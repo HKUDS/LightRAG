@@ -97,11 +97,7 @@ class LightRAG:
     addon_params: dict = field(default_factory=dict)
     convert_response_to_json_func: callable = convert_response_to_json
 
-    def __post_init__(self):
-        # use proxy
-        os.environ['http_proxy'] = 'http://127.0.0.1:7890'
-        os.environ['https_proxy'] = 'http://127.0.0.1:7890'
-        
+    def __post_init__(self):        
         log_file = os.path.join(self.working_dir, "lightrag.log")
         set_logger(log_file)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")

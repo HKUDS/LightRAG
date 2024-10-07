@@ -17,7 +17,7 @@ from .utils import compute_args_hash, wrap_embedding_func_with_attrs
     retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
 )
 async def openai_complete_if_cache(
-    model, prompt, api_key='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'
+    model, prompt, api_key=''
 , system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     openai_async_client = AsyncOpenAI(api_key=api_key)
@@ -72,25 +72,12 @@ async def gpt_4o_mini_complete(
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
 )
-async def openai_embedding(texts: list[str]) -> np.ndarray:
-    api_key = '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'
+async def openai_embedding(texts: list[str], api_key='') -> np.ndarray:
     openai_async_client = AsyncOpenAI(api_key=api_key)
     response = await openai_async_client.embeddings.create(
         model="text-embedding-3-small", input=texts, encoding_format="float"
     )
     return np.array([dp.embedding for dp in response.data])
-
-async def moonshot_complete(
-    prompt, system_prompt=None, history_messages=[], **kwargs
-) -> str:
-    return await openai_complete_if_cache(
-        "moonshot-v1-128k",
-        prompt,
-        api_key='sk-OsvLvHgFFH3tz6Yhym3OAhcTfZ9y7rHEgQ3JDLmnuLpTw9C0',
-        system_prompt=system_prompt,
-        history_messages=history_messages,
-        **kwargs,
-    )
 
 if __name__ == "__main__":
     import asyncio
