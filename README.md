@@ -20,7 +20,7 @@ pip install lightrag-hku
 
 ## Quick Start
 
-* Set OpenAI API key in environment: `export OPENAI_API_KEY="sk-...".`
+* Set OpenAI API key in environment: `export OPENAI_API_KEY="sk-..."`.
 * Download the demo text "A Christmas Carol by Charles Dickens" 
 ```
 curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./book.txt
@@ -30,7 +30,12 @@ Use the below python snippet:
 ```
 from lightrag import LightRAG, QueryParam
 
-rag = LightRAG(working_dir="./dickens")
+WORKING_DIR = "./dickens"
+
+if not os.path.exists(WORKING_DIR):
+    os.mkdir(WORKING_DIR)
+
+rag = LightRAG(working_dir=WORKING_DIR)
 
 with open("./book.txt") as f:
     rag.insert(f.read())

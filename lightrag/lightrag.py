@@ -166,7 +166,7 @@ class LightRAG:
         try:
             if isinstance(string_or_strings, str):
                 string_or_strings = [string_or_strings]
-            # ---------- new docs
+
             new_docs = {
                 compute_mdhash_id(c.strip(), prefix="doc-"): {"content": c.strip()}
                 for c in string_or_strings
@@ -178,7 +178,6 @@ class LightRAG:
                 return
             logger.info(f"[New Docs] inserting {len(new_docs)} docs")
 
-            # ---------- chunking
             inserting_chunks = {}
             for doc_key, doc in new_docs.items():
                 chunks = {
@@ -207,7 +206,19 @@ class LightRAG:
 
             await self.chunks_vdb.upsert(inserting_chunks)
 
-            # ---------- commit upsertings and indexing
+            logger.info("[Entity Extraction]...")
+            maybe_new_kg = await extract_entities(
+                inserting_chunks,
+                knwoledge_graph_inst=self.chunk_entity_relation_graph,
+                entity_vdb=self.entities_vdb,
+                relationships_vdb=self.relationships_vdb,
+                global_config=asdict(self),
+            )
+            if maybe_new_kg is None:
+                logger.warning("No new entities and relationships found")
+                return
+            self.chunk_entity_relation_graph = maybe_new_kg
+
             await self.full_docs.upsert(new_docs)
             await self.text_chunks.upsert(inserting_chunks)
         finally:
