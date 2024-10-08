@@ -65,7 +65,7 @@ The dataset used in LightRAG can be download from [TommyChien/UltraDomain](https
 
 ### Generate Query
 LightRAG uses the following prompt to generate high-level queries, with the corresponding code located in `example/generate_query.py`.
-```json
+```python
 Given the following description of a dataset:
 
 {description}
@@ -91,7 +91,7 @@ Output the results in the following structure:
  
  ### Batch Eval
 To evaluate the performance of two RAG systems on high-level queries, LightRAG uses the following prompt, with the specific code available in `example/batch_eval.py`.
-```json
+```python
 ---Role---
 You are an expert tasked with evaluating two answers to the same question based on three criteria: **Comprehensiveness**, **Diversity**, and **Empowerment**.
 ---Goal---
@@ -160,7 +160,7 @@ Output your evaluation in the following JSON format:
 
 ## Code Structure
 
-```json
+```python
 .
 ├── examples
 │   ├── batch_eval.py
@@ -183,7 +183,7 @@ Output your evaluation in the following JSON format:
 ```
 ## Citation
 
-```json
+```python
 @article{guo2024lightrag,
 title={LightRAG: Simple and Fast Retrieval-Augmented Generation}, 
 author={Zirui Guo and Lianghao Xia and Yanhua Yu and Tu Ao and Chao Huang},
@@ -193,3 +193,4 @@ archivePrefix={arXiv},
 primaryClass={cs.IR}
 }
 ```
+
