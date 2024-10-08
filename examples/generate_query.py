@@ -2,7 +2,7 @@ import os
 
 from openai import OpenAI
 
-os.environ["OPENAI_API_KEY"] = ""
+# os.environ["OPENAI_API_KEY"] = ""
 
 def openai_complete_if_cache(
     model="gpt-4o-mini", prompt=None, system_prompt=None, history_messages=[], **kwargs

@@ -3,7 +3,7 @@ import sys
 
 from lightrag import LightRAG, QueryParam
 
-os.environ["OPENAI_API_KEY"] = ""
+# os.environ["OPENAI_API_KEY"] = ""
 
 WORKING_DIR = ""
 
