@@ -940,5 +940,5 @@ async def naive_query(
         query,
         system_prompt=sys_prompt,
     )
-    return (response, section)
+    return response
 
