@@ -1,6 +1,5 @@
 import os
 import sys
-sys.path.append('xxx/xxx/LightRAG')
 
 from lightrag import LightRAG
 
