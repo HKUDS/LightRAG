@@ -1,0 +1,8 @@
+openai
+tiktoken
+networkx
+graspologic
+nano-vectordb
+hnswlib
+xxhash
+tenacity
