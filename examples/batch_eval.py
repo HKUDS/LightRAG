@@ -6,8 +6,8 @@ import jsonlines
 from openai import OpenAI
 
 
-def batch_eval(query_file, result1_file, result2_file, output_file_path, api_key):
-    client = OpenAI(api_key=api_key)
+def batch_eval(query_file, result1_file, result2_file, output_file_path):
+    client = OpenAI()
 
     with open(query_file, 'r') as f:
         data = f.read()

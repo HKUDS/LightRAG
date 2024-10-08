@@ -21,7 +21,7 @@ with open("./requirements.txt") as f:
         deps.append(line.strip())
 
 setuptools.setup(
-    name="lightrag",
+    name="light-rag",
     url=vars2readme["__url__"],
     version=vars2readme["__version__"],
     author=vars2readme["__author__"],
