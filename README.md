@@ -20,7 +20,7 @@ pip install lightrag-hku
 
 ## Quick Start
 
-* Set OpenAI API key in environment: `export OPENAI_API_KEY="sk-..."`.
+* Set OpenAI API key in environment: `export OPENAI_API_KEY="sk-...".`
 * Download the demo text "A Christmas Carol by Charles Dickens" 
 ```
 curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./book.txt
@@ -30,12 +30,7 @@ Use the below python snippet:
 ```
 from lightrag import LightRAG, QueryParam
 
-WORKING_DIR = "./dickens"
-
-if not os.path.exists(WORKING_DIR):
-    os.mkdir(WORKING_DIR)
-
-rag = LightRAG(working_dir=WORKING_DIR)
+rag = LightRAG(working_dir="./dickens")
 
 with open("./book.txt") as f:
     rag.insert(f.read())
@@ -138,6 +133,30 @@ Output your evaluation in the following JSON format:
     }}
 }}
 ```
+### Overall Performance Table
+|                      | **Agriculture**             |                       | **CS**                    |                       | **Legal**                 |                       | **Mix**                   |                       |
+|----------------------|-------------------------|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|
+|                      | NaiveRAG                | **LightRAG**           | NaiveRAG              | **LightRAG**           | NaiveRAG              | **LightRAG**           | NaiveRAG              | **LightRAG**           |
+| **Comprehensiveness** | 32.69%                  | <u>67.31%</u>         | 35.44%                | <u>64.56%</u>         | 19.05%                | <u>80.95%</u>         | 36.36%                | <u>63.64%</u>         |
+| **Diversity**         | 24.09%                  | <u>75.91%</u>         | 35.24%                | <u>64.76%</u>         | 10.98%                | <u>89.02%</u>         | 30.76%                | <u>69.24%</u>         |
+| **Empowerment**       | 31.35%                  | <u>68.65%</u>         | 35.48%                | <u>64.52%</u>         | 17.59%                | <u>82.41%</u>         | 40.95%                | <u>59.05%</u>         |
+| **Overall**           | 33.30%                  | <u>66.70%</u>         | 34.76%                | <u>65.24%</u>         | 17.46%                | <u>82.54%</u>         | 37.59%                | <u>62.40%</u>         |
+|                      | RQ-RAG                  | **LightRAG**           | RQ-RAG                | **LightRAG**           | RQ-RAG                | **LightRAG**           | RQ-RAG                | **LightRAG**           |
+| **Comprehensiveness** | 32.05%                  | <u>67.95%</u>         | 39.30%                | <u>60.70%</u>         | 18.57%                | <u>81.43%</u>         | 38.89%                | <u>61.11%</u>         |
+| **Diversity**         | 29.44%                  | <u>70.56%</u>         | 38.71%                | <u>61.29%</u>         | 15.14%                | <u>84.86%</u>         | 28.50%                | <u>71.50%</u>         |
+| **Empowerment**       | 32.51%                  | <u>67.49%</u>         | 37.52%                | <u>62.48%</u>         | 17.80%                | <u>82.20%</u>         | 43.96%                | <u>56.04%</u>         |
+| **Overall**           | 33.29%                  | <u>66.71%</u>         | 39.03%                | <u>60.97%</u>         | 17.80%                | <u>82.20%</u>         | 39.61%                | <u>60.39%</u>         |
+|                      | HyDE                    | **LightRAG**           | HyDE                  | **LightRAG**           | HyDE                  | **LightRAG**           | HyDE                  | **LightRAG**           |
+| **Comprehensiveness** | 24.39%                  | <u>75.61%</u>         | 36.49%                | <u>63.51%</u>         | 27.68%                | <u>72.32%</u>         | 42.17%                | <u>57.83%</u>         |
+| **Diversity**         | 24.96%                  | <u>75.34%</u>         | 37.41%                | <u>62.59%</u>         | 18.79%                | <u>81.21%</u>         | 30.88%                | <u>69.12%</u>         |
+| **Empowerment**       | 24.89%                  | <u>75.11%</u>         | 34.99%                | <u>65.01%</u>         | 26.99%                | <u>73.01%</u>         | 45.61%           |<u>54.39%</u>              |
+| **Overall**           | 23.17%                  | <u>76.83%</u>         | 35.67%                | <u>64.33%</u>         | 27.68%                | <u>72.32%</u>         | 42.72%                | <u>57.28%</u>         |
+|                      | GraphRAG                | **LightRAG**           | GraphRAG              | **LightRAG**           | GraphRAG              | **LightRAG**           | GraphRAG              | **LightRAG**           |
+| **Comprehensiveness** | 45.56%                  | <u>54.44%</u>         | 45.98%                | <u>54.02%</u>         | 47.13%                | <u>52.87%</u>         | <u>51.86%</u>            | 48.14%                |
+| **Diversity**         | 19.65%                  | <u>80.35%</u>         | 39.64%                | <u>60.36%</u>         | 25.55%                | <u>74.45%</u>         | 35.87%                | <u>64.13%</u>         |
+| **Empowerment**       | 36.69%                  | <u>63.31%</u>         | 45.09%                | <u>54.91%</u>         | 42.81%                | <u>57.19%</u>         | <u>52.94%</u>          | 47.06%                |
+| **Overall**           | 43.62%                  | <u>56.38%</u>         | 45.98%                | <u>54.02%</u>         | 45.70%                | <u>54.30%</u>         | <u>51.86%</u>          | 48.14%                |
+
 ## Code Structure
 
 ```
