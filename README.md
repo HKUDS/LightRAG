@@ -50,7 +50,7 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 Batch Insert
 ```python
 rag.insert(["TEXT1", "TEXT2",...])
-```python
+```
 Incremental Insert
 
 ```python
@@ -183,7 +183,7 @@ Output your evaluation in the following JSON format:
 ```
 ## Citation
 
-```python
+```
 @article{guo2024lightrag,
 title={LightRAG: Simple and Fast Retrieval-Augmented Generation}, 
 author={Zirui Guo and Lianghao Xia and Yanhua Yu and Tu Ao and Chao Huang},
