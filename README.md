@@ -1,10 +1,13 @@
 # LightRAG: Simple and Fast Retrieval-Augmented Generation
-<img src='' />
+![请添加图片描述](https://i-blog.csdnimg.cn/direct/567139f1a36e4564abc63ce5c12b6271.jpeg#pic_center)
+
+
 
 <a href='https://github.com/HKUDS/GraphEdit'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
 <a href='https://arxiv.org/abs/'><img src='https://img.shields.io/badge/arXiv--b31b1b'></a>
 
 This repository hosts the code of LightRAG. The structure of this code is based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag).
+![请添加图片描述](https://i-blog.csdnimg.cn/direct/b2aaf634151b4706892693ffb43d9093.png)
 ## Install
 
 * Install from source
@@ -193,4 +196,3 @@ archivePrefix={arXiv},
 primaryClass={cs.IR}
 }
 ```
-
