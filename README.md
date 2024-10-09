@@ -1,5 +1,5 @@
 # LightRAG: Simple and Fast Retrieval-Augmented Generation
-![请添加图片描述](https://i-blog.csdnimg.cn/direct/567139f1a36e4564abc63ce5c12b6271.jpeg#pic_center)
+![请添加图片描述](https://i-blog.csdnimg.cn/direct/567139f1a36e4564abc63ce5c12b6271.jpeg)
 
 
 
