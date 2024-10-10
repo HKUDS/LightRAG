@@ -3,7 +3,7 @@
 
 
 
-<a href='https://github.com/HKUDS/GraphRAG'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
+<a href='https://github.com/HKUDS/LightRAG'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
 <a href='https://arxiv.org/abs/'><img src='https://img.shields.io/badge/arXiv--b31b1b'></a>
 
 This repository hosts the code of LightRAG. The structure of this code is based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag).
