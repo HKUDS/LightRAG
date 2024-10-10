@@ -4,7 +4,7 @@
 
 
 <a href='https://github.com/HKUDS/LightRAG'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
-<a href='https://arxiv.org/abs/'><img src='https://img.shields.io/badge/arXiv--b31b1b'></a>
+<a href='https://arxiv.org/abs/2410.05779'><img src='https://img.shields.io/badge/arXiv2410.05779--b31b1b'></a>
 
 This repository hosts the code of LightRAG. The structure of this code is based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag).
 ![请添加图片描述](https://i-blog.csdnimg.cn/direct/b2aaf634151b4706892693ffb43d9093.png)
@@ -191,7 +191,7 @@ Output your evaluation in the following JSON format:
 title={LightRAG: Simple and Fast Retrieval-Augmented Generation}, 
 author={Zirui Guo and Lianghao Xia and Yanhua Yu and Tu Ao and Chao Huang},
 year={2024},
-eprint={},
+eprint={2410.05779},
 archivePrefix={arXiv},
 primaryClass={cs.IR}
 }
