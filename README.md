@@ -10,10 +10,10 @@
         <img src="https://badges.pufler.dev/visits/hkuds/lightrag?style=flat-square&logo=github">
         <img src='https://img.shields.io/github/stars/hkuds/lightrag?color=green&style=social' />
     </p>
-    <p>
+     <p>
         <img src="https://img.shields.io/badge/python->=3.9.11-blue">
-        <img src="https://img.shields.io/pypi/v/lightrag-hku.svg">
-        <img src="https://static.pepy.tech/badge/lightrag-hku/month">
+        <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg"></a>
+        <a href="https://pepy.tech/project/lightrag-hku"><img src="https://static.pepy.tech/badge/lightrag-hku/month"></a>
     </p>
     
 This repository hosts the code of LightRAG. The structure of this code is based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag).
