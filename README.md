@@ -250,7 +250,7 @@ def insert_text(rag, file_path):
 ```
 ### Step-2 Generate Queries
 
-We extract tokens from both the first half and the second half of each context in the dataset, then combine them to generate queries for dataset descriptions.
+We extract tokens from both the first half and the second half of each context in the dataset, then combine them as the dataset description to generate queries.
 ```python
 tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 
