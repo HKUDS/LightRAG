@@ -94,11 +94,11 @@ def wrap_embedding_func_with_attrs(**kwargs):
 def load_json(file_name):
     if not os.path.exists(file_name):
         return None
-    with open(file_name) as f:
+    with open(file_name, encoding="utf-8") as f:
         return json.load(f)
 
 def write_json(json_obj, file_name):
-    with open(file_name, "w") as f:
+    with open(file_name, "w", encoding="utf-8") as f:
         json.dump(json_obj, f, indent=2, ensure_ascii=False)
 
 def encode_string_by_tiktoken(content: str, model_name: str = "gpt-4o"):
