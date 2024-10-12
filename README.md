@@ -5,7 +5,7 @@
 
 <div align='center'>
      <p>
-        <a href='https://github.com/HKUDS/LightRAG'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
+        <a href='https://lightrag.github.io'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
         <a href='https://arxiv.org/abs/2410.05779'><img src='https://img.shields.io/badge/arXiv-2410.05779-b31b1b'></a>
         <img src="https://badges.pufler.dev/visits/hkuds/lightrag?style=flat-square&logo=github">
         <img src='https://img.shields.io/github/stars/hkuds/lightrag?color=green&style=social' />
