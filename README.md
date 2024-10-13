@@ -297,7 +297,7 @@ def extract_queries(file_path):
 │   ├── operate.py
 │   ├── prompt.py
 │   ├── storage.py
-│   └── utils.jpeg
+│   └── utils.py
 ├── reproduce
 │   ├── Step_0.py
 │   ├── Step_1.py
