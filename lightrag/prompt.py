@@ -32,7 +32,7 @@ Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tupl
 
 3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document.
 Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
- 
+
 4. Return output in English as a single list of all the entities and relationships identified in steps 1 and 2. Use **{record_delimiter}** as the list delimiter.
 
 5. When finished, output {completion_delimiter}
@@ -253,4 +253,42 @@ If you don't know the answer, just say so. Do not make anything up.
 Do not include information where the supporting evidence for it is not provided.
 ---Target response length and format---
 {response_type}
+"""
+PROMPTS["keywords_extraction_with_history"] = """---Role---
+
+You are a helpful assistant tasked with identifying both high-level and low-level keywords from the conversation history.
+
+---Goal---
+
+Given the conversation history, list both high-level and low-level keywords that are relevant to the user's query.
+
+---Instructions---
+
+- Output the keywords in JSON format.
+- The JSON should have two keys:
+  - "high_level_keywords" for overarching concepts or themes.
+  - "low_level_keywords" for specific entities or details.
+
+---Conversation History---
+{history}
+"""
+
+PROMPTS["context_generation_from_history"] = """---Role---
+
+You are a helpful assistant tasked with generating context for the user's query based on the conversation history and the provided keywords.
+
+---Goal---
+
+Using the conversation history and the keywords, summarize the relevant information that the assistant knows so far about the keywords.
+
+---Instructions---
+
+- Provide a concise summary that connects the keywords with the context from the conversation history.
+- Do not include irrelevant information.
+
+---Keywords---
+{keywords}
+
+---Conversation History---
+{history}
 """

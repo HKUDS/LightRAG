@@ -13,6 +13,7 @@ from .operate import (
     global_query,
     hybird_query,
     naive_query,
+    keyword_context_query,
 )
 
 from .storage import (
@@ -78,7 +79,7 @@ class LightRAG:
 
     # text embedding
     # embedding_func: EmbeddingFunc = field(default_factory=lambda:hf_embedding)
-    embedding_func: EmbeddingFunc = field(default_factory=lambda:openai_embedding)# 
+    embedding_func: EmbeddingFunc = field(default_factory=lambda:openai_embedding)#
     embedding_batch_num: int = 32
     embedding_func_max_async: int = 16
 
@@ -99,11 +100,11 @@ class LightRAG:
     addon_params: dict = field(default_factory=dict)
     convert_response_to_json_func: callable = convert_response_to_json
 
-    def __post_init__(self):        
+    def __post_init__(self):
         log_file = os.path.join(self.working_dir, "lightrag.log")
         set_logger(log_file)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
-        
+
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in asdict(self).items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
@@ -155,7 +156,7 @@ class LightRAG:
                 embedding_func=self.embedding_func,
             )
         )
-        
+
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(self.llm_model_func, hashing_kv=self.llm_response_cache)
         )
@@ -242,11 +243,11 @@ class LightRAG:
             tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())
         await asyncio.gather(*tasks)
 
-    def query(self, query: str, param: QueryParam = QueryParam()):
+    def query(self, query: str, param: QueryParam = QueryParam(), history_messages=[]):
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.aquery(query, param))
-    
-    async def aquery(self, query: str, param: QueryParam = QueryParam()):
+        return loop.run_until_complete(self.aquery(query, param, history_messages))
+
+    async def aquery(self, query: str, param: QueryParam = QueryParam(), history_messages=[]):
         if param.mode == "local":
             response = await local_query(
                 query,
@@ -285,11 +286,22 @@ class LightRAG:
                 param,
                 asdict(self),
             )
+        elif param.mode == "keyword_context":
+            response = await keyword_context_query(
+                query,
+                history_messages,
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.text_chunks,
+                param,
+                asdict(self),
+            )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
         await self._query_done()
         return response
-    
+
 
     async def _query_done(self):
         tasks = []
@@ -298,5 +310,3 @@ class LightRAG:
                 continue
             tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())
         await asyncio.gather(*tasks)
-
-    
