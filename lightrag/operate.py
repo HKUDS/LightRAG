@@ -3,7 +3,7 @@ import json
 import re
 from typing import Union
 from collections import Counter, defaultdict
-
+import warnings
 from .utils import (
     logger,
     clean_str,
@@ -398,10 +398,15 @@ async def local_query(
         keywords = keywords_data.get("low_level_keywords", [])
         keywords = ', '.join(keywords)
     except json.JSONDecodeError as e:
+        try:
+            result = result.replace(kw_prompt[:-1],'').replace('user','').replace('model','').strip().strip('```').strip('json')
+            keywords_data = json.loads(result)
+            keywords = keywords_data.get("low_level_keywords", [])
+            keywords = ', '.join(keywords)
         # Handle parsing error
-        print(f"JSON parsing error: {e}")
-        return PROMPTS["fail_response"]
-    
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            return PROMPTS["fail_response"]
     context = await _build_local_query_context(
         keywords,
         knowledge_graph_inst,
@@ -421,6 +426,9 @@ async def local_query(
         query,
         system_prompt=sys_prompt,
     )
+    if len(response)>len(sys_prompt):
+        response = response.replace(sys_prompt,'').replace('user','').replace('model','').replace(query,'').replace('<system>','').replace('</system>','').strip()
+    
     return response
 
 async def _build_local_query_context(
@@ -617,9 +625,16 @@ async def global_query(
         keywords = keywords_data.get("high_level_keywords", [])
         keywords = ', '.join(keywords)
     except json.JSONDecodeError as e:
-        # Handle parsing error
-        print(f"JSON parsing error: {e}")
-        return PROMPTS["fail_response"]
+        try:
+            result = result.replace(kw_prompt[:-1],'').replace('user','').replace('model','').strip().strip('```').strip('json')
+            keywords_data = json.loads(result)
+            keywords = keywords_data.get("high_level_keywords", [])
+            keywords = ', '.join(keywords)
+    
+        except json.JSONDecodeError as e:
+            # Handle parsing error
+            print(f"JSON parsing error: {e}")
+            return PROMPTS["fail_response"]
 
     context = await _build_global_query_context(
         keywords,
@@ -643,6 +658,9 @@ async def global_query(
         query,
         system_prompt=sys_prompt,
     )
+    if len(response)>len(sys_prompt):
+        response = response.replace(sys_prompt,'').replace('user','').replace('model','').replace(query,'').replace('<system>','').replace('</system>','').strip()
+    
     return response
 
 async def _build_global_query_context(
@@ -822,8 +840,8 @@ async def hybird_query(
 
     kw_prompt_temp = PROMPTS["keywords_extraction"]
     kw_prompt = kw_prompt_temp.format(query=query)
+    
     result = await use_model_func(kw_prompt)
-
     try:
         keywords_data = json.loads(result)
         hl_keywords = keywords_data.get("high_level_keywords", [])
@@ -831,10 +849,18 @@ async def hybird_query(
         hl_keywords = ', '.join(hl_keywords)
         ll_keywords = ', '.join(ll_keywords)
     except json.JSONDecodeError as e:
+        try:
+            result = result.replace(kw_prompt[:-1],'').replace('user','').replace('model','').strip().strip('```').strip('json')
+            keywords_data = json.loads(result)
+            hl_keywords = keywords_data.get("high_level_keywords", [])
+            ll_keywords = keywords_data.get("low_level_keywords", [])
+            hl_keywords = ', '.join(hl_keywords)
+            ll_keywords = ', '.join(ll_keywords)
         # Handle parsing error
-        print(f"JSON parsing error: {e}")
-        return PROMPTS["fail_response"]
-        
+        except json.JSONDecodeError as e:
+            print(f"JSON parsing error: {e}")
+            return PROMPTS["fail_response"]
+
     low_level_context = await _build_local_query_context(
         ll_keywords,
         knowledge_graph_inst,
@@ -851,7 +877,7 @@ async def hybird_query(
         text_chunks_db,
         query_param,
     )
-   
+
     context = combine_contexts(high_level_context, low_level_context)
 
     if query_param.only_need_context:
@@ -867,10 +893,13 @@ async def hybird_query(
         query,
         system_prompt=sys_prompt,
     )
+    if len(response)>len(sys_prompt):
+        response = response.replace(sys_prompt,'').replace('user','').replace('model','').replace(query,'').replace('<system>','').replace('</system>','').strip()
     return response
 
 def combine_contexts(high_level_context, low_level_context):
     # Function to extract entities, relationships, and sources from context strings
+
     def extract_sections(context):
         entities_match = re.search(r'-----Entities-----\s*```csv\s*(.*?)\s*```', context, re.DOTALL)
         relationships_match = re.search(r'-----Relationships-----\s*```csv\s*(.*?)\s*```', context, re.DOTALL)
@@ -883,8 +912,21 @@ def combine_contexts(high_level_context, low_level_context):
         return entities, relationships, sources
     
     # Extract sections from both contexts
-    hl_entities, hl_relationships, hl_sources = extract_sections(high_level_context)
-    ll_entities, ll_relationships, ll_sources = extract_sections(low_level_context)
+
+    if high_level_context==None:
+        warnings.warn("High Level context is None. Return empty High entity/relationship/source") 
+        hl_entities, hl_relationships, hl_sources = '','',''
+    else:
+        hl_entities, hl_relationships, hl_sources = extract_sections(high_level_context)
+
+
+    if low_level_context==None:
+        warnings.warn("Low Level context is None. Return empty Low entity/relationship/source")
+        ll_entities, ll_relationships, ll_sources = '','',''
+    else:
+        ll_entities, ll_relationships, ll_sources = extract_sections(low_level_context)
+
+
     
     # Combine and deduplicate the entities
     combined_entities_set = set(filter(None, hl_entities.strip().split('\n') + ll_entities.strip().split('\n')))
@@ -917,6 +959,7 @@ async def naive_query(
     global_config: dict,
 ):
     use_model_func = global_config["llm_model_func"]
+    use_model_name = global_config['llm_model_name']
     results = await chunks_vdb.query(query, top_k=query_param.top_k)
     if not len(results):
         return PROMPTS["fail_response"]
@@ -939,6 +982,11 @@ async def naive_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
+        model_name = use_model_name
     )
+
+    if len(response)>len(sys_prompt):
+        response = response[len(sys_prompt):].replace(sys_prompt,'').replace('user','').replace('model','').replace(query,'').replace('<system>','').replace('</system>','').strip()
+    
     return response
 
