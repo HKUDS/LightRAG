@@ -959,7 +959,6 @@ async def naive_query(
     global_config: dict,
 ):
     use_model_func = global_config["llm_model_func"]
-    use_model_name = global_config['llm_model_name']
     results = await chunks_vdb.query(query, top_k=query_param.top_k)
     if not len(results):
         return PROMPTS["fail_response"]
@@ -982,7 +981,6 @@ async def naive_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
-        model_name = use_model_name
     )
 
     if len(response)>len(sys_prompt):
