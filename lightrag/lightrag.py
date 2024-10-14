@@ -5,7 +5,7 @@ from datetime import datetime
 from functools import partial
 from typing import Type, cast
 
-from .llm import gpt_4o_complete, gpt_4o_mini_complete, openai_embedding,hf_model,hf_embedding
+from .llm import gpt_4o_complete, gpt_4o_mini_complete, openai_embedding,hf_model_complete,hf_embedding
 from .operate import (
     chunking_by_token_size,
     extract_entities,
@@ -77,12 +77,13 @@ class LightRAG:
     )
 
     # text embedding
-    embedding_func: EmbeddingFunc = field(default_factory=lambda: hf_embedding)#openai_embedding
+    # embedding_func: EmbeddingFunc = field(default_factory=lambda:hf_embedding)
+    embedding_func: EmbeddingFunc = field(default_factory=lambda:openai_embedding)# 
     embedding_batch_num: int = 32
     embedding_func_max_async: int = 16
 
     # LLM
-    llm_model_func: callable = hf_model#gpt_4o_mini_complete
+    llm_model_func: callable = gpt_4o_mini_complete#hf_model_complete#
     llm_model_name: str = 'meta-llama/Llama-3.2-1B-Instruct'#'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
     llm_model_max_token_size: int = 32768
     llm_model_max_async: int = 16

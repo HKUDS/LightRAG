@@ -115,10 +115,10 @@ async def gpt_4o_mini_complete(
 
 
 
-async def hf_model(
+async def hf_model_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
-    input_string = kwargs.get('model_name', 'google/gemma-2-2b-it')
+    input_string = kwargs['hashing_kv'].global_config['llm_model_name']
     return await hf_model_if_cache(
         input_string,
         prompt,
