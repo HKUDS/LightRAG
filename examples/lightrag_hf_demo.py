@@ -16,11 +16,13 @@ rag = LightRAG(
     llm_model_func=hf_model_complete,  
     llm_model_name='meta-llama/Llama-3.1-8B-Instruct',
     embedding_func=EmbeddingFunc(
-        tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
-        embed_model=AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
         embedding_dim=384,
         max_token_size=5000,
-        func=hf_embedding
+        func=lambda texts: hf_embedding(
+            texts, 
+            tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
+            embed_model=AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+        )
     ),
 )
 
