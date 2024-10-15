@@ -14,7 +14,7 @@ T = TypeVar("T")
 
 @dataclass
 class QueryParam:
-    mode: Literal["local", "global", "hybird", "naive"] = "global"
+    mode: Literal["local", "global", "hybrid", "naive"] = "global"
     only_need_context: bool = False
     response_type: str = "Multiple Paragraphs"
     top_k: int = 60

@@ -827,7 +827,7 @@ async def _find_related_text_unit_from_relationships(
 
     return all_text_units
 
-async def hybird_query(
+async def hybrid_query(
     query,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
