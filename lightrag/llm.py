@@ -141,11 +141,6 @@ async def openai_embedding(texts: list[str]) -> np.ndarray:
     return np.array([dp.embedding for dp in response.data])
 
 
-
-@wrap_embedding_func_with_attrs(
-    embedding_dim=384,
-    max_token_size=5000,
-)
 async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
     input_ids = tokenizer(texts, return_tensors='pt', padding=True, truncation=True).input_ids
     with torch.no_grad():
