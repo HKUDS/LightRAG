@@ -76,12 +76,8 @@ class LightRAG:
         }
     )
 
-    # text embedding
-    tokenizer: Any = None
-    embed_model: Any = None
-
     # embedding_func: EmbeddingFunc = field(default_factory=lambda:hf_embedding)
-    embedding_func: EmbeddingFunc = field(default_factory=lambda:openai_embedding)# 
+    embedding_func: EmbeddingFunc = field(default_factory=lambda:openai_embedding)
     embedding_batch_num: int = 32
     embedding_func_max_async: int = 16
 
@@ -103,13 +99,6 @@ class LightRAG:
     convert_response_to_json_func: callable = convert_response_to_json
 
     def __post_init__(self):        
-        if callable(self.embedding_func) and self.embedding_func.__name__ == 'hf_embedding':
-            if self.tokenizer is None:
-                self.tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-            if self.embed_model is None:
-                self.embed_model = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-
-
         log_file = os.path.join(self.working_dir, "lightrag.log")
         set_logger(log_file)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
@@ -139,10 +128,9 @@ class LightRAG:
         self.chunk_entity_relation_graph = self.graph_storage_cls(
             namespace="chunk_entity_relation", global_config=asdict(self)
         )
+
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
-            lambda texts: self.embedding_func(texts, self.tokenizer, self.embed_model) 
-            if callable(self.embedding_func) and self.embedding_func.__name__ == 'hf_embedding'
-            else self.embedding_func(texts)
+            self.embedding_func
         )
 
         self.entities_vdb = (

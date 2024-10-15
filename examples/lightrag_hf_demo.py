@@ -3,6 +3,7 @@ import sys
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import hf_model_complete, hf_embedding
+from lightrag.utils import EmbeddingFunc
 from transformers import AutoModel,AutoTokenizer
 
 WORKING_DIR = "./dickens"
@@ -14,9 +15,13 @@ rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=hf_model_complete,  
     llm_model_name='meta-llama/Llama-3.1-8B-Instruct',
-    embedding_func=hf_embedding,  
-    tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
-    embed_model=AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+    embedding_func=EmbeddingFunc(
+        tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
+        embed_model=AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
+        embedding_dim=384,
+        max_token_size=5000,
+        func=hf_embedding
+    ),
 )
 
 
