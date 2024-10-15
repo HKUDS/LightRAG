@@ -118,9 +118,9 @@ async def gpt_4o_mini_complete(
 async def hf_model_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
-    input_string = kwargs['hashing_kv'].global_config['llm_model_name']
+    model_name = kwargs['hashing_kv'].global_config['llm_model_name']
     return await hf_model_if_cache(
-        input_string,
+        model_name,
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
