@@ -19,9 +19,12 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
     retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
 )
 async def openai_complete_if_cache(
-    model, prompt, system_prompt=None, history_messages=[], **kwargs
+    model, prompt, system_prompt=None, history_messages=[], base_url=None, api_key=None, **kwargs
 ) -> str:
-    openai_async_client = AsyncOpenAI()
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+
+    openai_async_client = AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
     hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     messages = []
     if system_prompt:
@@ -133,10 +136,13 @@ async def hf_model_complete(
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
 )
-async def openai_embedding(texts: list[str]) -> np.ndarray:
-    openai_async_client = AsyncOpenAI()
+async def openai_embedding(texts: list[str], model: str = "text-embedding-3-small", base_url: str = None, api_key: str = None) -> np.ndarray:
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+
+    openai_async_client = AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
     response = await openai_async_client.embeddings.create(
-        model="text-embedding-3-small", input=texts, encoding_format="float"
+        model=model, input=texts, encoding_format="float"
     )
     return np.array([dp.embedding for dp in response.data])
 
