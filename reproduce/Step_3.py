@@ -52,7 +52,7 @@ def run_queries_and_save_to_json(queries, rag_instance, query_param, output_file
 
 if __name__ == "__main__":
     cls = "agriculture"
-    mode = "hybird"
+    mode = "hybrid"
     WORKING_DIR = "../{cls}"
 
     rag = LightRAG(working_dir=WORKING_DIR)

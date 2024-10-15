@@ -142,18 +142,14 @@ async def openai_embedding(texts: list[str]) -> np.ndarray:
 
 
 
-global EMBED_MODEL
-global tokenizer
-EMBED_MODEL = AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
-tokenizer = AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
 @wrap_embedding_func_with_attrs(
     embedding_dim=384,
     max_token_size=5000,
 )
-async def hf_embedding(texts: list[str]) -> np.ndarray:
+async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
     input_ids = tokenizer(texts, return_tensors='pt', padding=True, truncation=True).input_ids
     with torch.no_grad():
-        outputs = EMBED_MODEL(input_ids)
+        outputs = embed_model(input_ids)
         embeddings = outputs.last_hidden_state.mean(dim=1)
     return embeddings.detach().numpy()
 

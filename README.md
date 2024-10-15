@@ -59,8 +59,8 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 # Perform global search
 print(rag.query("What are the top themes in this story?", param=QueryParam(mode="global")))
 
-# Perform hybird search
-print(rag.query("What are the top themes in this story?", param=QueryParam(mode="hybird")))
+# Perform hybrid search
+print(rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid")))
 ```
 Batch Insert
 ```python
@@ -287,8 +287,8 @@ def extract_queries(file_path):
 ├── examples
 │   ├── batch_eval.py
 │   ├── generate_query.py
-│   ├── insert.py
-│   └── query.py
+│   ├── lightrag_openai_demo.py
+│   └── lightrag_hf_demo.py
 ├── lightrag
 │   ├── __init__.py
 │   ├── base.py
