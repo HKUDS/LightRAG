@@ -318,6 +318,17 @@ def extract_queries(file_path):
 
     return queries
 ```
+
+## Star History
+
+<a href="https://star-history.com/#HKUDS/LightRAG&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=HKUDS/LightRAG&type=Date" />
+ </picture>
+</a>
+
 ## Code Structure
 
 ```python
