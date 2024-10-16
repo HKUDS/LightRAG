@@ -7,7 +7,6 @@
      <p>
         <a href='https://lightrag.github.io'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
         <a href='https://arxiv.org/abs/2410.05779'><img src='https://img.shields.io/badge/arXiv-2410.05779-b31b1b'></a>
-        <img src="https://badges.pufler.dev/visits/hkuds/lightrag?style=flat-square&logo=github">
         <img src='https://img.shields.io/github/stars/hkuds/lightrag?color=green&style=social' />
     </p>
      <p>
@@ -21,6 +20,7 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 </div>
 
 ## 🎉 News 
+- [x] [2024.10.16]🎯🎯📢📢LightRAG now supports Ollama models! 
 - [x] [2024.10.15]🎯🎯📢📢LightRAG now supports Hugging Face models! 
 
 ## Install
@@ -37,7 +37,7 @@ pip install lightrag-hku
 ```
 
 ## Quick Start
-
+* All the code can be found in the `examples`.
 * Set OpenAI API key in environment if using OpenAI models: `export OPENAI_API_KEY="sk-...".`
 * Download the demo text "A Christmas Carol by Charles Dickens":
 ```bash
@@ -84,7 +84,7 @@ from transformers import AutoModel, AutoTokenizer
 # Initialize LightRAG with Hugging Face model
 rag = LightRAG(
     working_dir=WORKING_DIR,
-    llm_model_func=hf_model_complete,  # Use Hugging Face complete model for text generation
+    llm_model_func=hf_model_complete,  # Use Hugging Face model for text generation
     llm_model_name='meta-llama/Llama-3.1-8B-Instruct',  # Model name from Hugging Face
     # Use Hugging Face embedding function
     embedding_func=EmbeddingFunc(
@@ -94,6 +94,27 @@ rag = LightRAG(
             texts, 
             tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
             embed_model=AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
+        )
+    ),
+)
+```
+### Using Ollama Models
+If you want to use Ollama models, you only need to set LightRAG as follows:
+```python
+from lightrag.llm import ollama_model_complete, ollama_embedding
+
+# Initialize LightRAG with Ollama model
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=ollama_model_complete,  # Use Ollama model for text generation
+    llm_model_name='your_model_name', # Your model name
+    # Use Ollama embedding function
+    embedding_func=EmbeddingFunc(
+        embedding_dim=768,
+        max_token_size=8192,
+        func=lambda texts: ollama_embedding(
+            texts, 
+            embed_model="nomic-embed-text"
         )
     ),
 )
@@ -326,8 +347,10 @@ def extract_queries(file_path):
 ├── examples
 │   ├── batch_eval.py
 │   ├── generate_query.py
-│   ├── lightrag_openai_demo.py
-│   └── lightrag_hf_demo.py
+│   ├── lightrag_hf_demo.py
+│   ├── lightrag_ollama_demo.py
+│   ├── lightrag_openai_compatible_demo.py
+│   └── lightrag_openai_demo.py
 ├── lightrag
 │   ├── __init__.py
 │   ├── base.py
