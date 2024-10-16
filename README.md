@@ -20,8 +20,8 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 </div>
 
 ## 🎉 News 
-- [x] [2024.10.16]🎯🎯📢📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-ollama-models)! 
-- [x] [2024.10.15]🎯🎯📢📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-hugging-face-models)! 
+- [x] [2024.10.16]🎯🎯📢📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)! 
+- [x] [2024.10.15]🎯🎯📢📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)! 
 
 ## Install
 
@@ -76,7 +76,9 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 print(rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid")))
 ```
 
-### Open AI-like APIs
+<details>
+<summary> Using Open AI-like APIs </summary>
+
 LightRAG also support Open AI-like chat/embeddings APIs:
 ```python
 async def llm_model_func(
@@ -110,8 +112,11 @@ rag = LightRAG(
     )
 )
 ```
+</details>
 
-### Using Hugging Face Models
+<details>
+<summary> Using Hugging Face Models </summary>
+     
 If you want to use Hugging Face models, you only need to set LightRAG as follows:
 ```python
 from lightrag.llm import hf_model_complete, hf_embedding
@@ -134,9 +139,12 @@ rag = LightRAG(
     ),
 )
 ```
+</details>
 
-### Using Ollama Models
+<details>
+<summary> Using Ollama Models </summary>
 If you want to use Ollama models, you only need to set LightRAG as follows:
+     
 ```python
 from lightrag.llm import ollama_model_complete, ollama_embedding
 
@@ -156,6 +164,7 @@ rag = LightRAG(
     ),
 )
 ```
+</details>
 
 ### Batch Insert
 ```python
@@ -178,6 +187,10 @@ The dataset used in LightRAG can be download from [TommyChien/UltraDomain](https
 
 ### Generate Query
 LightRAG uses the following prompt to generate high-level queries, with the corresponding code located in `example/generate_query.py`.
+
+<details>
+<summary> Prompt </summary>
+     
 ```python
 Given the following description of a dataset:
 
@@ -201,9 +214,14 @@ Output the results in the following structure:
 - User 5: [user description]
     ...
 ```
+</details>
  
  ### Batch Eval
 To evaluate the performance of two RAG systems on high-level queries, LightRAG uses the following prompt, with the specific code available in `example/batch_eval.py`.
+
+<details>
+<summary> Prompt </summary>
+     
 ```python
 ---Role---
 You are an expert tasked with evaluating two answers to the same question based on three criteria: **Comprehensiveness**, **Diversity**, and **Empowerment**.
@@ -246,6 +264,7 @@ Output your evaluation in the following JSON format:
     }}
 }}
 ```
+</details>
 
 ### Overall Performance Table
 |                      | **Agriculture**             |                       | **CS**                    |                       | **Legal**                 |                       | **Mix**                   |                       |
@@ -276,6 +295,10 @@ All the code can be found in the `./reproduce` directory.
 
 ### Step-0 Extract Unique Contexts
 First, we need to extract unique contexts in the datasets.
+
+<details>
+<summary> Code </summary>
+     
 ```python
 def extract_unique_contexts(input_directory, output_directory):
 
@@ -327,10 +350,14 @@ def extract_unique_contexts(input_directory, output_directory):
     print("All files have been processed.")
 
 ```
+</details>
 
 ### Step-1 Insert Contexts
 For the extracted contexts, we insert them into the LightRAG system.
 
+<details>
+<summary> Code </summary>
+     
 ```python
 def insert_text(rag, file_path):
     with open(file_path, mode='r') as f:
@@ -349,10 +376,15 @@ def insert_text(rag, file_path):
     if retries == max_retries:
         print("Insertion failed after exceeding the maximum number of retries")
 ```
+</details>
 
 ### Step-2 Generate Queries
 
 We extract tokens from both the first half and the second half of each context in the dataset, then combine them as the dataset description to generate queries.
+
+<details>
+<summary> Code </summary>
+     
 ```python
 tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 
@@ -368,9 +400,14 @@ def get_summary(context, tot_tokens=2000):
     
     return summary
 ```
+</details>
 
 ### Step-3 Query
 For the queries generated in Step-2, we will extract them and query LightRAG.
+
+<details>
+<summary> Code </summary>
+     
 ```python
 def extract_queries(file_path):
     with open(file_path, 'r') as f:
@@ -382,6 +419,7 @@ def extract_queries(file_path):
 
     return queries
 ```
+</details>
 
 ## Code Structure
 
