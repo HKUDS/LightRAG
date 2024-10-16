@@ -9,3 +9,4 @@ tenacity
 transformers
 torch
 ollama
+accelerate
