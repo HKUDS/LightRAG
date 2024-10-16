@@ -7,7 +7,6 @@
      <p>
         <a href='https://lightrag.github.io'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
         <a href='https://arxiv.org/abs/2410.05779'><img src='https://img.shields.io/badge/arXiv-2410.05779-b31b1b'></a>
-        <img src="https://badges.pufler.dev/visits/hkuds/lightrag?style=flat-square&logo=github">
         <img src='https://img.shields.io/github/stars/hkuds/lightrag?color=green&style=social' />
     </p>
      <p>
@@ -21,7 +20,8 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 </div>
 
 ## 🎉 News 
-- [x] [2024.10.15]🎯🎯📢📢LightRAG now supports Hugging Face models! 
+- [x] [2024.10.16]🎯🎯📢📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-ollama-models)! 
+- [x] [2024.10.15]🎯🎯📢📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-hugging-face-models)! 
 
 ## Install
 
@@ -37,7 +37,7 @@ pip install lightrag-hku
 ```
 
 ## Quick Start
-
+* All the code can be found in the `examples`.
 * Set OpenAI API key in environment if using OpenAI models: `export OPENAI_API_KEY="sk-...".`
 * Download the demo text "A Christmas Carol by Charles Dickens":
 ```bash
@@ -75,6 +75,42 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 # Perform hybrid search
 print(rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid")))
 ```
+
+### Open AI-like APIs
+LightRAG also support Open AI-like chat/embeddings APIs:
+```python
+async def llm_model_func(
+    prompt, system_prompt=None, history_messages=[], **kwargs
+) -> str:
+    return await openai_complete_if_cache(
+        "solar-mini",
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        api_key=os.getenv("UPSTAGE_API_KEY"),
+        base_url="https://api.upstage.ai/v1/solar",
+        **kwargs
+    )
+
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    return await openai_embedding(
+        texts,
+        model="solar-embedding-1-large-query",
+        api_key=os.getenv("UPSTAGE_API_KEY"),
+        base_url="https://api.upstage.ai/v1/solar"
+    )
+
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    embedding_func=EmbeddingFunc(
+        embedding_dim=4096,
+        max_token_size=8192,
+        func=embedding_func
+    )
+)
+```
+
 ### Using Hugging Face Models
 If you want to use Hugging Face models, you only need to set LightRAG as follows:
 ```python
@@ -84,7 +120,7 @@ from transformers import AutoModel, AutoTokenizer
 # Initialize LightRAG with Hugging Face model
 rag = LightRAG(
     working_dir=WORKING_DIR,
-    llm_model_func=hf_model_complete,  # Use Hugging Face complete model for text generation
+    llm_model_func=hf_model_complete,  # Use Hugging Face model for text generation
     llm_model_name='meta-llama/Llama-3.1-8B-Instruct',  # Model name from Hugging Face
     # Use Hugging Face embedding function
     embedding_func=EmbeddingFunc(
@@ -98,11 +134,35 @@ rag = LightRAG(
     ),
 )
 ```
+
+### Using Ollama Models
+If you want to use Ollama models, you only need to set LightRAG as follows:
+```python
+from lightrag.llm import ollama_model_complete, ollama_embedding
+
+# Initialize LightRAG with Ollama model
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=ollama_model_complete,  # Use Ollama model for text generation
+    llm_model_name='your_model_name', # Your model name
+    # Use Ollama embedding function
+    embedding_func=EmbeddingFunc(
+        embedding_dim=768,
+        max_token_size=8192,
+        func=lambda texts: ollama_embedding(
+            texts, 
+            embed_model="nomic-embed-text"
+        )
+    ),
+)
+```
+
 ### Batch Insert
 ```python
 # Batch Insert: Insert multiple texts at once
 rag.insert(["TEXT1", "TEXT2",...])
 ```
+
 ### Incremental Insert
 
 ```python
@@ -186,6 +246,7 @@ Output your evaluation in the following JSON format:
     }}
 }}
 ```
+
 ### Overall Performance Table
 |                      | **Agriculture**             |                       | **CS**                    |                       | **Legal**                 |                       | **Mix**                   |                       |
 |----------------------|-------------------------|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|
@@ -212,6 +273,7 @@ Output your evaluation in the following JSON format:
 
 ## Reproduce 
 All the code can be found in the `./reproduce` directory.
+
 ### Step-0 Extract Unique Contexts
 First, we need to extract unique contexts in the datasets.
 ```python
@@ -265,6 +327,7 @@ def extract_unique_contexts(input_directory, output_directory):
     print("All files have been processed.")
 
 ```
+
 ### Step-1 Insert Contexts
 For the extracted contexts, we insert them into the LightRAG system.
 
@@ -286,6 +349,7 @@ def insert_text(rag, file_path):
     if retries == max_retries:
         print("Insertion failed after exceeding the maximum number of retries")
 ```
+
 ### Step-2 Generate Queries
 
 We extract tokens from both the first half and the second half of each context in the dataset, then combine them as the dataset description to generate queries.
@@ -326,8 +390,10 @@ def extract_queries(file_path):
 ├── examples
 │   ├── batch_eval.py
 │   ├── generate_query.py
-│   ├── lightrag_openai_demo.py
-│   └── lightrag_hf_demo.py
+│   ├── lightrag_hf_demo.py
+│   ├── lightrag_ollama_demo.py
+│   ├── lightrag_openai_compatible_demo.py
+│   └── lightrag_openai_demo.py
 ├── lightrag
 │   ├── __init__.py
 │   ├── base.py
