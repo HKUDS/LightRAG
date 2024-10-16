@@ -1,5 +1,6 @@
 import os
 import numpy as np
+import ollama
 from openai import AsyncOpenAI, APIConnectionError, RateLimitError, Timeout
 from tenacity import (
     retry,
@@ -92,6 +93,34 @@ async def hf_model_if_cache(
         )
     return response_text
 
+async def ollama_model_if_cache(
+    model, prompt, system_prompt=None, history_messages=[], **kwargs
+) -> str:
+    kwargs.pop("max_tokens", None)
+    kwargs.pop("response_format", None)
+
+    ollama_client = ollama.AsyncClient()
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+
+    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
+    messages.extend(history_messages)
+    messages.append({"role": "user", "content": prompt})
+    if hashing_kv is not None:
+        args_hash = compute_args_hash(model, messages)
+        if_cache_return = await hashing_kv.get_by_id(args_hash)
+        if if_cache_return is not None:
+            return if_cache_return["return"]
+
+    response = await ollama_client.chat(model=model, messages=messages, **kwargs)
+
+    result = response["message"]["content"]
+
+    if hashing_kv is not None:
+        await hashing_kv.upsert({args_hash: {"return": result, "model": model}})
+
+    return result
 
 async def gpt_4o_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
@@ -116,13 +145,23 @@ async def gpt_4o_mini_complete(
         **kwargs,
     )
 
-
-
 async def hf_model_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     model_name = kwargs['hashing_kv'].global_config['llm_model_name']
     return await hf_model_if_cache(
+        model_name,
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        **kwargs,
+    )
+
+async def ollama_model_complete(
+    prompt, system_prompt=None, history_messages=[], **kwargs
+) -> str:
+    model_name = kwargs['hashing_kv'].global_config['llm_model_name']
+    return await ollama_model_if_cache(
         model_name,
         prompt,
         system_prompt=system_prompt,
@@ -154,6 +193,13 @@ async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
         embeddings = outputs.last_hidden_state.mean(dim=1)
     return embeddings.detach().numpy()
 
+async def ollama_embedding(texts: list[str], embed_model) -> np.ndarray:
+    embed_text = []
+    for text in texts:
+        data = ollama.embeddings(model=embed_model, prompt=text)
+        embed_text.append(data["embedding"])
+
+    return embed_text
 
 if __name__ == "__main__":
     import asyncio
