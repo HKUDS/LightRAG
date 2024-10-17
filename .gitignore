@@ -1,0 +1,6 @@
+.env
+venv/
+lightrag_hku.egg-info/
+output/
+ragtest/
+__pycache__/

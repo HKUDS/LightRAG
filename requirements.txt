@@ -10,3 +10,6 @@ transformers
 torch
 ollama
 accelerate
+transformers
+torch
+python-dotenv

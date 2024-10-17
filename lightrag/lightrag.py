@@ -5,6 +5,7 @@ from datetime import datetime
 from functools import partial
 from typing import Type, cast, Any
 from transformers import AutoModel,AutoTokenizer, AutoModelForCausalLM
+from dotenv import load_dotenv
 
 from .llm import gpt_4o_complete, gpt_4o_mini_complete, openai_embedding, hf_model_complete, hf_embedding
 from .operate import (
@@ -49,6 +50,8 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
 
 @dataclass
 class LightRAG:
+    # Load environment variables from .env file
+    load_dotenv()
     working_dir: str = field(
         default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
