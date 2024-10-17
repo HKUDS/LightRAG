@@ -387,6 +387,7 @@ async def local_query(
     query_param: QueryParam,
     global_config: dict,
 ) -> str:
+    context = None
     use_model_func = global_config["llm_model_func"]
 
     kw_prompt_temp = PROMPTS["keywords_extraction"]
@@ -399,7 +400,9 @@ async def local_query(
         keywords = ', '.join(keywords)
     except json.JSONDecodeError as e:
         try:
-            result = result.replace(kw_prompt[:-1],'').replace('user','').replace('model','').strip().strip('```').strip('json')
+            result = result.replace(kw_prompt[:-1],'').replace('user','').replace('model','').strip()
+            result = '{' + result.split('{')[1].split('}')[0] + '}'
+
             keywords_data = json.loads(result)
             keywords = keywords_data.get("low_level_keywords", [])
             keywords = ', '.join(keywords)
@@ -407,13 +410,14 @@ async def local_query(
         except json.JSONDecodeError as e:
             print(f"JSON parsing error: {e}")
             return PROMPTS["fail_response"]
-    context = await _build_local_query_context(
-        keywords,
-        knowledge_graph_inst,
-        entities_vdb,
-        text_chunks_db,
-        query_param,
-    )
+    if keywords:
+        context = await _build_local_query_context(
+            keywords,
+            knowledge_graph_inst,
+            entities_vdb,
+            text_chunks_db,
+            query_param,
+        )
     if query_param.only_need_context:
         return context
     if context is None:
@@ -614,6 +618,7 @@ async def global_query(
     query_param: QueryParam,
     global_config: dict,
 ) -> str:
+    context = None
     use_model_func = global_config["llm_model_func"]
 
     kw_prompt_temp = PROMPTS["keywords_extraction"]
@@ -626,7 +631,9 @@ async def global_query(
         keywords = ', '.join(keywords)
     except json.JSONDecodeError as e:
         try:
-            result = result.replace(kw_prompt[:-1],'').replace('user','').replace('model','').strip().strip('```').strip('json')
+            result = result.replace(kw_prompt[:-1],'').replace('user','').replace('model','').strip()
+            result = '{' + result.split('{')[1].split('}')[0] + '}'
+
             keywords_data = json.loads(result)
             keywords = keywords_data.get("high_level_keywords", [])
             keywords = ', '.join(keywords)
@@ -635,15 +642,15 @@ async def global_query(
             # Handle parsing error
             print(f"JSON parsing error: {e}")
             return PROMPTS["fail_response"]
-
-    context = await _build_global_query_context(
-        keywords,
-        knowledge_graph_inst,
-        entities_vdb,
-        relationships_vdb,
-        text_chunks_db,
-        query_param,
-    )
+    if keywords:
+        context = await _build_global_query_context(
+            keywords,
+            knowledge_graph_inst,
+            entities_vdb,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
+        )
    
     if query_param.only_need_context:
         return context
@@ -836,6 +843,8 @@ async def hybrid_query(
     query_param: QueryParam,
     global_config: dict,
 ) -> str:
+    low_level_context = None
+    high_level_context = None
     use_model_func = global_config["llm_model_func"]
 
     kw_prompt_temp = PROMPTS["keywords_extraction"]
@@ -850,7 +859,9 @@ async def hybrid_query(
         ll_keywords = ', '.join(ll_keywords)
     except json.JSONDecodeError as e:
         try:
-            result = result.replace(kw_prompt[:-1],'').replace('user','').replace('model','').strip().strip('```').strip('json')
+            result = result.replace(kw_prompt[:-1],'').replace('user','').replace('model','').strip()
+            result = '{' + result.split('{')[1].split('}')[0] + '}'
+
             keywords_data = json.loads(result)
             hl_keywords = keywords_data.get("high_level_keywords", [])
             ll_keywords = keywords_data.get("low_level_keywords", [])
@@ -861,22 +872,24 @@ async def hybrid_query(
             print(f"JSON parsing error: {e}")
             return PROMPTS["fail_response"]
 
-    low_level_context = await _build_local_query_context(
-        ll_keywords,
-        knowledge_graph_inst,
-        entities_vdb,
-        text_chunks_db,
-        query_param,
-    )
+    if ll_keywords:
+        low_level_context = await _build_local_query_context(
+            ll_keywords,
+            knowledge_graph_inst,
+            entities_vdb,
+            text_chunks_db,
+            query_param,
+        )
 
-    high_level_context = await _build_global_query_context(
-        hl_keywords,
-        knowledge_graph_inst,
-        entities_vdb,
-        relationships_vdb,
-        text_chunks_db,
-        query_param,
-    )
+    if hl_keywords:
+        high_level_context = await _build_global_query_context(
+            hl_keywords,
+            knowledge_graph_inst,
+            entities_vdb,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
+        )
 
     context = combine_contexts(high_level_context, low_level_context)
 
