@@ -27,10 +27,14 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 
 ## Install
 
+Prerequisites
+- Poetry must be installed (refer to the Poetry documentation for installation instructions).
+
 * Install from source (Recommend)
 
 ```bash
 cd LightRAG
+init poetry
 pip install -e .
 ```
 * Install from PyPI
