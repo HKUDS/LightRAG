@@ -145,15 +145,16 @@ Output your evaluation in the following JSON format:
 │   ├── prompt.py
 │   ├── storage.py
 │   └── utils.py
-├── reproduce
-│   ├── Step_0.py
-│   ├── Step_1.py
-│   ├── Step_2.py
-│   └── Step_3.py
+├── scripts
+│   ├── repo_chunking.py
+│   ├── repo_stats.py
+│   ├── view_graph.py
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
 └── setup.py
+|__ index.py
+|__ query.py
 ```
 
 ## Citation
