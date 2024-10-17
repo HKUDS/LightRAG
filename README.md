@@ -144,7 +144,7 @@ rag = LightRAG(
 </details>
 
 <details>
-<summary> Using Ollama Models (There are some bugs. I'll fix them ASAP.) </summary>
+<summary> Using Ollama Models </summary>
 If you want to use Ollama models, you only need to set LightRAG as follows:
      
 ```python
