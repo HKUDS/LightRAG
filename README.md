@@ -25,7 +25,7 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 
 ## Install
 
-* Install from source
+* Install from source (Recommend)
 
 ```bash
 cd LightRAG
@@ -142,7 +142,7 @@ rag = LightRAG(
 </details>
 
 <details>
-<summary> Using Ollama Models </summary>
+<summary> Using Ollama Models (There are some bugs. I'll fix them ASAP.) </summary>
 If you want to use Ollama models, you only need to set LightRAG as follows:
      
 ```python
