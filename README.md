@@ -92,7 +92,7 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 <details>
 <summary> Using Open AI-like APIs </summary>
 
-LightRAG also supports Open AI-like chat/embeddings APIs:
+* LightRAG also supports Open AI-like chat/embeddings APIs:
 ```python
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
@@ -130,7 +130,7 @@ rag = LightRAG(
 <details>
 <summary> Using Hugging Face Models </summary>
 
-If you want to use Hugging Face models, you only need to set LightRAG as follows:
+* If you want to use Hugging Face models, you only need to set LightRAG as follows:
 ```python
 from lightrag.llm import hf_model_complete, hf_embedding
 from transformers import AutoModel, AutoTokenizer
@@ -156,7 +156,8 @@ rag = LightRAG(
 
 <details>
 <summary> Using Ollama Models </summary>
-If you want to use Ollama models, you only need to set LightRAG as follows:
+     
+* If you want to use Ollama models, you only need to set LightRAG as follows:
 
 ```python
 from lightrag.llm import ollama_model_complete, ollama_embedding
@@ -177,6 +178,29 @@ rag = LightRAG(
     ),
 )
 ```
+
+* Increasing the `num_ctx` parameter:
+
+1. Pull the model:
+```python
+ollama pull qwen2
+```
+
+2. Display the model file:
+```python
+ollama show --modelfile qwen2 > Modelfile
+```
+
+3. Edit the Modelfile by adding the following line:
+```python
+PARAMETER num_ctx 32768
+```
+
+4. Create the modified model:
+```python
+ollama create -f Modelfile qwen2m
+```
+
 </details>
 
 ### Batch Insert
@@ -441,6 +465,8 @@ def extract_queries(file_path):
 ├── examples
 │   ├── batch_eval.py
 │   ├── generate_query.py
+│   ├── lightrag_azure_openai_demo.py
+│   ├── lightrag_bedrock_demo.py
 │   ├── lightrag_hf_demo.py
 │   ├── lightrag_ollama_demo.py
 │   ├── lightrag_openai_compatible_demo.py
@@ -459,6 +485,8 @@ def extract_queries(file_path):
 │   ├── Step_1.py
 │   ├── Step_2.py
 │   └── Step_3.py
+├── .gitignore
+├── .pre-commit-config.yaml
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
