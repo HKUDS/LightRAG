@@ -1,8 +1,7 @@
-import os
-
 from openai import OpenAI
 
 # os.environ["OPENAI_API_KEY"] = ""
+
 
 def openai_complete_if_cache(
     model="gpt-4o-mini", prompt=None, system_prompt=None, history_messages=[], **kwargs
@@ -47,9 +46,9 @@ if __name__ == "__main__":
         ...
     """
 
-    result = openai_complete_if_cache(model='gpt-4o-mini', prompt=prompt)
+    result = openai_complete_if_cache(model="gpt-4o-mini", prompt=prompt)
 
-    file_path = f"./queries.txt"
+    file_path = "./queries.txt"
     with open(file_path, "w") as file:
         file.write(result)
 

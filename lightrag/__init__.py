@@ -1,4 +1,4 @@
-from .lightrag import LightRAG, QueryParam
+from .lightrag import LightRAG as LightRAG, QueryParam as QueryParam
 
 __version__ = "0.0.6"
 __author__ = "Zirui Guo"
