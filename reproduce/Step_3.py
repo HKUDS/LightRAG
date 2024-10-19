@@ -4,15 +4,17 @@ import asyncio
 from lightrag import LightRAG, QueryParam
 from tqdm import tqdm
 
-def extract_queries(file_path):
-    with open(file_path, 'r') as f:
-        data = f.read()
-    
-    data = data.replace('**', '')
 
-    queries = re.findall(r'- Question \d+: (.+)', data)
+def extract_queries(file_path):
+    with open(file_path, "r") as f:
+        data = f.read()
+
+    data = data.replace("**", "")
+
+    queries = re.findall(r"- Question \d+: (.+)", data)
 
     return queries
+
 
 async def process_query(query_text, rag_instance, query_param):
     try:
@@ -20,6 +22,7 @@ async def process_query(query_text, rag_instance, query_param):
         return {"query": query_text, "result": result, "context": context}, None
     except Exception as e:
         return None, {"query": query_text, "error": str(e)}
+
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
@@ -29,15 +32,22 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
         asyncio.set_event_loop(loop)
     return loop
 
-def run_queries_and_save_to_json(queries, rag_instance, query_param, output_file, error_file):
+
+def run_queries_and_save_to_json(
+    queries, rag_instance, query_param, output_file, error_file
+):
     loop = always_get_an_event_loop()
 
-    with open(output_file, 'a', encoding='utf-8') as result_file, open(error_file, 'a', encoding='utf-8') as err_file:
+    with open(output_file, "a", encoding="utf-8") as result_file, open(
+        error_file, "a", encoding="utf-8"
+    ) as err_file:
         result_file.write("[\n")
         first_entry = True
 
         for query_text in tqdm(queries, desc="Processing queries", unit="query"):
-            result, error = loop.run_until_complete(process_query(query_text, rag_instance, query_param))
+            result, error = loop.run_until_complete(
+                process_query(query_text, rag_instance, query_param)
+            )
 
             if result:
                 if not first_entry:
@@ -50,6 +60,7 @@ def run_queries_and_save_to_json(queries, rag_instance, query_param, output_file
 
         result_file.write("\n]")
 
+
 if __name__ == "__main__":
     cls = "agriculture"
     mode = "hybrid"
@@ -59,4 +70,6 @@ if __name__ == "__main__":
     query_param = QueryParam(mode=mode)
 
     queries = extract_queries(f"../datasets/questions/{cls}_questions.txt")
-    run_queries_and_save_to_json(queries, rag, query_param, f"{cls}_result.json", f"{cls}_errors.json")
+    run_queries_and_save_to_json(
+        queries, rag, query_param, f"{cls}_result.json", f"{cls}_errors.json"
+    )
