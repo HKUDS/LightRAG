@@ -47,11 +47,20 @@ pip install lightrag-hku
 ```bash
 curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./book.txt
 ```
-Use the below Python snippet to initialize LightRAG and perform queries:
+Use the below Python snippet (in a script) to initialize LightRAG and perform queries:
 
 ```python
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import gpt_4o_mini_complete, gpt_4o_complete
+
+#########
+# Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
+# import nest_asyncio 
+# nest_asyncio.apply() 
+#########
+
+WORKING_DIR = "./dickens"
+
 
 WORKING_DIR = "./dickens"
 
