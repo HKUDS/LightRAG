@@ -218,6 +218,26 @@ rag = LightRAG(working_dir="./dickens")
 with open("./newText.txt") as f:
     rag.insert(f.read())
 ```
+
+### Graph Visualization
+
+* Generate html file
+```python
+import networkx as nx
+from pyvis.network import Network
+
+# Load the GraphML file
+G = nx.read_graphml('./dickens/graph_chunk_entity_relation.graphml')
+
+# Create a Pyvis network
+net = Network(notebook=True)
+
+# Convert NetworkX graph to Pyvis network
+net.from_nx(G)
+
+# Save and display the network
+net.show('knowledge_graph.html')
+```
 ## Evaluation
 ### Dataset
 The dataset used in LightRAG can be downloaded from [TommyChien/UltraDomain](https://huggingface.co/datasets/TommyChien/UltraDomain).
@@ -465,6 +485,7 @@ def extract_queries(file_path):
 ├── examples
 │   ├── batch_eval.py
 │   ├── generate_query.py
+│   ├── graph_visual.py
 │   ├── lightrag_azure_openai_demo.py
 │   ├── lightrag_bedrock_demo.py
 │   ├── lightrag_hf_demo.py
