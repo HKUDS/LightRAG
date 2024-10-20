@@ -3,4 +3,4 @@ __pycache__
 dickens/
 book.txt
 lightrag-dev/
-*.idea
+.idea/
