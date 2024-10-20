@@ -4,15 +4,15 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm import ollama_model_complete, ollama_embedding
 from lightrag.utils import EmbeddingFunc
 
-# 工作目录和文本文件目录路径
+# Working directory and the directory path for text files
 WORKING_DIR = "./dickens"
 TEXT_FILES_DIR = "/llm/mt"
 
-# 如果工作目录不存在，则创建该目录
+# Create the working directory if it doesn't exist
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
-# 初始化 LightRAG
+# Initialize LightRAG
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,
@@ -24,7 +24,7 @@ rag = LightRAG(
     ),
 )
 
-# 读取 TEXT_FILES_DIR 目录下所有的 .txt 文件
+# Read all .txt files from the TEXT_FILES_DIR directory
 texts = []
 for filename in os.listdir(TEXT_FILES_DIR):
     if filename.endswith('.txt'):
@@ -32,7 +32,7 @@ for filename in os.listdir(TEXT_FILES_DIR):
         with open(file_path, 'r', encoding='utf-8') as file:
             texts.append(file.read())
 
-# 批量插入文本到 LightRAG，带有重试机制
+# Batch insert texts into LightRAG with a retry mechanism
 def insert_texts_with_retry(rag, texts, retries=3, delay=5):
     for _ in range(retries):
         try:
@@ -45,7 +45,7 @@ def insert_texts_with_retry(rag, texts, retries=3, delay=5):
 
 insert_texts_with_retry(rag, texts)
 
-# 执行不同类型的查询，并处理潜在的错误
+# Perform different types of queries and handle potential errors
 try:
     print(rag.query("What are the top themes in this story?", param=QueryParam(mode="naive")))
 except Exception as e:
@@ -66,12 +66,12 @@ try:
 except Exception as e:
     print(f"Error performing hybrid search: {e}")
 
-# 清理 VRAM 资源的函数
+# Function to clear VRAM resources
 def clear_vram():
     os.system("sudo nvidia-smi --gpu-reset")
 
-# 定期清理 VRAM 以防止溢出
-clear_vram_interval = 3600  # 每小时清理一次
+# Regularly clear VRAM to prevent overflow
+clear_vram_interval = 3600  # Clear once every hour
 start_time = time.time()
 
 while True:
@@ -79,4 +79,4 @@ while True:
     if current_time - start_time > clear_vram_interval:
         clear_vram()
         start_time = current_time
-    time.sleep(60)  # 每分钟检查一次时间
+    time.sleep(60)  # Check the time every minute
