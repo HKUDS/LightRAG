@@ -11,3 +11,4 @@ tiktoken
 torch
 transformers
 xxhash
+pyvis
