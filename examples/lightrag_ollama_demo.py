@@ -1,4 +1,7 @@
 import os
+import logging
+
+logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.DEBUG)
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import ollama_model_complete, ollama_embedding
