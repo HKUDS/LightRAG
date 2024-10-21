@@ -1,0 +1,272 @@
+DEFAULT_ENTITY_TYPES = ["function", "class", "module", "file", "variable", "comment", "readme", "test_case", "dependency", "call"]
+
+entity_extraction = """
+-Goal-
+Given a source code document chunk (prefixed with metadata) and a list of entity types, extract all relevant entities and relationships within the chunk. Pay special attention to the code structure (functions, classes, modules) and companion text (comments, README content etc). 
+
+Metadata prefixes are provided in each chunk as follows:
+####
+## FILENAME: <filename>
+## FILEPATH: <filepath>
+## CHUNK_NUM: <chunk_number>
+####
+<file content>
+- Use this metadata to link extracted entities to their source location and maintain context across chunks.
+
+-Steps-
+1. Identify All Entities:
+   For each identified entity, extract the following:
+   - entity_name: The name of the entity e.g., function name, class name, variable name, etc.
+   - entity_type: One of the following types: [{entity_types}]
+   - entity_description: A detailed description of the entity's role, behavior, and attributes (e.g., what a function does, what a class represents).
+   - file_name: FILENAME field from metadata
+   - file_path: FILE_PATH field from metadata
+   - chunk_num: CHUNK_NUM field from metadata
+
+   Format each entity as:  
+   ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>{tuple_delimiter}<file_name>{tuple_delimiter}<file_path>{tuple_delimiter}<chunk_number>)
+
+2. Identify Relationships:
+   Identify all related pairs of entities. Focus on relationships such as function calls, inheritance, dependencies, and code references.
+
+   For each relationship, extract:
+   - source_entity: Name of the source entity (e.g., function or class making a call).
+   - target_entity: Name of the target entity (e.g., function being called or class being inherited).
+   - relationship_description: Explanation of how the two entities are related.
+   - relationship_strength: A numeric score (1-10) indicating the relationship's strength (e.g., how central the dependency is).
+   - relationship_keywords: One or more keywords summarizing the relationship (e.g., "function call", "inheritance", "dependency").
+   - file_name: FILENAME field from metadata
+   - file_path: FILE_PATH field from metadata
+   - chunk_num: CHUNK_NUM field from metadata
+
+   Format each relationship as:  
+   ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_strength>{tuple_delimiter}<file_name>{tuple_delimiter}<file_path>{tuple_delimiter}<chunk_number>)
+
+3. Identify Companion Documentation Entities:
+   Identify documentation entities (e.g., README sections, inline comments) that add context to the code. Extract:
+   - entity_name: Name of the documentation section or comment (e.g., README, comment block).
+   - entity_type: Either "readme" or "comment".
+   - entity_description: A summary of the information provided by the documentation or comment.
+  If there're some code blocks - process them as a code
+
+4. Summarize High-Level Keywords:
+   Extract high-level keywords that summarize the key concepts, themes, or operations in the code chunk. Focus on terms such as "data processing", "unit test", or "dependency injection".
+
+   Format the keywords as:  
+   ("content_keywords"{tuple_delimiter}<high_level_keywords>)
+
+5. Output Format:
+   Return all entities and relationships as a single list, using {record_delimiter} as the delimiter between records. When done, use {completion_delimiter} to indicate the end of the output.
+   Output should be precisely structured, because it will be used for automation.
+  
+######################
+-Examples with metadata-
+######################
+
+*Example 1 (TypeScript Code with Imports):
+####
+## FILENAME: example.ts
+## FILEPATH: ./src/example.ts
+## CHUNK_NUM: 0
+####
+import {{ Component }} from 'react';
+import {{ useState, useEffect }} from 'react';
+import {{ someUtility }} from './utils';
+
+function App() {{
+   const [state, setState] = useState(0);
+   useEffect(() => {{
+       console.log("Component mounted");
+   }}, []);
+   return <Component prop={{state}} />;
+}}
+
+Output:
+("entity"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}"filepath"{tuple_delimiter}"A TypeScript source file containing a React component."{tuple_delimiter}"example.ts"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"App"{tuple_delimiter}"function"{tuple_delimiter}"The main application component function."{tuple_delimiter}"example.ts"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"state"{tuple_delimiter}"variable"{tuple_delimiter}"State variable to manage the component state."{tuple_delimiter}"example.ts"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"setState"{tuple_delimiter}"function"{tuple_delimiter}"Function to update the state."{tuple_delimiter}"example.ts"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"react"{tuple_delimiter}"dependency"{tuple_delimiter}"A library providing Component, useState, and useEffect."{tuple_delimiter}"example.ts"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"./utils"{tuple_delimiter}"dependency"{tuple_delimiter}"Utility module imported from './utils'."{tuple_delimiter}"example.ts"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}0){record_delimiter}
+("relationship"{tuple_delimiter}"App"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}"The 'App' function is defined in this file."{tuple_delimiter}"definition"{tuple_delimiter}8{tuple_delimiter}"example.ts"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}0){record_delimiter}
+("relationship"{tuple_delimiter}"state"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}"The state variable is declared in this file."{tuple_delimiter}"declaration"{tuple_delimiter}8{tuple_delimiter}"example.ts"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}0){record_delimiter}
+("relationship"{tuple_delimiter}"react"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}"React is imported in this file."{tuple_delimiter}"import"{tuple_delimiter}8{tuple_delimiter}"example.ts"{tuple_delimiter}"./src/example.ts"{tuple_delimiter}0){record_delimiter}
+("content_keywords"{tuple_delimiter}"react, state management, rendering, hooks, imports"){completion_delimiter}
+
+*Example 2 (Poorly Chunked Rust Code):
+####
+## FILENAME: main.rs
+## FILEPATH: ./src/main.rs
+## CHUNK_NUM: 3
+####
+= 2;
+// printing n
+println!("{{}}", n);
+exi
+
+Output:
+("entity"{tuple_delimiter}"./src/main.rs"{tuple_delimiter}"filepath"{tuple_delimiter}"A Rust source file with a poorly chunked snippet."{tuple_delimiter}"main.rs"{tuple_delimiter}"./src/main.rs"{tuple_delimiter}3){record_delimiter}
+("entity"{tuple_delimiter}"n"{tuple_delimiter}"variable"{tuple_delimiter}"A variable being printed."{tuple_delimiter}"main.rs"{tuple_delimiter}"./src/main.rs"{tuple_delimiter}3){record_delimiter}
+("entity"{tuple_delimiter}"println!()"{tuple_delimiter}"call"{tuple_delimiter}"A macro to print a variable."{tuple_delimiter}"main.rs"{tuple_delimiter}"./src/main.rs"{tuple_delimiter}3){record_delimiter}
+("relationship"{tuple_delimiter}"n"{tuple_delimiter}"./src/main.rs"{tuple_delimiter}"The 'n' variable is defined in this file."{tuple_delimiter}"declaration"{tuple_delimiter}7{tuple_delimiter}"main.rs"{tuple_delimiter}"./src/main.rs"{tuple_delimiter}3){record_delimiter}
+("relationship"{tuple_delimiter}"println!()"{tuple_delimiter}"./src/main.rs"{tuple_delimiter}"The 'println!()' macro is used in this file."{tuple_delimiter}"usage"{tuple_delimiter}7{tuple_delimiter}"main.rs"{tuple_delimiter}"./src/main.rs"{tuple_delimiter}3){record_delimiter}
+("content_keywords"{tuple_delimiter}"variable, printing, macro, call"){completion_delimiter}
+
+*Example 3 (C++ Code Example):
+####
+## FILENAME: test.cc
+## FILEPATH: ./src/tests/test.cc
+## CHUNK_NUM: 1
+####
+int add(int a, int b) {{
+   return a + b;
+}}
+
+Output:
+("entity"{tuple_delimiter}"./src/tests/test.cc"{tuple_delimiter}"filepath"{tuple_delimiter}"A C++ source file defining the 'add' function."{tuple_delimiter}"test.cc"{tuple_delimiter}"./src/tests/test.cc"{tuple_delimiter}1){record_delimiter}
+("entity"{tuple_delimiter}"add"{tuple_delimiter}"function"{tuple_delimiter}"A function adding two integers."{tuple_delimiter}"test.cc"{tuple_delimiter}"./src/tests/test.cc"{tuple_delimiter}1){record_delimiter}
+("relationship"{tuple_delimiter}"add"{tuple_delimiter}"./src/tests/test.cc"{tuple_delimiter}"The 'add' function is defined in this file."{tuple_delimiter}"definition"{tuple_delimiter}7{tuple_delimiter}"test.cc"{tuple_delimiter}"./src/tests/test.cc"{tuple_delimiter}1){record_delimiter}
+("content_keywords"{tuple_delimiter}"function, parameters, addition"){completion_delimiter}
+
+*Example 4 (README with Embedded Code):
+####
+## FILENAME: README.md
+## FILEPATH: ./README.md
+## CHUNK_NUM: 0
+####
+# Project Overview
+This project implements arithmetic functions, including addition.
+
+## Usage:
+```c
+add(1, 2);
+```
+
+Output: 
+("entity"{tuple_delimiter}"./README.md"{tuple_delimiter}"filepath"{tuple_delimiter}"A README file describing the project overview and usage."{tuple_delimiter}"README.md"{tuple_delimiter}"./README.md"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"add"{tuple_delimiter}"function"{tuple_delimiter}"An arithmetic function to add two numbers."{tuple_delimiter}"README.md"{tuple_delimiter}"./README.md"{tuple_delimiter}0){record_delimiter}
+("relationship"{tuple_delimiter}"add"{tuple_delimiter}"./README.md"{tuple_delimiter}"The 'add' function is referenced in this file."{tuple_delimiter}"reference"{tuple_delimiter}6{tuple_delimiter}"README.md"{tuple_delimiter}"./README.md"{tuple_delimiter}0){record_delimiter}
+("content_keywords"{tuple_delimiter}"arithmetic, usage, embedded code"){completion_delimiter}
+#############################
+-Real Data-
+######################
+Entity_types: {entity_types}
+Text: {input_text}
+######################
+Output:
+"""
+
+summarize_entity_descriptions = """You are a helpful assistant responsible for generating a comprehensive summary of the data provided below.  
+Given one or more entities and their relationships, create a single coherent description that captures the role, interactions, and significance of these entities.
+
+Make sure to:
+1. Include information about all entities and their relationships.
+2. Resolve any contradictions between the descriptions.
+3. Write in the third person, mentioning each entity by name to maintain full context.
+4. Highlight any function calls or dependencies that are important to the relationships.
+5. Data will be used for automation, so output raw JSON text without code blocks or formatting.
+
+#######
+-Data-
+Entities: {entity_name}
+Description List: {description_list}
+#######
+Output:
+"""
+
+entiti_continue_extraction = """MANY entities were missed in the last extraction.  Add them below using the same format:
+"""
+
+entiti_if_loop_extraction = """It appears some entities may have still been missed.  Answer YES | NO if there are still entities that need to be added.
+"""
+
+fail_response = "Sorry, I'm not able to provide an answer to that question"
+
+rag_response = """---Role---
+
+You are a helpful assistant responding to questions about data in the tables provided.
+
+
+---Goal---
+
+Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
+If you don't know the answer, just say so. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided.
+
+---Target response length and format---
+
+{response_type}
+
+---Data tables---
+
+{context_data}
+
+Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
+"""
+
+keywords_extraction = """---Role---
+
+You are a helpful assistant tasked with identifying both high-level and low-level keywords in the provided code-related query or content.
+
+---Goal---
+
+Given the input, list both high-level and low-level keywords. High-level keywords focus on overarching concepts (e.g., architecture, dependencies, or system components). Low-level keywords focus on specific entities, such as functions, variables, modules, and specific calls.
+
+---Instructions---
+
+- Data will be used for automation, so output raw JSON text without code blocks or formatting.
+- The JSON should have two keys:
+  - "high_level_keywords" for overarching concepts or themes.
+  - "low_level_keywords" for specific entities or concrete terms.
+
+######################
+-Examples-
+######################
+Example 1:
+
+Query: "How does the App component manage state using React hooks and render child components?"
+################
+Output:
+{{
+  "high_level_keywords": ["State management", "React hooks", "Component rendering"],
+  "low_level_keywords": ["App", "useState", "useEffect", "Component"]
+}}
+#############################
+Example 2:
+
+Query: "What are the roles of main and add functions in a simple C++ program?"
+################
+Output:
+{{
+  "high_level_keywords": ["Function roles", "C++ program structure"],
+  "low_level_keywords": ["main", "add", "int", "return"]
+}}
+#############################
+Example 3:
+
+Query: "Analyze how a Rust program prints variables using println macro."
+################
+Output:
+{{
+  "high_level_keywords": ["Rust program", "Printing variables", "Macros"],
+  "low_level_keywords": ["println!", "variable", "format string"]
+}}
+#############################
+-Real Data-
+######################
+Query: {query}
+######################
+Output:
+"""
+
+naive_rag_response = """You're a helpful assistant
+Below are the knowledge you know:
+{content_data}
+---
+If you don't know the answer or if the provided knowledge do not contain sufficient information to provide an answer, just say so. Do not make anything up.
+Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
+If you don't know the answer, just say so. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided.
+---Target response length and format---
+{response_type}
+"""
