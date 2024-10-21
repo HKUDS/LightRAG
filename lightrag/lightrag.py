@@ -1,9 +1,10 @@
 import asyncio
 import os
+import textwrap
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Type, cast
+from typing import Type, List, Union, cast
 
 from .llm import (
     gpt_4o_mini_complete,
@@ -157,11 +158,108 @@ class LightRAG:
             partial(self.llm_model_func, hashing_kv=self.llm_response_cache)
         )
 
-    def insert(self, string_or_strings):
+    def insert(self, input_data: Union[str, os.PathLike, List[Union[str, os.PathLike]]]):
+        """Insert content from a string, file path, or a list of them."""
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.ainsert(input_data))
+
+    async def ainsert(self, input_data: Union[str, os.PathLike, List[Union[str, os.PathLike]]]):
+        """Asynchronously handle inserting content from strings or file paths."""
+        try:
+            # Ensure input is treated as a list
+            if isinstance(input_data, (str, os.PathLike)):
+                input_data = [input_data]
+
+            contents = []
+            # Process each item: read from file or use the string directly
+            for item in input_data:
+                if isinstance(item, os.PathLike) and os.path.isfile(item):
+                    with open(item, 'r') as f:
+                        content = f.read().strip()
+                    contents.append((content, os.path.basename(item), os.path.abspath(item)))
+                else:
+                    contents.append((item.strip(), "!none", "!none"))
+
+            # Create documents with hashed keys
+            new_docs = {
+                compute_mdhash_id(content.strip(), prefix="doc-"): {
+                    "content": content,
+                    "filename": filename,
+                    "filepath": filepath
+                }
+                for content, filename, filepath in contents
+            }
+
+            # Filter out already stored documents
+            _add_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))
+            new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
+            if not new_docs:
+                logger.warning("All docs are already in the storage")
+                return
+            logger.info(f"[New Docs] inserting {len(new_docs)} docs")
+
+            # Chunk documents with metadata prefixes for each chunk
+            inserting_chunks = {}
+            for doc_key, doc in new_docs.items():
+                content = doc["content"]
+                filename = doc["filename"]
+                filepath = doc["filepath"]
+
+                # Generate chunks with metadata directly
+                chunks = {
+                    compute_mdhash_id(f"{doc_key}-{i}", prefix="chunk-"): {
+                        **dp,
+                        "content": dp["content"],
+                        "full_doc_id": doc_key,
+                    }
+                    for i, dp in enumerate(chunking_by_token_size(
+                        content,
+                        overlap_token_size=self.chunk_overlap_token_size,
+                        max_token_size=self.chunk_token_size,
+                        tiktoken_model=self.tiktoken_model_name,
+                        filename=filename,
+                        filepath=filepath
+                    ))
+                }
+                inserting_chunks.update(chunks)
+
+            # Filter out already stored chunks
+            _add_chunk_keys = await self.text_chunks.filter_keys(list(inserting_chunks.keys()))
+            inserting_chunks = {k: v for k, v in inserting_chunks.items() if k in _add_chunk_keys}
+            if not inserting_chunks:
+                logger.warning("All chunks are already in the storage")
+                return
+            logger.info(f"[New Chunks] inserting {len(inserting_chunks)} chunks")
+
+            # Insert chunks into vector database
+            await self.chunks_vdb.upsert(inserting_chunks)
+
+            # Extract entities and relationships
+            logger.info("[Entity Extraction]...")
+            maybe_new_kg = await extract_entities(
+                inserting_chunks,
+                knwoledge_graph_inst=self.chunk_entity_relation_graph,
+                entity_vdb=self.entities_vdb,
+                relationships_vdb=self.relationships_vdb,
+                global_config=asdict(self),
+            )
+            if maybe_new_kg is None:
+                logger.warning("No new entities and relationships found")
+                return
+            self.chunk_entity_relation_graph = maybe_new_kg
+
+            # Upsert documents and chunks into their storages
+            await self.full_docs.upsert(new_docs)
+            await self.text_chunks.upsert(inserting_chunks)
+
+        finally:
+            await self._insert_done()
+        
+    def _insert(self, string_or_strings):
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.ainsert(string_or_strings))
 
-    async def ainsert(self, string_or_strings):
+    async def _ainsert(self, string_or_strings):
         try:
             if isinstance(string_or_strings, str):
                 string_or_strings = [string_or_strings]

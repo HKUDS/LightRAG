@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import textwrap
 from typing import Union
 from collections import Counter, defaultdict
 import warnings
@@ -25,8 +26,46 @@ from .base import (
 )
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 
-
 def chunking_by_token_size(
+    content: str,
+    overlap_token_size=128,
+    max_token_size=1024,
+    tiktoken_model="gpt-4o",
+    filename="!none",
+    filepath="!none"
+):
+    """Chunk content by token size with metadata prefixed to each chunk."""
+    tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
+    results = []
+
+    for index, start in enumerate(
+        range(0, len(tokens), max_token_size - overlap_token_size)
+    ):
+        end = min(start + max_token_size, len(tokens))
+
+        # Slice the raw content using token indices
+        chunk_content = content[start:end].strip()
+
+        # Prefix metadata to each chunk
+        chunk_with_metadata = textwrap.dedent(f"""
+                ####
+                ## FILENAME: {filename}
+                ## FILEPATH: {filepath}
+                ## CHUNK_NUM: {index}
+                ####
+            """).strip() + "\n" + chunk_content.strip()
+        
+
+        # Store the chunk with its metadata
+        results.append({
+            "content": chunk_with_metadata,
+            "chunk_order_index": index,
+            "tokens": end - start
+        })
+
+    return results
+
+def _chunking_by_token_size(
     content: str, overlap_token_size=128, max_token_size=1024, tiktoken_model="gpt-4o"
 ):
     tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
@@ -78,20 +117,29 @@ async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
+    if len(record_attributes) < 7 or record_attributes[0] != '"entity"':
         return None
+    
     # add this record as a node in the G
-    entity_name = clean_str(record_attributes[1].upper())
+    entity_name = clean_str(record_attributes[1]) # removed upper
     if not entity_name.strip():
         return None
-    entity_type = clean_str(record_attributes[2].upper())
+    
+    entity_type = clean_str(record_attributes[2])
     entity_description = clean_str(record_attributes[3])
     entity_source_id = chunk_key
+    entity_file = record_attributes[4]
+    entity_path = record_attributes[5]
+    entity_chunk = record_attributes[6]
+    
     return dict(
         entity_name=entity_name,
         entity_type=entity_type,
         description=entity_description,
         source_id=entity_source_id,
+        file=entity_file,
+        path=entity_path,
+        chunk=entity_chunk,
     )
 
 
@@ -99,18 +147,23 @@ async def _handle_single_relationship_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
-        return None
+    if len(record_attributes) < 9 or record_attributes[0] != '"relationship"':
+        return None # "content_keywords" should be processed somewhere
+    
     # add this record as edge
-    source = clean_str(record_attributes[1].upper())
-    target = clean_str(record_attributes[2].upper())
+    source = clean_str(record_attributes[1]) # capitalization disabled
+    target = clean_str(record_attributes[2]) 
     edge_description = clean_str(record_attributes[3])
 
     edge_keywords = clean_str(record_attributes[4])
     edge_source_id = chunk_key
     weight = (
-        float(record_attributes[-1]) if is_float_regex(record_attributes[-1]) else 1.0
+        float(record_attributes[5]) if is_float_regex(record_attributes[5]) else 1.0
     )
+    edge_file = record_attributes[6]
+    edge_path = record_attributes[7]
+    edge_chunk = record_attributes[8]
+    
     return dict(
         src_id=source,
         tgt_id=target,
@@ -118,6 +171,9 @@ async def _handle_single_relationship_extraction(
         description=edge_description,
         keywords=edge_keywords,
         source_id=edge_source_id,
+        file=edge_file,
+        path=edge_path,
+        chunk=edge_chunk,
     )
 
 
@@ -266,7 +322,7 @@ async def extract_entities(
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
-        hint_prompt = entity_extract_prompt.format(**context_base, input_text=content)
+        hint_prompt = entity_extract_prompt.format(**context_base, input_text=content)#.replace('{{', '{').replace('}}', '}')
         final_result = await use_llm_func(hint_prompt)
 
         history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
@@ -592,6 +648,9 @@ async def _find_most_related_text_unit_from_entities(
     all_text_units = sorted(
         all_text_units, key=lambda x: (x["order"], -x["relation_counts"])
     )
+    # somhow empty chunks can be here
+    all_text_units = filter(lambda x: x.get("content"), all_text_units)
+    
     all_text_units = truncate_list_by_token_size(
         all_text_units,
         key=lambda x: x["data"]["content"],
@@ -966,7 +1025,6 @@ async def hybrid_query(
 
 def combine_contexts(high_level_context, low_level_context):
     # Function to extract entities, relationships, and sources from context strings
-
     def extract_sections(context):
         entities_match = re.search(
             r"-----Entities-----\s*```csv\s*(.*?)\s*```", context, re.DOTALL
@@ -1002,7 +1060,7 @@ def combine_contexts(high_level_context, low_level_context):
     else:
         ll_entities, ll_relationships, ll_sources = extract_sections(low_level_context)
 
-    # Combine and deduplicate the entities
+    # Combine and decate the entities
     combined_entities_set = set(
         filter(None, hl_entities.strip().split("\n") + ll_entities.strip().split("\n"))
     )

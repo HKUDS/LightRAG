@@ -52,7 +52,13 @@ class BaseVectorStorage(StorageNameSpace):
         """
         raise NotImplementedError
 
+    def dump(self):
+        """For debug purposes
 
+        Raises:
+            NotImplementedError: implement in subclass
+        """
+        raise NotImplementedError
 @dataclass
 class BaseKVStorage(Generic[T], StorageNameSpace):
     async def all_keys(self) -> list[str]:

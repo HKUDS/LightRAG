@@ -1,0 +1,228 @@
+DEFAULT_ENTITY_TYPES = ["organization", "person", "geo", "event", 'filepath']
+
+entity_extraction = """-Goal-
+Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
+
+-Steps-
+1. Identify all entities. File name should be entity also. For each identified entity, extract the following information:
+- entity_name: Name of the entity, capitalized
+- entity_type: One of the following types: [{entity_types}]
+- entity_description: Comprehensive description of the entity's attributes and activities
+- file_name: FILENAME field from metadata
+- file_path: FILE_PATH field from metadata
+- chunk_num: CHUNK_NUM field from metadata
+
+Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>{tuple_delimiter}<file_name>{tuple_delimiter}<file_path>{tuple_delimiter}<chunk_number>
+
+2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
+For each pair of related entities, extract the following information:
+- source_entity: name of the source entity, as identified in step 1
+- target_entity: name of the target entity, as identified in step 1
+- relationship_description: explanation as to why you think the source entity and the target entity are related to each other
+- relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
+- relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
+- file_name: FILENAME field from metadata
+- file_path: FILE_PATH field from metadata
+- chunk_num: CHUNK_NUM field from metadata
+
+Format each relationship as 
+("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_strength>{tuple_delimiter}<file_name>{tuple_delimiter}<file_path>{tuple_delimiter}<chunk_number>)
+
+3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document.
+Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
+
+4. Return output in English as a single list of all the entities and relationships identified in steps 1 and 2. Use **{record_delimiter}** as the list delimiter.
+
+5. When finished, output {completion_delimiter}
+
+######################
+-Examples-
+######################
+
+*Example 1 (Entity Interactions in Text):
+####
+## FILENAME: fragment_1.txt
+## FILEPATH: ./src/fragment_1.txt
+## CHUNK_NUM: 0
+####
+while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
+
+Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. “If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us.”
+
+The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
+
+It was a small transformation, barely perceptible, but one that Alex noted with an inward nod. They had all been brought here by different paths
+################
+Output:
+("entity"{tuple_delimiter}"./src/fragment_1.txt"{tuple_delimiter}"filepath"{tuple_delimiter}"A text file capturing character dynamics and their shared commitment to discovery."{tuple_delimiter}"fragment_1.txt"{tuple_delimiter}"./src/fragment_1.txt"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"fragment_1.txt"{tuple_delimiter}"filename"{tuple_delimiter}"A file focused on interpersonal dynamics among several individuals."{tuple_delimiter}"fragment_1.txt"{tuple_delimiter}"./src/fragment_1.txt"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"Alex"{tuple_delimiter}"person"{tuple_delimiter}"A character who experiences frustration and observes the dynamics among others."{tuple_delimiter}"fragment_1.txt"{tuple_delimiter}"./src/fragment_1.txt"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"Taylor"{tuple_delimiter}"person"{tuple_delimiter}"Taylor is portrayed with authoritarian certainty, showing a change of perspective."{tuple_delimiter}"fragment_1.txt"{tuple_delimiter}"./src/fragment_1.txt"{tuple_delimiter}0){record_delimiter}
+("relationship"{tuple_delimiter}"Alex"{tuple_delimiter}"./src/fragment_1.txt"{tuple_delimiter}"Alex appears in this file."{tuple_delimiter}"appearance"{tuple_delimiter}7){record_delimiter}
+("relationship"{tuple_delimiter}"Taylor"{tuple_delimiter}"Alex"{tuple_delimiter}"Taylor's attitude influences Alex's observation."{tuple_delimiter}"power dynamics, perspective shift"{tuple_delimiter}8){record_delimiter}
+("content_keywords"{tuple_delimiter}"power dynamics, discovery, change of perspective"){completion_delimiter}
+
+---
+
+*Example 2 (Mission and Evolution):
+####
+## FILENAME: mission_evolution.txt
+## FILEPATH: ./docs/mission_evolution.txt
+## CHUNK_NUM: 0
+####
+They were no longer mere operatives; they had become guardians of a threshold, keepers of a message from a realm beyond stars and stripes. This elevation in their mission could not be shackled by regulations—it demanded new resolve.
+
+Tension threaded through the dialogue of beeps as communications with Washington buzzed in the background. The team stood enveloped in a portentous air. Their decisions could redefine humanity's place in the cosmos or condemn it to ignorance.
+
+The group moved from passive recipients to active participants. Mercer's instincts led the team to shift from observing to interacting, marking a metamorphosis within Operation: Dulce.
+#############
+Output:
+("entity"{tuple_delimiter}"./docs/mission_evolution.txt"{tuple_delimiter}"filepath"{tuple_delimiter}"A document describing a mission's evolution."{tuple_delimiter}"mission_evolution.txt"{tuple_delimiter}"./docs/mission_evolution.txt"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"mission_evolution.txt"{tuple_delimiter}"filename"{tuple_delimiter}"A file focused on the transformation of a mission."{tuple_delimiter}"mission_evolution.txt"{tuple_delimiter}"./docs/mission_evolution.txt"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"Washington"{tuple_delimiter}"location"{tuple_delimiter}"Washington is a key communication hub in the narrative."{tuple_delimiter}"mission_evolution.txt"{tuple_delimiter}"./docs/mission_evolution.txt"{tuple_delimiter}0){record_delimiter}
+("relationship"{tuple_delimiter}"Washington"{tuple_delimiter}"./docs/mission_evolution.txt"{tuple_delimiter}"Washington is referenced in this file."{tuple_delimiter}"reference"{tuple_delimiter}6){record_delimiter}
+("relationship"{tuple_delimiter}"The team"{tuple_delimiter}"Washington"{tuple_delimiter}"The team receives communications from Washington."{tuple_delimiter}"decision-making, influence"{tuple_delimiter}7){record_delimiter}
+("content_keywords"{tuple_delimiter}"mission evolution, decision-making, cosmic impact"){completion_delimiter}
+
+---
+
+*Example 3 (Exploration of Control and Communication):
+####
+## FILENAME: control_and_communication.txt
+## FILEPATH: ./docs/control_and_communication.txt
+## CHUNK_NUM: 0
+####
+their voice slicing through the buzz of activity. "Control may be an illusion when facing intelligence that writes its own rules," they stated, casting a watchful eye over the flurry of data.
+
+"It's like it's learning to communicate," said Sam Rivera from a nearby interface, with a mix of awe and anxiety.
+
+Alex surveyed his team, acknowledging that this might well be their first contact. "We need to be ready for whatever answers back," he added.
+
+Together, they forged humanity's response to a cosmic message, a moment that could rewrite human history.
+#############
+Output:
+("entity"{tuple_delimiter}"./docs/control_and_communication.txt"{tuple_delimiter}"filepath"{tuple_delimiter}"A file exploring the themes of control and communication."{tuple_delimiter}"control_and_communication.txt"{tuple_delimiter}"./docs/control_and_communication.txt"{tuple_delimiter}0){record_delimiter}
+("entity"{tuple_delimiter}"Sam Rivera"{tuple_delimiter}"person"{tuple_delimiter}"A participant observing intelligence and its communication."{tuple_delimiter}"control_and_communication.txt"{tuple_delimiter}"./docs/control_and_communication.txt"{tuple_delimiter}0){record_delimiter}
+("relationship"{tuple_delimiter}"Sam Rivera"{tuple_delimiter}"Intelligence"{tuple_delimiter}"Sam Rivera interacts with the intelligent entity."{tuple_delimiter}"communication, observation"{tuple_delimiter}9){record_delimiter}
+("content_keywords"{tuple_delimiter}"control, communication, intelligence, exploration"){completion_delimiter}
+
+#############################
+-Real Data-
+######################
+Entity_types: {entity_types}
+Text: {input_text}
+######################
+Output:
+"""
+
+summarize_entity_descriptions = """You are a helpful assistant responsible for generating a comprehensive summary of the data provided below.
+Given one or two entities, and a list of descriptions, all related to the same entity or group of entities.
+Please concatenate all of these into a single, comprehensive description. Make sure to include information collected from all the descriptions.
+If the provided descriptions are contradictory, please resolve the contradictions and provide a single, coherent summary.
+Make sure it is written in third person, and include the entity names so we the have full context.
+
+#######
+-Data-
+Entities: {entity_name}
+Description List: {description_list}
+#######
+Output:
+"""
+
+entiti_continue_extraction = """MANY entities were missed in the last extraction.  Add them below using the same format:
+"""
+
+entiti_if_loop_extraction = """It appears some entities may have still been missed.  Answer YES | NO if there are still entities that need to be added.
+"""
+
+fail_response = "Sorry, I'm not able to provide an answer to that question"
+
+rag_response = """---Role---
+
+You are a helpful assistant responding to questions about data in the tables provided.
+
+
+---Goal---
+
+Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
+If you don't know the answer, just say so. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided.
+
+---Target response length and format---
+
+{response_type}
+
+---Data tables---
+
+{context_data}
+
+Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
+"""
+
+keywords_extraction = """---Role---
+
+You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query.
+
+---Goal---
+
+Given the query, list both high-level and low-level keywords. High-level keywords focus on overarching concepts or themes, while low-level keywords focus on specific entities, details, or concrete terms.
+
+---Instructions---
+
+- Output the keywords in JSON format.
+- The JSON should have two keys:
+  - "high_level_keywords" for overarching concepts or themes.
+  - "low_level_keywords" for specific entities or details.
+
+######################
+-Examples-
+######################
+Example 1:
+
+Query: "How does international trade influence global economic stability?"
+################
+Output:
+{{
+  "high_level_keywords": ["International trade", "Global economic stability", "Economic impact"],
+  "low_level_keywords": ["Trade agreements", "Tariffs", "Currency exchange", "Imports", "Exports"]
+}}
+#############################
+Example 2:
+
+Query: "What are the environmental consequences of deforestation on biodiversity?"
+################
+Output:
+{{
+  "high_level_keywords": ["Environmental consequences", "Deforestation", "Biodiversity loss"],
+  "low_level_keywords": ["Species extinction", "Habitat destruction", "Carbon emissions", "Rainforest", "Ecosystem"]
+}}
+#############################
+Example 3:
+
+Query: "What is the role of education in reducing poverty?"
+################
+Output:
+{{
+  "high_level_keywords": ["Education", "Poverty reduction", "Socioeconomic development"],
+  "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]
+}}
+#############################
+-Real Data-
+######################
+Query: {query}
+######################
+Output:
+
+"""
+
+naive_rag_response = """You're a helpful assistant
+Below are the knowledge you know:
+{content_data}
+---
+If you don't know the answer or if the provided knowledge do not contain sufficient information to provide an answer, just say so. Do not make anything up.
+Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
+If you don't know the answer, just say so. Do not make anything up.
+Do not include information where the supporting evidence for it is not provided.
+---Target response length and format---
+{response_type}
+"""

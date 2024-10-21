@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
@@ -18,6 +19,12 @@ logger = logging.getLogger("lightrag")
 
 
 def set_logger(log_file: str):
+    log_dir = os.path.dirname(log_file)  # Extract directory from log file path
+
+    if not os.path.exists(log_dir):
+        print(f"Directory '{log_dir}' does not exist. Creating it...")
+        os.makedirs(log_dir, exist_ok=True)  # Create the director
+        
     logger.setLevel(logging.DEBUG)
 
     file_handler = logging.FileHandler(log_file)
@@ -30,6 +37,9 @@ def set_logger(log_file: str):
 
     if not logger.handlers:
         logger.addHandler(file_handler)
+        
+    # disable logging
+    logging.disable(logging.CRITICAL + 1)
 
 
 @dataclass
