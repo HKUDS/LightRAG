@@ -51,6 +51,7 @@ curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_d
 Use the below Python snippet (in a script) to initialize LightRAG and perform queries:
 
 ```python
+import os
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import gpt_4o_mini_complete, gpt_4o_complete
 
@@ -62,8 +63,6 @@ from lightrag.llm import gpt_4o_mini_complete, gpt_4o_complete
 
 WORKING_DIR = "./dickens"
 
-
-WORKING_DIR = "./dickens"
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
