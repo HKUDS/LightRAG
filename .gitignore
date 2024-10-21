@@ -1,0 +1,7 @@
+__pycache__
+*.egg-info
+dickens/
+book.txt
+lightrag-dev/
+.idea/
+dist/
