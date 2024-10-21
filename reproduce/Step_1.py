@@ -4,10 +4,11 @@ import time
 
 from lightrag import LightRAG
 
+
 def insert_text(rag, file_path):
-    with open(file_path, mode='r') as f:
+    with open(file_path, mode="r") as f:
         unique_contexts = json.load(f)
-    
+
     retries = 0
     max_retries = 3
     while retries < max_retries:
@@ -20,6 +21,7 @@ def insert_text(rag, file_path):
             time.sleep(10)
     if retries == max_retries:
         print("Insertion failed after exceeding the maximum number of retries")
+
 
 cls = "agriculture"
 WORKING_DIR = "../{cls}"
