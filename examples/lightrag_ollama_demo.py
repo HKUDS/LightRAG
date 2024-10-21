@@ -1,7 +1,7 @@
 import os
 import logging
 
-logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.DEBUG)
+logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.INFO)
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import ollama_model_complete, ollama_embedding
@@ -14,7 +14,6 @@ if not os.path.exists(WORKING_DIR):
 
 rag = LightRAG(
     working_dir=WORKING_DIR,
-    tiktoken_model_name="mistral:7b",
     llm_model_func=ollama_model_complete,
     llm_model_name="mistral:7b",
     llm_model_max_async=2,
