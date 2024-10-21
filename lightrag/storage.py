@@ -1,16 +1,11 @@
 import asyncio
 import html
-import json
 import os
-from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Union, cast
-import pickle
-import hnswlib
 import networkx as nx
 import numpy as np
 from nano_vectordb import NanoVectorDB
-import xxhash
 
 from .utils import load_json, logger, write_json
 from .base import (
@@ -18,6 +13,7 @@ from .base import (
     BaseKVStorage,
     BaseVectorStorage,
 )
+
 
 @dataclass
 class JsonKVStorage(BaseKVStorage):
@@ -59,12 +55,12 @@ class JsonKVStorage(BaseKVStorage):
     async def drop(self):
         self._data = {}
 
+
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
     cosine_better_than_threshold: float = 0.2
 
     def __post_init__(self):
-
         self._client_file_name = os.path.join(
             self.global_config["working_dir"], f"vdb_{self.namespace}.json"
         )
@@ -118,6 +114,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def index_done_callback(self):
         self._client.save()
 
+
 @dataclass
 class NetworkXStorage(BaseGraphStorage):
     @staticmethod
@@ -142,7 +139,9 @@ class NetworkXStorage(BaseGraphStorage):
 
         graph = graph.copy()
         graph = cast(nx.Graph, largest_connected_component(graph))
-        node_mapping = {node: html.unescape(node.upper().strip()) for node in graph.nodes()}  # type: ignore
+        node_mapping = {
+            node: html.unescape(node.upper().strip()) for node in graph.nodes()
+        }  # type: ignore
         graph = nx.relabel_nodes(graph, node_mapping)
         return NetworkXStorage._stabilize_graph(graph)
 

@@ -16,16 +16,17 @@
         <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg"></a>
         <a href="https://pepy.tech/project/lightrag-hku"><img src="https://static.pepy.tech/badge/lightrag-hku/month"></a>
     </p>
-    
+
 This repository hosts the code of LightRAG. The structure of this code is based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag).
 ![请添加图片描述](https://i-blog.csdnimg.cn/direct/b2aaf634151b4706892693ffb43d9093.png)
 </div>
 
-## 🎉 News 
+## 🎉 News
+- [x] [2024.10.20]🎯🎯📢📢We’ve added a new feature to LightRAG: Graph Visualization.
 - [x] [2024.10.18]🎯🎯📢📢We’ve added a link to a [LightRAG Introduction Video](https://youtu.be/oageL-1I0GE). Thanks to the author!
 - [x] [2024.10.17]🎯🎯📢📢We have created a [Discord channel](https://discord.gg/mvsfu2Tg)! Welcome to join for sharing and discussions! 🎉🎉
-- [x] [2024.10.16]🎯🎯📢📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)! 
-- [x] [2024.10.15]🎯🎯📢📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)! 
+- [x] [2024.10.16]🎯🎯📢📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
+- [x] [2024.10.15]🎯🎯📢📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
 
 ## Install
 
@@ -47,11 +48,20 @@ pip install lightrag-hku
 ```bash
 curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./book.txt
 ```
-Use the below Python snippet to initialize LightRAG and perform queries:
+Use the below Python snippet (in a script) to initialize LightRAG and perform queries:
 
 ```python
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import gpt_4o_mini_complete, gpt_4o_complete
+
+#########
+# Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
+# import nest_asyncio 
+# nest_asyncio.apply() 
+#########
+
+WORKING_DIR = "./dickens"
+
 
 WORKING_DIR = "./dickens"
 
@@ -83,7 +93,7 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 <details>
 <summary> Using Open AI-like APIs </summary>
 
-LightRAG also support Open AI-like chat/embeddings APIs:
+* LightRAG also supports Open AI-like chat/embeddings APIs:
 ```python
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
@@ -120,8 +130,8 @@ rag = LightRAG(
 
 <details>
 <summary> Using Hugging Face Models </summary>
-     
-If you want to use Hugging Face models, you only need to set LightRAG as follows:
+
+* If you want to use Hugging Face models, you only need to set LightRAG as follows:
 ```python
 from lightrag.llm import hf_model_complete, hf_embedding
 from transformers import AutoModel, AutoTokenizer
@@ -136,7 +146,7 @@ rag = LightRAG(
         embedding_dim=384,
         max_token_size=5000,
         func=lambda texts: hf_embedding(
-            texts, 
+            texts,
             tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
             embed_model=AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
         )
@@ -147,8 +157,9 @@ rag = LightRAG(
 
 <details>
 <summary> Using Ollama Models </summary>
-If you want to use Ollama models, you only need to set LightRAG as follows:
      
+* If you want to use Ollama models, you only need to set LightRAG as follows:
+
 ```python
 from lightrag.llm import ollama_model_complete, ollama_embedding
 
@@ -162,12 +173,35 @@ rag = LightRAG(
         embedding_dim=768,
         max_token_size=8192,
         func=lambda texts: ollama_embedding(
-            texts, 
+            texts,
             embed_model="nomic-embed-text"
         )
     ),
 )
 ```
+
+* Increasing the `num_ctx` parameter:
+
+1. Pull the model:
+```python
+ollama pull qwen2
+```
+
+2. Display the model file:
+```python
+ollama show --modelfile qwen2 > Modelfile
+```
+
+3. Edit the Modelfile by adding the following line:
+```python
+PARAMETER num_ctx 32768
+```
+
+4. Create the modified model:
+```python
+ollama create -f Modelfile qwen2m
+```
+
 </details>
 
 ### Batch Insert
@@ -185,16 +219,171 @@ rag = LightRAG(working_dir="./dickens")
 with open("./newText.txt") as f:
     rag.insert(f.read())
 ```
+
+### Graph Visualization
+
+<details>
+<summary> Graph visualization with html </summary>
+
+* The following code can be found in `examples/graph_visual_with_html.py`
+
+```python
+import networkx as nx
+from pyvis.network import Network
+
+# Load the GraphML file
+G = nx.read_graphml('./dickens/graph_chunk_entity_relation.graphml')
+
+# Create a Pyvis network
+net = Network(notebook=True)
+
+# Convert NetworkX graph to Pyvis network
+net.from_nx(G)
+
+# Save and display the network
+net.show('knowledge_graph.html')
+```
+
+</details>
+
+<details>
+<summary> Graph visualization with Neo4j </summary>
+
+* The following code can be found in `examples/graph_visual_with_neo4j.py`
+
+```python
+import os
+import json
+from lightrag.utils import xml_to_json
+from neo4j import GraphDatabase
+
+# Constants
+WORKING_DIR = "./dickens"
+BATCH_SIZE_NODES = 500
+BATCH_SIZE_EDGES = 100
+
+# Neo4j connection credentials
+NEO4J_URI = "bolt://localhost:7687"
+NEO4J_USERNAME = "neo4j"
+NEO4J_PASSWORD = "your_password"
+
+def convert_xml_to_json(xml_path, output_path):
+    """Converts XML file to JSON and saves the output."""
+    if not os.path.exists(xml_path):
+        print(f"Error: File not found - {xml_path}")
+        return None
+
+    json_data = xml_to_json(xml_path)
+    if json_data:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(json_data, f, ensure_ascii=False, indent=2)
+        print(f"JSON file created: {output_path}")
+        return json_data
+    else:
+        print("Failed to create JSON data")
+        return None
+
+def process_in_batches(tx, query, data, batch_size):
+    """Process data in batches and execute the given query."""
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i + batch_size]
+        tx.run(query, {"nodes": batch} if "nodes" in query else {"edges": batch})
+
+def main():
+    # Paths
+    xml_file = os.path.join(WORKING_DIR, 'graph_chunk_entity_relation.graphml')
+    json_file = os.path.join(WORKING_DIR, 'graph_data.json')
+
+    # Convert XML to JSON
+    json_data = convert_xml_to_json(xml_file, json_file)
+    if json_data is None:
+        return
+
+    # Load nodes and edges
+    nodes = json_data.get('nodes', [])
+    edges = json_data.get('edges', [])
+
+    # Neo4j queries
+    create_nodes_query = """
+    UNWIND $nodes AS node
+    MERGE (e:Entity {id: node.id})
+    SET e.entity_type = node.entity_type,
+        e.description = node.description,
+        e.source_id = node.source_id,
+        e.displayName = node.id  
+    REMOVE e:Entity  
+    WITH e, node
+    CALL apoc.create.addLabels(e, [node.entity_type]) YIELD node AS labeledNode
+    RETURN count(*)
+    """
+
+    create_edges_query = """
+    UNWIND $edges AS edge
+    MATCH (source {id: edge.source})
+    MATCH (target {id: edge.target})
+    WITH source, target, edge,
+         CASE
+            WHEN edge.keywords CONTAINS 'lead' THEN 'lead'
+            WHEN edge.keywords CONTAINS 'participate' THEN 'participate'
+            WHEN edge.keywords CONTAINS 'uses' THEN 'uses'
+            WHEN edge.keywords CONTAINS 'located' THEN 'located'
+            WHEN edge.keywords CONTAINS 'occurs' THEN 'occurs'
+           ELSE REPLACE(SPLIT(edge.keywords, ',')[0], '\"', '')
+         END AS relType
+    CALL apoc.create.relationship(source, relType, {
+      weight: edge.weight,
+      description: edge.description,
+      keywords: edge.keywords,
+      source_id: edge.source_id
+    }, target) YIELD rel
+    RETURN count(*)
+    """
+
+    set_displayname_and_labels_query = """
+    MATCH (n)
+    SET n.displayName = n.id
+    WITH n
+    CALL apoc.create.setLabels(n, [n.entity_type]) YIELD node
+    RETURN count(*)
+    """
+
+    # Create a Neo4j driver
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
+
+    try:
+        # Execute queries in batches
+        with driver.session() as session:
+            # Insert nodes in batches
+            session.execute_write(process_in_batches, create_nodes_query, nodes, BATCH_SIZE_NODES)
+
+            # Insert edges in batches
+            session.execute_write(process_in_batches, create_edges_query, edges, BATCH_SIZE_EDGES)
+
+            # Set displayName and labels
+            session.run(set_displayname_and_labels_query)
+
+    except Exception as e:
+        print(f"Error occurred: {e}")
+    
+    finally:
+        driver.close()
+
+if __name__ == "__main__":
+    main()
+```
+
+</details>
+
 ## Evaluation
 ### Dataset
-The dataset used in LightRAG can be download from [TommyChien/UltraDomain](https://huggingface.co/datasets/TommyChien/UltraDomain).
+The dataset used in LightRAG can be downloaded from [TommyChien/UltraDomain](https://huggingface.co/datasets/TommyChien/UltraDomain).
 
 ### Generate Query
-LightRAG uses the following prompt to generate high-level queries, with the corresponding code located in `example/generate_query.py`.
+LightRAG uses the following prompt to generate high-level queries, with the corresponding code in `example/generate_query.py`.
 
 <details>
 <summary> Prompt </summary>
-     
+
 ```python
 Given the following description of a dataset:
 
@@ -219,18 +408,18 @@ Output the results in the following structure:
     ...
 ```
 </details>
- 
+
  ### Batch Eval
 To evaluate the performance of two RAG systems on high-level queries, LightRAG uses the following prompt, with the specific code available in `example/batch_eval.py`.
 
 <details>
 <summary> Prompt </summary>
-     
+
 ```python
 ---Role---
 You are an expert tasked with evaluating two answers to the same question based on three criteria: **Comprehensiveness**, **Diversity**, and **Empowerment**.
 ---Goal---
-You will evaluate two answers to the same question based on three criteria: **Comprehensiveness**, **Diversity**, and **Empowerment**. 
+You will evaluate two answers to the same question based on three criteria: **Comprehensiveness**, **Diversity**, and **Empowerment**.
 
 - **Comprehensiveness**: How much detail does the answer provide to cover all aspects and details of the question?
 - **Diversity**: How varied and rich is the answer in providing different perspectives and insights on the question?
@@ -294,7 +483,7 @@ Output your evaluation in the following JSON format:
 | **Empowerment**       | 36.69%                  | **63.31%**             | 45.09%                | **54.91%**             | 42.81%                | **57.19%**             | **52.94%**            | 47.06%                |
 | **Overall**           | 43.62%                  | **56.38%**             | 45.98%                | **54.02%**             | 45.70%                | **54.30%**             | **51.86%**            | 48.14%                |
 
-## Reproduce 
+## Reproduce
 All the code can be found in the `./reproduce` directory.
 
 ### Step-0 Extract Unique Contexts
@@ -302,7 +491,7 @@ First, we need to extract unique contexts in the datasets.
 
 <details>
 <summary> Code </summary>
-     
+
 ```python
 def extract_unique_contexts(input_directory, output_directory):
 
@@ -361,12 +550,12 @@ For the extracted contexts, we insert them into the LightRAG system.
 
 <details>
 <summary> Code </summary>
-     
+
 ```python
 def insert_text(rag, file_path):
     with open(file_path, mode='r') as f:
         unique_contexts = json.load(f)
-    
+
     retries = 0
     max_retries = 3
     while retries < max_retries:
@@ -384,11 +573,11 @@ def insert_text(rag, file_path):
 
 ### Step-2 Generate Queries
 
-We extract tokens from both the first half and the second half of each context in the dataset, then combine them as the dataset description to generate queries.
+We extract tokens from the first and the second half of each context in the dataset, then combine them as dataset descriptions to generate queries.
 
 <details>
 <summary> Code </summary>
-     
+
 ```python
 tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
 
@@ -401,7 +590,7 @@ def get_summary(context, tot_tokens=2000):
 
     summary_tokens = start_tokens + end_tokens
     summary = tokenizer.convert_tokens_to_string(summary_tokens)
-    
+
     return summary
 ```
 </details>
@@ -411,12 +600,12 @@ For the queries generated in Step-2, we will extract them and query LightRAG.
 
 <details>
 <summary> Code </summary>
-     
+
 ```python
 def extract_queries(file_path):
     with open(file_path, 'r') as f:
         data = f.read()
-    
+
     data = data.replace('**', '')
 
     queries = re.findall(r'- Question \d+: (.+)', data)
@@ -431,11 +620,16 @@ def extract_queries(file_path):
 .
 ├── examples
 │   ├── batch_eval.py
+│   ├── graph_visual_with_html.py
+│   ├── graph_visual_with_neo4j.py
 │   ├── generate_query.py
+│   ├── lightrag_azure_openai_demo.py
+│   ├── lightrag_bedrock_demo.py
 │   ├── lightrag_hf_demo.py
 │   ├── lightrag_ollama_demo.py
 │   ├── lightrag_openai_compatible_demo.py
-│   └── lightrag_openai_demo.py
+│   ├── lightrag_openai_demo.py
+│   └── vram_management_demo.py
 ├── lightrag
 │   ├── __init__.py
 │   ├── base.py
@@ -450,6 +644,8 @@ def extract_queries(file_path):
 │   ├── Step_1.py
 │   ├── Step_2.py
 │   └── Step_3.py
+├── .gitignore
+├── .pre-commit-config.yaml
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
@@ -470,7 +666,7 @@ def extract_queries(file_path):
 
 ```python
 @article{guo2024lightrag,
-title={LightRAG: Simple and Fast Retrieval-Augmented Generation}, 
+title={LightRAG: Simple and Fast Retrieval-Augmented Generation},
 author={Zirui Guo and Lianghao Xia and Yanhua Yu and Tu Ao and Chao Huang},
 year={2024},
 eprint={2410.05779},
