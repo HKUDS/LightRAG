@@ -3,11 +3,11 @@ import json
 import glob
 import argparse
 
-def extract_unique_contexts(input_directory, output_directory):
 
+def extract_unique_contexts(input_directory, output_directory):
     os.makedirs(output_directory, exist_ok=True)
 
-    jsonl_files = glob.glob(os.path.join(input_directory, '*.jsonl'))
+    jsonl_files = glob.glob(os.path.join(input_directory, "*.jsonl"))
     print(f"Found {len(jsonl_files)} JSONL files.")
 
     for file_path in jsonl_files:
@@ -21,18 +21,20 @@ def extract_unique_contexts(input_directory, output_directory):
         print(f"Processing file: {filename}")
 
         try:
-            with open(file_path, 'r', encoding='utf-8') as infile:
+            with open(file_path, "r", encoding="utf-8") as infile:
                 for line_number, line in enumerate(infile, start=1):
                     line = line.strip()
                     if not line:
                         continue
                     try:
                         json_obj = json.loads(line)
-                        context = json_obj.get('context')
+                        context = json_obj.get("context")
                         if context and context not in unique_contexts_dict:
                             unique_contexts_dict[context] = None
                     except json.JSONDecodeError as e:
-                        print(f"JSON decoding error in file {filename} at line {line_number}: {e}")
+                        print(
+                            f"JSON decoding error in file {filename} at line {line_number}: {e}"
+                        )
         except FileNotFoundError:
             print(f"File not found: {filename}")
             continue
@@ -41,10 +43,12 @@ def extract_unique_contexts(input_directory, output_directory):
             continue
 
         unique_contexts_list = list(unique_contexts_dict.keys())
-        print(f"There are {len(unique_contexts_list)} unique `context` entries in the file {filename}.")
+        print(
+            f"There are {len(unique_contexts_list)} unique `context` entries in the file {filename}."
+        )
 
         try:
-            with open(output_path, 'w', encoding='utf-8') as outfile:
+            with open(output_path, "w", encoding="utf-8") as outfile:
                 json.dump(unique_contexts_list, outfile, ensure_ascii=False, indent=4)
             print(f"Unique `context` entries have been saved to: {output_filename}")
         except Exception as e:
@@ -55,8 +59,10 @@ def extract_unique_contexts(input_directory, output_directory):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-i', '--input_dir', type=str, default='../datasets')
-    parser.add_argument('-o', '--output_dir', type=str, default='../datasets/unique_contexts')
+    parser.add_argument("-i", "--input_dir", type=str, default="../datasets")
+    parser.add_argument(
+        "-o", "--output_dir", type=str, default="../datasets/unique_contexts"
+    )
 
     args = parser.parse_args()
 
