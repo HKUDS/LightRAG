@@ -1,4 +1,7 @@
 import os
+import logging
+
+logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.INFO)
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import ollama_model_complete, ollama_embedding
@@ -12,11 +15,15 @@ if not os.path.exists(WORKING_DIR):
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=ollama_model_complete,
-    llm_model_name="your_model_name",
+    llm_model_name="mistral:7b",
+    llm_model_max_async=2,
+    llm_model_kwargs={"host": "http://localhost:11434"},
     embedding_func=EmbeddingFunc(
         embedding_dim=768,
         max_token_size=8192,
-        func=lambda texts: ollama_embedding(texts, embed_model="nomic-embed-text"),
+        func=lambda texts: ollama_embedding(
+            texts, embed_model="nomic-embed-text", host="http://localhost:11434"
+        ),
     ),
 )
 
