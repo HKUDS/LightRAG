@@ -30,7 +30,7 @@ rag = LightRAG(
 )
 
 
-with open("./book.txt") as f:
+with open("./book.txt", "r", encoding="utf-8") as f:
     rag.insert(f.read())
 
 # Perform naive search
