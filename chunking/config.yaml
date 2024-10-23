@@ -1,0 +1,14 @@
+# Github Repository to chunk
+github_repo:
+  owner: "palmier-io"
+  repo: "palmier-vscode-extension"
+
+# Path to the local directory to download the repository to
+input_path: "./"
+
+# Path to the output directory containing the chunk files
+output_path: "./ragtest/input"
+
+# Maximum number of tokens per chunk
+max_tokens: 800
+

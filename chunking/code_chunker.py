@@ -8,16 +8,55 @@ from github import Github
 from io import BytesIO
 import requests
 from dotenv import load_dotenv
+import yaml
+from typing import Dict, Any, List
+from dataclasses import dataclass
+
+def load_config(config_path):
+    with open(config_path, 'r') as config_file:
+        return yaml.safe_load(config_file)
+
+# global config
+config = load_config(os.path.join(os.path.dirname(__file__), 'config.yaml'))
+
+@dataclass
+class CodeChunk:
+
+    # The index of the chunk in the file
+    index: int
+
+    # The relative path to the file
+    file_path: str
+
+    # The content of the chunk
+    content: str
+
+    # Any metadata about the chunk
+    tag: Dict[str, Any]
 
 class CodeChunker:
     def __init__(self, root_dir, max_tokens=800):
+
+        # Local root directory of where the repo is downloaded to
         self.root_dir = root_dir
+
+        self.output_path = config['output_path']
+
+        # Max tokens per chunk
         self.max_tokens = max_tokens
+
+        # Encoding to calculate token count
         self.encoding = tiktoken.get_encoding('cl100k_base')
-        self.languages = ['python', 'javascript', 'tsx', 'java', 'cpp', 'rust', 'go', 'bash']
+
+        # Supported Languages
+        self.languages = ['python', 'javascript', 'typescript', 'tsx']
+        
+        # Node types to look for in the AST - TODO: Think whether we should parse generic node types instead
         self.language_node_types = {
             'python': ['function_definition', 'class_definition', 'import_statement', 'expression_statement'],
             'javascript': ['function_declaration', 'class_declaration', 'import_declaration', 'expression_statement'],
+            'typescript': ['function_declaration', 'class_declaration', 'import_declaration', 'expression_statement'],
+            'tsx': ['function_declaration', 'class_declaration', 'import_declaration', 'expression_statement'],
             'java': ['class_declaration', 'method_declaration', 'import_declaration'],
             'cpp': ['function_definition', 'class_specifier', 'declaration'],
             # Add more languages as needed
@@ -29,6 +68,8 @@ class CodeChunker:
         tsx is a special case, so we handle it separately.
         https://pygments.org/languages/
         """
+
+        # Handle special case for tsx
         extension = os.path.splitext(file_path)[1]
         if extension == ".tsx":
             return "tsx"
@@ -36,6 +77,7 @@ class CodeChunker:
         try:
             lexer = get_lexer_for_filename(file_path)
             language = lexer.name.lower()
+            print(language)
             if language in self.languages:
                 return language
             else:
@@ -47,34 +89,43 @@ class CodeChunker:
         """
         Walk the directory and return a list of full file paths.
         """
+
         file_list = []
         for root, dirs, files in os.walk(self.root_dir):
             for file in files:
                 file_list.append(os.path.join(root, file))
         return file_list
 
-    def chunk_code(self, tree, code_bytes, language_name):
+    def chunk_code(self, tree, code_bytes, language_name, file_path) -> List[CodeChunk]:
         """
         Given an AST tree, recursively traverse the tree and collect chunks of code until we hit max_tokens.
         """
+
         code_str = code_bytes.decode('utf-8', errors='ignore')
-        chunks = []
+        chunks: List[CodeChunk] = []
         current_chunk = ''
         current_token_count = 0
+        chunk_index = 0
 
         root_node = tree.root_node
         node_types = self.language_node_types.get(language_name, [])
 
         # Traverse the syntax tree
         def traverse(node):
-            nonlocal current_chunk, current_token_count
+            nonlocal current_chunk, current_token_count, chunk_index
             if node.type in node_types:
                 text = code_str[node.start_byte:node.end_byte]
                 tokens = self.encoding.encode(text)
                 token_count = len(tokens)
                 if current_token_count + token_count > self.max_tokens:
                     if current_chunk:
-                        chunks.append(current_chunk)
+                        chunks.append(CodeChunk(
+                            index=chunk_index,
+                            file_path=file_path,
+                            content=current_chunk,
+                            tag={"language": language_name}
+                        ))
+                        chunk_index += 1
                     current_chunk = text
                     current_token_count = token_count
                 else:
@@ -89,7 +140,12 @@ class CodeChunker:
         traverse(root_node)
 
         if current_chunk:
-            chunks.append(current_chunk)
+            chunks.append(CodeChunk(
+                index=chunk_index,
+                file_path=file_path,
+                content=current_chunk,
+                tag={"language": language_name}
+            ))
 
         return chunks
 
@@ -102,8 +158,6 @@ class CodeChunker:
             if language_name is None:
                 print(f"Skipping file {file_path} (unknown language)")
                 continue
-
-            print(f"Processing file {file_path} with language {language_name}")
    
             try:
                 parser = get_parser(language_name)
@@ -114,16 +168,31 @@ class CodeChunker:
             with open(file_path, 'rb') as f:
                 code_bytes = f.read()
             tree = parser.parse(code_bytes)
-            chunks = self.chunk_code(tree, code_bytes, language_name)
-            for i, chunk in enumerate(chunks):
-                # Process the chunk as needed (e.g., save to a file, analyze, etc.)
-                print(f"Chunk {i+1} of file {file_path}:")
-                print(chunk)
-                print('---')
+            chunks: List[CodeChunk] = self.chunk_code(tree, code_bytes, language_name, file_path)
+            for chunk in chunks:
+                # Create a sanitized file name
+                sanitized_file_path = file_path.replace(self.root_dir, '').strip(os.sep).replace(os.sep, '_')
+                output_file_name = f"{sanitized_file_path}_{chunk.index}.txt"
+                output_file_path = os.path.join(self.output_path, output_file_name)
+                
+                # Write the chunk to a file
+                with open(output_file_path, 'w', encoding='utf-8') as f:
+                    f.write(f"File: {chunk.file_path}\n")
+                    f.write(f"Chunk: {chunk.index + 1}\n")
+                    f.write(f"Language: {chunk.tag['language']}\n")
+                    f.write("\n")
+                    f.write(chunk.content)
+                
+                print(f"Wrote chunk {chunk.index + 1} of file {chunk.file_path} to {output_file_path}")
 
-def get_github_repo(local_path, repo_url):
-    # Extract owner and repo name from the URL
-    _, _, _, owner, repo = repo_url.rstrip('/').split('/')
+def get_github_repo():
+    """
+    Download the GitHub repository and extract it to the local directory.
+    """
+
+    owner = config['github_repo']['owner']
+    repo = config['github_repo']['repo']
+    local_path = config['input_path']
 
     # Create a directory for the repo
     repo_dir = os.path.join(local_path, f"{owner}_{repo}")
@@ -164,9 +233,7 @@ def get_github_repo(local_path, repo_url):
 
 def main():
     load_dotenv()
-    repo_url = "https://github.com/palmier-io/palmier-vscode-extension"
-    local_path = "/Users/harrisontin/palmierio/palmier-lightrag"
-    root_dir = get_github_repo(local_path, repo_url)
+    root_dir = get_github_repo()
     chunker = CodeChunker(root_dir)
     chunker.process_files()
 
