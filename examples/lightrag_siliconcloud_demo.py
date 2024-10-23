@@ -19,7 +19,7 @@ async def llm_model_func(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
-        api_key=os.getenv("UPSTAGE_API_KEY"),
+        api_key=os.getenv("SILICONFLOW_API_KEY"),
         base_url="https://api.siliconflow.cn/v1/",
         **kwargs,
     )
@@ -29,7 +29,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
     return await siliconcloud_embedding(
         texts,
         model="netease-youdao/bce-embedding-base_v1",
-        api_key=os.getenv("UPSTAGE_API_KEY"),
+        api_key=os.getenv("SILICONFLOW_API_KEY"),
         max_token_size=512
     )
 
