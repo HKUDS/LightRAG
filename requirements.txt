@@ -12,3 +12,4 @@ torch
 transformers
 xxhash
 pyvis
+aiohttp
