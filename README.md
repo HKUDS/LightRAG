@@ -629,6 +629,7 @@ def extract_queries(file_path):
 │   ├── lightrag_ollama_demo.py
 │   ├── lightrag_openai_compatible_demo.py
 │   ├── lightrag_openai_demo.py
+│   ├── lightrag_siliconcloud_demo.py
 │   └── vram_management_demo.py
 ├── lightrag
 │   ├── __init__.py
