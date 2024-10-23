@@ -204,6 +204,7 @@ ollama create -f Modelfile qwen2m
 
 </details>
 ### Query Param
+
 ```python
 class QueryParam:
     mode: Literal["local", "global", "hybrid", "naive"] = "global"
@@ -220,6 +221,7 @@ class QueryParam:
 ```
 
 ### Batch Insert
+
 ```python
 # Batch Insert: Insert multiple texts at once
 rag.insert(["TEXT1", "TEXT2",...])
