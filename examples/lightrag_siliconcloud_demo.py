@@ -1,7 +1,7 @@
 import os
 import asyncio
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import openai_complete_if_cache, openai_embedding
+from lightrag.llm import openai_complete_if_cache, siliconcloud_embedding
 from lightrag.utils import EmbeddingFunc
 import numpy as np
 
@@ -15,22 +15,22 @@ async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     return await openai_complete_if_cache(
-        "solar-mini",
+        "Qwen/Qwen2.5-7B-Instruct",
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("UPSTAGE_API_KEY"),
-        base_url="https://api.upstage.ai/v1/solar",
+        base_url="https://api.siliconflow.cn/v1/",
         **kwargs,
     )
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embedding(
+    return await siliconcloud_embedding(
         texts,
-        model="solar-embedding-1-large-query",
+        model="netease-youdao/bce-embedding-base_v1",
         api_key=os.getenv("UPSTAGE_API_KEY"),
-        base_url="https://api.upstage.ai/v1/solar",
+        max_token_size=int(512 * 1.5)
     )
 
 
@@ -50,12 +50,12 @@ rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(
-        embedding_dim=4096, max_token_size=8192, func=embedding_func
+        embedding_dim=768, max_token_size=512, func=embedding_func
     ),
 )
 
 
-with open("./book.txt", "r", encoding="utf-8") as f:
+with open("./book.txt") as f:
     rag.insert(f.read())
 
 # Perform naive search
