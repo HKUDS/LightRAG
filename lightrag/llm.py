@@ -1,5 +1,6 @@
 import os
 import copy
+from functools import lru_cache
 import json
 import aioboto3
 import aiohttp
@@ -202,15 +203,21 @@ async def bedrock_complete_if_cache(
         return response["output"]["message"]["content"][0]["text"]
 
 
+@lru_cache(maxsize=1)
+def initialize_hf_model(model_name):
+    hf_tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto",  trust_remote_code=True)
+    hf_model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
+    if hf_tokenizer.pad_token is None:
+        hf_tokenizer.pad_token = hf_tokenizer.eos_token
+
+    return hf_model, hf_tokenizer
+
+
 async def hf_model_if_cache(
     model, prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     model_name = model
-    hf_tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto")
-    if hf_tokenizer.pad_token is None:
-        # print("use eos token")
-        hf_tokenizer.pad_token = hf_tokenizer.eos_token
-    hf_model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto")
+    hf_model, hf_tokenizer = initialize_hf_model(model_name)
     hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     messages = []
     if system_prompt:
