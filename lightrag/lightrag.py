@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
 from typing import Type, cast
-
+from .storage import Neo4jKVStorage, Neo4jGraphStorage
 from .llm import (
     gpt_4o_mini_complete,
     openai_embedding,
@@ -44,9 +44,8 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        logger.info("Creating a new event loop in a sub-thread.")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        logger.info("Creating a new event loop in the main thread.")
+        loop = asyncio.get_event_loop()
     return loop
 
 
@@ -95,23 +94,34 @@ class LightRAG:
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
     graph_storage_cls: Type[BaseGraphStorage] = NetworkXStorage
     enable_llm_cache: bool = True
-
+    
+    # Neo4j configuration
+    neo4j_config: dict = field(default_factory=dict)
+    milvus_config: dict = field(default_factory=dict)
+    
     # extension
     addon_params: dict = field(default_factory=dict)
     convert_response_to_json_func: callable = convert_response_to_json
 
     def __post_init__(self):
+        if not os.path.exists(self.working_dir):
+            os.makedirs(self.working_dir)
+            logger.info(f"Creating working directory {self.working_dir}")
         log_file = os.path.join(self.working_dir, "lightrag.log")
         set_logger(log_file)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
 
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in asdict(self).items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
-
-        if not os.path.exists(self.working_dir):
-            logger.info(f"Creating working directory {self.working_dir}")
-            os.makedirs(self.working_dir)
-
+            
+        if self.neo4j_config.get("uri") and self.neo4j_config.get("username") and self.neo4j_config.get("password"):
+            self.key_string_value_json_storage_cls = Neo4jKVStorage
+            self.graph_storage_cls = Neo4jGraphStorage
+            logger.info("Using Neo4jKVStorage")
+        else:
+            self.key_string_value_json_storage_cls = JsonKVStorage
+            logger.info("Using JsonKVStorage")
+            
         self.full_docs = self.key_string_value_json_storage_cls(
             namespace="full_docs", global_config=asdict(self)
         )
