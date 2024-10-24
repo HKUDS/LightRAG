@@ -5,3 +5,5 @@ book.txt
 lightrag-dev/
 .idea/
 dist/
+/.lightRagEnv
+volumes/

@@ -13,3 +13,6 @@ tiktoken
 torch
 transformers
 xxhash
+aiohttp
+neo4j
+pymilvus
