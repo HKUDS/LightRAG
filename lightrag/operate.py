@@ -124,14 +124,14 @@ async def _handle_single_relationship_extraction(
 async def _merge_nodes_then_upsert(
     entity_name: str,
     nodes_data: list[dict],
-    knwoledge_graph_inst: BaseGraphStorage,
+    knowledge_graph_inst: BaseGraphStorage,
     global_config: dict,
 ):
     already_entitiy_types = []
     already_source_ids = []
     already_description = []
 
-    already_node = await knwoledge_graph_inst.get_node(entity_name)
+    already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node is not None:
         already_entitiy_types.append(already_node["entity_type"])
         already_source_ids.extend(
