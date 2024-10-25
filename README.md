@@ -30,6 +30,7 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 
 ## Algorithm Flowchart
 
+![LightRAG_Self excalidraw](https://github.com/user-attachments/assets/aa5c4892-2e44-49e6-a116-2403ed80a1a3)
 
 
 ## Install
