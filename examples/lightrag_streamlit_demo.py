@@ -29,51 +29,6 @@ if 'rag' not in st.session_state:
 
 # Sidebar
 with st.sidebar:
-    st.title("🔍 LightRAG")
-    
-    # Configuration section
-    st.header("Configuration")
-    
-    # OpenAI API Key input
-    api_key = st.text_input(
-        "OpenAI API Key",
-        type="password",
-        help="Enter your OpenAI API key to use the chat interface"
-    )
-    if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
-    
-    model_name = st.selectbox(
-        "Model",
-        ["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
-        index=0,  # Set default to first option (gpt-4o-mini)
-        help="Select the model for chat responses"
-    )
-    
-    # Update model if changed
-    MODEL_OPTIONS = {
-        "gpt-4o-mini": gpt_4o_mini_complete,
-        "gpt-4": gpt_4o_complete,
-        # Add other model mappings as needed
-    }
-    
-    if model_name in MODEL_OPTIONS:
-        st.session_state.rag.llm_model_func = MODEL_OPTIONS[model_name]
-    
-    # Chat Controls moved under Configuration
-    st.subheader("Chat Controls")
-    
-    # Query mode selection
-    query_mode = st.selectbox(
-        "Query Mode",
-        ["hybrid", "naive", "local", "global"],
-        help="Select the search mode for document retrieval"
-    )
-    
-    # Clear chat button
-    if st.button("🗑️ Clear Chat History"):
-        st.session_state.messages = []
-        st.rerun()
     
     # Chat info
     with st.expander("ℹ️ Chat Information"):
@@ -83,11 +38,60 @@ with st.sidebar:
         - Ask for comparisons or summaries
         - Request specific details
         """)
-    
-    st.markdown("---")
+            
+    # Move model configuration into expander
+    with st.expander("🤖 Model Settings", expanded=False):
+        # OpenAI API Key input
+        api_key = st.text_input(
+            "OpenAI API Key",
+            type="password",
+            help="Enter your OpenAI API key to use the chat interface"
+        )
+        if api_key:
+            os.environ["OPENAI_API_KEY"] = api_key
         
+        model_name = st.selectbox(
+            "Model",
+            ["gpt-4o-mini", "gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
+            index=0,
+            help="Select the model for chat responses"
+        )
+        
+        # Update model if changed
+        MODEL_OPTIONS = {
+            "gpt-4o-mini": gpt_4o_mini_complete,
+            "gpt-4": gpt_4o_complete,
+        }
+        
+        if model_name in MODEL_OPTIONS:
+            st.session_state.rag.llm_model_func = MODEL_OPTIONS[model_name]
+    
+    # Move Chat Controls into an expander
+    with st.expander("⚙️ Chat Controls", expanded=False):
+        # Query mode selection
+        query_mode = st.selectbox(
+            "Query Mode",
+            ["hybrid", "naive", "local", "global"],
+            help="Select the search mode for document retrieval"
+        )
+        
+        # Clear chat button
+        if st.button("🗑️ Clear Chat History"):
+            st.session_state.messages = []
+            st.rerun()
+
+    # Chat info
+    with st.expander("❤️ Open Source"):
+        st.markdown("""
+        By [Zirui Guo](https://github.com/LarFii), [Ai Bry](https://wikiwe.discourse.group/u/aiproductguy/summary), at el
+        - [ARXIV](https://arxiv.org/abs/2410.05779)
+        - [Streamlit](https://lightrag.streamlit.app/)
+        - [Github](https://github.com/aiproductguy/LightRAG)
+        - [Youtube Overview](https://www.youtube.com/watch?v=oageL-1I0GE)
+        """)
+
     # Knowledge Graph section
-    st.header("Knowledge Base")
+    st.header("Insert to Knowledge Graph")
     
     # Document input
     with st.expander("Add Document", expanded=True):
@@ -124,54 +128,30 @@ with st.sidebar:
                     if new_doc_name not in st.session_state.documents:
                         st.session_state.documents.append(new_doc_name)
                 st.success("Processed!")
-    
-    # Table of Contents moved into expander
-    with st.expander("📚 Documents", expanded=False):
-        if st.session_state.documents:
-            for idx, doc in enumerate(st.session_state.documents, 1):
-                st.markdown(f"{idx}. {doc}")
-        else:
-            st.info("No documents added yet. Use 'Add Document' above to get started.")
-    
-    # Add Knowledge Graph Statistics
-    graphml_path = os.path.join(WORKING_DIR, "graph_chunk_entity_relation.graphml")
-    if os.path.exists(graphml_path):
-        st.markdown("---")
-        st.subheader("KGraph Statistics")
-        
-        try:
-            # Load GraphML using networkx
-            G = nx.read_graphml(graphml_path)
-            
-            # Create metrics container
-            stats_col1, stats_col2 = st.columns(2)
-            
-            with stats_col1:
-                entity_count = G.number_of_nodes()
-                st.metric(
-                    label="Entities",
-                    value=entity_count,
-                    help="Total number of nodes in the graph"
-                )
-            
-            with stats_col2:
-                relation_count = G.number_of_edges()
-                st.metric(
-                    label="Relations",
-                    value=relation_count,
-                    help="Total number of connections in the graph"
-                )
-                            
-        except Exception as e:
-            st.error(f"Error loading graph statistics: {str(e)}")
 
 # Main container
 # Knowledge Graph Visualization at the top
-with st.expander("View Knowledge Graph", expanded=True):
-    refresh_graph = st.button("🔄 Refresh Graph")
+st.header("🔍LightRAG for more Simple, Fast, Local-first Retrieval")
+with st.expander("View Knowledge Graph", expanded=False):
+    # Create two columns for the header row
+    header_col1, header_col2, header_col3 = st.columns([0.2, 0.4, 0.4])
+    
+    with header_col1:
+        refresh_graph = st.button("🔄 Refresh Graph")
+    
+    # Check for graph data and show statistics inline
+    graphml_path = os.path.join(WORKING_DIR, "graph_chunk_entity_relation.graphml")
+    if os.path.exists(graphml_path):
+        try:
+            G = nx.read_graphml(graphml_path)
+            with header_col2:
+                st.metric("Entities", G.number_of_nodes())
+            with header_col3:
+                st.metric("Relations", G.number_of_edges())
+        except Exception as e:
+            st.error(f"Error loading graph statistics: {str(e)}")
     
     # Check for existing graph data
-    graphml_path = os.path.join(WORKING_DIR, "graph_chunk_entity_relation.graphml")
     has_graph_data = os.path.exists(graphml_path)
     
     if has_graph_data or st.session_state.documents:
@@ -293,10 +273,6 @@ with st.expander("View Knowledge Graph", expanded=True):
     else:
         st.info("No graph data available. Add documents to create a knowledge graph.")
 
-# Chat columns below graph - modified to single column
-st.header("LightRAG Chat Interface")
-
-# Enhanced Chat Interface - now full width
 # Custom CSS for the chat container
 st.markdown("""
     <style>
@@ -323,7 +299,7 @@ for message in st.session_state.messages:
             st.caption(message.get("timestamp", ""))
     
 # Chat input
-if prompt := st.chat_input("Ask about your documents...", key="chat_input"):
+if prompt := st.chat_input("Ask about your knowledge graph...", key="chat_input"):
     # Add timestamp to message with timezone
     timestamp = pd.Timestamp.now().strftime("%H:%M:%S %Z")
     
