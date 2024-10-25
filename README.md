@@ -28,6 +28,10 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 - [x] [2024.10.16]🎯🎯📢📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
 - [x] [2024.10.15]🎯🎯📢📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
 
+## Algorithm Flowchart
+
+
+
 ## Install
 
 * Install from source (Recommend)
