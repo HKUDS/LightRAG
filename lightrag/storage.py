@@ -393,9 +393,19 @@ class Neo4JStorage(BaseGraphStorage):
                 else:  
                     return None
 
-# edge_degree
-    # from neo4j import GraphDatabase
-
+    # edge_degree
+        # from neo4j import GraphDatabase
+    async def edge_degree(self, src_id: str, tgt_id: str) -> int:
+        entity_name__label_source = src_id
+        entity_name_label_target = tgt_id
+        with graph_db.session() as session:
+            result = session.run(
+                """MATCH (n1:{node_label1})-[r]-(n2:{node_label2})
+                RETURN count(r) AS degree"""
+                .format(node_label1=node_label1, node_label2=node_label2)
+            )        
+            record = result.single()        
+            return record["degree"]
     # driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
 
     #
