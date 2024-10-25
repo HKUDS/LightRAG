@@ -58,8 +58,8 @@ from lightrag.llm import gpt_4o_mini_complete, gpt_4o_complete
 
 #########
 # Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
-# import nest_asyncio 
-# nest_asyncio.apply() 
+# import nest_asyncio
+# nest_asyncio.apply()
 #########
 
 WORKING_DIR = "./dickens"
@@ -157,7 +157,7 @@ rag = LightRAG(
 
 <details>
 <summary> Using Ollama Models </summary>
-     
+
 * If you want to use Ollama models, you only need to set LightRAG as follows:
 
 ```python
@@ -328,8 +328,8 @@ def main():
     SET e.entity_type = node.entity_type,
         e.description = node.description,
         e.source_id = node.source_id,
-        e.displayName = node.id  
-    REMOVE e:Entity  
+        e.displayName = node.id
+    REMOVE e:Entity
     WITH e, node
     CALL apoc.create.addLabels(e, [node.entity_type]) YIELD node AS labeledNode
     RETURN count(*)
@@ -382,7 +382,7 @@ def main():
 
     except Exception as e:
         print(f"Error occurred: {e}")
-    
+
     finally:
         driver.close()
 
