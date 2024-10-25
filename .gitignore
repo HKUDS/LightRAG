@@ -5,3 +5,5 @@ book.txt
 lightrag-dev/
 .idea/
 dist/
+.venv/*
+.DS_Store

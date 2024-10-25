@@ -12,3 +12,5 @@ torch
 transformers
 xxhash
 pyvis
+streamlit
+PyPDF2

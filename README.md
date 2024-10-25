@@ -22,6 +22,7 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 </div>
 
 ## 🎉 News
+- [!] [2024.10.25]🎯🎯📢📢We’ve added a [Streamlit template for LightRAG]().
 - [x] [2024.10.20]🎯🎯📢📢We’ve added a new feature to LightRAG: Graph Visualization.
 - [x] [2024.10.18]🎯🎯📢📢We’ve added a link to a [LightRAG Introduction Video](https://youtu.be/oageL-1I0GE). Thanks to the author!
 - [x] [2024.10.17]🎯🎯📢📢We have created a [Discord channel](https://discord.gg/mvsfu2Tg)! Welcome to join for sharing and discussions! 🎉🎉
@@ -629,6 +630,7 @@ def extract_queries(file_path):
 │   ├── lightrag_ollama_demo.py
 │   ├── lightrag_openai_compatible_demo.py
 │   ├── lightrag_openai_demo.py
+│   ├── lightrag_streamlit_demo.py
 │   └── vram_management_demo.py
 ├── lightrag
 │   ├── __init__.py
@@ -651,6 +653,15 @@ def extract_queries(file_path):
 ├── requirements.txt
 └── setup.py
 ```
+
+## Streamlit Template
+
+We have added a new Streamlit template for LightRAG. You can run it directly using (activate .env):
+
+```bash
+python3 -m streamlit run example/lightrag_streamlit_demo.py
+```
+
 
 ## Star History
 
