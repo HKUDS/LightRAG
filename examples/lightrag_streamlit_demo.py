@@ -9,6 +9,7 @@ import networkx as nx
 import pandas as pd
 import PyPDF2
 import io
+import requests
 
 # Page configuration
 st.set_page_config(page_title="LightRAG Demo", page_icon="🔍", layout="wide")
@@ -75,6 +76,14 @@ with st.sidebar:
             help="Select the search mode for document retrieval"
         )
         
+        # System prompt input
+        system_prompt = st.text_area(
+            "System Prompt",
+            placeholder="Enter a system prompt to guide the chat responses...",
+            help="This prompt will be used to guide the assistant's responses."
+        )
+        st.session_state.system_prompt = system_prompt  # Store in session state
+        
         # Clear chat button
         if st.button("🗑️ Clear Chat History"):
             st.session_state.messages = []
@@ -95,7 +104,7 @@ with st.sidebar:
     
     # Document input
     with st.expander("Add Document", expanded=True):
-        tab1, tab2 = st.tabs(["Upload", "Paste"])
+        tab1, tab2, tab3 = st.tabs(["Upload", "Paste", "From URL"])
         
         with tab1:
             uploaded_file = st.file_uploader("Upload file", type=['txt', 'md', 'pdf'])
@@ -128,10 +137,45 @@ with st.sidebar:
                     if new_doc_name not in st.session_state.documents:
                         st.session_state.documents.append(new_doc_name)
                 st.success("Processed!")
+        
+        with tab3:
+            url_input = st.text_input("Enter URL:")
+            if st.button("Fetch and Process") and url_input:
+                try:
+                    response = requests.get(url_input)
+                    response.raise_for_status()  # Raise an error for bad responses
+                    content = response.text
+                    
+                    with st.spinner("Processing..."):
+                        st.session_state.rag.insert(content)
+                        new_doc_name = f"URL {len(st.session_state.documents) + 1}"
+                        if new_doc_name not in st.session_state.documents:
+                            st.session_state.documents.append(new_doc_name)
+                    st.success("Processed!")
+                except Exception as e:
+                    st.error(f"Error fetching or processing URL: {str(e)}")
+
+def get_combined_prompt(user_input):
+    """
+    Combines the system prompt with the user's input and appends a reader-role prompt.
+    
+    Args:
+        user_input (str): The user's input prompt.
+    
+    Returns:
+        str: The combined prompt including the system prompt and reader-role prompt if they exist.
+    """
+    system_prompt = st.session_state.get('system_prompt', '')
+    receptionist_role_prompt = (
+        "Cite all footnotes, references, and sources (under ### References) using APA style in Obsidian markdown format. "
+        "Include meaningful quotes."
+    )
+    combined_prompt = f"{system_prompt}\n{user_input}\n{receptionist_role_prompt}" if system_prompt else f"{user_input}\n{receptionist_role_prompt}"
+    return combined_prompt
 
 # Main container
 # Knowledge Graph Visualization at the top
-st.header("🔍LightRAG for more Simple, Fast, Local-first Retrieval")
+st.header("🔍LightRAG: Fast, Local-first Graph Upsert & Retrieval")
 with st.expander("View Knowledge Graph", expanded=False):
     # Create two columns for the header row
     header_col1, header_col2, header_col3 = st.columns([0.2, 0.4, 0.4])
@@ -292,21 +336,21 @@ st.markdown("""
 # Display chat history with timestamps
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        col1, col2 = st.columns([0.85, 0.15])
-        with col1:
-            st.markdown(message["content"])
-        with col2:
-            st.caption(message.get("timestamp", ""))
-    
+        st.markdown(message["content"])
+        st.caption(message.get("timestamp", ""))
+
 # Chat input
 if prompt := st.chat_input("Ask about your knowledge graph...", key="chat_input"):
     # Add timestamp to message with timezone
     timestamp = pd.Timestamp.now().strftime("%H:%M:%S %Z")
     
+    # Use the refactored function to get the combined prompt
+    combined_prompt = get_combined_prompt(prompt)
+    
     # Add user message with timestamp
     st.session_state.messages.append({
         "role": "user",
-        "content": prompt,
+        "content": combined_prompt,
         "timestamp": timestamp
     })
     
@@ -314,7 +358,7 @@ if prompt := st.chat_input("Ask about your knowledge graph...", key="chat_input"
     with st.chat_message("user"):
         col1, col2 = st.columns([0.85, 0.15])
         with col1:
-            st.markdown(prompt)
+            st.markdown(prompt)  # Display only the user's input
         with col2:
             st.caption(timestamp)
     
@@ -323,7 +367,7 @@ if prompt := st.chat_input("Ask about your knowledge graph...", key="chat_input"
         with st.spinner("Thinking..."):
             response_timestamp = pd.Timestamp.now().strftime("%H:%M:%S %Z")
             response = st.session_state.rag.query(
-                prompt,
+                combined_prompt,
                 param=QueryParam(mode=query_mode)
             )
             
@@ -338,3 +382,4 @@ if prompt := st.chat_input("Ask about your knowledge graph...", key="chat_input"
                 "content": response,
                 "timestamp": response_timestamp
             })
+
