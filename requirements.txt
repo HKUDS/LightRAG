@@ -15,3 +15,4 @@ pyvis
 streamlit
 PyPDF2
 lightrag-hku
+aiohttp

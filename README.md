@@ -205,7 +205,25 @@ ollama create -f Modelfile qwen2m
 
 </details>
 
+### Query Param
+
+```python
+class QueryParam:
+    mode: Literal["local", "global", "hybrid", "naive"] = "global"
+    only_need_context: bool = False
+    response_type: str = "Multiple Paragraphs"
+    # Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.
+    top_k: int = 60
+    # Number of tokens for the original chunks.
+    max_token_for_text_unit: int = 4000
+    # Number of tokens for the relationship descriptions
+    max_token_for_global_context: int = 4000
+    # Number of tokens for the entity descriptions
+    max_token_for_local_context: int = 4000
+```
+
 ### Batch Insert
+
 ```python
 # Batch Insert: Insert multiple texts at once
 rag.insert(["TEXT1", "TEXT2",...])
@@ -630,6 +648,7 @@ def extract_queries(file_path):
 │   ├── lightrag_ollama_demo.py
 │   ├── lightrag_openai_compatible_demo.py
 │   ├── lightrag_openai_demo.py
+│   ├── lightrag_siliconcloud_demo.py
 │   ├── lightrag_streamlit_demo.py
 │   └── vram_management_demo.py
 ├── lightrag
