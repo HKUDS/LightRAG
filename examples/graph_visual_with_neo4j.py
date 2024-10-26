@@ -13,6 +13,7 @@ NEO4J_URI = "bolt://localhost:7687"
 NEO4J_USERNAME = "neo4j"
 NEO4J_PASSWORD = "your_password"
 
+
 def convert_xml_to_json(xml_path, output_path):
     """Converts XML file to JSON and saves the output."""
     if not os.path.exists(xml_path):
@@ -21,7 +22,7 @@ def convert_xml_to_json(xml_path, output_path):
 
     json_data = xml_to_json(xml_path)
     if json_data:
-        with open(output_path, 'w', encoding='utf-8') as f:
+        with open(output_path, "w", encoding="utf-8") as f:
             json.dump(json_data, f, ensure_ascii=False, indent=2)
         print(f"JSON file created: {output_path}")
         return json_data
@@ -29,16 +30,18 @@ def convert_xml_to_json(xml_path, output_path):
         print("Failed to create JSON data")
         return None
 
+
 def process_in_batches(tx, query, data, batch_size):
     """Process data in batches and execute the given query."""
     for i in range(0, len(data), batch_size):
-        batch = data[i:i + batch_size]
+        batch = data[i : i + batch_size]
         tx.run(query, {"nodes": batch} if "nodes" in query else {"edges": batch})
+
 
 def main():
     # Paths
-    xml_file = os.path.join(WORKING_DIR, 'graph_chunk_entity_relation.graphml')
-    json_file = os.path.join(WORKING_DIR, 'graph_data.json')
+    xml_file = os.path.join(WORKING_DIR, "graph_chunk_entity_relation.graphml")
+    json_file = os.path.join(WORKING_DIR, "graph_data.json")
 
     # Convert XML to JSON
     json_data = convert_xml_to_json(xml_file, json_file)
@@ -46,8 +49,8 @@ def main():
         return
 
     # Load nodes and edges
-    nodes = json_data.get('nodes', [])
-    edges = json_data.get('edges', [])
+    nodes = json_data.get("nodes", [])
+    edges = json_data.get("edges", [])
 
     # Neo4j queries
     create_nodes_query = """
@@ -56,8 +59,8 @@ def main():
     SET e.entity_type = node.entity_type,
         e.description = node.description,
         e.source_id = node.source_id,
-        e.displayName = node.id  
-    REMOVE e:Entity  
+        e.displayName = node.id
+    REMOVE e:Entity
     WITH e, node
     CALL apoc.create.addLabels(e, [node.entity_type]) YIELD node AS labeledNode
     RETURN count(*)
@@ -100,19 +103,24 @@ def main():
         # Execute queries in batches
         with driver.session() as session:
             # Insert nodes in batches
-            session.execute_write(process_in_batches, create_nodes_query, nodes, BATCH_SIZE_NODES)
+            session.execute_write(
+                process_in_batches, create_nodes_query, nodes, BATCH_SIZE_NODES
+            )
 
             # Insert edges in batches
-            session.execute_write(process_in_batches, create_edges_query, edges, BATCH_SIZE_EDGES)
+            session.execute_write(
+                process_in_batches, create_edges_query, edges, BATCH_SIZE_EDGES
+            )
 
             # Set displayName and labels
             session.run(set_displayname_and_labels_query)
 
     except Exception as e:
         print(f"Error occurred: {e}")
-    
+
     finally:
         driver.close()
+
 
 if __name__ == "__main__":
     main()
