@@ -425,68 +425,172 @@ class Neo4JStorage(BaseGraphStorage):
     #     print("Degree of edge between source and target:", degree)
 
     
-    
- #get_edge   
-    # def get_edge(driver, node_id):
-    #     with driver.session() as session:
-    #         result = session.run(
-    #             """
-    #             MATCH (n)-[r]-(m) 
-    #             WHERE id(n) = $node_id 
-    #             RETURN r
-    #             """,
-    #             node_id=node_id
-    #         )
-    #         return [record["r"] for record in result]
-
-    # driver = GraphDatabase.driver("bolt://localhost:7687", auth=("neo4j", "password"))
-
-    # edges = get_node_edges(driver, 123)  # Replace 123 with the actual node ID
-
-    # for edge in edges:
-    #     print(f"Edge ID: {edge.id}, Type: {edge.type}, Start: {edge.start_node.id}, End: {edge.end_node.id}")
-
-    # driver.close()
+    async def get_edge(self, source_node_id: str, target_node_id: str) -> Union[dict, None]:
+        entity_name__label_source = src_id
+        entity_name_label_target = tgt_id
+        """
+        Find all edges between nodes of two given labels
+        
+        Args:
+            source_node_label (str): Label of the source nodes
+            target_node_label (str): Label of the target nodes
+            
+        Returns:
+            list: List of all relationships/edges found
+        """
+        with self.driver.session() as session:
+            query = f"""
+            MATCH (source:{entity_name__label_source})-[r]-(target:{entity_name_label_target})
+            RETURN r
+            """
+            
+            result = session.run(query)
+            return [record["r"] for record in result]
 
 
 #upsert_node
-    #add_node, upsert_node
-    # async def upsert_node(self, node_id: str, node_data: dict[str, str]):
-    #     node_name = node_id
-    #     with driver.session() as session:
-    #         session.run("CREATE (p:$node_name $node_data)", node_name=node_name, node_data=**node_data)
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]):
+        label = node_id
+        properties = node_data
+        """
+        Upsert a node with the given label and properties within a transaction.
+        If a node with the same label exists, it will:
+        - Update existing properties with new values
+        - Add new properties that don't exist
+        If no node exists, creates a new node with all properties.
+        
+        Args:
+            label: The node label to search for and apply
+            properties: Dictionary of node properties
+            
+        Returns:
+            Dictionary containing the node's properties after upsert, or None if operation fails
+        """
+        with self.driver.session() as session:
+            # Execute the upsert within a transaction
+            result = session.execute_write(
+                self._do_upsert,
+                label,
+                properties
+            )
+            return result
+    
 
-    #     with GraphDatabase.driver(URI, auth=AUTH) as driver:
-    #         add_node(driver, entity, data)
+        @staticmethod
+        def _do_upsert(tx: Transaction, label: str, properties: Dict[str, Any]):
+            """
+            Static method to perform the actual upsert operation within a transaction
+            
+            Args:
+                tx: Neo4j transaction object
+                label: The node label to search for and apply
+                properties: Dictionary of node properties
+                
+            Returns:
+                Dictionary containing the node's properties after upsert, or None if operation fails
+            """
+            # Create the dynamic property string for SET clause
+            property_string = ", ".join([
+                f"n.{key} = ${key}" 
+                for key in properties.keys()
+            ])
+            
+            # Cypher query that either matches existing node or creates new one
+            query = f"""
+            MATCH (n:{label})
+            WITH n LIMIT 1
+            CALL {{
+                WITH n
+                WHERE n IS NOT NULL
+                SET {property_string}
+                RETURN n
+                UNION
+                WITH n
+                WHERE n IS NULL
+                CREATE (n:{label})
+                SET {property_string}
+                RETURN n
+            }}
+            RETURN n
+            """
+        
+        # Execute the query with properties as parameters
+        result = tx.run(query, properties)
+        record = result.single()
+        
+        if record:
+            return dict(record["n"])
+        return None
+                
+   
 
-#async def upsert_edge(self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]):
-    # def add_edge_with_data(tx, source_node_id, target_node_id, relationship_type, edge_data: dict[str, str]):
-    #     source_node_name = source_node_id
-    #     target_node_name = target_node_id
-    #     tx.run("MATCH (s), (t) WHERE id(s) = $source_node_id AND id(t) = $target_node_id "
-    #        "CREATE (s)-[r:$relationship_type]->(t) SET r = $data",
-    #        source_node_id=source_node_id, target_node_id=target_node_id, 
-    #        relationship_type=relationship_type, data=edge_data)
+    async def upsert_edge(self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]) -> None:
+        source_node_label = source_node_id
+        target_node_label = target_node_id
+        """
+        Upsert an edge and its properties between two nodes identified by their labels.
+        
+        Args:
+            source_node_label (str): Label of the source node (used as identifier)
+            target_node_label (str): Label of the target node (used as identifier)
+            edge_properties (dict): Dictionary of properties to set on the edge
+        """
+        with self._driver.session() as session:
+            session.execute_write(
+                self._do_upsert_edge,
+                source_node_label,
+                target_node_label,
+                edge_data
+            )
 
-    #     with driver.session() as session:
-    #         session.write_transaction(add_edge_with_data, 1, 2, "KNOWS", {"since": 2020, "strength": 5})
+        @staticmethod
+        def _do_upsert_edge(tx, source_node_label: str, target_node_label: str, edge_properties: Dict[str, Any]) -> None:
+            """
+            Static method to perform the edge upsert within a transaction.
+            
+            The query will:
+            1. Match the source and target nodes by their labels
+            2. Merge the DIRECTED relationship
+            3. Set all properties on the relationship, updating existing ones and adding new ones
+            """
+            # Convert edge properties to Cypher parameter string
+            props_string = ", ".join(f"r.{key} = ${key}" for key in edge_properties.keys())
+            
+            query = """
+            MATCH (source)
+            WHERE source.label = $source_node_label
+            MATCH (target)
+            WHERE target.label = $target_node_label
+            MERGE (source)-[r:DIRECTED]->(target)
+            SET {}
+            """.format(props_string)
+
+            # Prepare parameters dictionary
+            params = {
+                "source_node_label": source_node_label,
+                "target_node_label": target_node_label,
+                **edge_properties
+            }
+            
+            # Execute the query
+            tx.run(query, params)
 
 
-#async def _node2vec_embed(self):
-    # # async def _node2vec_embed(self):
-    # with driver.session() as session:
-    # #Define the Cypher query
-    # options = self.global_config["node2vec_params"]
-    # query = f"""CALL gds.node2vec.stream('myGraph', {**options})
-    #            YIELD nodeId, embedding 
-    #            RETURN nodeId, embedding"""
-    # # Run the query and process the results
-    # results = session.run(query)
-    # for record in results:
-    #   node_id = record["nodeId"]
-    #   embedding = record["embedding"]
-    #   print(f"Node ID: {node_id}, Embedding: {embedding}")
-    #   #need to return two lists here.
+async def _node2vec_embed(self):
+    # async def _node2vec_embed(self):
+    with driver.session() as session:
+        #Define the Cypher query
+        options = self.global_config["node2vec_params"]
+        query = f"""CALL gds.node2vec.stream('myGraph', {**options})
+                YIELD nodeId, embedding 
+                RETURN nodeId, embedding"""
+    # Run the query and process the results
+    results = session.run(query)
+    for record in results:
+      node_id = record["nodeId"]
+      embedding = record["embedding"]
+      print(f"Node ID: {node_id}, Embedding: {embedding}")
+      #need to return two lists here.
 
 
 
