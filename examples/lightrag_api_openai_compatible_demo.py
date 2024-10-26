@@ -12,7 +12,7 @@ import nest_asyncio
 # Apply nest_asyncio to solve event loop issues
 nest_asyncio.apply()
 
-DEFAULT_RAG_DIR="index_default"
+DEFAULT_RAG_DIR = "index_default"
 app = FastAPI(title="LightRAG API", description="API for RAG operations")
 
 # Configure working directory
@@ -22,6 +22,8 @@ if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
 # LLM model function
+
+
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
@@ -36,6 +38,8 @@ async def llm_model_func(
     )
 
 # Embedding function
+
+
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await openai_embedding(
         texts,
@@ -54,15 +58,20 @@ rag = LightRAG(
 )
 
 # Data models
+
+
 class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
 
+
 class InsertRequest(BaseModel):
     text: str
 
+
 class InsertFileRequest(BaseModel):
     file_path: str
+
 
 class Response(BaseModel):
     status: str
@@ -70,13 +79,16 @@ class Response(BaseModel):
     message: Optional[str] = None
 
 # API routes
+
+
 @app.post("/query", response_model=Response)
 async def query_endpoint(request: QueryRequest):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, 
-            lambda: rag.query(request.query, param=QueryParam(mode=request.mode))
+            None,
+            lambda: rag.query(
+                request.query, param=QueryParam(mode=request.mode))
         )
         return Response(
             status="success",
@@ -84,6 +96,7 @@ async def query_endpoint(request: QueryRequest):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/insert", response_model=Response)
 async def insert_endpoint(request: InsertRequest):
@@ -97,6 +110,7 @@ async def insert_endpoint(request: InsertRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/insert_file", response_model=Response)
 async def insert_file(request: InsertFileRequest):
     try:
@@ -106,7 +120,7 @@ async def insert_file(request: InsertFileRequest):
                 status_code=404,
                 detail=f"File not found: {request.file_path}"
             )
-        
+
         # Read file content
         try:
             with open(request.file_path, 'r', encoding='utf-8') as f:
@@ -115,17 +129,18 @@ async def insert_file(request: InsertFileRequest):
             # If UTF-8 decoding fails, try other encodings
             with open(request.file_path, 'r', encoding='gbk') as f:
                 content = f.read()
-                
+
         # Insert file content
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: rag.insert(content))
-        
+
         return Response(
             status="success",
             message=f"File content from {request.file_path} inserted successfully"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/health")
 async def health_check():
