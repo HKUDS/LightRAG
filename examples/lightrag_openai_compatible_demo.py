@@ -52,6 +52,7 @@ async def test_funcs():
 
 # asyncio.run(test_funcs())
 
+
 async def main():
     try:
         embedding_dimension = await get_embedding_dim()
@@ -61,35 +62,47 @@ async def main():
             working_dir=WORKING_DIR,
             llm_model_func=llm_model_func,
             embedding_func=EmbeddingFunc(
-                embedding_dim=embedding_dimension, max_token_size=8192, func=embedding_func
+                embedding_dim=embedding_dimension,
+                max_token_size=8192,
+                func=embedding_func,
             ),
         )
-
 
         with open("./book.txt", "r", encoding="utf-8") as f:
             rag.insert(f.read())
 
         # Perform naive search
         print(
-            rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+            rag.query(
+                "What are the top themes in this story?", param=QueryParam(mode="naive")
+            )
         )
 
         # Perform local search
         print(
-            rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+            rag.query(
+                "What are the top themes in this story?", param=QueryParam(mode="local")
+            )
         )
 
         # Perform global search
         print(
-            rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+            rag.query(
+                "What are the top themes in this story?",
+                param=QueryParam(mode="global"),
+            )
         )
 
         # Perform hybrid search
         print(
-            rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+            rag.query(
+                "What are the top themes in this story?",
+                param=QueryParam(mode="hybrid"),
+            )
         )
     except Exception as e:
         print(f"An error occurred: {e}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

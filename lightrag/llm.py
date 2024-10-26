@@ -7,7 +7,13 @@ import aiohttp
 import numpy as np
 import ollama
 
-from openai import AsyncOpenAI, APIConnectionError, RateLimitError, Timeout, AsyncAzureOpenAI
+from openai import (
+    AsyncOpenAI,
+    APIConnectionError,
+    RateLimitError,
+    Timeout,
+    AsyncAzureOpenAI,
+)
 
 import base64
 import struct
@@ -70,26 +76,31 @@ async def openai_complete_if_cache(
         )
     return response.choices[0].message.content
 
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
 )
-async def azure_openai_complete_if_cache(model,
+async def azure_openai_complete_if_cache(
+    model,
     prompt,
     system_prompt=None,
     history_messages=[],
     base_url=None,
     api_key=None,
-    **kwargs):
+    **kwargs,
+):
     if api_key:
         os.environ["AZURE_OPENAI_API_KEY"] = api_key
     if base_url:
         os.environ["AZURE_OPENAI_ENDPOINT"] = base_url
 
-    openai_async_client = AsyncAzureOpenAI(azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-                                           api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-                                           api_version=os.getenv("AZURE_OPENAI_API_VERSION"))
+    openai_async_client = AsyncAzureOpenAI(
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+    )
 
     hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     messages = []
@@ -113,6 +124,7 @@ async def azure_openai_complete_if_cache(model,
             {args_hash: {"return": response.choices[0].message.content, "model": model}}
         )
     return response.choices[0].message.content
+
 
 class BedrockError(Exception):
     """Generic error for issues related to Amazon Bedrock"""
@@ -205,8 +217,12 @@ async def bedrock_complete_if_cache(
 
 @lru_cache(maxsize=1)
 def initialize_hf_model(model_name):
-    hf_tokenizer = AutoTokenizer.from_pretrained(model_name, device_map="auto",  trust_remote_code=True)
-    hf_model = AutoModelForCausalLM.from_pretrained(model_name, device_map="auto", trust_remote_code=True)
+    hf_tokenizer = AutoTokenizer.from_pretrained(
+        model_name, device_map="auto", trust_remote_code=True
+    )
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        model_name, device_map="auto", trust_remote_code=True
+    )
     if hf_tokenizer.pad_token is None:
         hf_tokenizer.pad_token = hf_tokenizer.eos_token
 
@@ -328,8 +344,9 @@ async def gpt_4o_mini_complete(
         **kwargs,
     )
 
+
 async def azure_openai_complete(
-        prompt, system_prompt=None, history_messages=[], **kwargs
+    prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     return await azure_openai_complete_if_cache(
         "conversation-4o-mini",
@@ -338,6 +355,7 @@ async def azure_openai_complete(
         history_messages=history_messages,
         **kwargs,
     )
+
 
 async def bedrock_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
@@ -418,9 +436,11 @@ async def azure_openai_embedding(
     if base_url:
         os.environ["AZURE_OPENAI_ENDPOINT"] = base_url
 
-    openai_async_client = AsyncAzureOpenAI(azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
-                                           api_key=os.getenv("AZURE_OPENAI_API_KEY"),
-                                           api_version=os.getenv("AZURE_OPENAI_API_VERSION"))
+    openai_async_client = AsyncAzureOpenAI(
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
+        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+    )
 
     response = await openai_async_client.embeddings.create(
         model=model, input=texts, encoding_format="float"
@@ -440,35 +460,28 @@ async def siliconcloud_embedding(
     max_token_size: int = 512,
     api_key: str = None,
 ) -> np.ndarray:
-    if api_key and not api_key.startswith('Bearer '):
-        api_key = 'Bearer ' + api_key
+    if api_key and not api_key.startswith("Bearer "):
+        api_key = "Bearer " + api_key
 
-    headers = {
-        "Authorization": api_key,
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": api_key, "Content-Type": "application/json"}
 
     truncate_texts = [text[0:max_token_size] for text in texts]
 
-    payload = {
-        "model": model,
-        "input": truncate_texts,
-        "encoding_format": "base64"
-    }
+    payload = {"model": model, "input": truncate_texts, "encoding_format": "base64"}
 
     base64_strings = []
     async with aiohttp.ClientSession() as session:
         async with session.post(base_url, headers=headers, json=payload) as response:
             content = await response.json()
-            if 'code' in content:
+            if "code" in content:
                 raise ValueError(content)
-            base64_strings = [item['embedding'] for item in content['data']]
-    
+            base64_strings = [item["embedding"] for item in content["data"]]
+
     embeddings = []
     for string in base64_strings:
         decode_bytes = base64.b64decode(string)
         n = len(decode_bytes) // 4
-        float_array = struct.unpack('<' + 'f' * n, decode_bytes)
+        float_array = struct.unpack("<" + "f" * n, decode_bytes)
         embeddings.append(float_array)
     return np.array(embeddings)
 
@@ -563,6 +576,7 @@ async def ollama_embedding(texts: list[str], embed_model) -> np.ndarray:
 
     return embed_text
 
+
 class Model(BaseModel):
     """
     This is a Pydantic model class named 'Model' that is used to define a custom language model.
@@ -580,14 +594,20 @@ class Model(BaseModel):
     The 'kwargs' dictionary contains the model name and API key to be passed to the function.
     """
 
-    gen_func: Callable[[Any], str] = Field(..., description="A function that generates the response from the llm. The response must be a string")
-    kwargs: Dict[str, Any] = Field(..., description="The arguments to pass to the callable function. Eg. the api key, model name, etc")
+    gen_func: Callable[[Any], str] = Field(
+        ...,
+        description="A function that generates the response from the llm. The response must be a string",
+    )
+    kwargs: Dict[str, Any] = Field(
+        ...,
+        description="The arguments to pass to the callable function. Eg. the api key, model name, etc",
+    )
 
     class Config:
         arbitrary_types_allowed = True
 
 
-class MultiModel():
+class MultiModel:
     """
     Distributes the load across multiple language models. Useful for circumventing low rate limits with certain api providers especially if you are on the free tier.
     Could also be used for spliting across diffrent models or providers.
@@ -611,25 +631,30 @@ class MultiModel():
             )
         ```
     """
+
     def __init__(self, models: List[Model]):
         self._models = models
         self._current_model = 0
-        
+
     def _next_model(self):
         self._current_model = (self._current_model + 1) % len(self._models)
         return self._models[self._current_model]
 
     async def llm_model_func(
-        self,
-        prompt, system_prompt=None, history_messages=[], **kwargs
+        self, prompt, system_prompt=None, history_messages=[], **kwargs
     ) -> str:
-        kwargs.pop("model", None) # stop from overwriting the custom model name
+        kwargs.pop("model", None)  # stop from overwriting the custom model name
         next_model = self._next_model()
-        args = dict(prompt=prompt, system_prompt=system_prompt, history_messages=history_messages, **kwargs, **next_model.kwargs)
-
-        return await next_model.gen_func(
-            **args
+        args = dict(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages,
+            **kwargs,
+            **next_model.kwargs,
         )
+
+        return await next_model.gen_func(**args)
+
 
 if __name__ == "__main__":
     import asyncio
