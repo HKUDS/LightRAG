@@ -6,7 +6,7 @@ import random
 G = nx.read_graphml("./dickens/graph_chunk_entity_relation.graphml")
 
 # Create a Pyvis network
-net = Network(notebook=True)
+net = Network(height="100vh", notebook=True)
 
 # Convert NetworkX graph to Pyvis network
 net.from_nx(G)
