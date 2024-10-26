@@ -85,7 +85,9 @@ class LightRAG:
 
     # LLM
     llm_model_func: callable = gpt_4o_mini_complete  # hf_model_complete#
-    llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  #'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
+    llm_model_name: str = (
+        "meta-llama/Llama-3.2-1B-Instruct"  #'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
+    )
     llm_model_max_token_size: int = 32768
     llm_model_max_async: int = 16
 
@@ -208,7 +210,7 @@ class LightRAG:
             logger.info("[Entity Extraction]...")
             maybe_new_kg = await extract_entities(
                 inserting_chunks,
-                knwoledge_graph_inst=self.chunk_entity_relation_graph,
+                knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
                 relationships_vdb=self.relationships_vdb,
                 global_config=asdict(self),
