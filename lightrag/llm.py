@@ -286,7 +286,9 @@ async def hf_model_if_cache(
     output = hf_model.generate(
         **input_ids, max_new_tokens=512, num_return_sequences=1, early_stopping=True
     )
-    response_text = hf_tokenizer.decode(output[0][len(inputs["input_ids"][0]):], skip_special_tokens=True)
+    response_text = hf_tokenizer.decode(
+        output[0][len(inputs["input_ids"][0]) :], skip_special_tokens=True
+    )
     if hashing_kv is not None:
         await hashing_kv.upsert({args_hash: {"return": response_text, "model": model}})
     return response_text
