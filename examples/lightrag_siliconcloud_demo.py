@@ -30,7 +30,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
         texts,
         model="netease-youdao/bce-embedding-base_v1",
         api_key=os.getenv("SILICONFLOW_API_KEY"),
-        max_token_size=512
+        max_token_size=512,
     )
 
 
