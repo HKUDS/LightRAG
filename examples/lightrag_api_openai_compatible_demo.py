@@ -16,7 +16,7 @@ DEFAULT_RAG_DIR = "index_default"
 app = FastAPI(title="LightRAG API", description="API for RAG operations")
 
 # Configure working directory
-WORKING_DIR = os.environ.get('RAG_DIR', f'{DEFAULT_RAG_DIR}')
+WORKING_DIR = os.environ.get("RAG_DIR", f"{DEFAULT_RAG_DIR}")
 print(f"WORKING_DIR: {WORKING_DIR}")
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -32,10 +32,11 @@ async def llm_model_func(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
-        api_key='YOUR_API_KEY',
+        api_key="YOUR_API_KEY",
         base_url="YourURL/v1",
         **kwargs,
     )
+
 
 # Embedding function
 
@@ -44,9 +45,10 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
     return await openai_embedding(
         texts,
         model="text-embedding-3-large",
-        api_key='YOUR_API_KEY',
+        api_key="YOUR_API_KEY",
         base_url="YourURL/v1",
     )
+
 
 # Initialize RAG instance
 rag = LightRAG(
@@ -78,6 +80,7 @@ class Response(BaseModel):
     data: Optional[str] = None
     message: Optional[str] = None
 
+
 # API routes
 
 
@@ -86,14 +89,9 @@ async def query_endpoint(request: QueryRequest):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None,
-            lambda: rag.query(
-                request.query, param=QueryParam(mode=request.mode))
+            None, lambda: rag.query(request.query, param=QueryParam(mode=request.mode))
         )
-        return Response(
-            status="success",
-            data=result
-        )
+        return Response(status="success", data=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -103,10 +101,7 @@ async def insert_endpoint(request: InsertRequest):
     try:
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: rag.insert(request.text))
-        return Response(
-            status="success",
-            message="Text inserted successfully"
-        )
+        return Response(status="success", message="Text inserted successfully")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -117,17 +112,16 @@ async def insert_file(request: InsertFileRequest):
         # Check if file exists
         if not os.path.exists(request.file_path):
             raise HTTPException(
-                status_code=404,
-                detail=f"File not found: {request.file_path}"
+                status_code=404, detail=f"File not found: {request.file_path}"
             )
 
         # Read file content
         try:
-            with open(request.file_path, 'r', encoding='utf-8') as f:
+            with open(request.file_path, "r", encoding="utf-8") as f:
                 content = f.read()
         except UnicodeDecodeError:
             # If UTF-8 decoding fails, try other encodings
-            with open(request.file_path, 'r', encoding='gbk') as f:
+            with open(request.file_path, "r", encoding="gbk") as f:
                 content = f.read()
 
         # Insert file content
@@ -136,7 +130,7 @@ async def insert_file(request: InsertFileRequest):
 
         return Response(
             status="success",
-            message=f"File content from {request.file_path} inserted successfully"
+            message=f"File content from {request.file_path} inserted successfully",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -146,8 +140,10 @@ async def insert_file(request: InsertFileRequest):
 async def health_check():
     return {"status": "healthy"}
 
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8020)
 
 # Usage example
