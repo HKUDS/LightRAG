@@ -3,11 +3,15 @@ import html
 import os
 from dataclasses import dataclass
 from typing import Any, Union, cast
-import networkx as nx
 import numpy as np
 from nano_vectordb import NanoVectorDB
 
-from .utils import load_json, logger, write_json
+
+
+#  import package.common.utils as utils
+
+
+from lightrag.utils import load_json, logger, write_json
 from ..base import (
     BaseGraphStorage
 )
@@ -22,10 +26,10 @@ PASSWORD = "your_password"
 @dataclass
 class GraphStorage(BaseGraphStorage):
     @staticmethod
-    def load_nx_graph(file_name) -> nx.Graph:
-        if os.path.exists(file_name):
-            return nx.read_graphml(file_name)
-        return None
+    # def load_nx_graph(file_name) -> nx.Graph:
+    #     if os.path.exists(file_name):
+    #         return nx.read_graphml(file_name)
+    #     return None
 
     def __post_init__(self):
         # self._graph = preloaded_graph or nx.Graph()
@@ -102,7 +106,7 @@ class GraphStorage(BaseGraphStorage):
             result = session.run(
                 """MATCH (n1:{node_label1})-[r]-(n2:{node_label2})
                 RETURN count(r) AS degree"""
-                .format(node_label1=node_label1, node_label2=node_label2)
+                .format(entity_name__label_source=entity_name__label_source, entity_name_label_target=entity_name_label_target)
             )        
             record = result.single()        
             return record["degree"]
@@ -263,7 +267,7 @@ class GraphStorage(BaseGraphStorage):
         with self._driver.session()  as session:
             #Define the Cypher query
             options = self.global_config["node2vec_params"]
-            query = f"""CALL gds.node2vec.stream('myGraph', {**options})
+            query = f"""CALL gds.node2vec.stream('myGraph', {options})  # **options
                     YIELD nodeId, embedding 
                     RETURN nodeId, embedding"""
             # Run the query and process the results
