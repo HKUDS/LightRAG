@@ -13,3 +13,4 @@ transformers
 xxhash
 pyvis
 aiohttp
+neo4j

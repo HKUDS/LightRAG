@@ -1,5 +1,6 @@
 import asyncio
 import os
+import importlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
@@ -23,6 +24,11 @@ from .storage import (
     NanoVectorDBStorage,
     NetworkXStorage,
 )
+ 
+from .kg.neo4j import (
+    GraphStorage as Neo4JStorage
+)
+
 from .utils import (
     EmbeddingFunc,
     compute_mdhash_id,
@@ -93,7 +99,14 @@ class LightRAG:
     key_string_value_json_storage_cls: Type[BaseKVStorage] = JsonKVStorage
     vector_db_storage_cls: Type[BaseVectorStorage] = NanoVectorDBStorage
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
-    graph_storage_cls: Type[BaseGraphStorage] = NetworkXStorage
+
+    # module = importlib.import_module('kg.neo4j')
+    # Neo4JStorage = getattr(module, 'GraphStorage')
+
+    if True==False:
+        graph_storage_cls: Type[BaseGraphStorage] = Neo4JStorage
+    else:
+        graph_storage_cls: Type[BaseGraphStorage] = NetworkXStorage
     enable_llm_cache: bool = True
 
     # extension
