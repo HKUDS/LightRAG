@@ -13,3 +13,4 @@ tiktoken
 torch
 transformers
 xxhash
+# lmdeploy[all]
