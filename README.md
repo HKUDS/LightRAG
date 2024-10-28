@@ -237,7 +237,15 @@ rag.insert(["TEXT1", "TEXT2",...])
 
 ```python
 # Incremental Insert: Insert new documents into an existing LightRAG instance
-rag = LightRAG(working_dir="./dickens")
+rag = LightRAG(
+     working_dir=WORKING_DIR,
+     llm_model_func=llm_model_func,
+     embedding_func=EmbeddingFunc(
+          embedding_dim=embedding_dimension,
+          max_token_size=8192,
+          func=embedding_func,
+     ),
+)
 
 with open("./newText.txt") as f:
     rag.insert(f.read())
