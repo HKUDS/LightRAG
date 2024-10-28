@@ -1,13 +1,12 @@
 import os
 import logging
-
-logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.INFO)
-
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import ollama_model_complete, ollama_embedding
 from lightrag.utils import EmbeddingFunc
 
 WORKING_DIR = "./dickens"
+
+logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.INFO)
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
