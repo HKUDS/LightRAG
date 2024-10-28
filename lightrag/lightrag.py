@@ -155,7 +155,11 @@ class LightRAG:
         )
 
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
-            partial(self.llm_model_func, hashing_kv=self.llm_response_cache, **self.llm_model_kwargs)
+            partial(
+                self.llm_model_func,
+                hashing_kv=self.llm_response_cache,
+                **self.llm_model_kwargs,
+            )
         )
 
     def insert(self, string_or_strings):
