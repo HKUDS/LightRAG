@@ -50,8 +50,8 @@ def extract_queries(file_path):
 
 async def process_query(query_text, rag_instance, query_param):
     try:
-        result, context = await rag_instance.aquery(query_text, param=query_param)
-        return {"query": query_text, "result": result, "context": context}, None
+        result = await rag_instance.aquery(query_text, param=query_param)
+        return {"query": query_text, "result": result}, None
     except Exception as e:
         return None, {"query": query_text, "error": str(e)}
 
