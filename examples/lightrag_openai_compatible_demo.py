@@ -34,6 +34,13 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
     )
 
 
+async def get_embedding_dim():
+    test_text = ["This is a test sentence."]
+    embedding = await embedding_func(test_text)
+    embedding_dim = embedding.shape[1]
+    return embedding_dim
+
+
 # function test
 async def test_funcs():
     result = await llm_model_func("How are you?")
@@ -43,37 +50,59 @@ async def test_funcs():
     print("embedding_func: ", result)
 
 
-asyncio.run(test_funcs())
+# asyncio.run(test_funcs())
 
 
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
-    embedding_func=EmbeddingFunc(
-        embedding_dim=4096, max_token_size=8192, func=embedding_func
-    ),
-)
+async def main():
+    try:
+        embedding_dimension = await get_embedding_dim()
+        print(f"Detected embedding dimension: {embedding_dimension}")
+
+        rag = LightRAG(
+            working_dir=WORKING_DIR,
+            llm_model_func=llm_model_func,
+            embedding_func=EmbeddingFunc(
+                embedding_dim=embedding_dimension,
+                max_token_size=8192,
+                func=embedding_func,
+            ),
+        )
+
+        with open("./book.txt", "r", encoding="utf-8") as f:
+            rag.insert(f.read())
+
+        # Perform naive search
+        print(
+            rag.query(
+                "What are the top themes in this story?", param=QueryParam(mode="naive")
+            )
+        )
+
+        # Perform local search
+        print(
+            rag.query(
+                "What are the top themes in this story?", param=QueryParam(mode="local")
+            )
+        )
+
+        # Perform global search
+        print(
+            rag.query(
+                "What are the top themes in this story?",
+                param=QueryParam(mode="global"),
+            )
+        )
+
+        # Perform hybrid search
+        print(
+            rag.query(
+                "What are the top themes in this story?",
+                param=QueryParam(mode="hybrid"),
+            )
+        )
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 
-with open("./book.txt") as f:
-    rag.insert(f.read())
-
-# Perform naive search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
-)
-
-# Perform local search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
-)
-
-# Perform global search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
-)
-
-# Perform hybrid search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
-)
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -8,7 +8,7 @@
         <a href='https://lightrag.github.io'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
         <a href='https://youtu.be/oageL-1I0GE'><img src='https://badges.aleen42.com/src/youtube.svg'></a>
         <a href='https://arxiv.org/abs/2410.05779'><img src='https://img.shields.io/badge/arXiv-2410.05779-b31b1b'></a>
-        <a href='https://discord.gg/mvsfu2Tg'><img src='https://discordapp.com/api/guilds/1296348098003734629/widget.png?style=shield'></a>
+        <a href='https://discord.gg/rdE8YVPm'><img src='https://discordapp.com/api/guilds/1296348098003734629/widget.png?style=shield'></a>
     </p>
      <p>
           <img src='https://img.shields.io/github/stars/hkuds/lightrag?color=green&style=social' />
@@ -27,6 +27,11 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 - [x] [2024.10.17]🎯🎯📢📢We have created a [Discord channel](https://discord.gg/mvsfu2Tg)! Welcome to join for sharing and discussions! 🎉🎉
 - [x] [2024.10.16]🎯🎯📢📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
 - [x] [2024.10.15]🎯🎯📢📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
+
+## Algorithm Flowchart
+
+![LightRAG_Self excalidraw](https://github.com/user-attachments/assets/aa5c4892-2e44-49e6-a116-2403ed80a1a3)
+
 
 ## Install
 
@@ -58,8 +63,8 @@ from lightrag.llm import gpt_4o_mini_complete, gpt_4o_complete
 
 #########
 # Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
-# import nest_asyncio 
-# nest_asyncio.apply() 
+# import nest_asyncio
+# nest_asyncio.apply()
 #########
 
 WORKING_DIR = "./dickens"
@@ -157,7 +162,7 @@ rag = LightRAG(
 
 <details>
 <summary> Using Ollama Models </summary>
-     
+
 * If you want to use Ollama models, you only need to set LightRAG as follows:
 
 ```python
@@ -204,7 +209,25 @@ ollama create -f Modelfile qwen2m
 
 </details>
 
+### Query Param
+
+```python
+class QueryParam:
+    mode: Literal["local", "global", "hybrid", "naive"] = "global"
+    only_need_context: bool = False
+    response_type: str = "Multiple Paragraphs"
+    # Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.
+    top_k: int = 60
+    # Number of tokens for the original chunks.
+    max_token_for_text_unit: int = 4000
+    # Number of tokens for the relationship descriptions
+    max_token_for_global_context: int = 4000
+    # Number of tokens for the entity descriptions
+    max_token_for_local_context: int = 4000
+```
+
 ### Batch Insert
+
 ```python
 # Batch Insert: Insert multiple texts at once
 rag.insert(["TEXT1", "TEXT2",...])
@@ -214,7 +237,15 @@ rag.insert(["TEXT1", "TEXT2",...])
 
 ```python
 # Incremental Insert: Insert new documents into an existing LightRAG instance
-rag = LightRAG(working_dir="./dickens")
+rag = LightRAG(
+     working_dir=WORKING_DIR,
+     llm_model_func=llm_model_func,
+     embedding_func=EmbeddingFunc(
+          embedding_dim=embedding_dimension,
+          max_token_size=8192,
+          func=embedding_func,
+     ),
+)
 
 with open("./newText.txt") as f:
     rag.insert(f.read())
@@ -310,8 +341,8 @@ def main():
     SET e.entity_type = node.entity_type,
         e.description = node.description,
         e.source_id = node.source_id,
-        e.displayName = node.id  
-    REMOVE e:Entity  
+        e.displayName = node.id
+    REMOVE e:Entity
     WITH e, node
     CALL apoc.create.addLabels(e, [node.entity_type]) YIELD node AS labeledNode
     RETURN count(*)
@@ -364,7 +395,7 @@ def main():
 
     except Exception as e:
         print(f"Error occurred: {e}")
-    
+
     finally:
         driver.close()
 
@@ -372,6 +403,125 @@ if __name__ == "__main__":
     main()
 ```
 
+</details>
+
+## API Server Implementation
+
+LightRAG also provides a FastAPI-based server implementation for RESTful API access to RAG operations. This allows you to run LightRAG as a service and interact with it through HTTP requests.
+
+### Setting up the API Server
+<details>
+<summary>Click to expand setup instructions</summary>
+
+1. First, ensure you have the required dependencies:
+```bash
+pip install fastapi uvicorn pydantic
+```
+
+2. Set up your environment variables:
+```bash
+export RAG_DIR="your_index_directory"  # Optional: Defaults to "index_default"
+```
+
+3. Run the API server:
+```bash
+python examples/lightrag_api_openai_compatible_demo.py
+```
+
+The server will start on `http://0.0.0.0:8020`.
+</details>
+
+### API Endpoints
+
+The API server provides the following endpoints:
+
+#### 1. Query Endpoint
+<details>
+<summary>Click to view Query endpoint details</summary>
+
+- **URL:** `/query`
+- **Method:** POST
+- **Body:**
+```json
+{
+    "query": "Your question here",
+    "mode": "hybrid"  // Can be "naive", "local", "global", or "hybrid"
+}
+```
+- **Example:**
+```bash
+curl -X POST "http://127.0.0.1:8020/query" \
+     -H "Content-Type: application/json" \
+     -d '{"query": "What are the main themes?", "mode": "hybrid"}'
+```
+</details>
+
+#### 2. Insert Text Endpoint
+<details>
+<summary>Click to view Insert Text endpoint details</summary>
+
+- **URL:** `/insert`
+- **Method:** POST
+- **Body:**
+```json
+{
+    "text": "Your text content here"
+}
+```
+- **Example:**
+```bash
+curl -X POST "http://127.0.0.1:8020/insert" \
+     -H "Content-Type: application/json" \
+     -d '{"text": "Content to be inserted into RAG"}'
+```
+</details>
+
+#### 3. Insert File Endpoint
+<details>
+<summary>Click to view Insert File endpoint details</summary>
+
+- **URL:** `/insert_file`
+- **Method:** POST
+- **Body:**
+```json
+{
+    "file_path": "path/to/your/file.txt"
+}
+```
+- **Example:**
+```bash
+curl -X POST "http://127.0.0.1:8020/insert_file" \
+     -H "Content-Type: application/json" \
+     -d '{"file_path": "./book.txt"}'
+```
+</details>
+
+#### 4. Health Check Endpoint
+<details>
+<summary>Click to view Health Check endpoint details</summary>
+
+- **URL:** `/health`
+- **Method:** GET
+- **Example:**
+```bash
+curl -X GET "http://127.0.0.1:8020/health"
+```
+</details>
+
+### Configuration
+
+The API server can be configured using environment variables:
+- `RAG_DIR`: Directory for storing the RAG index (default: "index_default")
+- API keys and base URLs should be configured in the code for your specific LLM and embedding model providers
+
+### Error Handling
+<details>
+<summary>Click to view error handling details</summary>
+
+The API includes comprehensive error handling:
+- File not found errors (404)
+- Processing errors (500)
+- Supports multiple file encodings (UTF-8 and GBK)
 </details>
 
 ## Evaluation
@@ -629,6 +779,7 @@ def extract_queries(file_path):
 │   ├── lightrag_ollama_demo.py
 │   ├── lightrag_openai_compatible_demo.py
 │   ├── lightrag_openai_demo.py
+│   ├── lightrag_siliconcloud_demo.py
 │   └── vram_management_demo.py
 ├── lightrag
 │   ├── __init__.py
