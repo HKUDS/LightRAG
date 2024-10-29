@@ -1,4 +1,5 @@
 ## Quick start
+Currently, the test supports pptx, pdf, csv, word, txt file types
 * install textract
 ```bash
 pip install textract
