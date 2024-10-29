@@ -804,12 +804,14 @@ def extract_queries(file_path):
 .
 ├── examples
 │   ├── batch_eval.py
+│   ├── generate_query.py
 │   ├── graph_visual_with_html.py
 │   ├── graph_visual_with_neo4j.py
-│   ├── generate_query.py
+│   ├── lightrag_api_openai_compatible_demo.py
 │   ├── lightrag_azure_openai_demo.py
 │   ├── lightrag_bedrock_demo.py
 │   ├── lightrag_hf_demo.py
+│   ├── lightrag_lmdeploy_demo.py
 │   ├── lightrag_ollama_demo.py
 │   ├── lightrag_openai_compatible_demo.py
 │   ├── lightrag_openai_demo.py
@@ -826,8 +828,10 @@ def extract_queries(file_path):
 │   └── utils.py
 ├── reproduce
 │   ├── Step_0.py
+│   ├── Step_1_openai_compatible.py
 │   ├── Step_1.py
 │   ├── Step_2.py
+│   ├── Step_3_openai_compatible.py
 │   └── Step_3.py
 ├── .gitignore
 ├── .pre-commit-config.yaml
