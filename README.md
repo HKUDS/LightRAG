@@ -163,7 +163,10 @@ rag = LightRAG(
 <details>
 <summary> Using Ollama Models </summary>
 
-* If you want to use Ollama models, you only need to set LightRAG as follows:
+### Overview
+If you want to use Ollama models, you need to pull model you plan to use and embedding model, for example `nomic-embed-text`.
+
+Then you only need to set LightRAG as follows:
 
 ```python
 from lightrag.llm import ollama_model_complete, ollama_embedding
@@ -185,27 +188,58 @@ rag = LightRAG(
 )
 ```
 
-* Increasing the `num_ctx` parameter:
+### Increasing context size
+In order for LightRAG to work context should be at least 32k tokens. By default Ollama models have context size of 8k. You can achieve this using one of two ways:
+
+#### Increasing the `num_ctx` parameter in Modelfile.
 
 1. Pull the model:
-```python
+```bash
 ollama pull qwen2
 ```
 
 2. Display the model file:
-```python
+```bash
 ollama show --modelfile qwen2 > Modelfile
 ```
 
 3. Edit the Modelfile by adding the following line:
-```python
+```bash
 PARAMETER num_ctx 32768
 ```
 
 4. Create the modified model:
-```python
+```bash
 ollama create -f Modelfile qwen2m
 ```
+
+#### Setup `num_ctx` via Ollama API.
+Tiy can use `llm_model_kwargs` param to configure ollama:
+
+```python
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=ollama_model_complete,  # Use Ollama model for text generation
+    llm_model_name='your_model_name', # Your model name
+    llm_model_kwargs={"options": {"num_ctx": 32768}},
+    # Use Ollama embedding function
+    embedding_func=EmbeddingFunc(
+        embedding_dim=768,
+        max_token_size=8192,
+        func=lambda texts: ollama_embedding(
+            texts,
+            embed_model="nomic-embed-text"
+        )
+    ),
+)
+```
+#### Fully functional example
+
+There fully functional example `examples/lightrag_ollama_demo.py` that utilizes `gemma2:2b` model, runs only 4 requests in parallel and set context size to 32k.
+
+#### Low RAM GPUs
+
+In order to run this experiment on low RAM GPU you should select small model and tune context window (increasing context increase memory consumption). For example, running this ollama example on repurposed mining GPU with 6Gb of RAM required to set context size to 26k while using `gemma2:2b`. It was able to find 197 entities and 19 relations on `book.txt`.
 
 </details>
 
