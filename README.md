@@ -3,7 +3,7 @@
 ```bash
 pip install textract
 ```
-*example
+* example
 ```bash
 import textract
 # 指定要提取文本的文件路径
