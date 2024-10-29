@@ -299,8 +299,10 @@ async def ollama_model_if_cache(
 ) -> str:
     kwargs.pop("max_tokens", None)
     kwargs.pop("response_format", None)
+    host = kwargs.pop("host", None)
+    timeout = kwargs.pop("timeout", None)
 
-    ollama_client = ollama.AsyncClient()
+    ollama_client = ollama.AsyncClient(host=host, timeout=timeout)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -700,10 +702,11 @@ async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
     return embeddings.detach().numpy()
 
 
-async def ollama_embedding(texts: list[str], embed_model) -> np.ndarray:
+async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     embed_text = []
+    ollama_client = ollama.Client(**kwargs)
     for text in texts:
-        data = ollama.embeddings(model=embed_model, prompt=text)
+        data = ollama_client.embeddings(model=embed_model, prompt=text)
         embed_text.append(data["embedding"])
 
     return embed_text
