@@ -1,15 +1,34 @@
 import os
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import gpt_4o_mini_complete, gpt_4o_complete
-
+from pprint import pprint
 #########
 # Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
 # import nest_asyncio 
 # nest_asyncio.apply() 
 #########
 
-WORKING_DIR = "./dickens"
+WORKING_DIR = "./dickensTestEmbedcall"
 
+
+# G = nx.read_graphml('./dickensTestEmbedcall/graph_chunk_entity_relation.graphml')
+# nx.write_gexf(G, "graph_chunk_entity_relation.gefx")
+
+import networkx as nx
+from networkx_query import search_nodes, search_edges
+G = nx.read_graphml('./dickensTestEmbedcall/graph_chunk_entity_relation.graphml')
+query = {}  # Empty query matches all nodes
+result = search_nodes(G, query)
+
+# Extract node IDs from the result
+node_ids = sorted([node for node in result])
+
+print("All node IDs in the graph:")
+pprint(node_ids)
+raise Exception
+
+
+# raise Exception
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
