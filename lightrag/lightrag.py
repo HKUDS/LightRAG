@@ -102,8 +102,8 @@ class LightRAG:
 
     # module = importlib.import_module('kg.neo4j')
     # Neo4JStorage = getattr(module, 'GraphStorage')
-
     if True==True:
+        print ("using KG")
         graph_storage_cls: Type[BaseGraphStorage] = Neo4JStorage
     else:
         graph_storage_cls: Type[BaseGraphStorage] = NetworkXStorage

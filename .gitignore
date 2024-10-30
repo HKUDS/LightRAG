@@ -6,3 +6,6 @@ lightrag-dev/
 .idea/
 dist/
 env/
+local_neo4jWorkDir/
+local_neo4jWorkDir.bak/
+neo4jWorkDir/
