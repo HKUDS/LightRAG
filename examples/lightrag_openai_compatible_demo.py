@@ -69,25 +69,25 @@ async def main():
         )
 
         with open("./book.txt", "r", encoding="utf-8") as f:
-            rag.insert(f.read())
+            await rag.ainsert(f.read())
 
         # Perform naive search
         print(
-            rag.query(
+            await rag.aquery(
                 "What are the top themes in this story?", param=QueryParam(mode="naive")
             )
         )
 
         # Perform local search
         print(
-            rag.query(
+            await rag.aquery(
                 "What are the top themes in this story?", param=QueryParam(mode="local")
             )
         )
 
         # Perform global search
         print(
-            rag.query(
+            await rag.aquery(
                 "What are the top themes in this story?",
                 param=QueryParam(mode="global"),
             )
@@ -95,7 +95,7 @@ async def main():
 
         # Perform hybrid search
         print(
-            rag.query(
+            await rag.aquery(
                 "What are the top themes in this story?",
                 param=QueryParam(mode="hybrid"),
             )
