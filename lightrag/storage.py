@@ -235,7 +235,7 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def _node2vec_embed(self):
         from graspologic import embed
-
+        print ("is this ever called?")
         embeddings, nodes = embed.node2vec_embed(
             self._graph,
             **self.global_config["node2vec_params"],
