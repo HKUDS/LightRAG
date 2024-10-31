@@ -523,7 +523,7 @@ async def _build_local_query_context(
 
     text_units_section_list = [["id", "content"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"].replace("\n", "").replace("\r", "")])
+        text_units_section_list.append([i, t["content"]])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return f"""
 -----Entities-----
@@ -788,7 +788,7 @@ async def _build_global_query_context(
 
     text_units_section_list = [["id", "content"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"].replace("\n", "").replace("\r", "")])
+        text_units_section_list.append([i, t["content"]])
     text_units_context = list_of_list_to_csv(text_units_section_list)
 
     return f"""
