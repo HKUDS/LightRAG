@@ -110,6 +110,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
             {**dp, "id": dp["__id__"], "distance": dp["__metrics__"]} for dp in results
         ]
         return results
+    
+    def dump(self):
+        for record in self._client.__storage["data"]:
+            print(record)
 
     async def index_done_callback(self):
         self._client.save()
@@ -140,7 +144,7 @@ class NetworkXStorage(BaseGraphStorage):
         graph = graph.copy()
         graph = cast(nx.Graph, largest_connected_component(graph))
         node_mapping = {
-            node: html.unescape(node.upper().strip()) for node in graph.nodes()
+            node: html.unescape(node.strip()) for node in graph.nodes() # removed upper
         }  # type: ignore
         graph = nx.relabel_nodes(graph, node_mapping)
         return NetworkXStorage._stabilize_graph(graph)
