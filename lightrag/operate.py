@@ -15,6 +15,7 @@ from .utils import (
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
+    process_combine_contexts,
 )
 from .base import (
     BaseGraphStorage,
@@ -1003,35 +1004,28 @@ def combine_contexts(high_level_context, low_level_context):
         ll_entities, ll_relationships, ll_sources = extract_sections(low_level_context)
 
     # Combine and deduplicate the entities
-    combined_entities_set = set(
-        filter(None, hl_entities.strip().split("\n") + ll_entities.strip().split("\n"))
-    )
-    combined_entities = "\n".join(combined_entities_set)
-
+    combined_entities = process_combine_contexts(hl_entities, ll_entities)
+    
     # Combine and deduplicate the relationships
-    combined_relationships_set = set(
-        filter(
-            None,
-            hl_relationships.strip().split("\n") + ll_relationships.strip().split("\n"),
-        )
-    )
-    combined_relationships = "\n".join(combined_relationships_set)
+    combined_relationships = process_combine_contexts(hl_relationships, ll_relationships)
 
     # Combine and deduplicate the sources
-    combined_sources_set = set(
-        filter(None, hl_sources.strip().split("\n") + ll_sources.strip().split("\n"))
-    )
-    combined_sources = "\n".join(combined_sources_set)
+    combined_sources = process_combine_contexts(hl_sources, ll_sources)
 
     # Format the combined context
     return f"""
 -----Entities-----
 ```csv
 {combined_entities}
+```
 -----Relationships-----
+```csv
 {combined_relationships}
+```
 -----Sources-----
+```csv
 {combined_sources}
+``
 """
 
 
