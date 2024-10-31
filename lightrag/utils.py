@@ -244,3 +244,40 @@ def xml_to_json(xml_file):
     except Exception as e:
         print(f"An error occurred: {e}")
         return None
+
+#混合检索中的合并函数
+def process_combine_contexts(hl, ll):
+    header = None
+    list_hl = hl.strip().split("\n")
+    list_ll = ll.strip().split("\n")
+    # 去掉第一个元素（如果不为空）
+    if list_hl:
+        header=list_hl[0]
+        list_hl = list_hl[1:]
+    if list_ll:
+        header = list_ll[0]
+        list_ll = list_ll[1:]
+    if header is None:
+        return ""
+
+    # 去掉每个子元素中逗号分隔后的第一个元素（如果不为空）
+    if list_hl:
+        list_hl = [','.join(item.split(',')[1:]) for item in list_hl if item]
+    if list_ll:
+        list_ll = [','.join(item.split(',')[1:]) for item in list_ll if item]
+
+    # 合并并去重
+    combined_sources_set = set(
+        filter(None, list_hl + list_ll)
+    )
+
+    # 创建包含头部的新列表
+    combined_sources = [header]
+    # 为 combined_sources_set 中的每个元素添加自增数字
+    for i, item in enumerate(combined_sources_set, start=1):
+        combined_sources.append(f"{i},\t{item}")
+
+    # 将列表转换为字符串，元素之间用换行符分隔
+    combined_sources = "\n".join(combined_sources)
+
+    return combined_sources
