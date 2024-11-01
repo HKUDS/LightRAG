@@ -280,7 +280,7 @@ class LightRAG:
                 asdict(self),
             )
         elif param.mode == "naive":
-            response = await naive_query(
+            response, chunks_save = await naive_query(
                 query,
                 self.chunks_vdb,
                 self.text_chunks,
@@ -290,7 +290,7 @@ class LightRAG:
         else:
             raise ValueError(f"Unknown mode {param.mode}")
         await self._query_done()
-        return response
+        return response, chunks_save
 
     async def _query_done(self):
         tasks = []
