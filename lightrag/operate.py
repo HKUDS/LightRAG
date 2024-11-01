@@ -961,7 +961,11 @@ async def hybrid_query(
             .replace("</system>", "")
             .strip()
         )
-    return response
+
+    chunks = ''
+    maybe_trun_chunks = ''
+    section = ''
+    return response, chunks, maybe_trun_chunks, section, context
 
 
 def combine_contexts(high_level_context, low_level_context):
@@ -1078,5 +1082,6 @@ async def naive_query(
             .replace("</system>", "")
             .strip()
         )
+    context = ''
 
-    return response, maybe_trun_chunks
+    return response, chunks, maybe_trun_chunks, section, context
