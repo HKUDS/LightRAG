@@ -270,7 +270,7 @@ class LightRAG:
                 asdict(self),
             )
         elif param.mode == "hybrid":
-            response = await hybrid_query(
+            response, chunks, maybe_trun_chunks, section, context = await hybrid_query(
                 query,
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
@@ -280,7 +280,7 @@ class LightRAG:
                 asdict(self),
             )
         elif param.mode == "naive":
-            response, chunks_save = await naive_query(
+            response, chunks, maybe_trun_chunks, section, context = await naive_query(
                 query,
                 self.chunks_vdb,
                 self.text_chunks,
@@ -290,7 +290,7 @@ class LightRAG:
         else:
             raise ValueError(f"Unknown mode {param.mode}")
         await self._query_done()
-        return response, chunks_save
+        return response, chunks, maybe_trun_chunks, section, context
 
     async def _query_done(self):
         tasks = []
