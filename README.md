@@ -160,7 +160,10 @@ rag = LightRAG(
 <summary> Using Neo4J for Storage </summary>
 
 * For production level scenarios you will most likely want to leverage an enterprise solution
-for KG storage. 
+* for KG storage. Running Neo4J in Docker is recommended for seamless local testing.  
+* See: https://hub.docker.com/_/neo4j
+
+
 ```python
 export NEO4J_URI="neo4j://localhost:7687"
 export NEO4J_USERNAME="neo4j"
