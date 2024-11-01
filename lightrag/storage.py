@@ -95,6 +95,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
             d["__vector__"] = embeddings[i]
+        print (f"Upserting to vector:  {list_data}")
         results = self._client.upsert(datas=list_data)
         return results
 
@@ -109,6 +110,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         results = [
             {**dp, "id": dp["__id__"], "distance": dp["__metrics__"]} for dp in results
         ]
+        print (f"vector db results {results} for query {query}")
         return results
 
     async def index_done_callback(self):
