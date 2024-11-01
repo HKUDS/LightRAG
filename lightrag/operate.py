@@ -71,7 +71,6 @@ async def _handle_entity_relation_summary(
     use_prompt = prompt_template.format(**context_base)
     logger.debug(f"Trigger summary: {entity_or_relation_name}")
     summary = await use_llm_func(use_prompt, max_tokens=summary_max_tokens)
-    print ("Summarized: {context_base} for entity relationship {}  ")
     return summary
 
 
@@ -79,7 +78,6 @@ async def _handle_single_entity_extraction(
     record_attributes: list[str],
     chunk_key: str,
 ):
-    print (f"_handle_single_entity_extraction {record_attributes}  chunk_key {chunk_key}")
     if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
         return None
     # add this record as a node in the G
@@ -265,7 +263,6 @@ async def extract_entities(
 
     async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
         nonlocal already_processed, already_entities, already_relations
-        print (f"kw: processing a single chunk, {chunk_key_dp}")
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
@@ -435,7 +432,6 @@ async def local_query(
             text_chunks_db,
             query_param,
         )
-    print (f"got the following context {context} based on prompt keywords {keywords}")
     if query_param.only_need_context:
         return context
     if context is None:
@@ -444,7 +440,6 @@ async def local_query(
     sys_prompt = sys_prompt_temp.format(
         context_data=context, response_type=query_param.response_type
     )
-    print (f"local query:{query} local sysprompt:{sys_prompt}")
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
@@ -470,20 +465,16 @@ async def _build_local_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    print ("kw1: ENTITIES VDB QUERY**********************************")
 
     results = await entities_vdb.query(query, top_k=query_param.top_k)
-    print (f"kw2: ENTITIES VDB QUERY, RESULTS {results}**********************************")
 
     if not len(results):
         return None
-    print ("kw3: using entities to get_nodes returned in above vdb query.  search results from embedding your query keywords")
     node_datas = await asyncio.gather(
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
     )
     if not all([n is not None for n in node_datas]):
         logger.warning("Some nodes are missing, maybe the storage is damaged")
-    print ("kw4: getting node degrees next for the same entities/nodes")
     node_degrees = await asyncio.gather(
         *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
     )
@@ -729,7 +720,6 @@ async def _build_global_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    print ("RELATIONSHIPS VDB QUERY**********************************")
     results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
 
     if not len(results):
@@ -895,14 +885,12 @@ async def hybrid_query(
     query_param: QueryParam,
     global_config: dict,
 ) -> str:
-    print ("HYBRID QUERY *********")
     low_level_context = None
     high_level_context = None
     use_model_func = global_config["llm_model_func"]
 
     kw_prompt_temp = PROMPTS["keywords_extraction"]
     kw_prompt = kw_prompt_temp.format(query=query)
-    print ( f"kw:kw_prompt: {kw_prompt}")
 
     result = await use_model_func(kw_prompt)
     try:
@@ -911,8 +899,6 @@ async def hybrid_query(
         ll_keywords = keywords_data.get("low_level_keywords", [])
         hl_keywords = ", ".join(hl_keywords)
         ll_keywords = ", ".join(ll_keywords)
-        print (f"High level key words: {hl_keywords}")
-        print (f"Low level key words: {ll_keywords}")
     except json.JSONDecodeError:
         try:
             result = (
@@ -942,7 +928,6 @@ async def hybrid_query(
             query_param,
         )
 
-    print (f"low_level_context: {low_level_context}")
 
     if hl_keywords:
         high_level_context = await _build_global_query_context(
@@ -953,7 +938,6 @@ async def hybrid_query(
             text_chunks_db,
             query_param,
         )
-    print (f"high_level_context: {high_level_context}")
 
 
     context = combine_contexts(high_level_context, low_level_context)
@@ -971,7 +955,6 @@ async def hybrid_query(
         query,
         system_prompt=sys_prompt,
     )
-    print (f"kw: got system prompt: {sys_prompt}.  got response for that prompt: {response}")
     if len(response) > len(sys_prompt):
         response = (
             response.replace(sys_prompt, "")
@@ -1065,12 +1048,10 @@ async def naive_query(
 ):
     use_model_func = global_config["llm_model_func"]
     results = await chunks_vdb.query(query, top_k=query_param.top_k)
-    print (f"raw chunks from chunks_vdb.query {results}")
     if not len(results):
         return PROMPTS["fail_response"]
     chunks_ids = [r["id"] for r in results]
     chunks = await text_chunks_db.get_by_ids(chunks_ids)
-    print (f"raw chunks from text_chunks_db {chunks} retrieved by id using the above chunk ids from prev chunks_vdb ")
 
 
     maybe_trun_chunks = truncate_list_by_token_size(
