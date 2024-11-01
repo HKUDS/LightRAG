@@ -1079,4 +1079,4 @@ async def naive_query(
             .strip()
         )
 
-    return response
+    return response, maybe_trun_chunks
