@@ -120,9 +120,6 @@ class LightRAG:
     addon_params: dict = field(default_factory=dict)
     convert_response_to_json_func: callable = convert_response_to_json
 
-    # def get_configured_KG(self):
-    #     return self.kg
-
     def __post_init__(self):
         log_file = os.path.join(self.working_dir, "lightrag.log")
         set_logger(log_file)
@@ -133,7 +130,7 @@ class LightRAG:
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in asdict(self).items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
-        #should move all storage setup here to leverage initial start params attached to self.
+        #@TODO: should move all storage setup here to leverage initial start params attached to self.
         self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class()[self.kg]
 
         if not os.path.exists(self.working_dir):
