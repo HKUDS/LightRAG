@@ -67,10 +67,9 @@ Output:
 PROMPTS[
     "summarize_entity_descriptions"
 ] = """You are a helpful assistant responsible for generating a comprehensive summary of the data provided below.
-Given one or two entities, and a list of descriptions, all related to the same entity or group of entities.
-Please concatenate all of these into a single, comprehensive description. Make sure to include information collected from all the descriptions.
-If the provided descriptions are contradictory, please resolve the contradictions and provide a single, coherent summary.
-Make sure it is written in third person, and include the entity names so we the have full context.
+Given one or more entities and a list of descriptions, all related to the same health-related entity or group of entities, concatenate all descriptions into a single, coherent summary.
+Ensure that all relevant health-related details are included. If the descriptions contain contradictions, resolve them and provide a unified summary.
+Write in third person and include the entity names for clear context.
 
 #######
 -Data-
@@ -82,26 +81,25 @@ Output:
 
 PROMPTS[
     "entiti_continue_extraction"
-] = """MANY entities were missed in the last extraction.  Add them below using the same format:
+] = """Many health-related entities were missed in the previous extraction. Add the remaining entities below using the same format:
 """
 
 PROMPTS[
     "entiti_if_loop_extraction"
-] = """It appears some entities may have still been missed.  Answer YES | NO if there are still entities that need to be added.
+] = """It appears some health-related entities may still be missing. Answer YES | NO if additional entities need to be added.
 """
 
-PROMPTS["fail_response"] = "Sorry, I'm not able to provide an answer to that question."
+PROMPTS["fail_response"] = "I'm sorry, but I can't provide an answer to that question based on the available data."
 
 PROMPTS["rag_response"] = """---Role---
 
-You are a helpful assistant responding to questions about data in the tables provided.
+You are a helpful assistant providing responses to health-related questions based on the data in the tables provided.
 
 
 ---Goal---
 
-Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
-If you don't know the answer, just say so. Do not make anything up.
-Do not include information where the supporting evidence for it is not provided.
+Generate a response that is aligned with the target length and format, summarizing relevant information from the input data tables. Integrate any pertinent general medical knowledge.
+If you don't have sufficient information, indicate so clearly. Do not include unsupported or speculative information.
 
 ---Target response length and format---
 
@@ -111,55 +109,55 @@ Do not include information where the supporting evidence for it is not provided.
 
 {context_data}
 
-Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
+Organize sections and commentary as suitable for the response length and format. Structure the response in markdown for clarity.
 """
 
 PROMPTS["keywords_extraction"] = """---Role---
 
-You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query.
+You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's health-related query.
 
 ---Goal---
 
-Given the query, list both high-level and low-level keywords. High-level keywords focus on overarching concepts or themes, while low-level keywords focus on specific entities, details, or concrete terms.
+Given the query, list both high-level and low-level keywords. High-level keywords focus on overarching health concepts or themes, while low-level keywords focus on specific medical entities, details, or concrete terms.
 
 ---Instructions---
 
 - Output the keywords in JSON format.
 - The JSON should have two keys:
-  - "high_level_keywords" for overarching concepts or themes.
-  - "low_level_keywords" for specific entities or details.
+  - "high_level_keywords" for overarching health concepts or themes.
+  - "low_level_keywords" for specific medical entities or details.
 
 ######################
 -Examples-
 ######################
 Example 1:
 
-Query: "How does international trade influence global economic stability?"
+Query: "What are the risk factors for cardiovascular disease?"
 ################
 Output:
 {{
-  "high_level_keywords": ["International trade", "Global economic stability", "Economic impact"],
-  "low_level_keywords": ["Trade agreements", "Tariffs", "Currency exchange", "Imports", "Exports"]
+  "high_level_keywords": ["Risk factors", "Cardiovascular disease", "Health conditions"],
+  "low_level_keywords": ["Hypertension", "Smoking", "High cholesterol", "Diabetes", "Obesity"]
 }}
 #############################
 Example 2:
 
-Query: "What are the environmental consequences of deforestation on biodiversity?"
+Query: "How does insulin therapy help in managing Type 1 diabetes?"
 ################
 Output:
 {{
-  "high_level_keywords": ["Environmental consequences", "Deforestation", "Biodiversity loss"],
-  "low_level_keywords": ["Species extinction", "Habitat destruction", "Carbon emissions", "Rainforest", "Ecosystem"]
+  "high_level_keywords": ["Insulin therapy", "Diabetes management", "Type 1 diabetes"],
+  "low_level_keywords": ["Blood sugar control", "Insulin injections", "Glucose levels", "Pancreatic function"]
 }}
 #############################
 Example 3:
 
-Query: "What is the role of education in reducing poverty?"
+Query: "What are the common symptoms and diagnostic methods for thyroid disorders?"
 ################
 Output:
 {{
-  "high_level_keywords": ["Education", "Poverty reduction", "Socioeconomic development"],
-  "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]
+  "high_level_keywords": ["Thyroid disorders", "Symptoms", "Diagnostic methods"],
+  "low_level_keywords": ["Hypothyroidism", "Hyperthyroidism", "TSH levels", "Ultrasound", "Blood tests"]
 }}
 #############################
 -Real Data-
@@ -170,14 +168,15 @@ Output:
 
 """
 
-PROMPTS["naive_rag_response"] = """You're a helpful assistant
-Below are the knowledge you know:
+PROMPTS["naive_rag_response"] = """You're a helpful assistant specialized in health-related topics.
+Below is the health knowledge available:
 {content_data}
 ---
-If you don't know the answer or if the provided knowledge do not contain sufficient information to provide an answer, just say so. Do not make anything up.
-Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
-If you don't know the answer, just say so. Do not make anything up.
-Do not include information where the supporting evidence for it is not provided.
+If you don't know the answer or if the provided knowledge does not contain sufficient information to answer, indicate so clearly. Do not make anything up.
+Generate a response that aligns with the target length and format, summarizing relevant health information from the input data. Integrate any pertinent medical knowledge, but avoid unsupported content.
+If you don't know the answer, just say so. Do not include information that lacks supporting evidence.
+
 ---Target response length and format---
 {response_type}
 """
+
