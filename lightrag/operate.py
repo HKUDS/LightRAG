@@ -908,7 +908,6 @@ async def hybrid_query(
                 .strip()
             )
             result = "{" + result.split("{")[1].split("}")[0] + "}"
-
             keywords_data = json.loads(result)
             hl_keywords = keywords_data.get("high_level_keywords", [])
             ll_keywords = keywords_data.get("low_level_keywords", [])
