@@ -1,16 +1,17 @@
 accelerate
 aioboto3
+aiohttp
 graspologic
 hnswlib
 nano-vectordb
+neo4j
 networkx
 ollama
 openai
+pyvis
 tenacity
 tiktoken
 torch
 transformers
 xxhash
-pyvis
-aiohttp
-neo4j
+# lmdeploy[all]
