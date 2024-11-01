@@ -72,9 +72,7 @@ async def openai_complete_if_cache(
 
 @retry(
     stop=stop_after_attempt(3),
-    #kw_
-    wait=wait_exponential(multiplier=1, min=10, max=60),
-    # wait=wait_exponential(multiplier=1, min=4, max=10),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
 )
 async def azure_openai_complete_if_cache(model,

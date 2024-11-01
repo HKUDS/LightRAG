@@ -95,7 +95,6 @@ class NanoVectorDBStorage(BaseVectorStorage):
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
             d["__vector__"] = embeddings[i]
-        print (f"Upserting to vector:  {list_data}")
         results = self._client.upsert(datas=list_data)
         return results
 
@@ -110,7 +109,6 @@ class NanoVectorDBStorage(BaseVectorStorage):
         results = [
             {**dp, "id": dp["__id__"], "distance": dp["__metrics__"]} for dp in results
         ]
-        print (f"vector db results {results} for query {query}")
         return results
 
     async def index_done_callback(self):
@@ -235,9 +233,11 @@ class NetworkXStorage(BaseGraphStorage):
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
 
+    
+    #@TODO: NOT USED 
     async def _node2vec_embed(self):
         from graspologic import embed
-        print ("is this ever called?")
+
         embeddings, nodes = embed.node2vec_embed(
             self._graph,
             **self.global_config["node2vec_params"],
