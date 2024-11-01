@@ -109,6 +109,7 @@ class LightRAG:
     llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  #'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
     llm_model_max_token_size: int = 32768
     llm_model_max_async: int = 16
+    llm_model_kwargs: dict = field(default_factory=dict)
 
     # storage
     key_string_value_json_storage_cls: Type[BaseKVStorage] = JsonKVStorage
@@ -179,7 +180,11 @@ class LightRAG:
         )
 
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
-            partial(self.llm_model_func, hashing_kv=self.llm_response_cache)
+            partial(
+                self.llm_model_func,
+                hashing_kv=self.llm_response_cache,
+                **self.llm_model_kwargs,
+            )
         )
     def _get_storage_class(self) -> Type[BaseGraphStorage]:
         return {
@@ -239,7 +244,7 @@ class LightRAG:
             logger.info("[Entity Extraction]...")
             maybe_new_kg = await extract_entities(
                 inserting_chunks,
-                knwoledge_graph_inst=self.chunk_entity_relation_graph,
+                knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
                 relationships_vdb=self.relationships_vdb,
                 global_config=asdict(self),

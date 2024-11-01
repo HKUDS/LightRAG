@@ -9,3 +9,4 @@ env/
 local_neo4jWorkDir/
 neo4jWorkDir/
 ignore_this.txt
+.venv/
