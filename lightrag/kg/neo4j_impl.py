@@ -74,9 +74,6 @@ class GraphStorage(BaseGraphStorage):
             )  
             result = tx.run(query)  
             single_result = result.single()
-            # if result.single() == None:
-            #     print (f"this should not happen: ---- {label1}/{label2}   {query}")
-
             logger.debug(
                     f'{inspect.currentframe().f_code.co_name}:query:{query}:result:{single_result["edgeExists"]}'
             )  
@@ -84,7 +81,7 @@ class GraphStorage(BaseGraphStorage):
             return single_result["edgeExists"]
         def close(self):  
             self._driver.close()   
-        #hard code relaitionship type 
+        #hard code relaitionship type, directed.
         with self._driver.session() as session:  
                 result = session.read_transaction(_check_edge_existence, entity_name_label_source, entity_name_label_target)  
                 return result   
@@ -111,7 +108,6 @@ class GraphStorage(BaseGraphStorage):
 
         def _find_node_degree(session, label):  
             with session.begin_transaction() as tx:  
-                # query = "MATCH (n:`{label}`) RETURN n, size((n)--()) AS degree".format(label=label)
                 query = f"""
                     MATCH (n:`{label}`)
                     RETURN COUNT{{ (n)--() }} AS totalEdgeCount
@@ -132,7 +128,6 @@ class GraphStorage(BaseGraphStorage):
             return degree
 
 
-    # degree = session.read_transaction(get_edge_degree, 1, 2)
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         entity_name_label_source = src_id.strip('\"')
         entity_name_label_target = tgt_id.strip('\"')
@@ -208,7 +203,6 @@ class GraphStorage(BaseGraphStorage):
                 target_label = list(connected_node.labels)[0] if connected_node and connected_node.labels else None
                 
                 if source_label and target_label:
-                    print (f"appending: {(source_label, target_label)}")
                     edges.append((source_label, target_label))
             
             return edges
@@ -217,44 +211,6 @@ class GraphStorage(BaseGraphStorage):
             edges = session.read_transaction(fetch_edges,node_label)
             return edges
 
-
-    
-    # from typing import List, Tuple
-    # async def get_node_connections(driver: GraphDatabase.driver, label: str) -> List[Tuple[str, str]]:
-    #     def get_connections_for_node(tx):
-    #         query = f"""
-    #         MATCH (n:`{label}`)
-    #         OPTIONAL MATCH (n)-[r]-(connected)
-    #         RETURN n, r, connected
-    #         """
-    #         results = tx.run(query)
-            
-            
-    #         connections = []
-    #         for record in results:
-    #             source_node = record['n']
-    #             connected_node = record['connected']
-                
-    #             source_label = list(source_node.labels)[0] if source_node.labels else None
-    #             target_label = list(connected_node.labels)[0] if connected_node and connected_node.labels else None
-                
-    #             if source_label and target_label:
-    #                 connections.append((source_label, target_label))
-
-    #         logger.debug(
-    #             f'{inspect.currentframe().f_code.co_name}:query:{query}:result:{connections}'
-    #         ) 
-    #         return connections
-
-    #     with driver.session() as session:
-              
-    #         return session.read_transaction(get_connections_for_node)
-
-        
-
-
-
-    #upsert_node
 
     @retry(
         stop=stop_after_attempt(3),
@@ -366,32 +322,5 @@ class GraphStorage(BaseGraphStorage):
             # return result
 
     async def _node2vec_embed(self):
-        print ("this is never called.  checking to be sure.")
+        print ("Implemented but never called.")
         
-        # async def _node2vec_embed(self):
-        with self._driver.session()  as session:
-            #Define the Cypher query
-            options = self.global_config["node2vec_params"]
-            logger.debug(f"building embeddings with options {options}")
-            query = f"""CALL gds.node2vec.write('91fbae6c', {
-                options
-                })
-                YIELD nodeId, labels, embedding
-                RETURN 
-                nodeId AS id, 
-                labels[0] AS distinctLabel, 
-                embedding AS nodeToVecEmbedding
-                """
-            # Run the query and process the results
-            results = session.run(query)
-            embeddings = []
-            node_labels = []
-        for record in results:
-            node_id = record["id"]
-            embedding = record["nodeToVecEmbedding"]
-            label = record["distinctLabel"]
-            print(f"Node id/label: {label}/{node_id}, Embedding: {embedding}")
-            embeddings.append(embedding)
-            node_labels.append(label)
-        return embeddings, node_labels
-
