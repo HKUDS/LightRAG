@@ -37,9 +37,6 @@ class GraphStorage(BaseGraphStorage):
             PASSWORD = os.environ["NEO4J_PASSWORD"]
         else:
             raise Exception (f"One or more Neo4J Credentials, {credetial_parts}, not found in the environment")
-        print (f"uri: {URI}")
-        print (f"uri: {USERNAME}")
-        print (f"uri: {PASSWORD}")
 
         self._driver = GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD))
         self._node_embed_algorithms = {
