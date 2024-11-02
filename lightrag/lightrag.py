@@ -26,7 +26,7 @@ from .storage import (
 )
  
 from .kg.neo4j_impl import (
-    GraphStorage as Neo4JStorage
+    Neo4JStorage 
 )
 #future KG integrations
 
@@ -57,9 +57,10 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        logger.info("Creating a new event loop in a sub-thread.")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        logger.info("Creating a new event loop in main thread.")
+        # loop = asyncio.new_event_loop()
+        # asyncio.set_event_loop(loop)
+        loop = asyncio.get_event_loop()
     return loop
 
 
