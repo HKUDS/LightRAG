@@ -520,16 +520,26 @@ async def gpt_4o_complete(
     )
 
 
+"""
 async def gpt_4o_mini_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
-    return await openai_complete_if_cache(
+    return await model.generate_content(
         "gpt-4o-mini",
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         **kwargs,
     )
+"""
+
+async def gpt_4o_mini_complete(
+    prompt, system_prompt=None, history_messages=[], **kwargs
+) -> str:
+    return await model.generate_content(
+        prompt
+    )
+
 
 
 async def azure_openai_complete(
