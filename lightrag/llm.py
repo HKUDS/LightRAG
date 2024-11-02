@@ -43,6 +43,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 
+model = genai.GenerativeModel("gemini-1.5-flash")
+
 async def openai_complete_if_cache(
     model,
     prompt,
@@ -85,6 +87,8 @@ async def openai_complete_if_cache(
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
 )
+
+
 
 
 
