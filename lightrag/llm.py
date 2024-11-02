@@ -41,10 +41,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 )
 
 
-
-
-model = genai.GenerativeModel("gemini-1.5-flash")
-
 async def openai_complete_if_cache(
     model,
     prompt,
@@ -55,11 +51,11 @@ async def openai_complete_if_cache(
     **kwargs,
 ) -> str:
     if api_key:
-        os.environ["GEMINI_API_KEY"] = api_key
-    
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
+        os.environ["OPENAI_API_KEY"] = api_key
 
+    openai_async_client = (
+        AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
+    )
     hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     messages = []
     if system_prompt:
@@ -72,14 +68,15 @@ async def openai_complete_if_cache(
         if if_cache_return is not None:
             return if_cache_return["return"]
 
-
-    response = await model.generate_content(messages)
+    response = await openai_async_client.chat.completions.create(
+        model=model, messages=messages, **kwargs
+    )
 
     if hashing_kv is not None:
         await hashing_kv.upsert(
             {args_hash: {"return": response.choices[0].message.content, "model": model}}
         )
-    return response.text
+    return response.choices[0].message.content
 
 
 @retry(
@@ -480,14 +477,16 @@ async def gpt_4o_complete(
     )
 
 
-
 async def gpt_4o_mini_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     return await model.generate_content(
-        prompt
+        "gpt-4o-mini",
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        **kwargs,
     )
-
 
 
 async def azure_openai_complete(
