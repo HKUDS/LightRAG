@@ -39,10 +39,6 @@ class Neo4JStorage(BaseGraphStorage):
         return None
 
     def __post_init__(self):
-        # self._graph = preloaded_graph or nx.Graph()
-        print("is this ever run")
-        credetial_parts = ['URI', 'USERNAME','PASSWORD']
-        credentials_set = all(x in os.environ for x in credetial_parts  )
         self._node_embed_algorithms = {
             "node2vec": self._node2vec_embed,
         }
@@ -207,10 +203,6 @@ class Neo4JStorage(BaseGraphStorage):
                 if source_label and target_label:
                     edges.append((source_label, target_label))
             
-            return edges
-
-        async with self._driver.session() as session:
-            edges = session.read_transaction(fetch_edges,node_label)
             return edges
 
 
