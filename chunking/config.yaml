@@ -1,7 +1,8 @@
 # Github Repository to chunk
 github_repo:
-  owner: "palmier-io"
-  repo: "palmier-vscode-extension"
+  owner: "temporalio"
+  repo: "temporal"
+  branch: "main"
 
 # Path to the local directory to download the repository to
 input_path: "./"

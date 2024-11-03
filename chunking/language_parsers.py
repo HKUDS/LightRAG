@@ -62,11 +62,6 @@ def get_language_from_file(file_path):
 
     try:
         lexer = get_lexer_for_filename(file_path)
-        language = lexer.name.lower()
-
-        if language in SUPPORT_LANGUAGES:
-            return language
-
-        return None
+        return lexer.name.lower()
     except ClassNotFound:
         return None

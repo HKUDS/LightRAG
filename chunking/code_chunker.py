@@ -1,16 +1,12 @@
 import os
-from tree_sitter_languages import get_parser, get_language
+from tree_sitter_languages import get_parser
 from tree_sitter import Node
 import tiktoken
-import zipfile
-from io import BytesIO
-import requests
 from dotenv import load_dotenv
 import yaml
 from typing import Dict, Any, List
 from dataclasses import dataclass
-from importlib import resources
-from language_parsers import get_language_from_file
+from language_parsers import get_language_from_file, SUPPORT_LANGUAGES
 from repo import get_github_repo
 
 def load_config(config_path):
@@ -51,17 +47,6 @@ class CodeChunker:
 
         # Encoding to calculate token count
         self.encoding = tiktoken.get_encoding('cl100k_base')
-        
-        # Node types to look for in the AST - TODO: Think whether we should parse generic node types instead
-        self.language_node_types = {
-            'python': ['function_definition', 'class_definition', 'import_statement', 'expression_statement'],
-            'javascript': ['function_declaration', 'class_declaration', 'import_declaration', 'expression_statement'],
-            'typescript': ['function_declaration', 'class_declaration', 'import_declaration', 'expression_statement'],
-            'tsx': ['function_declaration', 'class_declaration', 'import_declaration', 'expression_statement'],
-            'java': ['class_declaration', 'method_declaration', 'import_declaration'],
-            'cpp': ['function_definition', 'class_specifier', 'declaration'],
-            # Add more languages as needed
-        }
 
     def traverse_directory(self):
         """
@@ -78,13 +63,29 @@ class CodeChunker:
         """
         Given an AST tree, recursively chunk the tree nodes
         """
-        if file_path == "./palmier-io_palmier-vscode-extension/palmier-io-palmier-vscode-extension-c44a998ed5e8ae4254304cc36e6dec6e135374bd/frontend/src/db/cursor.ts":
+        if file_path == "./palmier-io_palmier-vscode-extension/palmier-io-palmier-vscode-extension-c44a998ed5e8ae4254304cc36e6dec6e135374bd/backend/src/utils/metadata/diff_test.py":
             print(f"Processing file {file_path}")
         code_str = code_bytes.decode('utf-8', errors='ignore')
         current_index = 0
 
         def traverse(node: Node) -> List[CodeChunk]:
             nonlocal code_str, language_name, file_path, current_index
+            
+            # Keep the leaf node as is, since we can't recursively split it
+            # Even if it exceeds max_tokens, lightrag will chunk it as a text
+            if len(node.children) == 0:
+                text = code_str[node.start_byte:node.end_byte]
+                tokens = self.encoding.encode(text)
+                token_count = len(tokens)
+                
+                return [CodeChunk(
+                    index=current_index,
+                    file_path=file_path,
+                    content=text,
+                    token_count=token_count,
+                    tag={"language": language_name}
+                )]
+            
             current_token_count = 0
             current_start_byte = -1
             current_end_byte = -1
@@ -97,18 +98,21 @@ class CodeChunker:
 
                 # Next child node is too big, so we need to recursively traverse the child nodes
                 if token_count > self.max_tokens:
-                    new_chunks.append(CodeChunk(
-                        index=current_index,
-                        file_path=file_path,
-                        content=code_str[current_start_byte:current_end_byte],
-                        token_count=current_token_count,
-                        tag={"language": language_name}
-                    ))
-                    current_index += 1
-                    current_token_count = token_count
+                    # Current chunk is valid
+                    if current_start_byte != -1:
+                        new_chunks.append(CodeChunk(
+                            index=current_index,
+                            file_path=file_path,
+                            content=code_str[current_start_byte:current_end_byte],
+                            token_count=current_token_count,
+                            tag={"language": language_name}
+                        ))
+                        current_index += 1
 
+                    # Reset Current Chunk
                     current_start_byte = -1
                     current_end_byte = -1
+                    current_token_count = 0
 
                     new_chunks.extend(traverse(child))
                 # Current chunk is too big, so we need to start a new chunk
@@ -121,8 +125,9 @@ class CodeChunker:
                         tag={"language": language_name}
                     ))
                     current_index += 1
-                    current_token_count = token_count
 
+                    # The new current chunk will be the next child
+                    current_token_count = token_count
                     current_start_byte = child.start_byte
                     current_end_byte = child.end_byte
                 # Otherwise, we can concatenate the current chunk with the next child node
@@ -132,52 +137,111 @@ class CodeChunker:
                     current_end_byte = child.end_byte
                     current_token_count += token_count
             
-
-
+            # Add the final chunk if there's content that hasn't been added yet
+            if current_start_byte != -1:
+                new_chunks.append(CodeChunk(
+                    index=current_index,
+                    file_path=file_path,
+                    content=code_str[current_start_byte:current_end_byte],
+                    token_count=current_token_count,
+                    tag={"language": language_name}
+                ))
+                current_index += 1
+            
             return new_chunks
     
-        return traverse(tree.root_node)
+        chunks = traverse(tree.root_node)
+
+        # Merge small chunks
+        merged_chunks = self.merge_chunks(chunks)
+        
+        return merged_chunks
+
+    def merge_chunks(self, chunks: List[CodeChunk]) -> List[CodeChunk]:
+        """
+        Merge small chunks together while respecting max_tokens limit,
+        starting from the end of the list to preserve context.
+        Returns a new list of merged chunks.
+        """
+        if not chunks:
+            return []
+        
+        # Work with reversed list
+        chunks = chunks[::-1]
+        merged = []
+        current_chunk = chunks[0]
+        
+        for next_chunk in chunks[1:]:
+            # If merging wouldn't exceed max_tokens, combine the chunks
+            # Note: next_chunk comes before current_chunk since we're going backwards
+            if current_chunk.token_count + next_chunk.token_count <= self.max_tokens:
+                current_chunk = CodeChunk(
+                    index=next_chunk.index,  # Use the earlier index
+                    file_path=next_chunk.file_path,
+                    content=next_chunk.content + current_chunk.content,  # Preserve order
+                    token_count=current_chunk.token_count + next_chunk.token_count,
+                    tag=next_chunk.tag
+                )
+            else:
+                # Can't merge anymore, add current_chunk to results and start new chunk
+                merged.append(current_chunk)
+                current_chunk = next_chunk
+        
+        # Don't forget to add the last chunk
+        merged.append(current_chunk)
+        
+        # Reverse back to original order and update indices
+        merged = merged[::-1]
+        for i, chunk in enumerate(merged):
+            chunk.index = i
+            
+        return merged
 
     def process_files(self):
         files = self.traverse_directory()
 
         for file_path in files:
+
+            with open(file_path, 'rb') as f:
+                code_bytes = f.read()
+                code_str = code_bytes.decode('utf-8', errors='ignore')
+
+            relative_file_path = file_path.replace(self.root_dir, '')
+            file_summary = ""
+
             language_name = get_language_from_file(file_path)
+            chunks: List[CodeChunk] = []
 
             if language_name is None:
                 print(f"Skipping file {file_path} (unknown language)")
                 continue
-   
-            try:
-                language = get_language(language_name)
-                parser = get_parser(language_name)
-            except LookupError:
-                print(f"Parser not found for language: {language_name}")
-                continue
+            else:
+                print(f"Processing file {file_path} ({language_name})")
 
-            # if language_name != 'python':
-            #     continue
-            with open(file_path, 'rb') as f:
-                code_bytes = f.read()
-            tree = parser.parse(code_bytes)
+            # For files that are not supported by tree-sitter, we will write the entire file
+            # and let lightrag handle the chunking
+            if language_name not in SUPPORT_LANGUAGES:
+                tokens = self.encoding.encode(code_str)
+                token_count = len(tokens)
+                chunks.append(CodeChunk(
+                    index=0,
+                    file_path=file_path,
+                    content=code_str,
+                    token_count=token_count,
+                    tag={"language": language_name}
+                ))
+            else:
+                # file_summary = generate_file_summary(code_str, relative_file_path)
 
-            # query_scm_filename = get_scm_fname(language_name)
-            # if not os.path.exists(query_scm_filename):
-            #     continue
-            # with open(query_scm_filename, 'r') as f:
-            #     query_scm = f.read()
+                try:
+                    parser = get_parser(language_name)
+                except LookupError:
+                    print(f"Parser not found for language: {language_name}")
+                    continue
 
-            # query = language.query(query_scm)
-            # captures = query.captures(tree.root_node)
+                tree = parser.parse(code_bytes)
+                chunks.extend(self.chunk_code(tree, code_bytes, language_name, relative_file_path))
 
-            # captures = list(captures)
-            # for node, tag in captures:
-            #     start = node.start_byte
-            #     end = node.end_byte
-            #     print(f"Found node with tag {tag}:\n---\n {code_bytes[start:end].decode('utf-8')}\n---\n")
-
-
-            chunks: List[CodeChunk] = self.chunk_code(tree, code_bytes, language_name, file_path)
             for chunk in chunks:
                 # Create a sanitized file name
                 sanitized_file_path = file_path.replace(self.root_dir, '').strip(os.sep).replace(os.sep, '_')
@@ -188,28 +252,45 @@ class CodeChunker:
                 # Write the chunk to a file
                 with open(output_file_path, 'w', encoding='utf-8') as f:
                     f.write(f"File: {chunk.file_path}\n")
+                    if file_summary:
+                        f.write(f"Summary: {file_summary}\n")
                     f.write(f"Chunk: {chunk.index + 1}\n")
                     f.write(f"Language: {chunk.tag['language']}\n")
                     f.write(f"Tokens: {chunk.token_count}\n")
                     f.write("\n")
                     f.write(chunk.content)
                 
-                print(f"Wrote chunk {chunk.index + 1} of file {chunk.file_path} to {output_file_path}")
+                # print(f"Wrote chunk {chunk.index + 1} of file {chunk.file_path} to {output_file_path}")
 
-def get_scm_fname(lang):
-    # Load the tags queries
-    try:
-        return os.path.join(os.path.dirname(__file__), "queries", f"tree-sitter-{lang}-tags.scm")
-    except KeyError:
-        return
+
+def generate_file_summary(code_str: str, file_path: str) -> str:
+    import openai
+
+    client = openai.OpenAI()
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[
+            {
+                "role": "system", 
+                "content": f"Please provide a high-level summary of the given code content in file {file_path}. Include key concepts and functionalities, mentioning relevant classes and function names along with their purposes and interactions. Take into account the file path name for context. Keep the summary concise, using no more than 100 words, and format it as a single paragraph."
+            },
+            {
+                "role": "user", 
+                "content": code_str
+            }
+        ]
+    )
+    return response.choices[0].message.content
 
 if __name__ == '__main__':
     load_dotenv()
 
     owner = config['github_repo']['owner']
     repo = config['github_repo']['repo']
+    branch = config['github_repo']['branch']
     local_path = config['input_path']
-    root_dir = get_github_repo(owner, repo, local_path)
+    root_dir = get_github_repo(owner, repo, branch, local_path)
 
     chunker = CodeChunker(root_dir)
     chunker.process_files()

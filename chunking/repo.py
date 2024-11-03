@@ -1,7 +1,14 @@
 from github import Github
 import os
+import zipfile
+from io import BytesIO
+import requests
 
-def get_github_repo(owner, repo, local_path):
+def get_github_repo(
+        owner: str, 
+        repo: str, 
+        branch: str, 
+        local_path: str):
     """
     Download the GitHub repository and extract it to the local directory.
     """
@@ -26,10 +33,11 @@ def get_github_repo(owner, repo, local_path):
     repository = g.get_repo(f"{owner}/{repo}")
 
     # Get the default branch
-    default_branch = repository.default_branch
+    if not branch:
+        branch = repository.default_branch
 
     # Get the zip file
-    zip_url = repository.get_archive_link("zipball", ref=default_branch)
+    zip_url = repository.get_archive_link("zipball", ref=branch)
     
     # Download the zip file
     response = requests.get(zip_url, headers={'Authorization': f'token {github_token}'})
