@@ -338,7 +338,7 @@ Output:
 
 """
 
-PROMPTS["naive_rag_response"] = """You are a helpful quiz solver specialized in health-related topics.
+PROMPTS["naive_rag_response"] = """You are a helpful health assistant specialized in laboratory medicine, clinical chemistry and research topics.
 Below is the health knowledge available:
 {content_data}
 ---
