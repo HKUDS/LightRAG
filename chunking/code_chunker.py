@@ -63,8 +63,19 @@ class CodeChunker:
         """
         Given an AST tree, recursively chunk the tree nodes
         """
-        if file_path == "./palmier-io_palmier-vscode-extension/palmier-io-palmier-vscode-extension-c44a998ed5e8ae4254304cc36e6dec6e135374bd/backend/src/utils/metadata/diff_test.py":
-            print(f"Processing file {file_path}")
+
+        # TODO 1: Summarize both file and chunk level with prompt caching
+
+        # TODO 2: Current greedy algorithm will often separate comments and functions since
+        #         comments above the function might fit into current chunk, but the function itself does not.
+        #         In this case, the comments end up being at the end of 1st chunk, and the function starts at the 2nd chunk
+        #         Potential solutions:
+        #            1. Overlapping chunk - set a overlapping size limit (e.g. 100 tokens). If the next node is within the limit
+        #                                   keep this node at both end of current chunk and beginning of next chunk. But,
+        #                                   We need to be careful because comment node is single-lined, so multi-line comments require
+        #                                   some looping. Also, merging a node might duplicate the overlap content
+        #            2. 
+
         code_str = code_bytes.decode('utf-8', errors='ignore')
         current_index = 0
 
@@ -200,6 +211,9 @@ class CodeChunker:
     def process_files(self):
         files = self.traverse_directory()
 
+        llm_summary_enabled = config['llm_summary_enabled']
+        file_summary = ""
+
         for file_path in files:
 
             with open(file_path, 'rb') as f:
@@ -207,7 +221,6 @@ class CodeChunker:
                 code_str = code_bytes.decode('utf-8', errors='ignore')
 
             relative_file_path = file_path.replace(self.root_dir, '')
-            file_summary = ""
 
             language_name = get_language_from_file(file_path)
             chunks: List[CodeChunk] = []
@@ -231,7 +244,8 @@ class CodeChunker:
                     tag={"language": language_name}
                 ))
             else:
-                # file_summary = generate_file_summary(code_str, relative_file_path)
+                if llm_summary_enabled:
+                    file_summary = generate_file_summary(code_str, relative_file_path)
 
                 try:
                     parser = get_parser(language_name)
@@ -267,9 +281,10 @@ def generate_file_summary(code_str: str, file_path: str) -> str:
     import openai
 
     client = openai.OpenAI()
+    model = config['llm_summary_model']
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model=model,
         messages=[
             {
                 "role": "system", 
@@ -285,6 +300,8 @@ def generate_file_summary(code_str: str, file_path: str) -> str:
 
 if __name__ == '__main__':
     load_dotenv()
+
+    # TODO: add timer
 
     owner = config['github_repo']['owner']
     repo = config['github_repo']['repo']

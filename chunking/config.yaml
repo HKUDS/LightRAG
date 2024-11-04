@@ -1,15 +1,21 @@
 # Github Repository to chunk
 github_repo:
-  owner: "temporalio"
-  repo: "temporal"
+  owner: "agentic-labs"
+  repo: "lsproxy"
   branch: "main"
 
 # Path to the local directory to download the repository to
 input_path: "./"
 
 # Path to the output directory containing the chunk files
-output_path: "./ragtest/input"
+output_path: "./ragtest2/input"
 
 # Maximum number of tokens per chunk
 max_tokens: 800
+
+# Enable LLM summary generation for each file
+llm_summary_enabled: false
+
+# LLM model to use for summary generation
+llm_summary_model: "gpt-4o-mini"
 
