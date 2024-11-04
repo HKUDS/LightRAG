@@ -1,13 +1,15 @@
 import asyncio
 import os
+import importlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Type, cast, Any
-from transformers import AutoModel,AutoTokenizer, AutoModelForCausalLM
-from dotenv import load_dotenv
+from typing import Type, cast
 
-from .llm import gpt_4o_complete, gpt_4o_mini_complete, openai_embedding, hf_model_complete, hf_embedding
+from .llm import (
+    gpt_4o_mini_complete,
+    openai_embedding,
+)
 from .operate import (
     chunking_by_token_size,
     extract_entities,
@@ -22,6 +24,18 @@ from .storage import (
     NanoVectorDBStorage,
     NetworkXStorage,
 )
+ 
+from .kg.neo4j_impl import (
+    Neo4JStorage 
+)
+#future KG integrations
+
+# from .kg.ArangoDB_impl import (
+#     GraphStorage as ArangoDBStorage
+# )
+
+
+
 from .utils import (
     EmbeddingFunc,
     compute_mdhash_id,
@@ -38,23 +52,36 @@ from .base import (
     QueryParam,
 )
 
+
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        logger.info("Creating a new event loop in a sub-thread.")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        logger.info("Creating a new event loop in main thread.")
+        # loop = asyncio.new_event_loop()
+        # asyncio.set_event_loop(loop)
+        loop = asyncio.get_event_loop()
     return loop
 
 
 @dataclass
 class LightRAG:
+<<<<<<< HEAD
     # Load environment variables from .env file
     load_dotenv()
+=======
+    
+>>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
     working_dir: str = field(
         default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
+
+    kg: str = field(default="NetworkXStorage")
+
+    current_log_level = logger.level
+    log_level: str = field(default=current_log_level)
+
+
 
     # text chunking
     chunk_token_size: int = 1200
@@ -72,7 +99,6 @@ class LightRAG:
             "dimensions": 1536,
             "num_walks": 10,
             "walk_length": 40,
-            "num_walks": 10,
             "window_size": 2,
             "iterations": 3,
             "random_seed": 3,
@@ -80,34 +106,39 @@ class LightRAG:
     )
 
     # embedding_func: EmbeddingFunc = field(default_factory=lambda:hf_embedding)
-    embedding_func: EmbeddingFunc = field(default_factory=lambda:openai_embedding)
+    embedding_func: EmbeddingFunc = field(default_factory=lambda: openai_embedding)
     embedding_batch_num: int = 32
     embedding_func_max_async: int = 16
 
     # LLM
-    llm_model_func: callable = gpt_4o_mini_complete#hf_model_complete#
-    llm_model_name: str = 'meta-llama/Llama-3.2-1B-Instruct'#'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
+    llm_model_func: callable = gpt_4o_mini_complete  # hf_model_complete#
+    llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  #'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
     llm_model_max_token_size: int = 32768
     llm_model_max_async: int = 16
+    llm_model_kwargs: dict = field(default_factory=dict)
 
     # storage
     key_string_value_json_storage_cls: Type[BaseKVStorage] = JsonKVStorage
     vector_db_storage_cls: Type[BaseVectorStorage] = NanoVectorDBStorage
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
-    graph_storage_cls: Type[BaseGraphStorage] = NetworkXStorage
     enable_llm_cache: bool = True
 
     # extension
     addon_params: dict = field(default_factory=dict)
     convert_response_to_json_func: callable = convert_response_to_json
 
-    def __post_init__(self):        
+    def __post_init__(self):
         log_file = os.path.join(self.working_dir, "lightrag.log")
         set_logger(log_file)
+        logger.setLevel(self.log_level)
+
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
-        
+
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in asdict(self).items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
+
+        #@TODO: should move all storage setup here to leverage initial start params attached to self.
+        self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class()[self.kg]
 
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
@@ -136,33 +167,37 @@ class LightRAG:
             self.embedding_func
         )
 
-        self.entities_vdb = (
-            self.vector_db_storage_cls(
-                namespace="entities",
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-                meta_fields={"entity_name"}
-            )
+        self.entities_vdb = self.vector_db_storage_cls(
+            namespace="entities",
+            global_config=asdict(self),
+            embedding_func=self.embedding_func,
+            meta_fields={"entity_name"},
         )
-        self.relationships_vdb = (
-            self.vector_db_storage_cls(
-                namespace="relationships",
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-                meta_fields={"src_id", "tgt_id"}
-            )
+        self.relationships_vdb = self.vector_db_storage_cls(
+            namespace="relationships",
+            global_config=asdict(self),
+            embedding_func=self.embedding_func,
+            meta_fields={"src_id", "tgt_id"},
         )
-        self.chunks_vdb = (
-            self.vector_db_storage_cls(
-                namespace="chunks",
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-            )
+        self.chunks_vdb = self.vector_db_storage_cls(
+            namespace="chunks",
+            global_config=asdict(self),
+            embedding_func=self.embedding_func,
         )
-        
+
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
-            partial(self.llm_model_func, hashing_kv=self.llm_response_cache)
+            partial(
+                self.llm_model_func,
+                hashing_kv=self.llm_response_cache,
+                **self.llm_model_kwargs,
+            )
         )
+    def _get_storage_class(self) -> Type[BaseGraphStorage]:
+        return {
+            "Neo4JStorage": Neo4JStorage,
+            "NetworkXStorage": NetworkXStorage,
+            # "ArangoDBStorage": ArangoDBStorage
+        }
 
     def insert(self, string_or_strings):
         loop = always_get_an_event_loop()
@@ -180,7 +215,7 @@ class LightRAG:
             _add_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
             if not len(new_docs):
-                logger.warning(f"All docs are already in the storage")
+                logger.warning("All docs are already in the storage")
                 return
             logger.info(f"[New Docs] inserting {len(new_docs)} docs")
 
@@ -206,7 +241,7 @@ class LightRAG:
                 k: v for k, v in inserting_chunks.items() if k in _add_chunk_keys
             }
             if not len(inserting_chunks):
-                logger.warning(f"All chunks are already in the storage")
+                logger.warning("All chunks are already in the storage")
                 return
             logger.info(f"[New Chunks] inserting {len(inserting_chunks)} chunks")
 
@@ -215,7 +250,7 @@ class LightRAG:
             logger.info("[Entity Extraction]...")
             maybe_new_kg = await extract_entities(
                 inserting_chunks,
-                knwoledge_graph_inst=self.chunk_entity_relation_graph,
+                knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
                 relationships_vdb=self.relationships_vdb,
                 global_config=asdict(self),
@@ -249,7 +284,7 @@ class LightRAG:
     def query(self, query: str, param: QueryParam = QueryParam()):
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.aquery(query, param))
-    
+
     async def aquery(self, query: str, param: QueryParam = QueryParam()):
         if param.mode == "local":
             response = await local_query(
@@ -293,7 +328,6 @@ class LightRAG:
             raise ValueError(f"Unknown mode {param.mode}")
         await self._query_done()
         return response
-    
 
     async def _query_done(self):
         tasks = []
@@ -302,5 +336,3 @@ class LightRAG:
                 continue
             tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())
         await asyncio.gather(*tasks)
-
-    
