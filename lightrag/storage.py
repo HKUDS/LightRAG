@@ -233,6 +233,8 @@ class NetworkXStorage(BaseGraphStorage):
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
 
+    
+    #@TODO: NOT USED 
     async def _node2vec_embed(self):
         from graspologic import embed
 
