@@ -66,12 +66,7 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
 
 @dataclass
 class LightRAG:
-<<<<<<< HEAD
-    # Load environment variables from .env file
-    load_dotenv()
-=======
     
->>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
     working_dir: str = field(
         default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
