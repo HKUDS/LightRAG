@@ -1,10 +1,10 @@
+import json
 from openai import OpenAI
-
-# os.environ["OPENAI_API_KEY"] = ""
+from transformers import GPT2Tokenizer
 
 
 def openai_complete_if_cache(
-    model="gpt-4o-mini", prompt=None, system_prompt=None, history_messages=[], **kwargs
+    model="gpt-4o", prompt=None, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     openai_client = OpenAI()
 
@@ -20,12 +20,35 @@ def openai_complete_if_cache(
     return response.choices[0].message.content
 
 
-if __name__ == "__main__":
-    description = ""
+tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
+
+
+def get_summary(context, tot_tokens=2000):
+    tokens = tokenizer.tokenize(context)
+    half_tokens = tot_tokens // 2
+
+    start_tokens = tokens[1000 : 1000 + half_tokens]
+    end_tokens = tokens[-(1000 + half_tokens) : 1000]
+
+    summary_tokens = start_tokens + end_tokens
+    summary = tokenizer.convert_tokens_to_string(summary_tokens)
+
+    return summary
+
+
+clses = ["agriculture"]
+for cls in clses:
+    with open(f"../datasets/unique_contexts/{cls}_unique_contexts.json", mode="r") as f:
+        unique_contexts = json.load(f)
+
+    summaries = [get_summary(context) for context in unique_contexts]
+
+    total_description = "\n\n".join(summaries)
+
     prompt = f"""
     Given the following description of a dataset:
 
-    {description}
+    {total_description}
 
     Please identify 5 potential users who would engage with this dataset. For each user, list 5 tasks they would perform with this dataset. Then, for each (user, task) combination, generate 5 questions that require a high-level understanding of the entire dataset.
 
@@ -46,10 +69,10 @@ if __name__ == "__main__":
         ...
     """
 
-    result = openai_complete_if_cache(model="gpt-4o-mini", prompt=prompt)
+    result = openai_complete_if_cache(model="gpt-4o", prompt=prompt)
 
-    file_path = "./queries.txt"
+    file_path = f"../datasets/questions/{cls}_questions.txt"
     with open(file_path, "w") as file:
         file.write(result)
 
-    print(f"Queries written to {file_path}")
+    print(f"{cls}_questions written to {file_path}")

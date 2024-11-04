@@ -9,9 +9,7 @@ PROMPTS["process_tickers"] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "
 
 PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event"]
 
-PROMPTS[
-    "entity_extraction"
-] = """-Goal-
+PROMPTS["entity_extraction"] = """-Goal-
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
 
 -Steps-
@@ -32,7 +30,7 @@ Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tupl
 
 3. Identify high-level key words that summarize the main concepts, themes, or topics of the entire text. These should capture the overarching ideas present in the document.
 Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
- 
+
 4. Return output in English as a single list of all the entities and relationships identified in steps 1 and 2. Use **{record_delimiter}** as the list delimiter.
 
 5. When finished, output {completion_delimiter}
@@ -146,9 +144,7 @@ PROMPTS[
 
 PROMPTS["fail_response"] = "Sorry, I'm not able to provide an answer to that question."
 
-PROMPTS[
-    "rag_response"
-] = """---Role---
+PROMPTS["rag_response"] = """---Role---
 
 You are a helpful assistant responding to questions about data in the tables provided.
 
@@ -163,24 +159,9 @@ Do not include information where the supporting evidence for it is not provided.
 
 {response_type}
 
-
 ---Data tables---
 
 {context_data}
-
-
----Goal---
-
-Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
-
-If you don't know the answer, just say so. Do not make anything up.
-
-Do not include information where the supporting evidence for it is not provided.
-
-
----Target response length and format---
-
-{response_type}
 
 Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
 """
@@ -241,9 +222,7 @@ Output:
 
 """
 
-PROMPTS[
-    "naive_rag_response"
-] = """You're a helpful assistant
+PROMPTS["naive_rag_response"] = """You're a helpful assistant
 Below are the knowledge you know:
 {content_data}
 ---

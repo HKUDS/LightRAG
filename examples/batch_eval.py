@@ -1,4 +1,3 @@
-import os
 import re
 import json
 import jsonlines
@@ -9,28 +8,28 @@ from openai import OpenAI
 def batch_eval(query_file, result1_file, result2_file, output_file_path):
     client = OpenAI()
 
-    with open(query_file, 'r') as f:
+    with open(query_file, "r") as f:
         data = f.read()
 
-    queries = re.findall(r'- Question \d+: (.+)', data)
+    queries = re.findall(r"- Question \d+: (.+)", data)
 
-    with open(result1_file, 'r') as f:
+    with open(result1_file, "r") as f:
         answers1 = json.load(f)
-    answers1 = [i['result'] for i in answers1]
+    answers1 = [i["result"] for i in answers1]
 
-    with open(result2_file, 'r') as f:
+    with open(result2_file, "r") as f:
         answers2 = json.load(f)
-    answers2 = [i['result'] for i in answers2]
+    answers2 = [i["result"] for i in answers2]
 
     requests = []
     for i, (query, answer1, answer2) in enumerate(zip(queries, answers1, answers2)):
-        sys_prompt = f"""
+        sys_prompt = """
         ---Role---
         You are an expert tasked with evaluating two answers to the same question based on three criteria: **Comprehensiveness**, **Diversity**, and **Empowerment**.
         """
 
         prompt = f"""
-        You will evaluate two answers to the same question based on three criteria: **Comprehensiveness**, **Diversity**, and **Empowerment**. 
+        You will evaluate two answers to the same question based on three criteria: **Comprehensiveness**, **Diversity**, and **Empowerment**.
 
         - **Comprehensiveness**: How much detail does the answer provide to cover all aspects and details of the question?
         - **Diversity**: How varied and rich is the answer in providing different perspectives and insights on the question?
@@ -69,7 +68,6 @@ def batch_eval(query_file, result1_file, result2_file, output_file_path):
         }}
         """
 
-        
         request_data = {
             "custom_id": f"request-{i+1}",
             "method": "POST",
@@ -78,22 +76,21 @@ def batch_eval(query_file, result1_file, result2_file, output_file_path):
                 "model": "gpt-4o-mini",
                 "messages": [
                     {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": prompt}
+                    {"role": "user", "content": prompt},
                 ],
-            }
+            },
         }
-        
+
         requests.append(request_data)
 
-    with jsonlines.open(output_file_path, mode='w') as writer:
+    with jsonlines.open(output_file_path, mode="w") as writer:
         for request in requests:
             writer.write(request)
 
     print(f"Batch API requests written to {output_file_path}")
 
     batch_input_file = client.files.create(
-        file=open(output_file_path, "rb"),
-        purpose="batch"
+        file=open(output_file_path, "rb"), purpose="batch"
     )
     batch_input_file_id = batch_input_file.id
 
@@ -101,12 +98,11 @@ def batch_eval(query_file, result1_file, result2_file, output_file_path):
         input_file_id=batch_input_file_id,
         endpoint="/v1/chat/completions",
         completion_window="24h",
-        metadata={
-            "description": "nightly eval job"
-        }
+        metadata={"description": "nightly eval job"},
     )
 
-    print(f'Batch {batch.id} has been created.')
+    print(f"Batch {batch.id} has been created.")
+
 
 if __name__ == "__main__":
     batch_eval()
