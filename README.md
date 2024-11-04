@@ -161,6 +161,39 @@ rag = LightRAG(
 ```
 </details>
 
+
+<details>
+<summary> Using Neo4J for Storage </summary>
+
+* For production level scenarios you will most likely want to leverage an enterprise solution
+* for KG storage. Running Neo4J in Docker is recommended for seamless local testing.  
+* See: https://hub.docker.com/_/neo4j
+
+
+```python
+export NEO4J_URI="neo4j://localhost:7687"
+export NEO4J_USERNAME="neo4j"
+export NEO4J_PASSWORD="password"
+
+When you launch the project be sure to override the default KG: NetworkS
+by specifying kg="Neo4JStorage".
+
+# Note: Default settings use NetworkX
+#Initialize LightRAG with Neo4J implementation. 
+WORKING_DIR = "./local_neo4jWorkDir"
+
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=gpt_4o_mini_complete,  # Use gpt_4o_mini_complete LLM model
+    kg="Neo4JStorage", #<-----------override KG default
+    log_level="DEBUG"  #<-----------override log_level default
+)
+```
+see test_neo4j.py for a working example.
+</details>
+
+
+
 <details>
 <summary> Using Ollama Models </summary>
 

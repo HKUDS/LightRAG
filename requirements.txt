@@ -4,6 +4,7 @@ aiohttp
 graspologic
 hnswlib
 nano-vectordb
+neo4j
 networkx
 ollama
 openai
