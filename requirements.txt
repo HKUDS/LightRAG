@@ -17,4 +17,7 @@ tiktoken
 torch
 transformers
 xxhash
+fastapi
+uvicorn
+nest_asyncio
 # lmdeploy[all]
