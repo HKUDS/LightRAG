@@ -1,0 +1,18 @@
+# Github Repository to chunk
+# github_repo:
+#   owner: "agentic-labs"
+#   repo: "lsproxy"
+#   branch: "main"
+
+# Path to the working directory where the github repo will be downloaded and chunked
+working_dir: "test_data"
+
+# Maximum number of tokens per chunk
+max_tokens: 800
+
+# Enable LLM summary generation for each file
+llm_summary_enabled: false
+
+# LLM model to use for summary generation
+llm_summary_model: "gpt-4o-mini"
+

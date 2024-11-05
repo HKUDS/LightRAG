@@ -6,15 +6,16 @@ from dotenv import load_dotenv
 import yaml
 from typing import Dict, Any, List
 from dataclasses import dataclass
-from language_parsers import get_language_from_file, SUPPORT_LANGUAGES
-from repo import get_github_repo
+from chunking.language_parsers import get_language_from_file, SUPPORT_LANGUAGES
+from chunking.repo import get_github_repo
 
 def load_config(config_path):
     with open(config_path, 'r') as config_file:
         return yaml.safe_load(config_file)
 
 # global config
-config = load_config(os.path.join(os.path.dirname(__file__), 'config.yaml'))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+config = load_config(os.path.join(project_root, 'config.yaml'))
 
 @dataclass
 class CodeChunk:
@@ -40,7 +41,8 @@ class CodeChunker:
         # Local root directory of where the repo is downloaded to
         self.root_dir = root_dir
 
-        self.output_path = config['output_path']
+        # Path to the output directory containing the chunk files
+        self.output_path = os.path.join(config['working_dir'], "input")
 
         # Max tokens per chunk
         self.max_tokens = max_tokens
@@ -214,6 +216,8 @@ class CodeChunker:
         llm_summary_enabled = config['llm_summary_enabled']
         file_summary = ""
 
+        print(f"Chunking {len(files)} files")
+
         for file_path in files:
 
             with open(file_path, 'rb') as f:
@@ -226,10 +230,7 @@ class CodeChunker:
             chunks: List[CodeChunk] = []
 
             if language_name is None:
-                print(f"Skipping file {file_path} (unknown language)")
                 continue
-            else:
-                print(f"Processing file {file_path} ({language_name})")
 
             # For files that are not supported by tree-sitter, we will write the entire file
             # and let lightrag handle the chunking
@@ -301,13 +302,11 @@ def generate_file_summary(code_str: str, file_path: str) -> str:
 if __name__ == '__main__':
     load_dotenv()
 
-    # TODO: add timer
-
     owner = config['github_repo']['owner']
     repo = config['github_repo']['repo']
     branch = config['github_repo']['branch']
-    local_path = config['input_path']
-    root_dir = get_github_repo(owner, repo, branch, local_path)
+    local_path = config['working_dir']
+    root_dir = get_github_repo(f"{owner}/{repo}", branch, local_path)
 
     chunker = CodeChunker(root_dir)
     chunker.process_files()

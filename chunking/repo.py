@@ -5,32 +5,28 @@ from io import BytesIO
 import requests
 
 def get_github_repo(
-        owner: str, 
         repo: str, 
-        branch: str, 
-        local_path: str):
+        branch: str,
+        local_path: str,
+        github_token: str = ""):
     """
     Download the GitHub repository and extract it to the local directory.
     """
 
     # Create a directory for the repo
-    repo_dir = os.path.join(local_path, f"{owner}_{repo}")
-    if os.path.exists(repo_dir):
-        print(f"Repository already exists in {repo_dir}")
-        return repo_dir
+    repo_dir = os.path.join(local_path, repo)
+    # if os.path.exists(repo_dir):
+    #     print(f"Repository already exists in {repo_dir}")
+    #     return repo_dir
 
     os.makedirs(repo_dir, exist_ok=True)
-
-    # Get the GitHub token from environment variable
-    github_token = os.environ.get('GITHUB_TOKEN')
-    if not github_token:
-        raise ValueError("GitHub token not found in environment variables")
 
     # Create a GitHub instance
     g = Github(github_token)
 
     # Get the repository
-    repository = g.get_repo(f"{owner}/{repo}")
+    repository = g.get_repo(repo)
+    print(f"Repository: {repository}")
 
     # Get the default branch
     if not branch:
@@ -38,9 +34,13 @@ def get_github_repo(
 
     # Get the zip file
     zip_url = repository.get_archive_link("zipball", ref=branch)
-    
+
     # Download the zip file
-    response = requests.get(zip_url, headers={'Authorization': f'token {github_token}'})
+    if github_token:
+        response = requests.get(zip_url, headers={'Authorization': f'token {github_token}'})
+    else:
+        response = requests.get(zip_url)
+
     response.raise_for_status()
 
     # Save and extract the zip file
