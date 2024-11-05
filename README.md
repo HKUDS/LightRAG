@@ -526,7 +526,8 @@ The API server provides the following endpoints:
 ```json
 {
     "query": "Your question here",
-    "mode": "hybrid"  // Can be "naive", "local", "global", or "hybrid"
+    "mode": "hybrid",  // Can be "naive", "local", "global", or "hybrid"
+    "only_need_context": true // Optional: Defaults to false, if true, only the referenced context will be returned, otherwise the llm answer will be returned
 }
 ```
 - **Example:**
