@@ -894,7 +894,7 @@ def extract_queries(file_path):
  </picture>
 </a>
 
-## Citation
+## 🌟Citation
 
 ```python
 @article{guo2024lightrag,
@@ -906,6 +906,5 @@ archivePrefix={arXiv},
 primaryClass={cs.IR}
 }
 ```
-
-
+**Thank you for your interest in our work!**
 
