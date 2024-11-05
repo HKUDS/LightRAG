@@ -71,6 +71,7 @@ rag = LightRAG(
 class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
+    only_need_context: bool = False
 
 
 class InsertRequest(BaseModel):
@@ -95,7 +96,8 @@ async def query_endpoint(request: QueryRequest):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: rag.query(request.query, param=QueryParam(mode=request.mode))
+            None, lambda: rag.query(request.query,
+                                    param=QueryParam(mode=request.mode, only_need_context=request.only_need_context))
         )
         return Response(status="success", data=result)
     except Exception as e:
