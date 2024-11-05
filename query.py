@@ -1,7 +1,7 @@
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import gpt_4o_mini_complete, gpt_4o_complete
 import os
-WORKING_DIR = "/home/harrisontin/palmier/test_data/temporalio_temporal"
+WORKING_DIR = "./ragtest"
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 rag = LightRAG(
@@ -10,7 +10,7 @@ rag = LightRAG(
     # llm_model_func=gpt_4o_complete  # Optionally, use a stronger model
 )
 
-query = "Where is the logic for the membership service? Answer in simple and precise terms."
+query = "What is the purpose of this project?"
 
 # Perform naive search
 print("\033[94m" + rag.query(query, param=QueryParam(mode="naive")) + "\033[0m")
