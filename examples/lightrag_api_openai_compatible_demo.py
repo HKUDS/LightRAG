@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from pydantic import BaseModel
 import os
 from lightrag import LightRAG, QueryParam
@@ -78,10 +78,6 @@ class InsertRequest(BaseModel):
     text: str
 
 
-class InsertFileRequest(BaseModel):
-    file_path: str
-
-
 class Response(BaseModel):
     status: str
     data: Optional[str] = None
@@ -115,30 +111,22 @@ async def insert_endpoint(request: InsertRequest):
 
 
 @app.post("/insert_file", response_model=Response)
-async def insert_file(request: InsertFileRequest):
+async def insert_file(file: UploadFile = File(...)):
     try:
-        # Check if file exists
-        if not os.path.exists(request.file_path):
-            raise HTTPException(
-                status_code=404, detail=f"File not found: {request.file_path}"
-            )
-
+        file_content = await file.read()
         # Read file content
         try:
-            with open(request.file_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            content = file_content.decode("utf-8")
         except UnicodeDecodeError:
             # If UTF-8 decoding fails, try other encodings
-            with open(request.file_path, "r", encoding="gbk") as f:
-                content = f.read()
-
+            content = file_content.decode("gbk")
         # Insert file content
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: rag.insert(content))
 
         return Response(
             status="success",
-            message=f"File content from {request.file_path} inserted successfully",
+            message=f"File content from {file.filename} inserted successfully",
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
