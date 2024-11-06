@@ -60,7 +60,7 @@ rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(embedding_dim=asyncio.run(get_embedding_dim()),
-                                 max_token_size=8192,
+                                 max_token_size=os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192),
                                  func=embedding_func),
 )
 
