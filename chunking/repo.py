@@ -22,7 +22,7 @@ def get_github_repo(
     os.makedirs(repo_dir, exist_ok=True)
 
     # Create a GitHub instance
-    g = Github(github_token)
+    g = Github(github_token) if github_token else Github()
 
     # Get the repository
     repository = g.get_repo(repo)
@@ -46,7 +46,9 @@ def get_github_repo(
     # Save and extract the zip file
     zip_file = BytesIO(response.content)
     with zipfile.ZipFile(zip_file) as zf:
+        extracted_folder = zf.namelist()[0].split('/')[0]
         zf.extractall(repo_dir)
 
-    print(f"Repository downloaded and extracted to: {repo_dir}")
-    return repo_dir
+    full_extracted_path = os.path.join(repo_dir, extracted_folder)
+    print(f"Repository downloaded and extracted to: {full_extracted_path}")
+    return full_extracted_path

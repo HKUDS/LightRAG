@@ -4,7 +4,7 @@ from tree_sitter import Node
 import tiktoken
 from dotenv import load_dotenv
 import yaml
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from chunking.language_parsers import get_language_from_file, SUPPORT_LANGUAGES
 from chunking.repo import get_github_repo
@@ -16,6 +16,18 @@ def load_config(config_path):
 # global config
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 config = load_config(os.path.join(project_root, 'config.yaml'))
+
+@dataclass
+class Position:
+
+    # The line number of the position
+    line: int
+
+    # The character number within the line
+    character: int
+
+    # The byte offset of the position
+    byte: int
 
 @dataclass
 class CodeChunk:
@@ -34,6 +46,12 @@ class CodeChunk:
 
     # Any metadata about the chunk
     tag: Dict[str, Any]
+
+    # The start position of the chunk
+    start: Position
+
+    # The end position of the chunk
+    end: Position
 
 class CodeChunker:
     def __init__(self, root_dir, max_tokens=800):
@@ -94,14 +112,17 @@ class CodeChunker:
                 return [CodeChunk(
                     index=current_index,
                     file_path=file_path,
+                    start=Position(line=node.start_point[0], character=node.start_point[1], byte=node.start_byte),
+                    end=Position(line=node.end_point[0], character=node.end_point[1], byte=node.end_byte),
                     content=text,
                     token_count=token_count,
                     tag={"language": language_name}
                 )]
             
             current_token_count = 0
-            current_start_byte = -1
-            current_end_byte = -1
+            current_start_position = None
+            current_end_position = None
+
             new_chunks: List[CodeChunk] = []
 
             for child in node.children:
@@ -112,19 +133,21 @@ class CodeChunker:
                 # Next child node is too big, so we need to recursively traverse the child nodes
                 if token_count > self.max_tokens:
                     # Current chunk is valid
-                    if current_start_byte != -1:
+                    if current_start_position is not None:
                         new_chunks.append(CodeChunk(
                             index=current_index,
                             file_path=file_path,
-                            content=code_str[current_start_byte:current_end_byte],
+                            start=current_start_position,
+                            end=current_end_position,
+                            content=code_str[current_start_position.byte:current_end_position.byte],
                             token_count=current_token_count,
                             tag={"language": language_name}
                         ))
                         current_index += 1
 
                     # Reset Current Chunk
-                    current_start_byte = -1
-                    current_end_byte = -1
+                    current_start_position = None
+                    current_end_position = None
                     current_token_count = 0
 
                     new_chunks.extend(traverse(child))
@@ -133,7 +156,9 @@ class CodeChunker:
                     new_chunks.append(CodeChunk(
                         index=current_index,
                         file_path=file_path,
-                        content=code_str[current_start_byte:current_end_byte],
+                        start=current_start_position,
+                        end=current_end_position,
+                        content=code_str[current_start_position.byte:current_end_position.byte],
                         token_count=current_token_count,
                         tag={"language": language_name}
                     ))
@@ -141,21 +166,39 @@ class CodeChunker:
 
                     # The new current chunk will be the next child
                     current_token_count = token_count
-                    current_start_byte = child.start_byte
-                    current_end_byte = child.end_byte
+                    current_start_position = Position(
+                        line=child.start_point[0],
+                        character=child.start_point[1],
+                        byte=child.start_byte
+                    )
+                    current_end_position = Position(
+                        line=child.end_point[0],
+                        character=child.end_point[1],
+                        byte=child.end_byte
+                    )
                 # Otherwise, we can concatenate the current chunk with the next child node
                 else:
-                    if current_start_byte == -1:
-                        current_start_byte = child.start_byte
-                    current_end_byte = child.end_byte
+                    if current_start_position is None:
+                        current_start_position = Position(
+                            line=child.start_point[0],
+                            character=child.start_point[1],
+                            byte=child.start_byte
+                        )
+                    current_end_position = Position(
+                        line=child.end_point[0],
+                        character=child.end_point[1],
+                        byte=child.end_byte
+                    )
                     current_token_count += token_count
             
             # Add the final chunk if there's content that hasn't been added yet
-            if current_start_byte != -1:
+            if current_start_position is not None:
                 new_chunks.append(CodeChunk(
                     index=current_index,
                     file_path=file_path,
-                    content=code_str[current_start_byte:current_end_byte],
+                    start=current_start_position,
+                    end=current_end_position,
+                    content=code_str[current_start_position.byte:current_end_position.byte],
                     token_count=current_token_count,
                     tag={"language": language_name}
                 ))
@@ -191,6 +234,8 @@ class CodeChunker:
                 current_chunk = CodeChunk(
                     index=next_chunk.index,  # Use the earlier index
                     file_path=next_chunk.file_path,
+                    start=next_chunk.start,
+                    end=current_chunk.end,
                     content=next_chunk.content + current_chunk.content,  # Preserve order
                     token_count=current_chunk.token_count + next_chunk.token_count,
                     tag=next_chunk.tag
@@ -225,6 +270,10 @@ class CodeChunker:
                 code_str = code_bytes.decode('utf-8', errors='ignore')
 
             relative_file_path = file_path.replace(self.root_dir, '')
+            # Remove leading separator and split path
+            relative_file_path = relative_file_path.lstrip(os.sep)
+            # Remove first folder from path - this is the zip folder name downloaded from GitHub
+            relative_file_path = os.sep.join(relative_file_path.split(os.sep)[1:])
 
             language_name = get_language_from_file(file_path)
             chunks: List[CodeChunk] = []
@@ -237,9 +286,12 @@ class CodeChunker:
             if language_name not in SUPPORT_LANGUAGES:
                 tokens = self.encoding.encode(code_str)
                 token_count = len(tokens)
+                code_lines = code_str.split('\n')
                 chunks.append(CodeChunk(
                     index=0,
-                    file_path=file_path,
+                    file_path=relative_file_path,
+                    start=Position(line=0, character=0, byte=0),
+                    end=Position(line=len(code_lines), character=len(code_lines[-1]), byte=len(code_str)),
                     content=code_str,
                     token_count=token_count,
                     tag={"language": language_name}
@@ -270,6 +322,10 @@ class CodeChunker:
                     if file_summary:
                         f.write(f"Summary: {file_summary}\n")
                     f.write(f"Chunk: {chunk.index + 1}\n")
+                    if chunk.start:
+                        f.write(f"Start: {chunk.start.line}:{chunk.start.character}\n")
+                    if chunk.end:
+                        f.write(f"End: {chunk.end.line}:{chunk.end.character}\n")
                     f.write(f"Language: {chunk.tag['language']}\n")
                     f.write(f"Tokens: {chunk.token_count}\n")
                     f.write("\n")
