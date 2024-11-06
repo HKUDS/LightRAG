@@ -22,7 +22,7 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 </div>
 
 ## 🎉 News
-- [x] [2024.11.04]🎯📢You can [use Neo4J for Storage](https://github.com/HKUDS/LightRAG/edit/main/README.md#using-neo4j-for-storage) now.
+- [x] [2024.11.04]🎯📢You can [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage) now.
 - [x] [2024.10.29]🎯📢LightRAG now supports multiple file types, including PDF, DOC, PPT, and CSV via `textract`.
 - [x] [2024.10.20]🎯📢We’ve added a new feature to LightRAG: Graph Visualization.
 - [x] [2024.10.18]🎯📢We’ve added a link to a [LightRAG Introduction Video](https://youtu.be/oageL-1I0GE). Thanks to the author!
@@ -894,7 +894,15 @@ def extract_queries(file_path):
  </picture>
 </a>
 
-## Citation
+## Contribution
+
+Thank you to all our contributors!
+
+<a href="https://github.com/HKUDS/LightRAG/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=HKUDS/LightRAG" />
+</a>
+
+## 🌟Citation
 
 ```python
 @article{guo2024lightrag,
@@ -906,6 +914,5 @@ archivePrefix={arXiv},
 primaryClass={cs.IR}
 }
 ```
-
-
+**Thank you for your interest in our work!**
 
