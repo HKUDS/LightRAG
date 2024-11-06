@@ -38,8 +38,10 @@ rag = LightRAG(
 
 class QueryRequest(BaseModel):
     query: str
-    mode: str = "hybrid"
-    only_need_context: bool = False
+    mode: Optional[str] = "hybrid"
+    only_need_context: Optional[bool] = False
+    response_type: Optional[str] = "Multiple Paragraphs"
+    top_k: Optional[int] = 60
 
 class IndexRequest(BaseModel):
     repo: str
@@ -97,7 +99,15 @@ async def query_endpoint(request: QueryRequest):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: rag.query(request.query, param=QueryParam(mode=request.mode, only_need_context=request.only_need_context))
+            None, lambda: rag.query(
+                request.query,
+                param=QueryParam(
+                    mode=request.mode,
+                    only_need_context=request.only_need_context,
+                    response_type=request.response_type,
+                    top_k=request.top_k
+                )
+            )
         )
         return Response(status="success", data=result)
     except Exception as e:
@@ -160,11 +170,12 @@ if __name__ == "__main__":
 
 # Example requests:
 # 1. Query:
-# curl -X POST "http://127.0.0.1:8020/query" -H "Content-Type: application/json" -d '{"query": "your query here", "mode": "hybrid"}'
+# curl -X POST "http://127.0.0.1:8020/query" -H "Content-Type: application/json" -d '{"query": "your query here"}'
+# curl -X POST "http://127.0.0.1:8020/query" -H "Content-Type: application/json" -d '{"query": "your query here", "mode": "hybrid", "response_type": "Multiple Paragraphs", "top_k": 60}'
 # Returns: {"status": "success", "data": "generated response here", "message": "message"}
 
 # 2. Query the context retrieved only (without generating the response)
-# curl -X POST "http://127.0.0.1:8020/query" -H "Content-Type: application/json" -d '{"query": "your query here", "mode": "hybrid", "only_need_context": true}'
+# curl -X POST "http://127.0.0.1:8020/query" -H "Content-Type: application/json" -d '{"query": "your query here", "only_need_context": true}'
 # Returns: {"status": "success", "data": "context here", "message": "message"}
 
 # 3. Start indexing (X-Github-Token required for private repos, can be ignored for public repos)
