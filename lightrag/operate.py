@@ -466,7 +466,9 @@ async def _build_local_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
+
     results = await entities_vdb.query(query, top_k=query_param.top_k)
+
     if not len(results):
         return None
     node_datas = await asyncio.gather(
@@ -481,7 +483,7 @@ async def _build_local_query_context(
         {**n, "entity_name": k["entity_name"], "rank": d}
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
-    ]
+    ]#what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
     use_text_units = await _find_most_related_text_unit_from_entities(
         node_datas, query_param, text_chunks_db, knowledge_graph_inst
     )
@@ -907,7 +909,6 @@ async def hybrid_query(
                 .strip()
             )
             result = "{" + result.split("{")[1].split("}")[0] + "}"
-
             keywords_data = json.loads(result)
             hl_keywords = keywords_data.get("high_level_keywords", [])
             ll_keywords = keywords_data.get("low_level_keywords", [])
@@ -927,6 +928,7 @@ async def hybrid_query(
             query_param,
         )
 
+
     if hl_keywords:
         high_level_context = await _build_global_query_context(
             hl_keywords,
@@ -936,6 +938,7 @@ async def hybrid_query(
             text_chunks_db,
             query_param,
         )
+
 
     context = combine_contexts(high_level_context, low_level_context)
 
@@ -1042,6 +1045,7 @@ async def naive_query(
         return PROMPTS["fail_response"]
     chunks_ids = [r["id"] for r in results]
     chunks = await text_chunks_db.get_by_ids(chunks_ids)
+
 
     maybe_trun_chunks = truncate_list_by_token_size(
         chunks,
