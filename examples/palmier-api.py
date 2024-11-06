@@ -3,8 +3,6 @@ from pydantic import BaseModel
 import os
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import gpt_4o_mini_complete, openai_embedding
-from lightrag.utils import EmbeddingFunc
-import numpy as np
 from typing import Optional
 import asyncio
 import nest_asyncio
@@ -41,6 +39,7 @@ rag = LightRAG(
 class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
+    only_need_context: bool = False
 
 class IndexRequest(BaseModel):
     repo: str
@@ -60,7 +59,7 @@ async def query_endpoint(request: QueryRequest):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: rag.query(request.query, param=QueryParam(mode=request.mode))
+            None, lambda: rag.query(request.query, param=QueryParam(mode=request.mode, only_need_context=request.only_need_context))
         )
         return Response(status="success", data=result)
     except Exception as e:
@@ -105,11 +104,14 @@ if __name__ == "__main__":
 
 # Usage example
 # To run the server, use the following command in your terminal:
-# python lightrag_api_openai_compatible_demo.py
+# python examples/palmier-api.py
 
 # Example requests:
 # 1. Query:
 # curl -X POST "http://127.0.0.1:8020/query" -H "Content-Type: application/json" -d '{"query": "your query here", "mode": "hybrid"}'
+
+# 2. Query the context retrieved only (without generating the response)
+# curl -X POST "http://127.0.0.1:8020/query" -H "Content-Type: application/json" -d '{"query": "your query here", "mode": "hybrid", "only_need_context": true}'
 
 # 2. Index Github repo: (for public repos, you don't need to provide X-Github-Token)
 # curl -X POST "http://127.0.0.1:8020/index" -H "Content-Type: application/json, X-Github-Token: your_github_token" -d '{"repo": "owner/repo", "branch": "main"}'
