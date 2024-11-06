@@ -13,6 +13,7 @@ if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
 
+
 async def llm_model_func(
         prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
@@ -35,29 +36,12 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
         base_url="https://api.siliconflow.cn/v1",
     )
 
-async def get_embedding_dim():
-    test_text = ["This is a test sentence."]
-    embedding = await embedding_func(test_text)
-    embedding_dim = embedding.shape[1]
-    return embedding_dim
-
-
-# function test
-async def test_funcs():
-    result = await llm_model_func("How are you?")
-    print("llm_model_func: ", result)
-
-    result = await embedding_func(["How are you?"])
-    print("embedding_func: ", result)
-
 
 # asyncio.run(test_funcs())
 
 
 async def main():
     try:
-        embedding_dimension = await get_embedding_dim()
-        print(f"Detected embedding dimension: {embedding_dimension}")
 
         rag = LightRAG(
             working_dir=WORKING_DIR,
@@ -69,40 +53,42 @@ async def main():
             ),
         )
 
-        # with open("./book.txt", "r", encoding="utf-8") as f:
-        #     await rag.ainsert(f.read())
-        # with open("./models.txt", "r", encoding="utf-8") as f:
-        #     await rag.ainsert(f.read())
 
-        # Perform naive search
-        print(
-            await rag.aquery(
-                "反航母作战中有哪些行动？", param=QueryParam(mode="naive")
-            )
-        )
-
+        # # Perform naive search
+        # print(
+        #     await rag.aquery(
+        #         "作战中怎么组织地方战斗机进攻，要使用哪些模型?", param=QueryParam(mode="naive")
+        #     )
+        # )
+        #
         # # Perform local search
         # print(
         #     await rag.aquery(
-        #         "What are the top themes in this story?", param=QueryParam(mode="local")
+        #         "作战中每一步行动需要使用哪些模型?", param=QueryParam(mode="local")
         #     )
         # )
         #
         # # Perform global search
         # print(
         #     await rag.aquery(
-        #         "What are the top themes in this story?",
+        #         "作战中怎么组织地方战斗机进攻?",
         #         param=QueryParam(mode="global"),
         #     )
         # )
-        #
-        # # Perform hybrid search
-        # print(
-        #     await rag.aquery(
-        #         "What are the top themes in this story?",
-        #         param=QueryParam(mode="hybrid"),
-        #     )
-        # )
+
+        # Perform hybrid search
+        print(
+            await rag.aquery(
+                "我要专门对敌方战斗机进行拦截，请给我推荐一个最合适的模型?",
+                param=QueryParam(mode="local"),
+            )
+        )
+        print(
+            await rag.aquery(
+                "反航母作战中需要用到哪些模型？",
+                param=QueryParam(mode="hybrid"),
+            )
+        )
     except Exception as e:
         print(f"An error occurred: {e}")
 

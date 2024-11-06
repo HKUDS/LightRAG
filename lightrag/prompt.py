@@ -9,6 +9,7 @@ PROMPTS["process_tickers"] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "
 
 PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event"]
 
+# 该提示用于从给定的文本中提取实体和关系，基于指定的实体类型（例如：人、组织、地点等）。它识别文本中的实体，并描述它们，同时找出实体之间的关系。输出结果按照特定格式呈现，实体和关系以元组的形式展示。
 PROMPTS["entity_extraction"] = """-Goal-
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
 
@@ -116,6 +117,8 @@ Text: {input_text}
 Output:
 """
 
+
+# 该提示用于生成对一个或多个实体描述的综合总结。它将多个相关的描述合并成一个完整的叙述，并解决可能存在的矛盾，确保生成的总结连贯且清晰。
 PROMPTS[
     "summarize_entity_descriptions"
 ] = """You are a helpful assistant responsible for generating a comprehensive summary of the data provided below.
@@ -132,18 +135,22 @@ Description List: {description_list}
 Output:
 """
 
+# 当之前的实体提取过程中遗漏了一些实体时，这个提示用于继续提取这些遗漏的实体，按照与前面相同的格式列出。
 PROMPTS[
     "entiti_continue_extraction"
 ] = """MANY entities were missed in the last extraction.  Add them below using the same format:
 """
 
+# 这个提示用于检查在之前的提取过程中是否有遗漏的实体。它要求用户确认是否还需要添加更多的实体。
 PROMPTS[
     "entiti_if_loop_extraction"
 ] = """It appears some entities may have still been missed.  Answer YES | NO if there are still entities that need to be added.
 """
 
+# 失败响应。当助手无法回答用户的问题时，返回此响应。
 PROMPTS["fail_response"] = "Sorry, I'm not able to provide an answer to that question."
 
+# 这是一个在检索增强生成（RAG）场景中使用的提示。助手根据特定的数据表回答问题，生成的回答应根据目标响应格式（例如：markdown）进行详细总结。它会将相关的上下文数据整合并总结，以符合所要求的响应长度和格式。
 PROMPTS["rag_response"] = """---Role---
 
 You are a helpful assistant responding to questions about data in the tables provided.
@@ -165,6 +172,8 @@ Do not include information where the supporting evidence for it is not provided.
 
 Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
 """
+
+# 该提示用于识别用户查询中的高层次（整体概念）和低层次（具体实体或细节）关键词。它将这些关键词输出为JSON格式，分别列出高层次和低层次关键词。
 
 PROMPTS["keywords_extraction"] = """---Role---
 
@@ -222,6 +231,7 @@ Output:
 
 """
 
+# 这是一个简化版本的RAG响应，助手基于已有的内容数据总结出回答用户问题的内容。它将提供的知识进行总结，并按照目标响应的格式和长度生成回应。当没有足够的信息时，助手不会胡乱编造答案。
 PROMPTS["naive_rag_response"] = """You're a helpful assistant
 Below are the knowledge you know:
 {content_data}
