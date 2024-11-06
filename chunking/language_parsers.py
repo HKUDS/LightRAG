@@ -36,7 +36,6 @@ SUPPORT_LANGUAGES = [
     "python",
     "ql",
     "r",
-    "r",
     "regex",
     "rst",
     "ruby",
@@ -47,6 +46,15 @@ SUPPORT_LANGUAGES = [
     "tsq",
     "typescript"
 ]
+
+FILES_TO_IGNORE = [
+    # General lock files in JSON/YAML formats
+    ".lock",
+    "lock.json",
+    "lock.yaml",
+    "lock.yml",
+]
+
 
 def get_language_from_file(file_path):
     """

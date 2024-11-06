@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import yaml
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
-from chunking.language_parsers import get_language_from_file, SUPPORT_LANGUAGES
+from chunking.language_parsers import get_language_from_file, SUPPORT_LANGUAGES, FILES_TO_IGNORE
 from chunking.repo import get_github_repo
 
 def load_config(config_path):
@@ -265,20 +265,25 @@ class CodeChunker:
 
         for file_path in files:
 
-            with open(file_path, 'rb') as f:
-                code_bytes = f.read()
-                code_str = code_bytes.decode('utf-8', errors='ignore')
-
             relative_file_path = file_path.replace(self.root_dir, '')
             # Remove leading separator and split path
             relative_file_path = relative_file_path.lstrip(os.sep)
             # Remove first folder from path - this is the zip folder name downloaded from GitHub
             relative_file_path = os.sep.join(relative_file_path.split(os.sep)[1:])
 
+            if any(relative_file_path.endswith(ext) for ext in FILES_TO_IGNORE):
+                print(f"Skipping file {relative_file_path}")
+                continue
+
+            with open(file_path, 'rb') as f:
+                code_bytes = f.read()
+                code_str = code_bytes.decode('utf-8', errors='ignore')
+
             language_name = get_language_from_file(file_path)
             chunks: List[CodeChunk] = []
 
             if language_name is None:
+                print(f"Skipping file {relative_file_path}")
                 continue
 
             # For files that are not supported by tree-sitter, we will write the entire file
@@ -362,7 +367,8 @@ if __name__ == '__main__':
     repo = config['github_repo']['repo']
     branch = config['github_repo']['branch']
     local_path = config['working_dir']
-    root_dir = get_github_repo(f"{owner}/{repo}", branch, local_path)
+    github_token = os.getenv('GITHUB_TOKEN')
+    root_dir = get_github_repo(f"{owner}/{repo}", branch, local_path, github_token=github_token)
 
     chunker = CodeChunker(root_dir)
     chunker.process_files()

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
 from pydantic import BaseModel
 import os
 from lightrag import LightRAG, QueryParam
@@ -50,6 +50,44 @@ class Response(BaseModel):
     data: Optional[str] = None
     message: Optional[str] = None
 
+class IndexStatus(BaseModel):
+    status: str
+    job_id: str
+    message: Optional[str] = None
+
+# Add this dictionary to store job statuses
+indexing_jobs = {}
+
+# Helper functions
+async def process_index_request(request: IndexRequest, github_token: str | None, job_id: str):
+    try:
+        # Download the Github repo to the working directory
+        root_dir = get_github_repo(request.repo, request.branch, WORKING_DIR, github_token=github_token)
+        indexing_jobs[job_id]["message"] = "Repository downloaded, processing files..."
+
+        # Chunk the repo and write the chunks into .txt files
+        chunker = CodeChunker(root_dir)
+        chunker.process_files()
+        indexing_jobs[job_id]["message"] = "Files processed, inserting into RAG..."
+
+        input_folder = os.path.join(WORKING_DIR, "input")
+        texts_to_insert = []
+        for filename in os.listdir(input_folder):
+            if filename.endswith(".txt"):
+                file_path = os.path.join(input_folder, filename)
+                with open(file_path, "r") as f:
+                    texts_to_insert.append(f.read())
+
+        # Insert the chunks into lightrag
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: rag.insert(texts_to_insert))
+        
+        indexing_jobs[job_id]["status"] = "completed"
+        indexing_jobs[job_id]["message"] = "Indexing completed successfully"
+    except Exception as e:
+        indexing_jobs[job_id]["status"] = "failed"
+        indexing_jobs[job_id]["message"] = f"Indexing failed: {str(e)}"
+        print(f"Indexing failed: {str(e)}")
 
 # API routes
 
@@ -66,31 +104,45 @@ async def query_endpoint(request: QueryRequest):
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/index", response_model=Response)
-async def index_endpoint(request: IndexRequest, x_github_token: str | None = Header(None, alias="X-Github-Token")):
+@app.post("/index", response_model=IndexStatus)
+async def index_endpoint(
+    request: IndexRequest, 
+    background_tasks: BackgroundTasks,
+    x_github_token: str | None = Header(None, alias="X-Github-Token")
+):
     try:
-        # Download the Github repo to the working directory
-        root_dir = get_github_repo(request.repo, request.branch, WORKING_DIR, github_token=x_github_token)
-
-        # Chunk the repo and write the chunks into .txt files
-        chunker = CodeChunker(root_dir)
-        chunker.process_files()
-
-        input_folder = os.path.join(WORKING_DIR, "input")
-        texts_to_insert = []
-        for filename in os.listdir(input_folder):
-            if filename.endswith(".txt"):
-                file_path = os.path.join(input_folder, filename)
-                with open(file_path, "r") as f:
-                    texts_to_insert.append(f.read())
-
-        # Insert the chunks into lightrag
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: rag.insert(texts_to_insert))
-        return Response(status="success", message="Index created successfully")
+        job_id = f"index_{len(indexing_jobs) + 1}"  # Simple job ID generation
+        indexing_jobs[job_id] = {"status": "pending", "message": "Indexing started"}
+        
+        # Move the indexing logic to a background task
+        background_tasks.add_task(
+            process_index_request,
+            request,
+            x_github_token,
+            job_id
+        )
+        
+        return IndexStatus(
+            status="accepted",
+            job_id=job_id,
+            message="Indexing job started"
+        )
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Add new endpoint to check indexing status
+@app.get("/index/status/{job_id}", response_model=IndexStatus)
+async def get_index_status(job_id: str):
+    if job_id not in indexing_jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    job_status = indexing_jobs[job_id]
+    return IndexStatus(
+        status=job_status["status"],
+        job_id=job_id,
+        message=job_status["message"]
+    )
 
 @app.get("/health")
 async def health_check():
@@ -109,12 +161,19 @@ if __name__ == "__main__":
 # Example requests:
 # 1. Query:
 # curl -X POST "http://127.0.0.1:8020/query" -H "Content-Type: application/json" -d '{"query": "your query here", "mode": "hybrid"}'
+# Returns: {"status": "success", "data": "generated response here", "message": "message"}
 
 # 2. Query the context retrieved only (without generating the response)
 # curl -X POST "http://127.0.0.1:8020/query" -H "Content-Type: application/json" -d '{"query": "your query here", "mode": "hybrid", "only_need_context": true}'
+# Returns: {"status": "success", "data": "context here", "message": "message"}
 
-# 2. Index Github repo: (for public repos, you don't need to provide X-Github-Token)
-# curl -X POST "http://127.0.0.1:8020/index" -H "Content-Type: application/json, X-Github-Token: your_github_token" -d '{"repo": "owner/repo", "branch": "main"}'
+# 3. Start indexing (X-Github-Token required for private repos, can be ignored for public repos)
+# curl -X POST "http://127.0.0.1:8020/index" -H "Content-Type: application/json, X-Github-Token: your_github_token" -d '{"repo": "owner/repo", "branch": "main"}' 
+# Returns: {"status": "accepted", "job_id": "index_1", "message": "Indexing job started"}
 
-# 3. Health check:
+# 4. Check indexing status
+# curl -X GET "http://127.0.0.1:8020/index/status/index_1"
+# Returns: {"status": "pending", "job_id": "index_1", "message": "Files processed, inserting into RAG..."}
+
+# 5. Health check:
 # curl -X GET "http://127.0.0.1:8020/health"
