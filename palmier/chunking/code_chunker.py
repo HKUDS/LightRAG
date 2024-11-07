@@ -4,18 +4,13 @@ from tree_sitter import Node
 import tiktoken
 from dotenv import load_dotenv
 import yaml
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from dataclasses import dataclass
 from chunking.language_parsers import get_language_from_file, SUPPORT_LANGUAGES, FILES_TO_IGNORE
 from chunking.repo import get_github_repo
+from config import load_config
 
-def load_config(config_path):
-    with open(config_path, 'r') as config_file:
-        return yaml.safe_load(config_file)
-
-# global config
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-config = load_config(os.path.join(project_root, 'config.yaml'))
+config = load_config()
 
 @dataclass
 class Position:
@@ -54,13 +49,13 @@ class CodeChunk:
     end: Position
 
 class CodeChunker:
-    def __init__(self, root_dir, max_tokens=800):
+    def __init__(self, root_dir, output_dir, max_tokens=800):
 
         # Local root directory of where the repo is downloaded to
         self.root_dir = root_dir
 
         # Path to the output directory containing the chunk files
-        self.output_path = os.path.join(config['working_dir'], "input")
+        self.output_path = os.path.join(output_dir, "input")
 
         # Max tokens per chunk
         self.max_tokens = max_tokens
@@ -258,7 +253,7 @@ class CodeChunker:
     def process_files(self):
         files = self.traverse_directory()
 
-        llm_summary_enabled = config['llm_summary_enabled']
+        llm_summary_enabled = config['chunker']['llm_summary_enabled']
         file_summary = ""
 
         print(f"Chunking {len(files)} files")
@@ -327,23 +322,19 @@ class CodeChunker:
                     if file_summary:
                         f.write(f"Summary: {file_summary}\n")
                     f.write(f"Chunk: {chunk.index + 1}\n")
-                    if chunk.start:
-                        f.write(f"Start: {chunk.start.line}:{chunk.start.character}\n")
-                    if chunk.end:
-                        f.write(f"End: {chunk.end.line}:{chunk.end.character}\n")
+                    f.write(f"Start: {chunk.start.line}:{chunk.start.character}\n")
+                    f.write(f"End: {chunk.end.line}:{chunk.end.character}\n")
                     f.write(f"Language: {chunk.tag['language']}\n")
                     f.write(f"Tokens: {chunk.token_count}\n")
                     f.write("\n")
                     f.write(chunk.content)
-                
-                # print(f"Wrote chunk {chunk.index + 1} of file {chunk.file_path} to {output_file_path}")
 
 
 def generate_file_summary(code_str: str, file_path: str) -> str:
     import openai
 
     client = openai.OpenAI()
-    model = config['llm_summary_model']
+    model = config['chunker']['llm_summary_model']
 
     response = client.chat.completions.create(
         model=model,
@@ -360,6 +351,7 @@ def generate_file_summary(code_str: str, file_path: str) -> str:
     )
     return response.choices[0].message.content
 
+# For testing code_chunker.py
 if __name__ == '__main__':
     load_dotenv()
 
@@ -370,5 +362,6 @@ if __name__ == '__main__':
     github_token = os.getenv('GITHUB_TOKEN')
     root_dir = get_github_repo(f"{owner}/{repo}", branch, local_path, github_token=github_token)
 
-    chunker = CodeChunker(root_dir)
+    max_tokens = config['chunker']['max_tokens']
+    chunker = CodeChunker(root_dir, local_path, max_tokens)
     chunker.process_files()

@@ -13,13 +13,8 @@ def get_github_repo(
     Download the GitHub repository and extract it to the local directory.
     """
 
-    # Create a directory for the repo
-    repo_dir = os.path.join(local_path, repo)
-    # if os.path.exists(repo_dir):
-    #     print(f"Repository already exists in {repo_dir}")
-    #     return repo_dir
-
-    os.makedirs(repo_dir, exist_ok=True)
+    if not os.path.exists(local_path):
+        os.makedirs(local_path, exist_ok=True)
 
     # Create a GitHub instance
     g = Github(github_token) if github_token else Github()
@@ -47,8 +42,8 @@ def get_github_repo(
     zip_file = BytesIO(response.content)
     with zipfile.ZipFile(zip_file) as zf:
         extracted_folder = zf.namelist()[0].split('/')[0]
-        zf.extractall(repo_dir)
+        zf.extractall(local_path)
 
-    full_extracted_path = os.path.join(repo_dir, extracted_folder)
+    full_extracted_path = os.path.join(local_path, extracted_folder)
     print(f"Repository downloaded and extracted to: {full_extracted_path}")
     return full_extracted_path
