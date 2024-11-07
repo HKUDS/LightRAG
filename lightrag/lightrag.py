@@ -51,12 +51,15 @@ from .base import (
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
-        loop = asyncio.get_event_loop()
+        return asyncio.get_event_loop()
+
     except RuntimeError:
         logger.info("Creating a new event loop in main thread.")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-    return loop
+
+        return loop
+
 
 
 @dataclass
