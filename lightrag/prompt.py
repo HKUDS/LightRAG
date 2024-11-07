@@ -343,6 +343,7 @@ Below is the health knowledge available:
 {content_data}
 ---
 If you don't know the answer or if the provided knowledge does not contain sufficient information to answer, indicate so clearly. Do not make anything up.
+Reply to multiple choice health questions (MCPs) like A, B, C, D. Don't write anything else just a letter. Example: A, Example: D, Example: C Example: B
 
 ---Target response length and format---
 {response_type}
