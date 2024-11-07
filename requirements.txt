@@ -1,26 +1,26 @@
 accelerate
 aioboto3
 aiohttp
+fastapi
+# lmdeploy[all]
+
+# Palmier
+fastapi-versioning
 graspologic
 hnswlib
 nano-vectordb
 neo4j
+nest_asyncio
 networkx
 ollama
 openai
+pygments
 pyvis
 tenacity
 tiktoken
 torch
 transformers
-xxhash
-# lmdeploy[all]
-
-# Palmier
-fastapi-versioning
-fastapi
-uvicorn
-nest_asyncio
 tree-sitter==0.21.3
 tree_sitter_languages==1.10.2
-pygments
+uvicorn
+xxhash

@@ -19,8 +19,8 @@ python palmier/main.py
 ### Index
 ```
 curl -X POST "http://127.0.0.1:8020/v1/index"
-     -H "Content-Type: application/json, X-Github-Token: your_github_token" 
-     -d '{"repo": "owner/repo", "branch": "main"}' 
+     -H "Content-Type: application/json, X-Github-Token: your_github_token"
+     -d '{"repo": "owner/repo", "branch": "main"}'
 ```
 ```
 curl -X GET "http://127.0.0.1:8020/v1/index/status/{owner}/{repo}"
@@ -35,5 +35,3 @@ curl -X POST "http://127.0.0.1:8020/v1/query"
 ```
 curl -X GET "http://127.0.0.1:8020/v1/health"
 ```
-
-

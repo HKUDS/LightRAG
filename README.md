@@ -189,7 +189,7 @@ rag = LightRAG(
 ### Using Neo4J for Storage
 
 * For production level scenarios you will most likely want to leverage an enterprise solution
-* for KG storage. Running Neo4J in Docker is recommended for seamless local testing.  
+* for KG storage. Running Neo4J in Docker is recommended for seamless local testing.
 * See: https://hub.docker.com/_/neo4j
 
 
@@ -202,7 +202,7 @@ When you launch the project be sure to override the default KG: NetworkS
 by specifying kg="Neo4JStorage".
 
 # Note: Default settings use NetworkX
-#Initialize LightRAG with Neo4J implementation. 
+#Initialize LightRAG with Neo4J implementation.
 WORKING_DIR = "./local_neo4jWorkDir"
 
 rag = LightRAG(
@@ -893,6 +893,3 @@ archivePrefix={arXiv},
 primaryClass={cs.IR}
 }
 ```
-
-
-

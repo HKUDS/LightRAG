@@ -44,7 +44,7 @@ SUPPORT_LANGUAGES = [
     "sql",
     "sqlite",
     "tsq",
-    "typescript"
+    "typescript",
 ]
 
 FILES_TO_IGNORE = [

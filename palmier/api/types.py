@@ -2,6 +2,7 @@ from pydantic import BaseModel
 from enum import Enum
 from typing import Optional
 
+
 class Status(Enum):
     """Status of an indexing job"""
 
@@ -9,6 +10,7 @@ class Status(Enum):
     PENDING = "pending"
     COMPLETED = "completed"
     FAILED = "failed"
+
 
 class QueryRequest(BaseModel):
     """Request body for /query endpoint"""
@@ -30,13 +32,16 @@ class QueryRequest(BaseModel):
     # top k retrieval
     top_k: Optional[int] = 60
 
+
 class IndexRequest(BaseModel):
     """Request body for /index endpoint"""
+
     # Github repository in format "owner/repo"
     repo: str
 
     # Repository branch - currently only one branch per repo is supported
     branch: Optional[str] = "main"
+
 
 class Response(BaseModel):
     """Response body for all endpoints"""

@@ -15,10 +15,10 @@ app = FastAPI(title="Palmier API", description="API for Palmier Code RAG")
 
 # global config
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-config = load_config(os.path.join(project_root, 'config.yaml'))
+config = load_config(os.path.join(project_root, "config.yaml"))
 
 # Configure working directory
-WORKING_DIR = config['working_dir']
+WORKING_DIR = config["working_dir"]
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 if not os.path.exists(os.path.join(WORKING_DIR, "input")):
@@ -30,7 +30,7 @@ print(f"WORKING_DIR: {WORKING_DIR}")
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=gpt_4o_mini_complete,
-    embedding_func=openai_embedding
+    embedding_func=openai_embedding,
 )
 
 # Data models
@@ -43,28 +43,37 @@ class QueryRequest(BaseModel):
     response_type: Optional[str] = "Multiple Paragraphs"
     top_k: Optional[int] = 60
 
+
 class IndexRequest(BaseModel):
     repo: str
     branch: str = "main"
+
 
 class Response(BaseModel):
     status: str
     data: Optional[str] = None
     message: Optional[str] = None
 
+
 class IndexStatus(BaseModel):
     status: str
     job_id: str
     message: Optional[str] = None
 
+
 # Add this dictionary to store job statuses
 indexing_jobs = {}
 
+
 # Helper functions
-async def process_index_request(request: IndexRequest, github_token: str | None, job_id: str):
+async def process_index_request(
+    request: IndexRequest, github_token: str | None, job_id: str
+):
     try:
         # Download the Github repo to the working directory
-        root_dir = get_github_repo(request.repo, request.branch, WORKING_DIR, github_token=github_token)
+        root_dir = get_github_repo(
+            request.repo, request.branch, WORKING_DIR, github_token=github_token
+        )
         indexing_jobs[job_id]["message"] = "Repository downloaded, processing files..."
 
         # Chunk the repo and write the chunks into .txt files
@@ -83,13 +92,14 @@ async def process_index_request(request: IndexRequest, github_token: str | None,
         # Insert the chunks into lightrag
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: rag.insert(texts_to_insert))
-        
+
         indexing_jobs[job_id]["status"] = "completed"
         indexing_jobs[job_id]["message"] = "Indexing completed successfully"
     except Exception as e:
         indexing_jobs[job_id]["status"] = "failed"
         indexing_jobs[job_id]["message"] = f"Indexing failed: {str(e)}"
         print(f"Indexing failed: {str(e)}")
+
 
 # API routes
 
@@ -99,60 +109,57 @@ async def query_endpoint(request: QueryRequest):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: rag.query(
+            None,
+            lambda: rag.query(
                 request.query,
                 param=QueryParam(
                     mode=request.mode,
                     only_need_context=request.only_need_context,
                     response_type=request.response_type,
-                    top_k=request.top_k
-                )
-            )
+                    top_k=request.top_k,
+                ),
+            ),
         )
         return Response(status="success", data=result)
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.post("/index", response_model=IndexStatus)
 async def index_endpoint(
-    request: IndexRequest, 
+    request: IndexRequest,
     background_tasks: BackgroundTasks,
-    x_github_token: str | None = Header(None, alias="X-Github-Token")
+    x_github_token: str | None = Header(None, alias="X-Github-Token"),
 ):
     try:
         job_id = f"index_{len(indexing_jobs) + 1}"  # Simple job ID generation
         indexing_jobs[job_id] = {"status": "pending", "message": "Indexing started"}
-        
+
         # Move the indexing logic to a background task
         background_tasks.add_task(
-            process_index_request,
-            request,
-            x_github_token,
-            job_id
+            process_index_request, request, x_github_token, job_id
         )
-        
+
         return IndexStatus(
-            status="accepted",
-            job_id=job_id,
-            message="Indexing job started"
+            status="accepted", job_id=job_id, message="Indexing job started"
         )
     except Exception as e:
         print(f"Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # Add new endpoint to check indexing status
 @app.get("/index/status/{job_id}", response_model=IndexStatus)
 async def get_index_status(job_id: str):
     if job_id not in indexing_jobs:
         raise HTTPException(status_code=404, detail="Job not found")
-    
+
     job_status = indexing_jobs[job_id]
     return IndexStatus(
-        status=job_status["status"],
-        job_id=job_id,
-        message=job_status["message"]
+        status=job_status["status"], job_id=job_id, message=job_status["message"]
     )
+
 
 @app.get("/health")
 async def health_check():
@@ -179,7 +186,7 @@ if __name__ == "__main__":
 # Returns: {"status": "success", "data": "context here", "message": "message"}
 
 # 3. Start indexing (X-Github-Token required for private repos, can be ignored for public repos)
-# curl -X POST "http://127.0.0.1:8020/index" -H "Content-Type: application/json, X-Github-Token: your_github_token" -d '{"repo": "owner/repo", "branch": "main"}' 
+# curl -X POST "http://127.0.0.1:8020/index" -H "Content-Type: application/json, X-Github-Token: your_github_token" -d '{"repo": "owner/repo", "branch": "main"}'
 # Returns: {"status": "accepted", "job_id": "index_1", "message": "Indexing job started"}
 
 # 4. Check indexing status

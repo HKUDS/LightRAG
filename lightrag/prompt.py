@@ -7,7 +7,17 @@ PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 PROMPTS["process_tickers"] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-PROMPTS["DEFAULT_ENTITY_TYPES"] = ["function", "class", "method", "variable", "module", "package", "library", "constant", "interface"]
+PROMPTS["DEFAULT_ENTITY_TYPES"] = [
+    "function",
+    "class",
+    "method",
+    "variable",
+    "module",
+    "package",
+    "library",
+    "constant",
+    "interface",
+]
 
 PROMPTS["entity_extraction"] = """-Goal-
 Given a code file or a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the code and all relationships among the identified entities.
