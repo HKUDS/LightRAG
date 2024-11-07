@@ -1,6 +1,5 @@
 import asyncio
 import os
-import importlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
@@ -24,16 +23,13 @@ from .storage import (
     NanoVectorDBStorage,
     NetworkXStorage,
 )
- 
-from .kg.neo4j_impl import (
-    Neo4JStorage 
-)
-#future KG integrations
+
+from .kg.neo4j_impl import Neo4JStorage
+# future KG integrations
 
 # from .kg.ArangoDB_impl import (
 #     GraphStorage as ArangoDBStorage
 # )
-
 
 
 from .utils import (
@@ -56,16 +52,18 @@ from .base import (
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
         return asyncio.get_event_loop()
+
     except RuntimeError:
         logger.info("Creating a new event loop in main thread.")
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
+
         return loop
+
 
 
 @dataclass
 class LightRAG:
-    
     working_dir: str = field(
         default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
@@ -74,8 +72,6 @@ class LightRAG:
 
     current_log_level = logger.level
     log_level: str = field(default=current_log_level)
-
-
 
     # text chunking
     chunk_token_size: int = 1200
@@ -131,8 +127,10 @@ class LightRAG:
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in asdict(self).items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
-        #@TODO: should move all storage setup here to leverage initial start params attached to self.
-        self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class()[self.kg]
+        # @TODO: should move all storage setup here to leverage initial start params attached to self.
+        self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class()[
+            self.kg
+        ]
 
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
@@ -186,6 +184,7 @@ class LightRAG:
                 **self.llm_model_kwargs,
             )
         )
+
     def _get_storage_class(self) -> Type[BaseGraphStorage]:
         return {
             "Neo4JStorage": Neo4JStorage,
