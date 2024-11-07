@@ -317,7 +317,7 @@ with open("./newText.txt") as f:
 
 ### Multi-file Type Support
 
-The `testract` supports reading file types such as TXT, DOCX, PPTX, CSV, and PDF.
+The `textract` supports reading file types such as TXT, DOCX, PPTX, CSV, and PDF.
 
 ```python
 import textract
