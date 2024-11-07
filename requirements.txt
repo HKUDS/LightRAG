@@ -7,9 +7,6 @@ nano-vectordb
 neo4j
 networkx
 ollama
-tree-sitter==0.21.3
-tree_sitter_languages==1.10.2
-pygments
 openai
 pyvis
 tenacity
@@ -17,7 +14,13 @@ tiktoken
 torch
 transformers
 xxhash
+# lmdeploy[all]
+
+# Palmier
+fastapi-versioning
 fastapi
 uvicorn
 nest_asyncio
-# lmdeploy[all]
+tree-sitter==0.21.3
+tree_sitter_languages==1.10.2
+pygments

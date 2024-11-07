@@ -1,0 +1,18 @@
+# Path to the working directory where the github repo will be downloaded and chunked
+working_dir: "test_data"
+
+chunker:
+  # Maximum number of tokens per chunk
+  max_tokens: 800
+  # Enable LLM summary generation for each file
+  llm_summary_enabled: false
+  # LLM model to use for summary generation - currently only support openai models
+  llm_summary_model: "gpt-4o-mini"
+
+# Uncomment to test code_chunker.py
+# github_repo:
+#   owner: "palmier-io"
+#   repo: "palmier-vscode-extension"
+#   branch: "main"
+
+# TODO: Add lightrag model config
