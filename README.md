@@ -45,15 +45,6 @@ pip install -e .
 ```
 
 ## Quick Start
-<<<<<<< HEAD
-
-* Set OpenAI API key in environment if using OpenAI models: `export OPENAI_API_KEY="sk-...".` OR add .env to `lightrag/`
-* Create `ragtest/input` directory containing `.txt` files to be indexed.
-* Run `python index.py` to index the documents.
-* Modify `query.py` with desired query and run `python query.py` to query the documents.
-### Using Hugging Face Models
-If you want to use Hugging Face models, you only need to set LightRAG as follows:
-=======
 * [Video demo](https://www.youtube.com/watch?v=g21royNJ4fw) of running LightRAG locally.
 * All the code can be found in the `examples`.
 * Set OpenAI API key in environment if using OpenAI models: `export OPENAI_API_KEY="sk-...".`
@@ -144,7 +135,6 @@ rag = LightRAG(
 <summary> Using Hugging Face Models </summary>
 
 * If you want to use Hugging Face models, you only need to set LightRAG as follows:
->>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
 ```python
 from lightrag.llm import hf_model_complete, hf_embedding
 from transformers import AutoModel, AutoTokenizer
@@ -166,8 +156,6 @@ rag = LightRAG(
     ),
 )
 ```
-<<<<<<< HEAD
-=======
 </details>
 
 <details>
@@ -298,7 +286,6 @@ class QueryParam:
     max_token_for_local_context: int = 4000
 ```
 
->>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
 ### Batch Insert
 
 ```python
@@ -614,15 +601,11 @@ The API includes comprehensive error handling:
 The dataset used in LightRAG can be downloaded from [TommyChien/UltraDomain](https://huggingface.co/datasets/TommyChien/UltraDomain).
 
 ### Generate Query
-<<<<<<< HEAD
-LightRAG uses the following prompt to generate high-level queries, with the corresponding code located in `example/generate_query.py`.
-=======
 LightRAG uses the following prompt to generate high-level queries, with the corresponding code in `example/generate_query.py`.
 
 <details>
 <summary> Prompt </summary>
 
->>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
 ```python
 Given the following description of a dataset:
 
@@ -646,11 +629,6 @@ Output the results in the following structure:
 - User 5: [user description]
     ...
 ```
-<<<<<<< HEAD
- 
- ### Batch Eval
-To evaluate the performance of two RAG systems on high-level queries, LightRAG uses the following prompt, with the specific code available in `example/batch_eval.py`.
-=======
 </details>
 
  ### Batch Eval
@@ -659,7 +637,6 @@ To evaluate the performance of two RAG systems on high-level queries, LightRAG u
 <details>
 <summary> Prompt </summary>
 
->>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
 ```python
 ---Role---
 You are an expert tasked with evaluating two answers to the same question based on three criteria: **Comprehensiveness**, **Diversity**, and **Empowerment**.
@@ -702,8 +679,6 @@ Output your evaluation in the following JSON format:
     }}
 }}
 ```
-<<<<<<< HEAD
-=======
 </details>
 
 ### Overall Performance Table
@@ -860,7 +835,6 @@ def extract_queries(file_path):
     return queries
 ```
 </details>
->>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
 
 ## Code Structure
 
@@ -869,10 +843,6 @@ def extract_queries(file_path):
 ├── examples
 │   ├── batch_eval.py
 │   ├── generate_query.py
-<<<<<<< HEAD
-│   ├── lightrag_openai_demo.py
-│   └── lightrag_hf_demo.py
-=======
 │   ├── graph_visual_with_html.py
 │   ├── graph_visual_with_neo4j.py
 │   ├── lightrag_api_openai_compatible_demo.py
@@ -885,7 +855,6 @@ def extract_queries(file_path):
 │   ├── lightrag_openai_demo.py
 │   ├── lightrag_siliconcloud_demo.py
 │   └── vram_management_demo.py
->>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
 ├── lightrag
 │   ├── __init__.py
 │   ├── base.py
@@ -895,12 +864,6 @@ def extract_queries(file_path):
 │   ├── prompt.py
 │   ├── storage.py
 │   └── utils.py
-<<<<<<< HEAD
-├── scripts
-│   ├── repo_chunking.py
-│   ├── repo_stats.py
-│   ├── view_graph.py
-=======
 ├── reproduce
 │   ├── Step_0.py
 │   ├── Step_1_openai_compatible.py
@@ -910,7 +873,6 @@ def extract_queries(file_path):
 │   └── Step_3.py
 ├── .gitignore
 ├── .pre-commit-config.yaml
->>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
@@ -930,11 +892,7 @@ eprint={2410.05779},
 archivePrefix={arXiv},
 primaryClass={cs.IR}
 }
-<<<<<<< HEAD
-```
-=======
 ```
 
 
 
->>>>>>> c523dd60ac01f1b7510384c985beb9398f3af96e
