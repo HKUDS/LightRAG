@@ -18,20 +18,6 @@ from .operate import (
     naive_query,
 )
 
-from .storage import (
-    JsonKVStorage,
-    NanoVectorDBStorage,
-    NetworkXStorage,
-)
-
-from .kg.neo4j_impl import Neo4JStorage
-# future KG integrations
-
-# from .kg.ArangoDB_impl import (
-#     GraphStorage as ArangoDBStorage
-# )
-
-
 from .utils import (
     EmbeddingFunc,
     compute_mdhash_id,
@@ -48,6 +34,26 @@ from .base import (
     QueryParam,
 )
 
+
+from .storage import (
+    JsonKVStorage,
+    NanoVectorDBStorage,
+    NetworkXStorage,
+    )
+
+from .kg.neo4j_impl import Neo4JStorage
+
+from .kg.oracle_impl import (
+    OracleKVStorage, 
+    OracleGraphStorage, 
+    OracleVectorDBStorage
+    )
+
+# future KG integrations
+
+# from .kg.ArangoDB_impl import (
+#     GraphStorage as ArangoDBStorage
+# )
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
@@ -68,7 +74,9 @@ class LightRAG:
         default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
 
-    kg: str = field(default="NetworkXStorage")
+    kv_storage : str = field(default="JsonKVStorage")
+    vector_storage: str = field(default="NanoVectorDBStorage")
+    graph_storage: str = field(default="NetworkXStorage")
 
     current_log_level = logger.level
     log_level: str = field(default=current_log_level)
@@ -108,9 +116,16 @@ class LightRAG:
     llm_model_kwargs: dict = field(default_factory=dict)
 
     # storage
-    key_string_value_json_storage_cls: Type[BaseKVStorage] = JsonKVStorage
-    vector_db_storage_cls: Type[BaseVectorStorage] = NanoVectorDBStorage
+
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
+    # if DATABASE_TYPE is None:
+    #     key_string_value_json_storage_cls: Type[BaseKVStorage] = JsonKVStorage
+    #     vector_db_storage_cls: Type[BaseVectorStorage] = NanoVectorDBStorage
+    #     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
+    # elif DATABASE_TYPE == "oracle":        
+    #     key_string_value_json_storage_cls: Type[BaseKVStorage] = OracleKVStorage,
+    #     vector_db_storage_cls: Type[BaseVectorStorage] = OracleVectorDBStorage,
+        
     enable_llm_cache: bool = True
 
     # extension
@@ -128,21 +143,16 @@ class LightRAG:
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
         # @TODO: should move all storage setup here to leverage initial start params attached to self.
-        self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class()[
-            self.kg
-        ]
 
+        self. key_string_value_json_storage_cls: Type[BaseKVStorage] = self._get_storage_class()[self.kv_storage]
+
+        self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class()[self.graph_storage]
+
+        self.vector_db_storage_cls: Type[BaseVectorStorage] = self._get_storage_class()[self.vector_storage]
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
 
-        self.full_docs = self.key_string_value_json_storage_cls(
-            namespace="full_docs", global_config=asdict(self)
-        )
-
-        self.text_chunks = self.key_string_value_json_storage_cls(
-            namespace="text_chunks", global_config=asdict(self)
-        )
 
         self.llm_response_cache = (
             self.key_string_value_json_storage_cls(
@@ -151,13 +161,26 @@ class LightRAG:
             if self.enable_llm_cache
             else None
         )
-        self.chunk_entity_relation_graph = self.graph_storage_cls(
-            namespace="chunk_entity_relation", global_config=asdict(self)
-        )
 
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
             self.embedding_func
         )
+
+        ####
+        # add embedding func by walter
+        ####
+        self.full_docs = self.key_string_value_json_storage_cls(
+            namespace="full_docs", global_config=asdict(self), embedding_func=self.embedding_func
+        )
+        self.text_chunks = self.key_string_value_json_storage_cls(
+            namespace="text_chunks", global_config=asdict(self), embedding_func=self.embedding_func
+        )
+        self.chunk_entity_relation_graph = self.graph_storage_cls(
+            namespace="chunk_entity_relation", global_config=asdict(self), embedding_func=self.embedding_func
+        )
+        ####
+        # add embedding func by walter over
+        ####
 
         self.entities_vdb = self.vector_db_storage_cls(
             namespace="entities",
@@ -187,8 +210,15 @@ class LightRAG:
 
     def _get_storage_class(self) -> Type[BaseGraphStorage]:
         return {
+            "JsonKVStorage":JsonKVStorage,
+            "OracleKVStorage":OracleKVStorage,
+
+            "NanoVectorDBStorage":NanoVectorDBStorage,
+            "OracleVectorDBStorage":OracleVectorDBStorage,
+
             "Neo4JStorage": Neo4JStorage,
             "NetworkXStorage": NetworkXStorage,
+            "OracleGraphStorage": OracleGraphStorage,
             # "ArangoDBStorage": ArangoDBStorage
         }
 
