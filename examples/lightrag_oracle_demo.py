@@ -116,7 +116,7 @@ async def main():
         modes = ["naive", "local", "global", "hybrid"]
         for mode in modes:
             print("="*20, mode, "="*20)
-            print(await rag.aquery("这个文章讲了什么?", param=QueryParam(mode=mode)))
+            print(await rag.aquery("What are the top themes in this story?", param=QueryParam(mode=mode)))
             print("-"*100, "\n")
 
     except Exception as e:
