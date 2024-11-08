@@ -71,13 +71,13 @@ async def main():
         # We storage data in unified tables, so we need to set a `workspace` parameter to specify which docs we want to store and query
         # Below is an example of how to connect to Oracle Autonomous Database on Oracle Cloud
         oracle_db = OracleDB(config={
-            "user":"RAG",
+            "user":"username",
             "password":"xxxxxxxxx",
             "dsn":"xxxxxxx_medium",
             "config_dir":"dir/path/to/oracle/config",
             "wallet_location":"dir/path/to/oracle/wallet",
             "wallet_password":"xxxxxxxxx",
-            "workspace":"company"  # specify which docs we want to store and query
+            "workspace":"company"  # specify which docs you want to store and query
             }
             )
         

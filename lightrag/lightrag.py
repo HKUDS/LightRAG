@@ -146,7 +146,7 @@ class LightRAG:
 
         self.llm_response_cache = (
             self.key_string_value_json_storage_cls(
-                namespace="llm_response_cache", global_config=asdict(self)
+                namespace="llm_response_cache", global_config=asdict(self),embedding_func=None
             )
             if self.enable_llm_cache
             else None
