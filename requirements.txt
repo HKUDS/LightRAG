@@ -1,18 +1,22 @@
 accelerate
-aioboto3
 aiohttp
-graspologic
-hnswlib
-nano-vectordb
-neo4j
-networkx
-ollama
-openai
 pyvis
 tenacity
+xxhash
+# lmdeploy[all]
+
+# LLM packages
 tiktoken
 torch
 transformers
-xxhash
-# lmdeploy[all]
+aioboto3
+ollama
+openai
+
+# database packages
+graspologic
+hnswlib
+networkx
 oracledb
+nano-vectordb
+neo4j
