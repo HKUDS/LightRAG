@@ -34,7 +34,6 @@ from .base import (
     QueryParam,
 )
 
-
 from .storage import (
     JsonKVStorage,
     NanoVectorDBStorage,
@@ -116,15 +115,7 @@ class LightRAG:
     llm_model_kwargs: dict = field(default_factory=dict)
 
     # storage
-
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
-    # if DATABASE_TYPE is None:
-    #     key_string_value_json_storage_cls: Type[BaseKVStorage] = JsonKVStorage
-    #     vector_db_storage_cls: Type[BaseVectorStorage] = NanoVectorDBStorage
-    #     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
-    # elif DATABASE_TYPE == "oracle":        
-    #     key_string_value_json_storage_cls: Type[BaseKVStorage] = OracleKVStorage,
-    #     vector_db_storage_cls: Type[BaseVectorStorage] = OracleVectorDBStorage,
         
     enable_llm_cache: bool = True
 
@@ -144,11 +135,10 @@ class LightRAG:
 
         # @TODO: should move all storage setup here to leverage initial start params attached to self.
 
-        self. key_string_value_json_storage_cls: Type[BaseKVStorage] = self._get_storage_class()[self.kv_storage]
-
+        self.key_string_value_json_storage_cls: Type[BaseKVStorage] = self._get_storage_class()[self.kv_storage]
+        self.vector_db_storage_cls: Type[BaseVectorStorage] = self._get_storage_class()[self.vector_storage]        
         self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class()[self.graph_storage]
 
-        self.vector_db_storage_cls: Type[BaseVectorStorage] = self._get_storage_class()[self.vector_storage]
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
@@ -210,14 +200,17 @@ class LightRAG:
 
     def _get_storage_class(self) -> Type[BaseGraphStorage]:
         return {
+            # kv storage
             "JsonKVStorage":JsonKVStorage,
             "OracleKVStorage":OracleKVStorage,
 
+            # vector storage
             "NanoVectorDBStorage":NanoVectorDBStorage,
             "OracleVectorDBStorage":OracleVectorDBStorage,
 
-            "Neo4JStorage": Neo4JStorage,
+            # graph storage
             "NetworkXStorage": NetworkXStorage,
+            "Neo4JStorage": Neo4JStorage,
             "OracleGraphStorage": OracleGraphStorage,
             # "ArangoDBStorage": ArangoDBStorage
         }
