@@ -142,6 +142,7 @@ rag = LightRAG(
 ```python
 from lightrag.llm import hf_model_complete, hf_embedding
 from transformers import AutoModel, AutoTokenizer
+from lightrag.utils import EmbeddingFunc
 
 # Initialize LightRAG with Hugging Face model
 rag = LightRAG(
@@ -172,6 +173,7 @@ Then you only need to set LightRAG as follows:
 
 ```python
 from lightrag.llm import ollama_model_complete, ollama_embedding
+from lightrag.utils import EmbeddingFunc
 
 # Initialize LightRAG with Ollama model
 rag = LightRAG(
