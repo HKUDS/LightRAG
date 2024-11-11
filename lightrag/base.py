@@ -116,7 +116,7 @@ class BaseGraphStorage(StorageNameSpace):
     ):
         raise NotImplementedError
 
-    async def clustering(self, algorithm: str):
+    async def delete_node(self, node_id: str):
         raise NotImplementedError
 
     async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:
