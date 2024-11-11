@@ -560,19 +560,19 @@ async def _find_most_related_text_unit_from_entities(
         if not this_edges:
             continue
         all_one_hop_nodes.update([e[1] for e in this_edges])
-    
+
     all_one_hop_nodes = list(all_one_hop_nodes)
     all_one_hop_nodes_data = await asyncio.gather(
         *[knowledge_graph_inst.get_node(e) for e in all_one_hop_nodes]
     )
-    
+
     # Add null check for node data
     all_one_hop_text_units_lookup = {
         k: set(split_string_by_multi_markers(v["source_id"], [GRAPH_FIELD_SEP]))
         for k, v in zip(all_one_hop_nodes, all_one_hop_nodes_data)
         if v is not None and "source_id" in v  # Add source_id check
     }
-    
+
     all_text_units_lookup = {}
     for index, (this_text_units, this_edges) in enumerate(zip(text_units, edges)):
         for c_id in this_text_units:
@@ -586,7 +586,7 @@ async def _find_most_related_text_unit_from_entities(
                         and c_id in all_one_hop_text_units_lookup[e[1]]
                     ):
                         relation_counts += 1
-            
+
             chunk_data = await text_chunks_db.get_by_id(c_id)
             if chunk_data is not None and "content" in chunk_data:  # Add content check
                 all_text_units_lookup[c_id] = {
@@ -594,29 +594,28 @@ async def _find_most_related_text_unit_from_entities(
                     "order": index,
                     "relation_counts": relation_counts,
                 }
-    
+
     # Filter out None values and ensure data has content
     all_text_units = [
-        {"id": k, **v} 
-        for k, v in all_text_units_lookup.items() 
+        {"id": k, **v}
+        for k, v in all_text_units_lookup.items()
         if v is not None and v.get("data") is not None and "content" in v["data"]
     ]
-    
+
     if not all_text_units:
         logger.warning("No valid text units found")
         return []
-        
+
     all_text_units = sorted(
-        all_text_units, 
-        key=lambda x: (x["order"], -x["relation_counts"])
+        all_text_units, key=lambda x: (x["order"], -x["relation_counts"])
     )
-    
+
     all_text_units = truncate_list_by_token_size(
         all_text_units,
         key=lambda x: x["data"]["content"],
         max_token_size=query_param.max_token_for_text_unit,
     )
-    
+
     all_text_units = [t["data"] for t in all_text_units]
     return all_text_units
 
