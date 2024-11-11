@@ -1,7 +1,7 @@
 <center><h2>🚀 LightRAG: Simple and Fast Retrieval-Augmented Generation</h2></center>
 
 
-![请添加图片描述](https://i-blog.csdnimg.cn/direct/567139f1a36e4564abc63ce5c12b6271.jpeg)
+![LightRAG Image](https://i-blog.csdnimg.cn/direct/567139f1a36e4564abc63ce5c12b6271.jpeg)
 
 <div align='center'>
      <p>
@@ -18,11 +18,12 @@
     </p>
 
 This repository hosts the code of LightRAG. The structure of this code is based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag).
-![请添加图片描述](https://i-blog.csdnimg.cn/direct/b2aaf634151b4706892693ffb43d9093.png)
+![LightRAG Diagram](https://i-blog.csdnimg.cn/direct/b2aaf634151b4706892693ffb43d9093.png)
 </div>
 
 ## 🎉 News
-- [x] [2024.11.08]🎯📢You can [use Oracle Database 23ai for all storage types (kv/vector/graph)](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_oracle_demo.py) now.
+- [x] [2024.11.11]🎯📢You can [use Oracle Database 23ai for all storage types (kv/vector/graph)](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_oracle_demo.py) now.
+- [x] [2024.11.09]🎯📢Now comes [LightRAG Gui](https://lightrag-gui.streamlit.app) that lets you insert, query, visualize, and download LightRAG knowledge.
 - [x] [2024.11.04]🎯📢You can [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage) now.
 - [x] [2024.10.29]🎯📢LightRAG now supports multiple file types, including PDF, DOC, PPT, and CSV via `textract`.
 - [x] [2024.10.20]🎯📢We’ve added a new feature to LightRAG: Graph Visualization.
@@ -143,6 +144,7 @@ rag = LightRAG(
 ```python
 from lightrag.llm import hf_model_complete, hf_embedding
 from transformers import AutoModel, AutoTokenizer
+from lightrag.utils import EmbeddingFunc
 
 # Initialize LightRAG with Hugging Face model
 rag = LightRAG(
@@ -173,6 +175,7 @@ Then you only need to set LightRAG as follows:
 
 ```python
 from lightrag.llm import ollama_model_complete, ollama_embedding
+from lightrag.utils import EmbeddingFunc
 
 # Initialize LightRAG with Ollama model
 rag = LightRAG(
@@ -194,7 +197,7 @@ rag = LightRAG(
 ### Using Neo4J for Storage
 
 * For production level scenarios you will most likely want to leverage an enterprise solution
-* for KG storage. Running Neo4J in Docker is recommended for seamless local testing.  
+* for KG storage. Running Neo4J in Docker is recommended for seamless local testing.
 * See: https://hub.docker.com/_/neo4j
 
 
@@ -207,7 +210,7 @@ When you launch the project be sure to override the default KG: NetworkS
 by specifying kg="Neo4JStorage".
 
 # Note: Default settings use NetworkX
-#Initialize LightRAG with Neo4J implementation. 
+#Initialize LightRAG with Neo4J implementation.
 WORKING_DIR = "./local_neo4jWorkDir"
 
 rag = LightRAG(
@@ -501,8 +504,8 @@ pip install fastapi uvicorn pydantic
 export RAG_DIR="your_index_directory"  # Optional: Defaults to "index_default"
 export OPENAI_BASE_URL="Your OpenAI API base URL"  # Optional: Defaults to "https://api.openai.com/v1"
 export OPENAI_API_KEY="Your OpenAI API key"  # Required
-export LLM_MODEL="Your LLM model" # Optional: Defaults to "gpt-4o-mini" 
-export EMBEDDING_MODEL="Your embedding model" # Optional: Defaults to "text-embedding-3-large" 
+export LLM_MODEL="Your LLM model" # Optional: Defaults to "gpt-4o-mini"
+export EMBEDDING_MODEL="Your embedding model" # Optional: Defaults to "text-embedding-3-large"
 ```
 
 3. Run the API server:
@@ -867,6 +870,9 @@ def extract_queries(file_path):
 │   ├── lightrag_siliconcloud_demo.py
 │   └── vram_management_demo.py
 ├── lightrag
+│   ├── kg
+│   │   ├── __init__.py
+│   │   └── neo4j_impl.py
 │   ├── __init__.py
 │   ├── base.py
 │   ├── lightrag.py
@@ -884,10 +890,14 @@ def extract_queries(file_path):
 │   └── Step_3.py
 ├── .gitignore
 ├── .pre-commit-config.yaml
+├── Dockerfile
+├── get_all_edges_nx.py
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
-└── setup.py
+├── setup.py
+├── test_neo4j.py
+└── test.py
 ```
 
 ## Star History
@@ -921,4 +931,3 @@ primaryClass={cs.IR}
 }
 ```
 **Thank you for your interest in our work!**
-
