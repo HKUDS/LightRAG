@@ -869,6 +869,9 @@ def extract_queries(file_path):
 │   ├── lightrag_siliconcloud_demo.py
 │   └── vram_management_demo.py
 ├── lightrag
+│   ├── kg
+│   │   ├── __init__.py
+│   │   └── neo4j_impl.py
 │   ├── __init__.py
 │   ├── base.py
 │   ├── lightrag.py
@@ -886,10 +889,14 @@ def extract_queries(file_path):
 │   └── Step_3.py
 ├── .gitignore
 ├── .pre-commit-config.yaml
+├── Dockerfile
+├── get_all_edges_nx.py
 ├── LICENSE
 ├── README.md
 ├── requirements.txt
-└── setup.py
+├── setup.py
+├── test_neo4j.py
+└── test.py
 ```
 
 ## Star History
