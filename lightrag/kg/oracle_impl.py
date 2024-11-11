@@ -279,7 +279,7 @@ class OracleVectorDBStorage(BaseVectorStorage):
         pass
 
 
-    #################### query method ################
+    #################### query method ###############
     async def query(self, query: str, top_k=5) -> Union[dict, list[dict]]:
         """从向量数据库中查询数据"""        
         embeddings = await self.embedding_func([query])
