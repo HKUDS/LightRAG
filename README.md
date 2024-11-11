@@ -1,7 +1,7 @@
 <center><h2>🚀 LightRAG: Simple and Fast Retrieval-Augmented Generation</h2></center>
 
 
-![请添加图片描述](https://i-blog.csdnimg.cn/direct/567139f1a36e4564abc63ce5c12b6271.jpeg)
+![LightRAG Image](https://i-blog.csdnimg.cn/direct/567139f1a36e4564abc63ce5c12b6271.jpeg)
 
 <div align='center'>
      <p>
@@ -18,10 +18,11 @@
     </p>
 
 This repository hosts the code of LightRAG. The structure of this code is based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag).
-![请添加图片描述](https://i-blog.csdnimg.cn/direct/b2aaf634151b4706892693ffb43d9093.png)
+![LightRAG Diagram](https://i-blog.csdnimg.cn/direct/b2aaf634151b4706892693ffb43d9093.png)
 </div>
 
 ## 🎉 News
+- [x] [2024.11.09]🎯📢Now comes [LightRAG Gui](https://lightrag-gui.streamlit.app) that lets you insert, query, visualize, and download LightRAG knowledge.
 - [x] [2024.11.04]🎯📢You can [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage) now.
 - [x] [2024.10.29]🎯📢LightRAG now supports multiple file types, including PDF, DOC, PPT, and CSV via `textract`.
 - [x] [2024.10.20]🎯📢We’ve added a new feature to LightRAG: Graph Visualization.
