@@ -61,7 +61,6 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
         return loop
 
 
-
 @dataclass
 class LightRAG:
     working_dir: str = field(

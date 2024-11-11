@@ -146,11 +146,11 @@ class Neo4JStorage(BaseGraphStorage):
         entity_name_label_target = target_node_id.strip('"')
         """
         Find all edges between nodes of two given labels
-        
+
         Args:
             source_node_label (str): Label of the source nodes
             target_node_label (str): Label of the target nodes
-            
+
         Returns:
             list: List of all relationships/edges found
         """
