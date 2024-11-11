@@ -22,6 +22,7 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 </div>
 
 ## 🎉 News
+- [x] [2024.11.11]🎯📢LightRAG now supports [deleting entities by their names](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete-entity).
 - [x] [2024.11.09]🎯📢Now comes [LightRAG Gui](https://lightrag-gui.streamlit.app) that lets you insert, query, visualize, and download LightRAG knowledge.
 - [x] [2024.11.04]🎯📢You can [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage) now.
 - [x] [2024.10.29]🎯📢LightRAG now supports multiple file types, including PDF, DOC, PPT, and CSV via `textract`.
@@ -316,6 +317,23 @@ rag = LightRAG(
 
 with open("./newText.txt") as f:
     rag.insert(f.read())
+```
+
+### Delete Entity
+
+```python
+#  Delete Entity: Deleting entities by their names
+rag = LightRAG(
+     working_dir=WORKING_DIR,
+     llm_model_func=llm_model_func,
+     embedding_func=EmbeddingFunc(
+          embedding_dim=embedding_dimension,
+          max_token_size=8192,
+          func=embedding_func,
+     ),
+)
+
+rag.delete_by_entity("Project Gutenberg")
 ```
 
 ### Multi-file Type Support
