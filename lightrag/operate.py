@@ -16,6 +16,7 @@ from .utils import (
     split_string_by_multi_markers,
     truncate_list_by_token_size,
     process_combine_contexts,
+    locate_json_string_body_from_string
 )
 from .base import (
     BaseGraphStorage,
@@ -403,9 +404,10 @@ async def local_query(
     kw_prompt_temp = PROMPTS["keywords_extraction"]
     kw_prompt = kw_prompt_temp.format(query=query)
     result = await use_model_func(kw_prompt)
+    json_text = locate_json_string_body_from_string(result)
 
     try:
-        keywords_data = json.loads(result)
+        keywords_data = json.loads(json_text)
         keywords = keywords_data.get("low_level_keywords", [])
         keywords = ", ".join(keywords)
     except json.JSONDecodeError:
@@ -670,9 +672,10 @@ async def global_query(
     kw_prompt_temp = PROMPTS["keywords_extraction"]
     kw_prompt = kw_prompt_temp.format(query=query)
     result = await use_model_func(kw_prompt)
+    json_text = locate_json_string_body_from_string(result)
 
     try:
-        keywords_data = json.loads(result)
+        keywords_data = json.loads(json_text)
         keywords = keywords_data.get("high_level_keywords", [])
         keywords = ", ".join(keywords)
     except json.JSONDecodeError:
@@ -911,8 +914,9 @@ async def hybrid_query(
     kw_prompt = kw_prompt_temp.format(query=query)
 
     result = await use_model_func(kw_prompt)
+    json_text = locate_json_string_body_from_string(result)
     try:
-        keywords_data = json.loads(result)
+        keywords_data = json.loads(json_text)
         hl_keywords = keywords_data.get("high_level_keywords", [])
         ll_keywords = keywords_data.get("low_level_keywords", [])
         hl_keywords = ", ".join(hl_keywords)
