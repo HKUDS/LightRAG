@@ -8,8 +8,8 @@ import numpy as np
 from nano_vectordb import NanoVectorDB
 
 from .utils import (
-    logger, 
-    load_json, 
+    logger,
+    load_json,
     write_json,
     compute_mdhash_id,
 )
@@ -116,7 +116,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             {**dp, "id": dp["__id__"], "distance": dp["__metrics__"]} for dp in results
         ]
         return results
-    
+
     @property
     def client_storage(self):
         return getattr(self._client, "_NanoVectorDB__storage")
@@ -124,7 +124,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def delete_entity(self, entity_name: str):
         try:
             entity_id = [compute_mdhash_id(entity_name, prefix="ent-")]
-            
+
             if self._client.get(entity_id):
                 self._client.delete(entity_id)
                 logger.info(f"Entity {entity_name} have been deleted.")
@@ -132,21 +132,27 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 logger.info(f"No entity found with name {entity_name}.")
         except Exception as e:
             logger.error(f"Error while deleting entity {entity_name}: {e}")
-    
+
     async def delete_relation(self, entity_name: str):
         try:
             relations = [
-                dp for dp in self.client_storage["data"] if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
+                dp
+                for dp in self.client_storage["data"]
+                if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
             ]
             ids_to_delete = [relation["__id__"] for relation in relations]
 
             if ids_to_delete:
                 self._client.delete(ids_to_delete)
-                logger.info(f"All relations related to entity {entity_name} have been deleted.")
+                logger.info(
+                    f"All relations related to entity {entity_name} have been deleted."
+                )
             else:
                 logger.info(f"No relations found for entity {entity_name}.")
         except Exception as e:
-            logger.error(f"Error while deleting relations for entity {entity_name}: {e}")
+            logger.error(
+                f"Error while deleting relations for entity {entity_name}: {e}"
+            )
 
     async def index_done_callback(self):
         self._client.save()
@@ -268,7 +274,7 @@ class NetworkXStorage(BaseGraphStorage):
     async def delete_node(self, node_id: str):
         """
         Delete a node from the graph based on the specified node_id.
-        
+
         :param node_id: The node_id to delete
         """
         if self._graph.has_node(node_id):
