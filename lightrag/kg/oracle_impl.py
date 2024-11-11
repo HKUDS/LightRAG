@@ -413,7 +413,7 @@ class OracleGraphStorage(BaseGraphStorage):
         """写入graphhml图文件"""
         logger.info("Node and edge data had been saved into oracle db already, so nothing to do here!")
     
-    #################### query method ################
+    #################### query method #################
     async def has_node(self, node_id: str) -> bool:
         """根据节点id检查节点是否存在""" 
         SQL = SQL_TEMPLATES["has_node"].format(workspace=self.db.workspace, node_id=node_id)
