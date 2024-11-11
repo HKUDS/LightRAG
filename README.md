@@ -196,7 +196,7 @@ rag = LightRAG(
 ### Using Neo4J for Storage
 
 * For production level scenarios you will most likely want to leverage an enterprise solution
-* for KG storage. Running Neo4J in Docker is recommended for seamless local testing.  
+* for KG storage. Running Neo4J in Docker is recommended for seamless local testing.
 * See: https://hub.docker.com/_/neo4j
 
 
@@ -209,7 +209,7 @@ When you launch the project be sure to override the default KG: NetworkS
 by specifying kg="Neo4JStorage".
 
 # Note: Default settings use NetworkX
-#Initialize LightRAG with Neo4J implementation. 
+#Initialize LightRAG with Neo4J implementation.
 WORKING_DIR = "./local_neo4jWorkDir"
 
 rag = LightRAG(
@@ -503,8 +503,8 @@ pip install fastapi uvicorn pydantic
 export RAG_DIR="your_index_directory"  # Optional: Defaults to "index_default"
 export OPENAI_BASE_URL="Your OpenAI API base URL"  # Optional: Defaults to "https://api.openai.com/v1"
 export OPENAI_API_KEY="Your OpenAI API key"  # Required
-export LLM_MODEL="Your LLM model" # Optional: Defaults to "gpt-4o-mini" 
-export EMBEDDING_MODEL="Your embedding model" # Optional: Defaults to "text-embedding-3-large" 
+export LLM_MODEL="Your LLM model" # Optional: Defaults to "gpt-4o-mini"
+export EMBEDDING_MODEL="Your embedding model" # Optional: Defaults to "text-embedding-3-large"
 ```
 
 3. Run the API server:
@@ -923,4 +923,3 @@ primaryClass={cs.IR}
 }
 ```
 **Thank you for your interest in our work!**
-

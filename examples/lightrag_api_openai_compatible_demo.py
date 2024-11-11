@@ -33,7 +33,7 @@ if not os.path.exists(WORKING_DIR):
 
 
 async def llm_model_func(
-        prompt, system_prompt=None, history_messages=[], **kwargs
+    prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     return await openai_complete_if_cache(
         LLM_MODEL,
@@ -66,9 +66,11 @@ async def get_embedding_dim():
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
-    embedding_func=EmbeddingFunc(embedding_dim=asyncio.run(get_embedding_dim()),
-                                 max_token_size=EMBEDDING_MAX_TOKEN_SIZE,
-                                 func=embedding_func),
+    embedding_func=EmbeddingFunc(
+        embedding_dim=asyncio.run(get_embedding_dim()),
+        max_token_size=EMBEDDING_MAX_TOKEN_SIZE,
+        func=embedding_func,
+    ),
 )
 
 
@@ -99,8 +101,13 @@ async def query_endpoint(request: QueryRequest):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: rag.query(request.query,
-                                    param=QueryParam(mode=request.mode, only_need_context=request.only_need_context))
+            None,
+            lambda: rag.query(
+                request.query,
+                param=QueryParam(
+                    mode=request.mode, only_need_context=request.only_need_context
+                ),
+            ),
         )
         return Response(status="success", data=result)
     except Exception as e:
