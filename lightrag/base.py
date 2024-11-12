@@ -59,6 +59,8 @@ class BaseVectorStorage(StorageNameSpace):
 
 @dataclass
 class BaseKVStorage(Generic[T], StorageNameSpace):
+    embedding_func: EmbeddingFunc
+
     async def all_keys(self) -> list[str]:
         raise NotImplementedError
 
@@ -83,6 +85,8 @@ class BaseKVStorage(Generic[T], StorageNameSpace):
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace):
+    embedding_func: EmbeddingFunc = None
+
     async def has_node(self, node_id: str) -> bool:
         raise NotImplementedError
 
@@ -116,7 +120,7 @@ class BaseGraphStorage(StorageNameSpace):
     ):
         raise NotImplementedError
 
-    async def clustering(self, algorithm: str):
+    async def delete_node(self, node_id: str):
         raise NotImplementedError
 
     async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:

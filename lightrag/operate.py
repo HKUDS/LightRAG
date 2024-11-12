@@ -16,6 +16,7 @@ from .utils import (
     split_string_by_multi_markers,
     truncate_list_by_token_size,
     process_combine_contexts,
+    locate_json_string_body_from_string,
 )
 from .base import (
     BaseGraphStorage,
@@ -403,9 +404,10 @@ async def local_query(
     kw_prompt_temp = PROMPTS["keywords_extraction"]
     kw_prompt = kw_prompt_temp.format(query=query)
     result = await use_model_func(kw_prompt)
+    json_text = locate_json_string_body_from_string(result)
 
     try:
-        keywords_data = json.loads(result)
+        keywords_data = json.loads(json_text)
         keywords = keywords_data.get("low_level_keywords", [])
         keywords = ", ".join(keywords)
     except json.JSONDecodeError:
@@ -466,7 +468,6 @@ async def _build_local_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-
     results = await entities_vdb.query(query, top_k=query_param.top_k)
 
     if not len(results):
@@ -483,7 +484,7 @@ async def _build_local_query_context(
         {**n, "entity_name": k["entity_name"], "rank": d}
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
-    ]#what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
+    ]  # what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
     use_text_units = await _find_most_related_text_unit_from_entities(
         node_datas, query_param, text_chunks_db, knowledge_graph_inst
     )
@@ -561,46 +562,63 @@ async def _find_most_related_text_unit_from_entities(
         if not this_edges:
             continue
         all_one_hop_nodes.update([e[1] for e in this_edges])
+
     all_one_hop_nodes = list(all_one_hop_nodes)
     all_one_hop_nodes_data = await asyncio.gather(
         *[knowledge_graph_inst.get_node(e) for e in all_one_hop_nodes]
     )
+
+    # Add null check for node data
     all_one_hop_text_units_lookup = {
         k: set(split_string_by_multi_markers(v["source_id"], [GRAPH_FIELD_SEP]))
         for k, v in zip(all_one_hop_nodes, all_one_hop_nodes_data)
-        if v is not None
+        if v is not None and "source_id" in v  # Add source_id check
     }
+
     all_text_units_lookup = {}
     for index, (this_text_units, this_edges) in enumerate(zip(text_units, edges)):
         for c_id in this_text_units:
             if c_id in all_text_units_lookup:
                 continue
             relation_counts = 0
-            for e in this_edges:
-                if (
-                    e[1] in all_one_hop_text_units_lookup
-                    and c_id in all_one_hop_text_units_lookup[e[1]]
-                ):
-                    relation_counts += 1
-            all_text_units_lookup[c_id] = {
-                "data": await text_chunks_db.get_by_id(c_id),
-                "order": index,
-                "relation_counts": relation_counts,
-            }
-    if any([v is None for v in all_text_units_lookup.values()]):
-        logger.warning("Text chunks are missing, maybe the storage is damaged")
+            if this_edges:  # Add check for None edges
+                for e in this_edges:
+                    if (
+                        e[1] in all_one_hop_text_units_lookup
+                        and c_id in all_one_hop_text_units_lookup[e[1]]
+                    ):
+                        relation_counts += 1
+
+            chunk_data = await text_chunks_db.get_by_id(c_id)
+            if chunk_data is not None and "content" in chunk_data:  # Add content check
+                all_text_units_lookup[c_id] = {
+                    "data": chunk_data,
+                    "order": index,
+                    "relation_counts": relation_counts,
+                }
+
+    # Filter out None values and ensure data has content
     all_text_units = [
-        {"id": k, **v} for k, v in all_text_units_lookup.items() if v is not None
+        {"id": k, **v}
+        for k, v in all_text_units_lookup.items()
+        if v is not None and v.get("data") is not None and "content" in v["data"]
     ]
+
+    if not all_text_units:
+        logger.warning("No valid text units found")
+        return []
+
     all_text_units = sorted(
         all_text_units, key=lambda x: (x["order"], -x["relation_counts"])
     )
+
     all_text_units = truncate_list_by_token_size(
         all_text_units,
         key=lambda x: x["data"]["content"],
         max_token_size=query_param.max_token_for_text_unit,
     )
-    all_text_units: list[TextChunkSchema] = [t["data"] for t in all_text_units]
+
+    all_text_units = [t["data"] for t in all_text_units]
     return all_text_units
 
 
@@ -653,9 +671,10 @@ async def global_query(
     kw_prompt_temp = PROMPTS["keywords_extraction"]
     kw_prompt = kw_prompt_temp.format(query=query)
     result = await use_model_func(kw_prompt)
+    json_text = locate_json_string_body_from_string(result)
 
     try:
-        keywords_data = json.loads(result)
+        keywords_data = json.loads(json_text)
         keywords = keywords_data.get("high_level_keywords", [])
         keywords = ", ".join(keywords)
     except json.JSONDecodeError:
@@ -894,8 +913,9 @@ async def hybrid_query(
     kw_prompt = kw_prompt_temp.format(query=query)
 
     result = await use_model_func(kw_prompt)
+    json_text = locate_json_string_body_from_string(result)
     try:
-        keywords_data = json.loads(result)
+        keywords_data = json.loads(json_text)
         hl_keywords = keywords_data.get("high_level_keywords", [])
         ll_keywords = keywords_data.get("low_level_keywords", [])
         hl_keywords = ", ".join(hl_keywords)
@@ -928,7 +948,6 @@ async def hybrid_query(
             query_param,
         )
 
-
     if hl_keywords:
         high_level_context = await _build_global_query_context(
             hl_keywords,
@@ -938,7 +957,6 @@ async def hybrid_query(
             text_chunks_db,
             query_param,
         )
-
 
     context = combine_contexts(high_level_context, low_level_context)
 
@@ -1008,9 +1026,11 @@ def combine_contexts(high_level_context, low_level_context):
 
     # Combine and deduplicate the entities
     combined_entities = process_combine_contexts(hl_entities, ll_entities)
-    
+
     # Combine and deduplicate the relationships
-    combined_relationships = process_combine_contexts(hl_relationships, ll_relationships)
+    combined_relationships = process_combine_contexts(
+        hl_relationships, ll_relationships
+    )
 
     # Combine and deduplicate the sources
     combined_sources = process_combine_contexts(hl_sources, ll_sources)
@@ -1028,7 +1048,7 @@ def combine_contexts(high_level_context, low_level_context):
 -----Sources-----
 ```csv
 {combined_sources}
-``
+```
 """
 
 
@@ -1045,7 +1065,6 @@ async def naive_query(
         return PROMPTS["fail_response"]
     chunks_ids = [r["id"] for r in results]
     chunks = await text_chunks_db.get_by_ids(chunks_ids)
-
 
     maybe_trun_chunks = truncate_list_by_token_size(
         chunks,

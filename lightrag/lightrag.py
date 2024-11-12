@@ -1,6 +1,5 @@
 import asyncio
 import os
-import importlib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
@@ -19,23 +18,6 @@ from .operate import (
     naive_query,
 )
 
-from .storage import (
-    JsonKVStorage,
-    NanoVectorDBStorage,
-    NetworkXStorage,
-)
- 
-from .kg.neo4j_impl import (
-    Neo4JStorage 
-)
-#future KG integrations
-
-# from .kg.ArangoDB_impl import (
-#     GraphStorage as ArangoDBStorage
-# )
-
-
-
 from .utils import (
     EmbeddingFunc,
     compute_mdhash_id,
@@ -52,31 +34,47 @@ from .base import (
     QueryParam,
 )
 
+from .storage import (
+    JsonKVStorage,
+    NanoVectorDBStorage,
+    NetworkXStorage,
+)
+
+from .kg.neo4j_impl import Neo4JStorage
+
+from .kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBStorage
+
+# future KG integrations
+
+# from .kg.ArangoDB_impl import (
+#     GraphStorage as ArangoDBStorage
+# )
+
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
-        loop = asyncio.get_running_loop()
+        return asyncio.get_event_loop()
+
     except RuntimeError:
         logger.info("Creating a new event loop in main thread.")
-        # loop = asyncio.new_event_loop()
-        # asyncio.set_event_loop(loop)
-        loop = asyncio.get_event_loop()
-    return loop
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        return loop
 
 
 @dataclass
 class LightRAG:
-    
     working_dir: str = field(
         default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
 
-    kg: str = field(default="NetworkXStorage")
+    kv_storage: str = field(default="JsonKVStorage")
+    vector_storage: str = field(default="NanoVectorDBStorage")
+    graph_storage: str = field(default="NetworkXStorage")
 
     current_log_level = logger.level
     log_level: str = field(default=current_log_level)
-
-
 
     # text chunking
     chunk_token_size: int = 512
@@ -113,9 +111,8 @@ class LightRAG:
     llm_model_kwargs: dict = field(default_factory=dict)
 
     # storage
-    key_string_value_json_storage_cls: Type[BaseKVStorage] = JsonKVStorage
-    vector_db_storage_cls: Type[BaseVectorStorage] = NanoVectorDBStorage
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
+
     enable_llm_cache: bool = True
 
     # extension
@@ -132,35 +129,57 @@ class LightRAG:
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in asdict(self).items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
-        #@TODO: should move all storage setup here to leverage initial start params attached to self.
-        self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class()[self.kg]
+        # @TODO: should move all storage setup here to leverage initial start params attached to self.
+
+        self.key_string_value_json_storage_cls: Type[BaseKVStorage] = (
+            self._get_storage_class()[self.kv_storage]
+        )
+        self.vector_db_storage_cls: Type[BaseVectorStorage] = self._get_storage_class()[
+            self.vector_storage
+        ]
+        self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class()[
+            self.graph_storage
+        ]
 
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
 
-        self.full_docs = self.key_string_value_json_storage_cls(
-            namespace="full_docs", global_config=asdict(self)
-        )
-
-        self.text_chunks = self.key_string_value_json_storage_cls(
-            namespace="text_chunks", global_config=asdict(self)
-        )
-
         self.llm_response_cache = (
             self.key_string_value_json_storage_cls(
-                namespace="llm_response_cache", global_config=asdict(self)
+                namespace="llm_response_cache",
+                global_config=asdict(self),
+                embedding_func=None,
             )
             if self.enable_llm_cache
             else None
-        )
-        self.chunk_entity_relation_graph = self.graph_storage_cls(
-            namespace="chunk_entity_relation", global_config=asdict(self)
         )
 
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
             self.embedding_func
         )
+
+        ####
+        # add embedding func by walter
+        ####
+        self.full_docs = self.key_string_value_json_storage_cls(
+            namespace="full_docs",
+            global_config=asdict(self),
+            embedding_func=self.embedding_func,
+        )
+        self.text_chunks = self.key_string_value_json_storage_cls(
+            namespace="text_chunks",
+            global_config=asdict(self),
+            embedding_func=self.embedding_func,
+        )
+        self.chunk_entity_relation_graph = self.graph_storage_cls(
+            namespace="chunk_entity_relation",
+            global_config=asdict(self),
+            embedding_func=self.embedding_func,
+        )
+        ####
+        # add embedding func by walter over
+        ####
 
         self.entities_vdb = self.vector_db_storage_cls(
             namespace="entities",
@@ -187,10 +206,19 @@ class LightRAG:
                 **self.llm_model_kwargs,
             )
         )
+
     def _get_storage_class(self) -> Type[BaseGraphStorage]:
         return {
-            "Neo4JStorage": Neo4JStorage,
+            # kv storage
+            "JsonKVStorage": JsonKVStorage,
+            "OracleKVStorage": OracleKVStorage,
+            # vector storage
+            "NanoVectorDBStorage": NanoVectorDBStorage,
+            "OracleVectorDBStorage": OracleVectorDBStorage,
+            # graph storage
             "NetworkXStorage": NetworkXStorage,
+            "Neo4JStorage": Neo4JStorage,
+            "OracleGraphStorage": OracleGraphStorage,
             # "ArangoDBStorage": ArangoDBStorage
         }
 
@@ -327,6 +355,37 @@ class LightRAG:
     async def _query_done(self):
         tasks = []
         for storage_inst in [self.llm_response_cache]:
+            if storage_inst is None:
+                continue
+            tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())
+        await asyncio.gather(*tasks)
+
+    def delete_by_entity(self, entity_name: str):
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.adelete_by_entity(entity_name))
+
+    async def adelete_by_entity(self, entity_name: str):
+        entity_name = f'"{entity_name.upper()}"'
+
+        try:
+            await self.entities_vdb.delete_entity(entity_name)
+            await self.relationships_vdb.delete_relation(entity_name)
+            await self.chunk_entity_relation_graph.delete_node(entity_name)
+
+            logger.info(
+                f"Entity '{entity_name}' and its relationships have been deleted."
+            )
+            await self._delete_by_entity_done()
+        except Exception as e:
+            logger.error(f"Error while deleting entity '{entity_name}': {e}")
+
+    async def _delete_by_entity_done(self):
+        tasks = []
+        for storage_inst in [
+            self.entities_vdb,
+            self.relationships_vdb,
+            self.chunk_entity_relation_graph,
+        ]:
             if storage_inst is None:
                 continue
             tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())

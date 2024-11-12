@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile
 from pydantic import BaseModel
 import os
 
@@ -65,6 +65,19 @@ app.add_middleware(
     allow_methods=["*"],  # Allow all HTTP methods
     allow_headers=["*"],  # Allow all headers
 )
+# Configure working directory
+WORKING_DIR = os.environ.get("RAG_DIR", f"{DEFAULT_RAG_DIR}")
+print(f"WORKING_DIR: {WORKING_DIR}")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+print(f"LLM_MODEL: {LLM_MODEL}")
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+print(f"EMBEDDING_MODEL: {EMBEDDING_MODEL}")
+EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192))
+print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
+
+if not os.path.exists(WORKING_DIR):
+    os.mkdir(WORKING_DIR)
+
 
 # LLM model function
 async def llm_model_func(
@@ -120,7 +133,13 @@ async def query_endpoint(request: QueryRequest):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, lambda: rag.query(request.query, param=QueryParam(mode=request.mode))
+            None,
+            lambda: rag.query(
+                request.query,
+                param=QueryParam(
+                    mode=request.mode, only_need_context=request.only_need_context
+                ),
+            ),
         )
         return Response(status="success", data=result)
     except Exception as e:
@@ -171,7 +190,7 @@ async def upload_file(file: UploadFile = File(...)):
     else:
         return Response(status="failed",message='files repeating')
 @app.post("/insert_file", response_model=Response)
-async def insert_file(request: InsertFileRequest):
+async def insert_file(file: UploadFile = File(...)):
     try:
         filename=request.filename
         cursor=conn.cursor()
