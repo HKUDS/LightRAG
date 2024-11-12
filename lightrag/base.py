@@ -60,6 +60,7 @@ class BaseVectorStorage(StorageNameSpace):
 @dataclass
 class BaseKVStorage(Generic[T], StorageNameSpace):
     embedding_func: EmbeddingFunc
+
     async def all_keys(self) -> list[str]:
         raise NotImplementedError
 
@@ -85,6 +86,7 @@ class BaseKVStorage(Generic[T], StorageNameSpace):
 @dataclass
 class BaseGraphStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc = None
+
     async def has_node(self, node_id: str) -> bool:
         raise NotImplementedError
 

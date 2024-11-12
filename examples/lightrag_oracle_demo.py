@@ -1,11 +1,11 @@
-import sys, os
+import sys
+import os
 from pathlib import Path
 import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import openai_complete_if_cache, openai_embedding
 from lightrag.utils import EmbeddingFunc
 import numpy as np
-from datetime import datetime
 from lightrag.kg.oracle_impl import OracleDB
 
 print(os.getcwd())
@@ -24,6 +24,7 @@ EMBEDMODEL = "cohere.embed-multilingual-v3.0"
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
+
 
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
@@ -66,21 +67,20 @@ async def main():
         # More docs here https://python-oracledb.readthedocs.io/en/latest/user_guide/connection_handling.html
         # We storage data in unified tables, so we need to set a `workspace` parameter to specify which docs we want to store and query
         # Below is an example of how to connect to Oracle Autonomous Database on Oracle Cloud
-        oracle_db = OracleDB(config={
-            "user":"username",
-            "password":"xxxxxxxxx",
-            "dsn":"xxxxxxx_medium",
-            "config_dir":"dir/path/to/oracle/config",
-            "wallet_location":"dir/path/to/oracle/wallet",
-            "wallet_password":"xxxxxxxxx",
-            "workspace":"company"  # specify which docs you want to store and query
+        oracle_db = OracleDB(
+            config={
+                "user": "username",
+                "password": "xxxxxxxxx",
+                "dsn": "xxxxxxx_medium",
+                "config_dir": "dir/path/to/oracle/config",
+                "wallet_location": "dir/path/to/oracle/wallet",
+                "wallet_password": "xxxxxxxxx",
+                "workspace": "company",  # specify which docs you want to store and query
             }
-            )
-        
+        )
 
         # Check if Oracle DB tables exist, if not, tables will be created
         await oracle_db.check_tables()
-
 
         # Initialize LightRAG
         # We use Oracle DB as the KV/vector/graph storage
@@ -93,10 +93,10 @@ async def main():
                 embedding_dim=embedding_dimension,
                 max_token_size=512,
                 func=embedding_func,
-                ),            
-            graph_storage = "OracleGraphStorage",
-            kv_storage="OracleKVStorage", 
-            vector_storage="OracleVectorDBStorage"
+            ),
+            graph_storage="OracleGraphStorage",
+            kv_storage="OracleKVStorage",
+            vector_storage="OracleVectorDBStorage",
         )
 
         # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool
@@ -106,14 +106,19 @@ async def main():
 
         # Extract and Insert into LightRAG storage
         with open("./dickens/demo.txt", "r", encoding="utf-8") as f:
-           await rag.ainsert(f.read())
+            await rag.ainsert(f.read())
 
         # Perform search in different modes
         modes = ["naive", "local", "global", "hybrid"]
         for mode in modes:
-            print("="*20, mode, "="*20)
-            print(await rag.aquery("What are the top themes in this story?", param=QueryParam(mode=mode)))
-            print("-"*100, "\n")
+            print("=" * 20, mode, "=" * 20)
+            print(
+                await rag.aquery(
+                    "What are the top themes in this story?",
+                    param=QueryParam(mode=mode),
+                )
+            )
+            print("-" * 100, "\n")
 
     except Exception as e:
         print(f"An error occurred: {e}")
