@@ -227,6 +227,7 @@ class LightRAG:
         return loop.run_until_complete(self.ainsert(string_or_strings))
 
     async def ainsert(self, string_or_strings):
+        update_storage = False
         try:
             if isinstance(string_or_strings, str):
                 string_or_strings = [string_or_strings]
@@ -240,6 +241,7 @@ class LightRAG:
             if not len(new_docs):
                 logger.warning("All docs are already in the storage")
                 return
+            update_storage = True
             logger.info(f"[New Docs] inserting {len(new_docs)} docs")
 
             inserting_chunks = {}
@@ -286,7 +288,8 @@ class LightRAG:
             await self.full_docs.upsert(new_docs)
             await self.text_chunks.upsert(inserting_chunks)
         finally:
-            await self._insert_done()
+            if update_storage:
+                await self._insert_done()
 
     async def _insert_done(self):
         tasks = []
