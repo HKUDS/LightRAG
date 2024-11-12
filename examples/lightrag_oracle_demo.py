@@ -1,20 +1,16 @@
-
-
 import sys, os
-print(os.getcwd())
 from pathlib import Path
-script_directory = Path(__file__).resolve().parent.parent
-sys.path.append(os.path.abspath(script_directory))
-
 import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import openai_complete_if_cache, openai_embedding
 from lightrag.utils import EmbeddingFunc
 import numpy as np
 from datetime import datetime
-
 from lightrag.kg.oracle_impl import OracleDB
 
+print(os.getcwd())
+script_directory = Path(__file__).resolve().parent.parent
+sys.path.append(os.path.abspath(script_directory))
 
 WORKING_DIR = "./dickens"
 
