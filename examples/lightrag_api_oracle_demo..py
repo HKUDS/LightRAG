@@ -1,10 +1,10 @@
-
 from fastapi import FastAPI, HTTPException, File, UploadFile
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from typing import Optional
 
-import sys, os
+import sys
+import os
 from pathlib import Path
 
 import asyncio
@@ -13,7 +13,6 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm import openai_complete_if_cache, openai_embedding
 from lightrag.utils import EmbeddingFunc
 import numpy as np
-from datetime import datetime
 
 from lightrag.kg.oracle_impl import OracleDB
 
@@ -22,8 +21,6 @@ print(os.getcwd())
 
 script_directory = Path(__file__).resolve().parent.parent
 sys.path.append(os.path.abspath(script_directory))
-
-
 
 
 # Apply nest_asyncio to solve event loop issues
@@ -50,6 +47,7 @@ print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
+
 
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
@@ -80,8 +78,8 @@ async def get_embedding_dim():
     embedding_dim = embedding.shape[1]
     return embedding_dim
 
+
 async def init():
-    
     # Detect embedding dimension
     embedding_dimension = await get_embedding_dim()
     print(f"Detected embedding dimension: {embedding_dimension}")
@@ -91,36 +89,36 @@ async def init():
     # We storage data in unified tables, so we need to set a `workspace` parameter to specify which docs we want to store and query
     # Below is an example of how to connect to Oracle Autonomous Database on Oracle Cloud
 
+    oracle_db = OracleDB(
+        config={
+            "user": "",
+            "password": "",
+            "dsn": "",
+            "config_dir": "",
+            "wallet_location": "",
+            "wallet_password": "",
+            "workspace": "",
+        }  # specify which docs you want to store and query
+    )
 
-    oracle_db = OracleDB(config={
-        "user":"",
-        "password":"",
-        "dsn":"",
-        "config_dir":"",
-        "wallet_location":"",
-        "wallet_password":"",
-        "workspace":""
-        }  # specify which docs you want to store and query               
-        )
-    
     # Check if Oracle DB tables exist, if not, tables will be created
     await oracle_db.check_tables()
     # Initialize LightRAG
-        # We use Oracle DB as the KV/vector/graph storage
+    # We use Oracle DB as the KV/vector/graph storage
     rag = LightRAG(
-            enable_llm_cache=False,
-            working_dir=WORKING_DIR,
-            chunk_token_size=512,
-            llm_model_func=llm_model_func,
-            embedding_func=EmbeddingFunc(
-                embedding_dim=embedding_dimension,
-                max_token_size=512,
-                func=embedding_func,
-                ),            
-            graph_storage = "OracleGraphStorage",
-            kv_storage="OracleKVStorage", 
-            vector_storage="OracleVectorDBStorage"
-        )
+        enable_llm_cache=False,
+        working_dir=WORKING_DIR,
+        chunk_token_size=512,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=embedding_dimension,
+            max_token_size=512,
+            func=embedding_func,
+        ),
+        graph_storage="OracleGraphStorage",
+        kv_storage="OracleKVStorage",
+        vector_storage="OracleVectorDBStorage",
+    )
 
     # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool
     rag.graph_storage_cls.db = oracle_db
@@ -128,6 +126,7 @@ async def init():
     rag.vector_db_storage_cls.db = oracle_db
 
     return rag
+
 
 # Data models
 
@@ -152,6 +151,7 @@ class Response(BaseModel):
 
 rag = None  # 定义为全局对象
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global rag
@@ -160,18 +160,21 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="LightRAG API", description="API for RAG operations",lifespan=lifespan)
+app = FastAPI(
+    title="LightRAG API", description="API for RAG operations", lifespan=lifespan
+)
+
 
 @app.post("/query", response_model=Response)
 async def query_endpoint(request: QueryRequest):
     try:
         # loop = asyncio.get_event_loop()
         result = await rag.aquery(
-                request.query,
-                param=QueryParam(
-                    mode=request.mode, only_need_context=request.only_need_context
-                ),
-            )
+            request.query,
+            param=QueryParam(
+                mode=request.mode, only_need_context=request.only_need_context
+            ),
+        )
         return Response(status="success", data=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
