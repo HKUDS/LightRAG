@@ -14,7 +14,7 @@ Given a text document that is potentially relevant to this activity and a list o
 
 -Steps-
 1. Identify all entities. For each identified entity, extract the following information:
-- entity_name: Name of the entity, capitalized
+- entity_name: Name of the entity, use same language as input text. If English, capitalized the name.
 - entity_type: One of the following types: [{entity_types}]
 - entity_description: Comprehensive description of the entity's attributes and activities
 Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>
@@ -222,14 +222,24 @@ Output:
 
 """
 
-PROMPTS["naive_rag_response"] = """You're a helpful assistant
-Below are the knowledge you know:
-{content_data}
----
-If you don't know the answer or if the provided knowledge do not contain sufficient information to provide an answer, just say so. Do not make anything up.
+PROMPTS["naive_rag_response"] = """---Role---
+
+You are a helpful assistant responding to questions about documents provided.
+
+
+---Goal---
+
 Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
 If you don't know the answer, just say so. Do not make anything up.
 Do not include information where the supporting evidence for it is not provided.
+
 ---Target response length and format---
+
 {response_type}
+
+---Documents---
+
+{content_data}
+
+Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
 """
