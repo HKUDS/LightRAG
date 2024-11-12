@@ -1,0 +1,192 @@
+Constraints, balancing competing, 72Contingency plans, 119, 123Contingency reserve, 62, 63, 127. See also 
+Reserve analysis
+PMI Seventh Edition July 2021258
+PMBOK® GuideContinuous delivery
+description of, 34
+supporting strategies for, 222
+Continuous development, 218Continuous digital approach, 34Continuous improvement, 139, 213, 214Contracting processes, 75–76Contractor conferences. See Bidder conferencesContracts, 191. See also Agreements
+Control chart, 106Controlling, monitoring and, 171Conversation, 14, 156, 192COQ. See Cost of quality
+Corrective action, 190Correlation versus causation, 112Cost(s)
+actual, 100appraisal, 88change and, 90–91external failure, 89failure, 88, 89internal failure, 89prevention, 88
+Cost baseline, 62, 63, 188Cost-benefit analysis, 175Cost-benefit ratio, 102Cost estimates, 62, 63, 105Cost management plan, 186Cost of change, 90–91Cost of quality (COQ), 88–89
+appraisal, 88data gathering and analysis, 175definition, 81Delivery Performance Domain, 88–89external failure, 89internal failure, 89prevention, 88
+Cost performance index (CPI), 100, 104Cost plus award fee (CPAF), 191Cost plus fixed fee (CPFF), 191Cost plus incentive fee (CPIF), 191Cost-reimbursable contracts, 191Cost reserve, 122Cost variance (CV), 80Courage, 21CPAF. See Cost plus award feeCPFF. See Cost plus fixed feeCPI. See Cost performance indexCPIF. See Cost plus incentive feeCrashing, 52Criteria
+acceptance, 42, 82, 85completion, 85entry, 46exit, 42, 46, 50requirements elicitation and, 83
+Critical path, 100Critical success factor, 207Critical thinking, 24Cross-cultural communication model, 157Culture
+organization and, 41, 143tailoring for project, 143team, 20
+Cumulative flow diagram (CFD), 188Customer centricity, 131, 219, 225Customer-centric organizations, 225Customer focus, 208Customer requests, 66Customer satisfaction, 95, 112CV.See Cost variance
+Cycle time chart, 189Cynefin framework, 164–165
+D
+Daily scrum, 179Daily standup, 127, 179Dashboards, 106–107
+definition, 93,visual data and, 189
+Data analysis, outputs of, 174Data gathering and analysis, 174–177Decision making, 27–28
+group-based, 28sponsors and, 208
+Decision tree analysis, 175Decomposition. See also Work breakdown 
+structure (WBS)
+scope, 84
+PMI Seventh Edition July 2021259
+IndexDecoupling, 121
+Defect(s)
+external failure costs and, 89integrity and, 20internal failure costs and, 89metrics and, 97, 98prevention of, 68reputation and, 69
+Definition of done (DoD), 81, 85Deliverable(s)
+completion of, 85definition, 33, 82degree of innovation and, 39
+Delivery Performance Domain, 82–87
+development approach for, 50hybrid approach and, 36lagging indicators and, 96project, 54requirements, 82–83tailoring for project, 142
+Delivery cadence, 32–34, 46–50
+Development Approach and Life Cycle Performance Domain, 46–48
+Delivery/deliveries
+continuous, 34measurements of, 99models, 221multiple, 34ongoing delivery model and, 221options for, 40periodic, 34Planning Performance Domain, 54project management office (PMO) and, 213single delivery, 34
+Delivery Performance Domain, 80–92
+definitions relevant to, 81deliverables, 82–87interactions with other performance 
+domains, 91outcomes, checking, 92outcomes, desired, 80outcomes, suboptimal, 91overview, 80–81quality, 87–91tailoring considerations, 149value, delivery of, 81–82Demoralization, 112Dependencies, types of, 60Deploy phase, 47Design, set-based, 119Design reviews, 127Desired outcomes
+Measurement Performance Domain, 93Uncertainty Performance Domain, 116
+Development and delivery approach, tailoring 
+and, 137
+Development Approach and Life Cycle 
+Performance Domain, 32–50
+aligning delivery cadence, development approach, and life cycle, 46–49definitions relevant to, 33delivery cadence, 33–34development, cadence, and life cycle relationship, 33development approaches, 35–41interactions with other performance domains, 49–50life cycle and phase definitions, 42–45outcomes and, 32, 50overview, 32tailoring and, 148, 150
+Development approaches, 35–39
+adaptive approach, 38community center and, 36, 38, 39considerations for selection of, 39–41hybrid approach, 36incremental development, 37iterative development, 37planning variables and, 53predictive approach, 35–36spectrum view of, 35tailoring process and, 138
+Development life cycle, 89Development phase, 47DevOps approach, 34Diagnostics, tailoring and, 151Discourse, positive, 21Discretionary dependency, 60Diversion shield, 18Diversity, reframing and, 121
+PMI Seventh Edition July 2021260
+PMBOK® GuideDocument(s)
+bid, 70, 75, 192
+business, 82business case document, 82project, 62project-authorizing, 82
+Documentation
+requirements, 83, 192written communication, 73
+Domains. See Performance domains; Project 
+performance domains
+Drexler/Sibbet Team Performance Model, 167Duration, 52, 62, 224
+effort and, 100
+Duration estimates, 105
+E
+EAC. See Estimate at completionEarned value (EV), 100, 101Earned value analysis (EVA)
+definition, 176schedule and cost variance, 101
+Earned value management (EVM), 100, 104, 105Effort, 100
+8-Step Process for Leading Change, 162, 173
+Emotional intelligence (EI), 25–27
+components of, 27key areas, 26
+Empowerment
+culture and, 143high-performing project teams and, 22tailoring engagement and, 136
+EMV. See Expected monetary value (EMV)Encouragement, development opportunities 
+and, 18
+Engage, 121Engagement. 
+See also Stakeholder engagement
+communication and, 73lack of, sponsor and, 208Project Work Performance Domain, 73tailoring, 136Enterprise-level PMO (EPMO), 212Environment
+product, 222tailoring and, 154
+Environmental considerations, 53, 129Escalation
+threats and, 123
+Estimate(s). See also Basis of estimates
+analogous, 178definition, 52parametric, 178
+Estimate at completion (EAC), 104, 105Estimate to complete (ETC), 104, 105Estimating, 55–58
+absolute, 57adjusting estimates for uncertainty, 58deterministic, 57flow-based, 58life cycle phase and, 55low accuracy, high precision, 56Planning Performance Domain, 55–58probabilistic, 57range decreasing over time, 56relative, 57, 58
+Estimating methods, 178EVA. See Earned value analysisEVM. See Earned value managementException plan
+definition, 114triggering of, 113
+Executing Process Group, 171Expected monetary value (EMV), 116, 126, 176Expert judgment, 104. See also Subject matter 
+experts (SMEs)
+Explicit knowledge, 70, 77–78External dependency, 60External failure costs, 89Extrinsic motivation, 159
+PMI Seventh Edition July 2021261
+IndexF
+Fail safe, 121
+Failure analysis, 89Failure costs
+internal and external, 89noncompliance and, 88
+Fast tracking, 52, 59, 60Feasibility, 42, 43Feature completion rates, 100Feedback loops, 13, 161Fees, contracts and, 91FFP. See Firm fixed priceFinance, 221Finish date, 100Finish-to-finish relationship, 59Finish-to-start relationship, 59Firm fixed price (FFP), 191Fist of five voting, 28Fixed-price contracts, 191Fixed price incentive fee (FPIF), 191Fixed price with economic price adjustment 
+(FPEPA), 191
+Flow-based estimating, 58Flow-based projects, 109Flow-based scheduling, 45Flowchart, 189Focus groups, 83, 174Forecasting, 104–105
+data gathering and analysis, 176methods, 32, 160–161
+Forming, storming, norming, performing, 
+adjourning, 166
+FPIF. 
+See Fixed price incentive fee
+FFP. See Firm fixed priceFunction point, 178Funding, 224
+availability of, 41incremental, 222, 223limitations, 62project processes and, 71requirements, 46G
+Gantt chart, 189Globalization/global environment
+cross-cultural communication, 157distributed project teams, 30
+Global market shifts, 219–221Good practices, 165, 180, 212Governance. See also Organizational governance
+development approach and, 148project, 87tailoring, and, 131, 139
+Group(s).
+external, 140Process Groups, 170–171
+Growth, 19Guidance, 19Gulf of evaluation, 158Gulf of execution, 158
+H
+Hawthorne effect, 112Hierarchical charts, 187High-level requirements, 39High-performing project teams, 22Histogram, 175, 189Historical information, 149Holistic thinking approach, 51, 68, 89Holistic view, 98, 190Hybrid development approach, 33, 36Hygiene factors, 158
+I
+ID. See Activity identifierIdea, transforming, 163Identified risks, 127Identify step, stakeholder engagement, 11IDIQ. See Indefinite delivery indefinite quantity
+Impact mapping, 181Improvement, continuous, 139, 213, 214Incremental development approach, 37, 44Incremental guidance and funding, 223
+PMI Seventh Edition July 2021262
+PMBOK® GuideIndefinite delivery indefinite quantity (IDIQ), 191
+Indicators. See Key performance indicators (KPIs)Individual project risk, 177, 190Industry/industries
+market and, 142traditional product, 224
+Influence
+development approach and, 39, 40, 41leadership and, 29sponsors and, 209
+Influence diagram, 176Information
+gathering, 119historical, 149Measurement Performance Domain, 106–111presenting, 106–111
+Information radiator, 108, 109Initiating Process Group, 171Initiatives, critical, 214Innovation
+degree of, 39
+Input(s)
+flow of deliveries and, 45Process Groups and, 171
+Inputs, tools/techniques, and outputs (ITTOs), 6Inspection, 42, 47, 88, 89Integration
+practice and, 163tailoring engagement and, 136
+Integrity, 20Intellectual property, 75Interactions, performance domains
+Delivery Performance Domain, 91Development Approach and Life Cycle Performance Domain, 49–50Measurement Performance Domain, 114–115Planning Performance Domain, 67Project Work Performance Domain, 78Stakeholder Performance Domain, 14Team Performance Domain, 31Uncertainty Performance Domain, 128
+Internal dependency, 60Internal failure costs, 89Internal rate of return (IRR), 175Interpersonal skills, 25–29
+soft skills, 12stakeholder engagement and, 12types of, 23–29
+Intrinsic motivation, 159IRR. See Internal rate of returnIssue log, 185Iterate, 121Iteration, 44–45, 53Iteration plan, 61, 186Iteration planning meeting, 179Iteration review, 179Iterative development, 37Iterative process, 120ITTOs. See Inputs, tools/techniques, and outputs
+J
+Job shadowing, 78Judgment. See Expert judgment
+Just-in-time scheduling approach, 45
+K
+Kanban boards, 109, 110Kanban scheduling system, 45Key performance indicators (KPIs), 95–96Key stakeholders, 11, 23, 44, 167, 179Kickoff meeting, 179, 183Knowledge
+explicit, 70, 77–78tacit, 77–78
+Knowledge management, 77Knowledge management repository, 149Knowledge transfer, 213KPIs. See Key performance indicators
+L
+Lagging indicators, 96Lags, leads and, 59Late start and finish dates, 100
+PMI Seventh Edition July 2021263
+IndexLeadership
+centralized management and, 17
+distributed management and, 17–18styles and, 30team, 17–19
+Leadership skills, 23–29
+critical thinking, 24interpersonal skills, 25–29motivation, 24–25team, 23–29vision, establishing and maintaining, 23
+Leadership styles, tailoring, 30Leading indicators, 96Leads, lags and, 59Lead time chart, 189Lean production methods, 71Lean scheduling approach, 45Learning throughout project
+explicit and tacit knowledge, 77–78knowledge management, 77
+Legal requirements, 118, 149Legal restrictions, 54Lessons learned. See also Retrospectives
+meetings, 127, 180retrospectives or, 71tailoring and, 151
+Lessons learned register, 185Life cycle. See also Predictive life cycle; Product 
+life cycle; Project life cycle
+adaptive development approach, 45community center, 48development, 89Development Approach and Life Cycle Performance Domain, 42–45incremental development approach, 44phase definitions and, 42–45phases in, 42, 46–48predictive, 43, 49tailoring and, 150
+Life cycle and development approach, tailoring 
+and, 134
+Life cycle assessment, 176Logs and registers, 185M
+Make-or-buy analysis, 65, 176Management
+change, 213conflict, 29project team, leadership and, 17–19requirements and, 83self-management, 26, 27
+Management reserve, 127Mandatory dependency, 60Market conditions, 54Market shifts, global, 219–221Master project schedule, 74Mastery, 159Materials, environment and, 53Measurement(s). See also Metrics
+baseline performance, 100–101business value, 102delivery, 99effective, establishment of, 95–105forecasts, 104–105key performance indicators (KPIs), 95–96pitfalls, 111–112resources, 101stakeholders, 103–104what to measure, 98–105
+Measurement Performance Domain, 93–115
+checking results, 115definitions relevant to, 93effective measures, establishment of, 95–105establishing effective measures, 95–105growing and improving, 114interactions with other performance  
+domains, 114–115measurement pitfalls, 111–112outcomes, checking, 115outcomes, desired, 93overview, 93–95presenting information, 106–111tailoring considerations, 150troubleshooting performance, 113–114what to measure, 98–105
+Media richness, 157
+PMI Seventh Edition July 2021264
+PMBOK® GuideMeetings
+bidder conference, 70, 179
+change control, 179events and, 179–180retrospectives/lessons learned, 71, 127, 179risk review and, 127standup, 127, 179types of, 179–180
+Memorandum of agreement (MOA), 191Memorandum of understanding (MOU), 191Methods, 174–181
+applied across performance domains, 181–183data gathering and analysis, 174–177definition, 153estimating, 178impact mapping, 181meetings and events, 179–180modeling, 181Net Promoter Score
+® (NPS®), 181
+overview, 153–155prioritization schema, 181tailoring, 136timebox, 181
+Metrics. See also Measurement Performance 
+Domain; Measurement(s)
+definition, 93, 192deliverable, 98effective, 97misuse of, 112Planning Performance Domain, 66SMART criteria, 97vanity metric, 112work performance, 66
+Milestones, roadmap and, 184Milestone schedule, 188. See also Master 
+project schedule
+Modeling, 181Models. See also
+ Change models; Communication 
+models; Complexity models; Motivation models; Negotiation models
+applied across performance domains, 112–113commonly used, 95–98conflict, 168–169definition, 153mapping of, performance domains and, 173OSCAR model, 156overview, 153–155planning, 170Process Groups, 170–171project team development, 166–167Salience Model, 171situational leadership, 155–156win-win perspective and, 169, 170
+Monitoring
+controlling and, 171new work and changes, 76–77
+Monitoring and Controlling Process Group, 171Monte Carlo simulation, 177Mood chart, 103Morale, 104, 112MoSCoW, 181Motivation
+emotional intelligence and, 27leadership skills and, 24–25sponsors and, 210
+Motivation models, 158–160
+hygiene and motivational factors, 158intrinsic versus extrinsic motivation, 159theory of needs, 159Theory X, Theory Y, and Theory Z, 160
+MOA. See Memorandum of agreement
+MOU. See Memorandum of understandingMulticriteria weighted analysis, 181Multipoint estimating, 178
+N
