@@ -8,7 +8,7 @@
         <a href='https://lightrag.github.io'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
         <a href='https://youtu.be/oageL-1I0GE'><img src='https://badges.aleen42.com/src/youtube.svg'></a>
         <a href='https://arxiv.org/abs/2410.05779'><img src='https://img.shields.io/badge/arXiv-2410.05779-b31b1b'></a>
-        <a href='https://discord.gg/rdE8YVPm'><img src='https://discordapp.com/api/guilds/1296348098003734629/widget.png?style=shield'></a>
+        <a href='https://discord.gg/yF2MmDJyGJ'><img src='https://discordapp.com/api/guilds/1296348098003734629/widget.png?style=shield'></a>
     </p>
      <p>
           <img src='https://img.shields.io/github/stars/hkuds/lightrag?color=green&style=social' />
@@ -22,7 +22,8 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 </div>
 
 ## 🎉 News
-- [x] [2024.11.11]🎯📢You can [use Oracle Database 23ai for all storage types (kv/vector/graph)](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_oracle_demo.py) now.
+- [x] [2024.11.12]🎯📢You can [use Oracle Database 23ai for all storage types (kv/vector/graph)](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_oracle_demo.py) now.
+- [x] [2024.11.11]🎯📢LightRAG now supports [deleting entities by their names](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete-entity).
 - [x] [2024.11.09]🎯📢Now comes [LightRAG Gui](https://lightrag-gui.streamlit.app) that lets you insert, query, visualize, and download LightRAG knowledge.
 - [x] [2024.11.04]🎯📢You can [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage) now.
 - [x] [2024.10.29]🎯📢LightRAG now supports multiple file types, including PDF, DOC, PPT, and CSV via `textract`.
@@ -317,6 +318,23 @@ rag = LightRAG(
 
 with open("./newText.txt") as f:
     rag.insert(f.read())
+```
+
+### Delete Entity
+
+```python
+#  Delete Entity: Deleting entities by their names
+rag = LightRAG(
+     working_dir=WORKING_DIR,
+     llm_model_func=llm_model_func,
+     embedding_func=EmbeddingFunc(
+          embedding_dim=embedding_dimension,
+          max_token_size=8192,
+          func=embedding_func,
+     ),
+)
+
+rag.delete_by_entity("Project Gutenberg")
 ```
 
 ### Multi-file Type Support
