@@ -306,28 +306,6 @@ class OracleVectorDBStorage(BaseVectorStorage):
 @dataclass
 class OracleGraphStorage(BaseGraphStorage):    
     """基于Oracle的图存储模块"""
-    # @staticmethod
-    # def load_graph(file_name) -> nx.Graph:
-    #     """读取graphhml图文件"""
-
-    # @staticmethod
-    # def write_graph(graph: nx.Graph, file_name):
-    #     # """写入graphhml图文件"""
-
-    # @staticmethod
-    # def stable_largest_connected_component(graph: nx.Graph) -> nx.Graph:
-    #     """Refer to https://github.com/microsoft/graphrag/index/graph/utils/stable_lcc.py
-    #     Return the largest connected component of the graph, with nodes and edges sorted in a stable way.
-    #     用于产生稳定的最大连通分量的模块，即相同的输入图==相同的输出lcc。
-    #     """
-        
-
-    # @staticmethod
-    # def _stabilize_graph(graph: nx.Graph) -> nx.Graph:
-    #     """Refer to https://github.com/microsoft/graphrag/index/graph/utils/stable_lcc.py
-    #     Ensure an undirected graph with the same relationships will always be read the same way.
-    #     确保具有相同关系的无向图始终以相同的方式读取。
-    #    """
    
     def __post_init__(self):
         """从graphml文件加载图"""
