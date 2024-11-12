@@ -592,7 +592,9 @@ TABLES = {
                     workspace varchar(1024),
                     doc_name varchar(1024),
                     content CLOB,
-                    meta JSON  
+                    meta JSON,
+                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updatetime TIMESTAMP DEFAULT NULL
                     )"""},
 
     "LIGHTRAG_DOC_CHUNKS":
@@ -603,7 +605,9 @@ TABLES = {
                     chunk_order_index NUMBER,
                     tokens NUMBER,    
                     content CLOB,
-                    content_vector VECTOR    
+                    content_vector VECTOR,
+                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updatetime TIMESTAMP DEFAULT NULL    
                     )"""},
 
     "LIGHTRAG_GRAPH_NODES":
@@ -615,7 +619,9 @@ TABLES = {
                     description CLOB,
                     source_chunk_id varchar(256),
                     content CLOB,
-                    content_vector VECTOR
+                    content_vector VECTOR,
+                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updatetime TIMESTAMP DEFAULT NULL
                     )"""},
     "LIGHTRAG_GRAPH_EDGES":
           {"ddl":"""CREATE TABLE LIGHTRAG_GRAPH_EDGES (
@@ -628,13 +634,18 @@ TABLES = {
                     description CLOB,
                     source_chunk_id varchar(256),
                     content CLOB,
-                    content_vector VECTOR
+                    content_vector VECTOR,
+                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updatetime TIMESTAMP DEFAULT NULL
                     )"""},
     "LIGHTRAG_LLM_CACHE":
           {"ddl":"""CREATE TABLE LIGHTRAG_LLM_CACHE (
                     id varchar(256) PRIMARY KEY,
+                    send clob,
                     return clob,
-                    model varchar(1024)
+                    model varchar(1024),
+                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updatetime TIMESTAMP DEFAULT NULL
                     )"""},
 
     "LIGHTRAG_GRAPH":

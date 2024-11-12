@@ -351,3 +351,34 @@ class LightRAG:
                 continue
             tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())
         await asyncio.gather(*tasks)
+
+    def delete_by_entity(self, entity_name: str):
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.adelete_by_entity(entity_name))
+
+    async def adelete_by_entity(self, entity_name: str):
+        entity_name = f'"{entity_name.upper()}"'
+
+        try:
+            await self.entities_vdb.delete_entity(entity_name)
+            await self.relationships_vdb.delete_relation(entity_name)
+            await self.chunk_entity_relation_graph.delete_node(entity_name)
+
+            logger.info(
+                f"Entity '{entity_name}' and its relationships have been deleted."
+            )
+            await self._delete_by_entity_done()
+        except Exception as e:
+            logger.error(f"Error while deleting entity '{entity_name}': {e}")
+
+    async def _delete_by_entity_done(self):
+        tasks = []
+        for storage_inst in [
+            self.entities_vdb,
+            self.relationships_vdb,
+            self.chunk_entity_relation_graph,
+        ]:
+            if storage_inst is None:
+                continue
+            tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())
+        await asyncio.gather(*tasks)

@@ -11,3 +11,4 @@ neo4jWorkDir/
 ignore_this.txt
 .venv/
 *.ignore.*
+.ruff_cache/
