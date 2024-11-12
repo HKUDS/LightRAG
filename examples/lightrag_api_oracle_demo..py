@@ -5,10 +5,7 @@ from pydantic import BaseModel
 from typing import Optional
 
 import sys, os
-print(os.getcwd())
 from pathlib import Path
-script_directory = Path(__file__).resolve().parent.parent
-sys.path.append(os.path.abspath(script_directory))
 
 import asyncio
 import nest_asyncio
@@ -19,6 +16,14 @@ import numpy as np
 from datetime import datetime
 
 from lightrag.kg.oracle_impl import OracleDB
+
+
+print(os.getcwd())
+
+script_directory = Path(__file__).resolve().parent.parent
+sys.path.append(os.path.abspath(script_directory))
+
+
 
 
 # Apply nest_asyncio to solve event loop issues
