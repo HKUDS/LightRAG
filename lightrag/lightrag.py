@@ -109,7 +109,7 @@ class LightRAG:
     llm_model_max_token_size: int = 32768
     llm_model_max_async: int = 16
     llm_model_kwargs: dict = field(default_factory=dict)
-
+    
     # storage
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
 
@@ -154,7 +154,7 @@ class LightRAG:
             if self.enable_llm_cache
             else None
         )
-
+        
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
             self.embedding_func
         )
