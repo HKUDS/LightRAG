@@ -1,0 +1,23 @@
+2024-11-12 23:42:06,424 - lightrag - INFO - Logger initialized for working directory: ./local_neo4jWorkDir
+2024-11-12 23:42:06,426 - lightrag - INFO - Load KV llm_response_cache with 0 data
+2024-11-12 23:42:06,427 - lightrag - INFO - Load KV full_docs with 0 data
+2024-11-12 23:42:06,428 - lightrag - INFO - Load KV text_chunks with 0 data
+2024-11-12 23:42:06,442 - lightrag - INFO - [New Docs] inserting 1 docs
+2024-11-12 23:42:10,669 - lightrag - INFO - [New Chunks] inserting 123 chunks
+2024-11-12 23:42:10,671 - lightrag - INFO - Inserting 123 vectors to chunks
+2024-11-12 23:42:31,528 - lightrag - INFO - [Entity Extraction]...
+2024-11-13 01:48:44,243 - lightrag - INFO - Inserting 1270 vectors to entities
+2024-11-13 01:49:18,782 - lightrag - INFO - Inserting 246 vectors to relationships
+2024-11-13 01:49:25,237 - lightrag - INFO - Writing graph with 1282 nodes, 246 edges
+2024-11-13 01:51:35,032 - lightrag - INFO - Local query uses 60 entites, 46 relations, 3 text units
+2024-11-13 01:51:35,712 - lightrag - INFO - Global query uses 23 entites, 43 relations, 3 text units
+2024-11-13 01:52:00,243 - lightrag - INFO - Local query uses 60 entites, 46 relations, 3 text units
+2024-11-13 01:52:00,893 - lightrag - INFO - Global query uses 23 entites, 43 relations, 3 text units
+2024-11-13 01:52:35,946 - lightrag - INFO - Local query uses 60 entites, 46 relations, 3 text units
+2024-11-13 02:00:03,774 - lightrag - INFO - Local query uses 60 entites, 46 relations, 3 text units
+2024-11-13 02:02:01,313 - lightrag - INFO - Local query uses 60 entites, 46 relations, 3 text units
+2024-11-13 02:04:10,044 - lightrag - INFO - Local query uses 4 entites, 0 relations, 3 text units
+2024-11-13 02:05:24,697 - lightrag - INFO - Local query uses 60 entites, 61 relations, 3 text units
+2024-11-13 02:11:33,223 - lightrag - INFO - Local query uses 60 entites, 61 relations, 3 text units
+2024-11-13 02:11:48,808 - lightrag - INFO - Local query uses 60 entites, 131 relations, 3 text units
+2024-11-13 02:13:03,209 - lightrag - INFO - Local query uses 60 entites, 46 relations, 3 text units
