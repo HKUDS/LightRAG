@@ -274,13 +274,19 @@ def process_combine_contexts(hl, ll):
     if list_ll:
         list_ll = [",".join(item[1:]) for item in list_ll if item]
 
-    combined_sources_set = set(filter(None, list_hl + list_ll))
+    combined_sources = []
+    seen = set()
 
-    combined_sources = [",\t".join(header)]
+    for item in list_hl + list_ll:
+        if item and item not in seen:
+            combined_sources.append(item)
+            seen.add(item)
 
-    for i, item in enumerate(combined_sources_set, start=1):
-        combined_sources.append(f"{i},\t{item}")
+    combined_sources_result = [",\t".join(header)]
 
-    combined_sources = "\n".join(combined_sources)
+    for i, item in enumerate(combined_sources, start=1):
+        combined_sources_result.append(f"{i},\t{item}")
 
-    return combined_sources
+    combined_sources_result = "\n".join(combined_sources_result)
+
+    return combined_sources_result
