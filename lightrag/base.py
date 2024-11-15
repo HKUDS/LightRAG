@@ -17,6 +17,7 @@ T = TypeVar("T")
 class QueryParam:
     mode: Literal["local", "global", "hybrid", "naive"] = "global"
     only_need_context: bool = False
+    only_need_prompt: bool = False
     response_type: str = "Multiple Paragraphs"
     # Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.
     top_k: int = 60
