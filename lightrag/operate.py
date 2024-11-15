@@ -405,12 +405,13 @@ async def local_query(
     kw_prompt = kw_prompt_temp.format(query=query)
     result = await use_model_func(kw_prompt)
     json_text = locate_json_string_body_from_string(result)
-
+    logger.debug("local_query json_text:", json_text)
     try:
         keywords_data = json.loads(json_text)
         keywords = keywords_data.get("low_level_keywords", [])
         keywords = ", ".join(keywords)
     except json.JSONDecodeError:
+        print(result)
         try:
             result = (
                 result.replace(kw_prompt[:-1], "")
@@ -443,6 +444,8 @@ async def local_query(
     sys_prompt = sys_prompt_temp.format(
         context_data=context, response_type=query_param.response_type
     )
+    if query_param.only_need_prompt:
+        return sys_prompt
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
@@ -672,12 +675,12 @@ async def global_query(
     kw_prompt = kw_prompt_temp.format(query=query)
     result = await use_model_func(kw_prompt)
     json_text = locate_json_string_body_from_string(result)
-
+    logger.debug("global json_text:", json_text)
     try:
         keywords_data = json.loads(json_text)
         keywords = keywords_data.get("high_level_keywords", [])
         keywords = ", ".join(keywords)
-    except json.JSONDecodeError:
+    except json.JSONDecodeError:        
         try:
             result = (
                 result.replace(kw_prompt[:-1], "")
@@ -714,6 +717,8 @@ async def global_query(
     sys_prompt = sys_prompt_temp.format(
         context_data=context, response_type=query_param.response_type
     )
+    if query_param.only_need_prompt:
+        return sys_prompt
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
@@ -914,6 +919,7 @@ async def hybrid_query(
 
     result = await use_model_func(kw_prompt)
     json_text = locate_json_string_body_from_string(result)
+    logger.debug("hybrid_query json_text:", json_text)
     try:
         keywords_data = json.loads(json_text)
         hl_keywords = keywords_data.get("high_level_keywords", [])
@@ -969,6 +975,8 @@ async def hybrid_query(
     sys_prompt = sys_prompt_temp.format(
         context_data=context, response_type=query_param.response_type
     )
+    if query_param.only_need_prompt:
+        return sys_prompt
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
@@ -1079,6 +1087,8 @@ async def naive_query(
     sys_prompt = sys_prompt_temp.format(
         content_data=section, response_type=query_param.response_type
     )
+    if query_param.only_need_prompt:
+        return sys_prompt
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
