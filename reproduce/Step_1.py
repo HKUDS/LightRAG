@@ -24,7 +24,7 @@ def insert_text(rag, file_path):
 
 
 cls = "agriculture"
-WORKING_DIR = "../{cls}"
+WORKING_DIR = f"../{cls}"
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
