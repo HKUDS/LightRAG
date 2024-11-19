@@ -214,7 +214,7 @@ class Neo4JStorage(BaseGraphStorage):
                 neo4jExceptions.ServiceUnavailable,
                 neo4jExceptions.TransientError,
                 neo4jExceptions.WriteServiceUnavailable,
-                neo4jExceptions.ClientError
+                neo4jExceptions.ClientError,
             )
         ),
     )
