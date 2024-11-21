@@ -34,9 +34,9 @@ async def llm_model_func(
         prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     client = AzureOpenAI(
-        api_key=LLM_AZURE_OPENAI_KEY,
-        api_version=LLM_AZURE_OPENAI_VERSION,
-        azure_endpoint=LLM_AZURE_OPENAI_API
+        api_key=AZURE_OPENAI_API_KEY,
+        api_version=AZURE_OPENAI_API_VERSION,
+        azure_endpoint=AZURE_OPENAI_DEPLOYMENT
     )
 
     messages = []
