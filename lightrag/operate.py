@@ -578,24 +578,20 @@ async def _find_most_related_text_unit_from_entities(
     all_text_units_lookup = {}
     for index, (this_text_units, this_edges) in enumerate(zip(text_units, edges)):
         for c_id in this_text_units:
-            if c_id in all_text_units_lookup:
-                continue
-            relation_counts = 0
-            if this_edges:  # Add check for None edges
+            if c_id not in all_text_units_lookup:
+                all_text_units_lookup[c_id] = {
+                    "data": await text_chunks_db.get_by_id(c_id),
+                    "order": index,
+                    "relation_counts": 0,
+                }
+
+            if this_edges:
                 for e in this_edges:
                     if (
                         e[1] in all_one_hop_text_units_lookup
                         and c_id in all_one_hop_text_units_lookup[e[1]]
                     ):
-                        relation_counts += 1
-
-            chunk_data = await text_chunks_db.get_by_id(c_id)
-            if chunk_data is not None and "content" in chunk_data:  # Add content check
-                all_text_units_lookup[c_id] = {
-                    "data": chunk_data,
-                    "order": index,
-                    "relation_counts": relation_counts,
-                }
+                        all_text_units_lookup[c_id]["relation_counts"] += 1
 
     # Filter out None values and ensure data has content
     all_text_units = [
