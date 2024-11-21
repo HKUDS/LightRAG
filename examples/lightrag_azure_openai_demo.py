@@ -31,13 +31,12 @@ os.mkdir(WORKING_DIR)
 
 
 async def llm_model_func(
-    prompt, system_prompt=None, history_messages=[], **kwargs
+        prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
-    
     client = AzureOpenAI(
-        api_key=AZURE_OPENAI_API_KEY,
-        api_version=AZURE_OPENAI_API_VERSION,
-        azure_endpoint=AZURE_OPENAI_ENDPOINT
+        api_key=LLM_AZURE_OPENAI_KEY,
+        api_version=LLM_AZURE_OPENAI_VERSION,
+        azure_endpoint=LLM_AZURE_OPENAI_API
     )
 
     messages = []
@@ -48,7 +47,7 @@ async def llm_model_func(
     messages.append({"role": "user", "content": prompt})
 
     chat_completion = client.chat.completions.create(
-        model=AZURE_OPENAI_DEPLOYMENT,  # model = "deployment_name".
+        model=LLM_AZURE_OPENAI_DEPLOYMENT,  # model = "deployment_name".
         messages=messages,
         temperature=kwargs.get("temperature", 0),
         top_p=kwargs.get("top_p", 1),
@@ -58,7 +57,6 @@ async def llm_model_func(
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-
     client = AzureOpenAI(
         api_key=AZURE_OPENAI_API_KEY,
         api_version=AZURE_EMBEDDING_API_VERSION,
@@ -68,7 +66,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
         model=AZURE_EMBEDDING_DEPLOYMENT,
         input=texts
     )
-    
+
     embeddings = [item.embedding for item in embedding.data]
     return np.array(embeddings)
 
