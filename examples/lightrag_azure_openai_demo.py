@@ -4,7 +4,6 @@ from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
 import numpy as np
 from dotenv import load_dotenv
-import aiohttp
 import logging
 from openai import AzureOpenAI
 
@@ -31,12 +30,12 @@ os.mkdir(WORKING_DIR)
 
 
 async def llm_model_func(
-        prompt, system_prompt=None, history_messages=[], **kwargs
+    prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     client = AzureOpenAI(
         api_key=AZURE_OPENAI_API_KEY,
         api_version=AZURE_OPENAI_API_VERSION,
-        azure_endpoint=AZURE_OPENAI_DEPLOYMENT
+        azure_endpoint=AZURE_OPENAI_ENDPOINT,
     )
 
     messages = []
@@ -47,7 +46,7 @@ async def llm_model_func(
     messages.append({"role": "user", "content": prompt})
 
     chat_completion = client.chat.completions.create(
-        model=LLM_AZURE_OPENAI_DEPLOYMENT,  # model = "deployment_name".
+        model=AZURE_OPENAI_DEPLOYMENT,  # model = "deployment_name".
         messages=messages,
         temperature=kwargs.get("temperature", 0),
         top_p=kwargs.get("top_p", 1),
@@ -60,12 +59,9 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
     client = AzureOpenAI(
         api_key=AZURE_OPENAI_API_KEY,
         api_version=AZURE_EMBEDDING_API_VERSION,
-        azure_endpoint=AZURE_OPENAI_ENDPOINT
+        azure_endpoint=AZURE_OPENAI_ENDPOINT,
     )
-    embedding = client.embeddings.create(
-        model=AZURE_EMBEDDING_DEPLOYMENT,
-        input=texts
-    )
+    embedding = client.embeddings.create(model=AZURE_EMBEDDING_DEPLOYMENT, input=texts)
 
     embeddings = [item.embedding for item in embedding.data]
     return np.array(embeddings)
