@@ -86,9 +86,6 @@ class Neo4JStorage(BaseGraphStorage):
             )
             return single_result["edgeExists"]
 
-        def close(self):
-            self._driver.close()
-
     async def get_node(self, node_id: str) -> Union[dict, None]:
         async with self._driver.session() as session:
             entity_name_label = node_id.strip('"')
