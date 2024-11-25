@@ -52,7 +52,7 @@ Output:
 """
 
 PROMPTS["entity_extraction_examples"] = [
-"""Example 1:
+    """Example 1:
 
 Entity_types: [person, technology, mission, organization, location]
 Text:
@@ -77,7 +77,7 @@ Output:
 ("relationship"{tuple_delimiter}"Taylor"{tuple_delimiter}"The Device"{tuple_delimiter}"Taylor shows reverence towards the device, indicating its importance and potential impact."{tuple_delimiter}"reverence, technological significance"{tuple_delimiter}9){record_delimiter}
 ("content_keywords"{tuple_delimiter}"power dynamics, ideological conflict, discovery, rebellion"){completion_delimiter}
 #############################""",
-"""Example 2:
+    """Example 2:
 
 Entity_types: [person, technology, mission, organization, location]
 Text:
@@ -95,7 +95,7 @@ Output:
 ("relationship"{tuple_delimiter}"The team"{tuple_delimiter}"Operation: Dulce"{tuple_delimiter}"The team is directly involved in Operation: Dulce, executing its evolved objectives and activities."{tuple_delimiter}"mission evolution, active participation"{tuple_delimiter}9){completion_delimiter}
 ("content_keywords"{tuple_delimiter}"mission evolution, decision-making, active participation, cosmic significance"){completion_delimiter}
 #############################""",
-"""Example 3:
+    """Example 3:
 
 Entity_types: [person, role, technology, organization, event, location, concept]
 Text:
@@ -121,10 +121,12 @@ Output:
 ("relationship"{tuple_delimiter}"Alex"{tuple_delimiter}"Humanity's Response"{tuple_delimiter}"Alex and his team are the key figures in Humanity's Response to the unknown intelligence."{tuple_delimiter}"collective action, cosmic significance"{tuple_delimiter}8){record_delimiter}
 ("relationship"{tuple_delimiter}"Control"{tuple_delimiter}"Intelligence"{tuple_delimiter}"The concept of Control is challenged by the Intelligence that writes its own rules."{tuple_delimiter}"power dynamics, autonomy"{tuple_delimiter}7){record_delimiter}
 ("content_keywords"{tuple_delimiter}"first contact, control, communication, cosmic significance"){completion_delimiter}
-#############################"""
+#############################""",
 ]
 
-PROMPTS["summarize_entity_descriptions"] = """You are a helpful assistant responsible for generating a comprehensive summary of the data provided below.
+PROMPTS[
+    "summarize_entity_descriptions"
+] = """You are a helpful assistant responsible for generating a comprehensive summary of the data provided below.
 Given one or two entities, and a list of descriptions, all related to the same entity or group of entities.
 Please concatenate all of these into a single, comprehensive description. Make sure to include information collected from all the descriptions.
 If the provided descriptions are contradictory, please resolve the contradictions and provide a single, coherent summary.
@@ -139,10 +141,14 @@ Description List: {description_list}
 Output:
 """
 
-PROMPTS["entiti_continue_extraction"] = """MANY entities were missed in the last extraction.  Add them below using the same format:
+PROMPTS[
+    "entiti_continue_extraction"
+] = """MANY entities were missed in the last extraction.  Add them below using the same format:
 """
 
-PROMPTS["entiti_if_loop_extraction"] = """It appears some entities may have still been missed.  Answer YES | NO if there are still entities that need to be added.
+PROMPTS[
+    "entiti_if_loop_extraction"
+] = """It appears some entities may have still been missed.  Answer YES | NO if there are still entities that need to be added.
 """
 
 PROMPTS["fail_response"] = "Sorry, I'm not able to provide an answer to that question."
@@ -201,7 +207,7 @@ Output:
 """
 
 PROMPTS["keywords_extraction_examples"] = [
-  """Example 1:
+    """Example 1:
 
 Query: "How does international trade influence global economic stability?"
 ################
@@ -211,7 +217,7 @@ Output:
   "low_level_keywords": ["Trade agreements", "Tariffs", "Currency exchange", "Imports", "Exports"]
 }}
 #############################""",
-  """Example 2:
+    """Example 2:
 
 Query: "What are the environmental consequences of deforestation on biodiversity?"
 ################
@@ -220,8 +226,8 @@ Output:
   "high_level_keywords": ["Environmental consequences", "Deforestation", "Biodiversity loss"],
   "low_level_keywords": ["Species extinction", "Habitat destruction", "Carbon emissions", "Rainforest", "Ecosystem"]
 }}
-#############################""", 
-  """Example 3:
+#############################""",
+    """Example 3:
 
 Query: "What is the role of education in reducing poverty?"
 ################
@@ -230,8 +236,8 @@ Output:
   "high_level_keywords": ["Education", "Poverty reduction", "Socioeconomic development"],
   "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]
 }}
-#############################"""
-] 
+#############################""",
+]
 
 
 PROMPTS["naive_rag_response"] = """---Role---
