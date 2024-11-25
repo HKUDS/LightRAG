@@ -122,8 +122,8 @@ class LightRAG:
 
     def __post_init__(self):
         log_file = os.path.join(self.working_dir, "lightrag.log")
-        set_logger(log_file)
-        logger.setLevel(self.log_level)
+        set_logger(log_file, self.log_level)
+        # logger.setLevel(self.log_level)
 
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
 
