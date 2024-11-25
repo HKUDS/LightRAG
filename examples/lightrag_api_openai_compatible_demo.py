@@ -1,9 +1,10 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile
 from pydantic import BaseModel
 import os
-
+from datetime import datetime
 from starlette.responses import JSONResponse
 
+from examples.graph_visual_with_html import visual_with_html
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import openai_complete_if_cache, openai_embedding
 from lightrag.utils import EmbeddingFunc
@@ -14,6 +15,8 @@ import nest_asyncio
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI, File, UploadFile, HTTPException
+import textract
+import uuid
 import sqlite3
 # Load environment variables
 load_dotenv()
@@ -54,6 +57,54 @@ CREATE TABLE IF NOT EXISTS files (
 conn.commit()
 cursor.close()
 
+cursor = conn.cursor()
+# 创建 tasks 表
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS tasks (
+    taskid INTEGER PRIMARY KEY AUTOINCREMENT,
+    taskname TEXT NOT NULL,
+    description TEXT UNIQUE,
+    status TEXT CHECK(status IN ('Pending', 'In Progress', 'Completed', 'Cancelled')) DEFAULT 'Pending',
+    starttime DATETIME,
+    endtime DATETIME
+);
+''')
+# 提交更改
+conn.commit()
+cursor.close()
+
+#创建会话列表数据库
+cursor = conn.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS conversations (
+    id TEXT PRIMARY KEY,  -- SQLite 自动处理主键的唯一性和递增
+    user_id INTEGER DEFAULT NULL,
+    title TEXT DEFAULT NULL,  -- SQLite 没有 VARCHAR 类型，使用 TEXT 替代
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,  -- 使用 TEXT 存储时间戳
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+''')
+conn.commit()
+cursor.close()
+
+#创建消息数据库
+cursor = conn.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,  -- SQLite 自动处理主键的唯一性和递增
+    conversation_id TEXT NOT NULL,
+    sender TEXT CHECK(sender IN ('user', 'ai')) NOT NULL,  -- 使用 TEXT 模拟 ENUM 类型
+    content TEXT NOT NULL,
+    mode TEXT CHECK(mode IN ('local', 'global', 'hybrid')) DEFAULT 'hybrid',  -- 使用 TEXT 模拟 ENUM 类型
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
+);
+''')
+conn.commit()
+cursor.close()
+
+
+
 # Initialize FastAPI app
 app = FastAPI(title="LightRAG API", description="API for RAG operations")
 
@@ -84,12 +135,12 @@ async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     return await openai_complete_if_cache(
-        "glm-4-flash",
+        "glm-4-plus",
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("ZHIPU_API_KEY"),
-        base_url="https://open.bigmodel.cn/api/paas/v4",
+        base_url="https://open.bigmodel.cn/api/paas/v4/",
         **kwargs,
     )
 
@@ -112,9 +163,13 @@ rag = LightRAG(
 )
 
 # Data models for API requests
+class MessageRequest(BaseModel):
+    conversation:str
 class QueryRequest(BaseModel):
     query: str
-    mode: str = "local"
+    mode: str = "hybrid"
+    conversation_id:str
+    only_need_context: bool = False
 
 class InsertRequest(BaseModel):
     text: str
@@ -126,21 +181,66 @@ class Response(BaseModel):
     status: str
     data: Optional[str] = None
     message: Optional[str] = None
+class DeleteRequest(BaseModel):
+    enetityname :str
+
+
 
 # API routes
+#创建新会话
+@app.get("/conversationlist")
+async def query_conversation():
+    cursor=conn.cursor()
+    cursor.execute("SELECT * FROM conversations")
+    conversationlist=cursor.fetchall()
+    cursor.close()
+    conversations=[{"id":row[0],"title":row[2],"created_at":row[3],"updated_at":row[4]}for row in conversationlist]
+    return JSONResponse(content={"status":"success","data":conversations})
+
+@app.post("/meassagelist")
+async def query_message(request:MessageRequest):
+    cursor=conn.cursor()
+    cursor.execute("SELECT * FROM messages WHERE conversation_id = ?", (str(request.conversation),))
+
+    messagelist=cursor.fetchall()
+    cursor.close()
+    messages=[{"id":row[0],"conversation_id":row[1],"sender":row[2],"content":row[3],"mode":row[4],"created_at":row[5]}for row in messagelist]
+    return JSONResponse(content={"status":"success","data":messages})
+
+
+
 @app.post("/query", response_model=Response)
 async def query_endpoint(request: QueryRequest):
+    #用户输入问题
+    cursor=conn.cursor()
+
+    if request.conversation_id=="":
+        request.conversation_id=str(uuid.uuid4())
+        print(request.conversation_id)
+        created_at=gettime()
+        cursor.execute("INSERT INTO conversations (id,user_id,title) VALUES (?,NULL,?)",(request.conversation_id,request.query))
+    cursor.execute("INSERT INTO messages (conversation_id,sender,content,mode,created_at)VALUES(?,?,?,?,?)",(request.conversation_id,"user",request.query,request.mode,gettime()))
+    conn.commit()
+    cursor.close()
+
+
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
             None,
             lambda: rag.query(
-                request.query,
+                request.query+'使用中文回答,以标准markdown形式返回',
                 param=QueryParam(
                     mode=request.mode, only_need_context=request.only_need_context
                 ),
             ),
         )
+        #回答问题
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO messages (conversation_id,sender,content,mode,created_at)VALUES(?,?,?,?,?)",
+                       (request.conversation_id, "ai", result, request.mode, gettime()))
+        conn.commit()
+        cursor.close()
         return Response(status="success", data=result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
@@ -149,11 +249,21 @@ async def getfilelist():
     cursor=conn.cursor()
     cursor.execute("SELECT id,name,embeded FROM files")
     filelist=cursor.fetchall()
+    cursor.close()
     # 格式化查询结果
     files = [{"id": row[0], "name": row[1], "embeded": row[2]} for row in filelist]
 
     # 返回 JSON 响应
     return JSONResponse(content={"status": "success", "data": files})
+@app.get("/gettasklist")
+async def gettasklist():
+    cursor=conn.cursor()
+    cursor.execute("SELECT * FROM tasks")
+    tasklist=cursor.fetchall()
+    cursor.close()
+    tasks=[{"taskname":row[1],"description":row[2],"status":row[3],"starttime":row[4],"endtime":row[5]} for row in tasklist]
+    return JSONResponse(content={"status":"success","data":tasks})
+
 
 
 @app.post("/insert", response_model=Response)
@@ -190,32 +300,42 @@ async def upload_file(file: UploadFile = File(...)):
     else:
         return Response(status="failed",message='files repeating')
 @app.post("/insert_file", response_model=Response)
-async def insert_file(file: UploadFile = File(...)):
+async def insert_file(file: InsertFileRequest):
     try:
-        filename=request.filename
+        filename=file.filename
         cursor=conn.cursor()
         cursor.execute("SELECT path FROM files WHERE name =?",(filename,))
         file_path=cursor.fetchall()
         cursor.close()
-        # print(file_path[0][0])
+        print(file_path[0][0])
         if not os.path.exists(file_path[0][0]):
             raise HTTPException(
                 status_code=404, detail=f"File not found: {file_path[0][0]}"
             )
-
+        current_datetime = gettime()
+        cursor=conn.cursor()
+        cursor.execute('''
+        INSERT INTO tasks (taskname, description, status, starttime,endtime)
+        VALUES ('Filembeded', ?, 'In Progress', ?,NULL)
+        ''',(filename,current_datetime))
+        conn.commit()
+        cursor.close()
         # Read file content
-        try:
-            with open(file_path[0][0], "r", encoding="utf-8") as f:
-                content = f.read()
-        except UnicodeDecodeError:
-            with open(file_path[0][0], "r", encoding="gbk") as f:
-                content = f.read()
-
+        # try:
+        #     with open(file_path[0][0], "r", encoding="utf-8") as f:
+        #         content = f.read()
+        # except UnicodeDecodeError:
+        #     with open(file_path[0][0], "r", encoding="gbk") as f:
+        #         content = f.read()
+        print('开始读取')
+        content= textract.read_text_file(file_path[0][0])
         # Insert file content into RAG system
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, lambda: rag.insert(content))
+        current_datetime = gettime()
         cursor=conn.cursor()
         cursor.execute("UPDATE files SET embeded=? WHERE name=?",(1,filename))
+        cursor.execute("UPDATE tasks SET status=?,endtime=? WHERE description=?",("Completed",current_datetime,filename))
         conn.commit()
         cursor.close()
 
@@ -225,11 +345,23 @@ async def insert_file(file: UploadFile = File(...)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+@app.post("/deleteentity")
+async def delete_entity(request:DeleteRequest):
+    try:
+        rag.delete_by_entity(request.enetityname)
+        return Response(status="success",message=f"delete {request.enetityname} success",)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
+@app.get("/visual")
+async def visual_html():
+    visual_with_html()
+    return Response(status="success",message="html visualize success")
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-
+def gettime():
+    return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 # Start the FastAPI app
 if __name__ == "__main__":
     import uvicorn

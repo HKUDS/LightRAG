@@ -15,8 +15,9 @@ from lightrag.utils import EmbeddingFunc
 import numpy as np
 
 from lightrag.kg.oracle_impl import OracleDB
-
-
+from dotenv import load_dotenv
+# Load environment variables
+load_dotenv()
 print(os.getcwd())
 
 script_directory = Path(__file__).resolve().parent.parent
@@ -26,22 +27,26 @@ sys.path.append(os.path.abspath(script_directory))
 # Apply nest_asyncio to solve event loop issues
 nest_asyncio.apply()
 
+
+# Default directory for RAG index
 DEFAULT_RAG_DIR = "index_default"
+WORKING_DIR = os.getenv("RAG_DIR")
+UPLOAD_DIR=os.getenv("UPLOAD_DIR")
+SQLITE_DIR=os.getenv("SQLITE_DIR")
 
-
-# We use OpenAI compatible API to call LLM on Oracle Cloud
-# More docs here https://github.com/jin38324/OCI_GenAI_access_gateway
-BASE_URL = "http://xxx.xxx.xxx.xxx:8088/v1/"
-APIKEY = "ocigenerativeai"
+# 大模型的url和key
+LLM_BASE_URL = os.getenv("LLM_BASE_URL")
+LLM_APIKEY = os.getenv("ZHIPU_API_KEY")
+EMBED_BASE_URL=os.getenv("EMBED_BASE_URL")
+EMBED_APIKEY=os.getenv("SILICON_API_KEY")
 
 # Configure working directory
-WORKING_DIR = os.environ.get("RAG_DIR", f"{DEFAULT_RAG_DIR}")
 print(f"WORKING_DIR: {WORKING_DIR}")
-LLM_MODEL = os.environ.get("LLM_MODEL", "cohere.command-r-plus")
+LLM_MODEL = os.getenv("LLM_MODEL")
 print(f"LLM_MODEL: {LLM_MODEL}")
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "cohere.embed-multilingual-v3.0")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL")
 print(f"EMBEDDING_MODEL: {EMBEDDING_MODEL}")
-EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 512))
+EMBEDDING_MAX_TOKEN_SIZE = int(os.getenv("EMBEDDING_MAX_TOKEN_SIZE"))
 print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
 
 
@@ -57,8 +62,8 @@ async def llm_model_func(
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
-        api_key=APIKEY,
-        base_url=BASE_URL,
+        api_key=LLM_APIKEY,
+        base_url=LLM_BASE_URL,
         **kwargs,
     )
 
@@ -67,8 +72,8 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
     return await openai_embedding(
         texts,
         model=EMBEDDING_MODEL,
-        api_key=APIKEY,
-        base_url=BASE_URL,
+        api_key=EMBED_APIKEY,
+        base_url=EMBED_BASE_URL,
     )
 
 

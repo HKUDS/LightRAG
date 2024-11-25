@@ -71,17 +71,17 @@ async def main():
 
         # with open("./book.txt", "r", encoding="utf-8") as f:
         #     await rag.ainsert(f.read())
-        # with open("./models.txt", "r", encoding="utf-8") as f:
+        # # with open("./models.txt", "r", encoding="utf-8") as f:
+        # #     await rag.ainsert(f.read())
+        # with open("./testmodels.txt", "r", encoding="utf-8") as f:
         #     await rag.ainsert(f.read())
-        with open("./testmodels.txt", "r", encoding="utf-8") as f:
-            await rag.ainsert(f.read())
 
         # Perform naive search
-        # print(
-        #     await rag.aquery(
-        #         "反航母作战中有哪些行动？", param=QueryParam(mode="naive")
-        #     )
-        # )
+        print(
+            await rag.aquery(
+                "反航母作战中有哪些行动？", param=QueryParam(mode="global")
+            )
+        )
 
         # # Perform local search
         # print(
