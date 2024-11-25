@@ -69,12 +69,15 @@ async def openai_complete_if_cache(
     response = await openai_async_client.chat.completions.create(
         model=model, messages=messages, **kwargs
     )
-
+    content = response.choices[0].message.content
+    if r'\u' in content:
+        content = content.encode('utf-8').decode('unicode_escape')
+    print(content)
     if hashing_kv is not None:
         await hashing_kv.upsert(
             {args_hash: {"return": response.choices[0].message.content, "model": model}}
         )
-    return response.choices[0].message.content
+    return content
 
 
 @retry(
@@ -539,7 +542,7 @@ async def openai_embedding(
     texts: list[str],
     model: str = "text-embedding-3-small",
     base_url: str = None,
-    api_key: str = None,
+    api_key: str = None
 ) -> np.ndarray:
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
@@ -548,7 +551,7 @@ async def openai_embedding(
         AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
     )
     response = await openai_async_client.embeddings.create(
-        model=model, input=texts, encoding_format="float"
+        model=model, input=texts,  encoding_format="float"
     )
     return np.array([dp.embedding for dp in response.data])
 
