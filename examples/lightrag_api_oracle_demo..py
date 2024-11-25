@@ -162,12 +162,12 @@ class Response(BaseModel):
 
 # API routes
 
-rag = None  # 定义为全局对象
+rag = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global rag
-    rag = await init()  # 在应用启动时初始化 `rag`
+    rag = await init()
     print("done!")
     yield
 
