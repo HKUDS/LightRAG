@@ -114,7 +114,9 @@ class OracleDB:
 
         logger.info("Finished check all tables in Oracle database")
 
-    async def query(self, sql: str, multirows: bool = False) -> Union[dict, None]:
+    async def query(
+        self, sql: str, params: dict = None, multirows: bool = False
+    ) -> Union[dict, None]:
         async with self.pool.acquire() as connection:
             connection.inputtypehandler = self.input_type_handler
             connection.outputtypehandler = self.output_type_handler
@@ -256,7 +258,7 @@ class OracleKVStorage(BaseKVStorage):
                     item["__vector__"],
                 ]
                 # print(merge_sql)
-                await self.db.execute(merge_sql, data)
+                await self.db.execute(merge_sql, values)
 
         if self.namespace == "full_docs":
             for k, v in self._data.items():
@@ -266,7 +268,7 @@ class OracleKVStorage(BaseKVStorage):
                 )
                 values = [k, self._data[k]["content"], self.db.workspace]
                 # print(merge_sql)
-                await self.db.execute(merge_sql, data)
+                await self.db.execute(merge_sql, values)
         return left_data
 
     async def index_done_callback(self):
