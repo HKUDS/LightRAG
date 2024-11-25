@@ -56,7 +56,8 @@ def locate_json_string_body_from_string(content: str) -> Union[str, None]:
             maybe_json_str = maybe_json_str.replace("'", '"')
             json.loads(maybe_json_str)
             return maybe_json_str
-    except:
+    except Exception:
+        pass
         # try:
         #     content = (
         #         content.replace(kw_prompt[:-1], "")
@@ -64,9 +65,9 @@ def locate_json_string_body_from_string(content: str) -> Union[str, None]:
         #         .replace("model", "")
         #         .strip()
         #     )
-        #     maybe_json_str = "{" + content.split("{")[1].split("}")[0] + "}" 
+        #     maybe_json_str = "{" + content.split("{")[1].split("}")[0] + "}"
         #     json.loads(maybe_json_str)
-        
+
         return None
 
 
