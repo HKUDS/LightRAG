@@ -97,7 +97,7 @@ async def main():
             ),
             graph_storage="OracleGraphStorage",
             kv_storage="OracleKVStorage",
-            vector_storage="OracleVectorDBStorage"            
+            vector_storage="OracleVectorDBStorage",
         )
 
         # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool
