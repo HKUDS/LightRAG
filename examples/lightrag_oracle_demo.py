@@ -84,6 +84,7 @@ async def main():
 
         # Initialize LightRAG
         # We use Oracle DB as the KV/vector/graph storage
+        # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
         rag = LightRAG(
             enable_llm_cache=False,
             working_dir=WORKING_DIR,
@@ -96,8 +97,7 @@ async def main():
             ),
             graph_storage="OracleGraphStorage",
             kv_storage="OracleKVStorage",
-            vector_storage="OracleVectorDBStorage",
-            addon_params={"example_number": 1, "language": "Simplfied Chinese"},
+            vector_storage="OracleVectorDBStorage"            
         )
 
         # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool

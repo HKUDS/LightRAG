@@ -571,19 +571,19 @@ async def _build_query_context(
             hl_text_units_context,
         )
     return f"""
-# -----Entities-----
-# ```csv
-# {entities_context}
-# ```
-# -----Relationships-----
-# ```csv
-# {relations_context}
-# ```
-# -----Sources-----
-# ```csv
-# {text_units_context}
-# ```
-# """
+-----Entities-----
+```csv
+{entities_context}
+```
+-----Relationships-----
+```csv
+{relations_context}
+```
+-----Sources-----
+```csv
+{text_units_context}
+```
+"""
 
 
 async def _get_node_data(
@@ -593,18 +593,18 @@ async def _get_node_data(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
-    # 获取相似的实体
+    # get similar entities
     results = await entities_vdb.query(query, top_k=query_param.top_k)
     if not len(results):
         return None
-    # 获取实体信息
+    # get entity information
     node_datas = await asyncio.gather(
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
     )
     if not all([n is not None for n in node_datas]):
         logger.warning("Some nodes are missing, maybe the storage is damaged")
 
-    # 获取实体的度
+    # get entity degree
     node_degrees = await asyncio.gather(
         *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
     )
@@ -613,11 +613,11 @@ async def _get_node_data(
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
     ]  # what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
-    # 根据实体获取文本片段
+    # get entitytext chunk 
     use_text_units = await _find_most_related_text_unit_from_entities(
         node_datas, query_param, text_chunks_db, knowledge_graph_inst
     )
-    # 获取关联的边
+    # get relate edges
     use_relations = await _find_most_related_edges_from_entities(
         node_datas, query_param, knowledge_graph_inst
     )
@@ -625,7 +625,7 @@ async def _get_node_data(
         f"Local query uses {len(node_datas)} entites, {len(use_relations)} relations, {len(use_text_units)} text units"
     )
 
-    # 构建提示词
+    # build prompt
     entites_section_list = [["id", "entity", "type", "description", "rank"]]
     for i, n in enumerate(node_datas):
         entites_section_list.append(

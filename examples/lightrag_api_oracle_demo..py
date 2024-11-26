@@ -81,7 +81,7 @@ async def get_embedding_dim():
 
 async def init():
     # Detect embedding dimension
-    embedding_dimension = 1024  # await get_embedding_dim()
+    embedding_dimension = await get_embedding_dim()
     print(f"Detected embedding dimension: {embedding_dimension}")
     # Create Oracle DB connection
     # The `config` parameter is the connection configuration of Oracle DB
@@ -105,6 +105,7 @@ async def init():
     await oracle_db.check_tables()
     # Initialize LightRAG
     # We use Oracle DB as the KV/vector/graph storage
+    # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
     rag = LightRAG(
         enable_llm_cache=False,
         working_dir=WORKING_DIR,
