@@ -12,7 +12,7 @@
     </p>
      <p>
           <img src='https://img.shields.io/github/stars/hkuds/lightrag?color=green&style=social' />
-        <img src="https://img.shields.io/badge/python->=3.9.11-blue">
+        <img src="https://img.shields.io/badge/python->=3.10-blue">
         <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg"></a>
         <a href="https://pepy.tech/project/lightrag-hku"><img src="https://static.pepy.tech/badge/lightrag-hku/month"></a>
     </p>
