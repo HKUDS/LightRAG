@@ -69,12 +69,15 @@ async def openai_complete_if_cache(
     response = await openai_async_client.chat.completions.create(
         model=model, messages=messages, **kwargs
     )
-
+    content = response.choices[0].message.content
+    if r"\u" in content:
+        content = content.encode("utf-8").decode("unicode_escape")
+    # print(content)
     if hashing_kv is not None:
         await hashing_kv.upsert(
             {args_hash: {"return": response.choices[0].message.content, "model": model}}
         )
-    return response.choices[0].message.content
+    return content
 
 
 @retry(
