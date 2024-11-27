@@ -545,6 +545,13 @@ class OracleGraphStorage(BaseGraphStorage):
         if res:
             return res
 
+    async def get_statistics(self):
+        SQL = SQL_TEMPLATES["get_statistics"]
+        params = {"workspace": self.db.workspace}
+        res = await self.db.query(sql=SQL, params=params, multirows=True)
+        if res:
+            return res
+
 
 N_T = {
     "full_docs": "LIGHTRAG_DOC_FULL",
@@ -717,13 +724,22 @@ SQL_TEMPLATES = {
                 WHEN NOT MATCHED THEN
                     INSERT(workspace,source_name,target_name,weight,keywords,description,source_chunk_id,content,content_vector)
                     values (:workspace,:source_name,:target_name,:weight,:keywords,:description,:source_chunk_id,:content,:content_vector) """,
-    "get_all_nodes": """SELECT t1.name as id,t1.entity_type as label,t1.DESCRIPTION,t2.content
-                FROM LIGHTRAG_GRAPH_NODES t1
-                LEFT JOIN LIGHTRAG_DOC_CHUNKS t2 on t1.source_chunk_id=t2.id
-                WHERE t1.workspace=:workspace
-                order by t1.CREATETIME DESC
-                fetch first :limit rows only
-                """,
+    "get_all_nodes": """WITH t0 AS (
+                        SELECT name AS id, entity_type AS label, entity_type, description,
+                            '["' || replace(source_chunk_id, '<SEP>', '","') || '"]'     source_chunk_ids
+                        FROM lightrag_graph_nodes
+                        WHERE workspace = :workspace
+                        ORDER BY createtime DESC fetch first :limit rows only
+                    ), t1 AS (
+                        SELECT t0.id, source_chunk_id
+                        FROM t0, JSON_TABLE ( source_chunk_ids, '$[*]' COLUMNS ( source_chunk_id PATH '$' ) )
+                    ), t2 AS (
+                        SELECT t1.id, LISTAGG(t2.content, '\n') content
+                        FROM t1 LEFT JOIN lightrag_doc_chunks t2 ON t1.source_chunk_id = t2.id
+                        GROUP BY t1.id
+                    )
+                    SELECT t0.id, label, entity_type, description, t2.content
+                    FROM t0 LEFT JOIN t2 ON t0.id = t2.id""",
     "get_all_edges": """SELECT t1.id,t1.keywords as label,t1.keywords, t1.source_name as source, t1.target_name as target,
                 t1.weight,t1.DESCRIPTION,t2.content
                 FROM LIGHTRAG_GRAPH_EDGES t1
@@ -731,4 +747,13 @@ SQL_TEMPLATES = {
                 WHERE t1.workspace=:workspace
                 order by t1.CREATETIME DESC
                 fetch first :limit rows only""",
+    "get_statistics": """select  count(distinct CASE WHEN type='node' THEN id END) as nodes_count,
+                count(distinct CASE WHEN type='edge' THEN id END) as edges_count
+                FROM (
+                select 'node' as type, id FROM GRAPH_TABLE (lightrag_graph
+                    MATCH (a) WHERE a.workspace=:workspace columns(a.name as id))
+                UNION
+                select 'edge' as type, TO_CHAR(id) id FROM GRAPH_TABLE (lightrag_graph
+                    MATCH (a)-[e]->(b) WHERE e.workspace=:workspace columns(e.id))
+                )""",
 }
