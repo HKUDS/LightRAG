@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from tqdm.asyncio import tqdm as tqdm_async
 from typing import Union
 from collections import Counter, defaultdict
 import warnings
@@ -342,11 +343,15 @@ async def extract_entities(
         )
         return dict(maybe_nodes), dict(maybe_edges)
 
-    # use_llm_func is wrapped in ascynio.Semaphore, limiting max_async callings
-    results = await asyncio.gather(
-        *[_process_single_content(c) for c in ordered_chunks]
-    )
-    print()  # clear the progress bar
+    results = []
+    for result in tqdm_async(
+        asyncio.as_completed([_process_single_content(c) for c in ordered_chunks]),
+        total=len(ordered_chunks),
+        desc="Extracting entities from chunks",
+        unit="chunk",
+    ):
+        results.append(await result)
+
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
     for m_nodes, m_edges in results:
@@ -354,18 +359,38 @@ async def extract_entities(
             maybe_nodes[k].extend(v)
         for k, v in m_edges.items():
             maybe_edges[tuple(sorted(k))].extend(v)
-    all_entities_data = await asyncio.gather(
-        *[
-            _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-            for k, v in maybe_nodes.items()
-        ]
-    )
-    all_relationships_data = await asyncio.gather(
-        *[
-            _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
-            for k, v in maybe_edges.items()
-        ]
-    )
+    logger.info("Inserting entities into storage...")
+    all_entities_data = []
+    for result in tqdm_async(
+        asyncio.as_completed(
+            [
+                _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
+                for k, v in maybe_nodes.items()
+            ]
+        ),
+        total=len(maybe_nodes),
+        desc="Inserting entities",
+        unit="entity",
+    ):
+        all_entities_data.append(await result)
+
+    logger.info("Inserting relationships into storage...")
+    all_relationships_data = []
+    for result in tqdm_async(
+        asyncio.as_completed(
+            [
+                _merge_edges_then_upsert(
+                    k[0], k[1], v, knowledge_graph_inst, global_config
+                )
+                for k, v in maybe_edges.items()
+            ]
+        ),
+        total=len(maybe_edges),
+        desc="Inserting relationships",
+        unit="relationship",
+    ):
+        all_relationships_data.append(await result)
+
     if not len(all_entities_data):
         logger.warning("Didn't extract any entities, maybe your LLM is not working")
         return None
