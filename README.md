@@ -26,7 +26,8 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 </div>
 
 ## 🎉 News
-- [x] [2024.11.19]🎯📢A comprehensive guide to LightRAG is now available on [LearnOpenCV](https://learnopencv.com/lightrag). Many thanks to the blog author!
+- [x] [2024.11.25]🎯📢LightRAG now supports seamless integration of [custom knowledge graphs](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#insert-custom-kg), empowering users to enhance the system with their own domain expertise.
+- [x] [2024.11.19]🎯📢A comprehensive guide to LightRAG is now available on [LearnOpenCV](https://learnopencv.com/lightrag). Many thanks to the blog author.
 - [x] [2024.11.12]🎯📢LightRAG now supports [Oracle Database 23ai for all storage types (KV, vector, and graph)](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_oracle_demo.py).
 - [x] [2024.11.11]🎯📢LightRAG now supports [deleting entities by their names](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete-entity).
 - [x] [2024.11.09]🎯📢Introducing the [LightRAG Gui](https://lightrag-gui.streamlit.app), which allows you to insert, query, visualize, and download LightRAG knowledge.
@@ -325,6 +326,49 @@ rag = LightRAG(
 
 with open("./newText.txt") as f:
     rag.insert(f.read())
+```
+
+### Insert Custom KG
+
+```python
+rag = LightRAG(
+     working_dir=WORKING_DIR,
+     llm_model_func=llm_model_func,
+     embedding_func=EmbeddingFunc(
+          embedding_dim=embedding_dimension,
+          max_token_size=8192,
+          func=embedding_func,
+     ),
+)
+
+custom_kg = {
+    "entities": [
+        {
+            "entity_name": "CompanyA",
+            "entity_type": "Organization",
+            "description": "A major technology company",
+            "source_id": "Source1"
+        },
+        {
+            "entity_name": "ProductX",
+            "entity_type": "Product",
+            "description": "A popular product developed by CompanyA",
+            "source_id": "Source1"
+        }
+    ],
+    "relationships": [
+        {
+            "src_id": "CompanyA",
+            "tgt_id": "ProductX",
+            "description": "CompanyA develops ProductX",
+            "keywords": "develop, produce",
+            "weight": 1.0,
+            "source_id": "Source1"
+        }
+    ]
+}
+
+rag.insert_custom_kg(custom_kg)
 ```
 
 ### Delete Entity
