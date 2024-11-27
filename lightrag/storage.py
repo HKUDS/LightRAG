@@ -1,6 +1,7 @@
 import asyncio
 import html
 import os
+from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 from typing import Any, Union, cast
 import networkx as nx
@@ -95,9 +96,16 @@ class NanoVectorDBStorage(BaseVectorStorage):
             contents[i : i + self._max_batch_size]
             for i in range(0, len(contents), self._max_batch_size)
         ]
-        embeddings_list = await asyncio.gather(
-            *[self.embedding_func(batch) for batch in batches]
-        )
+        embedding_tasks = [self.embedding_func(batch) for batch in batches]
+        embeddings_list = []
+        for f in tqdm_async(
+            asyncio.as_completed(embedding_tasks),
+            total=len(embedding_tasks),
+            desc="Generating embeddings",
+            unit="batch",
+        ):
+            embeddings = await f
+            embeddings_list.append(embeddings)
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
             d["__vector__"] = embeddings[i]
