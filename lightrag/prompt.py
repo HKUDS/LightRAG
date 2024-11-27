@@ -2,6 +2,7 @@ GRAPH_FIELD_SEP = "<SEP>"
 
 PROMPTS = {}
 
+PROMPTS["DEFAULT_LANGUAGE"] = "English"
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
@@ -11,6 +12,7 @@ PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event"]
 
 PROMPTS["entity_extraction"] = """-Goal-
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
+Use {language} as output language.
 
 -Steps-
 1. Identify all entities. For each identified entity, extract the following information:
@@ -38,7 +40,19 @@ Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_
 ######################
 -Examples-
 ######################
-Example 1:
+{examples}
+
+#############################
+-Real Data-
+######################
+Entity_types: {entity_types}
+Text: {input_text}
+######################
+Output:
+"""
+
+PROMPTS["entity_extraction_examples"] = [
+    """Example 1:
 
 Entity_types: [person, technology, mission, organization, location]
 Text:
@@ -62,8 +76,8 @@ Output:
 ("relationship"{tuple_delimiter}"Jordan"{tuple_delimiter}"Cruz"{tuple_delimiter}"Jordan's commitment to discovery is in rebellion against Cruz's vision of control and order."{tuple_delimiter}"ideological conflict, rebellion"{tuple_delimiter}5){record_delimiter}
 ("relationship"{tuple_delimiter}"Taylor"{tuple_delimiter}"The Device"{tuple_delimiter}"Taylor shows reverence towards the device, indicating its importance and potential impact."{tuple_delimiter}"reverence, technological significance"{tuple_delimiter}9){record_delimiter}
 ("content_keywords"{tuple_delimiter}"power dynamics, ideological conflict, discovery, rebellion"){completion_delimiter}
-#############################
-Example 2:
+#############################""",
+    """Example 2:
 
 Entity_types: [person, technology, mission, organization, location]
 Text:
@@ -80,8 +94,8 @@ Output:
 ("relationship"{tuple_delimiter}"The team"{tuple_delimiter}"Washington"{tuple_delimiter}"The team receives communications from Washington, which influences their decision-making process."{tuple_delimiter}"decision-making, external influence"{tuple_delimiter}7){record_delimiter}
 ("relationship"{tuple_delimiter}"The team"{tuple_delimiter}"Operation: Dulce"{tuple_delimiter}"The team is directly involved in Operation: Dulce, executing its evolved objectives and activities."{tuple_delimiter}"mission evolution, active participation"{tuple_delimiter}9){completion_delimiter}
 ("content_keywords"{tuple_delimiter}"mission evolution, decision-making, active participation, cosmic significance"){completion_delimiter}
-#############################
-Example 3:
+#############################""",
+    """Example 3:
 
 Entity_types: [person, role, technology, organization, event, location, concept]
 Text:
@@ -107,14 +121,8 @@ Output:
 ("relationship"{tuple_delimiter}"Alex"{tuple_delimiter}"Humanity's Response"{tuple_delimiter}"Alex and his team are the key figures in Humanity's Response to the unknown intelligence."{tuple_delimiter}"collective action, cosmic significance"{tuple_delimiter}8){record_delimiter}
 ("relationship"{tuple_delimiter}"Control"{tuple_delimiter}"Intelligence"{tuple_delimiter}"The concept of Control is challenged by the Intelligence that writes its own rules."{tuple_delimiter}"power dynamics, autonomy"{tuple_delimiter}7){record_delimiter}
 ("content_keywords"{tuple_delimiter}"first contact, control, communication, cosmic significance"){completion_delimiter}
-#############################
--Real Data-
-######################
-Entity_types: {entity_types}
-Text: {input_text}
-######################
-Output:
-"""
+#############################""",
+]
 
 PROMPTS[
     "summarize_entity_descriptions"
@@ -123,6 +131,7 @@ Given one or two entities, and a list of descriptions, all related to the same e
 Please concatenate all of these into a single, comprehensive description. Make sure to include information collected from all the descriptions.
 If the provided descriptions are contradictory, please resolve the contradictions and provide a single, coherent summary.
 Make sure it is written in third person, and include the entity names so we the have full context.
+Use Chinese as output language.
 
 #######
 -Data-
@@ -169,6 +178,7 @@ Add sections and commentary to the response as appropriate for the length and fo
 PROMPTS["keywords_extraction"] = """---Role---
 
 You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query.
+Use Chinese as output language.
 
 ---Goal---
 
@@ -184,7 +194,20 @@ Given the query, list both high-level and low-level keywords. High-level keyword
 ######################
 -Examples-
 ######################
-Example 1:
+{examples}
+
+#############################
+-Real Data-
+######################
+Query: {query}
+######################
+The `Output` should be human text, not unicode characters. Keep the same language as `Query`.
+Output:
+
+"""
+
+PROMPTS["keywords_extraction_examples"] = [
+    """Example 1:
 
 Query: "How does international trade influence global economic stability?"
 ################
@@ -193,8 +216,8 @@ Output:
   "high_level_keywords": ["International trade", "Global economic stability", "Economic impact"],
   "low_level_keywords": ["Trade agreements", "Tariffs", "Currency exchange", "Imports", "Exports"]
 }}
-#############################
-Example 2:
+#############################""",
+    """Example 2:
 
 Query: "What are the environmental consequences of deforestation on biodiversity?"
 ################
@@ -203,8 +226,8 @@ Output:
   "high_level_keywords": ["Environmental consequences", "Deforestation", "Biodiversity loss"],
   "low_level_keywords": ["Species extinction", "Habitat destruction", "Carbon emissions", "Rainforest", "Ecosystem"]
 }}
-#############################
-Example 3:
+#############################""",
+    """Example 3:
 
 Query: "What is the role of education in reducing poverty?"
 ################
@@ -213,14 +236,9 @@ Output:
   "high_level_keywords": ["Education", "Poverty reduction", "Socioeconomic development"],
   "low_level_keywords": ["School access", "Literacy rates", "Job training", "Income inequality"]
 }}
-#############################
--Real Data-
-######################
-Query: {query}
-######################
-Output:
+#############################""",
+]
 
-"""
 
 PROMPTS["naive_rag_response"] = """---Role---
 

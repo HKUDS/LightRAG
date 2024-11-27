@@ -1,10 +1,13 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile
+from fastapi import Query
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Any
 
 import sys
 import os
+
+
 from pathlib import Path
 
 import asyncio
@@ -16,9 +19,7 @@ import numpy as np
 
 from lightrag.kg.oracle_impl import OracleDB
 
-
 print(os.getcwd())
-
 script_directory = Path(__file__).resolve().parent.parent
 sys.path.append(os.path.abspath(script_directory))
 
@@ -37,13 +38,12 @@ APIKEY = "ocigenerativeai"
 # Configure working directory
 WORKING_DIR = os.environ.get("RAG_DIR", f"{DEFAULT_RAG_DIR}")
 print(f"WORKING_DIR: {WORKING_DIR}")
-LLM_MODEL = os.environ.get("LLM_MODEL", "cohere.command-r-plus")
+LLM_MODEL = os.environ.get("LLM_MODEL", "cohere.command-r-plus-08-2024")
 print(f"LLM_MODEL: {LLM_MODEL}")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "cohere.embed-multilingual-v3.0")
 print(f"EMBEDDING_MODEL: {EMBEDDING_MODEL}")
 EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 512))
 print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
-
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -94,10 +94,10 @@ async def init():
             "user": "",
             "password": "",
             "dsn": "",
-            "config_dir": "",
-            "wallet_location": "",
-            "wallet_password": "",
-            "workspace": "",
+            "config_dir": "path_to_config_dir",
+            "wallet_location": "path_to_wallet_location",
+            "wallet_password": "wallet_password",
+            "workspace": "company",
         }  # specify which docs you want to store and query
     )
 
@@ -105,6 +105,7 @@ async def init():
     await oracle_db.check_tables()
     # Initialize LightRAG
     # We use Oracle DB as the KV/vector/graph storage
+    # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
     rag = LightRAG(
         enable_llm_cache=False,
         working_dir=WORKING_DIR,
@@ -128,6 +129,17 @@ async def init():
     return rag
 
 
+# Extract and Insert into LightRAG storage
+# with open("./dickens/book.txt", "r", encoding="utf-8") as f:
+#   await rag.ainsert(f.read())
+
+# # Perform search in different modes
+# modes = ["naive", "local", "global", "hybrid"]
+# for mode in modes:
+#     print("="*20, mode, "="*20)
+#     print(await rag.aquery("这篇文档是关于什么内容的?", param=QueryParam(mode=mode)))
+#     print("-"*100, "\n")
+
 # Data models
 
 
@@ -135,6 +147,11 @@ class QueryRequest(BaseModel):
     query: str
     mode: str = "hybrid"
     only_need_context: bool = False
+    only_need_prompt: bool = False
+
+
+class DataRequest(BaseModel):
+    limit: int = 100
 
 
 class InsertRequest(BaseModel):
@@ -143,7 +160,7 @@ class InsertRequest(BaseModel):
 
 class Response(BaseModel):
     status: str
-    data: Optional[str] = None
+    data: Optional[Any] = None
     message: Optional[str] = None
 
 
@@ -167,17 +184,35 @@ app = FastAPI(
 
 @app.post("/query", response_model=Response)
 async def query_endpoint(request: QueryRequest):
-    try:
-        # loop = asyncio.get_event_loop()
-        result = await rag.aquery(
-            request.query,
-            param=QueryParam(
-                mode=request.mode, only_need_context=request.only_need_context
-            ),
-        )
-        return Response(status="success", data=result)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    # try:
+    # loop = asyncio.get_event_loop()
+    if request.mode == "naive":
+        top_k = 3
+    else:
+        top_k = 60
+    result = await rag.aquery(
+        request.query,
+        param=QueryParam(
+            mode=request.mode,
+            only_need_context=request.only_need_context,
+            only_need_prompt=request.only_need_prompt,
+            top_k=top_k,
+        ),
+    )
+    return Response(status="success", data=result)
+    # except Exception as e:
+    #     raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/data", response_model=Response)
+async def query_all_nodes(type: str = Query("nodes"), limit: int = Query(100)):
+    if type == "nodes":
+        result = await rag.chunk_entity_relation_graph.get_all_nodes(limit=limit)
+    elif type == "edges":
+        result = await rag.chunk_entity_relation_graph.get_all_edges(limit=limit)
+    elif type == "statistics":
+        result = await rag.chunk_entity_relation_graph.get_statistics()
+    return Response(status="success", data=result)
 
 
 @app.post("/insert", response_model=Response)
@@ -220,7 +255,7 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8020)
+    uvicorn.run(app, host="127.0.0.1", port=8020)
 
 # Usage example
 # To run the server, use the following command in your terminal:
