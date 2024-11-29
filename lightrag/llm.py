@@ -34,11 +34,15 @@ from .utils import compute_args_hash, wrap_embedding_func_with_attrs
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
+
+"""
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
 )
+
+
 async def openai_complete_if_cache(
     model,
     prompt,
@@ -75,6 +79,47 @@ async def openai_complete_if_cache(
             {args_hash: {"return": response.choices[0].message.content, "model": model}}
         )
     return response.choices[0].message.content
+"""
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+)
+async def openai_complete_if_cache(
+    model,
+    prompt,
+    history_messages=[],
+    base_url=None,
+    api_key=None,
+    **kwargs,
+) -> str:
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+
+    openai_async_client = (
+        AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
+    )
+    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
+    messages = []
+    messages.extend(history_messages)
+    messages.append({"role": "user", "content": prompt})
+    if hashing_kv is not None:
+        args_hash = compute_args_hash(model, messages)
+        if_cache_return = await hashing_kv.get_by_id(args_hash)
+        if if_cache_return is not None:
+            return if_cache_return["return"]
+
+    response = await openai_async_client.chat.completions.create(
+        model=model, messages=messages, **kwargs
+    )
+
+    if hashing_kv is not None:
+        await hashing_kv.upsert(
+            {args_hash: {"return": response.choices[0].message.content, "model": model}}
+        )
+    return response.choices[0].message.content
+
 
 
 @retry(
