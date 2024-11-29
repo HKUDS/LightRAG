@@ -70,9 +70,14 @@ async def openai_complete_if_cache(
         if if_cache_return is not None:
             return if_cache_return["return"]
 
-    response = await openai_async_client.chat.completions.create(
-        model=model, messages=messages, **kwargs
-    )
+    if "response_format" in kwargs:
+        response = await openai_async_client.beta.chat.completions.parse(
+            model=model, messages=messages, **kwargs
+        )
+    else:
+        response = await openai_async_client.chat.completions.create(
+            model=model, messages=messages, **kwargs
+        )
     content = response.choices[0].message.content
     if r"\u" in content:
         content = content.encode("utf-8").decode("unicode_escape")
@@ -545,7 +550,7 @@ async def ollama_model_complete(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
     if keyword_extraction:
-        kwargs["response_format"] = "json"
+        kwargs["format"] = "json"
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await ollama_model_if_cache(
         model_name,
