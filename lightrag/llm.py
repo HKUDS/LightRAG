@@ -518,7 +518,6 @@ async def gpt_4o_complete(
     return await openai_complete_if_cache(
         "o1-mini-2024-09-12",
         prompt,
-        system_prompt=system_prompt,
         history_messages=history_messages,
         **kwargs,
     )
