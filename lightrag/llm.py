@@ -454,7 +454,7 @@ async def lmdeploy_model_if_cache(
         await hashing_kv.upsert({args_hash: {"return": response, "model": model}})
     return response
 
-
+"""
 async def gpt_4o_complete(
     prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
@@ -465,6 +465,19 @@ async def gpt_4o_complete(
         history_messages=history_messages,
         **kwargs,
     )
+
+"""
+async def gpt_4o_complete(
+    prompt, system_prompt=None, history_messages=[], **kwargs
+) -> str:
+    return await openai_complete_if_cache(
+        "o1-mini-2024-09-12",
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        **kwargs,
+    )
+
 
 
 async def gpt_4o_mini_complete(
