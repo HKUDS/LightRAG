@@ -86,7 +86,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             return []
         list_data = [
             {
-                "__id__": k,
+                "__id__": compute_mdhash_id(k, prefix="ent-"),
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
