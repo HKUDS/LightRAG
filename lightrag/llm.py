@@ -567,11 +567,14 @@ async def azure_openai_embedding(
     model: str = "text-embedding-3-small",
     base_url: str = None,
     api_key: str = None,
+    api_version: str = None,
 ) -> np.ndarray:
     if api_key:
         os.environ["AZURE_OPENAI_API_KEY"] = api_key
     if base_url:
         os.environ["AZURE_OPENAI_ENDPOINT"] = base_url
+    if api_version:
+        os.environ["AZURE_OPENAI_API_VERSION"] = api_version
 
     openai_async_client = AsyncAzureOpenAI(
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
