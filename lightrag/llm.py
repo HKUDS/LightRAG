@@ -556,7 +556,7 @@ async def openai_embedding(
     return np.array([dp.embedding for dp in response.data])
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8191)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
