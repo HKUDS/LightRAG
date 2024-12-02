@@ -59,6 +59,9 @@ async def _handle_entity_relation_summary(
     llm_max_tokens = global_config["llm_model_max_token_size"]
     tiktoken_model_name = global_config["tiktoken_model_name"]
     summary_max_tokens = global_config["entity_summary_to_max_tokens"]
+    language = global_config["addon_params"].get(
+        "language", PROMPTS["DEFAULT_LANGUAGE"]
+    )
 
     tokens = encode_string_by_tiktoken(description, model_name=tiktoken_model_name)
     if len(tokens) < summary_max_tokens:  # No need for summary
@@ -70,6 +73,7 @@ async def _handle_entity_relation_summary(
     context_base = dict(
         entity_name=entity_or_relation_name,
         description_list=use_description.split(GRAPH_FIELD_SEP),
+        language=language,
     )
     use_prompt = prompt_template.format(**context_base)
     logger.debug(f"Trigger summary: {entity_or_relation_name}")
@@ -444,6 +448,9 @@ async def kg_query(
         )
     else:
         examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+    language = global_config["addon_params"].get(
+        "language", PROMPTS["DEFAULT_LANGUAGE"]
+    )
 
     # Set mode
     if query_param.mode not in ["local", "global", "hybrid"]:
@@ -453,7 +460,7 @@ async def kg_query(
     # LLM generate keywords
     use_model_func = global_config["llm_model_func"]
     kw_prompt_temp = PROMPTS["keywords_extraction"]
-    kw_prompt = kw_prompt_temp.format(query=query, examples=examples)
+    kw_prompt = kw_prompt_temp.format(query=query, examples=examples, language=language)
     result = await use_model_func(kw_prompt)
     logger.info("kw_prompt result:")
     print(result)
