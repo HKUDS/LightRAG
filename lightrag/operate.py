@@ -17,7 +17,6 @@ from .utils import (
     split_string_by_multi_markers,
     truncate_list_by_token_size,
     process_combine_contexts,
-    locate_json_string_body_from_string,
 )
 from .base import (
     BaseGraphStorage,
@@ -461,12 +460,12 @@ async def kg_query(
     use_model_func = global_config["llm_model_func"]
     kw_prompt_temp = PROMPTS["keywords_extraction"]
     kw_prompt = kw_prompt_temp.format(query=query, examples=examples, language=language)
-    result = await use_model_func(kw_prompt)
+    result = await use_model_func(kw_prompt, keyword_extraction=True)
     logger.info("kw_prompt result:")
     print(result)
     try:
-        json_text = locate_json_string_body_from_string(result)
-        keywords_data = json.loads(json_text)
+        # json_text = locate_json_string_body_from_string(result) # handled in use_model_func
+        keywords_data = json.loads(result)
         hl_keywords = keywords_data.get("high_level_keywords", [])
         ll_keywords = keywords_data.get("low_level_keywords", [])
 

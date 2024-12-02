@@ -54,7 +54,7 @@ def locate_json_string_body_from_string(content: str) -> Union[str, None]:
             maybe_json_str = maybe_json_str.replace("\\n", "")
             maybe_json_str = maybe_json_str.replace("\n", "")
             maybe_json_str = maybe_json_str.replace("'", '"')
-            json.loads(maybe_json_str)
+            # json.loads(maybe_json_str) # don't check here, cannot validate schema after all
             return maybe_json_str
     except Exception:
         pass
