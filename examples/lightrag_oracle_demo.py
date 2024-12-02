@@ -104,6 +104,8 @@ async def main():
         rag.graph_storage_cls.db = oracle_db
         rag.key_string_value_json_storage_cls.db = oracle_db
         rag.vector_db_storage_cls.db = oracle_db
+        # add embedding_func for graph database, it's deleted in commit 5661d76860436f7bf5aef2e50d9ee4a59660146c
+        rag.chunk_entity_relation_graph.embedding_func = rag.embedding_func
 
         # Extract and Insert into LightRAG storage
         with open("./dickens/demo.txt", "r", encoding="utf-8") as f:
