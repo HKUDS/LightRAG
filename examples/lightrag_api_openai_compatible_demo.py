@@ -4,9 +4,9 @@ import os
 from datetime import datetime
 from starlette.responses import JSONResponse
 
-from examples.graph_visual_with_html import visual_with_html
+#from examples.graph_visual_with_html import visual_with_html
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import openai_complete_if_cache, openai_embedding
+from lightrag.llm import openai_complete_if_cache, openai_embedding, ollama_model_complete
 from lightrag.utils import EmbeddingFunc
 import numpy as np
 from typing import Optional
@@ -148,17 +148,33 @@ async def llm_model_func(
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await openai_embedding(
         texts,
-        model="BAAI/bge-m3",
-        api_key=os.getenv("SILICON_API_KEY"),
-        base_url="https://api.siliconflow.cn/v1",
+        model="acge_text_embedding",
+        api_key='EMPTY',
+        #api_key=os.getenv("SILICON_API_KEY"),
+        #base_url="https://api.siliconflow.cn/v1",
+        base_url="http://172.21.252.218:9997/v1",
     )
 
+
 # Initialize RAG instance
+#OPenai 写法
+# rag = LightRAG(
+#     working_dir=WORKING_DIR,
+#     llm_model_func=llm_model_func,
+#     embedding_func=EmbeddingFunc(
+#         embedding_dim=1792, max_token_size=1024, func=embedding_func
+#     ),
+# )
+#ollama写法
 rag = LightRAG(
     working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
+    llm_model_func=ollama_model_complete,
+    llm_model_name="phi3:latest",
+    llm_model_max_async=4,
+    llm_model_max_token_size=32768,
+    llm_model_kwargs={"host": "http://223.2.37.45:11434", "options": {"num_ctx": 32768}},
     embedding_func=EmbeddingFunc(
-        embedding_dim=1024, max_token_size=8192, func=embedding_func
+        embedding_dim=1792, max_token_size=1024, func=embedding_func
     ),
 )
 
@@ -181,9 +197,10 @@ class Response(BaseModel):
     status: str
     data: Optional[str] = None
     message: Optional[str] = None
-class DeleteRequest(BaseModel):
+class DeleteEnetityRequest(BaseModel):
     enetityname :str
-
+class DeleteConversationRequest(BaseModel):
+    conversationid:str
 
 
 # API routes
@@ -241,7 +258,7 @@ async def query_endpoint(request: QueryRequest):
                        (request.conversation_id, "ai", result, request.mode, gettime()))
         conn.commit()
         cursor.close()
-        return Response(status="success", data=result)
+        return Response(status="success", data=result,message=request.conversation_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 @app.get("/getfilelist")
@@ -346,20 +363,41 @@ async def insert_file(file: InsertFileRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 @app.post("/deleteentity")
-async def delete_entity(request:DeleteRequest):
+async def delete_entity(request:DeleteEnetityRequest):
     try:
         rag.delete_by_entity(request.enetityname)
         return Response(status="success",message=f"delete {request.enetityname} success",)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+@app.post("/deleteconversation")
+async def delete_conversation(request:DeleteConversationRequest):
+    try:
+        cursor=conn.cursor()
+        # 开始事务
+        conn.execute('BEGIN TRANSACTION;')
+
+        # 删除 message 表中与 conversation_id 相关的记录
+        cursor.execute('DELETE FROM messages WHERE conversation_id = ?', (request.conversationid,))
+
+        # 删除 conversation 表中的记录
+        cursor.execute('DELETE FROM conversations WHERE id = ?', (request.conversationid,))
+
+        # 提交事务
+        conn.commit()
+        cursor.close()
+        return Response(status="success",
+                        message=f"删除{request.conversationid}成功")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 
 @app.get("/visual")
 async def visual_html():
-    visual_with_html()
+    #visual_with_html()
     return Response(status="success",message="html visualize success")
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
 def gettime():
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 # Start the FastAPI app
