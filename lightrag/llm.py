@@ -745,6 +745,9 @@ async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
 
 
 async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+    """
+    Deprecated in favor of `embed`.
+    """
     embed_text = []
     ollama_client = ollama.Client(**kwargs)
     for text in texts:
@@ -752,6 +755,12 @@ async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarra
         embed_text.append(data["embedding"])
 
     return embed_text
+
+
+async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+    ollama_client = ollama.Client(**kwargs)
+    data = ollama_client.embed(model=embed_model, input=texts)
+    return data["embeddings"]
 
 
 class Model(BaseModel):
