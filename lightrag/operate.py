@@ -264,6 +264,16 @@ async def extract_entities(
     else:
         examples = "\n".join(PROMPTS["entity_extraction_examples"])
 
+    example_context_base = dict(
+        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
+        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+        entity_types=",".join(PROMPTS["DEFAULT_ENTITY_TYPES"]),
+        language=language,
+    )
+    # add example's format
+    examples = examples.format(**example_context_base)
+
     entity_extract_prompt = PROMPTS["entity_extraction"]
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
