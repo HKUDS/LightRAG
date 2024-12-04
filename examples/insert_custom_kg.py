@@ -56,18 +56,6 @@ custom_kg = {
             "description": "An annual technology conference held in CityC",
             "source_id": "Source3",
         },
-        {
-            "entity_name": "CompanyD",
-            "entity_type": "Organization",
-            "description": "A financial services company specializing in insurance",
-            "source_id": "Source4",
-        },
-        {
-            "entity_name": "ServiceZ",
-            "entity_type": "Service",
-            "description": "An insurance product offered by CompanyD",
-            "source_id": "Source4",
-        },
     ],
     "relationships": [
         {
@@ -94,13 +82,23 @@ custom_kg = {
             "weight": 0.8,
             "source_id": "Source3",
         },
+    ],
+    "chunks": [
         {
-            "src_id": "CompanyD",
-            "tgt_id": "ServiceZ",
-            "description": "CompanyD provides ServiceZ",
-            "keywords": "provide, offer",
-            "weight": 1.0,
-            "source_id": "Source4",
+            "content": "ProductX, developed by CompanyA, has revolutionized the market with its cutting-edge features.",
+            "source_id": "Source1",
+        },
+        {
+            "content": "PersonA is a prominent researcher at UniversityB, focusing on artificial intelligence and machine learning.",
+            "source_id": "Source2",
+        },
+        {
+            "content": "EventY, held in CityC, attracts technology enthusiasts and companies from around the globe.",
+            "source_id": "Source3",
+        },
+        {
+            "content": "None",
+            "source_id": "UNKNOWN",
         },
     ],
 }
