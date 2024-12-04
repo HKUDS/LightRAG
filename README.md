@@ -965,8 +965,8 @@ def extract_queries(file_path):
 
 ```python
 .
-├── .github
-│   ├── workflows
+├── .github/
+│   ├── workflows/
 │   │   └── linting.yaml
 ├── examples/
 │   ├── batch_eval.py
@@ -987,8 +987,8 @@ def extract_queries(file_path):
 │   ├── lightrag_oracle_demo.py
 │   ├── lightrag_siliconcloud_demo.py
 │   └── vram_management_demo.py
-├── lightrag
-│   ├── kg
+├── lightrag/
+│   ├── kg/
 │   │   ├── __init__.py
 │   │   ├── oracle_impl.py
 │   │   └── neo4j_impl.py
@@ -1000,7 +1000,7 @@ def extract_queries(file_path):
 │   ├── prompt.py
 │   ├── storage.py
 │   └── utils.py
-├── reproduce
+├── reproduce/
 │   ├── Step_0.py
 │   ├── Step_1_openai_compatible.py
 │   ├── Step_1.py
