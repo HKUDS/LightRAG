@@ -186,7 +186,9 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
         self.chunk_entity_relation_graph = self.graph_storage_cls(
-            namespace="chunk_entity_relation", global_config=asdict(self)
+            namespace="chunk_entity_relation",
+            global_config=asdict(self),
+            embedding_func=self.embedding_func,
         )
         ####
         # add embedding func by walter over
