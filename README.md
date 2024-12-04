@@ -961,6 +961,7 @@ def extract_queries(file_path):
 │   ├── lightrag_bedrock_demo.py
 │   ├── lightrag_hf_demo.py
 │   ├── lightrag_lmdeploy_demo.py
+│   ├── lightrag_nvidia_demo.py
 │   ├── lightrag_ollama_demo.py
 │   ├── lightrag_openai_compatible_demo.py
 │   ├── lightrag_openai_demo.py
