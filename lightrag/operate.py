@@ -297,7 +297,9 @@ async def extract_entities(
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
         # hint_prompt = entity_extract_prompt.format(**context_base, input_text=content)
-        hint_prompt = entity_extract_prompt.format(**context_base, input_text="{input_text}").format(**context_base, input_text=content)
+        hint_prompt = entity_extract_prompt.format(
+            **context_base, input_text="{input_text}"
+        ).format(**context_base, input_text=content)
 
         final_result = await use_llm_func(hint_prompt)
         history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
@@ -949,7 +951,6 @@ async def _find_related_text_unit_from_relationships(
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
         for dp in edge_datas
     ]
-
     all_text_units_lookup = {}
 
     for index, unit_list in enumerate(text_units):
