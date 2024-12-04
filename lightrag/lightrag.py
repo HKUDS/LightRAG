@@ -133,7 +133,7 @@ class LightRAG:
     convert_response_to_json_func: callable = convert_response_to_json
 
     def __post_init__(self):
-        log_file = os.path.join(self.working_dir, "lightrag.log")
+        log_file = os.path.join("lightrag.log")
         set_logger(log_file)
         logger.setLevel(self.log_level)
 
