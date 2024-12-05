@@ -10,6 +10,10 @@ if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 print(f"WorkingDir: {WORKING_DIR}")
 
+# mongo
+os.environ["MONGO_URI"] = "mongodb://root:root@localhost:27017/"
+os.environ["MONGO_DATABASE"] = "LightRAG"
+
 # neo4j
 BATCH_SIZE_NODES = 500
 BATCH_SIZE_EDGES = 100
@@ -38,6 +42,7 @@ rag = LightRAG(
             texts=texts, embed_model="bge-m3:latest", host="http://127.0.0.1:11434"
         ),
     ),
+    kv_storage="MongoKVStorage",
     graph_storage="Neo4JStorage",
     vector_storage="MilvusVectorDBStorge",
 )
