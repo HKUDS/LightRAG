@@ -42,9 +42,9 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 ## Algorithm Flowchart
 
 ![LightRAG Indexing Flowchart](https://learnopencv.com/wp-content/uploads/2024/11/LightRAG-VectorDB-Json-KV-Store-Indexing-Flowchart-scaled.jpg)
-*Figure 1: LightRAG Indexing Flowchart*
+*Figure 1: LightRAG Indexing Flowchart - Img Caption : [Source](https://learnopencv.com/lightrag/)*
 ![LightRAG Retrieval and Querying Flowchart](https://learnopencv.com/wp-content/uploads/2024/11/LightRAG-Querying-Flowchart-Dual-Level-Retrieval-Generation-Knowledge-Graphs-scaled.jpg)
-*Figure 2: LightRAG Retrieval and Querying Flowchart*
+*Figure 2: LightRAG Retrieval and Querying Flowchart - Img Caption : [Source](https://learnopencv.com/lightrag/)*
 
 ## Install
 
@@ -364,7 +364,21 @@ custom_kg = {
             "weight": 1.0,
             "source_id": "Source1"
         }
-    ]
+    ],
+    "chunks": [
+        {
+            "content": "ProductX, developed by CompanyA, has revolutionized the market with its cutting-edge features.",
+            "source_id": "Source1",
+        },
+        {
+            "content": "PersonA is a prominent researcher at UniversityB, focusing on artificial intelligence and machine learning.",
+            "source_id": "Source2",
+        },
+        {
+            "content": "None",
+            "source_id": "UNKNOWN",
+        },
+    ],
 }
 
 rag.insert_custom_kg(custom_kg)
@@ -951,24 +965,32 @@ def extract_queries(file_path):
 
 ```python
 .
-├── examples
+├── .github/
+│   ├── workflows/
+│   │   └── linting.yaml
+├── examples/
 │   ├── batch_eval.py
 │   ├── generate_query.py
 │   ├── graph_visual_with_html.py
 │   ├── graph_visual_with_neo4j.py
+│   ├── insert_custom_kg.py
 │   ├── lightrag_api_openai_compatible_demo.py
+│   ├── lightrag_api_oracle_demo..py
 │   ├── lightrag_azure_openai_demo.py
 │   ├── lightrag_bedrock_demo.py
 │   ├── lightrag_hf_demo.py
 │   ├── lightrag_lmdeploy_demo.py
+│   ├── lightrag_nvidia_demo.py
 │   ├── lightrag_ollama_demo.py
 │   ├── lightrag_openai_compatible_demo.py
 │   ├── lightrag_openai_demo.py
+│   ├── lightrag_oracle_demo.py
 │   ├── lightrag_siliconcloud_demo.py
 │   └── vram_management_demo.py
-├── lightrag
-│   ├── kg
+├── lightrag/
+│   ├── kg/
 │   │   ├── __init__.py
+│   │   ├── oracle_impl.py
 │   │   └── neo4j_impl.py
 │   ├── __init__.py
 │   ├── base.py
@@ -978,7 +1000,7 @@ def extract_queries(file_path):
 │   ├── prompt.py
 │   ├── storage.py
 │   └── utils.py
-├── reproduce
+├── reproduce/
 │   ├── Step_0.py
 │   ├── Step_1_openai_compatible.py
 │   ├── Step_1.py
@@ -987,7 +1009,6 @@ def extract_queries(file_path):
 │   └── Step_3.py
 ├── .gitignore
 ├── .pre-commit-config.yaml
-├── Dockerfile
 ├── get_all_edges_nx.py
 ├── LICENSE
 ├── README.md
@@ -996,6 +1017,7 @@ def extract_queries(file_path):
 ├── test_neo4j.py
 └── test.py
 ```
+
 
 ## Star History
 
