@@ -12,7 +12,11 @@ if not os.path.exists(WORKING_DIR):
 
 
 async def lmdeploy_model_complete(
-    prompt=None, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt=None,
+    system_prompt=None,
+    history_messages=[],
+    keyword_extraction=False,
+    **kwargs,
 ) -> str:
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await lmdeploy_model_if_cache(
