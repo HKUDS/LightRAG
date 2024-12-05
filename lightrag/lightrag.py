@@ -44,6 +44,8 @@ from .kg.neo4j_impl import Neo4JStorage
 
 from .kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBStorage
 
+from .kg.milvus_impl import MilvusVectorDBStorge
+
 # future KG integrations
 
 # from .kg.ArangoDB_impl import (
@@ -228,6 +230,7 @@ class LightRAG:
             # vector storage
             "NanoVectorDBStorage": NanoVectorDBStorage,
             "OracleVectorDBStorage": OracleVectorDBStorage,
+            "MilvusVectorDBStorge": MilvusVectorDBStorge,
             # graph storage
             "NetworkXStorage": NetworkXStorage,
             "Neo4JStorage": Neo4JStorage,
