@@ -114,7 +114,7 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 * LightRAG also supports Open AI-like chat/embeddings APIs:
 ```python
 async def llm_model_func(
-    prompt, system_prompt=None, history_messages=[], **kwargs
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
     return await openai_complete_if_cache(
         "solar-mini",
