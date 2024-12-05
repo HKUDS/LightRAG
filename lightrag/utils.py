@@ -307,3 +307,72 @@ def process_combine_contexts(hl, ll):
     combined_sources_result = "\n".join(combined_sources_result)
 
     return combined_sources_result
+
+
+async def get_best_cached_response(
+    hashing_kv, current_embedding, similarity_threshold=0.95
+):
+    """获取最高相似度的缓存响应"""
+    try:
+        # 使用 list_keys() 获取所有键
+        all_keys = await hashing_kv.all_keys()
+        max_similarity = 0
+        best_cached_response = None
+
+        # 逐个获取缓存数据
+        for key in all_keys:
+            cache_data = await hashing_kv.get_by_id(key)
+            if cache_data is None or "embedding" not in cache_data:
+                continue
+
+            # 将缓存的 embedding 列表转换为 ndarray
+            cached_quantized = np.frombuffer(
+                bytes.fromhex(cache_data["embedding"]), dtype=np.uint8
+            ).reshape(cache_data["embedding_shape"])
+            cached_embedding = dequantize_embedding(
+                cached_quantized,
+                cache_data["embedding_min"],
+                cache_data["embedding_max"],
+            )
+
+            similarity = cosine_similarity(current_embedding, cached_embedding)
+            if similarity > max_similarity:
+                max_similarity = similarity
+                best_cached_response = cache_data["return"]
+
+        if max_similarity > similarity_threshold:
+            return best_cached_response
+        return None
+
+    except Exception as e:
+        logger.warning(f"Error in get_best_cached_response: {e}")
+        return None
+
+
+def cosine_similarity(v1, v2):
+    """计算两个向量的余弦相似度"""
+    dot_product = np.dot(v1, v2)
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    return dot_product / (norm1 * norm2)
+
+
+def quantize_embedding(embedding: np.ndarray, bits=8) -> tuple:
+    """将embedding量化为指定位数"""
+    # 计算最大最小值用于重建
+    min_val = embedding.min()
+    max_val = embedding.max()
+
+    # 量化到0-255范围
+    scale = (2**bits - 1) / (max_val - min_val)
+    quantized = np.round((embedding - min_val) * scale).astype(np.uint8)
+
+    return quantized, min_val, max_val
+
+
+def dequantize_embedding(
+    quantized: np.ndarray, min_val: float, max_val: float, bits=8
+) -> np.ndarray:
+    """还原量化的embedding"""
+    scale = (max_val - min_val) / (2**bits - 1)
+    return (quantized * scale + min_val).astype(np.float32)
