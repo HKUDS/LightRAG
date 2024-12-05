@@ -312,20 +312,20 @@ def process_combine_contexts(hl, ll):
 async def get_best_cached_response(
     hashing_kv, current_embedding, similarity_threshold=0.95
 ):
-    """获取最高相似度的缓存响应"""
+    """Get the cached response with highest similarity"""
     try:
-        # 使用 list_keys() 获取所有键
+        # Get all keys using list_keys()
         all_keys = await hashing_kv.all_keys()
         max_similarity = 0
         best_cached_response = None
 
-        # 逐个获取缓存数据
+        # Get cached data one by one
         for key in all_keys:
             cache_data = await hashing_kv.get_by_id(key)
             if cache_data is None or "embedding" not in cache_data:
                 continue
 
-            # 将缓存的 embedding 列表转换为 ndarray
+            # Convert cached embedding list to ndarray
             cached_quantized = np.frombuffer(
                 bytes.fromhex(cache_data["embedding"]), dtype=np.uint8
             ).reshape(cache_data["embedding_shape"])
@@ -350,7 +350,7 @@ async def get_best_cached_response(
 
 
 def cosine_similarity(v1, v2):
-    """计算两个向量的余弦相似度"""
+    """Calculate cosine similarity between two vectors"""
     dot_product = np.dot(v1, v2)
     norm1 = np.linalg.norm(v1)
     norm2 = np.linalg.norm(v2)
@@ -358,12 +358,12 @@ def cosine_similarity(v1, v2):
 
 
 def quantize_embedding(embedding: np.ndarray, bits=8) -> tuple:
-    """将embedding量化为指定位数"""
-    # 计算最大最小值用于重建
+    """Quantize embedding to specified bits"""
+    # Calculate min/max values for reconstruction
     min_val = embedding.min()
     max_val = embedding.max()
 
-    # 量化到0-255范围
+    # Quantize to 0-255 range
     scale = (2**bits - 1) / (max_val - min_val)
     quantized = np.round((embedding - min_val) * scale).astype(np.uint8)
 
@@ -373,6 +373,6 @@ def quantize_embedding(embedding: np.ndarray, bits=8) -> tuple:
 def dequantize_embedding(
     quantized: np.ndarray, min_val: float, max_val: float, bits=8
 ) -> np.ndarray:
-    """还原量化的embedding"""
+    """Restore quantized embedding"""
     scale = (max_val - min_val) / (2**bits - 1)
     return (quantized * scale + min_val).astype(np.float32)

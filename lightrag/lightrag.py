@@ -85,7 +85,7 @@ class LightRAG:
     working_dir: str = field(
         default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
-    # 默认不使用 embedding 缓存
+    # Default not to use embedding cache
     embedding_cache_config: dict = field(
         default_factory=lambda: {"enabled": False, "similarity_threshold": 0.95}
     )
