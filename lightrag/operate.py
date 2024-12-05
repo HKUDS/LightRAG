@@ -26,16 +26,23 @@ from .base import (
     TextChunkSchema,
     QueryParam,
 )
-from .prompt import GRAPH_FIELD_SEP, PROMPTS
+from .prompt_cn import GRAPH_FIELD_SEP, PROMPTS
 
 
 def chunking_by_token_size(
-    content: str, overlap_token_size=128, max_token_size=1024, tiktoken_model="gpt-4o"
+    content: str, overlap_token_size=128, max_token_size=1024, tiktoken_model="gpt-4o",
+    # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
+    extend_entity_title: str = '',
+    extend_entity_sn: str = '',
 ):
     tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
+    # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
+    extend_entity_content = f"{extend_entity_sn} 《{extend_entity_title}》\n"
+    entend_entity_tokens = encode_string_by_tiktoken(extend_entity_content, model_name=tiktoken_model)
+    entend_entity_tokens_size = len(entend_entity_tokens)
     results = []
     for index, start in enumerate(
-        range(0, len(tokens), max_token_size - overlap_token_size)
+        range(0, len(tokens), max_token_size - overlap_token_size - entend_entity_tokens_size)
     ):
         chunk_content = decode_tokens_by_tiktoken(
             tokens[start : start + max_token_size], model_name=tiktoken_model
@@ -43,7 +50,7 @@ def chunking_by_token_size(
         results.append(
             {
                 "tokens": min(max_token_size, len(tokens) - start),
-                "content": chunk_content.strip(),
+                "content": f"{extend_entity_content}{chunk_content.strip()}",
                 "chunk_order_index": index,
             }
         )
@@ -250,43 +257,82 @@ async def extract_entities(
 
     ordered_chunks = list(chunks.items())
 
+    # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
+    extend_entity_sn = global_config["extend_entity_sn"]
+    extend_entity_title = global_config["extend_entity_title"]
+
     entity_extract_prompt = PROMPTS["entity_extraction"]
+    relationship_extraction_prompt = PROMPTS["relationship_extraction"]
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=",".join(PROMPTS["DEFAULT_ENTITY_TYPES"]),
+        # 自定义新增 关系类型 by bumaple 2024-12-03
+        relationship_types=",".join(PROMPTS["DEFAULT_RELATIONSHIP_TYPES"]),
+        # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
+        extend_entity_sn=extend_entity_sn,
+        extend_entity_title=extend_entity_title,
     )
-    continue_prompt = PROMPTS["entiti_continue_extraction"]
-    if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]
+    entity_continue_prompt = PROMPTS["entiti_continue_extraction"]
+    entity_if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]
+
+    relationship_continue_prompt = PROMPTS["relationship_continue_extraction"]
+    relationship_if_loop_prompt = PROMPTS["relationship_if_loop_extraction"]
 
     already_processed = 0
     already_entities = 0
     already_relations = 0
 
+    # 修改原函数功能，改为两步操作，先提取实体，然后根据实体提取关系。
     async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
         nonlocal already_processed, already_entities, already_relations
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
-        hint_prompt = entity_extract_prompt.format(**context_base, input_text=content)
-        final_result = await use_llm_func(hint_prompt)
 
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
+        # 自定义新增 只提取实体 by bumaple 2024-12-05
+        entity_hint_prompt = entity_extract_prompt.format(**context_base, input_text=content)
+        entity_final_result = await use_llm_func(entity_hint_prompt)
+
+        entity_history = pack_user_ass_to_openai_messages(entity_hint_prompt, entity_final_result)
         for now_glean_index in range(entity_extract_max_gleaning):
-            glean_result = await use_llm_func(continue_prompt, history_messages=history)
+            glean_result = await use_llm_func(entity_continue_prompt, history_messages=entity_history)
 
-            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
-            final_result += glean_result
+            entity_history += pack_user_ass_to_openai_messages(entity_continue_prompt, glean_result)
+            entity_final_result += glean_result
             if now_glean_index == entity_extract_max_gleaning - 1:
                 break
 
             if_loop_result: str = await use_llm_func(
-                if_loop_prompt, history_messages=history
+                entity_if_loop_prompt, history_messages=entity_history
             )
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
             if if_loop_result != "yes":
                 break
+
+        # 自定义新增 根据实体提取关系 by bumaple 2024-12-05
+        context_base["entity_list"] = entity_final_result
+        relationship_hint_prompt = relationship_extraction_prompt.format(**context_base, input_text=content)
+        relationship_final_result = await use_llm_func(relationship_hint_prompt)
+
+        relationship_history = pack_user_ass_to_openai_messages(relationship_hint_prompt, relationship_final_result)
+        for now_glean_index in range(entity_extract_max_gleaning):
+            glean_result = await use_llm_func(relationship_continue_prompt, history_messages=relationship_history)
+
+            relationship_history += pack_user_ass_to_openai_messages(relationship_continue_prompt, glean_result)
+            relationship_final_result += glean_result
+            if now_glean_index == entity_extract_max_gleaning - 1:
+                break
+
+            if_loop_result: str = await use_llm_func(
+                relationship_if_loop_prompt, history_messages=relationship_history
+            )
+            if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
+            if if_loop_result != "yes":
+                break
+
+        final_result = entity_final_result + relationship_final_result
 
         records = split_string_by_multi_markers(
             final_result,

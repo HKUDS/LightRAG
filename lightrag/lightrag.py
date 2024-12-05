@@ -120,6 +120,10 @@ class LightRAG:
     addon_params: dict = field(default_factory=dict)
     convert_response_to_json_func: callable = convert_response_to_json
 
+    # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
+    extend_entity_title = ''
+    extend_entity_sn = ''
+
     def __post_init__(self):
         log_file = os.path.join(self.working_dir, "lightrag.log")
         set_logger(log_file, self.log_level)
@@ -257,6 +261,9 @@ class LightRAG:
                         overlap_token_size=self.chunk_overlap_token_size,
                         max_token_size=self.chunk_token_size,
                         tiktoken_model=self.tiktoken_model_name,
+                        # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
+                        extend_entity_title=self.extend_entity_title,
+                        extend_entity_sn=self.extend_entity_sn,
                     )
                 }
                 inserting_chunks.update(chunks)
