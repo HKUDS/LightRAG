@@ -46,6 +46,8 @@ from .kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBS
 
 from .kg.milvus_impl import MilvusVectorDBStorge
 
+from .kg.mongo_impl import MongoKVStorage
+
 # future KG integrations
 
 # from .kg.ArangoDB_impl import (
@@ -227,6 +229,7 @@ class LightRAG:
             # kv storage
             "JsonKVStorage": JsonKVStorage,
             "OracleKVStorage": OracleKVStorage,
+            "MongoKVStorage": MongoKVStorage,
             # vector storage
             "NanoVectorDBStorage": NanoVectorDBStorage,
             "OracleVectorDBStorage": OracleVectorDBStorage,
