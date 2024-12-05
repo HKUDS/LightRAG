@@ -59,6 +59,9 @@ async def openai_complete_if_cache(
         AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
     )
     hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
+    # 从kwargs中移除keyword_extraction参数，对于使用openai_complete_if_cache来调用openai接口风格自定义的模型，
+    # 如果调用时指定了keyword_extraction=True，则会导致openai的模型无法正常工作
+    kwargs.pop("keyword_extraction", None)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
