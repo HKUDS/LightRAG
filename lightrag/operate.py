@@ -479,10 +479,18 @@ async def kg_query(
     print(result)
     try:
         # json_text = locate_json_string_body_from_string(result) # handled in use_model_func
-        result = re.search(r"{.*}", result, re.DOTALL)
-        keywords_data = json.loads(result)
-        hl_keywords = keywords_data.get("high_level_keywords", [])
-        ll_keywords = keywords_data.get("low_level_keywords", [])
+        match = re.search(r"\{.*\}", result, re.DOTALL)
+        if match:
+            result = match.group(0)
+            keywords_data = json.loads(result)
+
+            hl_keywords = keywords_data.get("high_level_keywords", [])
+            ll_keywords = keywords_data.get("low_level_keywords", [])
+
+            return hl_keywords, ll_keywords
+        else:
+            logger.error("No JSON-like structure found in the result.")
+            return PROMPTS["fail_response"]
 
     # Handle parsing error
     except json.JSONDecodeError as e:
