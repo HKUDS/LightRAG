@@ -29,7 +29,11 @@ import torch
 from pydantic import BaseModel, Field
 from typing import List, Dict, Callable, Any
 from .base import BaseKVStorage
-from .utils import compute_args_hash, wrap_embedding_func_with_attrs
+from .utils import (
+    compute_args_hash,
+    wrap_embedding_func_with_attrs,
+    locate_json_string_body_from_string,
+)
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -66,15 +70,23 @@ async def openai_complete_if_cache(
         if if_cache_return is not None:
             return if_cache_return["return"]
 
-    response = await openai_async_client.chat.completions.create(
-        model=model, messages=messages, **kwargs
-    )
-
+    if "response_format" in kwargs:
+        response = await openai_async_client.beta.chat.completions.parse(
+            model=model, messages=messages, **kwargs
+        )
+    else:
+        response = await openai_async_client.chat.completions.create(
+            model=model, messages=messages, **kwargs
+        )
+    content = response.choices[0].message.content
+    if r"\u" in content:
+        content = content.encode("utf-8").decode("unicode_escape")
+    # print(content)
     if hashing_kv is not None:
         await hashing_kv.upsert(
             {args_hash: {"return": response.choices[0].message.content, "model": model}}
         )
-    return response.choices[0].message.content
+    return content
 
 
 @retry(
@@ -89,12 +101,15 @@ async def azure_openai_complete_if_cache(
     history_messages=[],
     base_url=None,
     api_key=None,
+    api_version=None,
     **kwargs,
 ):
     if api_key:
         os.environ["AZURE_OPENAI_API_KEY"] = api_key
     if base_url:
         os.environ["AZURE_OPENAI_ENDPOINT"] = base_url
+    if api_version:
+        os.environ["AZURE_OPENAI_API_VERSION"] = api_version
 
     openai_async_client = AsyncAzureOpenAI(
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
@@ -298,7 +313,7 @@ async def ollama_model_if_cache(
     model, prompt, system_prompt=None, history_messages=[], **kwargs
 ) -> str:
     kwargs.pop("max_tokens", None)
-    kwargs.pop("response_format", None)
+    # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
 
@@ -342,9 +357,9 @@ def initialize_lmdeploy_pipeline(
         backend_config=TurbomindEngineConfig(
             tp=tp, model_format=model_format, quant_policy=quant_policy
         ),
-        chat_template_config=ChatTemplateConfig(model_name=chat_template)
-        if chat_template
-        else None,
+        chat_template_config=(
+            ChatTemplateConfig(model_name=chat_template) if chat_template else None
+        ),
         log_level="WARNING",
     )
     return lmdeploy_pipe
@@ -455,9 +470,17 @@ async def lmdeploy_model_if_cache(
     return response
 
 
+class GPTKeywordExtractionFormat(BaseModel):
+    high_level_keywords: List[str]
+    low_level_keywords: List[str]
+
+
 async def gpt_4o_complete(
-    prompt, system_prompt=None, history_messages=[], **kwargs
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    if keyword_extraction:
+        kwargs["response_format"] = GPTKeywordExtractionFormat
     return await openai_complete_if_cache(
         "gpt-4o",
         prompt,
@@ -468,8 +491,11 @@ async def gpt_4o_complete(
 
 
 async def gpt_4o_mini_complete(
-    prompt, system_prompt=None, history_messages=[], **kwargs
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    if keyword_extraction:
+        kwargs["response_format"] = GPTKeywordExtractionFormat
     return await openai_complete_if_cache(
         "gpt-4o-mini",
         prompt,
@@ -479,46 +505,78 @@ async def gpt_4o_mini_complete(
     )
 
 
-async def azure_openai_complete(
-    prompt, system_prompt=None, history_messages=[], **kwargs
+async def nvidia_openai_complete(
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
-    return await azure_openai_complete_if_cache(
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    result = await openai_complete_if_cache(
+        "nvidia/llama-3.1-nemotron-70b-instruct",  # context length 128k
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        base_url="https://integrate.api.nvidia.com/v1",
+        **kwargs,
+    )
+    if keyword_extraction:  # TODO: use JSON API
+        return locate_json_string_body_from_string(result)
+    return result
+
+
+async def azure_openai_complete(
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+) -> str:
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    result = await azure_openai_complete_if_cache(
         "conversation-4o-mini",
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         **kwargs,
     )
+    if keyword_extraction:  # TODO: use JSON API
+        return locate_json_string_body_from_string(result)
+    return result
 
 
 async def bedrock_complete(
-    prompt, system_prompt=None, history_messages=[], **kwargs
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
-    return await bedrock_complete_if_cache(
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    result = await bedrock_complete_if_cache(
         "anthropic.claude-3-haiku-20240307-v1:0",
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         **kwargs,
     )
+    if keyword_extraction:  # TODO: use JSON API
+        return locate_json_string_body_from_string(result)
+    return result
 
 
 async def hf_model_complete(
-    prompt, system_prompt=None, history_messages=[], **kwargs
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
-    return await hf_model_if_cache(
+    result = await hf_model_if_cache(
         model_name,
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
         **kwargs,
     )
+    if keyword_extraction:  # TODO: use JSON API
+        return locate_json_string_body_from_string(result)
+    return result
 
 
 async def ollama_model_complete(
-    prompt, system_prompt=None, history_messages=[], **kwargs
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+    if keyword_extraction:
+        kwargs["format"] = "json"
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await ollama_model_if_cache(
         model_name,
@@ -553,7 +611,37 @@ async def openai_embedding(
     return np.array([dp.embedding for dp in response.data])
 
 
-@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)
+@wrap_embedding_func_with_attrs(embedding_dim=2048, max_token_size=512)
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=60),
+    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+)
+async def nvidia_openai_embedding(
+    texts: list[str],
+    model: str = "nvidia/llama-3.2-nv-embedqa-1b-v1",  # refer to https://build.nvidia.com/nim?filters=usecase%3Ausecase_text_to_embedding
+    base_url: str = "https://integrate.api.nvidia.com/v1",
+    api_key: str = None,
+    input_type: str = "passage",  # query for retrieval, passage for embedding
+    trunc: str = "NONE",  # NONE or START or END
+    encode: str = "float",  # float or base64
+) -> np.ndarray:
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+
+    openai_async_client = (
+        AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
+    )
+    response = await openai_async_client.embeddings.create(
+        model=model,
+        input=texts,
+        encoding_format=encode,
+        extra_body={"input_type": input_type, "truncate": trunc},
+    )
+    return np.array([dp.embedding for dp in response.data])
+
+
+@wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8191)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -564,11 +652,14 @@ async def azure_openai_embedding(
     model: str = "text-embedding-3-small",
     base_url: str = None,
     api_key: str = None,
+    api_version: str = None,
 ) -> np.ndarray:
     if api_key:
         os.environ["AZURE_OPENAI_API_KEY"] = api_key
     if base_url:
         os.environ["AZURE_OPENAI_ENDPOINT"] = base_url
+    if api_version:
+        os.environ["AZURE_OPENAI_API_VERSION"] = api_version
 
     openai_async_client = AsyncAzureOpenAI(
         azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT"),
@@ -707,6 +798,9 @@ async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
 
 
 async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+    """
+    Deprecated in favor of `embed`.
+    """
     embed_text = []
     ollama_client = ollama.Client(**kwargs)
     for text in texts:
@@ -714,6 +808,12 @@ async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarra
         embed_text.append(data["embedding"])
 
     return embed_text
+
+
+async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+    ollama_client = ollama.Client(**kwargs)
+    data = ollama_client.embed(model=embed_model, input=texts)
+    return data["embeddings"]
 
 
 class Model(BaseModel):

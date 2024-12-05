@@ -13,9 +13,8 @@ from .llm import (
 from .operate import (
     chunking_by_token_size,
     extract_entities,
-    local_query,
-    global_query,
-    hybrid_query,
+    # local_query,global_query,hybrid_query,
+    kg_query,
     naive_query,
 )
 
@@ -45,6 +44,8 @@ from .kg.neo4j_impl import Neo4JStorage
 
 from .kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBStorage
 
+from .kg.milvus_impl import MilvusVectorDBStorge
+
 # future KG integrations
 
 # from .kg.ArangoDB_impl import (
@@ -53,15 +54,28 @@ from .kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBS
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
+    """
+    Ensure that there is always an event loop available.
+
+    This function tries to get the current event loop. If the current event loop is closed or does not exist,
+    it creates a new event loop and sets it as the current event loop.
+
+    Returns:
+        asyncio.AbstractEventLoop: The current or newly created event loop.
+    """
     try:
-        return asyncio.get_event_loop()
+        # Try to get the current event loop
+        current_loop = asyncio.get_event_loop()
+        if current_loop._closed:
+            raise RuntimeError("Event loop is closed.")
+        return current_loop
 
     except RuntimeError:
+        # If no event loop exists or it is closed, create a new one
         logger.info("Creating a new event loop in main thread.")
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        return loop
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        return new_loop
 
 
 @dataclass
@@ -178,7 +192,9 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
         self.chunk_entity_relation_graph = self.graph_storage_cls(
-            namespace="chunk_entity_relation", global_config=asdict(self)
+            namespace="chunk_entity_relation",
+            global_config=asdict(self),
+            embedding_func=self.embedding_func,
         )
         ####
         # add embedding func by walter over
@@ -218,6 +234,7 @@ class LightRAG:
             # vector storage
             "NanoVectorDBStorage": NanoVectorDBStorage,
             "OracleVectorDBStorage": OracleVectorDBStorage,
+            "MilvusVectorDBStorge": MilvusVectorDBStorge,
             # graph storage
             "NetworkXStorage": NetworkXStorage,
             "Neo4JStorage": Neo4JStorage,
@@ -315,33 +332,149 @@ class LightRAG:
             tasks.append(cast(StorageNameSpace, storage_inst).index_done_callback())
         await asyncio.gather(*tasks)
 
+    def insert_custom_kg(self, custom_kg: dict):
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.ainsert_custom_kg(custom_kg))
+
+    async def ainsert_custom_kg(self, custom_kg: dict):
+        update_storage = False
+        try:
+            # Insert chunks into vector storage
+            all_chunks_data = {}
+            chunk_to_source_map = {}
+            for chunk_data in custom_kg.get("chunks", []):
+                chunk_content = chunk_data["content"]
+                source_id = chunk_data["source_id"]
+                chunk_id = compute_mdhash_id(chunk_content.strip(), prefix="chunk-")
+
+                chunk_entry = {"content": chunk_content.strip(), "source_id": source_id}
+                all_chunks_data[chunk_id] = chunk_entry
+                chunk_to_source_map[source_id] = chunk_id
+                update_storage = True
+
+            if self.chunks_vdb is not None and all_chunks_data:
+                await self.chunks_vdb.upsert(all_chunks_data)
+            if self.text_chunks is not None and all_chunks_data:
+                await self.text_chunks.upsert(all_chunks_data)
+
+            # Insert entities into knowledge graph
+            all_entities_data = []
+            for entity_data in custom_kg.get("entities", []):
+                entity_name = f'"{entity_data["entity_name"].upper()}"'
+                entity_type = entity_data.get("entity_type", "UNKNOWN")
+                description = entity_data.get("description", "No description provided")
+                # source_id = entity_data["source_id"]
+                source_chunk_id = entity_data.get("source_id", "UNKNOWN")
+                source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+
+                # Log if source_id is UNKNOWN
+                if source_id == "UNKNOWN":
+                    logger.warning(
+                        f"Entity '{entity_name}' has an UNKNOWN source_id. Please check the source mapping."
+                    )
+
+                # Prepare node data
+                node_data = {
+                    "entity_type": entity_type,
+                    "description": description,
+                    "source_id": source_id,
+                }
+                # Insert node data into the knowledge graph
+                await self.chunk_entity_relation_graph.upsert_node(
+                    entity_name, node_data=node_data
+                )
+                node_data["entity_name"] = entity_name
+                all_entities_data.append(node_data)
+                update_storage = True
+
+            # Insert relationships into knowledge graph
+            all_relationships_data = []
+            for relationship_data in custom_kg.get("relationships", []):
+                src_id = f'"{relationship_data["src_id"].upper()}"'
+                tgt_id = f'"{relationship_data["tgt_id"].upper()}"'
+                description = relationship_data["description"]
+                keywords = relationship_data["keywords"]
+                weight = relationship_data.get("weight", 1.0)
+                # source_id = relationship_data["source_id"]
+                source_chunk_id = relationship_data.get("source_id", "UNKNOWN")
+                source_id = chunk_to_source_map.get(source_chunk_id, "UNKNOWN")
+
+                # Log if source_id is UNKNOWN
+                if source_id == "UNKNOWN":
+                    logger.warning(
+                        f"Relationship from '{src_id}' to '{tgt_id}' has an UNKNOWN source_id. Please check the source mapping."
+                    )
+
+                # Check if nodes exist in the knowledge graph
+                for need_insert_id in [src_id, tgt_id]:
+                    if not (
+                        await self.chunk_entity_relation_graph.has_node(need_insert_id)
+                    ):
+                        await self.chunk_entity_relation_graph.upsert_node(
+                            need_insert_id,
+                            node_data={
+                                "source_id": source_id,
+                                "description": "UNKNOWN",
+                                "entity_type": "UNKNOWN",
+                            },
+                        )
+
+                # Insert edge into the knowledge graph
+                await self.chunk_entity_relation_graph.upsert_edge(
+                    src_id,
+                    tgt_id,
+                    edge_data={
+                        "weight": weight,
+                        "description": description,
+                        "keywords": keywords,
+                        "source_id": source_id,
+                    },
+                )
+                edge_data = {
+                    "src_id": src_id,
+                    "tgt_id": tgt_id,
+                    "description": description,
+                    "keywords": keywords,
+                }
+                all_relationships_data.append(edge_data)
+                update_storage = True
+
+            # Insert entities into vector storage if needed
+            if self.entities_vdb is not None:
+                data_for_vdb = {
+                    compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
+                        "content": dp["entity_name"] + dp["description"],
+                        "entity_name": dp["entity_name"],
+                    }
+                    for dp in all_entities_data
+                }
+                await self.entities_vdb.upsert(data_for_vdb)
+
+            # Insert relationships into vector storage if needed
+            if self.relationships_vdb is not None:
+                data_for_vdb = {
+                    compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
+                        "src_id": dp["src_id"],
+                        "tgt_id": dp["tgt_id"],
+                        "content": dp["keywords"]
+                        + dp["src_id"]
+                        + dp["tgt_id"]
+                        + dp["description"],
+                    }
+                    for dp in all_relationships_data
+                }
+                await self.relationships_vdb.upsert(data_for_vdb)
+        finally:
+            if update_storage:
+                await self._insert_done()
+
     def query(self, query: str, param: QueryParam = QueryParam()):
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.aquery(query, param))
 
     async def aquery(self, query: str, param: QueryParam = QueryParam()):
-        if param.mode == "local":
-            response = await local_query(
-                query,
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
-            )
-        elif param.mode == "global":
-            response = await global_query(
-                query,
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
-            )
-        elif param.mode == "hybrid":
-            response = await hybrid_query(
+        if param.mode in ["local", "global", "hybrid"]:
+            response = await kg_query(
                 query,
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
