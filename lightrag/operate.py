@@ -486,8 +486,6 @@ async def kg_query(
 
             hl_keywords = keywords_data.get("high_level_keywords", [])
             ll_keywords = keywords_data.get("low_level_keywords", [])
-
-            return hl_keywords, ll_keywords
         else:
             logger.error("No JSON-like structure found in the result.")
             return PROMPTS["fail_response"]
