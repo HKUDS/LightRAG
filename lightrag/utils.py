@@ -312,9 +312,9 @@ def process_combine_contexts(hl, ll):
 async def get_best_cached_response(
     hashing_kv, current_embedding, similarity_threshold=0.95
 ):
-    """Get the cached response with highest similarity"""
+    """Get the cached response with the highest similarity"""
     try:
-        # Get all keys using list_keys()
+        # Get all keys
         all_keys = await hashing_kv.all_keys()
         max_similarity = 0
         best_cached_response = None
