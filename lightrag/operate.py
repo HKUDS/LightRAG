@@ -474,7 +474,9 @@ async def kg_query(
     use_model_func = global_config["llm_model_func"]
     kw_prompt_temp = PROMPTS["keywords_extraction"]
     kw_prompt = kw_prompt_temp.format(query=query, examples=examples, language=language)
-    result = await use_model_func(kw_prompt, keyword_extraction=True)
+    result = await use_model_func(
+        kw_prompt, keyword_extraction=True, mode=query_param.mode
+    )
     logger.info("kw_prompt result:")
     print(result)
     try:
@@ -535,6 +537,7 @@ async def kg_query(
         query,
         system_prompt=sys_prompt,
         stream=query_param.stream,
+        mode=query_param.mode,
     )
     if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
@@ -1036,6 +1039,7 @@ async def naive_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
+        mode=query_param.mode,
     )
 
     if len(response) > len(sys_prompt):
