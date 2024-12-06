@@ -2,6 +2,7 @@ GRAPH_FIELD_SEP = "<SEP>"
 
 PROMPTS = {}
 
+PROMPTS["DEFAULT_LANGUAGE"] = "中文"
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
@@ -18,6 +19,7 @@ PROMPTS["DEFAULT_RELATIONSHIP_TYPES"] = ["标准与内容", "发布者与标准"
 PROMPTS["entity_extraction"] = """-目的-
 给定一个可能与该活动相关的Markdown文本文档、一个实体类型列表，从文本中识别出所有实体，不要遗漏。如果实体内容中存在、号，将、前后内容拆分成不同的实体。
 不在给出的实体类型列表中的实体，使用新命名的实体类型。提取的内容中html上下标记保留，图片标记保留，按要求的格式输出，不要任何说明与解释。
+使用{language}作为输出语言。
 -步骤-
 1.识别出所有实体。对于每个已识别的实体，提取以下信息：
 - entity_name：实体的名称，使用与输入文本相同的语言。如果是英文，则保留原来的格式。
@@ -30,7 +32,18 @@ entity_types: {entity_types}
 #############################
 -范例-
 ######################
-范例1:
+{entity_examples}
+
+#############################
+-待处理的数据-
+######################
+文本内容: {input_text}
+######################
+输出:
+"""
+
+PROMPTS["entity_extraction_examples"] = [
+    """范例1:
 文本内容: 
 中华人民共和国国家标准
 GB2761-2017
@@ -71,8 +84,8 @@ GB2761-2017与GB2761-2011相比,主要变化如下:
 ("entity"{tuple_delimiter}应用原则{tuple_delimiter}应用原则{tuple_delimiter}标准实施和使用的基本准则和指导方针){record_delimiter}
 ("entity"{tuple_delimiter}检验方法标准号{tuple_delimiter}检验方法标准号{tuple_delimiter}更新的检验方法相关标准号){record_delimiter}
 ("entity"{tuple_delimiter}附录A{tuple_delimiter}附录{tuple_delimiter}在标准中修改的附录){record_delimiter}
-######################
-范例2:
+######################""",
+    """范例2:
 文本内容: 
 GB2761-2017 食品中真菌毒素限量
 # 1 范围
@@ -108,8 +121,8 @@ GB2761-2017规定了食品中黄曲霉毒素B<sub>1</sub>、黄曲霉毒素M<sub
 ("entity"{tuple_delimiter}3.2{tuple_delimiter}应用原则{tuple_delimiter}标准列出了可能对公众健康构成较大风险的真菌毒素，并制定限量值的食品){record_delimiter}
 ("entity"{tuple_delimiter}3.3{tuple_delimiter}应用原则{tuple_delimiter}食品类别说明用于界定真菌毒素限量的适用范围，适用于标准中的所有食品类别){record_delimiter}
 ("entity"{tuple_delimiter}3.4{tuple_delimiter}应用原则{tuple_delimiter}食品中真菌毒素限量以食品通常的可食用部分计算，特别规定除外){record_delimiter}
-######################
-范例3:
+######################""",
+    """范例3:
 文本内容: 
 GB2761-2017 食品中真菌毒素限量
 # 4 指标要求
@@ -136,16 +149,12 @@ GB2761-2017 食品中真菌毒素限量
 ("entity"{tuple_delimiter}GB5009.22{tuple_delimiter}检验方法标准号{tuple_delimiter}描述检测食品中黄曲霉毒素B<sub>1</sub>的方法标准号){record_delimiter}
 ("entity"{tuple_delimiter}0.5{tuple_delimiter}数值{tuple_delimiter}黄曲霉毒素B1的限量指标值){record_delimiter}
 ("entity"{tuple_delimiter}μg/kg{tuple_delimiter}计量单位{tuple_delimiter}黄曲霉毒素B1限量的计量单位){record_delimiter}
-#############################
--待处理的数据-
-######################
-文本内容: {input_text}
-######################
-输出:
-"""
+######################""",
+]
 
 PROMPTS["relationship_extraction"] = """-目的-
 给定一个可能与该活动相关的Markdown文本文档、一个实体列表、一个关系类型列表，从文本中识别出全部这些实体之间的所有关系。提取的内容中html上下标记保留，图片标记保留，按要求的格式输出，不要任何说明与解释。
+使用{language}作为输出语言。
 -步骤-
 1.根据给出的Markdown文本文档内容，从给出的实体列表中，找出所有明显相关的(source_entity, target_entity)，实体关系可以超出给定的关系类型列表。所有给出的实体都必须建立至少一个关系。如果有实体找不到与其它实体的关系，那么建立与"{extend_entity_sn}"实体的“标准与内容"关系。
 对于每对相关的实体，提取以下信息：
@@ -166,7 +175,18 @@ relationship_types：{relationship_types}
 #############################
 -范例-
 ######################
-范例1:
+{relationship_examples}
+
+#############################
+-待处理的数据-
+######################
+文本内容: {input_text}
+######################
+输出:
+"""
+
+PROMPTS["relationship_extraction_examples"] = [
+    """范例1:
 文本内容: 
 中华人民共和国国家标准
 GB2761-2017
@@ -204,8 +224,8 @@ GB2761-2017与GB2761-2011相比,主要变化如下:
 ("relationship"{tuple_delimiter}检验方法标准号{tuple_delimiter}GB2761-2017{tuple_delimiter}更新了检验方法相关标准号{tuple_delimiter}更新、检验{tuple_delimiter}6){record_delimiter}
 ("relationship"{tuple_delimiter}附录A{tuple_delimiter}GB2761-2017{tuple_delimiter}标准中修改的附录{tuple_delimiter}修改、变化{tuple_delimiter}5){record_delimiter}
 ("content_keywords"{tuple_delimiter}食品安全、真菌毒素、国家标准、限量要求、营养食品、检验方法){completion_delimiter}
-######################
-范例2:
+######################""",
+    """范例2:
 文本内容: 
 GB2761-2017 食品中真菌毒素限量
 # 1 范围
@@ -236,8 +256,8 @@ GB2761-2017规定了食品中黄曲霉毒素B<sub>1</sub>、黄曲霉毒素M<sub
 ("relationship"{tuple_delimiter}GB2761-2017{tuple_delimiter}真菌毒素{tuple_delimiter}标准规定了真菌毒素在食品原料和(或)食品成品可食用部分中的最大允许含量。{tuple_delimiter}含量限制{tuple_delimiter}4){record_delimiter}
 ("relationship"{tuple_delimiter}GB2761-2017{tuple_delimiter}应用原则{tuple_delimiter}标准规定了应用原则{tuple_delimiter}适用{tuple_delimiter}5){record_delimiter}
 ("content_keywords"{tuple_delimiter}真菌毒素、食品安全、限量标准、毒素类型、可食用部分、应用原则、控制措施){completion_delimiter}
-######################
-范例3:
+######################""",
+    """范例3:
 文本内容: 
 GB2761-2017 食品中真菌毒素限量
 # 4 指标要求
@@ -259,25 +279,21 @@ GB2761-2017 食品中真菌毒素限量
 ("relationship"{tuple_delimiter}黄曲霉毒素B<sub>1</sub>{tuple_delimiter}孕妇及乳母营养补充食品{tuple_delimiter}孕妇及乳母营养补充食品中的黄曲霉毒素B<sub>1</sub>限量为0.5μg/kg{tuple_delimiter}规定{tuple_delimiter}6){record_delimiter}
 ("relationship"{tuple_delimiter}黄曲霉毒素B<sub>1</sub>{tuple_delimiter}GB5009.22{tuple_delimiter}检验方法标准号GB5009.22用于测定黄曲霉毒素B<sub>1</sub>含量{tuple_delimiter}测定{tuple_delimiter}7){record_delimiter}
 ("content_keywords"{tuple_delimiter}黄曲霉毒素B<sub>1</sub>、食品类别、营养食品、限量标准、检验方法){completion_delimiter}
-#############################
--待处理的数据-
-######################
-文本内容: {input_text}
-######################
-输出:
-"""
+######################""",
+]
 
 PROMPTS[
     "summarize_entity_descriptions"
 ] = """你是一个负责生成综合摘要的助手，需要处理以下数据：给定一个或两个实体，以及一系列与这些实体或实体组相关的描述。请将所有这些描述合并成一个综合描述，确保包含从所有描述中收集到的信息。
 如果提供的描述存在矛盾之处，请解决这些矛盾，并提供一个单一且连贯的摘要。
 请确保以第三人称撰写，并包含实体名称，以便我们了解完整的上下文。按要求的格式输出，不要任何说明与解释。
+使用{language}作为输出语言。
 #######
--Data-
-Entities: {entity_name}
-Description List: {description_list}
+-待处理数据-
+实体: {entity_name}
+相关描述: {description_list}
 #######
-Output:
+输出:
 """
 
 PROMPTS[
@@ -317,50 +333,56 @@ PROMPTS["rag_response"] = """---角色---
 
 PROMPTS["keywords_extraction"] = """---角色---
 你是一个负责识别用户查询中的高级和低级关键词的助手。
+使用{language}作为输出语言。
 ---目的---
 根据查询，列出高级和低级关键词。高级关键词关注总体概念或主题，而低级关键词关注具体实体、细节或具体术语。
 ---指令---
 - 以JSON格式输出关键词。
 - JSON应包含两个键：
-  - "high_level_keywords" 用于表示总体概念或主题。
-  - "low_level_keywords" 用于表示具体实体或细节。
+  - "high_level_keywords" 高级关键词，用于表示总体概念或主题。
+  - "low_level_keywords" 低级关键词，用于表示具体实体或细节。
 #############################
 -范例-
 ######################
-范例1:
-Query: "国际贸易如何影响全球经济稳定？"
+{examples}
+
+#############################
+-待处理的数据-
+######################
+查询: {query}
+######################
+输出:
+"""
+
+PROMPTS["keywords_extraction_examples"] = [
+    """范例1:
+查询: "国际贸易如何影响全球经济稳定？"
 ################
-Output:
+输出:
 {{
   "high_level_keywords": ["国际贸易", "全球经济", "经济稳定"],
   "low_level_keywords": ["经济增长", "国内生产总值（GDP）", "就业率", "技术创新", "产业升级", "资源配置", "市场竞争力", "企业盈利能力", "市场规模"]
 }}
-######################
-范例2:
-Query: "森林砍伐对生物多样性的环境影响是什么？"
+######################""",
+    """范例2:
+查询: "森林砍伐对生物多样性的环境影响是什么？"
 ################
-Output:
+输出:
 {{
   "high_level_keywords": ["森林砍伐", "生物多样性", "环境影响"],
   "low_level_keywords": ["栖息地丧失", "物种灭绝", "生态系统破坏", "土壤侵蚀", "气候变化", "碳排放", "水源保护", "植被覆盖"]
 }}
-######################
-范例3:
-Query: "教育在减少贫困中的作用是什么？"
+######################""",
+    """范例3:
+查询: "教育在减少贫困中的作用是什么？"
 ################
-Output:
+输出:
 {{
   "high_level_keywords": ["教育", "减少贫困", "作用"],
   "low_level_keywords": ["就业机会", "收入水平", "技能提升", "社会流动性", "健康意识", "儿童福利", "社区发展", "经济贡献"]
 }}
-#############################
--待处理的数据-
-######################
-Query: {query}
-######################
-Output:
-
-"""
+#############################""",
+]
 
 PROMPTS["naive_rag_response"] = """---角色---
 你是一个负责回答有关所提供文档的问题的助手。
