@@ -162,7 +162,6 @@ async def azure_openai_complete_if_cache(
     if prompt is not None:
         messages.append({"role": "user", "content": prompt})
 
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     if hashing_kv is not None:
         # Calculate args_hash only when using cache
         args_hash = compute_args_hash(model, messages)
@@ -373,7 +372,6 @@ async def hf_model_if_cache(
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     if hashing_kv is not None:
         # Calculate args_hash only when using cache
         args_hash = compute_args_hash(model, messages)
@@ -491,7 +489,6 @@ async def ollama_model_if_cache(
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     if hashing_kv is not None:
         # Calculate args_hash only when using cache
         args_hash = compute_args_hash(model, messages)
@@ -652,7 +649,6 @@ async def lmdeploy_model_if_cache(
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
-    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     if hashing_kv is not None:
         # Calculate args_hash only when using cache
         args_hash = compute_args_hash(model, messages)
