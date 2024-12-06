@@ -73,11 +73,12 @@ async def openai_complete_if_cache(
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
+    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     # Handle cache
     mode = kwargs.pop("mode", "default")
     args_hash = compute_args_hash(model, messages)
     cached_response, quantized, min_val, max_val = await handle_cache(
-        kwargs.get("hashing_kv"), args_hash, prompt, mode
+        hashing_kv, args_hash, prompt, mode
     )
     if cached_response is not None:
         return cached_response
@@ -219,12 +220,12 @@ async def bedrock_complete_if_cache(
 
     # Add user prompt
     messages.append({"role": "user", "content": [{"text": prompt}]})
-
+    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     # Handle cache
     mode = kwargs.pop("mode", "default")
     args_hash = compute_args_hash(model, messages)
     cached_response, quantized, min_val, max_val = await handle_cache(
-        kwargs.get("hashing_kv"), args_hash, prompt, mode
+        hashing_kv, args_hash, prompt, mode
     )
     if cached_response is not None:
         return cached_response
@@ -250,12 +251,12 @@ async def bedrock_complete_if_cache(
             args["inferenceConfig"][inference_params_map.get(param, param)] = (
                 kwargs.pop(param)
             )
-
+    hashing_kv: BaseKVStorage = kwargs.pop("hashing_kv", None)
     # Handle cache
     mode = kwargs.pop("mode", "default")
     args_hash = compute_args_hash(model, messages)
     cached_response, quantized, min_val, max_val = await handle_cache(
-        kwargs.get("hashing_kv"), args_hash, prompt, mode
+        hashing_kv, args_hash, prompt, mode
     )
     if cached_response is not None:
         return cached_response
