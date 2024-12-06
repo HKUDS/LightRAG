@@ -143,7 +143,7 @@ class OracleDB:
                         data = None
                 return data
 
-    async def execute(self, sql: str, data: list | dict = None):
+    async def execute(self, sql: str, data: Union[list, dict] = None):
         # logger.info("go into OracleDB execute method")
         try:
             async with self.pool.acquire() as connection:
