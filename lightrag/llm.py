@@ -4,8 +4,8 @@ import json
 import os
 import struct
 from functools import lru_cache
-from typing import List, Dict, Callable, Any, Union
-
+from typing import List, Dict, Callable, Any, Union, Optional
+from dataclasses import dataclass
 import aioboto3
 import aiohttp
 import numpy as np
