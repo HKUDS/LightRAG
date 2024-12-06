@@ -358,7 +358,7 @@ async def get_best_cached_response(
             "cache_id": best_cache_id,
             "original_prompt": prompt_display,
         }
-        logger.info(json.dumps(log_data))
+        logger.info(json.dumps(log_data, ensure_ascii=False))
         return best_response
     return None
 
