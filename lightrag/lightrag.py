@@ -85,7 +85,10 @@ class LightRAG:
     working_dir: str = field(
         default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
-
+    # Default not to use embedding cache
+    embedding_cache_config: dict = field(
+        default_factory=lambda: {"enabled": False, "similarity_threshold": 0.95}
+    )
     kv_storage: str = field(default="JsonKVStorage")
     vector_storage: str = field(default="NanoVectorDBStorage")
     graph_storage: str = field(default="NetworkXStorage")
