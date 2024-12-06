@@ -534,8 +534,9 @@ async def kg_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
+        stream=query_param.stream,
     )
-    if len(response) > len(sys_prompt):
+    if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
             response.replace(sys_prompt, "")
             .replace("user", "")
