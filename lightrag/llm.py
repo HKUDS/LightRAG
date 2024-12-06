@@ -97,7 +97,7 @@ async def openai_complete_if_cache(
 
     # Save to cache
     await save_to_cache(
-        kwargs.get("hashing_kv"),
+        hashing_kv,
         CacheData(
             args_hash=args_hash,
             content=content,
@@ -271,7 +271,7 @@ async def bedrock_complete_if_cache(
 
     # Save to cache
     await save_to_cache(
-        kwargs.get("hashing_kv"),
+        hashing_kv,
         CacheData(
             args_hash=args_hash,
             content=response["output"]["message"]["content"][0]["text"],
