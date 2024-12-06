@@ -62,7 +62,7 @@ async def main():
             working_dir=WORKING_DIR,
             embedding_cache_config={
                 "enabled": True,
-                "similarity_threshold": 0.90,  # 可以自定义阈值
+                "similarity_threshold": 0.90,
             },
             llm_model_func=llm_model_func,
             embedding_func=EmbeddingFunc(
