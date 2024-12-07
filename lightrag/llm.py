@@ -455,24 +455,6 @@ async def ollama_model_if_cache(
             ),
         )
         return result
-    result = response["message"]["content"]
-
-    # Save to cache
-    await save_to_cache(
-        hashing_kv,
-        CacheData(
-            args_hash=args_hash,
-            content=result,
-            model=model,
-            prompt=prompt,
-            quantized=quantized,
-            min_val=min_val,
-            max_val=max_val,
-            mode=mode,
-        ),
-    )
-
-    return result
 
 
 @lru_cache(maxsize=1)
