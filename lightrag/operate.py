@@ -218,7 +218,7 @@ async def _merge_edges_then_upsert(
                 },
             )
     description = await _handle_entity_relation_summary(
-        (src_id, tgt_id), description, global_config
+        f"({src_id}, {tgt_id})", description, global_config
     )
     await knowledge_graph_inst.upsert_edge(
         src_id,
