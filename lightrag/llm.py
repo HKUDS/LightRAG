@@ -314,8 +314,7 @@ async def ollama_model_if_cache(
 
         return inner()
     else:
-        result = response["message"]["content"]
-        return result
+        return response["message"]["content"]
 
 
 @lru_cache(maxsize=1)
