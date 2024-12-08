@@ -87,7 +87,11 @@ class LightRAG:
     )
     # Default not to use embedding cache
     embedding_cache_config: dict = field(
-        default_factory=lambda: {"enabled": False, "similarity_threshold": 0.95}
+        default_factory=lambda: {
+            "enabled": False,
+            "similarity_threshold": 0.95,
+            "use_llm_check": False,
+        }
     )
     kv_storage: str = field(default="JsonKVStorage")
     vector_storage: str = field(default="NanoVectorDBStorage")
@@ -174,7 +178,6 @@ class LightRAG:
             if self.enable_llm_cache
             else None
         )
-
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
             self.embedding_func
         )
@@ -481,6 +484,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
+                hashing_kv=self.llm_response_cache,
             )
         elif param.mode == "naive":
             response = await naive_query(
@@ -489,6 +493,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
+                hashing_kv=self.llm_response_cache,
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
