@@ -315,7 +315,6 @@ async def ollama_model_if_cache(
         return inner()
     else:
         result = response["message"]["content"]
-        # Save to cache
         return result
 
 
