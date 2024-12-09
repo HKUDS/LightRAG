@@ -488,7 +488,7 @@ class CacheData:
 
 
 async def save_to_cache(hashing_kv, cache_data: CacheData):
-    if hashing_kv is None:
+    if hashing_kv is None or hasattr(cache_data.content, "__aiter__"):
         return
 
     mode_cache = await hashing_kv.get_by_id(cache_data.mode) or {}
