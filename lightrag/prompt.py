@@ -178,7 +178,6 @@ Add sections and commentary to the response as appropriate for the length and fo
 PROMPTS["keywords_extraction"] = """---Role---
 
 You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query.
-Use {language} as output language.
 
 ---Goal---
 
