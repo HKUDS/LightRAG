@@ -616,7 +616,6 @@ async def jina_embedding(
     data_list = await fetch_data(url, headers, data)
     return np.array([dp["embedding"] for dp in data_list])
 
-
 @wrap_embedding_func_with_attrs(embedding_dim=2048, max_token_size=512)
 @retry(
     stop=stop_after_attempt(3),

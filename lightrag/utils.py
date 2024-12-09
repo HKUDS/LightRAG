@@ -383,7 +383,7 @@ async def get_best_cached_response(
             except Exception as e:  # Catch all possible exceptions
                 logger.warning(f"LLM similarity check failed: {e}")
                 return None  # Return None directly when LLM check fails
-
+              
         prompt_display = (
             best_prompt[:50] + "..." if len(best_prompt) > 50 else best_prompt
         )
