@@ -24,7 +24,6 @@ WORKING_DIR = os.environ.get("RAG_DIR", f"{DEFAULT_RAG_DIR}")
 print(f"WORKING_DIR: {WORKING_DIR}")
 
 
-
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
@@ -81,6 +80,7 @@ async def query_endpoint(request: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # insert by text
 @app.post("/insert", response_model=Response)
 async def insert_endpoint(request: InsertRequest):
@@ -90,6 +90,7 @@ async def insert_endpoint(request: InsertRequest):
         return Response(status="success", message="Text inserted successfully")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # insert by file in payload
 @app.post("/insert_file", response_model=Response)
@@ -113,6 +114,7 @@ async def insert_file(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # insert by local default file
 @app.post("/insert_default_file", response_model=Response)
 @app.get("/insert_default_file", response_model=Response)
@@ -133,6 +135,7 @@ async def insert_default_file():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
@@ -140,6 +143,7 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8020)
 
 # Usage example
