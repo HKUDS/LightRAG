@@ -17,6 +17,10 @@ from .utils import (
     split_string_by_multi_markers,
     truncate_list_by_token_size,
     process_combine_contexts,
+    compute_args_hash,
+    handle_cache,
+    save_to_cache,
+    CacheData,
 )
 from .base import (
     BaseGraphStorage,
@@ -452,8 +456,17 @@ async def kg_query(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
     global_config: dict,
+    hashing_kv: BaseKVStorage = None,
 ) -> str:
-    context = None
+    # Handle cache
+    use_model_func = global_config["llm_model_func"]
+    args_hash = compute_args_hash(query_param.mode, query)
+    cached_response, quantized, min_val, max_val = await handle_cache(
+        hashing_kv, args_hash, query, query_param.mode
+    )
+    if cached_response is not None:
+        return cached_response
+
     example_number = global_config["addon_params"].get("example_number", None)
     if example_number and example_number < len(PROMPTS["keywords_extraction_examples"]):
         examples = "\n".join(
@@ -471,12 +484,9 @@ async def kg_query(
         return PROMPTS["fail_response"]
 
     # LLM generate keywords
-    use_model_func = global_config["llm_model_func"]
     kw_prompt_temp = PROMPTS["keywords_extraction"]
     kw_prompt = kw_prompt_temp.format(query=query, examples=examples, language=language)
-    result = await use_model_func(
-        kw_prompt, keyword_extraction=True, mode=query_param.mode
-    )
+    result = await use_model_func(kw_prompt, keyword_extraction=True)
     logger.info("kw_prompt result:")
     print(result)
     try:
@@ -537,7 +547,6 @@ async def kg_query(
         query,
         system_prompt=sys_prompt,
         stream=query_param.stream,
-        mode=query_param.mode,
     )
     if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
@@ -550,6 +559,19 @@ async def kg_query(
             .strip()
         )
 
+    # Save to cache
+    await save_to_cache(
+        hashing_kv,
+        CacheData(
+            args_hash=args_hash,
+            content=response,
+            prompt=query,
+            quantized=quantized,
+            min_val=min_val,
+            max_val=max_val,
+            mode=query_param.mode,
+        ),
+    )
     return response
 
 
@@ -967,23 +989,37 @@ async def _find_related_text_unit_from_relationships(
     for index, unit_list in enumerate(text_units):
         for c_id in unit_list:
             if c_id not in all_text_units_lookup:
-                all_text_units_lookup[c_id] = {
-                    "data": await text_chunks_db.get_by_id(c_id),
-                    "order": index,
-                }
+                chunk_data = await text_chunks_db.get_by_id(c_id)
+                # Only store valid data
+                if chunk_data is not None and "content" in chunk_data:
+                    all_text_units_lookup[c_id] = {
+                        "data": chunk_data,
+                        "order": index,
+                    }
 
-    if any([v is None for v in all_text_units_lookup.values()]):
-        logger.warning("Text chunks are missing, maybe the storage is damaged")
-    all_text_units = [
-        {"id": k, **v} for k, v in all_text_units_lookup.items() if v is not None
-    ]
+    if not all_text_units_lookup:
+        logger.warning("No valid text chunks found")
+        return []
+
+    all_text_units = [{"id": k, **v} for k, v in all_text_units_lookup.items()]
     all_text_units = sorted(all_text_units, key=lambda x: x["order"])
-    all_text_units = truncate_list_by_token_size(
-        all_text_units,
+
+    # Ensure all text chunks have content
+    valid_text_units = [
+        t for t in all_text_units if t["data"] is not None and "content" in t["data"]
+    ]
+
+    if not valid_text_units:
+        logger.warning("No valid text chunks after filtering")
+        return []
+
+    truncated_text_units = truncate_list_by_token_size(
+        valid_text_units,
         key=lambda x: x["data"]["content"],
         max_token_size=query_param.max_token_for_text_unit,
     )
-    all_text_units: list[TextChunkSchema] = [t["data"] for t in all_text_units]
+
+    all_text_units: list[TextChunkSchema] = [t["data"] for t in truncated_text_units]
 
     return all_text_units
 
@@ -1013,29 +1049,57 @@ async def naive_query(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
     global_config: dict,
+    hashing_kv: BaseKVStorage = None,
 ):
+    # Handle cache
     use_model_func = global_config["llm_model_func"]
+    args_hash = compute_args_hash(query_param.mode, query)
+    cached_response, quantized, min_val, max_val = await handle_cache(
+        hashing_kv, args_hash, query, query_param.mode
+    )
+    if cached_response is not None:
+        return cached_response
+
     results = await chunks_vdb.query(query, top_k=query_param.top_k)
     if not len(results):
         return PROMPTS["fail_response"]
+
     chunks_ids = [r["id"] for r in results]
     chunks = await text_chunks_db.get_by_ids(chunks_ids)
 
+    # Filter out invalid chunks
+    valid_chunks = [
+        chunk for chunk in chunks if chunk is not None and "content" in chunk
+    ]
+
+    if not valid_chunks:
+        logger.warning("No valid chunks found after filtering")
+        return PROMPTS["fail_response"]
+
     maybe_trun_chunks = truncate_list_by_token_size(
-        chunks,
+        valid_chunks,
         key=lambda x: x["content"],
         max_token_size=query_param.max_token_for_text_unit,
     )
+
+    if not maybe_trun_chunks:
+        logger.warning("No chunks left after truncation")
+        return PROMPTS["fail_response"]
+
     logger.info(f"Truncate {len(chunks)} to {len(maybe_trun_chunks)} chunks")
     section = "\n--New Chunk--\n".join([c["content"] for c in maybe_trun_chunks])
+
     if query_param.only_need_context:
         return section
+
     sys_prompt_temp = PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
         content_data=section, response_type=query_param.response_type
     )
+
     if query_param.only_need_prompt:
         return sys_prompt
+
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
@@ -1053,5 +1117,19 @@ async def naive_query(
             .replace("</system>", "")
             .strip()
         )
+
+    # Save to cache
+    await save_to_cache(
+        hashing_kv,
+        CacheData(
+            args_hash=args_hash,
+            content=response,
+            prompt=query,
+            quantized=quantized,
+            min_val=min_val,
+            max_val=max_val,
+            mode=query_param.mode,
+        ),
+    )
 
     return response
