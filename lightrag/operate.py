@@ -1103,7 +1103,6 @@ async def naive_query(
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
-        mode=query_param.mode,
     )
 
     if len(response) > len(sys_prompt):
