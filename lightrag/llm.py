@@ -603,7 +603,7 @@ async def jina_embedding(
     url = "https://api.jina.ai/v1/embeddings" if not base_url else base_url
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {os.environ["JINA_API_KEY"]}",
+        "Authorization": f"Bearer {os.environ['JINA_API_KEY']}",
     }
     data = {
         "model": "jina-embeddings-v3",
