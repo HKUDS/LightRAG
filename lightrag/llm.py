@@ -29,6 +29,7 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from .utils import (
     wrap_embedding_func_with_attrs,
     locate_json_string_body_from_string,
+    safe_unicode_decode,
 )
 
 import sys
@@ -85,14 +86,14 @@ async def openai_complete_if_cache(
                 if content is None:
                     continue
                 if r"\u" in content:
-                    content = content.encode("utf-8").decode("unicode_escape")
+                    content = safe_unicode_decode(content.encode("utf-8"))
                 yield content
 
         return inner()
     else:
         content = response.choices[0].message.content
         if r"\u" in content:
-            content = content.encode("utf-8").decode("unicode_escape")
+            content = safe_unicode_decode(content.encode("utf-8"))
         return content
 
 
