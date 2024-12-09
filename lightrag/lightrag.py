@@ -84,7 +84,7 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
         # Try to get the current event loop
         current_loop = asyncio.get_event_loop()
-        if current_loop._closed:
+        if current_loop.is_closed():
             raise RuntimeError("Event loop is closed.")
         return current_loop
 
