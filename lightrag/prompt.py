@@ -261,3 +261,22 @@ Do not include information where the supporting evidence for it is not provided.
 
 Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
 """
+
+PROMPTS[
+    "similarity_check"
+] = """Please analyze the similarity between these two questions:
+
+Question 1: {original_prompt}
+Question 2: {cached_prompt}
+
+Please evaluate:
+1. Whether these two questions are semantically similar
+2. Whether the answer to Question 2 can be used to answer Question 1
+
+Please provide a similarity score between 0 and 1, where:
+0: Completely unrelated or answer cannot be reused
+1: Identical and answer can be directly reused
+0.5: Partially related and answer needs modification to be used
+
+Return only a number between 0-1, without any additional content.
+"""
