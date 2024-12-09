@@ -919,6 +919,8 @@ class MultiModel:
         self, prompt, system_prompt=None, history_messages=[], **kwargs
     ) -> str:
         kwargs.pop("model", None)  # stop from overwriting the custom model name
+        kwargs.pop("keyword_extraction", None)
+        kwargs.pop("mode", None)
         next_model = self._next_model()
         args = dict(
             prompt=prompt,
