@@ -48,18 +48,24 @@ from .storage import (
 
 
 def lazy_external_import(module_name: str, class_name: str):
-    """Lazily import an external module and return a class from it."""
+    """Lazily import a class from an external module based on the package of the caller."""
 
-    def import_class():
+    def import_class(*args, **kwargs):
+        import inspect
         import importlib
 
-        # Import the module using importlib
-        module = importlib.import_module(module_name)
+        # Get the caller's module and package
+        caller_frame = inspect.currentframe().f_back
+        module = inspect.getmodule(caller_frame)
+        package = module.__package__ if module else None
 
-        # Get the class from the module
-        return getattr(module, class_name)
+        # Import the module using importlib with package context
+        module = importlib.import_module(module_name, package=package)
 
-    # Return the import_class function itself, not its result
+        # Get the class from the module and instantiate it
+        cls = getattr(module, class_name)
+        return cls(*args, **kwargs)
+
     return import_class
 
 
@@ -69,6 +75,7 @@ OracleGraphStorage = lazy_external_import(".kg.oracle_impl", "OracleGraphStorage
 OracleVectorDBStorage = lazy_external_import(".kg.oracle_impl", "OracleVectorDBStorage")
 MilvusVectorDBStorge = lazy_external_import(".kg.milvus_impl", "MilvusVectorDBStorge")
 MongoKVStorage = lazy_external_import(".kg.mongo_impl", "MongoKVStorage")
+ChromaVectorDBStorage = lazy_external_import(".kg.chroma_impl", "ChromaVectorDBStorage")
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -256,6 +263,7 @@ class LightRAG:
             "NanoVectorDBStorage": NanoVectorDBStorage,
             "OracleVectorDBStorage": OracleVectorDBStorage,
             "MilvusVectorDBStorge": MilvusVectorDBStorge,
+            "ChromaVectorDBStorage": ChromaVectorDBStorage,
             # graph storage
             "NetworkXStorage": NetworkXStorage,
             "Neo4JStorage": Neo4JStorage,
