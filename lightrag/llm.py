@@ -63,6 +63,7 @@ async def openai_complete_if_cache(
         AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
     )
     kwargs.pop("hashing_kv", None)
+    kwargs.pop("keyword_extraction", None)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
