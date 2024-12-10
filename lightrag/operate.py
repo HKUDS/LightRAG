@@ -414,7 +414,7 @@ async def extract_entities(
 
     if not len(all_entities_data) and not len(all_relationships_data):
         logger.warning(
-            "Didn't extract any entities or relationships, maybe your LLM is not working"
+            "Didn't extract any entities and relationships, maybe your LLM is not working"
         )
         return None
 
