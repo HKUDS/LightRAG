@@ -40,19 +40,35 @@ from .storage import (
     NetworkXStorage,
 )
 
-from .kg.neo4j_impl import Neo4JStorage
-
-from .kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBStorage
-
-from .kg.milvus_impl import MilvusVectorDBStorge
-
-from .kg.mongo_impl import MongoKVStorage
-
 # future KG integrations
 
 # from .kg.ArangoDB_impl import (
 #     GraphStorage as ArangoDBStorage
 # )
+
+
+def lazy_external_import(module_name: str, class_name: str):
+    """Lazily import an external module and return a class from it."""
+
+    def import_class():
+        import importlib
+
+        # Import the module using importlib
+        module = importlib.import_module(module_name)
+
+        # Get the class from the module
+        return getattr(module, class_name)
+
+    # Return the import_class function itself, not its result
+    return import_class
+
+
+Neo4JStorage = lazy_external_import(".kg.neo4j_impl", "Neo4JStorage")
+OracleKVStorage = lazy_external_import(".kg.oracle_impl", "OracleKVStorage")
+OracleGraphStorage = lazy_external_import(".kg.oracle_impl", "OracleGraphStorage")
+OracleVectorDBStorage = lazy_external_import(".kg.oracle_impl", "OracleVectorDBStorage")
+MilvusVectorDBStorge = lazy_external_import(".kg.milvus_impl", "MilvusVectorDBStorge")
+MongoKVStorage = lazy_external_import(".kg.mongo_impl", "MongoKVStorage")
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -68,7 +84,7 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     try:
         # Try to get the current event loop
         current_loop = asyncio.get_event_loop()
-        if current_loop._closed:
+        if current_loop.is_closed():
             raise RuntimeError("Event loop is closed.")
         return current_loop
 
@@ -87,7 +103,11 @@ class LightRAG:
     )
     # Default not to use embedding cache
     embedding_cache_config: dict = field(
-        default_factory=lambda: {"enabled": False, "similarity_threshold": 0.95}
+        default_factory=lambda: {
+            "enabled": False,
+            "similarity_threshold": 0.95,
+            "use_llm_check": False,
+        }
     )
     kv_storage: str = field(default="JsonKVStorage")
     vector_storage: str = field(default="NanoVectorDBStorage")
@@ -178,7 +198,6 @@ class LightRAG:
             if self.enable_llm_cache
             else None
         )
-
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
             self.embedding_func
         )
@@ -488,6 +507,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
+                hashing_kv=self.llm_response_cache,
             )
         elif param.mode == "naive":
             response = await naive_query(
@@ -496,6 +516,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
+                hashing_kv=self.llm_response_cache,
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
