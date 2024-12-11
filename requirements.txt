@@ -16,6 +16,9 @@ pymongo
 pyvis
 tenacity
 # lmdeploy[all]
+sqlalchemy
+pymysql
+
 
 # LLM packages
 tiktoken
