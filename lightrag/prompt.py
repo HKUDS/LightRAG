@@ -268,14 +268,19 @@ PROMPTS[
 Question 1: {original_prompt}
 Question 2: {cached_prompt}
 
-Please evaluate:
+Please evaluate the following two points and provide a similarity score between 0 and 1 directly:
 1. Whether these two questions are semantically similar
 2. Whether the answer to Question 2 can be used to answer Question 1
-
-Please provide a similarity score between 0 and 1, where:
-0: Completely unrelated or answer cannot be reused
+Similarity score criteria:
+0: Completely unrelated or answer cannot be reused, including but not limited to:
+   - The questions have different topics
+   - The locations mentioned in the questions are different
+   - The times mentioned in the questions are different
+   - The specific individuals mentioned in the questions are different
+   - The specific events mentioned in the questions are different
+   - The background information in the questions is different
+   - The key conditions in the questions are different
 1: Identical and answer can be directly reused
 0.5: Partially related and answer needs modification to be used
-
 Return only a number between 0-1, without any additional content.
 """
