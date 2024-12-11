@@ -29,7 +29,8 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 from .utils import (
     wrap_embedding_func_with_attrs,
     locate_json_string_body_from_string,
-    safe_unicode_decode, logger,
+    safe_unicode_decode,
+    logger,
 )
 
 import sys
