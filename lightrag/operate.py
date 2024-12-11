@@ -30,33 +30,97 @@ from .base import (
     QueryParam,
 )
 from .prompt_cn import GRAPH_FIELD_SEP, PROMPTS
+# 引入自定义的文本分割器 bumaple 2024-12-10
+from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter, MarkdownTextSplitter
 
 
 def chunking_by_token_size(
-        content: str, overlap_token_size=128, max_token_size=1024, tiktoken_model="gpt-4o",
-        # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
-        extend_entity_title: str = '',
-        extend_entity_sn: str = '',
+    content: str, overlap_token_size=128, max_token_size=1024, tiktoken_model="gpt-4o"
 ):
     tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
-    # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
-    extend_entity_content = f"{extend_entity_sn} 《{extend_entity_title}》\n"
-    entend_entity_tokens = encode_string_by_tiktoken(extend_entity_content, model_name=tiktoken_model)
-    entend_entity_tokens_size = len(entend_entity_tokens)
     results = []
     for index, start in enumerate(
-            range(0, len(tokens), max_token_size - overlap_token_size - entend_entity_tokens_size)
+        range(0, len(tokens), max_token_size - overlap_token_size)
     ):
         chunk_content = decode_tokens_by_tiktoken(
-            tokens[start: start + max_token_size], model_name=tiktoken_model
+            tokens[start : start + max_token_size], model_name=tiktoken_model
         )
         results.append(
             {
                 "tokens": min(max_token_size, len(tokens) - start),
-                "content": f"{extend_entity_content}{chunk_content.strip()}",
+                "content": chunk_content.strip(),
                 "chunk_order_index": index,
             }
         )
+    return results
+
+
+# 引入Markdown的文本分割器 bumaple 2024-12-10
+def chunking_by_markdown_header(
+        content: str, overlap_token_size=128, max_token_size=1024,
+        extend_entity_title: str = '',
+        extend_entity_sn: str = '',
+        chunk_header_level: int = 2,
+):
+    extend_entity_content = f"{extend_entity_sn} 《{extend_entity_title}》\n"
+    results = []
+    headers_to_split_on = []
+    # 根据参数循环生成需要分割的标题级别
+    for level in range(1, chunk_header_level):
+        header = str("#" * level)
+        header_text = f"Header {level}"
+        headers_to_split_on.append((header, header_text))
+
+    # 首先用Markdown的文本分割器进行分割
+    markdown_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=headers_to_split_on,
+        strip_headers=False,
+    )
+    md_header_splits = markdown_splitter.split_text(content)
+    # 再用文本分割器再分割，控制不超过制定长度
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=max_token_size, chunk_overlap=overlap_token_size
+    )
+    md_splits = text_splitter.split_documents(md_header_splits)
+    chunk_order_index = 0
+    for md_split in md_splits:
+        chunk_content = f"{extend_entity_content}{md_split.page_content.strip()}"
+        chunk_content_size = len(chunk_content)
+        results.append(
+            {
+                "tokens": chunk_content_size,
+                "content": chunk_content,
+                "chunk_order_index": chunk_order_index,
+            }
+        )
+        chunk_order_index += chunk_content_size
+    return results
+
+
+def chunking_by_markdown_text(
+        content: str, overlap_token_size=128, max_token_size=1024,
+        extend_entity_title: str = '',
+        extend_entity_sn: str = '',
+):
+    extend_entity_content = f"{extend_entity_sn} 《{extend_entity_title}》\n"
+    results = []
+    # 用Markdown的文本分割器进行分割
+    markdown_splitter = MarkdownTextSplitter(
+        chunk_size=max_token_size, chunk_overlap=overlap_token_size
+    )
+    md_splits = markdown_splitter.split_text(content)
+    chunk_order_index = 0
+    for md_split in md_splits:
+        chunk_content = f"{extend_entity_content}{md_split.strip()}"
+        chunk_content_size = len(chunk_content)
+        results.append(
+            {
+                "tokens": chunk_content_size,
+                "content": chunk_content,
+                "chunk_order_index": chunk_order_index,
+            }
+        )
+        chunk_order_index += chunk_content_size
     return results
 
 
@@ -352,7 +416,6 @@ async def extract_entities(
 
         # 自定义新增 根据实体提取关系 by bumaple 2024-12-05
         context_base["entity_list"] = entity_final_result
-        # relationship_hint_prompt = relationship_extraction_prompt.format(**context_base, input_text=content)
         relationship_hint_prompt = relationship_extraction_prompt.format(
             **context_base, input_text="{input_text}"
         ).format(**context_base, input_text=content)
@@ -360,9 +423,12 @@ async def extract_entities(
 
         relationship_history = pack_user_ass_to_openai_messages(relationship_hint_prompt, relationship_final_result)
         for now_glean_index in range(entity_extract_max_gleaning):
-            glean_result = await use_llm_func(relationship_continue_prompt, history_messages=relationship_history)
+            relationship_continue_hint_prompt = relationship_continue_prompt.format(
+                **context_base, input_text="{input_text}"
+            ).format(**context_base, input_text=content)
+            glean_result = await use_llm_func(relationship_continue_hint_prompt, history_messages=relationship_history)
 
-            relationship_history += pack_user_ass_to_openai_messages(relationship_continue_prompt, glean_result)
+            relationship_history += pack_user_ass_to_openai_messages(relationship_continue_hint_prompt, glean_result)
             relationship_final_result += glean_result
             if now_glean_index == entity_extract_max_gleaning - 1:
                 break

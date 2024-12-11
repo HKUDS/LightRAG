@@ -28,7 +28,7 @@ PROMPTS["entity_extraction"] = """-目的-
 将每个实体按照 ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>){record_delimiter} 进行格式化。
 2.按照要求的格式返回识别出的所有实体的列表。
 -实体类型列表-
-entity_types: {entity_types}
+entity_types: [{entity_types}]
 #############################
 -范例-
 ######################
@@ -169,9 +169,9 @@ PROMPTS["relationship_extraction"] = """-目的-
 3.返回一个包含步骤1中识别出的所有实体和关系的列表。
 -实体列表-
 每个实体格式化为 ("entity"{tuple_delimiter}实体的名称{tuple_delimiter}实体类型{tuple_delimiter}对实体的属性和活动进行的全面描述){record_delimiter}
-entity_list: {entity_list}
+entity_list: [{entity_list}]
 -关系类型列表-
-relationship_types：{relationship_types}
+relationship_types：[{relationship_types}]
 #############################
 -范例-
 ######################
@@ -303,17 +303,17 @@ PROMPTS[
 
 PROMPTS[
     "entiti_if_loop_extraction"
-] = """似乎仍有一些实体可能被遗漏了。如果仍有需要添加的实体，请回答“YES”；如果没有，请回答“NO”。
+] = """似乎仍有一些实体可能被遗漏了。如果仍有需要添加的实体，请回答“YES”；如果没有，请回答“NO”。回答不要包含“YES”、“NO”之外的任何内容。
 """
 
 PROMPTS[
     "relationship_continue_extraction"
-] = """在上次提取中遗漏了许多关系，如果有实体找不到与其它实体的关系，那么建立与"{extend_entity_sn}"实体的“标准与内容"关系。。请使用相同的格式将它们添加在下面：
+] = """在上次提取中遗漏了许多关系，如果有实体找不到与其它实体的关系，那么建立与"{extend_entity_sn}"实体的“标准与内容"关系。请使用相同的格式将它们添加在下面：
 """
 
 PROMPTS[
     "relationship_if_loop_extraction"
-] = """似乎仍有一些关系可能被遗漏了。如果仍有需要添加的关系，请回答“YES”；如果没有，请回答“NO”。
+] = """似乎仍有一些关系可能被遗漏了。如果仍有需要添加的关系，请回答“YES”；如果没有，请回答“NO”。回答不要包含“YES”、“NO”之外的任何内容。
 """
 
 PROMPTS["fail_response"] = "抱歉，我无法回答这个问题。"
