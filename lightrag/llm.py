@@ -30,6 +30,7 @@ from .utils import (
     wrap_embedding_func_with_attrs,
     locate_json_string_body_from_string,
     safe_unicode_decode,
+    logger,
 )
 
 import sys
@@ -63,12 +64,18 @@ async def openai_complete_if_cache(
         AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
     )
     kwargs.pop("hashing_kv", None)
+    kwargs.pop("keyword_extraction", None)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
+    # 添加日志输出
+    logger.debug("===== Query Input to LLM =====")
+    logger.debug(f"Query: {prompt}")
+    logger.debug(f"System prompt: {system_prompt}")
+    logger.debug("Full context:")
     if "response_format" in kwargs:
         response = await openai_async_client.beta.chat.completions.parse(
             model=model, messages=messages, **kwargs
