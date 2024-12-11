@@ -107,10 +107,16 @@ class NanoVectorDBStorage(BaseVectorStorage):
             embeddings = await f
             embeddings_list.append(embeddings)
         embeddings = np.concatenate(embeddings_list)
-        for i, d in enumerate(list_data):
-            d["__vector__"] = embeddings[i]
-        results = self._client.upsert(datas=list_data)
-        return results
+        if len(embeddings) == len(list_data):
+            for i, d in enumerate(list_data):
+                d["__vector__"] = embeddings[i]
+            results = self._client.upsert(datas=list_data)
+            return results
+        else:
+            # sometimes the embedding is not returned correctly. just log it.
+            logger.error(
+                f"embedding is not 1-1 with data, {len(embeddings)} != {len(list_data)}"
+            )
 
     async def query(self, query: str, top_k=5):
         embedding = await self.embedding_func([query])

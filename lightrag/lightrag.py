@@ -48,18 +48,25 @@ from .storage import (
 
 
 def lazy_external_import(module_name: str, class_name: str):
-    """Lazily import an external module and return a class from it."""
+    """Lazily import a class from an external module based on the package of the caller."""
 
-    def import_class():
+    # Get the caller's module and package
+    import inspect
+
+    caller_frame = inspect.currentframe().f_back
+    module = inspect.getmodule(caller_frame)
+    package = module.__package__ if module else None
+
+    def import_class(*args, **kwargs):
         import importlib
 
         # Import the module using importlib
-        module = importlib.import_module(module_name)
+        module = importlib.import_module(module_name, package=package)
 
-        # Get the class from the module
-        return getattr(module, class_name)
+        # Get the class from the module and instantiate it
+        cls = getattr(module, class_name)
+        return cls(*args, **kwargs)
 
-    # Return the import_class function itself, not its result
     return import_class
 
 
