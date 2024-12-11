@@ -76,6 +76,7 @@ OracleGraphStorage = lazy_external_import(".kg.oracle_impl", "OracleGraphStorage
 OracleVectorDBStorage = lazy_external_import(".kg.oracle_impl", "OracleVectorDBStorage")
 MilvusVectorDBStorge = lazy_external_import(".kg.milvus_impl", "MilvusVectorDBStorge")
 MongoKVStorage = lazy_external_import(".kg.mongo_impl", "MongoKVStorage")
+ChromaVectorDBStorage = lazy_external_import(".kg.chroma_impl", "ChromaVectorDBStorage")
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -263,6 +264,7 @@ class LightRAG:
             "NanoVectorDBStorage": NanoVectorDBStorage,
             "OracleVectorDBStorage": OracleVectorDBStorage,
             "MilvusVectorDBStorge": MilvusVectorDBStorge,
+            "ChromaVectorDBStorage": ChromaVectorDBStorage,
             # graph storage
             "NetworkXStorage": NetworkXStorage,
             "Neo4JStorage": Neo4JStorage,
