@@ -58,27 +58,35 @@ from lightrag.kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleV
 
 
 def lazy_external_import(module_name: str, class_name: str):
-    """Lazily import an external module and return a class from it."""
+    """Lazily import a class from an external module based on the package of the caller."""
 
-    def import_class():
+    # Get the caller's module and package
+    import inspect
+
+    caller_frame = inspect.currentframe().f_back
+    module = inspect.getmodule(caller_frame)
+    package = module.__package__ if module else None
+
+    def import_class(*args, **kwargs):
         import importlib
 
         # Import the module using importlib
-        module = importlib.import_module(module_name)
+        module = importlib.import_module(module_name, package=package)
 
-        # Get the class from the module
-        return getattr(module, class_name)
+        # Get the class from the module and instantiate it
+        cls = getattr(module, class_name)
+        return cls(*args, **kwargs)
 
-    # Return the import_class function itself, not its result
     return import_class
 
-# 存在路径问题，不使用动态导入 bumaple 2024-12-10
-# Neo4JStorage = lazy_external_import("lightrag..kg.neo4j_impl", "Neo4JStorage")
-# OracleKVStorage = lazy_external_import("lightrag..kg.oracle_impl", "OracleKVStorage")
-# OracleGraphStorage = lazy_external_import("lightrag..kg.oracle_impl", "OracleGraphStorage")
-# OracleVectorDBStorage = lazy_external_import("lightrag..kg.oracle_impl", "OracleVectorDBStorage")
-# MilvusVectorDBStorge = lazy_external_import("lightrag..kg.milvus_impl", "MilvusVectorDBStorge")
-# MongoKVStorage = lazy_external_import("lightrag..kg.mongo_impl", "MongoKVStorage")
+
+Neo4JStorage = lazy_external_import(".kg.neo4j_impl", "Neo4JStorage")
+OracleKVStorage = lazy_external_import(".kg.oracle_impl", "OracleKVStorage")
+OracleGraphStorage = lazy_external_import(".kg.oracle_impl", "OracleGraphStorage")
+OracleVectorDBStorage = lazy_external_import(".kg.oracle_impl", "OracleVectorDBStorage")
+MilvusVectorDBStorge = lazy_external_import(".kg.milvus_impl", "MilvusVectorDBStorge")
+MongoKVStorage = lazy_external_import(".kg.mongo_impl", "MongoKVStorage")
+ChromaVectorDBStorage = lazy_external_import(".kg.chroma_impl", "ChromaVectorDBStorage")
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -274,6 +282,7 @@ class LightRAG:
             "NanoVectorDBStorage": NanoVectorDBStorage,
             "OracleVectorDBStorage": OracleVectorDBStorage,
             "MilvusVectorDBStorge": MilvusVectorDBStorge,
+            "ChromaVectorDBStorage": ChromaVectorDBStorage,
             # graph storage
             "NetworkXStorage": NetworkXStorage,
             "Neo4JStorage": Neo4JStorage,

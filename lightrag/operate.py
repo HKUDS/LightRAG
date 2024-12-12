@@ -331,6 +331,9 @@ async def extract_entities(
     language = global_config["addon_params"].get(
         "language", PROMPTS["DEFAULT_LANGUAGE"]
     )
+    entity_types = global_config["addon_params"].get(
+        "entity_types", PROMPTS["DEFAULT_ENTITY_TYPES"]
+    )
     example_number = global_config["addon_params"].get("example_number", None)
     if example_number and example_number < len(PROMPTS["entity_extraction_examples"]):
         entity_examples = "\n".join(
@@ -347,7 +350,7 @@ async def extract_entities(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=",".join(PROMPTS["DEFAULT_ENTITY_TYPES"]),
+        entity_types=",".join(entity_types),
         language=language,
     )
     # add example's format
@@ -396,8 +399,8 @@ async def extract_entities(
         entity_hint_prompt = entity_extract_prompt.format(
             **context_base, input_text="{input_text}"
         ).format(**context_base, input_text=content)
-        entity_final_result = await use_llm_func(entity_hint_prompt)
 
+        entity_final_result = await use_llm_func(entity_hint_prompt)
         entity_history = pack_user_ass_to_openai_messages(entity_hint_prompt, entity_final_result)
         for now_glean_index in range(entity_extract_max_gleaning):
             glean_result = await use_llm_func(entity_continue_prompt, history_messages=entity_history)
@@ -419,8 +422,8 @@ async def extract_entities(
         relationship_hint_prompt = relationship_extraction_prompt.format(
             **context_base, input_text="{input_text}"
         ).format(**context_base, input_text=content)
-        relationship_final_result = await use_llm_func(relationship_hint_prompt)
 
+        relationship_final_result = await use_llm_func(relationship_hint_prompt)
         relationship_history = pack_user_ass_to_openai_messages(relationship_hint_prompt, relationship_final_result)
         for now_glean_index in range(entity_extract_max_gleaning):
             relationship_continue_hint_prompt = relationship_continue_prompt.format(
@@ -532,14 +535,16 @@ async def extract_entities(
     ):
         all_relationships_data.append(await result)
 
-    if not len(all_entities_data):
-        logger.warning("Didn't extract any entities, maybe your LLM is not working")
-        return None
-    if not len(all_relationships_data):
+    if not len(all_entities_data) and not len(all_relationships_data):
         logger.warning(
-            "Didn't extract any relationships, maybe your LLM is not working"
+            "Didn't extract any entities and relationships, maybe your LLM is not working"
         )
         return None
+
+    if not len(all_entities_data):
+        logger.warning("Didn't extract any entities")
+    if not len(all_relationships_data):
+        logger.warning("Didn't extract any relationships")
 
     if entity_vdb is not None:
         data_for_vdb = {
@@ -750,6 +755,13 @@ async def _build_query_context(
                 text_chunks_db,
                 query_param,
             )
+            if (
+                hl_entities_context == ""
+                and hl_relations_context == ""
+                and hl_text_units_context == ""
+            ):
+                logger.warn("No high level context found. Switching to local mode.")
+                query_param.mode = "local"
     if query_param.mode == "hybrid":
         entities_context, relations_context, text_units_context = combine_contexts(
             [hl_entities_context, ll_entities_context],
@@ -985,7 +997,7 @@ async def _get_edge_data(
     results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
 
     if not len(results):
-        return None
+        return "", "", ""
 
     edge_datas = await asyncio.gather(
         *[knowledge_graph_inst.get_edge(r["src_id"], r["tgt_id"]) for r in results]
