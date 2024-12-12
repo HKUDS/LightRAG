@@ -588,6 +588,9 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
+    # ll_entities_context, ll_relations_context, ll_text_units_context = "", "", ""
+    # hl_entities_context, hl_relations_context, hl_text_units_context = "", "", ""
+
     ll_kewwords, hl_keywrds = query[0], query[1]
     if query_param.mode in ["local", "hybrid"]:
         if ll_kewwords == "":
@@ -686,7 +689,7 @@ async def _get_node_data(
     # get similar entities
     results = await entities_vdb.query(query, top_k=query_param.top_k)
     if not len(results):
-        return None
+        return "", "", ""
     # get entity information
     node_datas = await asyncio.gather(
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
