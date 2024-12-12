@@ -137,13 +137,13 @@ async def _merge_nodes_then_upsert(
     knowledge_graph_inst: BaseGraphStorage,
     global_config: dict,
 ):
-    already_entitiy_types = []
+    already_entity_types = []
     already_source_ids = []
     already_description = []
 
     already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node is not None:
-        already_entitiy_types.append(already_node["entity_type"])
+        already_entity_types.append(already_node["entity_type"])
         already_source_ids.extend(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
@@ -151,7 +151,7 @@ async def _merge_nodes_then_upsert(
 
     entity_type = sorted(
         Counter(
-            [dp["entity_type"] for dp in nodes_data] + already_entitiy_types
+            [dp["entity_type"] for dp in nodes_data] + already_entity_types
         ).items(),
         key=lambda x: x[1],
         reverse=True,
