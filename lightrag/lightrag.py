@@ -77,6 +77,8 @@ OracleVectorDBStorage = lazy_external_import(".kg.oracle_impl", "OracleVectorDBS
 MilvusVectorDBStorge = lazy_external_import(".kg.milvus_impl", "MilvusVectorDBStorge")
 MongoKVStorage = lazy_external_import(".kg.mongo_impl", "MongoKVStorage")
 ChromaVectorDBStorage = lazy_external_import(".kg.chroma_impl", "ChromaVectorDBStorage")
+TiDBKVStorage = lazy_external_import(".kg.tidb_impl", "TiDBKVStorage")
+TiDBVectorDBStorage = lazy_external_import(".kg.tidb_impl", "TiDBVectorDBStorage")
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -260,11 +262,13 @@ class LightRAG:
             "JsonKVStorage": JsonKVStorage,
             "OracleKVStorage": OracleKVStorage,
             "MongoKVStorage": MongoKVStorage,
+            "TiDBKVStorage": TiDBKVStorage,
             # vector storage
             "NanoVectorDBStorage": NanoVectorDBStorage,
             "OracleVectorDBStorage": OracleVectorDBStorage,
             "MilvusVectorDBStorge": MilvusVectorDBStorge,
             "ChromaVectorDBStorage": ChromaVectorDBStorage,
+            "TiDBVectorDBStorage": TiDBVectorDBStorage,
             # graph storage
             "NetworkXStorage": NetworkXStorage,
             "Neo4JStorage": Neo4JStorage,
