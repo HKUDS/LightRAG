@@ -13,11 +13,11 @@ openai
 oracledb
 pymilvus
 pymongo
+pymysql
 pyvis
-tenacity
 # lmdeploy[all]
 sqlalchemy
-pymysql
+tenacity
 
 
 # LLM packages
