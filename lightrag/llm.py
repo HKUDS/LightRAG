@@ -2,6 +2,7 @@ import base64
 import copy
 import json
 import os
+import re
 import struct
 from functools import lru_cache
 from typing import List, Dict, Callable, Any, Union, Optional
