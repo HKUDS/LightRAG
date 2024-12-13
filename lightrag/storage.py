@@ -103,7 +103,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
             return result
 
         embedding_tasks = [wrapped_task(batch) for batch in batches]
-        pbar = tqdm_async(total=len(embedding_tasks), desc="Generating embeddings", unit="batch")
+        pbar = tqdm_async(
+            total=len(embedding_tasks), desc="Generating embeddings", unit="batch"
+        )
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         embeddings = np.concatenate(embeddings_list)
