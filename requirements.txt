@@ -11,6 +11,7 @@ networkx
 ollama
 openai
 oracledb
+psycopg[binary,pool]
 pymilvus
 pymongo
 pymysql
