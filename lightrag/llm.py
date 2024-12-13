@@ -604,11 +604,11 @@ async def ollama_model_complete(
 )
 async def zhipu_complete_if_cache(
     prompt: Union[str, List[Dict[str, str]]],
-    model: str = "glm-4-flashx", # The most cost/performance balance model in glm-4 series
+    model: str = "glm-4-flashx",  # The most cost/performance balance model in glm-4 series
     api_key: Optional[str] = None,
     system_prompt: Optional[str] = None,
     history_messages: List[Dict[str, str]] = [],
-    **kwargs
+    **kwargs,
 ) -> str:
     # dynamically load ZhipuAI
     try:
@@ -640,13 +640,11 @@ async def zhipu_complete_if_cache(
     logger.debug(f"System prompt: {system_prompt}")
 
     # Remove unsupported kwargs
-    kwargs = {k: v for k, v in kwargs.items() if k not in ['hashing_kv', 'keyword_extraction']}
+    kwargs = {
+        k: v for k, v in kwargs.items() if k not in ["hashing_kv", "keyword_extraction"]
+    }
 
-    response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            **kwargs
-        )
+    response = client.chat.completions.create(model=model, messages=messages, **kwargs)
 
     return response.choices[0].message.content
 
@@ -663,13 +661,13 @@ async def zhipu_complete(
         Please analyze the content and extract two types of keywords:
         1. High-level keywords: Important concepts and main themes
         2. Low-level keywords: Specific details and supporting elements
-        
+
         Return your response in this exact JSON format:
         {
             "high_level_keywords": ["keyword1", "keyword2"],
             "low_level_keywords": ["keyword1", "keyword2", "keyword3"]
         }
-        
+
         Only return the JSON, no other text."""
 
         # Combine with existing system prompt if any
@@ -683,15 +681,15 @@ async def zhipu_complete(
                 prompt=prompt,
                 system_prompt=system_prompt,
                 history_messages=history_messages,
-                **kwargs
+                **kwargs,
             )
-            
+
             # Try to parse as JSON
             try:
                 data = json.loads(response)
                 return GPTKeywordExtractionFormat(
                     high_level_keywords=data.get("high_level_keywords", []),
-                    low_level_keywords=data.get("low_level_keywords", [])
+                    low_level_keywords=data.get("low_level_keywords", []),
                 )
             except json.JSONDecodeError:
                 # If direct JSON parsing fails, try to extract JSON from text
@@ -701,13 +699,15 @@ async def zhipu_complete(
                         data = json.loads(match.group())
                         return GPTKeywordExtractionFormat(
                             high_level_keywords=data.get("high_level_keywords", []),
-                            low_level_keywords=data.get("low_level_keywords", [])
+                            low_level_keywords=data.get("low_level_keywords", []),
                         )
                     except json.JSONDecodeError:
                         pass
-                
+
                 # If all parsing fails, log warning and return empty format
-                logger.warning(f"Failed to parse keyword extraction response: {response}")
+                logger.warning(
+                    f"Failed to parse keyword extraction response: {response}"
+                )
                 return GPTKeywordExtractionFormat(
                     high_level_keywords=[], low_level_keywords=[]
                 )
@@ -722,7 +722,7 @@ async def zhipu_complete(
             prompt=prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
-            **kwargs
+            **kwargs,
         )
 
 
@@ -733,13 +733,9 @@ async def zhipu_complete(
     retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
 )
 async def zhipu_embedding(
-    texts: list[str],
-    model: str = "embedding-3",
-    api_key: str = None,
-    **kwargs
+    texts: list[str], model: str = "embedding-3", api_key: str = None, **kwargs
 ) -> np.ndarray:
-
-# dynamically load ZhipuAI
+    # dynamically load ZhipuAI
     try:
         from zhipuai import ZhipuAI
     except ImportError:
@@ -758,11 +754,7 @@ async def zhipu_embedding(
     embeddings = []
     for text in texts:
         try:
-            response = client.embeddings.create(
-                model=model,
-                input=[text],
-                **kwargs
-            )
+            response = client.embeddings.create(model=model, input=[text], **kwargs)
             embeddings.append(response.data[0].embedding)
         except Exception as e:
             raise Exception(f"Error calling ChatGLM Embedding API: {str(e)}")

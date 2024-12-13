@@ -1,9 +1,6 @@
-import asyncio
 import os
-import inspect
 import logging
 
-from dotenv import load_dotenv
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import zhipu_complete, zhipu_embedding
@@ -21,7 +18,6 @@ if api_key is None:
     raise Exception("Please set ZHIPU_API_KEY in your environment")
 
 
-
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=zhipu_complete,
@@ -31,9 +27,7 @@ rag = LightRAG(
     embedding_func=EmbeddingFunc(
         embedding_dim=2048,  # Zhipu embedding-3 dimension
         max_token_size=8192,
-        func=lambda texts: zhipu_embedding(
-            texts
-        ),
+        func=lambda texts: zhipu_embedding(texts),
     ),
 )
 
