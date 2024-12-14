@@ -384,7 +384,9 @@ class AGEStorage(BaseGraphStorage):
 
     async def get_node(self, node_id: str) -> Union[dict, None]:
         entity_name_label = node_id.strip('"')
-        query = "MATCH (n:`{label}`) RETURN n"
+        query = """
+                MATCH (n:`{label}`) RETURN n
+                """
         params = {"label": AGEStorage._encode_graph_label(entity_name_label)}
         record = await self._query(query, **params)
         if record:
