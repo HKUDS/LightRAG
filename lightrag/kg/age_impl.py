@@ -370,7 +370,7 @@ class AGEStorage(BaseGraphStorage):
 
         query = (
             "MATCH (a:`{src_label}`)-[r]-(b:`{tgt_label}`) "
-            "RETURN COUNT(r) > 0 AS edgeExists"
+            "RETURN COUNT(r) > 0 AS edge_exists"
         )
         single_result = (
             await self._query(
@@ -384,7 +384,7 @@ class AGEStorage(BaseGraphStorage):
             inspect.currentframe().f_code.co_name,
             single_result[0],
         )
-        return single_result["edgeExists"].lower() == "true"
+        return single_result["edge_exists"].lower() == "true"
 
     async def get_node(self, node_id: str) -> Union[dict, None]:
         entity_name_label = node_id.strip('"')
