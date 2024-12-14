@@ -51,10 +51,11 @@ from .storage import (
 # )
 
 # 存在路径问题，不使用动态导入 bumaple 2024-12-10
-from lightrag.kg.mongo_impl import MongoKVStorage
-from lightrag.kg.neo4j_impl import Neo4JStorage
-from lightrag.kg.milvus_impl import MilvusVectorDBStorge
-from lightrag.kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBStorage
+# from lightrag.kg.mongo_impl import MongoKVStorage
+# from lightrag.kg.neo4j_impl import Neo4JStorage
+# from lightrag.kg.milvus_impl import MilvusVectorDBStorge
+# from lightrag.kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBStorage
+# from lightrag.kg.chroma_impl import ChromaVectorDBStorage
 
 
 def lazy_external_import(module_name: str, class_name: str):
@@ -184,6 +185,8 @@ class LightRAG:
     chunk_type: str = 'token_size'
     # 自定义新增 块标题层级 by bumaple 2024-12-11
     chunk_header_level: int = 2
+    # 采用实体、关系分步骤识别 True：分步骤识别 False：合并识别
+    entity_relationship_extraction_step: bool = False
 
     def __post_init__(self):
         log_file = os.path.join(self.working_dir, "lightrag.log")
