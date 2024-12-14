@@ -208,13 +208,13 @@ async def _merge_nodes_then_upsert(
     knowledge_graph_inst: BaseGraphStorage,
     global_config: dict,
 ):
-    already_entitiy_types = []
+    already_entity_types = []
     already_source_ids = []
     already_description = []
 
     already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node is not None:
-        already_entitiy_types.append(already_node["entity_type"])
+        already_entity_types.append(already_node["entity_type"])
         already_source_ids.extend(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
@@ -222,7 +222,7 @@ async def _merge_nodes_then_upsert(
 
     entity_type = sorted(
         Counter(
-            [dp["entity_type"] for dp in nodes_data] + already_entitiy_types
+            [dp["entity_type"] for dp in nodes_data] + already_entity_types
         ).items(),
         key=lambda x: x[1],
         reverse=True,
@@ -747,6 +747,9 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage[TextChunkSchema],
     query_param: QueryParam,
 ):
+    # ll_entities_context, ll_relations_context, ll_text_units_context = "", "", ""
+    # hl_entities_context, hl_relations_context, hl_text_units_context = "", "", ""
+
     ll_kewwords, hl_keywrds = query[0], query[1]
     if query_param.mode in ["local", "hybrid"]:
         if ll_kewwords == "":
@@ -845,7 +848,7 @@ async def _get_node_data(
     # get similar entities
     results = await entities_vdb.query(query, top_k=query_param.top_k)
     if not len(results):
-        return None
+        return "", "", ""
     # get entity information
     node_datas = await asyncio.gather(
         *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
