@@ -356,10 +356,10 @@ class AGEStorage(BaseGraphStorage):
             "{%s}:query:{%s}:result:{%s}",
             inspect.currentframe().f_code.co_name,
             query.format(**params),
-            single_result[0],
+            single_result["node_exists"],
         )
 
-        return single_result["node_exists"].lower() == "true"
+        return single_result["node_exists"]
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         entity_name_label_source = source_node_id.strip('"')
@@ -378,9 +378,9 @@ class AGEStorage(BaseGraphStorage):
             "{%s}:query:{%s}:result:{%s}",
             inspect.currentframe().f_code.co_name,
             query.format(**params),
-            single_result[0],
+            single_result["edge_exists"],
         )
-        return single_result["edge_exists"].lower() == "true"
+        return single_result["edge_exists"]
 
     async def get_node(self, node_id: str) -> Union[dict, None]:
         entity_name_label = node_id.strip('"')
