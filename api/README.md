@@ -23,10 +23,15 @@ A powerful FastAPI-based server for managing and querying documents using LightR
   - pydantic
 
 ## Installation
+If you are using windows, you will need to donwload and install visual c++ build tools from [https://visualstudio.microsoft.com/visual-cpp-build-tools/ ](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+Make sure you install the VS 2022 C++ x64/x86 Build tools like from indivisual componants tab:
+![image](https://github.com/user-attachments/assets/3723e15b-0a2c-42ed-aebf-e595a9f9c946)
+
+This is mandatory for builmding some modules.
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/LightRAG/lightrag-server.git
+git clone https://github.com/ParisNeo/LightRAG.git
 cd api
 ```
 
