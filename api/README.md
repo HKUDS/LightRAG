@@ -27,7 +27,7 @@ A powerful FastAPI-based server for managing and querying documents using LightR
 1. Clone the repository:
 ```bash
 git clone https://github.com/LightRAG/lightrag-server.git
-cd lightrag-server
+cd api
 ```
 
 2. Install dependencies:
@@ -42,7 +42,7 @@ pip install -r requirements.txt
 The server can be configured using command-line arguments:
 
 ```bash
-python rag_server.py --help
+python ollama_lightrag_server.py --help
 ```
 
 Available options:
