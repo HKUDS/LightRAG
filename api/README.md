@@ -31,7 +31,7 @@ This is mandatory for builmding some modules.
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/LightRAG/lightrag-server.git
+git clone https://github.com/ParisNeo/LightRAG.git
 cd api
 ```
 
