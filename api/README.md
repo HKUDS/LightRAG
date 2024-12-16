@@ -26,7 +26,7 @@ A powerful FastAPI-based server for managing and querying documents using LightR
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/lightrag-server.git
+git clone https://github.com/LightRAG/lightrag-server.git
 cd lightrag-server
 ```
 
