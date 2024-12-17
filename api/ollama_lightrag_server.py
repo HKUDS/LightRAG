@@ -213,7 +213,7 @@ def create_app(args):
     @app.post("/query", response_model=QueryResponse)
     async def query_text(request: QueryRequest):
         try:
-            response = rag.query(
+            response = await rag.aquery(
                 request.query,
                 param=QueryParam(mode=request.mode, stream=request.stream)
             )
