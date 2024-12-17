@@ -252,7 +252,12 @@ class LightRAG:
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(
                 self.llm_model_func,
-                hashing_kv=self.llm_response_cache,
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache
+                and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    global_config=asdict(self),
+                ),
                 **self.llm_model_kwargs,
             )
         )
@@ -515,7 +520,12 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache,
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache
+                and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    global_config=asdict(self),
+                ),
             )
         elif param.mode == "naive":
             response = await naive_query(
@@ -524,7 +534,12 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache,
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache
+                and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    global_config=asdict(self),
+                ),
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
