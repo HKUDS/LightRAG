@@ -82,9 +82,13 @@ async def openai_complete_if_cache(
             model=model, messages=messages, **kwargs
         )
     else:
-        response = await openai_async_client.chat.completions.create(
-            model=model, messages=messages, **kwargs
-        )
+        try:
+            response = await openai_async_client.chat.completions.create(
+                model=model, messages=messages, **kwargs
+            )
+        except Exception as e:
+            logger.error(e)
+            return ''
 
     if hasattr(response, "__aiter__"):
 
