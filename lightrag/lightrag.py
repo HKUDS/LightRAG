@@ -256,7 +256,9 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
                     global_config=asdict(self),
+                    embedding_func=None,
                 ),
                 **self.llm_model_kwargs,
             )
@@ -524,7 +526,9 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
                     global_config=asdict(self),
+                    embedding_func=None,
                 ),
             )
         elif param.mode == "naive":
@@ -538,7 +542,9 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
                     global_config=asdict(self),
+                    embedding_func=None,
                 ),
             )
         else:
