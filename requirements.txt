@@ -11,11 +11,15 @@ networkx
 ollama
 openai
 oracledb
+psycopg[binary,pool]
 pymilvus
 pymongo
+pymysql
 pyvis
-tenacity
 # lmdeploy[all]
+sqlalchemy
+tenacity
+
 
 # LLM packages
 tiktoken

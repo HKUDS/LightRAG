@@ -48,18 +48,25 @@ from .storage import (
 
 
 def lazy_external_import(module_name: str, class_name: str):
-    """Lazily import an external module and return a class from it."""
+    """Lazily import a class from an external module based on the package of the caller."""
 
-    def import_class():
+    # Get the caller's module and package
+    import inspect
+
+    caller_frame = inspect.currentframe().f_back
+    module = inspect.getmodule(caller_frame)
+    package = module.__package__ if module else None
+
+    def import_class(*args, **kwargs):
         import importlib
 
         # Import the module using importlib
-        module = importlib.import_module(module_name)
+        module = importlib.import_module(module_name, package=package)
 
-        # Get the class from the module
-        return getattr(module, class_name)
+        # Get the class from the module and instantiate it
+        cls = getattr(module, class_name)
+        return cls(*args, **kwargs)
 
-    # Return the import_class function itself, not its result
     return import_class
 
 
@@ -69,6 +76,10 @@ OracleGraphStorage = lazy_external_import(".kg.oracle_impl", "OracleGraphStorage
 OracleVectorDBStorage = lazy_external_import(".kg.oracle_impl", "OracleVectorDBStorage")
 MilvusVectorDBStorge = lazy_external_import(".kg.milvus_impl", "MilvusVectorDBStorge")
 MongoKVStorage = lazy_external_import(".kg.mongo_impl", "MongoKVStorage")
+ChromaVectorDBStorage = lazy_external_import(".kg.chroma_impl", "ChromaVectorDBStorage")
+TiDBKVStorage = lazy_external_import(".kg.tidb_impl", "TiDBKVStorage")
+TiDBVectorDBStorage = lazy_external_import(".kg.tidb_impl", "TiDBVectorDBStorage")
+AGEStorage = lazy_external_import(".kg.age_impl", "AGEStorage")
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -241,7 +252,14 @@ class LightRAG:
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(
                 self.llm_model_func,
-                hashing_kv=self.llm_response_cache,
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache
+                and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
+                    global_config=asdict(self),
+                    embedding_func=None,
+                ),
                 **self.llm_model_kwargs,
             )
         )
@@ -252,14 +270,18 @@ class LightRAG:
             "JsonKVStorage": JsonKVStorage,
             "OracleKVStorage": OracleKVStorage,
             "MongoKVStorage": MongoKVStorage,
+            "TiDBKVStorage": TiDBKVStorage,
             # vector storage
             "NanoVectorDBStorage": NanoVectorDBStorage,
             "OracleVectorDBStorage": OracleVectorDBStorage,
             "MilvusVectorDBStorge": MilvusVectorDBStorge,
+            "ChromaVectorDBStorage": ChromaVectorDBStorage,
+            "TiDBVectorDBStorage": TiDBVectorDBStorage,
             # graph storage
             "NetworkXStorage": NetworkXStorage,
             "Neo4JStorage": Neo4JStorage,
             "OracleGraphStorage": OracleGraphStorage,
+            "AGEStorage": AGEStorage,
             # "ArangoDBStorage": ArangoDBStorage
         }
 
@@ -500,7 +522,14 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache,
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache
+                and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
+                    global_config=asdict(self),
+                    embedding_func=None,
+                ),
             )
         elif param.mode == "naive":
             response = await naive_query(
@@ -509,7 +538,14 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache,
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache
+                and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
+                    global_config=asdict(self),
+                    embedding_func=None,
+                ),
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
