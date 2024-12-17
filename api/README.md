@@ -47,7 +47,7 @@ pip install -r requirements.txt
 The server can be configured using command-line arguments:
 
 ```bash
-python ollama_lightrag_server.py --help
+python ollama_lightollama_lightrag_server.py --help
 ```
 
 Available options:
@@ -55,7 +55,7 @@ Available options:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | --host | 0.0.0.0 | Server host |
-| --port | 8000 | Server port |
+| --port | 9621 | Server port |
 | --model | gemma2:2b | LLM model name |
 | --embedding-model | nomic-embed-text | Embedding model name |
 | --ollama-host | http://localhost:11434 | Ollama host URL |
@@ -71,19 +71,18 @@ Available options:
 
 1. Basic usage with default settings:
 ```bash
-python rag_server.py
+python ollama_lightrag_server.py
 ```
 
 2. Custom configuration:
 ```bash
-python rag_server.py --model llama2:13b --port 8080 --working-dir ./custom_rag
+python ollama_lightrag_server.py --model llama2:13b --port 8080 --working-dir ./custom_rag
 ```
 
-3. Using the launch script:
 ```bash
-chmod +x launch_rag_server.sh
-./launch_rag_server.sh
+python ollama_lightrag_server.py --model mistral-nemo:latest  --embedding-dim 1024 --embedding-model bge-m3
 ```
+
 
 ## API Endpoints
 
@@ -93,7 +92,7 @@ chmod +x launch_rag_server.sh
 Query the RAG system with options for different search modes.
 
 ```bash
-curl -X POST "http://localhost:8000/query" \
+curl -X POST "http://localhost:9621/query" \
     -H "Content-Type: application/json" \
     -d '{"query": "Your question here", "mode": "hybrid"}'
 ```
@@ -102,7 +101,7 @@ curl -X POST "http://localhost:8000/query" \
 Stream responses from the RAG system.
 
 ```bash
-curl -X POST "http://localhost:8000/query/stream" \
+curl -X POST "http://localhost:9621/query/stream" \
     -H "Content-Type: application/json" \
     -d '{"query": "Your question here", "mode": "hybrid"}'
 ```
@@ -113,7 +112,7 @@ curl -X POST "http://localhost:8000/query/stream" \
 Insert text directly into the RAG system.
 
 ```bash
-curl -X POST "http://localhost:8000/documents/text" \
+curl -X POST "http://localhost:9621/documents/text" \
     -H "Content-Type: application/json" \
     -d '{"text": "Your text content here", "description": "Optional description"}'
 ```
@@ -122,7 +121,7 @@ curl -X POST "http://localhost:8000/documents/text" \
 Upload a single file to the RAG system.
 
 ```bash
-curl -X POST "http://localhost:8000/documents/file" \
+curl -X POST "http://localhost:9621/documents/file" \
     -F "file=@/path/to/your/document.txt" \
     -F "description=Optional description"
 ```
@@ -131,7 +130,7 @@ curl -X POST "http://localhost:8000/documents/file" \
 Upload multiple files at once.
 
 ```bash
-curl -X POST "http://localhost:8000/documents/batch" \
+curl -X POST "http://localhost:9621/documents/batch" \
     -F "files=@/path/to/doc1.txt" \
     -F "files=@/path/to/doc2.txt"
 ```
@@ -140,7 +139,7 @@ curl -X POST "http://localhost:8000/documents/batch" \
 Clear all documents from the RAG system.
 
 ```bash
-curl -X DELETE "http://localhost:8000/documents"
+curl -X DELETE "http://localhost:9621/documents"
 ```
 
 ### Utility Endpoints
@@ -149,7 +148,7 @@ curl -X DELETE "http://localhost:8000/documents"
 Check server health and configuration.
 
 ```bash
-curl "http://localhost:8000/health"
+curl "http://localhost:9621/health"
 ```
 
 ## Development
@@ -157,14 +156,14 @@ curl "http://localhost:8000/health"
 ### Running in Development Mode
 
 ```bash
-uvicorn rag_server:app --reload --port 8000
+uvicorn ollama_lightrag_server:app --reload --port 9621
 ```
 
 ### API Documentation
 
 When the server is running, visit:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+- Swagger UI: http://localhost:9621/docs
+- ReDoc: http://localhost:9621/redoc
 
 ## Contributing
 
