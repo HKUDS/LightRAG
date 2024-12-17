@@ -12,6 +12,7 @@ from typing import Optional, List
 from enum import Enum
 from pathlib import Path
 import shutil
+import aiofiles
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -134,7 +135,6 @@ def create_app(args):
             ),
         ),
     )
-
     @app.on_event("startup")
     async def startup_event():
         """Index all files in input directory during startup"""
@@ -142,9 +142,11 @@ def create_app(args):
             new_files = doc_manager.scan_directory()
             for file_path in new_files:
                 try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                        rag.insert(content)
+                    # Use async file reading
+                    async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+                        content = await f.read()
+                        # Use the async version of insert directly
+                        await rag.ainsert(content)
                         doc_manager.mark_as_indexed(file_path)
                         logging.info(f"Indexed file: {file_path}")
                 except Exception as e:
