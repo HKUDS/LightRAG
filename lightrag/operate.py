@@ -496,7 +496,7 @@ async def kg_query(
     print(result)
     try:
         # json_text = locate_json_string_body_from_string(result) # handled in use_model_func
-        match = re.search(r"\{.*\}", result, re.DOTALL)
+        match = re.search(r"\{.*?\}", result, re.DOTALL)
         if match:
             result = match.group(0)
             keywords_data = json.loads(result)
