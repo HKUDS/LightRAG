@@ -21,7 +21,7 @@ def parse_args():
 
     # Server configuration
     parser.add_argument('--host', default='0.0.0.0', help='Server host (default: 0.0.0.0)')
-    parser.add_argument('--port', type=int, default=8000, help='Server port (default: 8000)')
+    parser.add_argument('--port', type=int, default=9621, help='Server port (default: 9621)')
     
     # Directory configuration
     parser.add_argument('--working-dir', default='./rag_storage', 
