@@ -56,13 +56,13 @@ Available options:
 |-----------|---------|-------------|
 | --host | 0.0.0.0 | Server host |
 | --port | 9621 | Server port |
-| --model | gemma2:2b | LLM model name |
-| --embedding-model | nomic-embed-text | Embedding model name |
+| --model | mistral-nemo:latest | LLM model name |
+| --embedding-model | bge-m3:latest | Embedding model name |
 | --ollama-host | http://localhost:11434 | Ollama host URL |
-| --working-dir | ./dickens | Working directory for RAG |
+| --working-dir | ./rag_storage | Working directory for RAG |
 | --max-async | 4 | Maximum async operations |
 | --max-tokens | 32768 | Maximum token size |
-| --embedding-dim | 768 | Embedding dimensions |
+| --embedding-dim | 1024 | Embedding dimensions |
 | --max-embed-tokens | 8192 | Maximum embedding token size |
 | --input-file | ./book.txt | Initial input file |
 | --log-level | INFO | Logging level |
@@ -79,10 +79,10 @@ python ollama_lightrag_server.py
 python ollama_lightrag_server.py --model llama2:13b --port 8080 --working-dir ./custom_rag
 ```
 
+Make sure the models are installed in your ollama instance
 ```bash
-python ollama_lightrag_server.py --model mistral-nemo:latest  --embedding-dim 1024 --embedding-model bge-m3
+python ollama_lightrag_server.py --model mistral-nemo:latest --embedding-model bge-m3  --embedding-dim 1024
 ```
-
 
 ## API Endpoints
 
@@ -165,13 +165,6 @@ When the server is running, visit:
 - Swagger UI: http://localhost:9621/docs
 - ReDoc: http://localhost:9621/redoc
 
-## Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
 
 ## License
 
@@ -182,5 +175,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Built with [FastAPI](https://fastapi.tiangolo.com/)
 - Uses [LightRAG](https://github.com/HKUDS/LightRAG) for document processing
 - Powered by [Ollama](https://ollama.ai/) for LLM inference
-
-## Support
