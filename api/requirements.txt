@@ -1,3 +1,4 @@
 fastapi
 uvicorn
 python-multipart
+ascii_colors

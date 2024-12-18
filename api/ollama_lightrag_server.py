@@ -13,6 +13,7 @@ from enum import Enum
 from pathlib import Path
 import shutil
 import aiofiles
+from ascii_colors import ASCIIColors, trace_exception
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -30,17 +31,17 @@ def parse_args():
                        help='Directory containing input documents (default: ./inputs)')
     
     # Model configuration
-    parser.add_argument('--model', default='gemma2:2b', help='LLM model name (default: gemma2:2b)')
-    parser.add_argument('--embedding-model', default='nomic-embed-text', 
-                       help='Embedding model name (default: nomic-embed-text)')
+    parser.add_argument('--model', default='mistral-nemo:latest', help='LLM model name (default: mistral-nemo:latest)')
+    parser.add_argument('--embedding-model', default='bge-m3:latest', 
+                       help='Embedding model name (default: bge-m3:latest)')
     parser.add_argument('--ollama-host', default='http://localhost:11434', 
                        help='Ollama host URL (default: http://localhost:11434)')
     
     # RAG configuration
     parser.add_argument('--max-async', type=int, default=4, help='Maximum async operations (default: 4)')
     parser.add_argument('--max-tokens', type=int, default=32768, help='Maximum token size (default: 32768)')
-    parser.add_argument('--embedding-dim', type=int, default=768, 
-                       help='Embedding dimensions (default: 768)')
+    parser.add_argument('--embedding-dim', type=int, default=1024, 
+                       help='Embedding dimensions (default: 1024)')
     parser.add_argument('--max-embed-tokens', type=int, default=8192, 
                        help='Maximum embedding token size (default: 8192)')
     
@@ -150,6 +151,7 @@ def create_app(args):
                         doc_manager.mark_as_indexed(file_path)
                         logging.info(f"Indexed file: {file_path}")
                 except Exception as e:
+                    trace_exception(e)
                     logging.error(f"Error indexing file {file_path}: {str(e)}")
             
             logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
@@ -328,7 +330,7 @@ def create_app(args):
             raise HTTPException(status_code=500, detail=str(e))
 
 
-    @app.get("/status")
+    @app.get("/health")
     async def get_status():
         """Get current system status"""
         return {
