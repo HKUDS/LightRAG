@@ -1,4 +1,4 @@
-fastapi
-uvicorn
-python-multipart
 ascii_colors
+fastapi
+python-multipart
+uvicorn
