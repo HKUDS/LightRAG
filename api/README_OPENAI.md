@@ -169,4 +169,3 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Built with [FastAPI](https://fastapi.tiangolo.com/)
 - Uses [LightRAG](https://github.com/HKUDS/LightRAG) for document processing
 - Powered by [OpenAI](https://openai.com/) for language model inference
-
