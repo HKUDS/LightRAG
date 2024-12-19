@@ -14,3 +14,4 @@ ignore_this.txt
 .ruff_cache/
 gui/
 *.log
+.vscode
