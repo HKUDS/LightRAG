@@ -81,6 +81,7 @@ TiDBKVStorage = lazy_external_import(".kg.tidb_impl", "TiDBKVStorage")
 TiDBVectorDBStorage = lazy_external_import(".kg.tidb_impl", "TiDBVectorDBStorage")
 TiDBGraphStorage = lazy_external_import(".kg.tidb_impl", "TiDBGraphStorage")
 AGEStorage = lazy_external_import(".kg.age_impl", "AGEStorage")
+GremlinStorage = lazy_external_import(".kg.gremlin_impl", "GremlinStorage")
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -284,6 +285,7 @@ class LightRAG:
             "OracleGraphStorage": OracleGraphStorage,
             "AGEStorage": AGEStorage,
             "TiDBGraphStorage": TiDBGraphStorage,
+            "GremlinStorage": GremlinStorage,
             # "ArangoDBStorage": ArangoDBStorage
         }
 
