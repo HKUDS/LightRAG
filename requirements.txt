@@ -4,6 +4,7 @@ aiohttp
 
 # database packages
 graspologic
+gremlinpython
 hnswlib
 nano-vectordb
 neo4j
