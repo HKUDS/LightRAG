@@ -21,8 +21,7 @@ TIDB_HOST = ""
 TIDB_PORT = ""
 TIDB_USER = ""
 TIDB_PASSWORD = ""
-TIDB_DATABASE = ""
-
+TIDB_DATABASE = "lightrag"
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -93,6 +92,7 @@ async def main():
             ),
             kv_storage="TiDBKVStorage",
             vector_storage="TiDBVectorDBStorage",
+            graph_storage="TiDBGraphStorage",
         )
 
         if rag.llm_response_cache:
@@ -102,6 +102,7 @@ async def main():
         rag.entities_vdb.db = tidb
         rag.relationships_vdb.db = tidb
         rag.chunks_vdb.db = tidb
+        rag.chunk_entity_relation_graph.db = tidb
 
         # Extract and Insert into LightRAG storage
         with open("./dickens/demo.txt", "r", encoding="utf-8") as f:

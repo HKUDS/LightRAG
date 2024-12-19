@@ -79,6 +79,7 @@ MongoKVStorage = lazy_external_import(".kg.mongo_impl", "MongoKVStorage")
 ChromaVectorDBStorage = lazy_external_import(".kg.chroma_impl", "ChromaVectorDBStorage")
 TiDBKVStorage = lazy_external_import(".kg.tidb_impl", "TiDBKVStorage")
 TiDBVectorDBStorage = lazy_external_import(".kg.tidb_impl", "TiDBVectorDBStorage")
+TiDBGraphStorage = lazy_external_import(".kg.tidb_impl", "TiDBGraphStorage")
 AGEStorage = lazy_external_import(".kg.age_impl", "AGEStorage")
 
 
@@ -282,6 +283,7 @@ class LightRAG:
             "Neo4JStorage": Neo4JStorage,
             "OracleGraphStorage": OracleGraphStorage,
             "AGEStorage": AGEStorage,
+            "TiDBGraphStorage": TiDBGraphStorage,
             # "ArangoDBStorage": ArangoDBStorage
         }
 
