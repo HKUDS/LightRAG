@@ -306,13 +306,6 @@ class GremlinStorage(BaseGraphStorage):
                  .project('connected_label')
                     .by(__.label())
                  """
-        result1 = await self._query(query1)
-        edges1 = (
-            [(node_label, res["connected_label"]) for res in result1[0]]
-            if result1
-            else []
-        )
-
         query2 = f"""
                  {self.traverse_source_name}
                  .V().has('graph', '{self.graph_name}')
@@ -322,7 +315,14 @@ class GremlinStorage(BaseGraphStorage):
                  .project('connected_label')
                     .by(__.select('connected').label())
                  """
-        result2 = await self._query(query2)
+        result1, result2 = await asyncio.gather(
+            self._query(query1), self._query(query2)
+        )
+        edges1 = (
+            [(node_label, res["connected_label"]) for res in result1[0]]
+            if result1
+            else []
+        )
         edges2 = (
             [(res["connected_label"], node_label) for res in result2[0]]
             if result2
