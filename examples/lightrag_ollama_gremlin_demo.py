@@ -1,9 +1,13 @@
 import asyncio
 import inspect
-import logging
 import os
 
-logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.WARN)
+# Uncomment these lines below to filter out somewhat verbose INFO level
+# logging prints (the default loglevel is INFO).
+# This has to go before the lightrag imports to work,
+# which triggers linting errors, so we keep it commented out:
+# import logging
+# logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.WARN)
 
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import ollama_embedding, ollama_model_complete
