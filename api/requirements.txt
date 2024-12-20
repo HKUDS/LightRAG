@@ -1,0 +1,4 @@
+ascii_colors
+fastapi
+python-multipart
+uvicorn
