@@ -339,6 +339,62 @@ async def ollama_model_if_cache(
         return response["message"]["content"]
 
 
+async def lollms_model_if_cache(
+    model,
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    base_url="http://localhost:9600",
+    **kwargs,
+) -> Union[str, AsyncIterator[str]]:
+    """Client implementation for lollms generation."""
+
+    stream = True if kwargs.get("stream") else False
+
+    # Extract lollms specific parameters
+    request_data = {
+        "prompt": prompt,
+        "model_name": model,
+        "personality": kwargs.get("personality", -1),
+        "n_predict": kwargs.get("n_predict", None),
+        "stream": stream,
+        "temperature": kwargs.get("temperature", 0.1),
+        "top_k": kwargs.get("top_k", 50),
+        "top_p": kwargs.get("top_p", 0.95),
+        "repeat_penalty": kwargs.get("repeat_penalty", 0.8),
+        "repeat_last_n": kwargs.get("repeat_last_n", 40),
+        "seed": kwargs.get("seed", None),
+        "n_threads": kwargs.get("n_threads", 8),
+    }
+
+    # Prepare the full prompt including history
+    full_prompt = ""
+    if system_prompt:
+        full_prompt += f"{system_prompt}\n"
+    for msg in history_messages:
+        full_prompt += f"{msg['role']}: {msg['content']}\n"
+    full_prompt += prompt
+
+    request_data["prompt"] = full_prompt
+
+    async with aiohttp.ClientSession() as session:
+        if stream:
+
+            async def inner():
+                async with session.post(
+                    f"{base_url}/lollms_generate", json=request_data
+                ) as response:
+                    async for line in response.content:
+                        yield line.decode().strip()
+
+            return inner()
+        else:
+            async with session.post(
+                f"{base_url}/lollms_generate", json=request_data
+            ) as response:
+                return await response.text()
+
+
 @lru_cache(maxsize=1)
 def initialize_lmdeploy_pipeline(
     model,
@@ -589,6 +645,32 @@ async def ollama_model_complete(
         kwargs["format"] = "json"
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     return await ollama_model_if_cache(
+        model_name,
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        **kwargs,
+    )
+
+
+async def lollms_model_complete(
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+) -> Union[str, AsyncIterator[str]]:
+    """Complete function for lollms model generation."""
+
+    # Extract and remove keyword_extraction from kwargs if present
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+
+    # Get model name from config
+    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
+
+    # If keyword extraction is needed, we might need to modify the prompt
+    # or add specific parameters for JSON output (if lollms supports it)
+    if keyword_extraction:
+        # Note: You might need to adjust this based on how lollms handles structured output
+        pass
+
+    return await lollms_model_if_cache(
         model_name,
         prompt,
         system_prompt=system_prompt,
@@ -1024,6 +1106,35 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     ollama_client = ollama.Client(**kwargs)
     data = ollama_client.embed(model=embed_model, input=texts)
     return data["embeddings"]
+
+
+async def lollms_embed(
+    texts: List[str], embed_model=None, base_url="http://localhost:9600", **kwargs
+) -> np.ndarray:
+    """
+    Generate embeddings for a list of texts using lollms server.
+
+    Args:
+        texts: List of strings to embed
+        embed_model: Model name (not used directly as lollms uses configured vectorizer)
+        base_url: URL of the lollms server
+        **kwargs: Additional arguments passed to the request
+
+    Returns:
+        np.ndarray: Array of embeddings
+    """
+    async with aiohttp.ClientSession() as session:
+        embeddings = []
+        for text in texts:
+            request_data = {"text": text}
+
+            async with session.post(
+                f"{base_url}/lollms_embed", json=request_data
+            ) as response:
+                result = await response.json()
+                embeddings.append(result["vector"])
+
+        return np.array(embeddings)
 
 
 class Model(BaseModel):
