@@ -3,7 +3,7 @@ from pydantic import BaseModel
 import logging
 import argparse
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import ollama_model_complete, ollama_embed
+from lightrag.llm import lollms_model_complete, lollms_embed
 from lightrag.utils import EmbeddingFunc
 from typing import Optional, List
 from enum import Enum
@@ -50,9 +50,9 @@ def parse_args():
         help="Embedding model name (default: bge-m3:latest)",
     )
     parser.add_argument(
-        "--ollama-host",
+        "--lollms-host",
         default="http://localhost:11434",
-        help="Ollama host URL (default: http://localhost:11434)",
+        help="lollms host URL (default: http://localhost:11434)",
     )
 
     # RAG configuration
@@ -168,19 +168,19 @@ def create_app(args):
     # Initialize RAG
     rag = LightRAG(
         working_dir=args.working_dir,
-        llm_model_func=ollama_model_complete,
+        llm_model_func=lollms_model_complete,
         llm_model_name=args.model,
         llm_model_max_async=args.max_async,
         llm_model_max_token_size=args.max_tokens,
         llm_model_kwargs={
-            "host": args.ollama_host,
+            "host": args.lollms_host,
             "options": {"num_ctx": args.max_tokens},
         },
         embedding_func=EmbeddingFunc(
             embedding_dim=args.embedding_dim,
             max_token_size=args.max_embed_tokens,
-            func=lambda texts: ollama_embed(
-                texts, embed_model=args.embedding_model, host=args.ollama_host
+            func=lambda texts: lollms_embed(
+                texts, embed_model=args.embedding_model, host=args.lollms_host
             ),
         ),
     )
@@ -386,7 +386,7 @@ def create_app(args):
                 "model": args.model,
                 "embedding_model": args.embedding_model,
                 "max_tokens": args.max_tokens,
-                "ollama_host": args.ollama_host,
+                "lollms_host": args.lollms_host,
             },
         }
 
