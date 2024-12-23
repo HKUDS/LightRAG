@@ -172,6 +172,20 @@ When the server is running, visit:
 - Swagger UI: http://localhost:9621/docs
 - ReDoc: http://localhost:9621/redoc
 
+## Deployment
+Azure OpenAI API can be created using the following commands:
+```bash
+az login
+az group create --name LightRAG --location swedencentral
+az cognitiveservices account create --name LightRAG-OpenAI --resource-group LightRAG  --kind OpenAI --sku S0 --location swedencentral
+az cognitiveservices account deployment create --resource-group LightRAG  --model-format OpenAI --name LightRAG-OpenAI --deployment-name gpt-4o --model-name gpt-4o --model-version "2024-08-06"  --sku-capacity 100 --sku-name "Standard"
+az cognitiveservices account deployment create --resource-group LightRAG  --model-format OpenAI --name LightRAG-OpenAI --deployment-name text-embedding-3-large --model-name text-embedding-3-large --model-version "1"  --sku-capacity 80 --sku-name "Standard"
+az cognitiveservices account show --name LightRAG-OpenAI --resource-group LightRAG --query "properties.endpoint"
+az cognitiveservices account keys list --name LightRAG-OpenAI -g LightRAG
+
+```
+
+
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
