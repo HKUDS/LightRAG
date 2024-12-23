@@ -2,3 +2,16 @@ ascii_colors
 fastapi
 python-multipart
 uvicorn
+nest_asyncio
+lightrag-hku
+tqdm
+aioboto3
+numpy
+ollama
+torch
+openai
+tenacity
+transformers
+tiktoken
+nano_vectordb
+python-dotenv
