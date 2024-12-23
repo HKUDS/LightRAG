@@ -182,7 +182,7 @@ def create_app(args):
         prompt, system_prompt=None, history_messages=[], **kwargs
     ):
         """Async wrapper for OpenAI completion"""
-        keyword_extraction = kwargs.pop("keyword_extraction", None)
+        kwargs.pop("keyword_extraction", None)
 
         return await azure_openai_complete_if_cache(
             args.model,
