@@ -173,18 +173,23 @@ When the server is running, visit:
 - ReDoc: http://localhost:9621/redoc
 
 ## Deployment
-Azure OpenAI API can be created using the following commands:
+Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
 ```bash
+# Change the resource group name, location and OpenAI resource name as needed
+RESOURCE_GROUP_NAME=LightRAG
+LOCATION=swedencentral
+RESOURCE_NAME=LightRAG-OpenAI
+
 az login
-az group create --name LightRAG --location swedencentral
-az cognitiveservices account create --name LightRAG-OpenAI --resource-group LightRAG  --kind OpenAI --sku S0 --location swedencentral
-az cognitiveservices account deployment create --resource-group LightRAG  --model-format OpenAI --name LightRAG-OpenAI --deployment-name gpt-4o --model-name gpt-4o --model-version "2024-08-06"  --sku-capacity 100 --sku-name "Standard"
-az cognitiveservices account deployment create --resource-group LightRAG  --model-format OpenAI --name LightRAG-OpenAI --deployment-name text-embedding-3-large --model-name text-embedding-3-large --model-version "1"  --sku-capacity 80 --sku-name "Standard"
-az cognitiveservices account show --name LightRAG-OpenAI --resource-group LightRAG --query "properties.endpoint"
-az cognitiveservices account keys list --name LightRAG-OpenAI -g LightRAG
+az group create --name $RESOURCE_GROUP_NAME --location $LOCATION
+az cognitiveservices account create --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME  --kind OpenAI --sku S0 --location swedencentral
+az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name gpt-4o --model-name gpt-4o --model-version "2024-08-06"  --sku-capacity 100 --sku-name "Standard"
+az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name text-embedding-3-large --model-name text-embedding-3-large --model-version "1"  --sku-capacity 80 --sku-name "Standard"
+az cognitiveservices account show --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME --query "properties.endpoint"
+az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_NAME
 
 ```
-
+The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
 
 ## License
 
