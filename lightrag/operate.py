@@ -78,7 +78,7 @@ def chunking_by_markdown_header(
     )
     md_header_splits = markdown_splitter.split_text(content)
     # 再用文本分割器再分割，控制不超过制定长度
-    text_splitter = RecursiveCharacterTextSplitter(
+    text_splitter = MarkdownTextSplitter(
         chunk_size=max_token_size, chunk_overlap=overlap_token_size
     )
     md_splits = text_splitter.split_documents(md_header_splits)

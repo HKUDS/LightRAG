@@ -8,13 +8,14 @@ PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 PROMPTS["process_tickers"] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
-PROMPTS["DEFAULT_ENTITY_TYPES"] = ["标准编号", "标准号", "标准名称", "标准类别", "发布机构", "发布日期", "实施日期", "代替标准",
-                                   "食品名称", "食品类别", "范围", "术语", "定义", "指标", "成分", "生产标准", "产品标准",
-                                   "使用标准", "检验方法", "检测方法", "使用量", "含量", "应用原则", "表+数字", "附录+字母", "附录+数字",
-                                   "检验方法标准号", "数值+计量单位", "数值"]
+PROMPTS["DEFAULT_ENTITY_TYPES"] = ["标准元数据", "毒素", "食品", "检测", "限量", "特殊食品", "食品加工", "食品来源", "食品状态",
+                                   "食品成分", "容器/包装", "处理方法", "生产工艺", "法规属性", "计量单位", "文档结构",
+                                   "食品饮料子", "地域/来源", "营养特征", "加工技术"]
 
-PROMPTS["DEFAULT_RELATIONSHIP_TYPES"] = ["标准与内容", "发布者与标准", "修改", "增加", "删除", "更新", "发布", "实施", "代替",
-                                         "变化", "相比", "允许", "适用", "规定", "测定", "限量"]
+PROMPTS["DEFAULT_RELATIONSHIP_TYPES"] = ["层级包含", "限量指标", "检测方法", "来源", "加工转化", "成分组成", "毒素产生",
+                                         "风险评估", "时间（如发布、实施等）", "数值映射", "类别分类", "食品状态转换", "标准适用",
+                                         "机构发布", "原料", "工艺关联", "食品用途", "营养特征关联", "可食用部分", "处理方法",
+                                         "计量单位", "文档结构", "标准修订", "风险控制", "目标人群"]
 
 PROMPTS["entity_extraction"] = """-目的-
 给定可能与此活动相关的Markdown或Html文本和一个实体类型列表，从文本中识别出这些类型的所有实体以及所识别实体之间的所有关系，不要遗漏。如果实体内容中存在、号，将、前后内容拆分成不同的实体。
@@ -23,7 +24,7 @@ PROMPTS["entity_extraction"] = """-目的-
 -步骤-
 1.识别所有实体。对于每个已识别的实体，提取以下信息：
 -entity_name：实体的名称，使用与输入文本相同的语言。如果是英文，则保留原来的格式。
--entity_type：实体类型。实体类型是"表+数字"、"附录+字母"、"附录+数字"，改为“表格”、“附录”，实体类型是“数值+计量单位”，改为“数值”。
+-entity_type：实体类型。保留实体类型名称，不需要举例说明内容。
 -entity_description：对实体的属性和活动进行的全面描述。
 将每个实体格式化为 ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>){record_delimiter}
 
@@ -41,10 +42,10 @@ PROMPTS["entity_extraction"] = """-目的-
 
 4.以{language}返回输出，作为步骤1和2中标识的所有实体和关系的单个列表。
 
-5.完成后，输出{completion_definer}
+5.完成后，输出{completion_delimiter}
 
 -实体类型列表-
-entity_types: [{entity_types}]
+entity_types: {entity_types}
 #############################
 -范例-
 ######################
@@ -212,12 +213,12 @@ PROMPTS["entity_extraction_alone"] = """-目的-
 -步骤-
 1.识别出所有实体。对于每个已识别的实体，提取以下信息：
 - entity_name：实体的名称，使用与输入文本相同的语言。如果是英文，则保留原来的格式。
-- entity_type：实体类型。实体类型是"表+数字"、"附录+字母"、"附录+数字"，改为“表格”、“附录”，实体类型是“数值+计量单位”，改为“数值”。
+- entity_type：实体类型。保留实体类型名称，不需要举例说明内容。
 - entity_description：对实体的属性和活动进行的全面描述
 将每个实体按照 ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>){record_delimiter} 进行格式化。
 2.按照要求的格式返回识别出的所有实体的列表。
 -实体类型列表-
-entity_types: [{entity_types}]
+entity_types: {entity_types}
 #############################
 -范例-
 ######################
@@ -360,7 +361,7 @@ PROMPTS["relationship_extraction_alone"] = """-目的-
 每个实体格式化为 ("entity"{tuple_delimiter}实体的名称{tuple_delimiter}实体类型{tuple_delimiter}对实体的属性和活动进行的全面描述){record_delimiter}
 entity_list: [{entity_list}]
 -关系类型列表-
-relationship_types：[{relationship_types}]
+relationship_types：{relationship_types}
 #############################
 -范例-
 ######################
@@ -590,17 +591,24 @@ PROMPTS["naive_rag_response"] = """---角色---
 PROMPTS[
     "similarity_check"
 ] = """请分析这两个问题之间的相似性：
+
 问题1:{original_prompt}
 问题2:{cached_prompt}
 
-请评估：
+请评估以下两点，并直接提供0到1之间的相似性得分：
 1.这两个问题在语义上是否相似；
 2.“问题2”的答案是否可用于回答“问题1”。
-
-请提供介于0和1之间的相似性得分，其中：
-0:完全无关或答案不能重复使用
+相似性评分标准：
+0:完全无关或答案不能重复使用，包括但不限于：
+  -这些问题有不同的主题。
+  -问题中提到的地点不同。
+  -问题中提到的时间不同。
+  -问题中提到的具体个人不同。
+  -问题中提到的具体事件不同。
+  -问题中的背景信息不同。
+  -问题中的关键条件不同。
+  -问题中提到的标准名称、标准编号、标准号不同。
 1:完全相同，答案可以直接重复使用
 0.5:部分相关，需要修改答案才能使用
-
 仅返回0-1之间的数字，不包含任何其他内容。
 """
