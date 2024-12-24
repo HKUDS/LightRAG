@@ -1048,7 +1048,7 @@ Before running any of the servers, ensure you have the corresponding backend ser
 
 #### For LoLLMs Server
 - LoLLMs must be running and accessible
-- Default connection: http://localhost:11434
+- Default connection: http://localhost:9600
 - Configure using --lollms-host if running on a different host/port
 
 #### For Ollama Server
@@ -1072,7 +1072,7 @@ Each server has its own specific configuration options:
 | --port | 9621 | RAG server port |
 | --model | mistral-nemo:latest | LLM model name |
 | --embedding-model | bge-m3:latest | Embedding model name |
-| --lollms-host | http://localhost:11434 | LoLLMS backend URL |
+| --lollms-host | http://localhost:9600 | LoLLMS backend URL |
 | --working-dir | ./rag_storage | Working directory for RAG |
 | --max-async | 4 | Maximum async operations |
 | --max-tokens | 32768 | Maximum token size |
