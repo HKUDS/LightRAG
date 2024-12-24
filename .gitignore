@@ -15,3 +15,5 @@ ignore_this.txt
 gui/
 *.log
 .vscode
+inputs
+rag_storage
