@@ -4,7 +4,10 @@ import asyncio
 import logging
 import argparse
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import azure_openai_complete_if_cache, azure_openai_complete, azure_openai_embedding
+from lightrag.llm import (
+    azure_openai_complete_if_cache,
+    azure_openai_embedding,
+)
 from lightrag.utils import EmbeddingFunc
 from typing import Optional, List
 from enum import Enum
@@ -27,6 +30,7 @@ AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 
 AZURE_EMBEDDING_DEPLOYMENT = os.getenv("AZURE_EMBEDDING_DEPLOYMENT")
 AZURE_EMBEDDING_API_VERSION = os.getenv("AZURE_EMBEDDING_API_VERSION")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -132,7 +136,7 @@ class SearchMode(str, Enum):
 class QueryRequest(BaseModel):
     query: str
     mode: SearchMode = SearchMode.hybrid
-    #stream: bool = False
+    # stream: bool = False
 
 
 class QueryResponse(BaseModel):
@@ -205,10 +209,11 @@ def create_app(args):
         embedding_func=EmbeddingFunc(
             embedding_dim=embedding_dim,
             max_token_size=args.max_embed_tokens,
-            func=lambda texts: azure_openai_embedding(texts, model=args.embedding_model),
+            func=lambda texts: azure_openai_embedding(
+                texts, model=args.embedding_model
+            ),
         ),
     )
-   
 
     @app.on_event("startup")
     async def startup_event():
@@ -266,9 +271,7 @@ def create_app(args):
             if os.path.exists(cachefile):
                 with open(cachefile, "w") as f:
                     f.write("{}")
-            return {
-                "status": "success"
-            }
+            return {"status": "success"}
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -319,14 +322,16 @@ def create_app(args):
                 param=QueryParam(mode=request.mode, stream=True),
             )
             if inspect.isasyncgen(response):
+
                 async def stream_generator():
                     async for chunk in response:
                         yield json.dumps({"data": chunk}) + "\n"
 
-                return StreamingResponse(stream_generator(), media_type="application/json")
+                return StreamingResponse(
+                    stream_generator(), media_type="application/json"
+                )
             else:
                 return QueryResponse(response=response)
-
 
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -433,5 +438,6 @@ def create_app(args):
 if __name__ == "__main__":
     args = parse_args()
     import uvicorn
+
     app = create_app(args)
     uvicorn.run(app, host=args.host, port=args.port)
