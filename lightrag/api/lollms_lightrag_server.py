@@ -1,10 +1,9 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from pydantic import BaseModel
-import asyncio
 import logging
 import argparse
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import openai_complete_if_cache, openai_embedding
+from lightrag.llm import lollms_model_complete, lollms_embed
 from lightrag.utils import EmbeddingFunc
 from typing import Optional, List
 from enum import Enum
@@ -12,15 +11,11 @@ from pathlib import Path
 import shutil
 import aiofiles
 from ascii_colors import trace_exception
-import nest_asyncio
-
-# Apply nest_asyncio to solve event loop issues
-nest_asyncio.apply()
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="LightRAG FastAPI Server with OpenAI integration"
+        description="LightRAG FastAPI Server with separate working and input directories"
     )
 
     # Server configuration
@@ -45,20 +40,36 @@ def parse_args():
 
     # Model configuration
     parser.add_argument(
-        "--model", default="gpt-4", help="OpenAI model name (default: gpt-4)"
+        "--model",
+        default="mistral-nemo:latest",
+        help="LLM model name (default: mistral-nemo:latest)",
     )
     parser.add_argument(
         "--embedding-model",
-        default="text-embedding-3-large",
-        help="OpenAI embedding model (default: text-embedding-3-large)",
+        default="bge-m3:latest",
+        help="Embedding model name (default: bge-m3:latest)",
+    )
+    parser.add_argument(
+        "--lollms-host",
+        default="http://localhost:11434",
+        help="lollms host URL (default: http://localhost:11434)",
     )
 
     # RAG configuration
+    parser.add_argument(
+        "--max-async", type=int, default=4, help="Maximum async operations (default: 4)"
+    )
     parser.add_argument(
         "--max-tokens",
         type=int,
         default=32768,
         help="Maximum token size (default: 32768)",
+    )
+    parser.add_argument(
+        "--embedding-dim",
+        type=int,
+        default=1024,
+        help="Embedding dimensions (default: 1024)",
     )
     parser.add_argument(
         "--max-embed-tokens",
@@ -136,13 +147,6 @@ class InsertResponse(BaseModel):
     document_count: int
 
 
-async def get_embedding_dim(embedding_model: str) -> int:
-    """Get embedding dimensions for the specified model"""
-    test_text = ["This is a test sentence."]
-    embedding = await openai_embedding(test_text, model=embedding_model)
-    return embedding.shape[1]
-
-
 def create_app(args):
     # Setup logging
     logging.basicConfig(
@@ -152,7 +156,7 @@ def create_app(args):
     # Initialize FastAPI app
     app = FastAPI(
         title="LightRAG API",
-        description="API for querying text using LightRAG with OpenAI integration",
+        description="API for querying text using LightRAG with separate storage and input directories",
     )
 
     # Create working directory if it doesn't exist
@@ -161,31 +165,23 @@ def create_app(args):
     # Initialize document manager
     doc_manager = DocumentManager(args.input_dir)
 
-    # Get embedding dimensions
-    embedding_dim = asyncio.run(get_embedding_dim(args.embedding_model))
-
-    async def async_openai_complete(
-        prompt, system_prompt=None, history_messages=[], **kwargs
-    ):
-        """Async wrapper for OpenAI completion"""
-        return await openai_complete_if_cache(
-            args.model,
-            prompt,
-            system_prompt=system_prompt,
-            history_messages=history_messages,
-            **kwargs,
-        )
-
-    # Initialize RAG with OpenAI configuration
+    # Initialize RAG
     rag = LightRAG(
         working_dir=args.working_dir,
-        llm_model_func=async_openai_complete,
+        llm_model_func=lollms_model_complete,
         llm_model_name=args.model,
+        llm_model_max_async=args.max_async,
         llm_model_max_token_size=args.max_tokens,
+        llm_model_kwargs={
+            "host": args.lollms_host,
+            "options": {"num_ctx": args.max_tokens},
+        },
         embedding_func=EmbeddingFunc(
-            embedding_dim=embedding_dim,
+            embedding_dim=args.embedding_dim,
             max_token_size=args.max_embed_tokens,
-            func=lambda texts: openai_embedding(texts, model=args.embedding_model),
+            func=lambda texts: lollms_embed(
+                texts, embed_model=args.embedding_model, host=args.lollms_host
+            ),
         ),
     )
 
@@ -390,16 +386,19 @@ def create_app(args):
                 "model": args.model,
                 "embedding_model": args.embedding_model,
                 "max_tokens": args.max_tokens,
-                "embedding_dim": embedding_dim,
+                "lollms_host": args.lollms_host,
             },
         }
 
     return app
 
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
     import uvicorn
 
     app = create_app(args)
     uvicorn.run(app, host=args.host, port=args.port)
+
+if __name__ == "__main__":
+    main()

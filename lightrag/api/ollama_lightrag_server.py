@@ -393,9 +393,12 @@ def create_app(args):
     return app
 
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
     import uvicorn
 
     app = create_app(args)
     uvicorn.run(app, host=args.host, port=args.port)
+
+if __name__ == "__main__":
+    main()
