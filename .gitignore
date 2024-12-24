@@ -15,3 +15,7 @@ ignore_this.txt
 gui/
 *.log
 .vscode
+.env
+venv/
+examples/input/
+examples/output/
