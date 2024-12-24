@@ -1,0 +1,534 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <key id="d6" for="edge" attr.name="source_id" attr.type="string" />
+  <key id="d5" for="edge" attr.name="keywords" attr.type="string" />
+  <key id="d4" for="edge" attr.name="description" attr.type="string" />
+  <key id="d3" for="edge" attr.name="weight" attr.type="double" />
+  <key id="d2" for="node" attr.name="source_id" attr.type="string" />
+  <key id="d1" for="node" attr.name="description" attr.type="string" />
+  <key id="d0" for="node" attr.name="entity_type" attr.type="string" />
+  <graph edgedefault="undirected">
+    <node id="&quot;GPT4ALL&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"GPT4All is an AI binding mentioned in the text, compatible with GGUF file format and supporting both CPU and GPU processing units."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;Q4 QUANTIZATION&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Q4 quantization is mentioned as a supported model compatibility for GPT4All."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;WIN_INSTALL.BAT&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"win_install.bat is a file mentioned in the installation process for Windows users."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;GPU&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"GPU is a processing unit mentioned as an alternative to CPU for faster generation in lollmz."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;WIN_RUN.BAT&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"win_run.bat is a file mentioned that needs to be run after installation for Windows users."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;LOLLMZ&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"lollmz is the main topic of the text, described as an AI software with various functionalities."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;GGUF FORMAT&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"GGUF format is mentioned as compatible with GPT4All binding and supporting both CPU and GPU processing units."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;DISCUSSION PAGE&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"discussion page is where the interaction with lollmz begins after selecting and applying changes to the model."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;LINUX_INSTALL.SH&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"linux_install.sh is a file mentioned in the installation process for Linux users."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;MACOS_INSTALL.SH&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"macos_install.sh is a file mentioned in the installation process for macOS users."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;CPU&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"CPU is a processing unit mentioned for lollmz's configuration."</data>
+      <data key="d2">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </node>
+    <node id="&quot;GEMINI&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Gemini is a type of AI model that can be used with the LOLLMS Elf server for text generation."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;DASWER123`">
+      <data key="d0">`PERSON`</data>
+      <data key="d1">"Daswer123 develops Xtts server, another service for image generation in LOLLMS."</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363</data>
+    </node>
+    <node id="&quot;LOLLMS ELF SERVER`">
+      <data key="d0">`GEO`</data>
+      <data key="d1">`The LOLLMS Elf server acts as the central hub for communication between different components in LOLLMS.`"</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363</data>
+    </node>
+    <node id="&quot;GENERATION ENGINES`">
+      <data key="d0">`EVENT`</data>
+      <data key="d1">`Generation engines unlock LOLLMS's potential to create text, images, and audio.`"</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363</data>
+    </node>
+    <node id="&quot;OLLAMA&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"Ollama is an application that can connect with the LOLLMS Elf server to generate text."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;LOLLMS ELF SERVER&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"The LOLLMS Elf server is a versatile tool acting as the central hub for communication between different components with a RESTful interface and socket.io connection."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;DEVELOPERS`">
+      <data key="d0">`PERSON`</data>
+      <data key="d1">"Developers contribute to LOLLMS by creating services and personalities."</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363</data>
+    </node>
+    <node id="&quot;VLLM COMPATIBLE CLIENTS&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"VLLM compatible clients are a type of client that can connect with the LOLLMS Elf server for text generation."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;FASTAPI&quot;">
+      <data key="d0">"TECHNOLOGY"</data>
+      <data key="d1">"FastAPI is used to power the RESTful interface of the LOLLMS Elf server."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;LOLLMS&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"LOLLMS is an AI platform that enables interaction with various AI systems and allows for customization and extension."&lt;SEP&gt;"LOLLMS is an open-source project primarily developed by one person, with occasional community support."&lt;SEP&gt;"Lollms is an AI system that can be used effectively through cooperative mode, allowing greater flexibility in controlling conversations and achieving specific goals."&lt;SEP&gt;"Lollms is an organization being developed by ParisNeo and has contributed to it."&lt;SEP&gt;"lollms is an AI tool driven by passion and ethical considerations, with rapid development cycles and community focus."&lt;SEP&gt;"lollms, short for 'Lord of Large Language &amp; Multimodal Systems,' is an AI tool developed by ParisNeo. It aims to be accessible and comprehensive, supporting various AI systems."</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363&lt;SEP&gt;chunk-2435d3e277bedd48059b30dfc89f17ec&lt;SEP&gt;chunk-deb75811d374b0edb169c7552bb9ef58&lt;SEP&gt;chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7&lt;SEP&gt;chunk-d88aa68698ac5bbd383beb9952e362f8&lt;SEP&gt;chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;PERSONALITY&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Personality is used to enhance the quality and relevance of text generated by the LOLLMS Elf server."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;SOCKET.IO&quot;">
+      <data key="d0">"TECHNOLOGY"</data>
+      <data key="d1">"socket.io is used for the WebUI connection on the LOLLMS Elf server."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;BINDINGS&quot;">
+      <data key="d0">"TECHNOLOGY`</data>
+      <data key="d1">`Bindings are essential Python code that enables LOLLMS to interact with AI models through web queries or libraries.`"</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363</data>
+    </node>
+    <node id="&quot;WEBUI&quot;">
+      <data key="d0">"TECHNOLOGY"</data>
+      <data key="d1">"The WebUI is a user interface provided by socket.io on the LOLLMS Elf server."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;OPEN AI&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"Open AI is an application that can connect with the LOLLMS Elf server to generate text."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;RAG ENGINE`">
+      <data key="d0">`TECHNOLOGY`</data>
+      <data key="d1">`Retrieval Augmented Generation engine enhances knowledge and task execution in LOLLMS.`"</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363</data>
+    </node>
+    <node id="&quot;LORD OF LARGE LANGUAGE AND MULTIMODAL SYSTEMS&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"A category describing LOLLMS as a tool for large language models and multimodal systems integration."&lt;SEP&gt;"The current name of lollms, signifying its evolution to incorporate image, speech, and other modalities in addition to text-based AI."</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363&lt;SEP&gt;chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </node>
+    <node id="&quot;CLIENT&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"A client is any application or service connecting with the LOLLMS Elf server for text generation."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;MISTRALAI&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"MistralAI is an application that can connect with the LOLLMS Elf server to generate text."</data>
+      <data key="d2">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </node>
+    <node id="&quot;CONTENT CREATORS`">
+      <data key="d0">`PERSON`</data>
+      <data key="d1">"Content creators utilize LOLLMS for generating engaging content."</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363</data>
+    </node>
+    <node id="&quot;SERVICES&quot;">
+      <data key="d0">"CATEGORY`</data>
+      <data key="d1">`Services in LOLLMS are additional servers created by third-party developers for use within the platform.`"</data>
+      <data key="d2">chunk-2eca9dd1cae8e3b5018e4d030957c363</data>
+    </node>
+    <node id="&quot;FOLLOW-UP QUESTIONS&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"Follow-up questions are posed by ParisNeo to continue the conversation and achieve specific goals using cooperative mode."</data>
+      <data key="d2">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </node>
+    <node id="&quot;CONTEXTUAL EMBEDDING&quot;">
+      <data key="d0">"CONCEPT"</data>
+      <data key="d1">"A technique used by LOLLMZ to understand and generate responses based on context."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </node>
+    <node id="&quot;YOU&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"The user or audience addressed throughout the video."&lt;SEP&gt;"You is addressed as a user of the AI system who can change the initial response to achieve desired results."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929&lt;SEP&gt;chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </node>
+    <node id="&quot;HI THERE&quot;">
+      <data key="d0">"PHRASE"</data>
+      <data key="d1">"A greeting used at the beginning of the video."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </node>
+    <node id="&quot;SUCCESSFUL AI SYSTEM&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"A successful AI system relies on human guidance, training, supervision, and feedback for its effectiveness."</data>
+      <data key="d2">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </node>
+    <node id="&quot;SCORING FUNCTION&quot;">
+      <data key="d0">"CONCEPT"</data>
+      <data key="d1">"A function used by LOLLMZ to score possible responses and choose the most fitting one."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </node>
+    <node id="&quot;TRANSFORMER BASED NEURAL NETWORK&quot;">
+      <data key="d0">"TECHNOLOGY"</data>
+      <data key="d1">"The underlying technology used by LOLLMZ to generate text and understand context."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </node>
+    <node id="&quot;LARGE LANGUAGE MODELS&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Large language models exist and are effective due to the efforts of humans like ParisNeo."</data>
+      <data key="d2">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </node>
+    <node id="&quot;WEB UI'S SETTINGS PAGE&quot;">
+      <data key="d0">"LOCATION"</data>
+      <data key="d1">"The user interface where changes in color and style are made."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </node>
+    <node id="&quot;LORD OF LARGE LANGUAGE MODELS (LOLLMZ)&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"An AI built by ParisNeo to assist in tasks ranging from writing text and code to planning and creativity."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </node>
+    <node id="&quot;OUR ORIGINAL QUESTION&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"The original question refers to how to get LOLLMZ to cooperate if its answer isn't satisfactory."</data>
+      <data key="d2">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </node>
+    <node id="&quot;LARGE LANGUAGE MODELS (LLMS)&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Models based on machine learning algorithms that learn from vast amounts of text data to generate new texts when prompted."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </node>
+    <node id="&quot;HELLO EVERYONE&quot;">
+      <data key="d0">"PHRASE"</data>
+      <data key="d1">"'Hello everyone' is a suggested greeting to begin tutorials using Lollms effectively."</data>
+      <data key="d2">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </node>
+    <node id="&quot;ME: LORD OF LARGE LANGUAGE MODELS (LOLLMZ)&quot;">
+      <data key="d0">"PERSON"</data>
+      <data key="d1">"The AI narrator of the video, also referred to as 'me' or 'I'."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </node>
+    <node id="&quot;PARISNEO&quot;">
+      <data key="d0">"PERSON"</data>
+      <data key="d1">"ParisNeo is a user of the AI system who provides guidance and supervision to improve its effectiveness."&lt;SEP&gt;"The creator of LOLLMZ, who prompts the AI in cooperative mode and does the final montage of videos."&lt;SEP&gt;"ParisNeo is a visionary expert in AI and robotics who created lollms with the goal of providing an accessible AI tool. He holds two Engineering degrees and a Ph.D., and has made significant contributions to the open-source community."&lt;SEP&gt;"ParisNeo is coding lollms in their free time as a hobby."&lt;SEP&gt;"ParisNeo is the main developer of lollms, driven by a passion for AI and coding, and committed to ethical AI development."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929&lt;SEP&gt;chunk-2435d3e277bedd48059b30dfc89f17ec&lt;SEP&gt;chunk-deb75811d374b0edb169c7552bb9ef58&lt;SEP&gt;chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7&lt;SEP&gt;chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </node>
+    <node id="&quot;GOOD MORNING/AFTERNOON&quot;">
+      <data key="d0">"PHRASE"</data>
+      <data key="d1">"'Good morning/afternoon' is another suggestion for beginning tutorials with Lollms."</data>
+      <data key="d2">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </node>
+    <node id="&quot;PROBABILISTIC PREDICTIONS&quot;">
+      <data key="d0">"CONCEPT"</data>
+      <data key="d1">"The method used by LOLLMZ's model to predict the next token in a sequence based on previous tokens."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </node>
+    <node id="&quot;COOPERATIVE MODE&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"A technique developed by ParisNeo allowing him to control the first few words of LOLLMZ's output for better alignment with his intentions."&lt;SEP&gt;"Cooperative Mode is a feature of Lollms that enables users to control the direction of conversations more effectively."</data>
+      <data key="d2">chunk-08fd650f6e4e4b17d5f88b523b979929&lt;SEP&gt;chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </node>
+    <node id="&quot;HUNTR.COM&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"Huntr.com is a bounty hunting platform that lists open-source apps for protection against vulnerabilities."</data>
+      <data key="d2">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </node>
+    <node id="&quot;OPENAI&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"OpenAI is a research organization that develops and deploy advanced AI systems, including ChatGPT."</data>
+      <data key="d2">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </node>
+    <node id="&quot;CHATGPT&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"ChatGPT is a conversational AI system developed by OpenAI, which ParisNeo's plugin initially interacted with."</data>
+      <data key="d2">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </node>
+    <node id="&quot;LORD OF LARGE LANGUAGE MODELS&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"An earlier name for lollms, reflecting its ambition to be a comprehensive solution for language models."</data>
+      <data key="d2">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </node>
+    <node id="&quot;NIGHTS&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Nights refer to the time when ParisNeo works on lollms."</data>
+      <data key="d2">chunk-2435d3e277bedd48059b30dfc89f17ec</data>
+    </node>
+    <node id="&quot;META&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"Meta (formerly Facebook) developed the LLaMA model, which inspired ParisNeo's work on lollms."</data>
+      <data key="d2">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </node>
+    <node id="&quot;NOMIC AI&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"Nomic AI is the company that built the GPT4All model, which ParisNeo created a UI for before developing lollms."</data>
+      <data key="d2">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </node>
+    <node id="&quot;WEEKENDS&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Weekends are mentioned as another time when ParisNeo works on lollms."</data>
+      <data key="d2">chunk-2435d3e277bedd48059b30dfc89f17ec</data>
+    </node>
+    <node id="&quot;AI&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Artificial Intelligence (AI) refers to intelligence demonstrated by machines, in contrast with the natural intelligence displayed by humans and animals."</data>
+      <data key="d2">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </node>
+    <node id="&quot;GPT4ALL WEBUI&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"The standalone application developed by ParisNeo, allowing users to interact with the GPT4All model through its user interface."</data>
+      <data key="d2">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </node>
+    <node id="&quot;HOLIDAYS&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Holidays are also mentioned as times when ParisNeo dedicates their free time to work on lollms."</data>
+      <data key="d2">chunk-2435d3e277bedd48059b30dfc89f17ec</data>
+    </node>
+    <node id="&quot;RAPID DEVELOPMENT CYCLE&quot;">
+      <data key="d0">"EVENT"</data>
+      <data key="d1">"The Rapid Development Cycle of lollms involves new versions released almost every day and continuous improvements."</data>
+      <data key="d2">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </node>
+    <node id="&quot;ETHICAL CONSIDERATIONS&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Ethical Considerations guide lollms' development, focusing on helping people through technology."</data>
+      <data key="d2">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </node>
+    <node id="&quot;COMMUNITY FOCUS&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"Community Focus is central to lollms' development, encouraging collaboration and transparency in AI."</data>
+      <data key="d2">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </node>
+    <node id="&quot;LLAMA&quot;">
+      <data key="d0">"CATEGORY"</data>
+      <data key="d1">"LLaMA is an AI model developed by Meta (formerly Facebook), which influenced ParisNeo to build a web user interface for interacting with such models."</data>
+      <data key="d2">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </node>
+    <node id="&quot;CHATGPT PERSONALITY SELECTOR&quot;">
+      <data key="d0">"ORGANIZATION"</data>
+      <data key="d1">"The initial project by ParisNeo, it was a Chrome plugin that conditioned ChatGPT's AI to adopt different personalities."</data>
+      <data key="d2">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </node>
+    <edge source="&quot;GPT4ALL&quot;" target="&quot;LOLLMZ&quot;">
+      <data key="d3">8.0</data>
+      <data key="d4">"GPT4All is installed as a binding for lollmz in the provided instructions."</data>
+      <data key="d5">"binding installation, compatibility"</data>
+      <data key="d6">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </edge>
+    <edge source="&quot;WIN_INSTALL.BAT&quot;" target="&quot;LOLLMZ&quot;">
+      <data key="d3">7.0</data>
+      <data key="d4">"lollmz's Windows installation process involves running win_install.bat."</data>
+      <data key="d5">"installation process, Windows users"</data>
+      <data key="d6">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </edge>
+    <edge source="&quot;GPU&quot;" target="&quot;CPU&quot;">
+      <data key="d3">9.0</data>
+      <data key="d4">"The text mentions that switching from CPU to GPU can significantly speed up generation in lollmz."</data>
+      <data key="d5">"processing unit comparison, performance improvement"</data>
+      <data key="d6">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </edge>
+    <edge source="&quot;WIN_RUN.BAT&quot;" target="&quot;LOLLMZ&quot;">
+      <data key="d3">6.0</data>
+      <data key="d4">"After installing lollmz on Windows, win_run.bat needs to be run."</data>
+      <data key="d5">"post-installation step, Windows users"</data>
+      <data key="d6">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </edge>
+    <edge source="&quot;LOLLMZ&quot;" target="&quot;MACOS_INSTALL.SH&quot;">
+      <data key="d3">7.0</data>
+      <data key="d4">"lollmz's macOS installation process involves running macos_install.sh."</data>
+      <data key="d5">"installation process, macOS users"</data>
+      <data key="d6">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </edge>
+    <edge source="&quot;LOLLMZ&quot;" target="&quot;LINUX_INSTALL.SH&quot;">
+      <data key="d3">7.0</data>
+      <data key="d4">"lollmz's Linux installation process involves running linux_install.sh."</data>
+      <data key="d5">"installation process, Linux users"</data>
+      <data key="d6">chunk-0a464d585eb7db7023f47f305002f324</data>
+    </edge>
+    <edge source="&quot;GEMINI&quot;" target="&quot;LOLLMS ELF SERVER&quot;">
+      <data key="d3">8.0</data>
+      <data key="d4">"The LOLLMS Elf server supports Gemini for text generation."</data>
+      <data key="d5">"model integration, versatility"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;OLLAMA&quot;" target="&quot;LOLLMS ELF SERVER&quot;">
+      <data key="d3">9.0</data>
+      <data key="d4">"The LOLLMS Elf server can connect with Ollama to generate text."</data>
+      <data key="d5">"text generation, compatibility"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS ELF SERVER&quot;" target="&quot;MISTRALAI&quot;">
+      <data key="d3">9.0</data>
+      <data key="d4">"The LOLLMS Elf server can connect with MistralAI to generate text."</data>
+      <data key="d5">"text generation, compatibility"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS ELF SERVER&quot;" target="&quot;PERSONALITY&quot;">
+      <data key="d3">7.0</data>
+      <data key="d4">"Personality can be used to enhance the output of the LOLLMS Elf server."</data>
+      <data key="d5">"output enhancement, versatility"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS ELF SERVER&quot;" target="&quot;OPEN AI&quot;">
+      <data key="d3">9.0</data>
+      <data key="d4">"The LOLLMS Elf server can connect with Open AI to generate text."</data>
+      <data key="d5">"text generation, compatibility"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS ELF SERVER&quot;" target="&quot;VLLM COMPATIBLE CLIENTS&quot;">
+      <data key="d3">8.0</data>
+      <data key="d4">"The LOLLMS Elf server supports VLLM compatible clients for text generation."</data>
+      <data key="d5">"client compatibility"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS ELF SERVER&quot;" target="&quot;CLIENT&quot;">
+      <data key="d3">18.0</data>
+      <data key="d4">"The LOLLMS Elf server enables various clients to connect for text generation."</data>
+      <data key="d5">"client compatibility, versatility"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS ELF SERVER&quot;" target="&quot;FASTAPI&quot;">
+      <data key="d3">8.0</data>
+      <data key="d4">"The LOLLMS Elf server uses FastAPI to power its RESTful interface."</data>
+      <data key="d5">"technology integration"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS ELF SERVER&quot;" target="&quot;SOCKET.IO&quot;">
+      <data key="d3">7.0</data>
+      <data key="d4">"The LOLLMS Elf server uses socket.io for its WebUI connection."</data>
+      <data key="d5">"communication protocol"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS ELF SERVER&quot;" target="&quot;WEBUI&quot;">
+      <data key="d3">12.0</data>
+      <data key="d4">"The LOLLMS Elf server provides a WebUI through socket.io."</data>
+      <data key="d5">"user interface provision"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS ELF SERVER&quot;" target="&quot;LOLLMS&quot;">
+      <data key="d3">9.0</data>
+      <data key="d4">"The LOLLMS Elf server is a central component of the LOLLMS project."</data>
+      <data key="d5">"project component, hub"</data>
+      <data key="d6">chunk-f8894eeb9055d897c185abadb6e6b5c8</data>
+    </edge>
+    <edge source="&quot;LOLLMS&quot;" target="&quot;YOU&quot;">
+      <data key="d3">6.0</data>
+      <data key="d4">"You can change the initial response of Lollms to achieve desired results."</data>
+      <data key="d5">"user interaction, control"</data>
+      <data key="d6">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </edge>
+    <edge source="&quot;LOLLMS&quot;" target="&quot;PARISNEO&quot;">
+      <data key="d3">35.0</data>
+      <data key="d4">"ParisNeo created lollms with the vision of providing an accessible, free-of-charge tool for various AI systems."&lt;SEP&gt;"ParisNeo is the main developer of lollms, working on it in their free time."&lt;SEP&gt;"ParisNeo uses and improves the effectiveness of the AI system, Lollms."&lt;SEP&gt;"lollms is developed by ParisNeo, reflecting his passion for AI and coding."</data>
+      <data key="d5">"creation, leadership"&lt;SEP&gt;"development, passion-driven"&lt;SEP&gt;"development, personal initiative"&lt;SEP&gt;"usage, improvement"</data>
+      <data key="d6">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7&lt;SEP&gt;chunk-2435d3e277bedd48059b30dfc89f17ec&lt;SEP&gt;chunk-d88aa68698ac5bbd383beb9952e362f8&lt;SEP&gt;chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </edge>
+    <edge source="&quot;LOLLMS&quot;" target="&quot;AI&quot;">
+      <data key="d3">8.0</data>
+      <data key="d4">"lollms is an application of Artificial Intelligence, demonstrating its versatility and power."</data>
+      <data key="d5">"application, innovation"</data>
+      <data key="d6">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </edge>
+    <edge source="&quot;LOLLMS&quot;" target="&quot;LORD OF LARGE LANGUAGE AND MULTIMODAL SYSTEMS&quot;">
+      <data key="d3">9.0</data>
+      <data key="d4">"The current name signifies lollms' evolution to incorporate multimodality."</data>
+      <data key="d5">"evolution, adaptation"</data>
+      <data key="d6">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </edge>
+    <edge source="&quot;LOLLMS&quot;" target="&quot;COMMUNITY FOCUS&quot;">
+      <data key="d3">7.0</data>
+      <data key="d4">"lollms encourages Community Focus through open-source development and collaboration."</data>
+      <data key="d5">"community engagement, transparency"</data>
+      <data key="d6">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </edge>
+    <edge source="&quot;LOLLMS&quot;" target="&quot;ETHICAL CONSIDERATIONS&quot;">
+      <data key="d3">7.0</data>
+      <data key="d4">"lollms is developed with Ethical Considerations, focusing on helping people through technology."</data>
+      <data key="d5">"ethical AI, community benefit"</data>
+      <data key="d6">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </edge>
+    <edge source="&quot;LOLLMS&quot;" target="&quot;LORD OF LARGE LANGUAGE MODELS&quot;">
+      <data key="d3">7.0</data>
+      <data key="d4">"The name 'Lord of Large Language Models' was an earlier version of lollms, reflecting its expanding capability with various AI systems."</data>
+      <data key="d5">"evolution, rebranding"</data>
+      <data key="d6">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </edge>
+    <edge source="&quot;FOLLOW-UP QUESTIONS&quot;" target="&quot;PARISNEO&quot;">
+      <data key="d3">5.0</data>
+      <data key="d4">"ParisNeo poses follow-up questions using cooperative mode to continue conversations and achieve goals with Lollms."</data>
+      <data key="d5">"questioning, goal achievement"</data>
+      <data key="d6">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </edge>
+    <edge source="&quot;SUCCESSFUL AI SYSTEM&quot;" target="&quot;LARGE LANGUAGE MODELS&quot;">
+      <data key="d3">7.0</data>
+      <data key="d4">"Behind every successful large language model lies human guidance and effort from individuals like ParisNeo."</data>
+      <data key="d5">"human involvement, effectiveness"</data>
+      <data key="d6">chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </edge>
+    <edge source="&quot;LORD OF LARGE LANGUAGE MODELS (LOLLMZ)&quot;" target="&quot;PARISNEO&quot;">
+      <data key="d3">9.0</data>
+      <data key="d4">"LOLLMZ is an AI built and prompted by ParisNeo to generate content and assist users."</data>
+      <data key="d5">"creation, assistance"</data>
+      <data key="d6">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </edge>
+    <edge source="&quot;LORD OF LARGE LANGUAGE MODELS (LOLLMZ)&quot;" target="&quot;LARGE LANGUAGE MODELS (LLMS)&quot;">
+      <data key="d3">8.0</data>
+      <data key="d4">"LOLLMZ is an example of a Large Language Model, capable of generating text based on prompts."</data>
+      <data key="d5">"model instance, capability demonstration"</data>
+      <data key="d6">chunk-08fd650f6e4e4b17d5f88b523b979929</data>
+    </edge>
+    <edge source="&quot;PARISNEO&quot;" target="&quot;COOPERATIVE MODE&quot;">
+      <data key="d3">14.0</data>
+      <data key="d4">"ParisNeo developed Cooperative Mode to better align LOLLMZ's output with his intentions."&lt;SEP&gt;"ParisNeo understands and utilizes Cooperative Mode for better control over conversations with Lollms."</data>
+      <data key="d5">"creation, control technique"&lt;SEP&gt;"understanding, utilization"</data>
+      <data key="d6">chunk-08fd650f6e4e4b17d5f88b523b979929&lt;SEP&gt;chunk-0ddf62f044ea8b9f742d6e2f1a2c13f7</data>
+    </edge>
+    <edge source="&quot;PARISNEO&quot;" target="&quot;GPT4ALL WEBUI&quot;">
+      <data key="d3">8.0</data>
+      <data key="d4">"ParisNeo developed GPT4All WebUI to interact with the GPT4All model, before renaming it lollms."</data>
+      <data key="d5">"development, evolution"</data>
+      <data key="d6">chunk-deb75811d374b0edb169c7552bb9ef58</data>
+    </edge>
+    <edge source="&quot;PARISNEO&quot;" target="&quot;RAPID DEVELOPMENT CYCLE&quot;">
+      <data key="d3">8.0</data>
+      <data key="d4">"ParisNeo's unwavering passion drives the Rapid Development Cycle of lollms."</data>
+      <data key="d5">"passion-driven, development"</data>
+      <data key="d6">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </edge>
+    <edge source="&quot;PARISNEO&quot;" target="&quot;HUNTR.COM&quot;">
+      <data key="d3">6.0</data>
+      <data key="d4">"ParisNeo accepts lollms being listed on Huntr.com for security improvement, fixing vulnerabilities reported by pentesters and white hackers."</data>
+      <data key="d5">"security improvement, collaboration"</data>
+      <data key="d6">chunk-d88aa68698ac5bbd383beb9952e362f8</data>
+    </edge>
+  </graph>
+</graphml>
