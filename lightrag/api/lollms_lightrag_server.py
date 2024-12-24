@@ -51,8 +51,8 @@ def parse_args():
     )
     parser.add_argument(
         "--lollms-host",
-        default="http://localhost:11434",
-        help="lollms host URL (default: http://localhost:11434)",
+        default="http://localhost:9600",
+        help="lollms host URL (default: http://localhost:9600)",
     )
 
     # RAG configuration
