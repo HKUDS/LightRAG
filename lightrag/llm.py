@@ -148,7 +148,7 @@ async def azure_openai_complete_if_cache(
         response = await openai_async_client.chat.completions.create(
             model=model, messages=messages, **kwargs
         )
- 
+
     if hasattr(response, "__aiter__"):
 
         async def inner():
