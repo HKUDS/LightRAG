@@ -17,3 +17,7 @@ gui/
 .vscode
 inputs
 rag_storage
+.env
+venv/
+examples/input/
+examples/output/
