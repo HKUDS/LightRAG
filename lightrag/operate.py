@@ -32,6 +32,7 @@ from .base import (
 from .prompt_cn import GRAPH_FIELD_SEP, PROMPTS
 # 引入自定义的文本分割器 bumaple 2024-12-10
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter, MarkdownTextSplitter
+from langchain_core.documents import Document
 
 
 def chunking_by_token_size(
@@ -64,24 +65,17 @@ def chunking_by_markdown_header(
 ):
     extend_entity_content = f"{extend_entity_sn} 《{extend_entity_title}》\n"
     results = []
-    headers_to_split_on = []
-    # 根据参数循环生成需要分割的标题级别
-    for level in range(1, chunk_header_level):
-        header = str("#" * level)
-        header_text = f"Header {level}"
-        headers_to_split_on.append((header, header_text))
-
-    # 首先用Markdown的文本分割器进行分割
-    markdown_splitter = MarkdownHeaderTextSplitter(
-        headers_to_split_on=headers_to_split_on,
-        strip_headers=False,
+    md_split_contents = _chunking_text_by_markerdown_header_loop(
+        max_token_size=max_token_size,
+        header_level=1,
+        content=content
     )
-    md_header_splits = markdown_splitter.split_text(content)
+
     # 再用文本分割器再分割，控制不超过制定长度
-    text_splitter = MarkdownTextSplitter(
+    markdown_text_splitter = MarkdownTextSplitter(
         chunk_size=max_token_size, chunk_overlap=overlap_token_size
     )
-    md_splits = text_splitter.split_documents(md_header_splits)
+    md_splits = markdown_text_splitter.split_documents(md_split_contents)
     chunk_order_index = 0
     for md_split in md_splits:
         chunk_content = f"{extend_entity_content}{md_split.page_content.strip()}"
@@ -95,6 +89,69 @@ def chunking_by_markdown_header(
         )
         chunk_order_index += chunk_content_size
     return results
+
+
+def _chunking_text_by_markerdown_header_loop(
+        max_token_size: int,
+        header_level: int,
+        content: str
+) -> list:
+    content_splits = []
+    # 循环判断被首次分割的内容，如果超过制定长度，再利用下级标题进行切割
+    if len(content) > max_token_size:
+        header = str("#" * header_level)
+        header_text = f"Header {header_level}"
+        markdown_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=[(header, header_text)],
+            strip_headers=False,
+        )
+        md_splits = markdown_splitter.split_text(content)
+        md_loop_splits = _chunking_list_by_markerdown_header_loop(
+            max_token_size=max_token_size,
+            header_level=header_level + 1,
+            contents=md_splits,
+        )
+        content_splits.extend(md_loop_splits)
+    else:
+        content_splits.append(content)
+    return content_splits
+
+
+def _chunking_list_by_markerdown_header_loop(
+        max_token_size: int,
+        header_level: int,
+        contents: list
+) -> list:
+    content_splits = []
+    for content in contents:
+        # 循环判断被首次分割的内容，如果超过制定长度，再利用下级标题进行切割
+        if len(content.page_content) > max_token_size:
+            header_title = ''
+            # 截取content.page_content第一行，判断是否是标题，如果是赋值给header_title
+            header_line = content.page_content.split("\n")[0]
+            header_line_is_title = re.match(r"^#{1,6}\s+.+$", header_line)
+            if header_line_is_title:
+                header_title = header_line.strip()
+
+            header = str("#" * header_level)
+            header_text = f"Header {header_level}"
+            markdown_splitter = MarkdownHeaderTextSplitter(
+                headers_to_split_on=[(header, header_text)],
+                strip_headers=False,
+            )
+            md_splits = markdown_splitter.split_text(content.page_content)
+            for idx, md_split in enumerate(md_splits):
+                if idx > 0:
+                    md_split.page_content = f"{header_title}\n{md_split.page_content}"
+            md_loop_splits = _chunking_list_by_markerdown_header_loop(
+                max_token_size=max_token_size,
+                header_level=header_level + 1,
+                contents=md_splits
+            )
+            content_splits.extend(md_loop_splits)
+        else:
+            content_splits.append(content)
+    return content_splits
 
 
 def chunking_by_markdown_text(
