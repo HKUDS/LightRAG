@@ -140,12 +140,34 @@ async def azure_openai_complete_if_cache(
     if prompt is not None:
         messages.append({"role": "user", "content": prompt})
 
-    response = await openai_async_client.chat.completions.create(
-        model=model, messages=messages, **kwargs
-    )
-    content = response.choices[0].message.content
+    if "response_format" in kwargs:
+        response = await openai_async_client.beta.chat.completions.parse(
+            model=model, messages=messages, **kwargs
+        )
+    else:
+        response = await openai_async_client.chat.completions.create(
+            model=model, messages=messages, **kwargs
+        )
 
-    return content
+    if hasattr(response, "__aiter__"):
+
+        async def inner():
+            async for chunk in response:
+                if len(chunk.choices) == 0:
+                    continue
+                content = chunk.choices[0].delta.content
+                if content is None:
+                    continue
+                if r"\u" in content:
+                    content = safe_unicode_decode(content.encode("utf-8"))
+                yield content
+
+        return inner()
+    else:
+        content = response.choices[0].message.content
+        if r"\u" in content:
+            content = safe_unicode_decode(content.encode("utf-8"))
+        return content
 
 
 class BedrockError(Exception):
