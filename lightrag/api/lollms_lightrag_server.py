@@ -267,7 +267,11 @@ def create_app(args):
         try:
             response = await rag.aquery(
                 request.query,
-                param=QueryParam(mode=request.mode, stream=request.stream, only_need_context=request.only_need_context),
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=request.stream,
+                    only_need_context=request.only_need_context,
+                ),
             )
 
             if request.stream:
@@ -284,7 +288,12 @@ def create_app(args):
     async def query_text_stream(request: QueryRequest):
         try:
             response = rag.query(
-                request.query, param=QueryParam(mode=request.mode, stream=True, only_need_context=request.only_need_context)
+                request.query,
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=True,
+                    only_need_context=request.only_need_context,
+                ),
             )
 
             async def stream_generator():

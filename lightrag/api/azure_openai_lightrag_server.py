@@ -309,7 +309,11 @@ def create_app(args):
         try:
             response = await rag.aquery(
                 request.query,
-                param=QueryParam(mode=request.mode, stream=False, only_need_context=request.only_need_context),
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=False,
+                    only_need_context=request.only_need_context,
+                ),
             )
             return QueryResponse(response=response)
         except Exception as e:
@@ -320,7 +324,11 @@ def create_app(args):
         try:
             response = await rag.aquery(
                 request.query,
-                param=QueryParam(mode=request.mode, stream=True, only_need_context=request.only_need_context),
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=True,
+                    only_need_context=request.only_need_context,
+                ),
             )
             if inspect.isasyncgen(response):
 
