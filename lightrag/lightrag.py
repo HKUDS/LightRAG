@@ -198,15 +198,12 @@ class LightRAG:
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
 
-        self.llm_response_cache = (
-            self.key_string_value_json_storage_cls(
-                namespace="llm_response_cache",
-                global_config=asdict(self),
-                embedding_func=None,
-            )
-            if self.enable_llm_cache
-            else None
+        self.llm_response_cache = self.key_string_value_json_storage_cls(
+            namespace="llm_response_cache",
+            global_config=asdict(self),
+            embedding_func=None,
         )
+
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
             self.embedding_func
         )
