@@ -598,120 +598,6 @@ if __name__ == "__main__":
 | **convert\_response\_to\_json\_func** | `callable` | Not used | `convert_response_to_json` |
 | **embedding\_cache\_config** | `dict` | Configuration for question-answer caching. Contains three parameters:<br>- `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers.<br>- `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM.<br>- `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
-## API Server Implementation
-
-LightRAG also provides a FastAPI-based server implementation for RESTful API access to RAG operations. This allows you to run LightRAG as a service and interact with it through HTTP requests.
-
-### Setting up the API Server
-<details>
-<summary>Click to expand setup instructions</summary>
-
-1. First, ensure you have the required dependencies:
-```bash
-pip install fastapi uvicorn pydantic
-```
-
-2. Set up your environment variables:
-```bash
-export RAG_DIR="your_index_directory"  # Optional: Defaults to "index_default"
-export OPENAI_BASE_URL="Your OpenAI API base URL"  # Optional: Defaults to "https://api.openai.com/v1"
-export OPENAI_API_KEY="Your OpenAI API key"  # Required
-export LLM_MODEL="Your LLM model" # Optional: Defaults to "gpt-4o-mini"
-export EMBEDDING_MODEL="Your embedding model" # Optional: Defaults to "text-embedding-3-large"
-```
-
-3. Run the API server:
-```bash
-python examples/lightrag_api_openai_compatible_demo.py
-```
-
-The server will start on `http://0.0.0.0:8020`.
-</details>
-
-### API Endpoints
-
-The API server provides the following endpoints:
-
-#### 1. Query Endpoint
-<details>
-<summary>Click to view Query endpoint details</summary>
-
-- **URL:** `/query`
-- **Method:** POST
-- **Body:**
-```json
-{
-    "query": "Your question here",
-    "mode": "hybrid",  // Can be "naive", "local", "global", or "hybrid"
-    "only_need_context": true // Optional: Defaults to false, if true, only the referenced context will be returned, otherwise the llm answer will be returned
-}
-```
-- **Example:**
-```bash
-curl -X POST "http://127.0.0.1:8020/query" \
-     -H "Content-Type: application/json" \
-     -d '{"query": "What are the main themes?", "mode": "hybrid"}'
-```
-</details>
-
-#### 2. Insert Text Endpoint
-<details>
-<summary>Click to view Insert Text endpoint details</summary>
-
-- **URL:** `/insert`
-- **Method:** POST
-- **Body:**
-```json
-{
-    "text": "Your text content here"
-}
-```
-- **Example:**
-```bash
-curl -X POST "http://127.0.0.1:8020/insert" \
-     -H "Content-Type: application/json" \
-     -d '{"text": "Content to be inserted into RAG"}'
-```
-</details>
-
-#### 3. Insert File Endpoint
-<details>
-<summary>Click to view Insert File endpoint details</summary>
-
-- **URL:** `/insert_file`
-- **Method:** POST
-- **Body:**
-```json
-{
-    "file_path": "path/to/your/file.txt"
-}
-```
-- **Example:**
-```bash
-curl -X POST "http://127.0.0.1:8020/insert_file" \
-     -H "Content-Type: application/json" \
-     -d '{"file_path": "./book.txt"}'
-```
-</details>
-
-#### 4. Health Check Endpoint
-<details>
-<summary>Click to view Health Check endpoint details</summary>
-
-- **URL:** `/health`
-- **Method:** GET
-- **Example:**
-```bash
-curl -X GET "http://127.0.0.1:8020/health"
-```
-</details>
-
-### Configuration
-
-The API server can be configured using environment variables:
-- `RAG_DIR`: Directory for storing the RAG index (default: "index_default")
-- API keys and base URLs should be configured in the code for your specific LLM and embedding model providers
-
 ### Error Handling
 <details>
 <summary>Click to view error handling details</summary>
@@ -989,6 +875,12 @@ def extract_queries(file_path):
 │   ├── lightrag_siliconcloud_demo.py
 │   └── vram_management_demo.py
 ├── lightrag/
+│   ├── api/
+│   │   ├── lollms_lightrag_server.py
+│   │   ├── ollama_lightrag_server.py
+│   │   ├── openai_lightrag_server.py
+│   │   ├── azure_openai_lightrag_server.py
+│   │   └── requirements.txt
 │   ├── kg/
 │   │   ├── __init__.py
 │   │   ├── oracle_impl.py
@@ -1033,7 +925,7 @@ pip install "lightrag-hku[api]"
 
 ```bash
 # Clone the repository
-git clone https://github.com/ParisNeo/lightrag.git
+git clone https://github.com/HKUDS/lightrag.git
 
 # Change to the repository directory
 cd lightrag
@@ -1059,6 +951,27 @@ Before running any of the servers, ensure you have the corresponding backend ser
 #### For OpenAI Server
 - Requires valid OpenAI API credentials set in environment variables
 - OPENAI_API_KEY must be set
+
+#### For Azure OpenAI Server
+Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
+```bash
+# Change the resource group name, location and OpenAI resource name as needed
+RESOURCE_GROUP_NAME=LightRAG
+LOCATION=swedencentral
+RESOURCE_NAME=LightRAG-OpenAI
+
+az login
+az group create --name $RESOURCE_GROUP_NAME --location $LOCATION
+az cognitiveservices account create --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME  --kind OpenAI --sku S0 --location swedencentral
+az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name gpt-4o --model-name gpt-4o --model-version "2024-08-06"  --sku-capacity 100 --sku-name "Standard"
+az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name text-embedding-3-large --model-name text-embedding-3-large --model-version "1"  --sku-capacity 80 --sku-name "Standard"
+az cognitiveservices account show --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME --query "properties.endpoint"
+az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_NAME
+
+```
+The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
+
+
 
 ### Configuration Options
 
@@ -1112,6 +1025,22 @@ Each server has its own specific configuration options:
 | --input-dir | ./inputs | Input directory for documents |
 | --log-level | INFO | Logging level |
 
+#### OpenAI AZURE Server Options
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| --host | 0.0.0.0 | Server host |
+| --port | 9621 | Server port |
+| --model | gpt-4 | OpenAI model name |
+| --embedding-model | text-embedding-3-large | OpenAI embedding model |
+| --working-dir | ./rag_storage | Working directory for RAG |
+| --max-tokens | 32768 | Maximum token size |
+| --max-embed-tokens | 8192 | Maximum embedding token size |
+| --input-dir | ./inputs | Input directory for documents |
+| --enable-cache | True | Enable response cache |
+| --log-level | INFO | Logging level |
+
+
 ### Example Usage
 
 #### LoLLMs RAG Server
@@ -1140,17 +1069,25 @@ ollama-lightrag-server --model mistral-nemo:latest --embedding-model bge-m3 --em
 # Using GPT-4 with text-embedding-3-large
 openai-lightrag-server --port 9624 --model gpt-4 --embedding-model text-embedding-3-large
 ```
+#### Azure OpenAI RAG Server
+```bash
+# Using GPT-4 with text-embedding-3-large
+azure-openai-lightrag-server --model gpt-4o --port 8080 --working-dir ./custom_rag --embedding-model text-embedding-3-large
+```
+
 
 **Important Notes:**
 - For LoLLMs: Make sure the specified models are installed in your LoLLMs instance
 - For Ollama: Make sure the specified models are installed in your Ollama instance
 - For OpenAI: Ensure you have set up your OPENAI_API_KEY environment variable
+- For Azure OpenAI: Build and configure your server as stated in the Prequisites section
 
 For help on any server, use the --help flag:
 ```bash
 lollms-lightrag-server --help
 ollama-lightrag-server --help
 openai-lightrag-server --help
+azure-openai-lightrag-server --help
 ```
 
 Note: If you don't need the API functionality, you can install the base package without API support using:
@@ -1160,7 +1097,7 @@ pip install lightrag-hku
 
 ## API Endpoints
 
-All servers (LoLLMs, Ollama, and OpenAI) provide the same REST API endpoints for RAG functionality.
+All servers (LoLLMs, Ollama, OpenAI and Azure OpenAI) provide the same REST API endpoints for RAG functionality.
 
 ### Query Endpoints
 
@@ -1245,7 +1182,10 @@ For OpenAI:
 ```bash
 uvicorn openai_lightrag_server:app --reload --port 9621
 ```
-
+For Azure OpenAI:
+```bash
+uvicorn azure_openai_lightrag_server:app --reload --port 9621
+```
 ### API Documentation
 
 When any server is running, visit:
@@ -1299,6 +1239,14 @@ ollama-lightrag-server --input-dir ./my_documents --port 8080
 # Start server with automatic document vectorization
 # Existing documents are retrieved from cache, only new ones are processed
 openai-lightrag-server --input-dir ./my_documents --port 9624
+```
+
+#### Azure OpenAI RAG Server
+
+```bash
+# Start server with automatic document vectorization
+# Existing documents are retrieved from cache, only new ones are processed
+azure-openai-lightrag-server --input-dir ./my_documents --port 9624
 ```
 
 **Important Notes:**
