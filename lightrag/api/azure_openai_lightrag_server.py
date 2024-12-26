@@ -136,6 +136,7 @@ class SearchMode(str, Enum):
 class QueryRequest(BaseModel):
     query: str
     mode: SearchMode = SearchMode.hybrid
+    only_need_context: bool = False
     # stream: bool = False
 
 
@@ -308,7 +309,7 @@ def create_app(args):
         try:
             response = await rag.aquery(
                 request.query,
-                param=QueryParam(mode=request.mode, stream=False),
+                param=QueryParam(mode=request.mode, stream=False, only_need_context=request.only_need_context),
             )
             return QueryResponse(response=response)
         except Exception as e:
@@ -319,7 +320,7 @@ def create_app(args):
         try:
             response = await rag.aquery(
                 request.query,
-                param=QueryParam(mode=request.mode, stream=True),
+                param=QueryParam(mode=request.mode, stream=True, only_need_context=request.only_need_context),
             )
             if inspect.isasyncgen(response):
 
