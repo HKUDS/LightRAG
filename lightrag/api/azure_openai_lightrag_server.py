@@ -339,11 +339,11 @@ def create_app(args):
     @app.post("/documents/text", response_model=InsertResponse)
     async def insert_text(request: InsertTextRequest):
         try:
-            rag.insert(request.text)
+            await rag.ainsert(request.text)
             return InsertResponse(
                 status="success",
                 message="Text successfully inserted",
-                document_count=len(rag),
+                document_count=1,
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -365,7 +365,7 @@ def create_app(args):
             return InsertResponse(
                 status="success",
                 message=f"File '{file.filename}' successfully inserted",
-                document_count=len(rag),
+                document_count=1,
             )
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="File encoding not supported")
@@ -397,7 +397,7 @@ def create_app(args):
             return InsertResponse(
                 status="success" if inserted_count > 0 else "partial_success",
                 message=status_message,
-                document_count=len(rag),
+                document_count=len(files),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))

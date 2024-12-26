@@ -219,7 +219,7 @@ def create_app(args):
                 try:
                     with open(file_path, "r", encoding="utf-8") as f:
                         content = f.read()
-                        rag.insert(content)
+                        await rag.ainsert(content)
                         doc_manager.mark_as_indexed(file_path)
                         indexed_count += 1
                 except Exception as e:
@@ -250,7 +250,7 @@ def create_app(args):
             # Immediately index the uploaded file
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                rag.insert(content)
+                await rag.ainsert(content)
                 doc_manager.mark_as_indexed(file_path)
 
             return {
@@ -313,7 +313,7 @@ def create_app(args):
 
             if file.filename.endswith((".txt", ".md")):
                 text = content.decode("utf-8")
-                rag.insert(text)
+                await rag.ainsert(text)
             else:
                 raise HTTPException(
                     status_code=400,
@@ -323,7 +323,7 @@ def create_app(args):
             return InsertResponse(
                 status="success",
                 message=f"File '{file.filename}' successfully inserted",
-                document_count=len(rag),
+                document_count=1,
             )
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="File encoding not supported")
@@ -341,7 +341,7 @@ def create_app(args):
                     content = await file.read()
                     if file.filename.endswith((".txt", ".md")):
                         text = content.decode("utf-8")
-                        rag.insert(text)
+                        await rag.ainsert(text)
                         inserted_count += 1
                     else:
                         failed_files.append(f"{file.filename} (unsupported type)")
@@ -355,7 +355,7 @@ def create_app(args):
             return InsertResponse(
                 status="success" if inserted_count > 0 else "partial_success",
                 message=status_message,
-                document_count=len(rag),
+                document_count=len(files),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
