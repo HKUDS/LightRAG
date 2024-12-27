@@ -119,6 +119,7 @@ class QueryRequest(BaseModel):
     query: str
     mode: SearchMode = SearchMode.hybrid
     stream: bool = False
+    only_need_context: bool = False
 
 
 class QueryResponse(BaseModel):
@@ -270,7 +271,11 @@ def create_app(args):
         try:
             response = await rag.aquery(
                 request.query,
-                param=QueryParam(mode=request.mode, stream=request.stream),
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=request.stream,
+                    only_need_context=request.only_need_context,
+                ),
             )
 
             if request.stream:
@@ -287,7 +292,12 @@ def create_app(args):
     async def query_text_stream(request: QueryRequest):
         try:
             response = rag.query(
-                request.query, param=QueryParam(mode=request.mode, stream=True)
+                request.query,
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=True,
+                    only_need_context=request.only_need_context,
+                ),
             )
 
             async def stream_generator():
@@ -327,7 +337,7 @@ def create_app(args):
             return InsertResponse(
                 status="success",
                 message=f"File '{file.filename}' successfully inserted",
-                document_count=len(rag),
+                document_count=1,
             )
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="File encoding not supported")
@@ -359,7 +369,7 @@ def create_app(args):
             return InsertResponse(
                 status="success" if inserted_count > 0 else "partial_success",
                 message=status_message,
-                document_count=len(rag),
+                document_count=len(files),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
