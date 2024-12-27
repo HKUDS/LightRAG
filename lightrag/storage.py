@@ -3,7 +3,7 @@ import html
 import os
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
-from typing import Any, Union, cast
+from typing import Any, Union, cast, Dict
 import networkx as nx
 import numpy as np
 from nano_vectordb import NanoVectorDB
@@ -19,6 +19,9 @@ from .base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    DocStatus,
+    DocProcessingStatus,
+    DocStatusStorage,
 )
 
 
@@ -315,3 +318,47 @@ class NetworkXStorage(BaseGraphStorage):
 
         nodes_ids = [self._graph.nodes[node_id]["id"] for node_id in nodes]
         return embeddings, nodes_ids
+
+
+@dataclass
+class JsonDocStatusStorage(DocStatusStorage):
+    """JSON implementation of document status storage"""
+
+    def __post_init__(self):
+        working_dir = self.global_config["working_dir"]
+        self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
+        self._data = load_json(self._file_name) or {}
+        logger.info(f"Loaded document status storage with {len(self._data)} records")
+
+    async def filter_keys(self, data: list[str]) -> set[str]:
+        """Return keys that don't exist in storage"""
+        return set([k for k in data if k not in self._data])
+
+    async def get_status_counts(self) -> Dict[str, int]:
+        """Get counts of documents in each status"""
+        counts = {status: 0 for status in DocStatus}
+        for doc in self._data.values():
+            counts[doc["status"]] += 1
+        return counts
+
+    async def get_failed_docs(self) -> Dict[str, DocProcessingStatus]:
+        """Get all failed documents"""
+        return {k: v for k, v in self._data.items() if v["status"] == DocStatus.FAILED}
+
+    async def get_pending_docs(self) -> Dict[str, DocProcessingStatus]:
+        """Get all pending documents"""
+        return {k: v for k, v in self._data.items() if v["status"] == DocStatus.PENDING}
+
+    async def index_done_callback(self):
+        """Save data to file after indexing"""
+        write_json(self._data, self._file_name)
+
+    async def upsert(self, data: dict[str, dict]):
+        """Update or insert document status
+
+        Args:
+            data: Dictionary of document IDs and their status data
+        """
+        self._data.update(data)
+        await self.index_done_callback()
+        return data
