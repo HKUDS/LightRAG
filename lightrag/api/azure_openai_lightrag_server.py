@@ -136,6 +136,7 @@ class SearchMode(str, Enum):
 class QueryRequest(BaseModel):
     query: str
     mode: SearchMode = SearchMode.hybrid
+    only_need_context: bool = False
     # stream: bool = False
 
 
@@ -308,7 +309,11 @@ def create_app(args):
         try:
             response = await rag.aquery(
                 request.query,
-                param=QueryParam(mode=request.mode, stream=False),
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=False,
+                    only_need_context=request.only_need_context,
+                ),
             )
             return QueryResponse(response=response)
         except Exception as e:
@@ -319,7 +324,11 @@ def create_app(args):
         try:
             response = await rag.aquery(
                 request.query,
-                param=QueryParam(mode=request.mode, stream=True),
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=True,
+                    only_need_context=request.only_need_context,
+                ),
             )
             if inspect.isasyncgen(response):
 
@@ -339,11 +348,11 @@ def create_app(args):
     @app.post("/documents/text", response_model=InsertResponse)
     async def insert_text(request: InsertTextRequest):
         try:
-            rag.insert(request.text)
+            await rag.ainsert(request.text)
             return InsertResponse(
                 status="success",
                 message="Text successfully inserted",
-                document_count=len(rag),
+                document_count=1,
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -365,7 +374,7 @@ def create_app(args):
             return InsertResponse(
                 status="success",
                 message=f"File '{file.filename}' successfully inserted",
-                document_count=len(rag),
+                document_count=1,
             )
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="File encoding not supported")
@@ -397,7 +406,7 @@ def create_app(args):
             return InsertResponse(
                 status="success" if inserted_count > 0 else "partial_success",
                 message=status_message,
-                document_count=len(rag),
+                document_count=len(files),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -435,9 +444,13 @@ def create_app(args):
     return app
 
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
     import uvicorn
 
     app = create_app(args)
     uvicorn.run(app, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()

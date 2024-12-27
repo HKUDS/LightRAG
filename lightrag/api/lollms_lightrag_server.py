@@ -130,6 +130,7 @@ class QueryRequest(BaseModel):
     query: str
     mode: SearchMode = SearchMode.hybrid
     stream: bool = False
+    only_need_context: bool = False
 
 
 class QueryResponse(BaseModel):
@@ -219,7 +220,7 @@ def create_app(args):
                 try:
                     with open(file_path, "r", encoding="utf-8") as f:
                         content = f.read()
-                        rag.insert(content)
+                        await rag.ainsert(content)
                         doc_manager.mark_as_indexed(file_path)
                         indexed_count += 1
                 except Exception as e:
@@ -250,7 +251,7 @@ def create_app(args):
             # Immediately index the uploaded file
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
-                rag.insert(content)
+                await rag.ainsert(content)
                 doc_manager.mark_as_indexed(file_path)
 
             return {
@@ -266,7 +267,11 @@ def create_app(args):
         try:
             response = await rag.aquery(
                 request.query,
-                param=QueryParam(mode=request.mode, stream=request.stream),
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=request.stream,
+                    only_need_context=request.only_need_context,
+                ),
             )
 
             if request.stream:
@@ -283,7 +288,12 @@ def create_app(args):
     async def query_text_stream(request: QueryRequest):
         try:
             response = rag.query(
-                request.query, param=QueryParam(mode=request.mode, stream=True)
+                request.query,
+                param=QueryParam(
+                    mode=request.mode,
+                    stream=True,
+                    only_need_context=request.only_need_context,
+                ),
             )
 
             async def stream_generator():
@@ -313,7 +323,7 @@ def create_app(args):
 
             if file.filename.endswith((".txt", ".md")):
                 text = content.decode("utf-8")
-                rag.insert(text)
+                await rag.ainsert(text)
             else:
                 raise HTTPException(
                     status_code=400,
@@ -323,7 +333,7 @@ def create_app(args):
             return InsertResponse(
                 status="success",
                 message=f"File '{file.filename}' successfully inserted",
-                document_count=len(rag),
+                document_count=1,
             )
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="File encoding not supported")
@@ -341,7 +351,7 @@ def create_app(args):
                     content = await file.read()
                     if file.filename.endswith((".txt", ".md")):
                         text = content.decode("utf-8")
-                        rag.insert(text)
+                        await rag.ainsert(text)
                         inserted_count += 1
                     else:
                         failed_files.append(f"{file.filename} (unsupported type)")
@@ -355,7 +365,7 @@ def create_app(args):
             return InsertResponse(
                 status="success" if inserted_count > 0 else "partial_success",
                 message=status_message,
-                document_count=len(rag),
+                document_count=len(files),
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
