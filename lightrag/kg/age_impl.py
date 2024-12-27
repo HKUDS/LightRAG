@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 import json
-import os
+import os, sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
@@ -20,6 +20,9 @@ from lightrag.utils import logger
 
 from ..base import BaseGraphStorage
 
+if sys.platform.startswith("win"):
+    import asyncio.windows_events
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 class AGEQueryException(Exception):
     """Exception for the AGE queries."""
