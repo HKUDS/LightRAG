@@ -106,7 +106,20 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 
 # Perform hybrid search
 print(rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid")))
+
+# Perform mix search (Knowledge Graph + Vector Retrieval)
+# Mix mode combines knowledge graph and vector search:
+# - Uses both structured (KG) and unstructured (vector) information
+# - Provides comprehensive answers by analyzing relationships and context
+# - Supports image content through HTML img tags
+# - Allows control over retrieval depth via top_k parameter
+print(rag.query("What are the top themes in this story?", param=QueryParam(
+    mode="mix")))
+
 ```
+
+
+
 
 <details>
 <summary> Using Open AI-like APIs </summary>
@@ -262,7 +275,7 @@ In order to run this experiment on low RAM GPU you should select small model and
 
 ```python
 class QueryParam:
-    mode: Literal["local", "global", "hybrid", "naive"] = "global"
+    mode: Literal["local", "global", "hybrid", "naive", "mix"] = "global"
     only_need_context: bool = False
     response_type: str = "Multiple Paragraphs"
     # Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.
