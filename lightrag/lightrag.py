@@ -16,6 +16,7 @@ from .operate import (
     # local_query,global_query,hybrid_query,
     kg_query,
     naive_query,
+    mix_kg_vector_query,
 )
 
 from .utils import (
@@ -617,6 +618,25 @@ class LightRAG:
         elif param.mode == "naive":
             response = await naive_query(
                 query,
+                self.chunks_vdb,
+                self.text_chunks,
+                param,
+                asdict(self),
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache
+                and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
+                    global_config=asdict(self),
+                    embedding_func=None,
+                ),
+            )
+        elif param.mode == "mix":
+            response = await mix_kg_vector_query(
+                query,
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
                 self.chunks_vdb,
                 self.text_chunks,
                 param,
