@@ -88,7 +88,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
             return []
-        
+
         current_time = time.time()
         list_data = [
             {
@@ -137,11 +137,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
         results = [
             {
-                **dp, 
-                "id": dp["__id__"], 
+                **dp,
+                "id": dp["__id__"],
                 "distance": dp["__metrics__"],
-                "created_at": dp.get("__created_at__")
-            } 
+                "created_at": dp.get("__created_at__"),
+            }
             for dp in results
         ]
         return results
