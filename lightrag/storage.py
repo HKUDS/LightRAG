@@ -7,6 +7,7 @@ from typing import Any, Union, cast, Dict
 import networkx as nx
 import numpy as np
 from nano_vectordb import NanoVectorDB
+import time
 
 from .utils import (
     logger,
@@ -87,9 +88,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
             return []
+        
+        current_time = time.time()
         list_data = [
             {
                 "__id__": k,
+                "__created_at__": current_time,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
@@ -132,7 +136,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             better_than_threshold=self.cosine_better_than_threshold,
         )
         results = [
-            {**dp, "id": dp["__id__"], "distance": dp["__metrics__"]} for dp in results
+            {
+                **dp, 
+                "id": dp["__id__"], 
+                "distance": dp["__metrics__"],
+                "created_at": dp.get("__created_at__")
+            } 
+            for dp in results
         ]
         return results
 
