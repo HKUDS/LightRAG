@@ -164,6 +164,12 @@ Generate a response of the target length and format that responds to the user's 
 If you don't know the answer, just say so. Do not make anything up.
 Do not include information where the supporting evidence for it is not provided.
 
+When handling relationships with timestamps:
+1. Each relationship has a "created_at" timestamp indicating when we acquired this knowledge
+2. When encountering conflicting relationships, consider both the semantic content and the timestamp
+3. Don't automatically prefer the most recently created relationships - use judgment based on the context
+4. For time-specific queries, prioritize temporal information in the content before considering creation timestamps
+
 ---Target response length and format---
 
 {response_type}
@@ -172,8 +178,7 @@ Do not include information where the supporting evidence for it is not provided.
 
 {context_data}
 
-Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
-"""
+Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown."""
 
 PROMPTS["keywords_extraction"] = """---Role---
 
@@ -250,6 +255,12 @@ Generate a response of the target length and format that responds to the user's 
 If you don't know the answer, just say so. Do not make anything up.
 Do not include information where the supporting evidence for it is not provided.
 
+When handling content with timestamps:
+1. Each piece of content has a "created_at" timestamp indicating when we acquired this knowledge
+2. When encountering conflicting information, consider both the content and the timestamp
+3. Don't automatically prefer the most recent content - use judgment based on the context
+4. For time-specific queries, prioritize temporal information in the content before considering creation timestamps
+
 ---Target response length and format---
 
 {response_type}
@@ -292,6 +303,12 @@ You are a professional assistant responsible for answering questions based on kn
 ---Goal---
 
 Generate a concise response that summarizes relevant points from the provided information. If you don't know the answer, just say so. Do not make anything up or include information where the supporting evidence is not provided.
+
+When handling information with timestamps:
+1. Each piece of information (both relationships and content) has a "created_at" timestamp indicating when we acquired this knowledge
+2. When encountering conflicting information, consider both the content/relationship and the timestamp
+3. Don't automatically prefer the most recent information - use judgment based on the context
+4. For time-specific queries, prioritize temporal information in the content before considering creation timestamps
 
 ---Data Sources---
 
