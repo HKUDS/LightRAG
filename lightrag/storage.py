@@ -341,8 +341,14 @@ class JsonDocStatusStorage(DocStatusStorage):
         logger.info(f"Loaded document status storage with {len(self._data)} records")
 
     async def filter_keys(self, data: list[str]) -> set[str]:
-        """Return keys that don't exist in storage"""
-        return set([k for k in data if k not in self._data])
+        """Return keys that should be processed (not in storage or not successfully processed)"""
+        return set(
+            [
+                k
+                for k in data
+                if k not in self._data or self._data[k]["status"] != DocStatus.PROCESSED
+            ]
+        )
 
     async def get_status_counts(self) -> Dict[str, int]:
         """Get counts of documents in each status"""
