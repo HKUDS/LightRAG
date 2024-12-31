@@ -188,14 +188,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
         try:
             self._client.delete(ids)
-            logger.info(f"Successfully deleted {len(ids)} vectors from {self.namespace}")
+            logger.info(
+                f"Successfully deleted {len(ids)} vectors from {self.namespace}"
+            )
         except Exception as e:
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
 
     async def delete_entity(self, entity_name: str):
         try:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
+            logger.debug(
+                f"Attempting to delete entity {entity_name} with ID {entity_id}"
+            )
             # Check if the entity exists
             if self._client.get([entity_id]):
                 await self.delete([entity_id])
@@ -208,15 +212,18 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def delete_entity_relation(self, entity_name: str):
         try:
             relations = [
-                dp for dp in self.client_storage["data"]
+                dp
+                for dp in self.client_storage["data"]
                 if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
             ]
             logger.debug(f"Found {len(relations)} relations for entity {entity_name}")
             ids_to_delete = [relation["__id__"] for relation in relations]
-            
+
             if ids_to_delete:
                 await self.delete(ids_to_delete)
-                logger.debug(f"Deleted {len(ids_to_delete)} relations for {entity_name}")
+                logger.debug(
+                    f"Deleted {len(ids_to_delete)} relations for {entity_name}"
+                )
             else:
                 logger.debug(f"No relations found for entity {entity_name}")
         except Exception as e:
