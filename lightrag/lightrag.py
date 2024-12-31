@@ -43,6 +43,8 @@ from .storage import (
     JsonDocStatusStorage,
 )
 
+from .prompt import GRAPH_FIELD_SEP
+
 # future KG integrations
 
 # from .kg.ArangoDB_impl import (
@@ -672,7 +674,7 @@ class LightRAG:
 
         try:
             await self.entities_vdb.delete_entity(entity_name)
-            await self.relationships_vdb.delete_relation(entity_name)
+            await self.relationships_vdb.delete_entity_relation(entity_name)
             await self.chunk_entity_relation_graph.delete_node(entity_name)
 
             logger.info(
@@ -716,3 +718,272 @@ class LightRAG:
             Dict with counts for each status
         """
         return await self.doc_status.get_status_counts()
+
+    async def adelete_by_doc_id(self, doc_id: str):
+        """Delete a document and all its related data
+
+        Args:
+            doc_id: Document ID to delete
+        """
+        try:
+            # 1. Get the document status and related data
+            doc_status = await self.doc_status.get(doc_id)
+            if not doc_status:
+                logger.warning(f"Document {doc_id} not found")
+                return
+            
+            logger.debug(f"Starting deletion for document {doc_id}")
+            
+            # 2. Get all related chunks
+            chunks = await self.text_chunks.filter(lambda x: x.get("full_doc_id") == doc_id)
+            chunk_ids = list(chunks.keys())
+            logger.debug(f"Found {len(chunk_ids)} chunks to delete")
+            
+            # 3. Before deleting, check the related entities and relationships for these chunks
+            for chunk_id in chunk_ids:
+                # Check entities
+                entities = [
+                    dp for dp in self.entities_vdb.client_storage["data"]
+                    if dp.get("source_id") == chunk_id
+                ]
+                logger.debug(f"Chunk {chunk_id} has {len(entities)} related entities")
+                
+                # Check relationships
+                relations = [
+                    dp for dp in self.relationships_vdb.client_storage["data"]
+                    if dp.get("source_id") == chunk_id
+                ]
+                logger.debug(f"Chunk {chunk_id} has {len(relations)} related relations")
+            
+            # Continue with the original deletion process...
+
+            # 4. Delete chunks from vector database
+            if chunk_ids:
+                await self.chunks_vdb.delete(chunk_ids)
+                await self.text_chunks.delete(chunk_ids)
+
+            # 5. Find and process entities and relationships that have these chunks as source
+            # Get all nodes in the graph
+            nodes = self.chunk_entity_relation_graph._graph.nodes(data=True)
+            edges = self.chunk_entity_relation_graph._graph.edges(data=True)
+
+            # Track which entities and relationships need to be deleted or updated
+            entities_to_delete = set()
+            entities_to_update = {}  # entity_name -> new_source_id
+            relationships_to_delete = set()
+            relationships_to_update = {}  # (src, tgt) -> new_source_id
+
+            # Process entities
+            for node, data in nodes:
+                if 'source_id' in data:
+                    # Split source_id using GRAPH_FIELD_SEP
+                    sources = set(data['source_id'].split(GRAPH_FIELD_SEP))
+                    sources.difference_update(chunk_ids)
+                    if not sources:
+                        entities_to_delete.add(node)
+                        logger.debug(f"Entity {node} marked for deletion - no remaining sources")
+                    else:
+                        new_source_id = GRAPH_FIELD_SEP.join(sources)
+                        entities_to_update[node] = new_source_id
+                        logger.debug(f"Entity {node} will be updated with new source_id: {new_source_id}")
+
+            # Process relationships
+            for src, tgt, data in edges:
+                if 'source_id' in data:
+                    # Split source_id using GRAPH_FIELD_SEP
+                    sources = set(data['source_id'].split(GRAPH_FIELD_SEP))
+                    sources.difference_update(chunk_ids)
+                    if not sources:
+                        relationships_to_delete.add((src, tgt))
+                        logger.debug(f"Relationship {src}-{tgt} marked for deletion - no remaining sources")
+                    else:
+                        new_source_id = GRAPH_FIELD_SEP.join(sources)
+                        relationships_to_update[(src, tgt)] = new_source_id
+                        logger.debug(f"Relationship {src}-{tgt} will be updated with new source_id: {new_source_id}")
+
+            # Delete entities
+            if entities_to_delete:
+                for entity in entities_to_delete:
+                    await self.entities_vdb.delete_entity(entity)
+                    logger.debug(f"Deleted entity {entity} from vector DB")
+                self.chunk_entity_relation_graph.remove_nodes(list(entities_to_delete))
+                logger.debug(f"Deleted {len(entities_to_delete)} entities from graph")
+
+            # Update entities
+            for entity, new_source_id in entities_to_update.items():
+                node_data = self.chunk_entity_relation_graph._graph.nodes[entity]
+                node_data['source_id'] = new_source_id
+                await self.chunk_entity_relation_graph.upsert_node(entity, node_data)
+                logger.debug(f"Updated entity {entity} with new source_id: {new_source_id}")
+
+            # Delete relationships
+            if relationships_to_delete:
+                for src, tgt in relationships_to_delete:
+                    rel_id_0 = compute_mdhash_id(src + tgt, prefix="rel-")
+                    rel_id_1 = compute_mdhash_id(tgt + src, prefix="rel-")
+                    await self.relationships_vdb.delete([rel_id_0, rel_id_1])
+                    logger.debug(f"Deleted relationship {src}-{tgt} from vector DB")
+                self.chunk_entity_relation_graph.remove_edges(list(relationships_to_delete))
+                logger.debug(f"Deleted {len(relationships_to_delete)} relationships from graph")
+
+            # Update relationships
+            for (src, tgt), new_source_id in relationships_to_update.items():
+                edge_data = self.chunk_entity_relation_graph._graph.edges[src, tgt]
+                edge_data['source_id'] = new_source_id
+                await self.chunk_entity_relation_graph.upsert_edge(src, tgt, edge_data)
+                logger.debug(f"Updated relationship {src}-{tgt} with new source_id: {new_source_id}")
+
+            # 6. Delete original document and status
+            await self.full_docs.delete([doc_id])
+            await self.doc_status.delete([doc_id])
+
+            # 7. Ensure all indexes are updated
+            await self._insert_done()
+
+            logger.info(
+                f"Successfully deleted document {doc_id} and related data. "
+                f"Deleted {len(entities_to_delete)} entities and {len(relationships_to_delete)} relationships. "
+                f"Updated {len(entities_to_update)} entities and {len(relationships_to_update)} relationships."
+            )
+
+            # Add verification step
+            async def verify_deletion():
+                # Verify if the document has been deleted
+                if await self.full_docs.get_by_id(doc_id):
+                    logger.error(f"Document {doc_id} still exists in full_docs")
+                    
+                # Verify if chunks have been deleted
+                remaining_chunks = await self.text_chunks.filter(
+                    lambda x: x.get("full_doc_id") == doc_id
+                )
+                if remaining_chunks:
+                    logger.error(f"Found {len(remaining_chunks)} remaining chunks")
+                    
+                # Verify entities and relationships
+                for chunk_id in chunk_ids:
+                    # Check entities
+                    entities_with_chunk = [
+                        dp for dp in self.entities_vdb.client_storage["data"]
+                        if chunk_id in (dp.get("source_id") or "").split(GRAPH_FIELD_SEP)
+                    ]
+                    if entities_with_chunk:
+                        logger.error(f"Found {len(entities_with_chunk)} entities still referencing chunk {chunk_id}")
+                    
+                    # Check relationships
+                    relations_with_chunk = [
+                        dp for dp in self.relationships_vdb.client_storage["data"]
+                        if chunk_id in (dp.get("source_id") or "").split(GRAPH_FIELD_SEP)
+                    ]
+                    if relations_with_chunk:
+                        logger.error(f"Found {len(relations_with_chunk)} relations still referencing chunk {chunk_id}")
+
+            await verify_deletion()
+
+        except Exception as e:
+            logger.error(f"Error while deleting document {doc_id}: {e}")
+
+    def delete_by_doc_id(self, doc_id: str):
+        """Synchronous version of adelete"""
+        return asyncio.run(self.adelete_by_doc_id(doc_id))
+
+    async def get_entity_info(self, entity_name: str, include_vector_data: bool = False):
+        """Get detailed information of an entity
+        
+        Args:
+            entity_name: Entity name (no need for quotes)
+            include_vector_data: Whether to include data from the vector database
+        
+        Returns:
+            dict: A dictionary containing entity information, including:
+                - entity_name: Entity name
+                - source_id: Source document ID
+                - graph_data: Complete node data from the graph database
+                - vector_data: (optional) Data from the vector database
+        """
+        entity_name = f'"{entity_name.upper()}"'
+        
+        # Get information from the graph
+        node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
+        source_id = node_data.get('source_id') if node_data else None
+        
+        result = {
+            "entity_name": entity_name,
+            "source_id": source_id,
+            "graph_data": node_data,
+        }
+        
+        # Optional: Get vector database information
+        if include_vector_data:
+            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+            vector_data = self.entities_vdb._client.get([entity_id])
+            result["vector_data"] = vector_data[0] if vector_data else None
+        
+        return result
+
+    def get_entity_info_sync(self, entity_name: str, include_vector_data: bool = False):
+        """Synchronous version of getting entity information
+        
+        Args:
+            entity_name: Entity name (no need for quotes)
+            include_vector_data: Whether to include data from the vector database
+        """
+        try:
+            import tracemalloc
+            tracemalloc.start()
+            return asyncio.run(self.get_entity_info(entity_name, include_vector_data))
+        finally:
+            tracemalloc.stop()
+
+    async def get_relation_info(self, src_entity: str, tgt_entity: str, include_vector_data: bool = False):
+        """Get detailed information of a relationship
+        
+        Args:
+            src_entity: Source entity name (no need for quotes)
+            tgt_entity: Target entity name (no need for quotes)
+            include_vector_data: Whether to include data from the vector database
+        
+        Returns:
+            dict: A dictionary containing relationship information, including:
+                - src_entity: Source entity name
+                - tgt_entity: Target entity name
+                - source_id: Source document ID
+                - graph_data: Complete edge data from the graph database
+                - vector_data: (optional) Data from the vector database
+        """
+        src_entity = f'"{src_entity.upper()}"'
+        tgt_entity = f'"{tgt_entity.upper()}"'
+        
+        # Get information from the graph
+        edge_data = await self.chunk_entity_relation_graph.get_edge(src_entity, tgt_entity)
+        source_id = edge_data.get('source_id') if edge_data else None
+        
+        result = {
+            "src_entity": src_entity,
+            "tgt_entity": tgt_entity,
+            "source_id": source_id,
+            "graph_data": edge_data,
+        }
+        
+        # Optional: Get vector database information
+        if include_vector_data:
+            rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
+            vector_data = self.relationships_vdb._client.get([rel_id])
+            result["vector_data"] = vector_data[0] if vector_data else None
+        
+        return result
+
+    def get_relation_info_sync(self, src_entity: str, tgt_entity: str, include_vector_data: bool = False):
+        """Synchronous version of getting relationship information
+        
+        Args:
+            src_entity: Source entity name (no need for quotes)
+            tgt_entity: Target entity name (no need for quotes)
+            include_vector_data: Whether to include data from the vector database
+        """
+        try:
+            import tracemalloc
+            tracemalloc.start()
+            return asyncio.run(self.get_relation_info(src_entity, tgt_entity, include_vector_data))
+        finally:
+            tracemalloc.stop()
+
