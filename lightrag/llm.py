@@ -15,7 +15,7 @@ from openai import (
     AsyncOpenAI,
     APIConnectionError,
     RateLimitError,
-    Timeout,
+    APITimeoutError,
     AsyncAzureOpenAI,
 )
 from pydantic import BaseModel, Field
@@ -47,7 +47,9 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def openai_complete_if_cache(
     model,
@@ -108,7 +110,9 @@ async def openai_complete_if_cache(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APIConnectionError)
+    ),
 )
 async def azure_openai_complete_if_cache(
     model,
@@ -140,12 +144,34 @@ async def azure_openai_complete_if_cache(
     if prompt is not None:
         messages.append({"role": "user", "content": prompt})
 
-    response = await openai_async_client.chat.completions.create(
-        model=model, messages=messages, **kwargs
-    )
-    content = response.choices[0].message.content
+    if "response_format" in kwargs:
+        response = await openai_async_client.beta.chat.completions.parse(
+            model=model, messages=messages, **kwargs
+        )
+    else:
+        response = await openai_async_client.chat.completions.create(
+            model=model, messages=messages, **kwargs
+        )
 
-    return content
+    if hasattr(response, "__aiter__"):
+
+        async def inner():
+            async for chunk in response:
+                if len(chunk.choices) == 0:
+                    continue
+                content = chunk.choices[0].delta.content
+                if content is None:
+                    continue
+                if r"\u" in content:
+                    content = safe_unicode_decode(content.encode("utf-8"))
+                yield content
+
+        return inner()
+    else:
+        content = response.choices[0].message.content
+        if r"\u" in content:
+            content = safe_unicode_decode(content.encode("utf-8"))
+        return content
 
 
 class BedrockError(Exception):
@@ -237,7 +263,9 @@ def initialize_hf_model(model_name):
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def hf_model_if_cache(
     model,
@@ -304,7 +332,9 @@ async def hf_model_if_cache(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def ollama_model_if_cache(
     model,
@@ -339,6 +369,62 @@ async def ollama_model_if_cache(
         return response["message"]["content"]
 
 
+async def lollms_model_if_cache(
+    model,
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    base_url="http://localhost:9600",
+    **kwargs,
+) -> Union[str, AsyncIterator[str]]:
+    """Client implementation for lollms generation."""
+
+    stream = True if kwargs.get("stream") else False
+
+    # Extract lollms specific parameters
+    request_data = {
+        "prompt": prompt,
+        "model_name": model,
+        "personality": kwargs.get("personality", -1),
+        "n_predict": kwargs.get("n_predict", None),
+        "stream": stream,
+        "temperature": kwargs.get("temperature", 0.1),
+        "top_k": kwargs.get("top_k", 50),
+        "top_p": kwargs.get("top_p", 0.95),
+        "repeat_penalty": kwargs.get("repeat_penalty", 0.8),
+        "repeat_last_n": kwargs.get("repeat_last_n", 40),
+        "seed": kwargs.get("seed", None),
+        "n_threads": kwargs.get("n_threads", 8),
+    }
+
+    # Prepare the full prompt including history
+    full_prompt = ""
+    if system_prompt:
+        full_prompt += f"{system_prompt}\n"
+    for msg in history_messages:
+        full_prompt += f"{msg['role']}: {msg['content']}\n"
+    full_prompt += prompt
+
+    request_data["prompt"] = full_prompt
+
+    async with aiohttp.ClientSession() as session:
+        if stream:
+
+            async def inner():
+                async with session.post(
+                    f"{base_url}/lollms_generate", json=request_data
+                ) as response:
+                    async for line in response.content:
+                        yield line.decode().strip()
+
+            return inner()
+        else:
+            async with session.post(
+                f"{base_url}/lollms_generate", json=request_data
+            ) as response:
+                return await response.text()
+
+
 @lru_cache(maxsize=1)
 def initialize_lmdeploy_pipeline(
     model,
@@ -366,7 +452,9 @@ def initialize_lmdeploy_pipeline(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def lmdeploy_model_if_cache(
     model,
@@ -597,10 +685,38 @@ async def ollama_model_complete(
     )
 
 
+async def lollms_model_complete(
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+) -> Union[str, AsyncIterator[str]]:
+    """Complete function for lollms model generation."""
+
+    # Extract and remove keyword_extraction from kwargs if present
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+
+    # Get model name from config
+    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
+
+    # If keyword extraction is needed, we might need to modify the prompt
+    # or add specific parameters for JSON output (if lollms supports it)
+    if keyword_extraction:
+        # Note: You might need to adjust this based on how lollms handles structured output
+        pass
+
+    return await lollms_model_if_cache(
+        model_name,
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        **kwargs,
+    )
+
+
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def zhipu_complete_if_cache(
     prompt: Union[str, List[Dict[str, str]]],
@@ -730,7 +846,9 @@ async def zhipu_complete(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def zhipu_embedding(
     texts: list[str], model: str = "embedding-3", api_key: str = None, **kwargs
@@ -766,7 +884,9 @@ async def zhipu_embedding(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def openai_embedding(
     texts: list[str],
@@ -824,7 +944,9 @@ async def jina_embedding(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def nvidia_openai_embedding(
     texts: list[str],
@@ -855,7 +977,9 @@ async def nvidia_openai_embedding(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def azure_openai_embedding(
     texts: list[str],
@@ -886,7 +1010,9 @@ async def azure_openai_embedding(
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
-    retry=retry_if_exception_type((RateLimitError, APIConnectionError, Timeout)),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError)
+    ),
 )
 async def siliconcloud_embedding(
     texts: list[str],
@@ -1024,6 +1150,35 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     ollama_client = ollama.Client(**kwargs)
     data = ollama_client.embed(model=embed_model, input=texts)
     return data["embeddings"]
+
+
+async def lollms_embed(
+    texts: List[str], embed_model=None, base_url="http://localhost:9600", **kwargs
+) -> np.ndarray:
+    """
+    Generate embeddings for a list of texts using lollms server.
+
+    Args:
+        texts: List of strings to embed
+        embed_model: Model name (not used directly as lollms uses configured vectorizer)
+        base_url: URL of the lollms server
+        **kwargs: Additional arguments passed to the request
+
+    Returns:
+        np.ndarray: Array of embeddings
+    """
+    async with aiohttp.ClientSession() as session:
+        embeddings = []
+        for text in texts:
+            request_data = {"text": text}
+
+            async with session.post(
+                f"{base_url}/lollms_embed", json=request_data
+            ) as response:
+                result = await response.json()
+                embeddings.append(result["vector"])
+
+        return np.array(embeddings)
 
 
 class Model(BaseModel):

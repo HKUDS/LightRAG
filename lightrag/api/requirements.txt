@@ -1,0 +1,17 @@
+aioboto3
+ascii_colors
+fastapi
+lightrag-hku
+nano_vectordb
+nest_asyncio
+numpy
+ollama
+openai
+python-dotenv
+python-multipart
+tenacity
+tiktoken
+torch
+tqdm
+transformers
+uvicorn

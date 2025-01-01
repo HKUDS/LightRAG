@@ -449,7 +449,7 @@ def dequantize_embedding(
 
 async def handle_cache(hashing_kv, args_hash, prompt, mode="default"):
     """Generic cache handling function"""
-    if hashing_kv is None:
+    if hashing_kv is None or not hashing_kv.global_config.get("enable_llm_cache"):
         return None, None, None, None
 
     # For naive mode, only use simple cache matching

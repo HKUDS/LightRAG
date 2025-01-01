@@ -14,3 +14,10 @@ ignore_this.txt
 .ruff_cache/
 gui/
 *.log
+.vscode
+inputs
+rag_storage
+.env
+venv/
+examples/input/
+examples/output/

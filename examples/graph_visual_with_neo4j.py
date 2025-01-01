@@ -62,7 +62,7 @@ def main():
         e.displayName = node.id
     REMOVE e:Entity
     WITH e, node
-    CALL apoc.create.addLabels(e, [node.entity_type]) YIELD node AS labeledNode
+    CALL apoc.create.addLabels(e, [node.id]) YIELD node AS labeledNode
     RETURN count(*)
     """
 
