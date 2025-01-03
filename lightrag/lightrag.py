@@ -6,7 +6,7 @@ from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Type, cast
+from typing import Type, cast, Dict
 
 from .llm import (
     gpt_4o_mini_complete,
