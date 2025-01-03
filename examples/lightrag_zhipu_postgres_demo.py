@@ -6,7 +6,7 @@ import time
 from dotenv import load_dotenv
 
 from lightrag import LightRAG, QueryParam
-from lightrag.kg.postgres_impl import PostgreSQLDB, PGGraphStorage
+from lightrag.kg.postgres_impl import PostgreSQLDB
 from lightrag.llm import ollama_embedding, zhipu_complete
 from lightrag.utils import EmbeddingFunc
 
@@ -67,7 +67,6 @@ async def main():
     rag.entities_vdb.db = postgres_db
     rag.graph_storage_cls.db = postgres_db
     rag.chunk_entity_relation_graph.db = postgres_db
-    await rag.chunk_entity_relation_graph.check_graph_exists()
     # add embedding_func for graph database, it's deleted in commit 5661d76860436f7bf5aef2e50d9ee4a59660146c
     rag.chunk_entity_relation_graph.embedding_func = rag.embedding_func
 
@@ -102,21 +101,6 @@ async def main():
         await rag.aquery("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
     )
     print(f"Hybrid Query Time: {time.time() - start_time} seconds")
-
-    print("**** Start Stream Query ****")
-    start_time = time.time()
-    # stream response
-    resp = await rag.aquery(
-        "What are the top themes in this story?",
-        param=QueryParam(mode="hybrid", stream=True),
-    )
-    print(f"Stream Query Time: {time.time() - start_time} seconds")
-    print("**** Done Stream Query ****")
-
-    if inspect.isasyncgen(resp):
-        asyncio.run(print_stream(resp))
-    else:
-        print(resp)
 
 
 if __name__ == "__main__":
