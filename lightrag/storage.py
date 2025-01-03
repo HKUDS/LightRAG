@@ -3,10 +3,11 @@ import html
 import os
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
-from typing import Any, Union, cast
+from typing import Any, Union, cast, Dict
 import networkx as nx
 import numpy as np
 from nano_vectordb import NanoVectorDB
+import time
 
 from .utils import (
     logger,
@@ -19,6 +20,9 @@ from .base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
+    DocStatus,
+    DocProcessingStatus,
+    DocStatusStorage,
 )
 
 
@@ -28,6 +32,7 @@ class JsonKVStorage(BaseKVStorage):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
         self._data = load_json(self._file_name) or {}
+        self._lock = asyncio.Lock()
         logger.info(f"Load KV {self.namespace} with {len(self._data)} data")
 
     async def all_keys(self) -> list[str]:
@@ -62,6 +67,35 @@ class JsonKVStorage(BaseKVStorage):
     async def drop(self):
         self._data = {}
 
+    async def filter(self, filter_func):
+        """Filter key-value pairs based on a filter function
+
+        Args:
+            filter_func: The filter function, which takes a value as an argument and returns a boolean value
+
+        Returns:
+            Dict: Key-value pairs that meet the condition
+        """
+        result = {}
+        async with self._lock:
+            for key, value in self._data.items():
+                if filter_func(value):
+                    result[key] = value
+        return result
+
+    async def delete(self, ids: list[str]):
+        """Delete data with specified IDs
+
+        Args:
+            ids: List of IDs to delete
+        """
+        async with self._lock:
+            for id in ids:
+                if id in self._data:
+                    del self._data[id]
+            await self.index_done_callback()
+            logger.info(f"Successfully deleted {len(ids)} items from {self.namespace}")
+
 
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
@@ -84,9 +118,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
             return []
+
+        current_time = time.time()
         list_data = [
             {
                 "__id__": k,
+                "__created_at__": current_time,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
@@ -129,7 +166,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             better_than_threshold=self.cosine_better_than_threshold,
         )
         results = [
-            {**dp, "id": dp["__id__"], "distance": dp["__metrics__"]} for dp in results
+            {
+                **dp,
+                "id": dp["__id__"],
+                "distance": dp["__metrics__"],
+                "created_at": dp.get("__created_at__"),
+            }
+            for dp in results
         ]
         return results
 
@@ -137,38 +180,54 @@ class NanoVectorDBStorage(BaseVectorStorage):
     def client_storage(self):
         return getattr(self._client, "_NanoVectorDB__storage")
 
+    async def delete(self, ids: list[str]):
+        """Delete vectors with specified IDs
+
+        Args:
+            ids: List of vector IDs to be deleted
+        """
+        try:
+            self._client.delete(ids)
+            logger.info(
+                f"Successfully deleted {len(ids)} vectors from {self.namespace}"
+            )
+        except Exception as e:
+            logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
+
     async def delete_entity(self, entity_name: str):
         try:
-            entity_id = [compute_mdhash_id(entity_name, prefix="ent-")]
-
-            if self._client.get(entity_id):
-                self._client.delete(entity_id)
-                logger.info(f"Entity {entity_name} have been deleted.")
+            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+            logger.debug(
+                f"Attempting to delete entity {entity_name} with ID {entity_id}"
+            )
+            # Check if the entity exists
+            if self._client.get([entity_id]):
+                await self.delete([entity_id])
+                logger.debug(f"Successfully deleted entity {entity_name}")
             else:
-                logger.info(f"No entity found with name {entity_name}.")
+                logger.debug(f"Entity {entity_name} not found in storage")
         except Exception as e:
-            logger.error(f"Error while deleting entity {entity_name}: {e}")
+            logger.error(f"Error deleting entity {entity_name}: {e}")
 
-    async def delete_relation(self, entity_name: str):
+    async def delete_entity_relation(self, entity_name: str):
         try:
             relations = [
                 dp
                 for dp in self.client_storage["data"]
                 if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
             ]
+            logger.debug(f"Found {len(relations)} relations for entity {entity_name}")
             ids_to_delete = [relation["__id__"] for relation in relations]
 
             if ids_to_delete:
-                self._client.delete(ids_to_delete)
-                logger.info(
-                    f"All relations related to entity {entity_name} have been deleted."
+                await self.delete(ids_to_delete)
+                logger.debug(
+                    f"Deleted {len(ids_to_delete)} relations for {entity_name}"
                 )
             else:
-                logger.info(f"No relations found for entity {entity_name}.")
+                logger.debug(f"No relations found for entity {entity_name}")
         except Exception as e:
-            logger.error(
-                f"Error while deleting relations for entity {entity_name}: {e}"
-            )
+            logger.error(f"Error deleting relations for {entity_name}: {e}")
 
     async def index_done_callback(self):
         self._client.save()
@@ -315,3 +374,83 @@ class NetworkXStorage(BaseGraphStorage):
 
         nodes_ids = [self._graph.nodes[node_id]["id"] for node_id in nodes]
         return embeddings, nodes_ids
+
+    def remove_nodes(self, nodes: list[str]):
+        """Delete multiple nodes
+
+        Args:
+            nodes: List of node IDs to be deleted
+        """
+        for node in nodes:
+            if self._graph.has_node(node):
+                self._graph.remove_node(node)
+
+    def remove_edges(self, edges: list[tuple[str, str]]):
+        """Delete multiple edges
+
+        Args:
+            edges: List of edges to be deleted, each edge is a (source, target) tuple
+        """
+        for source, target in edges:
+            if self._graph.has_edge(source, target):
+                self._graph.remove_edge(source, target)
+
+
+@dataclass
+class JsonDocStatusStorage(DocStatusStorage):
+    """JSON implementation of document status storage"""
+
+    def __post_init__(self):
+        working_dir = self.global_config["working_dir"]
+        self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
+        self._data = load_json(self._file_name) or {}
+        logger.info(f"Loaded document status storage with {len(self._data)} records")
+
+    async def filter_keys(self, data: list[str]) -> set[str]:
+        """Return keys that should be processed (not in storage or not successfully processed)"""
+        return set(
+            [
+                k
+                for k in data
+                if k not in self._data or self._data[k]["status"] != DocStatus.PROCESSED
+            ]
+        )
+
+    async def get_status_counts(self) -> Dict[str, int]:
+        """Get counts of documents in each status"""
+        counts = {status: 0 for status in DocStatus}
+        for doc in self._data.values():
+            counts[doc["status"]] += 1
+        return counts
+
+    async def get_failed_docs(self) -> Dict[str, DocProcessingStatus]:
+        """Get all failed documents"""
+        return {k: v for k, v in self._data.items() if v["status"] == DocStatus.FAILED}
+
+    async def get_pending_docs(self) -> Dict[str, DocProcessingStatus]:
+        """Get all pending documents"""
+        return {k: v for k, v in self._data.items() if v["status"] == DocStatus.PENDING}
+
+    async def index_done_callback(self):
+        """Save data to file after indexing"""
+        write_json(self._data, self._file_name)
+
+    async def upsert(self, data: dict[str, dict]):
+        """Update or insert document status
+
+        Args:
+            data: Dictionary of document IDs and their status data
+        """
+        self._data.update(data)
+        await self.index_done_callback()
+        return data
+
+    async def get(self, doc_id: str) -> Union[DocProcessingStatus, None]:
+        """Get document status by ID"""
+        return self._data.get(doc_id)
+
+    async def delete(self, doc_ids: list[str]):
+        """Delete document status by IDs"""
+        for doc_id in doc_ids:
+            self._data.pop(doc_id, None)
+        await self.index_done_callback()

@@ -26,10 +26,11 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 </div>
 
 ## 🎉 News
+- [x] [2024.12.31]🎯📢LightRAG now supports [deletion by document ID](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete).
 - [x] [2024.11.25]🎯📢LightRAG now supports seamless integration of [custom knowledge graphs](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#insert-custom-kg), empowering users to enhance the system with their own domain expertise.
 - [x] [2024.11.19]🎯📢A comprehensive guide to LightRAG is now available on [LearnOpenCV](https://learnopencv.com/lightrag). Many thanks to the blog author.
 - [x] [2024.11.12]🎯📢LightRAG now supports [Oracle Database 23ai for all storage types (KV, vector, and graph)](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_oracle_demo.py).
-- [x] [2024.11.11]🎯📢LightRAG now supports [deleting entities by their names](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete-entity).
+- [x] [2024.11.11]🎯📢LightRAG now supports [deleting entities by their names](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete).
 - [x] [2024.11.09]🎯📢Introducing the [LightRAG Gui](https://lightrag-gui.streamlit.app), which allows you to insert, query, visualize, and download LightRAG knowledge.
 - [x] [2024.11.04]🎯📢You can now [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage).
 - [x] [2024.10.29]🎯📢LightRAG now supports multiple file types, including PDF, DOC, PPT, and CSV via `textract`.
@@ -106,7 +107,20 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 
 # Perform hybrid search
 print(rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid")))
+
+# Perform mix search (Knowledge Graph + Vector Retrieval)
+# Mix mode combines knowledge graph and vector search:
+# - Uses both structured (KG) and unstructured (vector) information
+# - Provides comprehensive answers by analyzing relationships and context
+# - Supports image content through HTML img tags
+# - Allows control over retrieval depth via top_k parameter
+print(rag.query("What are the top themes in this story?", param=QueryParam(
+    mode="mix")))
+
 ```
+
+
+
 
 <details>
 <summary> Using Open AI-like APIs </summary>
@@ -262,7 +276,7 @@ In order to run this experiment on low RAM GPU you should select small model and
 
 ```python
 class QueryParam:
-    mode: Literal["local", "global", "hybrid", "naive"] = "global"
+    mode: Literal["local", "global", "hybrid", "naive", "mix"] = "global"
     only_need_context: bool = False
     response_type: str = "Multiple Paragraphs"
     # Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.
@@ -278,9 +292,24 @@ class QueryParam:
 ### Batch Insert
 
 ```python
-# Batch Insert: Insert multiple texts at once
+# Basic Batch Insert: Insert multiple texts at once
 rag.insert(["TEXT1", "TEXT2",...])
+
+# Batch Insert with custom batch size configuration
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    addon_params={
+        "insert_batch_size": 20  # Process 20 documents per batch
+    }
+)
+rag.insert(["TEXT1", "TEXT2", "TEXT3", ...])  # Documents will be processed in batches of 20
 ```
+
+The `insert_batch_size` parameter in `addon_params` controls how many documents are processed in each batch during insertion. This is useful for:
+- Managing memory usage with large document collections
+- Optimizing processing speed
+- Providing better progress tracking
+- Default value is 10 if not specified
 
 ### Incremental Insert
 
@@ -384,10 +413,9 @@ custom_kg = {
 rag.insert_custom_kg(custom_kg)
 ```
 
-### Delete Entity
-
+### Delete
 ```python
-#  Delete Entity: Deleting entities by their names
+
 rag = LightRAG(
      working_dir=WORKING_DIR,
      llm_model_func=llm_model_func,
@@ -398,7 +426,11 @@ rag = LightRAG(
      ),
 )
 
+#  Delete Entity: Deleting entities by their names
 rag.delete_by_entity("Project Gutenberg")
+
+#  Delete Document: Deleting entities and relationships associated with the document by doc id
+rag.delete_by_doc_id("doc_id")
 ```
 
 ### Multi-file Type Support
@@ -594,123 +626,9 @@ if __name__ == "__main__":
 | **llm\_model\_kwargs** | `dict` | Additional parameters for LLM generation |     |
 | **vector\_db\_storage\_cls\_kwargs** | `dict` | Additional parameters for vector database (currently not used) |     |
 | **enable\_llm\_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
-| **addon\_params** | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`: sets example limit and output language | `example_number: all examples, language: English` |
+| **addon\_params** | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"], "insert_batch_size": 10}`: sets example limit, output language, and batch size for document processing | `example_number: all examples, language: English, insert_batch_size: 10` |
 | **convert\_response\_to\_json\_func** | `callable` | Not used | `convert_response_to_json` |
 | **embedding\_cache\_config** | `dict` | Configuration for question-answer caching. Contains three parameters:<br>- `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers.<br>- `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM.<br>- `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
-
-## API Server Implementation
-
-LightRAG also provides a FastAPI-based server implementation for RESTful API access to RAG operations. This allows you to run LightRAG as a service and interact with it through HTTP requests.
-
-### Setting up the API Server
-<details>
-<summary>Click to expand setup instructions</summary>
-
-1. First, ensure you have the required dependencies:
-```bash
-pip install fastapi uvicorn pydantic
-```
-
-2. Set up your environment variables:
-```bash
-export RAG_DIR="your_index_directory"  # Optional: Defaults to "index_default"
-export OPENAI_BASE_URL="Your OpenAI API base URL"  # Optional: Defaults to "https://api.openai.com/v1"
-export OPENAI_API_KEY="Your OpenAI API key"  # Required
-export LLM_MODEL="Your LLM model" # Optional: Defaults to "gpt-4o-mini"
-export EMBEDDING_MODEL="Your embedding model" # Optional: Defaults to "text-embedding-3-large"
-```
-
-3. Run the API server:
-```bash
-python examples/lightrag_api_openai_compatible_demo.py
-```
-
-The server will start on `http://0.0.0.0:8020`.
-</details>
-
-### API Endpoints
-
-The API server provides the following endpoints:
-
-#### 1. Query Endpoint
-<details>
-<summary>Click to view Query endpoint details</summary>
-
-- **URL:** `/query`
-- **Method:** POST
-- **Body:**
-```json
-{
-    "query": "Your question here",
-    "mode": "hybrid",  // Can be "naive", "local", "global", or "hybrid"
-    "only_need_context": true // Optional: Defaults to false, if true, only the referenced context will be returned, otherwise the llm answer will be returned
-}
-```
-- **Example:**
-```bash
-curl -X POST "http://127.0.0.1:8020/query" \
-     -H "Content-Type: application/json" \
-     -d '{"query": "What are the main themes?", "mode": "hybrid"}'
-```
-</details>
-
-#### 2. Insert Text Endpoint
-<details>
-<summary>Click to view Insert Text endpoint details</summary>
-
-- **URL:** `/insert`
-- **Method:** POST
-- **Body:**
-```json
-{
-    "text": "Your text content here"
-}
-```
-- **Example:**
-```bash
-curl -X POST "http://127.0.0.1:8020/insert" \
-     -H "Content-Type: application/json" \
-     -d '{"text": "Content to be inserted into RAG"}'
-```
-</details>
-
-#### 3. Insert File Endpoint
-<details>
-<summary>Click to view Insert File endpoint details</summary>
-
-- **URL:** `/insert_file`
-- **Method:** POST
-- **Body:**
-```json
-{
-    "file_path": "path/to/your/file.txt"
-}
-```
-- **Example:**
-```bash
-curl -X POST "http://127.0.0.1:8020/insert_file" \
-     -H "Content-Type: application/json" \
-     -d '{"file_path": "./book.txt"}'
-```
-</details>
-
-#### 4. Health Check Endpoint
-<details>
-<summary>Click to view Health Check endpoint details</summary>
-
-- **URL:** `/health`
-- **Method:** GET
-- **Example:**
-```bash
-curl -X GET "http://127.0.0.1:8020/health"
-```
-</details>
-
-### Configuration
-
-The API server can be configured using environment variables:
-- `RAG_DIR`: Directory for storing the RAG index (default: "index_default")
-- API keys and base URLs should be configured in the code for your specific LLM and embedding model providers
 
 ### Error Handling
 <details>
@@ -989,6 +907,12 @@ def extract_queries(file_path):
 │   ├── lightrag_siliconcloud_demo.py
 │   └── vram_management_demo.py
 ├── lightrag/
+│   ├── api/
+│   │   ├── lollms_lightrag_server.py
+│   │   ├── ollama_lightrag_server.py
+│   │   ├── openai_lightrag_server.py
+│   │   ├── azure_openai_lightrag_server.py
+│   │   └── requirements.txt
 │   ├── kg/
 │   │   ├── __init__.py
 │   │   ├── oracle_impl.py
@@ -1033,7 +957,7 @@ pip install "lightrag-hku[api]"
 
 ```bash
 # Clone the repository
-git clone https://github.com/ParisNeo/lightrag.git
+git clone https://github.com/HKUDS/lightrag.git
 
 # Change to the repository directory
 cd lightrag
@@ -1059,6 +983,27 @@ Before running any of the servers, ensure you have the corresponding backend ser
 #### For OpenAI Server
 - Requires valid OpenAI API credentials set in environment variables
 - OPENAI_API_KEY must be set
+
+#### For Azure OpenAI Server
+Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
+```bash
+# Change the resource group name, location and OpenAI resource name as needed
+RESOURCE_GROUP_NAME=LightRAG
+LOCATION=swedencentral
+RESOURCE_NAME=LightRAG-OpenAI
+
+az login
+az group create --name $RESOURCE_GROUP_NAME --location $LOCATION
+az cognitiveservices account create --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME  --kind OpenAI --sku S0 --location swedencentral
+az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name gpt-4o --model-name gpt-4o --model-version "2024-08-06"  --sku-capacity 100 --sku-name "Standard"
+az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name text-embedding-3-large --model-name text-embedding-3-large --model-version "1"  --sku-capacity 80 --sku-name "Standard"
+az cognitiveservices account show --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME --query "properties.endpoint"
+az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_NAME
+
+```
+The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
+
+
 
 ### Configuration Options
 
@@ -1112,6 +1057,22 @@ Each server has its own specific configuration options:
 | --input-dir | ./inputs | Input directory for documents |
 | --log-level | INFO | Logging level |
 
+#### OpenAI AZURE Server Options
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| --host | 0.0.0.0 | Server host |
+| --port | 9621 | Server port |
+| --model | gpt-4 | OpenAI model name |
+| --embedding-model | text-embedding-3-large | OpenAI embedding model |
+| --working-dir | ./rag_storage | Working directory for RAG |
+| --max-tokens | 32768 | Maximum token size |
+| --max-embed-tokens | 8192 | Maximum embedding token size |
+| --input-dir | ./inputs | Input directory for documents |
+| --enable-cache | True | Enable response cache |
+| --log-level | INFO | Logging level |
+
+
 ### Example Usage
 
 #### LoLLMs RAG Server
@@ -1140,17 +1101,25 @@ ollama-lightrag-server --model mistral-nemo:latest --embedding-model bge-m3 --em
 # Using GPT-4 with text-embedding-3-large
 openai-lightrag-server --port 9624 --model gpt-4 --embedding-model text-embedding-3-large
 ```
+#### Azure OpenAI RAG Server
+```bash
+# Using GPT-4 with text-embedding-3-large
+azure-openai-lightrag-server --model gpt-4o --port 8080 --working-dir ./custom_rag --embedding-model text-embedding-3-large
+```
+
 
 **Important Notes:**
 - For LoLLMs: Make sure the specified models are installed in your LoLLMs instance
 - For Ollama: Make sure the specified models are installed in your Ollama instance
 - For OpenAI: Ensure you have set up your OPENAI_API_KEY environment variable
+- For Azure OpenAI: Build and configure your server as stated in the Prequisites section
 
 For help on any server, use the --help flag:
 ```bash
 lollms-lightrag-server --help
 ollama-lightrag-server --help
 openai-lightrag-server --help
+azure-openai-lightrag-server --help
 ```
 
 Note: If you don't need the API functionality, you can install the base package without API support using:
@@ -1160,7 +1129,7 @@ pip install lightrag-hku
 
 ## API Endpoints
 
-All servers (LoLLMs, Ollama, and OpenAI) provide the same REST API endpoints for RAG functionality.
+All servers (LoLLMs, Ollama, OpenAI and Azure OpenAI) provide the same REST API endpoints for RAG functionality.
 
 ### Query Endpoints
 
@@ -1245,7 +1214,10 @@ For OpenAI:
 ```bash
 uvicorn openai_lightrag_server:app --reload --port 9621
 ```
-
+For Azure OpenAI:
+```bash
+uvicorn azure_openai_lightrag_server:app --reload --port 9621
+```
 ### API Documentation
 
 When any server is running, visit:
@@ -1299,6 +1271,14 @@ ollama-lightrag-server --input-dir ./my_documents --port 8080
 # Start server with automatic document vectorization
 # Existing documents are retrieved from cache, only new ones are processed
 openai-lightrag-server --input-dir ./my_documents --port 9624
+```
+
+#### Azure OpenAI RAG Server
+
+```bash
+# Start server with automatic document vectorization
+# Existing documents are retrieved from cache, only new ones are processed
+azure-openai-lightrag-server --input-dir ./my_documents --port 9624
 ```
 
 **Important Notes:**
