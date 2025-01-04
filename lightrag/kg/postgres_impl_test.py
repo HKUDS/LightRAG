@@ -20,10 +20,9 @@ if sys.platform.startswith("win"):
 async def get_pool():
     return await asyncpg.create_pool(
         f"postgres://{USER}:{PASSWORD}@{HOST}:{PORT}/{DB}",
-        min_size=10,  # 连接池初始化时默认的最小连接数, 默认为1 0
-        max_size=10,  # 连接池的最大连接数, 默认为 10
-        max_queries=5000,  # 每个链接最大查询数量, 超过了就换新的连接, 默认 5000
-        # 最大不活跃时间, 默认 300.0, 超过这个时间的连接就会被关闭, 传入 0 的话则永不关闭
+        min_size=10,
+        max_size=10,
+        max_queries=5000,
         max_inactive_connection_lifetime=300.0
     )
 
@@ -118,5 +117,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(query_with_age())
-
-
