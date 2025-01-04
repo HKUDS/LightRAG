@@ -14,6 +14,14 @@ import aiofiles
 from ascii_colors import trace_exception
 import nest_asyncio
 
+import os
+
+from fastapi import Depends, Security
+from fastapi.security import APIKeyHeader
+from fastapi.middleware.cors import CORSMiddleware
+
+from starlette.status import HTTP_403_FORBIDDEN
+
 # Apply nest_asyncio to solve event loop issues
 nest_asyncio.apply()
 
@@ -73,6 +81,13 @@ def parse_args():
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging level (default: INFO)",
+    )
+
+    parser.add_argument(
+        "--key",
+        type=str,
+        help="API key for authentication. This protects lightrag server against unauthorized access",
+        default=None,
     )
 
     return parser.parse_args()
@@ -137,6 +152,31 @@ class InsertResponse(BaseModel):
     document_count: int
 
 
+def get_api_key_dependency(api_key: Optional[str]):
+    if not api_key:
+        # If no API key is configured, return a dummy dependency that always succeeds
+        async def no_auth():
+            return None
+
+        return no_auth
+
+    # If API key is configured, use proper authentication
+    api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+    async def api_key_auth(api_key_header_value: str | None = Security(api_key_header)):
+        if not api_key_header_value:
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN, detail="API Key required"
+            )
+        if api_key_header_value != api_key:
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN, detail="Invalid API Key"
+            )
+        return api_key_header_value
+
+    return api_key_auth
+
+
 async def get_embedding_dim(embedding_model: str) -> int:
     """Get embedding dimensions for the specified model"""
     test_text = ["This is a test sentence."]
@@ -150,10 +190,39 @@ def create_app(args):
         format="%(levelname)s:%(message)s", level=getattr(logging, args.log_level)
     )
 
-    # Initialize FastAPI app
+    # Check if API key is provided either through env var or args
+    api_key = os.getenv("LIGHTRAG_API_KEY") or args.key
+
+    # Initialize FastAPI
     app = FastAPI(
         title="LightRAG API",
-        description="API for querying text using LightRAG with OpenAI integration",
+        description="API for querying text using LightRAG with separate storage and input directories"
+        + "(With authentication)"
+        if api_key
+        else "",
+        version="1.0.0",
+        openapi_tags=[{"name": "api"}],
+    )
+
+    # Add CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Create the optional API key dependency
+    optional_api_key = get_api_key_dependency(api_key)
+
+    # Add CORS middleware
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     # Create working directory if it doesn't exist
@@ -213,7 +282,7 @@ def create_app(args):
         except Exception as e:
             logging.error(f"Error during startup indexing: {str(e)}")
 
-    @app.post("/documents/scan")
+    @app.post("/documents/scan", dependencies=[Depends(optional_api_key)])
     async def scan_for_new_documents():
         """Manually trigger scanning for new documents"""
         try:
@@ -238,7 +307,7 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/documents/upload")
+    @app.post("/documents/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(file: UploadFile = File(...)):
         """Upload a file to the input directory"""
         try:
@@ -266,7 +335,9 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/query", response_model=QueryResponse)
+    @app.post(
+        "/query", response_model=QueryResponse, dependencies=[Depends(optional_api_key)]
+    )
     async def query_text(request: QueryRequest):
         try:
             response = await rag.aquery(
@@ -288,7 +359,7 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/query/stream")
+    @app.post("/query/stream", dependencies=[Depends(optional_api_key)])
     async def query_text_stream(request: QueryRequest):
         try:
             response = rag.query(
@@ -308,7 +379,11 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/documents/text", response_model=InsertResponse)
+    @app.post(
+        "/documents/text",
+        response_model=InsertResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
     async def insert_text(request: InsertTextRequest):
         try:
             rag.insert(request.text)
@@ -320,7 +395,11 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/documents/file", response_model=InsertResponse)
+    @app.post(
+        "/documents/file",
+        response_model=InsertResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
     async def insert_file(file: UploadFile = File(...), description: str = Form(None)):
         try:
             content = await file.read()
@@ -344,7 +423,11 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.post("/documents/batch", response_model=InsertResponse)
+    @app.post(
+        "/documents/batch",
+        response_model=InsertResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
     async def insert_batch(files: List[UploadFile] = File(...)):
         try:
             inserted_count = 0
@@ -374,7 +457,11 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.delete("/documents", response_model=InsertResponse)
+    @app.delete(
+        "/documents",
+        response_model=InsertResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
     async def clear_documents():
         try:
             rag.text_chunks = []
@@ -388,7 +475,7 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    @app.get("/health")
+    @app.get("/health", dependencies=[Depends(optional_api_key)])
     async def get_status():
         """Get current system status"""
         return {
