@@ -104,13 +104,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-
-async def print_stream(stream):
-    async for chunk in stream:
-        print(chunk, end="", flush=True)
-
-
-
-
-
