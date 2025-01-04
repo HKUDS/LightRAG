@@ -85,8 +85,12 @@ ChromaVectorDBStorage = lazy_external_import(".kg.chroma_impl", "ChromaVectorDBS
 TiDBKVStorage = lazy_external_import(".kg.tidb_impl", "TiDBKVStorage")
 TiDBVectorDBStorage = lazy_external_import(".kg.tidb_impl", "TiDBVectorDBStorage")
 TiDBGraphStorage = lazy_external_import(".kg.tidb_impl", "TiDBGraphStorage")
+PGKVStorage = lazy_external_import(".kg.postgres_impl", "PGKVStorage")
+PGVectorStorage = lazy_external_import(".kg.postgres_impl", "PGVectorStorage")
 AGEStorage = lazy_external_import(".kg.age_impl", "AGEStorage")
+PGGraphStorage = lazy_external_import(".kg.postgres_impl", "PGGraphStorage")
 GremlinStorage = lazy_external_import(".kg.gremlin_impl", "GremlinStorage")
+PGDocStatusStorage = lazy_external_import(".kg.postgres_impl", "PGDocStatusStorage")
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -297,6 +301,10 @@ class LightRAG:
             "Neo4JStorage": Neo4JStorage,
             "OracleGraphStorage": OracleGraphStorage,
             "AGEStorage": AGEStorage,
+            "PGGraphStorage": PGGraphStorage,
+            "PGKVStorage": PGKVStorage,
+            "PGDocStatusStorage": PGDocStatusStorage,
+            "PGVectorStorage": PGVectorStorage,
             "TiDBGraphStorage": TiDBGraphStorage,
             "GremlinStorage": GremlinStorage,
             # "ArangoDBStorage": ArangoDBStorage
