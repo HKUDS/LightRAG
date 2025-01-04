@@ -14,6 +14,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import tiktoken
+import loguru
 
 from lightrag.prompt import PROMPTS
 
@@ -30,22 +31,36 @@ class UnlimitedSemaphore:
 
 ENCODER = None
 
-logger = logging.getLogger("lightrag")
+# logger = logging.getLogger("lightrag")
+logger = loguru.logger
 
+# def set_logger(log_file: str):
+#     logger.setLevel(logging.DEBUG)
+#
+#     file_handler = logging.FileHandler(log_file)
+#     file_handler.setLevel(logging.DEBUG)
+#
+#     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+#     file_handler.setFormatter(formatter)
+#
+#     if not logger.handlers:
+#         logger.addHandler(file_handler)
 
-def set_logger(log_file: str):
-    logger.setLevel(logging.DEBUG)
+def set_logger(log_file: str, log_level: str = "INFO"):
+    """
+        TRACE：用于追踪代码中的详细信息。
+        DEBUG：用于调试和开发过程中的详细信息。
+        INFO：用于提供一般性的信息，表明应用程序正在按预期运行。
+        SUCCESS：用于表示成功完成的操作。
+        WARNING：用于表示潜在的问题或警告，不会导致应用程序的中断或错误。
+        ERROR：用于表示错误，可能会导致应用程序的中断或异常行为。
+        CRITICAL：用于表示严重错误，通常与应用程序无法继续执行相关。
+    """
+    if log_level not in ['TRACE', 'DEBUG', 'INFO', 'SUCCESS', 'WARNING', 'ERROR', 'CRITICAL']:
+        log_level = 'INFO'
 
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.DEBUG)
-
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    file_handler.setFormatter(formatter)
-
-    if not logger.handlers:
-        logger.addHandler(file_handler)
+    logger.add(sink=log_file, level=log_level, rotation="1 days", retention="30 days",
+               encoding="utf-8", enqueue=True, colorize=False, backtrace=True, diagnose=True)
 
 
 @dataclass
@@ -90,7 +105,6 @@ def locate_json_string_body_from_string(content: str) -> Union[str, None]:
         #     json.loads(maybe_json_str)
 
         return None
-
 
 def convert_response_to_json(response: str) -> dict:
     json_str = locate_json_string_body_from_string(response)
@@ -229,7 +243,7 @@ def csv_string_to_list(csv_string: str) -> List[List[str]]:
 
 
 def save_data_to_file(data, file_name):
-    with open(file_name, "w", encoding="utf-8") as f:
+    with open(file_name, 'w', encoding='utf-8') as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
 

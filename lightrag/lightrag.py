@@ -1,5 +1,7 @@
 import asyncio
 import os
+
+from lightrag.operate import chunking_by_markdown_header
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -12,6 +14,8 @@ from .llm import (
 )
 from .operate import (
     chunking_by_token_size,
+    chunking_by_markdown_header,
+    chunking_by_markdown_text,
     extract_entities,
     # local_query,global_query,hybrid_query,
     kg_query,
@@ -43,13 +47,20 @@ from .storage import (
     JsonDocStatusStorage,
 )
 
-from .prompt import GRAPH_FIELD_SEP
+from .prompt_cn import GRAPH_FIELD_SEP
 
 # future KG integrations
 
 # from .kg.ArangoDB_impl import (
 #     GraphStorage as ArangoDBStorage
 # )
+
+# 存在路径问题，不使用动态导入 bumaple 2024-12-10
+# from lightrag.kg.mongo_impl import MongoKVStorage
+# from lightrag.kg.neo4j_impl import Neo4JStorage
+# from lightrag.kg.milvus_impl import MilvusVectorDBStorge
+# from lightrag.kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBStorage
+# from lightrag.kg.chroma_impl import ChromaVectorDBStorage
 
 
 def lazy_external_import(module_name: str, class_name: str):
@@ -177,13 +188,23 @@ class LightRAG:
     addon_params: dict = field(default_factory=dict)
     convert_response_to_json_func: callable = convert_response_to_json
 
+    # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
+    extend_entity_title: str = ''
+    extend_entity_sn: str = ''
+    # 自定义新增 块类型 by bumaple 2024-12-11
+    chunk_type: str = 'token_size'
+    # 自定义新增 块标题层级 by bumaple 2024-12-11
+    chunk_header_level: int = 2
+    # 采用实体、关系分步骤识别 True：分步骤识别 False：合并识别
+    entity_relationship_extraction_step: bool = False
+
     # Add new field for document status storage type
     doc_status_storage: str = field(default="JsonDocStatusStorage")
 
     def __post_init__(self):
-        log_file = os.path.join("lightrag.log")
-        set_logger(log_file)
-        logger.setLevel(self.log_level)
+        log_file = os.path.join(self.working_dir, "lightrag.log")
+        set_logger(log_file, self.log_level)
+        # logger.setLevel(self.log_level)
 
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
 
@@ -362,18 +383,48 @@ class LightRAG:
                     await self.doc_status.upsert({doc_id: doc_status})
 
                     # Generate chunks from document
-                    chunks = {
-                        compute_mdhash_id(dp["content"], prefix="chunk-"): {
-                            **dp,
-                            "full_doc_id": doc_id,
+                    if self.chunk_type == "markdown_header":
+                        chunks = {
+                            compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                                **dp,
+                                "full_doc_id": doc_id,
+                            }
+                            for dp in chunking_by_markdown_header(
+                                doc["content"],
+                                overlap_token_size=self.chunk_overlap_token_size,
+                                max_token_size=self.chunk_token_size,
+                                extend_entity_title=self.extend_entity_title,
+                                extend_entity_sn=self.extend_entity_sn,
+                                chunk_header_level=self.chunk_header_level,
+                            )
                         }
-                        for dp in chunking_by_token_size(
-                            doc["content"],
-                            overlap_token_size=self.chunk_overlap_token_size,
-                            max_token_size=self.chunk_token_size,
-                            tiktoken_model=self.tiktoken_model_name,
-                        )
-                    }
+                    elif self.chunk_type == "markdown_text":
+                        chunks = {
+                            compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                                **dp,
+                                "full_doc_id": doc_id,
+                            }
+                            for dp in chunking_by_markdown_text(
+                                doc["content"],
+                                overlap_token_size=self.chunk_overlap_token_size,
+                                max_token_size=self.chunk_token_size,
+                                extend_entity_title=self.extend_entity_title,
+                                extend_entity_sn=self.extend_entity_sn,
+                            )
+                        }
+                    else:
+                        chunks = {
+                            compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                                **dp,
+                                "full_doc_id": doc_id,
+                            }
+                            for dp in chunking_by_token_size(
+                                doc["content"],
+                                overlap_token_size=self.chunk_overlap_token_size,
+                                max_token_size=self.chunk_token_size,
+                                tiktoken_model=self.tiktoken_model_name,
+                            )
+                        }
 
                     # Update status with chunks information
                     doc_status.update(
