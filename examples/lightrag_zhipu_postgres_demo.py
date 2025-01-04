@@ -53,7 +53,7 @@ async def main():
         kv_storage="PGKVStorage",
         doc_status_storage="PGDocStatusStorage",
         graph_storage="PGGraphStorage",
-        vector_storage="PGVectorStorage"
+        vector_storage="PGVectorStorage",
     )
     # Set the KV/vector/graph storage's `db` property, so all operation will use same connection pool
     rag.doc_status.db = postgres_db
@@ -77,27 +77,35 @@ async def main():
     start_time = time.time()
     # Perform naive search
     print(
-        await rag.aquery("What are the top themes in this story?", param=QueryParam(mode="naive"))
+        await rag.aquery(
+            "What are the top themes in this story?", param=QueryParam(mode="naive")
+        )
     )
     print(f"Naive Query Time: {time.time() - start_time} seconds")
     # Perform local search
     print("**** Start Local Query ****")
     start_time = time.time()
     print(
-        await rag.aquery("What are the top themes in this story?", param=QueryParam(mode="local"))
+        await rag.aquery(
+            "What are the top themes in this story?", param=QueryParam(mode="local")
+        )
     )
     print(f"Local Query Time: {time.time() - start_time} seconds")
     # Perform global search
     print("**** Start Global Query ****")
     start_time = time.time()
     print(
-        await rag.aquery("What are the top themes in this story?", param=QueryParam(mode="global"))
+        await rag.aquery(
+            "What are the top themes in this story?", param=QueryParam(mode="global")
+        )
     )
     print(f"Global Query Time: {time.time() - start_time}")
     # Perform hybrid search
     print("**** Start Hybrid Query ****")
     print(
-        await rag.aquery("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+        await rag.aquery(
+            "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+        )
     )
     print(f"Hybrid Query Time: {time.time() - start_time} seconds")
 

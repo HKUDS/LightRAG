@@ -1,6 +1,8 @@
 accelerate
 aioboto3~=13.3.0
+aiofiles~=24.1.0
 aiohttp~=3.11.11
+asyncpg~=0.30.0
 
 # database packages
 graspologic
@@ -9,14 +11,20 @@ hnswlib
 nano-vectordb
 neo4j~=5.27.0
 networkx~=3.2.1
+
+numpy~=2.2.0
 ollama~=0.4.4
 openai~=1.58.1
 oracledb
+psycopg-pool~=3.2.4
 psycopg[binary,pool]~=3.2.3
+pydantic~=2.10.4
 pymilvus
 pymongo
 pymysql
+python-dotenv~=1.0.1
 pyvis~=0.3.2
+setuptools~=70.0.0
 # lmdeploy[all]
 sqlalchemy~=2.0.36
 tenacity~=9.0.0
@@ -25,14 +33,6 @@ tenacity~=9.0.0
 # LLM packages
 tiktoken~=0.8.0
 torch~=2.5.1+cu121
+tqdm~=4.67.1
 transformers~=4.47.1
 xxhash
-
-numpy~=2.2.0
-aiofiles~=24.1.0
-pydantic~=2.10.4
-python-dotenv~=1.0.1
-psycopg-pool~=3.2.4
-tqdm~=4.67.1
-asyncpg~=0.30.0
-setuptools~=70.0.0
