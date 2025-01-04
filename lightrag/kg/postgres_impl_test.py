@@ -1,21 +1,24 @@
 import asyncio
 import asyncpg
-import sys, os
+import sys
+import os
 
 import psycopg
 from psycopg_pool import AsyncConnectionPool
 from lightrag.kg.postgres_impl import PostgreSQLDB, PGGraphStorage
 
-DB="rag"
-USER="rag"
-PASSWORD="rag"
-HOST="localhost"
-PORT="15432"
+DB = "rag"
+USER = "rag"
+PASSWORD = "rag"
+HOST = "localhost"
+PORT = "15432"
 os.environ["AGE_GRAPH_NAME"] = "dickens"
 
 if sys.platform.startswith("win"):
     import asyncio.windows_events
+
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 
 async def get_pool():
     return await asyncpg.create_pool(
@@ -23,11 +26,14 @@ async def get_pool():
         min_size=10,
         max_size=10,
         max_queries=5000,
-        max_inactive_connection_lifetime=300.0
+        max_inactive_connection_lifetime=300.0,
     )
 
+
 async def main1():
-    connection_string = f"dbname='{DB}' user='{USER}' password='{PASSWORD}' host='{HOST}' port={PORT}"
+    connection_string = (
+        f"dbname='{DB}' user='{USER}' password='{PASSWORD}' host='{HOST}' port={PORT}"
+    )
     pool = AsyncConnectionPool(connection_string, open=False)
     await pool.open()
 
@@ -36,17 +42,18 @@ async def main1():
         async with conn.cursor() as curs:
             try:
                 await curs.execute('SET search_path = ag_catalog, "$user", public')
-                await curs.execute(f"SELECT create_graph('dickens-2')")
+                await curs.execute("SELECT create_graph('dickens-2')")
                 await conn.commit()
                 print("create_graph success")
             except (
-                    psycopg.errors.InvalidSchemaName,
-                    psycopg.errors.UniqueViolation,
+                psycopg.errors.InvalidSchemaName,
+                psycopg.errors.UniqueViolation,
             ):
                 print("create_graph already exists")
                 await conn.rollback()
     finally:
         pass
+
 
 db = PostgreSQLDB(
     config={
@@ -58,6 +65,7 @@ db = PostgreSQLDB(
     }
 )
 
+
 async def query_with_age():
     await db.initdb()
     graph = PGGraphStorage(
@@ -68,6 +76,7 @@ async def query_with_age():
     graph.db = db
     res = await graph.get_node('"CHRISTMAS-TIME"')
     print("Node is: ", res)
+
 
 async def create_edge_with_age():
     await db.initdb()
@@ -89,31 +98,28 @@ async def create_edge_with_age():
             "source_id": "chunk-1d4b58de5429cd1261370c231c8673e8",
         },
     )
-    res = await graph.get_edge('THE CRATCHITS', '"THE GIRLS"')
+    res = await graph.get_edge("THE CRATCHITS", '"THE GIRLS"')
     print("Edge is: ", res)
 
 
 async def main():
     pool = await get_pool()
-    # 如果还有其它什么特殊参数，也可以直接往里面传递，因为设置了 **connect_kwargs
-    # 专门用来设置一些数据库独有的某些属性
-    # 从池子中取出一个连接
     sql = r"SELECT * FROM ag_catalog.cypher('dickens', $$ MATCH (n:帅哥) RETURN n $$) AS (n ag_catalog.agtype)"
     # cypher = "MATCH (n:how_are_you_doing) RETURN n"
     async with pool.acquire() as conn:
-            try:
-                await conn.execute("""SET search_path = ag_catalog, "$user", public;select create_graph('dickens')""")
-            except asyncpg.exceptions.InvalidSchemaNameError:
-                print("create_graph already exists")
-            # stmt = await conn.prepare(sql)
-            row = await conn.fetch(sql)
-            print("row is: ", row)
+        try:
+            await conn.execute(
+                """SET search_path = ag_catalog, "$user", public;select create_graph('dickens')"""
+            )
+        except asyncpg.exceptions.InvalidSchemaNameError:
+            print("create_graph already exists")
+        # stmt = await conn.prepare(sql)
+        row = await conn.fetch(sql)
+        print("row is: ", row)
 
-            # 解决办法就是起一个别名
-            row = await conn.fetchrow("select '100'::int + 200 as result")
-            print(row)  # <Record result=300>
-    # 我们的连接是从池子里面取出的，上下文结束之后会自动放回到到池子里面
+        row = await conn.fetchrow("select '100'::int + 200 as result")
+        print(row)  # <Record result=300>
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(query_with_age())
