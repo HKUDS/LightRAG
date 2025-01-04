@@ -98,23 +98,19 @@ def _chunking_text_by_markerdown_header_loop(
         content: str
 ) -> list:
     content_splits = []
-    # 循环判断被首次分割的内容，如果超过制定长度，再利用下级标题进行切割
-    if len(content) > max_token_size:
-        header = str("#" * header_level)
-        header_text = f"Header {header_level}"
-        markdown_splitter = MarkdownHeaderTextSplitter(
-            headers_to_split_on=[(header, header_text)],
-            strip_headers=False,
-        )
-        md_splits = markdown_splitter.split_text(content)
-        md_loop_splits = _chunking_list_by_markerdown_header_loop(
-            max_token_size=max_token_size,
-            header_level=header_level + 1,
-            contents=md_splits,
-        )
-        content_splits.extend(md_loop_splits)
-    else:
-        content_splits.append(content)
+    header = str("#" * header_level)
+    header_text = f"Header {header_level}"
+    markdown_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=[(header, header_text)],
+        strip_headers=False,
+    )
+    md_splits = markdown_splitter.split_text(content)
+    md_loop_splits = _chunking_list_by_markerdown_header_loop(
+        max_token_size=max_token_size,
+        header_level=header_level + 1,
+        contents=md_splits,
+    )
+    content_splits.extend(md_loop_splits)
     return content_splits
 
 
