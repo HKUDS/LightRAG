@@ -1077,7 +1077,7 @@ Each server has its own specific configuration options:
 | --key | none | Access Key to protect the lightrag service |
 
 
-For protecting the server using an authentication key, you can also use an environment variable named `LIGHTRAG_API_KEY`. 
+For protecting the server using an authentication key, you can also use an environment variable named `LIGHTRAG_API_KEY`.
 ### Example Usage
 
 #### LoLLMs RAG Server
@@ -1088,6 +1088,10 @@ lollms-lightrag-server --model mistral-nemo --port 8080 --working-dir ./custom_r
 
 # Using specific models (ensure they are installed in your LoLLMs instance)
 lollms-lightrag-server --model mistral-nemo:latest --embedding-model bge-m3 --embedding-dim 1024
+
+# Using specific models and an authentication key
+lollms-lightrag-server --model mistral-nemo:latest --embedding-model bge-m3 --embedding-dim 1024 --key ky-mykey
+
 ```
 
 #### Ollama RAG Server
