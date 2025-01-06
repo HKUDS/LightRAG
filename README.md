@@ -887,69 +887,6 @@ def extract_queries(file_path):
 ```
 </details>
 
-## Code Structure
-
-```python
-.
-├── .github/
-│   ├── workflows/
-│   │   └── linting.yaml
-├── examples/
-│   ├── batch_eval.py
-│   ├── generate_query.py
-│   ├── graph_visual_with_html.py
-│   ├── graph_visual_with_neo4j.py
-│   ├── insert_custom_kg.py
-│   ├── lightrag_api_openai_compatible_demo.py
-│   ├── lightrag_api_oracle_demo..py
-│   ├── lightrag_azure_openai_demo.py
-│   ├── lightrag_bedrock_demo.py
-│   ├── lightrag_hf_demo.py
-│   ├── lightrag_lmdeploy_demo.py
-│   ├── lightrag_nvidia_demo.py
-│   ├── lightrag_ollama_demo.py
-│   ├── lightrag_openai_compatible_demo.py
-│   ├── lightrag_openai_demo.py
-│   ├── lightrag_oracle_demo.py
-│   ├── lightrag_siliconcloud_demo.py
-│   └── vram_management_demo.py
-├── lightrag/
-│   ├── api/
-│   │   ├── lollms_lightrag_server.py
-│   │   ├── ollama_lightrag_server.py
-│   │   ├── openai_lightrag_server.py
-│   │   ├── azure_openai_lightrag_server.py
-│   │   └── requirements.txt
-│   ├── kg/
-│   │   ├── __init__.py
-│   │   ├── oracle_impl.py
-│   │   └── neo4j_impl.py
-│   ├── __init__.py
-│   ├── base.py
-│   ├── lightrag.py
-│   ├── llm.py
-│   ├── operate.py
-│   ├── prompt.py
-│   ├── storage.py
-│   └── utils.py
-├── reproduce/
-│   ├── Step_0.py
-│   ├── Step_1_openai_compatible.py
-│   ├── Step_1.py
-│   ├── Step_2.py
-│   ├── Step_3_openai_compatible.py
-│   └── Step_3.py
-├── .gitignore
-├── .pre-commit-config.yaml
-├── get_all_edges_nx.py
-├── LICENSE
-├── README.md
-├── requirements.txt
-├── setup.py
-├── test_neo4j.py
-└── test.py
-```
-
 ## Install with API Support
 
 LightRAG provides optional API support through FastAPI servers that add RAG capabilities to existing LLM services. You can install LightRAG with API support in two ways:
