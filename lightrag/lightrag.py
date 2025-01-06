@@ -177,7 +177,7 @@ class LightRAG:
 
     enable_llm_cache: bool = True
     # Sometimes there are some reason the LLM failed at Extracting Entities, and we want to continue without LLM cost, we can use this flag
-    enable_llm_cache_for_entity_extract: bool = False
+    enable_llm_cache_for_entity_extract: bool = True
 
     # extension
     addon_params: dict = field(default_factory=dict)
