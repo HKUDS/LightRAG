@@ -176,6 +176,8 @@ class LightRAG:
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
 
     enable_llm_cache: bool = True
+    # Sometimes there are some reason the LLM failed at Extracting Entities, and we want to continue without LLM cost, we can use this flag
+    enable_llm_cache_for_entity_extract: bool = False
 
     # extension
     addon_params: dict = field(default_factory=dict)
@@ -402,6 +404,7 @@ class LightRAG:
                             knowledge_graph_inst=self.chunk_entity_relation_graph,
                             entity_vdb=self.entities_vdb,
                             relationships_vdb=self.relationships_vdb,
+                            llm_response_cache=self.llm_response_cache,
                             global_config=asdict(self),
                         )
 

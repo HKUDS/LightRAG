@@ -151,7 +151,10 @@ class PostgreSQLDB:
         try:
             await conn.execute('SET search_path = ag_catalog, "$user", public')
             await conn.execute(f"""select create_graph('{graph_name}')""")
-        except asyncpg.exceptions.InvalidSchemaNameError:
+        except (
+            asyncpg.exceptions.InvalidSchemaNameError,
+            asyncpg.exceptions.UniqueViolationError,
+        ):
             pass
 
 
@@ -160,7 +163,6 @@ class PGKVStorage(BaseKVStorage):
     db: PostgreSQLDB = None
 
     def __post_init__(self):
-        self._data = {}
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
     ################ QUERY METHODS ################
@@ -177,6 +179,19 @@ class PGKVStorage(BaseKVStorage):
         else:
             res = await self.db.query(sql, params)
         if res:
+            return res
+        else:
+            return None
+
+    async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
+        """Specifically for llm_response_cache."""
+        sql = SQL_TEMPLATES["get_by_mode_id_" + self.namespace]
+        params = {"workspace": self.db.workspace, mode: mode, "id": id}
+        if "llm_response_cache" == self.namespace:
+            array_res = await self.db.query(sql, params, multirows=True)
+            res = {}
+            for row in array_res:
+                res[row["id"]] = row
             return res
         else:
             return None
@@ -229,33 +244,30 @@ class PGKVStorage(BaseKVStorage):
 
     ################ INSERT METHODS ################
     async def upsert(self, data: Dict[str, dict]):
-        left_data = {k: v for k, v in data.items() if k not in self._data}
-        self._data.update(left_data)
         if self.namespace == "text_chunks":
             pass
         elif self.namespace == "full_docs":
-            for k, v in self._data.items():
+            for k, v in data.items():
                 upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
-                data = {
+                _data = {
                     "id": k,
                     "content": v["content"],
                     "workspace": self.db.workspace,
                 }
-                await self.db.execute(upsert_sql, data)
+                await self.db.execute(upsert_sql, _data)
         elif self.namespace == "llm_response_cache":
-            for mode, items in self._data.items():
+            for mode, items in data.items():
                 for k, v in items.items():
                     upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
-                    data = {
+                    _data = {
                         "workspace": self.db.workspace,
                         "id": k,
                         "original_prompt": v["original_prompt"],
-                        "return": v["return"],
+                        "return_value": v["return"],
                         "mode": mode,
                     }
-                    await self.db.execute(upsert_sql, data)
 
-        return left_data
+                    await self.db.execute(upsert_sql, _data)
 
     async def index_done_callback(self):
         if self.namespace in ["full_docs", "text_chunks"]:
@@ -977,9 +989,6 @@ class PGGraphStorage(BaseGraphStorage):
         source_node_label = source_node_id.strip('"')
         target_node_label = target_node_id.strip('"')
         edge_properties = edge_data
-        logger.info(
-            f"-- inserting edge: {source_node_label} -> {target_node_label}: {edge_data}"
-        )
 
         query = """MATCH (source:`{src_label}`)
                 WITH source
@@ -1028,8 +1037,8 @@ TABLES = {
                     doc_name VARCHAR(1024),
                     content TEXT,
                     meta JSONB,
-                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updatetime TIMESTAMP,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -1042,8 +1051,8 @@ TABLES = {
                     tokens INTEGER,
                     content TEXT,
                     content_vector VECTOR,
-                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updatetime TIMESTAMP,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -1054,8 +1063,8 @@ TABLES = {
                     entity_name VARCHAR(255),
                     content TEXT,
                     content_vector VECTOR,
-                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updatetime TIMESTAMP,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -1067,8 +1076,8 @@ TABLES = {
                     target_id VARCHAR(256),
                     content TEXT,
                     content_vector VECTOR,
-                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updatetime TIMESTAMP,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -1078,10 +1087,10 @@ TABLES = {
 	                id varchar(255) NOT NULL,
 	                mode varchar(32) NOT NULL,
                     original_prompt TEXT,
-                    return TEXT,
-                    createtime TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updatetime TIMESTAMP,
-	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, id)
+                    return_value TEXT,
+                    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP,
+	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, mode, id)
                     )"""
     },
     "LIGHTRAG_DOC_STATUS": {
@@ -1109,9 +1118,12 @@ SQL_TEMPLATES = {
                                 chunk_order_index, full_doc_id
                                 FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
                             """,
-    "get_by_id_llm_response_cache": """SELECT id, original_prompt, COALESCE("return", '') as "return", mode
+    "get_by_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode=$2
                                """,
+    "get_by_mode_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
+                           FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode=$2 AND id=$3
+                          """,
     "get_by_ids_full_docs": """SELECT id, COALESCE(content, '') as content
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id IN ({ids})
                             """,
@@ -1119,22 +1131,22 @@ SQL_TEMPLATES = {
                                   chunk_order_index, full_doc_id
                                    FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id IN ({ids})
                                 """,
-    "get_by_ids_llm_response_cache": """SELECT id, original_prompt, COALESCE("return", '') as "return", mode
+    "get_by_ids_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
                                  FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode= IN ({ids})
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
     "upsert_doc_full": """INSERT INTO LIGHTRAG_DOC_FULL (id, content, workspace)
                         VALUES ($1, $2, $3)
                         ON CONFLICT (workspace,id) DO UPDATE
-                           SET content = $2, updatetime = CURRENT_TIMESTAMP
+                           SET content = $2, update_time = CURRENT_TIMESTAMP
                        """,
-    "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,"return",mode)
+    "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,mode)
                                       VALUES ($1, $2, $3, $4, $5)
-                                      ON CONFLICT (workspace,id) DO UPDATE
+                                      ON CONFLICT (workspace,mode,id) DO UPDATE
                                       SET original_prompt = EXCLUDED.original_prompt,
-                                      "return"=EXCLUDED."return",
+                                      return_value=EXCLUDED.return_value,
                                       mode=EXCLUDED.mode,
-                                      updatetime = CURRENT_TIMESTAMP
+                                      update_time = CURRENT_TIMESTAMP
                                      """,
     "upsert_chunk": """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, content_vector)
@@ -1145,7 +1157,7 @@ SQL_TEMPLATES = {
                       full_doc_id=EXCLUDED.full_doc_id,
                       content = EXCLUDED.content,
                       content_vector=EXCLUDED.content_vector,
-                      updatetime = CURRENT_TIMESTAMP
+                      update_time = CURRENT_TIMESTAMP
                      """,
     "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content, content_vector)
                       VALUES ($1, $2, $3, $4, $5)
@@ -1153,7 +1165,7 @@ SQL_TEMPLATES = {
                       SET entity_name=EXCLUDED.entity_name,
                       content=EXCLUDED.content,
                       content_vector=EXCLUDED.content_vector,
-                      updatetime=CURRENT_TIMESTAMP
+                      update_time=CURRENT_TIMESTAMP
                      """,
     "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
                       target_id, content, content_vector)
@@ -1162,7 +1174,7 @@ SQL_TEMPLATES = {
                       SET source_id=EXCLUDED.source_id,
                       target_id=EXCLUDED.target_id,
                       content=EXCLUDED.content,
-                      content_vector=EXCLUDED.content_vector, updatetime = CURRENT_TIMESTAMP
+                      content_vector=EXCLUDED.content_vector, update_time = CURRENT_TIMESTAMP
                      """,
     # SQL for VectorStorage
     "entities": """SELECT entity_name FROM
