@@ -43,6 +43,7 @@ async def main():
         llm_model_name="glm-4-flashx",
         llm_model_max_async=4,
         llm_model_max_token_size=32768,
+        enable_llm_cache_for_entity_extract=True,
         embedding_func=EmbeddingFunc(
             embedding_dim=768,
             max_token_size=8192,
