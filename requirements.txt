@@ -32,7 +32,8 @@ tenacity~=9.0.0
 
 # LLM packages
 tiktoken~=0.8.0
-torch~=2.5.1+cu121
+# torch~=2.5.1+cu121
+torch~=2.5.1
 tqdm~=4.67.1
 transformers~=4.47.1
 xxhash
