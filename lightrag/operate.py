@@ -380,8 +380,6 @@ async def extract_entities(
 ) -> Union[BaseGraphStorage, None]:
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
-    # 采用实体、关系分步骤识别 True：合并识别 False：分步骤识别 by bumaple 2024-12-12
-    entity_relationship_extraction_step = global_config["entity_relationship_extraction_step"]
 
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
@@ -391,75 +389,39 @@ async def extract_entities(
     entity_types = global_config["addon_params"].get(
         "entity_types", PROMPTS["DEFAULT_ENTITY_TYPES"]
     )
-    # 增加判断 是否需要合并识别 by bumaple 2024-12-12
-    if entity_relationship_extraction_step:
-        # 自定义新增 关系类型列表 by bumaple 2024-12-12
-        relationship_types = global_config["addon_params"].get(
-            "relationship_types", PROMPTS["DEFAULT_RELATIONSHIP_TYPES"]
-        )
-    else:
-        relationship_types = ''
 
     example_number = global_config["addon_params"].get("example_number", None)
-    # 增加判断 是否需要合并识别 by bumaple 2024-12-12
-    if not entity_relationship_extraction_step:
-        # 合同识别
-        if example_number and example_number < len(PROMPTS["entity_extraction_examples"]):
-            entity_examples = "\n".join(
-                PROMPTS["entity_extraction_examples"][: int(example_number)]
-            )
-        else:
-            entity_examples = "\n".join(PROMPTS["entity_extraction_examples"])
-        relationship_examples = ''
+
+    if example_number and example_number < len(PROMPTS["entity_extraction_examples"]):
+        entity_examples = "\n".join(
+            PROMPTS["entity_extraction_examples"][: int(example_number)]
+        )
     else:
-        # 分步骤识别
-        if example_number and example_number < len(PROMPTS["entity_extraction_alone_examples"]):
-            entity_examples = "\n".join(
-                PROMPTS["entity_extraction_alone_examples"][: int(example_number)]
-            )
-        else:
-            entity_examples = "\n".join(PROMPTS["entity_extraction_alone_examples"])
-        if example_number and example_number < len(PROMPTS["relationship_extraction_alone_examples"]):
-            relationship_examples = "\n".join(
-                PROMPTS["relationship_extraction_alone_examples"][: int(example_number)]
-            )
-        else:
-            relationship_examples = "\n".join(PROMPTS["relationship_extraction_alone_examples"])
+        entity_examples = "\n".join(PROMPTS["entity_extraction_examples"])
+    relationship_examples = ''
 
     example_context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=",".join(entity_types),
-        # 自定义新增 关系类型列表 by bumaple 2024-12-12
-        relationship_types="".join(relationship_types),
         language=language,
     )
     # add example's format
     entity_examples = entity_examples.format(**example_context_base)
-    # 增加判断 是否需要合并识别 by bumaple 2024-12-12
-    if entity_relationship_extraction_step:
-        relationship_examples = relationship_examples.format(**example_context_base)
 
     # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
     extend_entity_sn = global_config["extend_entity_sn"]
     extend_entity_title = global_config["extend_entity_title"]
 
-    # 增加判断 是否需要合并识别 by bumaple 2024-12-12
-    if not entity_relationship_extraction_step:
-        entity_extract_prompt = PROMPTS["entity_extraction"]
-    else:
-        entity_extract_prompt = PROMPTS["entity_extraction_alone"]
-        relationship_extraction_prompt = PROMPTS["relationship_extraction_alone"]
+    entity_extract_prompt = PROMPTS["entity_extraction"]
+
     context_base = dict(
         tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
         record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
         completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
         entity_types=",".join(entity_types),
         entity_examples=entity_examples,
-        # 自定义新增 关系类型列表 by bumaple 2024-12-12
-        relationship_types="".join(relationship_types),
-        relationship_examples=relationship_examples,
         # 自定义新增 主实体编号、名称 by bumaple 2024-12-03
         extend_entity_sn=extend_entity_sn,
         extend_entity_title=extend_entity_title,
@@ -467,14 +429,6 @@ async def extract_entities(
     )
     entity_continue_prompt = PROMPTS["entiti_continue_extraction"]
     entity_if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]
-
-    # 增加判断 是否需要合并识别 by bumaple 2024-12-12
-    if entity_relationship_extraction_step:
-        relationship_continue_prompt = PROMPTS["relationship_continue_extraction"]
-        relationship_if_loop_prompt = PROMPTS["relationship_if_loop_extraction"]
-    else:
-        relationship_continue_prompt = ''
-        relationship_if_loop_prompt = ''
 
     already_processed = 0
     already_entities = 0
@@ -508,36 +462,6 @@ async def extract_entities(
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
             if if_loop_result != "yes":
                 break
-
-        # 增加判断 是否需要合并识别 by bumaple 2024-12-12
-        if entity_relationship_extraction_step:
-            # 自定义新增 根据实体提取关系 by bumaple 2024-12-05
-            context_base["entity_list"] = final_result
-            relationship_hint_prompt = relationship_extraction_prompt.format(
-                **context_base, input_text="{input_text}"
-            ).format(**context_base, input_text=content)
-
-            relationship_final_result = await use_llm_func(relationship_hint_prompt)
-            relationship_history = pack_user_ass_to_openai_messages(relationship_hint_prompt, relationship_final_result)
-            for now_glean_index in range(entity_extract_max_gleaning):
-                relationship_continue_hint_prompt = relationship_continue_prompt.format(
-                    **context_base, input_text="{input_text}"
-                ).format(**context_base, input_text=content)
-                glean_result = await use_llm_func(relationship_continue_hint_prompt, history_messages=relationship_history)
-
-                relationship_history += pack_user_ass_to_openai_messages(relationship_continue_hint_prompt, glean_result)
-                relationship_final_result += glean_result
-                if now_glean_index == entity_extract_max_gleaning - 1:
-                    break
-
-                if_loop_result: str = await use_llm_func(
-                    relationship_if_loop_prompt, history_messages=relationship_history
-                )
-                if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
-                if if_loop_result != "yes":
-                    break
-
-            final_result += relationship_final_result
 
         records = split_string_by_multi_markers(
             final_result,

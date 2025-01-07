@@ -195,8 +195,6 @@ class LightRAG:
     chunk_type: str = 'token_size'
     # 自定义新增 块标题层级 by bumaple 2024-12-11
     chunk_header_level: int = 2
-    # 采用实体、关系分步骤识别 True：分步骤识别 False：合并识别
-    entity_relationship_extraction_step: bool = False
 
     # Add new field for document status storage type
     doc_status_storage: str = field(default="JsonDocStatusStorage")
