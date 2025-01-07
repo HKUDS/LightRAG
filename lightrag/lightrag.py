@@ -96,8 +96,12 @@ ChromaVectorDBStorage = lazy_external_import(".kg.chroma_impl", "ChromaVectorDBS
 TiDBKVStorage = lazy_external_import(".kg.tidb_impl", "TiDBKVStorage")
 TiDBVectorDBStorage = lazy_external_import(".kg.tidb_impl", "TiDBVectorDBStorage")
 TiDBGraphStorage = lazy_external_import(".kg.tidb_impl", "TiDBGraphStorage")
+PGKVStorage = lazy_external_import(".kg.postgres_impl", "PGKVStorage")
+PGVectorStorage = lazy_external_import(".kg.postgres_impl", "PGVectorStorage")
 AGEStorage = lazy_external_import(".kg.age_impl", "AGEStorage")
+PGGraphStorage = lazy_external_import(".kg.postgres_impl", "PGGraphStorage")
 GremlinStorage = lazy_external_import(".kg.gremlin_impl", "GremlinStorage")
+PGDocStatusStorage = lazy_external_import(".kg.postgres_impl", "PGDocStatusStorage")
 
 
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
@@ -183,6 +187,8 @@ class LightRAG:
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
 
     enable_llm_cache: bool = True
+    # Sometimes there are some reason the LLM failed at Extracting Entities, and we want to continue without LLM cost, we can use this flag
+    enable_llm_cache_for_entity_extract: bool = True
 
     # extension
     addon_params: dict = field(default_factory=dict)
@@ -316,6 +322,10 @@ class LightRAG:
             "Neo4JStorage": Neo4JStorage,
             "OracleGraphStorage": OracleGraphStorage,
             "AGEStorage": AGEStorage,
+            "PGGraphStorage": PGGraphStorage,
+            "PGKVStorage": PGKVStorage,
+            "PGDocStatusStorage": PGDocStatusStorage,
+            "PGVectorStorage": PGVectorStorage,
             "TiDBGraphStorage": TiDBGraphStorage,
             "GremlinStorage": GremlinStorage,
             # "ArangoDBStorage": ArangoDBStorage
@@ -443,6 +453,7 @@ class LightRAG:
                             knowledge_graph_inst=self.chunk_entity_relation_graph,
                             entity_vdb=self.entities_vdb,
                             relationships_vdb=self.relationships_vdb,
+                            llm_response_cache=self.llm_response_cache,
                             global_config=asdict(self),
                         )
 

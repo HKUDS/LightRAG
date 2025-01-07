@@ -468,7 +468,10 @@ async def handle_cache(hashing_kv, args_hash, prompt, mode="default"):
 
     # For naive mode, only use simple cache matching
     if mode == "naive":
-        mode_cache = await hashing_kv.get_by_id(mode) or {}
+        if exists_func(hashing_kv, "get_by_mode_and_id"):
+            mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
+        else:
+            mode_cache = await hashing_kv.get_by_id(mode) or {}
         if args_hash in mode_cache:
             return mode_cache[args_hash]["return"], None, None, None
         return None, None, None, None
@@ -502,7 +505,10 @@ async def handle_cache(hashing_kv, args_hash, prompt, mode="default"):
             return best_cached_response, None, None, None
     else:
         # Use regular cache
-        mode_cache = await hashing_kv.get_by_id(mode) or {}
+        if exists_func(hashing_kv, "get_by_mode_and_id"):
+            mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
+        else:
+            mode_cache = await hashing_kv.get_by_id(mode) or {}
         if args_hash in mode_cache:
             return mode_cache[args_hash]["return"], None, None, None
 
@@ -524,7 +530,13 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     if hashing_kv is None or hasattr(cache_data.content, "__aiter__"):
         return
 
-    mode_cache = await hashing_kv.get_by_id(cache_data.mode) or {}
+    if exists_func(hashing_kv, "get_by_mode_and_id"):
+        mode_cache = (
+            await hashing_kv.get_by_mode_and_id(cache_data.mode, cache_data.args_hash)
+            or {}
+        )
+    else:
+        mode_cache = await hashing_kv.get_by_id(cache_data.mode) or {}
 
     mode_cache[cache_data.args_hash] = {
         "return": cache_data.content,
@@ -557,3 +569,15 @@ def safe_unicode_decode(content):
     )
 
     return decoded_content
+
+
+def exists_func(obj, func_name: str) -> bool:
+    """Check if a function exists in an object or not.
+    :param obj:
+    :param func_name:
+    :return: True / False
+    """
+    if callable(getattr(obj, func_name, None)):
+        return True
+    else:
+        return False
