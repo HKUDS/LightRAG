@@ -4,7 +4,6 @@ import re
 from tqdm.asyncio import tqdm as tqdm_async
 from typing import Union
 from collections import Counter, defaultdict
-import warnings
 from .utils import (
     logger,
     clean_str,
@@ -605,10 +604,16 @@ async def kg_query(
         logger.warning("low_level_keywords and high_level_keywords is empty")
         return PROMPTS["fail_response"]
     if ll_keywords == [] and query_param.mode in ["local", "hybrid"]:
-        logger.warning("low_level_keywords is empty, switching from %s mode to global mode", query_param.mode)
+        logger.warning(
+            "low_level_keywords is empty, switching from %s mode to global mode",
+            query_param.mode,
+        )
         query_param.mode = "global"
     if hl_keywords == [] and query_param.mode in ["global", "hybrid"]:
-        logger.warning("high_level_keywords is empty, switching from %s mode to local mode", query_param.mode)
+        logger.warning(
+            "high_level_keywords is empty, switching from %s mode to local mode",
+            query_param.mode,
+        )
         query_param.mode = "local"
 
     ll_keywords = ", ".join(ll_keywords) if ll_keywords else ""
@@ -699,14 +704,22 @@ async def _build_query_context(
             query_param,
         )
     else:  # hybrid mode
-        ll_entities_context, ll_relations_context, ll_text_units_context = await _get_node_data(
+        (
+            ll_entities_context,
+            ll_relations_context,
+            ll_text_units_context,
+        ) = await _get_node_data(
             ll_keywords,
             knowledge_graph_inst,
             entities_vdb,
             text_chunks_db,
             query_param,
         )
-        hl_entities_context, hl_relations_context, hl_text_units_context = await _get_edge_data(
+        (
+            hl_entities_context,
+            hl_relations_context,
+            hl_text_units_context,
+        ) = await _get_edge_data(
             hl_keywords,
             knowledge_graph_inst,
             relationships_vdb,
