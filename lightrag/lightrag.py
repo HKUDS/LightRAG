@@ -45,6 +45,7 @@ from .storage import (
 
 from .prompt import GRAPH_FIELD_SEP
 
+
 # future KG integrations
 
 # from .kg.ArangoDB_impl import (
@@ -167,7 +168,7 @@ class LightRAG:
 
     # LLM
     llm_model_func: callable = gpt_4o_mini_complete  # hf_model_complete#
-    llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  #'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
+    llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  # 'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
     llm_model_max_token_size: int = 32768
     llm_model_max_async: int = 16
     llm_model_kwargs: dict = field(default_factory=dict)
@@ -313,15 +314,18 @@ class LightRAG:
             "JsonDocStatusStorage": JsonDocStatusStorage,
         }
 
-    def insert(self, string_or_strings):
+    def insert(self, string_or_strings, split_by_character=None):
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.ainsert(string_or_strings))
+        return loop.run_until_complete(
+            self.ainsert(string_or_strings, split_by_character)
+        )
 
-    async def ainsert(self, string_or_strings):
+    async def ainsert(self, string_or_strings, split_by_character):
         """Insert documents with checkpoint support
 
         Args:
             string_or_strings: Single document string or list of document strings
+            split_by_character: if split_by_character is not None, split the string by character
         """
         if isinstance(string_or_strings, str):
             string_or_strings = [string_or_strings]
@@ -358,7 +362,7 @@ class LightRAG:
             batch_docs = dict(list(new_docs.items())[i : i + batch_size])
 
             for doc_id, doc in tqdm_async(
-                batch_docs.items(), desc=f"Processing batch {i//batch_size + 1}"
+                batch_docs.items(), desc=f"Processing batch {i // batch_size + 1}"
             ):
                 try:
                     # Update status to processing
@@ -379,6 +383,7 @@ class LightRAG:
                         }
                         for dp in chunking_by_token_size(
                             doc["content"],
+                            split_by_character=split_by_character,
                             overlap_token_size=self.chunk_overlap_token_size,
                             max_token_size=self.chunk_token_size,
                             tiktoken_model=self.tiktoken_model_name,
