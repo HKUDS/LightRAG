@@ -320,7 +320,7 @@ class LightRAG:
             self.ainsert(string_or_strings, split_by_character)
         )
 
-    async def ainsert(self, string_or_strings, split_by_character):
+    async def ainsert(self, string_or_strings, split_by_character=None):
         """Insert documents with checkpoint support
 
         Args:
