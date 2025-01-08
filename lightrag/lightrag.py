@@ -460,16 +460,15 @@ class LightRAG:
 
     def insert_custom_chunks(self, full_text: str, text_chunks: list[str]):
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.ainsert_custom_chunks(full_text, text_chunks))
+        return loop.run_until_complete(
+            self.ainsert_custom_chunks(full_text, text_chunks)
+        )
 
     async def ainsert_custom_chunks(self, full_text: str, text_chunks: list[str]):
-        
         update_storage = False
         try:
             doc_key = compute_mdhash_id(full_text.strip(), prefix="doc-")
-            new_docs = {
-                doc_key: {"content": full_text.strip()}
-            }
+            new_docs = {doc_key: {"content": full_text.strip()}}
 
             _add_doc_keys = await self.full_docs.filter_keys([doc_key])
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
@@ -484,13 +483,15 @@ class LightRAG:
             for chunk_text in text_chunks:
                 chunk_text_stripped = chunk_text.strip()
                 chunk_key = compute_mdhash_id(chunk_text_stripped, prefix="chunk-")
-            
+
                 inserting_chunks[chunk_key] = {
                     "content": chunk_text_stripped,
                     "full_doc_id": doc_key,
                 }
 
-            _add_chunk_keys = await self.text_chunks.filter_keys(list(inserting_chunks.keys()))
+            _add_chunk_keys = await self.text_chunks.filter_keys(
+                list(inserting_chunks.keys())
+            )
             inserting_chunks = {
                 k: v for k, v in inserting_chunks.items() if k in _add_chunk_keys
             }
