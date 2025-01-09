@@ -17,6 +17,7 @@ from openai import (
     RateLimitError,
     APITimeoutError,
     AsyncAzureOpenAI,
+    OpenAI,
 )
 from pydantic import BaseModel, Field
 from tenacity import (
@@ -63,9 +64,19 @@ async def openai_complete_if_cache(
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
-    openai_async_client = (
-        AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
-    )
+    # 处理流式输出 by bumaple 2025-01-09
+    stream = False
+    if 'stream' in kwargs:
+        stream = kwargs["stream"]
+
+    if not stream:
+        openai_async_client = (
+            OpenAI() if base_url is None else OpenAI(base_url=base_url)
+        )
+    else:
+        openai_async_client = (
+            AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
+        )
     kwargs.pop("hashing_kv", None)
     kwargs.pop("keyword_extraction", None)
     messages = []
@@ -91,13 +102,23 @@ async def openai_complete_if_cache(
     if hasattr(response, "__aiter__"):
 
         async def inner():
-            async for chunk in response:
-                content = chunk.choices[0].delta.content
-                if content is None:
-                    continue
-                if r"\u" in content:
-                    content = safe_unicode_decode(content.encode("utf-8"))
-                yield content
+            # 处理流式输出 by bumaple 2025-01-09
+            if not stream:
+                async for chunk in response:
+                    content = chunk.choices[0].delta.content
+                    if content is None:
+                        continue
+                    if r"\u" in content:
+                        content = safe_unicode_decode(content.encode("utf-8"))
+                    yield content
+            else:
+                for chunk in response:
+                    content = chunk.choices[0].delta.content
+                    if content is None:
+                        continue
+                    if r"\u" in content:
+                        content = safe_unicode_decode(content.encode("utf-8"))
+                    yield content
 
         return inner()
     else:
