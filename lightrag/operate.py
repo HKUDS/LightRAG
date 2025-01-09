@@ -36,6 +36,7 @@ import time
 def chunking_by_token_size(
     content: str,
     split_by_character=None,
+    split_by_character_only=False,
     overlap_token_size=128,
     max_token_size=1024,
     tiktoken_model="gpt-4o",
@@ -45,21 +46,26 @@ def chunking_by_token_size(
     if split_by_character:
         raw_chunks = content.split(split_by_character)
         new_chunks = []
-        for chunk in raw_chunks:
-            _tokens = encode_string_by_tiktoken(chunk, model_name=tiktoken_model)
-            if len(_tokens) > max_token_size:
-                for start in range(
-                    0, len(_tokens), max_token_size - overlap_token_size
-                ):
-                    chunk_content = decode_tokens_by_tiktoken(
-                        _tokens[start : start + max_token_size],
-                        model_name=tiktoken_model,
-                    )
-                    new_chunks.append(
-                        (min(max_token_size, len(_tokens) - start), chunk_content)
-                    )
-            else:
+        if split_by_character_only:
+            for chunk in raw_chunks:
+                _tokens = encode_string_by_tiktoken(chunk, model_name=tiktoken_model)
                 new_chunks.append((len(_tokens), chunk))
+        else:
+            for chunk in raw_chunks:
+                _tokens = encode_string_by_tiktoken(chunk, model_name=tiktoken_model)
+                if len(_tokens) > max_token_size:
+                    for start in range(
+                        0, len(_tokens), max_token_size - overlap_token_size
+                    ):
+                        chunk_content = decode_tokens_by_tiktoken(
+                            _tokens[start : start + max_token_size],
+                            model_name=tiktoken_model,
+                        )
+                        new_chunks.append(
+                            (min(max_token_size, len(_tokens) - start), chunk_content)
+                        )
+                else:
+                    new_chunks.append((len(_tokens), chunk))
         for index, (_len, chunk) in enumerate(new_chunks):
             results.append(
                 {
