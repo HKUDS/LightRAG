@@ -39,6 +39,7 @@ def chunking_by_token_size(
     overlap_token_size=128,
     max_token_size=1024,
     tiktoken_model="gpt-4o",
+    **kwargs,
 ):
     tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
     results = []
