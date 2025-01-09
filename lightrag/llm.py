@@ -101,26 +101,29 @@ async def openai_complete_if_cache(
 
     if hasattr(response, "__aiter__"):
 
-        async def inner():
-            # 处理流式输出 by bumaple 2025-01-09
-            if not stream:
-                async for chunk in response:
-                    content = chunk.choices[0].delta.content
-                    if content is None:
-                        continue
-                    if r"\u" in content:
-                        content = safe_unicode_decode(content.encode("utf-8"))
-                    yield content
-            else:
-                for chunk in response:
-                    content = chunk.choices[0].delta.content
-                    if content is None:
-                        continue
-                    if r"\u" in content:
-                        content = safe_unicode_decode(content.encode("utf-8"))
-                    yield content
+        async def inner_async():
+            async for chunk in response:
+                content = chunk.choices[0].delta.content
+                if content is None:
+                    continue
+                if r"\u" in content:
+                    content = safe_unicode_decode(content.encode("utf-8"))
+                yield content
 
-        return inner()
+        # 处理流式输出 by bumaple 2025-01-09
+        def inner_sync():
+            for chunk in response:
+                content = chunk.choices[0].delta.content
+                if content is None:
+                    continue
+                if r"\u" in content:
+                    content = safe_unicode_decode(content.encode("utf-8"))
+                yield content
+
+        if not stream:
+            return inner_async()
+        else:
+            return inner_sync()
     else:
         content = response.choices[0].message.content
         if r"\u" in content:
