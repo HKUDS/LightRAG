@@ -187,6 +187,10 @@ class LightRAG:
     # Add new field for document status storage type
     doc_status_storage: str = field(default="JsonDocStatusStorage")
 
+    # Custom Chunking Function
+    chunking_func: callable = chunking_by_token_size
+    chunking_func_kwargs: dict = field(default_factory=dict)
+
     def __post_init__(self):
         log_file = os.path.join("lightrag.log")
         set_logger(log_file)
@@ -388,13 +392,14 @@ class LightRAG:
                             **dp,
                             "full_doc_id": doc_id,
                         }
-                        for dp in chunking_by_token_size(
+                        for dp in self.chunking_func(
                             doc["content"],
                             split_by_character=split_by_character,
                             split_by_character_only=split_by_character_only,
                             overlap_token_size=self.chunk_overlap_token_size,
                             max_token_size=self.chunk_token_size,
                             tiktoken_model=self.tiktoken_model_name,
+                            **self.chunking_func_kwargs,
                         )
                     }
 
