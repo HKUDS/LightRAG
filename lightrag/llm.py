@@ -18,6 +18,7 @@ from openai import (
     APITimeoutError,
     AsyncAzureOpenAI,
     OpenAI,
+    BadRequestError,
 )
 from pydantic import BaseModel, Field
 from tenacity import (
@@ -49,7 +50,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
+        (RateLimitError, APIConnectionError, APITimeoutError, BadRequestError)
     ),
 )
 async def openai_complete_if_cache(
@@ -64,19 +65,9 @@ async def openai_complete_if_cache(
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
-    # 处理流式输出 by bumaple 2025-01-09
-    stream = False
-    if 'stream' in kwargs:
-        stream = kwargs["stream"]
-
-    if not stream:
-        openai_async_client = (
-            OpenAI() if base_url is None else OpenAI(base_url=base_url)
-        )
-    else:
-        openai_async_client = (
-            AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
-        )
+    openai_async_client = (
+        AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
+    )
     kwargs.pop("hashing_kv", None)
     kwargs.pop("keyword_extraction", None)
     messages = []
@@ -101,7 +92,7 @@ async def openai_complete_if_cache(
 
     if hasattr(response, "__aiter__"):
 
-        async def inner_async():
+        async def inner():
             async for chunk in response:
                 content = chunk.choices[0].delta.content
                 if content is None:
@@ -110,25 +101,67 @@ async def openai_complete_if_cache(
                     content = safe_unicode_decode(content.encode("utf-8"))
                 yield content
 
-        # 处理流式输出 by bumaple 2025-01-09
-        def inner_sync():
-            for chunk in response:
-                content = chunk.choices[0].delta.content
-                if content is None:
-                    continue
-                if r"\u" in content:
-                    content = safe_unicode_decode(content.encode("utf-8"))
-                yield content
-
-        if not stream:
-            return inner_async()
-        else:
-            return inner_sync()
+        return inner()
     else:
         content = response.choices[0].message.content
         if r"\u" in content:
             content = safe_unicode_decode(content.encode("utf-8"))
         return content
+
+
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=4, max=10),
+    retry=retry_if_exception_type(
+        (RateLimitError, APIConnectionError, APITimeoutError, BadRequestError)
+    ),
+)
+def openai_complete_if_cache_stream(
+    model,
+    prompt,
+    system_prompt=None,
+    history_messages=[],
+    base_url=None,
+    api_key=None,
+    stream=True,
+    stream_options={"include_usage": True},
+    **kwargs,
+) -> str:
+    if api_key:
+        os.environ["OPENAI_API_KEY"] = api_key
+
+    openai_client = (
+        OpenAI() if base_url is None else OpenAI(base_url=base_url)
+    )
+    kwargs.pop("hashing_kv", None)
+    kwargs.pop("keyword_extraction", None)
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.extend(history_messages)
+    messages.append({"role": "user", "content": prompt})
+
+    # 添加日志输出
+    logger.debug("===== Query Input to LLM =====")
+    logger.debug(f"Query: {prompt}")
+    logger.debug(f"System prompt: {system_prompt}")
+    logger.debug("Full context:")
+    if "response_format" in kwargs:
+        response = openai_client.beta.chat.completions.parse(
+            model=model, messages=messages, **kwargs
+        )
+    else:
+        response = openai_client.chat.completions.create(
+            model=model, messages=messages, stream=stream, stream_options=stream_options, **kwargs
+        )
+
+    for chunk in response:
+        content = chunk.choices[0].delta.content
+        if content is None:
+            continue
+        if r"\u" in content:
+            content = safe_unicode_decode(content.encode("utf-8"))
+        yield content
 
 
 @retry(
@@ -449,131 +482,133 @@ async def lollms_model_if_cache(
                 return await response.text()
 
 
-@lru_cache(maxsize=1)
-def initialize_lmdeploy_pipeline(
-    model,
-    tp=1,
-    chat_template=None,
-    log_level="WARNING",
-    model_format="hf",
-    quant_policy=0,
-):
-    from lmdeploy import pipeline, ChatTemplateConfig, TurbomindEngineConfig
+# 本地调试不支持，临时注释
+# @lru_cache(maxsize=1)
+# def initialize_lmdeploy_pipeline(
+#     model,
+#     tp=1,
+#     chat_template=None,
+#     log_level="WARNING",
+#     model_format="hf",
+#     quant_policy=0,
+# ):
+#     from lmdeploy import pipeline, ChatTemplateConfig, TurbomindEngineConfig
+#
+#     lmdeploy_pipe = pipeline(
+#         model_path=model,
+#         backend_config=TurbomindEngineConfig(
+#             tp=tp, model_format=model_format, quant_policy=quant_policy
+#         ),
+#         chat_template_config=(
+#             ChatTemplateConfig(model_name=chat_template) if chat_template else None
+#         ),
+#         log_level="WARNING",
+#     )
+#     return lmdeploy_pipe
 
-    lmdeploy_pipe = pipeline(
-        model_path=model,
-        backend_config=TurbomindEngineConfig(
-            tp=tp, model_format=model_format, quant_policy=quant_policy
-        ),
-        chat_template_config=(
-            ChatTemplateConfig(model_name=chat_template) if chat_template else None
-        ),
-        log_level="WARNING",
-    )
-    return lmdeploy_pipe
 
-
-@retry(
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
-    ),
-)
-async def lmdeploy_model_if_cache(
-    model,
-    prompt,
-    system_prompt=None,
-    history_messages=[],
-    chat_template=None,
-    model_format="hf",
-    quant_policy=0,
-    **kwargs,
-) -> str:
-    """
-    Args:
-        model (str): The path to the model.
-            It could be one of the following options:
-                    - i) A local directory path of a turbomind model which is
-                        converted by `lmdeploy convert` command or download
-                        from ii) and iii).
-                    - ii) The model_id of a lmdeploy-quantized model hosted
-                        inside a model repo on huggingface.co, such as
-                        "InternLM/internlm-chat-20b-4bit",
-                        "lmdeploy/llama2-chat-70b-4bit", etc.
-                    - iii) The model_id of a model hosted inside a model repo
-                        on huggingface.co, such as "internlm/internlm-chat-7b",
-                        "Qwen/Qwen-7B-Chat ", "baichuan-inc/Baichuan2-7B-Chat"
-                        and so on.
-        chat_template (str): needed when model is a pytorch model on
-            huggingface.co, such as "internlm-chat-7b",
-            "Qwen-7B-Chat ", "Baichuan2-7B-Chat" and so on,
-            and when the model name of local path did not match the original model name in HF.
-        tp (int): tensor parallel
-        prompt (Union[str, List[str]]): input texts to be completed.
-        do_preprocess (bool): whether pre-process the messages. Default to
-            True, which means chat_template will be applied.
-        skip_special_tokens (bool): Whether or not to remove special tokens
-            in the decoding. Default to be True.
-        do_sample (bool): Whether or not to use sampling, use greedy decoding otherwise.
-            Default to be False, which means greedy decoding will be applied.
-    """
-    try:
-        import lmdeploy
-        from lmdeploy import version_info, GenerationConfig
-    except Exception:
-        raise ImportError("Please install lmdeploy before initialize lmdeploy backend.")
-    kwargs.pop("hashing_kv", None)
-    kwargs.pop("response_format", None)
-    max_new_tokens = kwargs.pop("max_tokens", 512)
-    tp = kwargs.pop("tp", 1)
-    skip_special_tokens = kwargs.pop("skip_special_tokens", True)
-    do_preprocess = kwargs.pop("do_preprocess", True)
-    do_sample = kwargs.pop("do_sample", False)
-    gen_params = kwargs
-
-    version = version_info
-    if do_sample is not None and version < (0, 6, 0):
-        raise RuntimeError(
-            "`do_sample` parameter is not supported by lmdeploy until "
-            f"v0.6.0, but currently using lmdeloy {lmdeploy.__version__}"
-        )
-    else:
-        do_sample = True
-        gen_params.update(do_sample=do_sample)
-
-    lmdeploy_pipe = initialize_lmdeploy_pipeline(
-        model=model,
-        tp=tp,
-        chat_template=chat_template,
-        model_format=model_format,
-        quant_policy=quant_policy,
-        log_level="WARNING",
-    )
-
-    messages = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-
-    messages.extend(history_messages)
-    messages.append({"role": "user", "content": prompt})
-
-    gen_config = GenerationConfig(
-        skip_special_tokens=skip_special_tokens,
-        max_new_tokens=max_new_tokens,
-        **gen_params,
-    )
-
-    response = ""
-    async for res in lmdeploy_pipe.generate(
-        messages,
-        gen_config=gen_config,
-        do_preprocess=do_preprocess,
-        stream_response=False,
-        session_id=1,
-    ):
-        response += res.response
-    return response
+# 本地调试不支持，临时注释
+# @retry(
+#     stop=stop_after_attempt(3),
+#     wait=wait_exponential(multiplier=1, min=4, max=10),
+#     retry=retry_if_exception_type(
+#         (RateLimitError, APIConnectionError, APITimeoutError)
+#     ),
+# )
+# async def lmdeploy_model_if_cache(
+#     model,
+#     prompt,
+#     system_prompt=None,
+#     history_messages=[],
+#     chat_template=None,
+#     model_format="hf",
+#     quant_policy=0,
+#     **kwargs,
+# ) -> str:
+#     """
+#     Args:
+#         model (str): The path to the model.
+#             It could be one of the following options:
+#                     - i) A local directory path of a turbomind model which is
+#                         converted by `lmdeploy convert` command or download
+#                         from ii) and iii).
+#                     - ii) The model_id of a lmdeploy-quantized model hosted
+#                         inside a model repo on huggingface.co, such as
+#                         "InternLM/internlm-chat-20b-4bit",
+#                         "lmdeploy/llama2-chat-70b-4bit", etc.
+#                     - iii) The model_id of a model hosted inside a model repo
+#                         on huggingface.co, such as "internlm/internlm-chat-7b",
+#                         "Qwen/Qwen-7B-Chat ", "baichuan-inc/Baichuan2-7B-Chat"
+#                         and so on.
+#         chat_template (str): needed when model is a pytorch model on
+#             huggingface.co, such as "internlm-chat-7b",
+#             "Qwen-7B-Chat ", "Baichuan2-7B-Chat" and so on,
+#             and when the model name of local path did not match the original model name in HF.
+#         tp (int): tensor parallel
+#         prompt (Union[str, List[str]]): input texts to be completed.
+#         do_preprocess (bool): whether pre-process the messages. Default to
+#             True, which means chat_template will be applied.
+#         skip_special_tokens (bool): Whether or not to remove special tokens
+#             in the decoding. Default to be True.
+#         do_sample (bool): Whether or not to use sampling, use greedy decoding otherwise.
+#             Default to be False, which means greedy decoding will be applied.
+#     """
+#     try:
+#         import lmdeploy
+#         from lmdeploy import version_info, GenerationConfig
+#     except Exception:
+#         raise ImportError("Please install lmdeploy before initialize lmdeploy backend.")
+#     kwargs.pop("hashing_kv", None)
+#     kwargs.pop("response_format", None)
+#     max_new_tokens = kwargs.pop("max_tokens", 512)
+#     tp = kwargs.pop("tp", 1)
+#     skip_special_tokens = kwargs.pop("skip_special_tokens", True)
+#     do_preprocess = kwargs.pop("do_preprocess", True)
+#     do_sample = kwargs.pop("do_sample", False)
+#     gen_params = kwargs
+#
+#     version = version_info
+#     if do_sample is not None and version < (0, 6, 0):
+#         raise RuntimeError(
+#             "`do_sample` parameter is not supported by lmdeploy until "
+#             f"v0.6.0, but currently using lmdeloy {lmdeploy.__version__}"
+#         )
+#     else:
+#         do_sample = True
+#         gen_params.update(do_sample=do_sample)
+#
+#     lmdeploy_pipe = initialize_lmdeploy_pipeline(
+#         model=model,
+#         tp=tp,
+#         chat_template=chat_template,
+#         model_format=model_format,
+#         quant_policy=quant_policy,
+#         log_level="WARNING",
+#     )
+#
+#     messages = []
+#     if system_prompt:
+#         messages.append({"role": "system", "content": system_prompt})
+#
+#     messages.extend(history_messages)
+#     messages.append({"role": "user", "content": prompt})
+#
+#     gen_config = GenerationConfig(
+#         skip_special_tokens=skip_special_tokens,
+#         max_new_tokens=max_new_tokens,
+#         **gen_params,
+#     )
+#
+#     response = ""
+#     async for res in lmdeploy_pipe.generate(
+#         messages,
+#         gen_config=gen_config,
+#         do_preprocess=do_preprocess,
+#         stream_response=False,
+#         session_id=1,
+#     ):
+#         response += res.response
+#     return response
 
 
 class GPTKeywordExtractionFormat(BaseModel):
