@@ -40,7 +40,7 @@ PROMPTS["entity_extraction"] = """-目的-
 5.完成后，输出{completion_delimiter}
 
 -实体类型列表-
-entity_types: {entity_types}
+entity_types: [{entity_types}]
 #############################
 -范例-
 ######################
@@ -63,16 +63,12 @@ GB2761-2017
 食品中真菌毒素限量
 2017-03-17发布
 2017-09-17实施
-中华人民共和国国家卫生和计划生育委员会、国家食品药品监督管理总局 发布
+中华人民共和国国家卫生和计划生育委员会 发布
 # 前言
 GB2761-2017代替GB2761-2011《食品安全国家标准食品中真菌毒素限量》。
 GB2761-2017与GB2761-2011相比,主要变化如下:
---修改了应用原则;
 --增加了葡萄酒和咖啡中赭曲霉毒素A限量要求;
---增加了特殊医学用途配方食品、辅食营养补充品、运动营养食品、孕妇及乳母营养补充食品中真菌毒素限量要求;
---删除了表1.中酿造酱后括号注解;
 --更新了检验方法标准号;
---修改了附录A。
 食品安全国家标准食品中真菌毒素限量
 ################
 输出:
@@ -82,35 +78,18 @@ GB2761-2017与GB2761-2011相比,主要变化如下:
 ("entity"{tuple_delimiter}2017-03-17{tuple_delimiter}发布日期{tuple_delimiter}标准发布的具体日期){record_delimiter}
 ("entity"{tuple_delimiter}2017-09-17{tuple_delimiter}实施日期{tuple_delimiter}标准正式实施的日期){record_delimiter}
 ("entity"{tuple_delimiter}中华人民共和国国家卫生和计划生育委员会{tuple_delimiter}发布机构{tuple_delimiter}负责发布该标准的政府机构之一){record_delimiter}
-("entity"{tuple_delimiter}国家食品药品监督管理总局{tuple_delimiter}发布机构{tuple_delimiter}负责发布该标准的政府机构之一){record_delimiter}
 ("entity"{tuple_delimiter}GB2761-2011{tuple_delimiter}代替标准{tuple_delimiter}被GB2761-2017替代的旧标准){record_delimiter}
 ("entity"{tuple_delimiter}葡萄酒{tuple_delimiter}食品名称{tuple_delimiter}新增赭曲霉毒素A限量要求的食品){record_delimiter}
 ("entity"{tuple_delimiter}咖啡{tuple_delimiter}食品名称{tuple_delimiter}新增赭曲霉毒素A限量要求的食品){record_delimiter}
-("entity"{tuple_delimiter}特殊医学用途配方食品{tuple_delimiter}食品名称{tuple_delimiter}新增真菌毒素限量要求的食品类型){record_delimiter}
-("entity"{tuple_delimiter}辅食营养补充品{tuple_delimiter}食品名称{tuple_delimiter}新增真菌毒素限量要求的食品类型){record_delimiter}
-("entity"{tuple_delimiter}运动营养食品{tuple_delimiter}食品名称{tuple_delimiter}新增真菌毒素限量要求的食品类型){record_delimiter}
-("entity"{tuple_delimiter}孕妇及乳母营养补充食品{tuple_delimiter}食品名称{tuple_delimiter}新增真菌毒素限量要求的食品类型){record_delimiter}
 ("entity"{tuple_delimiter}赭曲霉毒素A{tuple_delimiter}元素{tuple_delimiter}在葡萄酒和咖啡中新增限量要求的真菌毒素){record_delimiter}
-("entity"{tuple_delimiter}酿造酱{tuple_delimiter}食品名称{tuple_delimiter}删除了表1中的括号注解){record_delimiter}
-("entity"{tuple_delimiter}应用原则{tuple_delimiter}应用原则{tuple_delimiter}标准实施和使用的基本准则和指导方针){record_delimiter}
 ("entity"{tuple_delimiter}检验方法标准号{tuple_delimiter}检验方法标准号{tuple_delimiter}更新的检验方法相关标准号){record_delimiter}
-("entity"{tuple_delimiter}附录A{tuple_delimiter}附录{tuple_delimiter}在标准中修改的附录){record_delimiter}
 ("relationship"{tuple_delimiter}GB2761-2017{tuple_delimiter}食品安全国家标准{tuple_delimiter}国家标准文件描述了食品中真菌毒素限量的具体标准{tuple_delimiter}标准、规范、内容{tuple_delimiter}8){record_delimiter}
 ("relationship"{tuple_delimiter}GB2761-2017{tuple_delimiter}2017-03-17{tuple_delimiter}标准的发布日期{tuple_delimiter}发布、时间{tuple_delimiter}7){record_delimiter}
 ("relationship"{tuple_delimiter}GB2761-2017{tuple_delimiter}2017-09-17{tuple_delimiter}标准的实施日期{tuple_delimiter}实施、时间{tuple_delimiter}7){record_delimiter}
 ("relationship"{tuple_delimiter}中华人民共和国国家卫生和计划生育委员会{tuple_delimiter}GB2761-2017{tuple_delimiter}作为标准发布机构之一{tuple_delimiter}发布者、标准{tuple_delimiter}6){record_delimiter}
-("relationship"{tuple_delimiter}国家食品药品监督管理总局{tuple_delimiter}GB2761-2017{tuple_delimiter}作为标准发布机构之一{tuple_delimiter}发布者、标准{tuple_delimiter}6){record_delimiter}
 ("relationship"{tuple_delimiter}GB2761-2017{tuple_delimiter}GB2761-2011{tuple_delimiter}新标准替代旧标准{tuple_delimiter}代替、更新{tuple_delimiter}8){record_delimiter}
 ("relationship"{tuple_delimiter}葡萄酒{tuple_delimiter}赭曲霉毒素A{tuple_delimiter}新增限量要求的食品类型和元素{tuple_delimiter}限量、增加{tuple_delimiter}7){record_delimiter}
 ("relationship"{tuple_delimiter}咖啡{tuple_delimiter}赭曲霉毒素A{tuple_delimiter}新增限量要求的食品类型和元素{tuple_delimiter}限量、增加{tuple_delimiter}7){record_delimiter}
-("relationship"{tuple_delimiter}特殊医学用途配方食品{tuple_delimiter}真菌毒素限量{tuple_delimiter}新增真菌毒素限量要求{tuple_delimiter}限量、增加{tuple_delimiter}6){record_delimiter}
-("relationship"{tuple_delimiter}辅食营养补充品{tuple_delimiter}真菌毒素限量{tuple_delimiter}新增真菌毒素限量要求{tuple_delimiter}限量、增加{tuple_delimiter}6){record_delimiter}
-("relationship"{tuple_delimiter}运动营养食品{tuple_delimiter}真菌毒素限量{tuple_delimiter}新增真菌毒素限量要求{tuple_delimiter}限量、增加{tuple_delimiter}6){record_delimiter}
-("relationship"{tuple_delimiter}孕妇及乳母营养补充食品{tuple_delimiter}真菌毒素限量{tuple_delimiter}新增真菌毒素限量要求{tuple_delimiter}限量、增加{tuple_delimiter}6){record_delimiter}
-("relationship"{tuple_delimiter}酿造酱{tuple_delimiter}表1{tuple_delimiter}删除括号注解{tuple_delimiter}删除、变化{tuple_delimiter}5){record_delimiter}
-("relationship"{tuple_delimiter}应用原则{tuple_delimiter}GB2761-2017{tuple_delimiter}标准实施的基本准则{tuple_delimiter}标准与内容、规定{tuple_delimiter}7){record_delimiter}
-("relationship"{tuple_delimiter}检验方法标准号{tuple_delimiter}GB2761-2017{tuple_delimiter}更新了检验方法相关标准号{tuple_delimiter}更新、检验{tuple_delimiter}6){record_delimiter}
-("relationship"{tuple_delimiter}附录A{tuple_delimiter}GB2761-2017{tuple_delimiter}标准中修改的附录{tuple_delimiter}修改、变化{tuple_delimiter}5){record_delimiter}
 ("content_keywords"{tuple_delimiter}食品安全、真菌毒素、国家标准、限量要求、营养食品、检验方法、发布日期、实施日期、发布机构){completion_delimiter}
 ######################""",
     """范例2:
