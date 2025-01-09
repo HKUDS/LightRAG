@@ -314,18 +314,25 @@ class LightRAG:
             "JsonDocStatusStorage": JsonDocStatusStorage,
         }
 
-    def insert(self, string_or_strings, split_by_character=None):
+    def insert(
+        self, string_or_strings, split_by_character=None, split_by_character_only=False
+    ):
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.ainsert(string_or_strings, split_by_character)
+            self.ainsert(string_or_strings, split_by_character, split_by_character_only)
         )
 
-    async def ainsert(self, string_or_strings, split_by_character=None):
+    async def ainsert(
+        self, string_or_strings, split_by_character=None, split_by_character_only=False
+    ):
         """Insert documents with checkpoint support
 
         Args:
             string_or_strings: Single document string or list of document strings
-            split_by_character: if split_by_character is not None, split the string by character
+            split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
+            chunk_size, split the sub chunk by token size.
+            split_by_character_only: if split_by_character_only is True, split the string by character only, when
+            split_by_character is None, this parameter is ignored.
         """
         if isinstance(string_or_strings, str):
             string_or_strings = [string_or_strings]
@@ -384,6 +391,7 @@ class LightRAG:
                         for dp in chunking_by_token_size(
                             doc["content"],
                             split_by_character=split_by_character,
+                            split_by_character_only=split_by_character_only,
                             overlap_token_size=self.chunk_overlap_token_size,
                             max_token_size=self.chunk_token_size,
                             tiktoken_model=self.tiktoken_model_name,
