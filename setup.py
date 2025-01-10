@@ -100,10 +100,7 @@ setuptools.setup(
     },
     entry_points={
         "console_scripts": [
-            "lollms-lightrag-server=lightrag.api.lollms_lightrag_server:main [api]",
-            "ollama-lightrag-server=lightrag.api.ollama_lightrag_server:main [api]",
-            "openai-lightrag-server=lightrag.api.openai_lightrag_server:main [api]",
-            "azure-openai-lightrag-server=lightrag.api.azure_openai_lightrag_server:main [api]",
+            "lightrag-server=lightrag.api.lightrag_server:main [api]",
         ],
     },
 )
