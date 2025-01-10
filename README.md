@@ -959,23 +959,26 @@ Each server has its own specific configuration options:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| --host | 0.0.0.0 | RAG server host |
-| --port | 9621 | RAG server port |
-| --llm-binding | ollama | LLM binding to be used. Supported: lollms, ollama, openai (default: ollama) |
-| --llm-binding-host | http://localhost:11434 if the binding is ollama, http://localhost:9600 if the binding is lollms, https://api.openai.com/v1 if the binding is openai | llm server host URL (default: http://localhost:11434 if the binding is ollama, http://localhost:9600 if the binding is lollms, https://api.openai.com/v1 if the binding is openai) |
-| --model | mistral-nemo:latest | LLM model name |
-| --embedding-binding | ollama | Embedding binding to be used. Supported: lollms, ollama, openai (default: ollama) |
-| --embedding-binding-host | http://localhost:11434 if the binding is ollama, http://localhost:9600 if the binding is lollms, https://api.openai.com/v1 if the binding is openai | embedding server host URL (default: http://localhost:11434 if the binding is ollama, http://localhost:9600 if the binding is lollms, https://api.openai.com/v1 if the binding is openai) |
+| --host | 0.0.0.0 | Server host |
+| --port | 9621 | Server port |
+| --llm-binding | ollama | LLM binding to be used. Supported: lollms, ollama, openai |
+| --llm-binding-host | (dynamic) | LLM server host URL. Defaults based on binding: http://localhost:11434 (ollama), http://localhost:9600 (lollms), https://api.openai.com/v1 (openai) |
+| --llm-model | mistral-nemo:latest | LLM model name |
+| --embedding-binding | ollama | Embedding binding to be used. Supported: lollms, ollama, openai |
+| --embedding-binding-host | (dynamic) | Embedding server host URL. Defaults based on binding: http://localhost:11434 (ollama), http://localhost:9600 (lollms), https://api.openai.com/v1 (openai) |
 | --embedding-model | bge-m3:latest | Embedding model name |
-| --embedding-binding-host | http://localhost:9600 | LoLLMS backend URL |
-| --working-dir | ./rag_storage | Working directory for RAG |
+| --working-dir | ./rag_storage | Working directory for RAG storage |
+| --input-dir | ./inputs | Directory containing input documents |
 | --max-async | 4 | Maximum async operations |
 | --max-tokens | 32768 | Maximum token size |
 | --embedding-dim | 1024 | Embedding dimensions |
 | --max-embed-tokens | 8192 | Maximum embedding token size |
-| --input-file | ./book.txt | Initial input file |
-| --log-level | INFO | Logging level |
-| --key | none | Access Key to protect the lightrag service |
+| --timeout | None | Timeout in seconds (useful when using slow AI). Use None for infinite timeout |
+| --log-level | INFO | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
+| --key | None | API key for authentication. Protects lightrag server against unauthorized access |
+| --ssl | False | Enable HTTPS |
+| --ssl-certfile | None | Path to SSL certificate file (required if --ssl is enabled) |
+| --ssl-keyfile | None | Path to SSL private key file (required if --ssl is enabled) |
 
 
 
