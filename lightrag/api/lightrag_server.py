@@ -101,6 +101,12 @@ def parse_args():
         help="Embedding model name (default: bge-m3:latest)",
     )
 
+    parser.add_argument(
+        "--timeout",
+        default=300,
+        help="Timeout is seconds (useful when using slow AI)",
+    )
+
     # RAG configuration
     parser.add_argument(
         "--max-async", type=int, default=4, help="Maximum async operations (default: 4)"
@@ -139,6 +145,22 @@ def parse_args():
         default=None,
     )
 
+    # Optional https parameters
+    parser.add_argument(
+        "--ssl",
+        action="store_true",
+        help="Enable HTTPS (default: False)"
+    )
+    parser.add_argument(
+        "--ssl-certfile",
+        default=None,
+        help="Path to SSL certificate file (required if --ssl is enabled)"
+    )
+    parser.add_argument(
+        "--ssl-keyfile",
+        default=None, 
+        help="Path to SSL private key file (required if --ssl is enabled)"
+    )
     return parser.parse_args()
 
 
@@ -284,6 +306,7 @@ def create_app(args):
         llm_model_max_token_size=args.max_tokens,
         llm_model_kwargs={
             "host": args.llm_binding_host,
+            "timeout":args.timeout
             "options": {"num_ctx": args.max_tokens},
         },
         embedding_func=EmbeddingFunc(
