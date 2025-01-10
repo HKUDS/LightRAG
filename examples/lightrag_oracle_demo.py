@@ -20,7 +20,8 @@ BASE_URL = "http://xxx.xxx.xxx.xxx:8088/v1/"
 APIKEY = "ocigenerativeai"
 CHATMODEL = "cohere.command-r-plus"
 EMBEDMODEL = "cohere.embed-multilingual-v3.0"
-
+CHUNK_TOKEN_SIZE = 1024
+MAX_TOKENS = 4000
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -86,27 +87,49 @@ async def main():
         # We use Oracle DB as the KV/vector/graph storage
         # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
         rag = LightRAG(
+            working_dir=WORKING_DIR,        
+            entity_extract_max_gleaning = 1,
+
             enable_llm_cache=False,
-            working_dir=WORKING_DIR,
-            chunk_token_size=512,
+            embedding_cache_config= None,  # {"enabled": True,"similarity_threshold": 0.90},
+            enable_llm_cache_for_entity_extract = True,
+
+            chunk_token_size=CHUNK_TOKEN_SIZE,
+            llm_model_max_token_size = MAX_TOKENS,
             llm_model_func=llm_model_func,
             embedding_func=EmbeddingFunc(
                 embedding_dim=embedding_dimension,
-                max_token_size=512,
+                max_token_size=500,
                 func=embedding_func,
-            ),
-            graph_storage="OracleGraphStorage",
-            kv_storage="OracleKVStorage",
+                ),        
+            
+            graph_storage = "OracleGraphStorage",
+            kv_storage = "OracleKVStorage", 
             vector_storage="OracleVectorDBStorage",
+            doc_status_storage="OracleDocStatusStorage",
+
+            addon_params = {"example_number":1, "language":"Simplfied Chinese"},
         )
 
-        # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool
-        rag.graph_storage_cls.db = oracle_db
+        # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool    
         rag.key_string_value_json_storage_cls.db = oracle_db
         rag.vector_db_storage_cls.db = oracle_db
-        # add embedding_func for graph database, it's deleted in commit 5661d76860436f7bf5aef2e50d9ee4a59660146c
-        rag.chunk_entity_relation_graph.embedding_func = rag.embedding_func
+        rag.graph_storage_cls.db = oracle_db
+        rag.doc_status_storage_cls.db = oracle_db
+        rag.doc_status.db = oracle_db
+        rag.full_docs.db = oracle_db
+        rag.text_chunks.db = oracle_db
+        rag.llm_response_cache.db = oracle_db
+        rag.key_string_value_json_storage_cls.db = oracle_db
+        rag.chunks_vdb.db = oracle_db
+        rag.relationships_vdb.db = oracle_db
+        rag.entities_vdb.db = oracle_db
+        rag.graph_storage_cls.db = oracle_db
+        rag.chunk_entity_relation_graph.db = oracle_db
+        rag.llm_response_cache.db = oracle_db
 
+        rag.chunk_entity_relation_graph.embedding_func = rag.embedding_func
+        
         # Extract and Insert into LightRAG storage
         with open("./dickens/demo.txt", "r", encoding="utf-8") as f:
             await rag.ainsert(f.read())

@@ -59,13 +59,15 @@ async def _handle_entity_relation_summary(
     description: str,
     global_config: dict,
 ) -> str:
+    """Handle entity relation summary
+    For each entity or relation, input is the combined description of already existing description and new description.
+    If too long, use LLM to summarize.
+    """
     use_llm_func: callable = global_config["llm_model_func"]
     llm_max_tokens = global_config["llm_model_max_token_size"]
     tiktoken_model_name = global_config["tiktoken_model_name"]
     summary_max_tokens = global_config["entity_summary_to_max_tokens"]
-    language = global_config["addon_params"].get(
-        "language", PROMPTS["DEFAULT_LANGUAGE"]
-    )
+    language = global_config["addon_params"].get("language", PROMPTS["DEFAULT_LANGUAGE"])
 
     tokens = encode_string_by_tiktoken(description, model_name=tiktoken_model_name)
     if len(tokens) < summary_max_tokens:  # No need for summary
@@ -139,6 +141,7 @@ async def _merge_nodes_then_upsert(
     knowledge_graph_inst: BaseGraphStorage,
     global_config: dict,
 ):
+    """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
     already_entity_types = []
     already_source_ids = []
     already_description = []
@@ -319,7 +322,7 @@ async def extract_entities(
                 llm_response_cache.global_config = new_config
                 need_to_restore = True
             if history_messages:
-                history = json.dumps(history_messages)
+                history = json.dumps(history_messages,ensure_ascii=False)
                 _prompt = history + "\n" + input_text
             else:
                 _prompt = input_text
@@ -351,6 +354,11 @@ async def extract_entities(
             return await use_llm_func(input_text)
 
     async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
+        """"Prpocess a single chunk
+        Args:
+            chunk_key_dp (tuple[str, TextChunkSchema]):
+                ("chunck-xxxxxx", {"tokens": int, "content": str, "full_doc_id": str, "chunk_order_index": int})
+        """
         nonlocal already_processed, already_entities, already_relations
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]

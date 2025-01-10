@@ -79,6 +79,7 @@ Neo4JStorage = lazy_external_import(".kg.neo4j_impl", "Neo4JStorage")
 OracleKVStorage = lazy_external_import(".kg.oracle_impl", "OracleKVStorage")
 OracleGraphStorage = lazy_external_import(".kg.oracle_impl", "OracleGraphStorage")
 OracleVectorDBStorage = lazy_external_import(".kg.oracle_impl", "OracleVectorDBStorage")
+OracleDocStatusStorage = lazy_external_import(".kg.oracle_impl", "OracleDocStatusStorage")
 MilvusVectorDBStorge = lazy_external_import(".kg.milvus_impl", "MilvusVectorDBStorge")
 MongoKVStorage = lazy_external_import(".kg.mongo_impl", "MongoKVStorage")
 ChromaVectorDBStorage = lazy_external_import(".kg.chroma_impl", "ChromaVectorDBStorage")
@@ -290,6 +291,7 @@ class LightRAG:
             # kv storage
             "JsonKVStorage": JsonKVStorage,
             "OracleKVStorage": OracleKVStorage,
+            "OracleDocStatusStorage":OracleDocStatusStorage,
             "MongoKVStorage": MongoKVStorage,
             "TiDBKVStorage": TiDBKVStorage,
             # vector storage
