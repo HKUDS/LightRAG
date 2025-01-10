@@ -101,12 +101,17 @@ def parse_args():
         help="Embedding model name (default: bge-m3:latest)",
     )
 
+    def timeout_type(value):
+        if value is None or value == "None":
+            return None
+        return int(value)
+
     parser.add_argument(
         "--timeout",
-        default=300,
-        help="Timeout is seconds (useful when using slow AI)",
+        default=None,
+        type=timeout_type,
+        help="Timeout in seconds (useful when using slow AI). Use None for infinite timeout",
     )
-
     # RAG configuration
     parser.add_argument(
         "--max-async", type=int, default=4, help="Maximum async operations (default: 4)"
