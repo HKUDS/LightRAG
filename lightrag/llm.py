@@ -336,6 +336,7 @@ async def hf_model_if_cache(
         (RateLimitError, APIConnectionError, APITimeoutError)
     ),
 )
+
 async def ollama_model_if_cache(
     model,
     prompt,
@@ -406,8 +407,9 @@ async def lollms_model_if_cache(
     full_prompt += prompt
 
     request_data["prompt"] = full_prompt
+    timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout", 300))  # 300 seconds = 5 minutes
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         if stream:
 
             async def inner():
