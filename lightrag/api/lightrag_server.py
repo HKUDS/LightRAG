@@ -306,7 +306,7 @@ def create_app(args):
         llm_model_max_token_size=args.max_tokens,
         llm_model_kwargs={
             "host": args.llm_binding_host,
-            "timeout":args.timeout
+            "timeout":args.timeout,
             "options": {"num_ctx": args.max_tokens},
         },
         embedding_func=EmbeddingFunc(
