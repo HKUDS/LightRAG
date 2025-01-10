@@ -407,11 +407,10 @@ async def lollms_model_if_cache(
     full_prompt += prompt
 
     request_data["prompt"] = full_prompt
-    timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout", 300))  # 300 seconds = 5 minutes
+    timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout", None))
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         if stream:
-
             async def inner():
                 async with session.post(
                     f"{base_url}/lollms_generate", json=request_data
