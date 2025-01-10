@@ -43,13 +43,26 @@ class Neo4JStorage(BaseGraphStorage):
             "NEO4J_DATABASE"
         )  # If this param is None, the home database will be used. If it is not None, the specified database will be used.
         self._DATABASE = DATABASE
+        # 增加默认参数 by bumaple 2025-01-10
+        self._timeout = 600
+        self._conn_pool_size = 20
+
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(
-            URI, auth=(USERNAME, PASSWORD)
+            URI, auth=(USERNAME, PASSWORD),
+            connection_acquisition_timeout=self._timeout,
+            max_connection_lifetime=self._timeout,
+            max_connection_pool_size=self._conn_pool_size,
+            connection_timeout=self._timeout,
         )
         _database_name = "home database" if DATABASE is None else f"database {DATABASE}"
-        with GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD)) as _sync_driver:
+        with GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD),
+                                  connection_acquisition_timeout=self._timeout,
+                                  max_connection_lifetime=self._timeout,
+                                  max_connection_pool_size=self._conn_pool_size,
+                                  connection_timeout=self._timeout,
+                                  ) as _sync_driver:
             try:
-                with _sync_driver.session(database=DATABASE) as session:
+                with _sync_driver.session(database=DATABASE, connection_acquisition_timeout=self._timeout) as session:
                     try:
                         session.run("MATCH (n) RETURN n LIMIT 0")
                         logger.info(f"Connected to {DATABASE} at {URI}")
@@ -101,7 +114,7 @@ class Neo4JStorage(BaseGraphStorage):
     async def has_node(self, node_id: str) -> bool:
         entity_name_label = node_id.strip('"')
 
-        async with self._driver.session(database=self._DATABASE) as session:
+        async with self._driver.session(database=self._DATABASE, connection_acquisition_timeout=self._timeout) as session:
             query = (
                 f"MATCH (n:`{entity_name_label}`) RETURN count(n) > 0 AS node_exists"
             )
@@ -116,7 +129,7 @@ class Neo4JStorage(BaseGraphStorage):
         entity_name_label_source = source_node_id.strip('"')
         entity_name_label_target = target_node_id.strip('"')
 
-        async with self._driver.session(database=self._DATABASE) as session:
+        async with self._driver.session(database=self._DATABASE, connection_acquisition_timeout=self._timeout) as session:
             query = (
                 f"MATCH (a:`{entity_name_label_source}`)-[r]-(b:`{entity_name_label_target}`) "
                 "RETURN COUNT(r) > 0 AS edgeExists"
@@ -129,7 +142,7 @@ class Neo4JStorage(BaseGraphStorage):
             return single_result["edgeExists"]
 
     async def get_node(self, node_id: str) -> Union[dict, None]:
-        async with self._driver.session(database=self._DATABASE) as session:
+        async with self._driver.session(database=self._DATABASE, connection_acquisition_timeout=self._timeout) as session:
             entity_name_label = node_id.strip('"')
             query = f"MATCH (n:`{entity_name_label}`) RETURN n"
             result = await session.run(query)
@@ -146,7 +159,7 @@ class Neo4JStorage(BaseGraphStorage):
     async def node_degree(self, node_id: str) -> int:
         entity_name_label = node_id.strip('"')
 
-        async with self._driver.session(database=self._DATABASE) as session:
+        async with self._driver.session(database=self._DATABASE, connection_acquisition_timeout=self._timeout) as session:
             query = f"""
                 MATCH (n:`{entity_name_label}`)
                 RETURN COUNT{{ (n)--() }} AS totalEdgeCount
@@ -193,7 +206,7 @@ class Neo4JStorage(BaseGraphStorage):
         Returns:
             list: List of all relationships/edges found
         """
-        async with self._driver.session(database=self._DATABASE) as session:
+        async with self._driver.session(database=self._DATABASE, connection_acquisition_timeout=self._timeout) as session:
             query = f"""
             MATCH (start:`{entity_name_label_source}`)-[r]->(end:`{entity_name_label_target}`)
             RETURN properties(r) as edge_properties
@@ -224,7 +237,7 @@ class Neo4JStorage(BaseGraphStorage):
         query = f"""MATCH (n:`{node_label}`)
                 OPTIONAL MATCH (n)-[r]-(connected)
                 RETURN n, r, connected"""
-        async with self._driver.session(database=self._DATABASE) as session:
+        async with self._driver.session(database=self._DATABASE, connection_acquisition_timeout=self._timeout) as session:
             results = await session.run(query)
             edges = []
             async for record in results:
@@ -279,7 +292,7 @@ class Neo4JStorage(BaseGraphStorage):
             )
 
         try:
-            async with self._driver.session(database=self._DATABASE) as session:
+            async with self._driver.session(database=self._DATABASE, connection_acquisition_timeout=self._timeout) as session:
                 await session.execute_write(_do_upsert)
         except Exception as e:
             logger.error(f"Error during upsert: {str(e)}")
@@ -326,7 +339,7 @@ class Neo4JStorage(BaseGraphStorage):
             )
 
         try:
-            async with self._driver.session(database=self._DATABASE) as session:
+            async with self._driver.session(database=self._DATABASE, connection_acquisition_timeout=self._timeout) as session:
                 await session.execute_write(_do_upsert_edge)
         except Exception as e:
             logger.error(f"Error during edge upsert: {str(e)}")

@@ -55,13 +55,6 @@ from .prompt_cn import GRAPH_FIELD_SEP
 #     GraphStorage as ArangoDBStorage
 # )
 
-# 存在路径问题，不使用动态导入 bumaple 2024-12-10
-# from lightrag.kg.mongo_impl import MongoKVStorage
-# from lightrag.kg.neo4j_impl import Neo4JStorage
-# from lightrag.kg.milvus_impl import MilvusVectorDBStorge
-# from lightrag.kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBStorage
-# from lightrag.kg.chroma_impl import ChromaVectorDBStorage
-
 
 def lazy_external_import(module_name: str, class_name: str):
     """Lazily import a class from an external module based on the package of the caller."""
