@@ -262,7 +262,16 @@ def create_app(args):
         raise Exception("embedding binding not supported")
 
 
-
+    # Add SSL validation
+    if args.ssl:
+        if not args.ssl_certfile or not args.ssl_keyfile:
+            raise Exception("SSL certificate and key files must be provided when SSL is enabled")
+        if not os.path.exists(args.ssl_certfile):
+            raise Exception(f"SSL certificate file not found: {args.ssl_certfile}")
+        if not os.path.exists(args.ssl_keyfile):
+            raise Exception(f"SSL key file not found: {args.ssl_keyfile}")
+        
+        
     # Setup logging
     logging.basicConfig(
         format="%(levelname)s:%(message)s", level=getattr(logging, args.log_level)
@@ -577,7 +586,17 @@ def main():
     import uvicorn
 
     app = create_app(args)
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn_config = {
+        "app": app,
+        "host": args.host,
+        "port": args.port,
+    }    
+    if args.ssl:
+        uvicorn_config.update({
+            "ssl_certfile": args.ssl_certfile,
+            "ssl_keyfile": args.ssl_keyfile,
+        })    
+    uvicorn.run(**uvicorn_config)
 
 
 if __name__ == "__main__":
