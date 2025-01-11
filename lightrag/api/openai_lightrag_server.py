@@ -390,7 +390,7 @@ def create_app(args):
             return InsertResponse(
                 status="success",
                 message="Text successfully inserted",
-                document_count=len(rag),
+                document_count=1,
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
