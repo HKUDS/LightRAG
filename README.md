@@ -12,7 +12,7 @@
     </p>
      <p>
           <img src='https://img.shields.io/github/stars/hkuds/lightrag?color=green&style=social' />
-        <img src="https://img.shields.io/badge/python->=3.10-blue">
+        <img src="https://img.shields.io/badge/python-3.10-blue">
         <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg"></a>
         <a href="https://pepy.tech/project/lightrag-hku"><img src="https://static.pepy.tech/badge/lightrag-hku/month"></a>
     </p>
@@ -637,7 +637,7 @@ if __name__ == "__main__":
 | **llm\_model\_kwargs**                       | `dict` | Additional parameters for LLM generation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |                                                                                                             |
 | **vector\_db\_storage\_cls\_kwargs**         | `dict` | Additional parameters for vector database (currently not used)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |                                                                                                             |
 | **enable\_llm\_cache**                       | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `TRUE`                                                                                                      |
-| **enable\_llm\_cache\_for\_entity\_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `FALSE`                                                                                                     |
+| **enable\_llm\_cache\_for\_entity\_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | `TRUE`                                                                                                     |
 | **addon\_params**                            | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"], "insert_batch_size": 10}`: sets example limit, output language, and batch size for document processing                                                                                                                                                                                                                                                                                                                                                                                                                            | `example_number: all examples, language: English, insert_batch_size: 10`                                    |
 | **convert\_response\_to\_json\_func**        | `callable` | Not used                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `convert_response_to_json`                                                                                  |
 | **embedding\_cache\_config**                 | `dict` | Configuration for question-answer caching. Contains three parameters:<br>- `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers.<br>- `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM.<br>- `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}`                         |
@@ -891,69 +891,6 @@ def extract_queries(file_path):
     return queries
 ```
 </details>
-
-## Code Structure
-
-```python
-.
-├── .github/
-│   ├── workflows/
-│   │   └── linting.yaml
-├── examples/
-│   ├── batch_eval.py
-│   ├── generate_query.py
-│   ├── graph_visual_with_html.py
-│   ├── graph_visual_with_neo4j.py
-│   ├── insert_custom_kg.py
-│   ├── lightrag_api_openai_compatible_demo.py
-│   ├── lightrag_api_oracle_demo..py
-│   ├── lightrag_azure_openai_demo.py
-│   ├── lightrag_bedrock_demo.py
-│   ├── lightrag_hf_demo.py
-│   ├── lightrag_lmdeploy_demo.py
-│   ├── lightrag_nvidia_demo.py
-│   ├── lightrag_ollama_demo.py
-│   ├── lightrag_openai_compatible_demo.py
-│   ├── lightrag_openai_demo.py
-│   ├── lightrag_oracle_demo.py
-│   ├── lightrag_siliconcloud_demo.py
-│   └── vram_management_demo.py
-├── lightrag/
-│   ├── api/
-│   │   ├── lollms_lightrag_server.py
-│   │   ├── ollama_lightrag_server.py
-│   │   ├── openai_lightrag_server.py
-│   │   ├── azure_openai_lightrag_server.py
-│   │   └── requirements.txt
-│   ├── kg/
-│   │   ├── __init__.py
-│   │   ├── oracle_impl.py
-│   │   └── neo4j_impl.py
-│   ├── __init__.py
-│   ├── base.py
-│   ├── lightrag.py
-│   ├── llm.py
-│   ├── operate.py
-│   ├── prompt.py
-│   ├── storage.py
-│   └── utils.py
-├── reproduce/
-│   ├── Step_0.py
-│   ├── Step_1_openai_compatible.py
-│   ├── Step_1.py
-│   ├── Step_2.py
-│   ├── Step_3_openai_compatible.py
-│   └── Step_3.py
-├── .gitignore
-├── .pre-commit-config.yaml
-├── get_all_edges_nx.py
-├── LICENSE
-├── README.md
-├── requirements.txt
-├── setup.py
-├── test_neo4j.py
-└── test.py
-```
 
 ## Install with API Support
 
