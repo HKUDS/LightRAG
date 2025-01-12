@@ -369,7 +369,9 @@ For production level scenarios you will most likely want to leverage an enterpri
 * Known issue of the Apache AGE: The released versions got below issue:
   > You might find that the properties of the nodes/edges are empty.
   > It is a known issue of the release version: https://github.com/apache/age/pull/1721
+  >
   > You can Compile the AGE from source code and fix it.
+
 
 
 ### Insert Custom KG
