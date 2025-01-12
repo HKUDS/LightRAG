@@ -924,12 +924,14 @@ pip install -e ".[api]"
 
 ### Prerequisites
 
-Before running any of the servers, ensure you have the corresponding backend service running:
+Before running any of the servers, ensure you have the corresponding backend service running for both llm and embedding.
+The new api allows you to mix different bindings for llm/embeddings.
+For example, you have the possibility to use ollama for the embedding and openai for the llm.
 
 #### For LoLLMs Server
 - LoLLMs must be running and accessible
 - Default connection: http://localhost:9600
-- Configure using --lollms-host if running on a different host/port
+- Configure using --llm-binding-host and/or --embedding-binding-host if running on a different host/port
 
 #### For Ollama Server
 - Ollama must be running and accessible
@@ -965,113 +967,96 @@ The output of the last command will give you the endpoint and the key for the Op
 
 Each server has its own specific configuration options:
 
-#### LoLLMs Server Options
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| --host | 0.0.0.0 | RAG server host |
-| --port | 9621 | RAG server port |
-| --model | mistral-nemo:latest | LLM model name |
-| --embedding-model | bge-m3:latest | Embedding model name |
-| --lollms-host | http://localhost:9600 | LoLLMS backend URL |
-| --working-dir | ./rag_storage | Working directory for RAG |
-| --max-async | 4 | Maximum async operations |
-| --max-tokens | 32768 | Maximum token size |
-| --embedding-dim | 1024 | Embedding dimensions |
-| --max-embed-tokens | 8192 | Maximum embedding token size |
-| --input-file | ./book.txt | Initial input file |
-| --log-level | INFO | Logging level |
-| --key | none | Access Key to protect the lightrag service |
-
-#### Ollama Server Options
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| --host | 0.0.0.0 | RAG server host |
-| --port | 9621 | RAG server port |
-| --model | mistral-nemo:latest | LLM model name |
-| --embedding-model | bge-m3:latest | Embedding model name |
-| --ollama-host | http://localhost:11434 | Ollama backend URL |
-| --working-dir | ./rag_storage | Working directory for RAG |
-| --max-async | 4 | Maximum async operations |
-| --max-tokens | 32768 | Maximum token size |
-| --embedding-dim | 1024 | Embedding dimensions |
-| --max-embed-tokens | 8192 | Maximum embedding token size |
-| --input-file | ./book.txt | Initial input file |
-| --log-level | INFO | Logging level |
-| --key | none | Access Key to protect the lightrag service |
-
-#### OpenAI Server Options
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| --host | 0.0.0.0 | RAG server host |
-| --port | 9621 | RAG server port |
-| --model | gpt-4 | OpenAI model name |
-| --embedding-model | text-embedding-3-large | OpenAI embedding model |
-| --working-dir | ./rag_storage | Working directory for RAG |
-| --max-tokens | 32768 | Maximum token size |
-| --max-embed-tokens | 8192 | Maximum embedding token size |
-| --input-dir | ./inputs | Input directory for documents |
-| --log-level | INFO | Logging level |
-| --key | none | Access Key to protect the lightrag service |
-
-#### OpenAI AZURE Server Options
+#### LightRag Server Options
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | --host | 0.0.0.0 | Server host |
 | --port | 9621 | Server port |
-| --model | gpt-4 | OpenAI model name |
-| --embedding-model | text-embedding-3-large | OpenAI embedding model |
-| --working-dir | ./rag_storage | Working directory for RAG |
+| --llm-binding | ollama | LLM binding to be used. Supported: lollms, ollama, openai |
+| --llm-binding-host | (dynamic) | LLM server host URL. Defaults based on binding: http://localhost:11434 (ollama), http://localhost:9600 (lollms), https://api.openai.com/v1 (openai) |
+| --llm-model | mistral-nemo:latest | LLM model name |
+| --embedding-binding | ollama | Embedding binding to be used. Supported: lollms, ollama, openai |
+| --embedding-binding-host | (dynamic) | Embedding server host URL. Defaults based on binding: http://localhost:11434 (ollama), http://localhost:9600 (lollms), https://api.openai.com/v1 (openai) |
+| --embedding-model | bge-m3:latest | Embedding model name |
+| --working-dir | ./rag_storage | Working directory for RAG storage |
+| --input-dir | ./inputs | Directory containing input documents |
+| --max-async | 4 | Maximum async operations |
 | --max-tokens | 32768 | Maximum token size |
+| --embedding-dim | 1024 | Embedding dimensions |
 | --max-embed-tokens | 8192 | Maximum embedding token size |
-| --input-dir | ./inputs | Input directory for documents |
-| --enable-cache | True | Enable response cache |
-| --log-level | INFO | Logging level |
-| --key | none | Access Key to protect the lightrag service |
+| --timeout | None | Timeout in seconds (useful when using slow AI). Use None for infinite timeout |
+| --log-level | INFO | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
+| --key | None | API key for authentication. Protects lightrag server against unauthorized access |
+| --ssl | False | Enable HTTPS |
+| --ssl-certfile | None | Path to SSL certificate file (required if --ssl is enabled) |
+| --ssl-keyfile | None | Path to SSL private key file (required if --ssl is enabled) |
+
 
 
 For protecting the server using an authentication key, you can also use an environment variable named `LIGHTRAG_API_KEY`.
 ### Example Usage
 
-#### LoLLMs RAG Server
+#### Running a Lightrag server with ollama default local server as llm and embedding backends
+
+Ollama is the default backend for both llm and embedding, so by default you can run lightrag-server with no parameters and the default ones will be used. Make sure ollama is installed and is running and default models are already installed on ollama.
 
 ```bash
-# Custom configuration with specific model and working directory
-lollms-lightrag-server --model mistral-nemo --port 8080 --working-dir ./custom_rag
+# Run lightrag with ollama, mistral-nemo:latest for llm, and bge-m3:latest for embedding
+lightrag-server
 
-# Using specific models (ensure they are installed in your LoLLMs instance)
-lollms-lightrag-server --model mistral-nemo:latest --embedding-model bge-m3 --embedding-dim 1024
+# Using specific models (ensure they are installed in your ollama instance)
+lightrag-server --llm-model adrienbrault/nous-hermes2theta-llama3-8b:f16 --embedding-model nomic-embed-text --embedding-dim 1024
 
-# Using specific models and an authentication key
-lollms-lightrag-server --model mistral-nemo:latest --embedding-model bge-m3 --embedding-dim 1024 --key ky-mykey
+# Using an authentication key
+lightrag-server --key my-key
 
+# Using lollms for llm and ollama for embedding
+lightrag-server --llm-binding lollms
 ```
 
-#### Ollama RAG Server
+#### Running a Lightrag server with lollms default local server as llm and embedding backends
 
 ```bash
-# Custom configuration with specific model and working directory
-ollama-lightrag-server --model mistral-nemo:latest --port 8080 --working-dir ./custom_rag
+# Run lightrag with lollms, mistral-nemo:latest for llm, and bge-m3:latest for embedding, use lollms for both llm and embedding
+lightrag-server --llm-binding lollms --embedding-binding lollms
 
-# Using specific models (ensure they are installed in your Ollama instance)
-ollama-lightrag-server --model mistral-nemo:latest --embedding-model bge-m3 --embedding-dim 1024
+# Using specific models (ensure they are installed in your ollama instance)
+lightrag-server --llm-binding lollms --llm-model adrienbrault/nous-hermes2theta-llama3-8b:f16 --embedding-binding lollms --embedding-model nomic-embed-text --embedding-dim 1024
+
+# Using an authentication key
+lightrag-server --key my-key
+
+# Using lollms for llm and openai for embedding
+lightrag-server --llm-binding lollms --embedding-binding openai --embedding-model text-embedding-3-small
 ```
 
-#### OpenAI RAG Server
+
+#### Running a Lightrag server with openai server as llm and embedding backends
 
 ```bash
-# Using GPT-4 with text-embedding-3-large
-openai-lightrag-server --port 9624 --model gpt-4 --embedding-model text-embedding-3-large
-```
-#### Azure OpenAI RAG Server
-```bash
-# Using GPT-4 with text-embedding-3-large
-azure-openai-lightrag-server --model gpt-4o --port 8080 --working-dir ./custom_rag --embedding-model text-embedding-3-large
+# Run lightrag with lollms, GPT-4o-mini  for llm, and text-embedding-3-small for embedding, use openai for both llm and embedding
+lightrag-server --llm-binding openai --llm-model GPT-4o-mini --embedding-binding openai --embedding-model text-embedding-3-small
+
+# Using an authentication key
+lightrag-server --llm-binding openai --llm-model GPT-4o-mini --embedding-binding openai --embedding-model text-embedding-3-small --key my-key
+
+# Using lollms for llm and openai for embedding
+lightrag-server --llm-binding lollms --embedding-binding openai --embedding-model text-embedding-3-small
 ```
 
+#### Running a Lightrag server with azure openai server as llm and embedding backends
+
+```bash
+# Run lightrag with lollms, GPT-4o-mini  for llm, and text-embedding-3-small for embedding, use openai for both llm and embedding
+lightrag-server --llm-binding azure_openai --llm-model GPT-4o-mini --embedding-binding openai --embedding-model text-embedding-3-small
+
+# Using an authentication key
+lightrag-server --llm-binding azure_openai --llm-model GPT-4o-mini --embedding-binding azure_openai --embedding-model text-embedding-3-small --key my-key
+
+# Using lollms for llm and azure_openai for embedding
+lightrag-server --llm-binding lollms --embedding-binding azure_openai --embedding-model text-embedding-3-small
+```
 
 **Important Notes:**
 - For LoLLMs: Make sure the specified models are installed in your LoLLMs instance
@@ -1081,10 +1066,7 @@ azure-openai-lightrag-server --model gpt-4o --port 8080 --working-dir ./custom_r
 
 For help on any server, use the --help flag:
 ```bash
-lollms-lightrag-server --help
-ollama-lightrag-server --help
-openai-lightrag-server --help
-azure-openai-lightrag-server --help
+lightrag-server --help
 ```
 
 Note: If you don't need the API functionality, you can install the base package without API support using:
@@ -1104,7 +1086,7 @@ Query the RAG system with options for different search modes.
 ```bash
 curl -X POST "http://localhost:9621/query" \
     -H "Content-Type: application/json" \
-    -d '{"query": "Your question here", "mode": "hybrid"}'
+    -d '{"query": "Your question here", "mode": "hybrid", ""}'
 ```
 
 #### POST /query/stream
