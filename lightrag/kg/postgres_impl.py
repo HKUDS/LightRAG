@@ -141,13 +141,16 @@ class PostgreSQLDB:
                     await connection.execute(sql)
                 else:
                     await connection.execute(sql, *data.values())
-        except asyncpg.exceptions.UniqueViolationError as e:
+        except (
+            asyncpg.exceptions.UniqueViolationError,
+            asyncpg.exceptions.DuplicateTableError,
+        ) as e:
             if upsert:
                 print("Key value duplicate, but upsert succeeded.")
             else:
                 logger.error(f"Upsert error: {e}")
         except Exception as e:
-            logger.error(f"PostgreSQL database error: {e}")
+            logger.error(f"PostgreSQL database error: {e.__class__} - {e}")
             print(sql)
             print(data)
             raise
@@ -885,7 +888,12 @@ class PGGraphStorage(BaseGraphStorage):
             )
 
             if source_label and target_label:
-                edges.append((source_label, target_label))
+                edges.append(
+                    (
+                        PGGraphStorage._decode_graph_label(source_label),
+                        PGGraphStorage._decode_graph_label(target_label),
+                    )
+                )
 
         return edges
 
