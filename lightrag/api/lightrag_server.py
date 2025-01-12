@@ -483,7 +483,7 @@ def create_app(args):
     )
     async def insert_text(request: InsertTextRequest):
         try:
-            rag.insert(request.text)
+            await rag.ainsert(request.text)
             return InsertResponse(
                 status="success",
                 message="Text successfully inserted",
