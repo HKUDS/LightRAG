@@ -436,7 +436,8 @@ async def extract_entities(
     already_relations = 0
 
     async def _user_llm_func_with_cache(
-        input_text: str, history_messages: list[dict[str, str]] = None
+        chunk_index: int, chunk_total: int,
+        input_text: str, history_messages: list[dict[str, str]] = None,
     ) -> str:
         if enable_llm_cache_for_entity_extract and llm_response_cache:
             need_to_restore = False
@@ -466,10 +467,10 @@ async def extract_entities(
 
             if history_messages:
                 res: str = await use_llm_func(
-                    input_text, history_messages=history_messages
+                    input_text, history_messages=history_messages, index=index, total=total
                 )
             else:
-                res: str = await use_llm_func(input_text)
+                res: str = await use_llm_func(input_text, index=index, total=total)
             await save_to_cache(
                 llm_response_cache,
                 CacheData(args_hash=arg_hash, content=res, prompt=_prompt),
@@ -477,11 +478,11 @@ async def extract_entities(
             return res
 
         if history_messages:
-            return await use_llm_func(input_text, history_messages=history_messages)
+            return await use_llm_func(input_text, history_messages=history_messages, index=index, total=total)
         else:
-            return await use_llm_func(input_text)
+            return await use_llm_func(input_text, index=index, total=total)
 
-    async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
+    async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema], chunk_index: int, chunk_total: int):
         nonlocal already_processed, already_entities, already_relations
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
@@ -491,11 +492,11 @@ async def extract_entities(
             **context_base, input_text="{input_text}"
         ).format(**context_base, input_text=content)
 
-        final_result = await _user_llm_func_with_cache(hint_prompt)
+        final_result = await _user_llm_func_with_cache(hint_prompt, chunk_index=chunk_index, chunk_total=chunk_total)
         history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
         for now_glean_index in range(entity_extract_max_gleaning):
             glean_result = await _user_llm_func_with_cache(
-                continue_prompt, history_messages=history
+                continue_prompt, history_messages=history, chunk_index=chunk_index, chunk_total=chunk_total
             )
 
             history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
@@ -504,7 +505,7 @@ async def extract_entities(
                 break
 
             if_loop_result: str = await _user_llm_func_with_cache(
-                if_loop_prompt, history_messages=history
+                if_loop_prompt, history_messages=history, chunk_index=chunk_index, chunk_total=chunk_total
             )
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
             if if_loop_result != "yes":
@@ -554,7 +555,7 @@ async def extract_entities(
 
     results = []
     for result in tqdm_async(
-        asyncio.as_completed([_process_single_content(c) for c in ordered_chunks]),
+        asyncio.as_completed([_process_single_content(c, idx, len(ordered_chunks)) for idx, c in enumerate(ordered_chunks)]),
         total=len(ordered_chunks),
         desc="Extracting entities from chunks",
         unit="chunk",
