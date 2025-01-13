@@ -83,7 +83,7 @@ class MilvusVectorDBStorge(BaseVectorStorage):
             output_fields=list(self.meta_fields),
             search_params={"metric_type": "COSINE", "params": {"radius": 0.2}},
         )
-        print(results)
+        print(f"Query VectorDB Results: {len(results)}\n * * * * * {results}\n* * * * *")
         return [
             {**dp["entity"], "id": dp["id"], "distance": dp["distance"]}
             for dp in results[0]
