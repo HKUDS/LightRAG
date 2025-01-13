@@ -45,7 +45,9 @@ class MongoKVStorage(BaseKVStorage):
             for mode, items in data.items():
                 for k, v in tqdm_async(items.items(), desc="Upserting"):
                     key = f"{mode}_{k}"
-                    result = self._data.update_one({"_id": key}, {"$setOnInsert": v}, upsert=True)
+                    result = self._data.update_one(
+                        {"_id": key}, {"$setOnInsert": v}, upsert=True
+                    )
                     if result.upserted_id:
                         logger.debug(f"\nInserted new document with key: {key}")
                     data[mode][k]["_id"] = key
@@ -54,20 +56,20 @@ class MongoKVStorage(BaseKVStorage):
                 self._data.update_one({"_id": k}, {"$set": v}, upsert=True)
                 data[k]["_id"] = k
         return data
-    
+
     async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
         if "llm_response_cache" == self.namespace:
             res = {}
-            v = self._data.find_one({"_id": mode+"_"+id})
+            v = self._data.find_one({"_id": mode + "_" + id})
             if v:
                 res[id] = v
-                print(f"find one by:{id}")
+                logger.debug(f"llm_response_cache find one by:{id}")
                 return res
             else:
                 return None
         else:
             return None
-    
+
     async def drop(self):
         """ """
         pass

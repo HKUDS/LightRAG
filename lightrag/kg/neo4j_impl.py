@@ -48,7 +48,11 @@ class Neo4JStorage(BaseGraphStorage):
             URI, auth=(USERNAME, PASSWORD)
         )
         _database_name = "home database" if DATABASE is None else f"database {DATABASE}"
-        with GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD), max_connection_pool_size=MAX_CONNECTION_POOL_SIZE) as _sync_driver:
+        with GraphDatabase.driver(
+            URI,
+            auth=(USERNAME, PASSWORD),
+            max_connection_pool_size=MAX_CONNECTION_POOL_SIZE,
+        ) as _sync_driver:
             try:
                 with _sync_driver.session(database=DATABASE) as session:
                     try:
