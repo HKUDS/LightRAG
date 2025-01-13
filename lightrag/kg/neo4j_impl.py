@@ -39,6 +39,7 @@ class Neo4JStorage(BaseGraphStorage):
         URI = os.environ["NEO4J_URI"]
         USERNAME = os.environ["NEO4J_USERNAME"]
         PASSWORD = os.environ["NEO4J_PASSWORD"]
+        MAX_CONNECTION_POOL_SIZE = os.environ.get("NEO4J_MAX_CONNECTION_POOL_SIZE", 800)
         DATABASE = os.environ.get(
             "NEO4J_DATABASE"
         )  # If this param is None, the home database will be used. If it is not None, the specified database will be used.
@@ -47,7 +48,7 @@ class Neo4JStorage(BaseGraphStorage):
             URI, auth=(USERNAME, PASSWORD)
         )
         _database_name = "home database" if DATABASE is None else f"database {DATABASE}"
-        with GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD)) as _sync_driver:
+        with GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD), max_connection_pool_size=MAX_CONNECTION_POOL_SIZE) as _sync_driver:
             try:
                 with _sync_driver.session(database=DATABASE) as session:
                     try:
