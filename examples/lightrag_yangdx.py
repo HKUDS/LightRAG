@@ -1,6 +1,6 @@
-import asyncio
 import os
-import inspect
+# import asyncio
+# import inspect
 import logging
 from dotenv import load_dotenv
 from lightrag import LightRAG, QueryParam
@@ -64,19 +64,19 @@ print(
     rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
 )
 
-# stream response
-resp = rag.query(
-    "What are the top themes in this story?",
-    param=QueryParam(mode="hybrid", stream=True),
-)
+# # stream response
+# resp = rag.query(
+#     "What are the top themes in this story?",
+#     param=QueryParam(mode="hybrid", stream=True),
+# )
 
 
-async def print_stream(stream):
-    async for chunk in stream:
-        print(chunk, end="", flush=True)
+# async def print_stream(stream):
+#     async for chunk in stream:
+#         print(chunk, end="", flush=True)
 
 
-if inspect.isasyncgen(resp):
-    asyncio.run(print_stream(resp))
-else:
-    print(resp)
+# if inspect.isasyncgen(resp):
+#     asyncio.run(print_stream(resp))
+# else:
+#     print(resp)
