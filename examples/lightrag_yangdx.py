@@ -9,7 +9,7 @@ from lightrag.utils import EmbeddingFunc
 
 load_dotenv()
 
-WORKING_DIR = "./examples/input"
+WORKING_DIR = "./examples/output"
 
 logging.basicConfig(format="%(levelname)s:%(message)s", level=logging.INFO)
 
@@ -22,7 +22,7 @@ async def llm_model_func(
         system_prompt=system_prompt,
         history_messages=history_messages,
         api_key=os.getenv("DEEPSEEK_API_KEY"),
-        base_url=os.getenv("DEEPSEEK__ENDPOINT"),
+        base_url=os.getenv("DEEPSEEK_ENDPOINT"),
         **kwargs,
     )
 
@@ -33,15 +33,15 @@ rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=llm_model_func,
     embedding_func=EmbeddingFunc(
-        embedding_dim=768,
+        embedding_dim=1024,
         max_token_size=8192,
         func=lambda texts: ollama_embedding(
-            texts, embed_model="nomic-embed-text", host="http://m4.lan.znipower.com:11434"
+            texts, embed_model="bge-m3:latest", host="http://m4.lan.znipower.com:11434"
         ),
     ),
 )
 
-with open("./input/book.txt", "r", encoding="utf-8") as f:
+with open("./examples/input/book.txt", "r", encoding="utf-8") as f:
     rag.insert(f.read())
 
 # Perform naive search
