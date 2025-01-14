@@ -17,6 +17,8 @@ from .operate import (
     kg_query,
     naive_query,
     mix_kg_vector_query,
+    extract_keywords_only,
+    kg_query_with_keywords,
 )
 
 from .utils import (
@@ -750,6 +752,114 @@ class LightRAG:
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
+        await self._query_done()
+        return response
+
+    def query_with_separate_keyword_extraction(
+        self,
+        query: str,
+        prompt: str,    
+        param: QueryParam = QueryParam()
+    ):
+        """
+        1. Extract keywords from the 'query' using new function in operate.py.
+        2. Then run the standard aquery() flow with the final prompt (formatted_question).
+        """
+
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.aquery_with_separate_keyword_extraction(query, prompt,  param))
+    
+    async def aquery_with_separate_keyword_extraction(
+        self,
+        query: str,
+        prompt: str, 
+        param: QueryParam = QueryParam()
+    ):
+        """
+        1. Calls extract_keywords_only to get HL/LL keywords from 'query'.
+        2. Then calls kg_query(...) or naive_query(...), etc. as the main query, while also injecting the newly extracted keywords if needed.
+        """
+
+        # ---------------------
+        # STEP 1: Keyword Extraction
+        # ---------------------
+        # We'll assume 'extract_keywords_only(...)' returns (hl_keywords, ll_keywords).
+        hl_keywords, ll_keywords = await extract_keywords_only(
+            text=query,
+            param=param,
+            global_config=asdict(self),
+            hashing_kv=self.llm_response_cache or self.key_string_value_json_storage_cls(
+                namespace="llm_response_cache",
+                global_config=asdict(self),
+                embedding_func=None,
+            )
+        )
+        
+        param.hl_keywords=hl_keywords,
+        param.ll_keywords=ll_keywords,
+        
+        # ---------------------
+        # STEP 2: Final Query Logic
+        # ---------------------
+        
+        # Create a new string with the prompt and the keywords
+        ll_keywords_str = ", ".join(ll_keywords)
+        hl_keywords_str = ", ".join(hl_keywords)
+        formatted_question = f"{prompt}\n\n### Keywords:\nHigh-level: {hl_keywords_str}\nLow-level: {ll_keywords_str}\n\n### Query:\n{query}"
+
+        if param.mode in ["local", "global", "hybrid"]:
+            response = await kg_query_with_keywords(
+                formatted_question,
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.text_chunks,
+                param,
+                asdict(self),
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
+                    global_config=asdict(self),
+                    embedding_func=None,
+                ),
+            )
+        elif param.mode == "naive":
+            response = await naive_query(
+                formatted_question,
+                self.chunks_vdb,
+                self.text_chunks,
+                param,
+                asdict(self),
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
+                    global_config=asdict(self),
+                    embedding_func=None,
+                ),
+            )
+        elif param.mode == "mix":
+            response = await mix_kg_vector_query(
+                formatted_question,
+                self.chunk_entity_relation_graph,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.chunks_vdb,
+                self.text_chunks,
+                param,
+                asdict(self),
+                hashing_kv=self.llm_response_cache
+                if self.llm_response_cache and hasattr(self.llm_response_cache, "global_config")
+                else self.key_string_value_json_storage_cls(
+                    namespace="llm_response_cache",
+                    global_config=asdict(self),
+                    embedding_func=None,
+                ),
+            )
+        else:
+            raise ValueError(f"Unknown mode {param.mode}")
+
         await self._query_done()
         return response
 
