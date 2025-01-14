@@ -680,6 +680,7 @@ async def kg_query(
     )
     return response
 
+
 async def kg_query_with_keywords(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -717,8 +718,10 @@ async def kg_query_with_keywords(
 
     # If neither has any keywords, you could handle that logic here.
     if not hl_keywords and not ll_keywords:
-        logger.warning("No keywords found in query_param. Could default to global mode or fail.")
-        return PROMPTS["fail_response"] 
+        logger.warning(
+            "No keywords found in query_param. Could default to global mode or fail."
+        )
+        return PROMPTS["fail_response"]
     if not ll_keywords and query_param.mode in ["local", "hybrid"]:
         logger.warning("low_level_keywords is empty, switching to global mode.")
         query_param.mode = "global"
@@ -727,8 +730,16 @@ async def kg_query_with_keywords(
         query_param.mode = "local"
 
     # Flatten low-level and high-level keywords if needed
-    ll_keywords_flat = [item for sublist in ll_keywords for item in sublist] if any(isinstance(i, list) for i in ll_keywords) else ll_keywords
-    hl_keywords_flat = [item for sublist in hl_keywords for item in sublist] if any(isinstance(i, list) for i in hl_keywords) else hl_keywords
+    ll_keywords_flat = (
+        [item for sublist in ll_keywords for item in sublist]
+        if any(isinstance(i, list) for i in ll_keywords)
+        else ll_keywords
+    )
+    hl_keywords_flat = (
+        [item for sublist in hl_keywords for item in sublist]
+        if any(isinstance(i, list) for i in hl_keywords)
+        else hl_keywords
+    )
 
     # Join the flattened lists
     ll_keywords_str = ", ".join(ll_keywords_flat) if ll_keywords_flat else ""
@@ -766,7 +777,7 @@ async def kg_query_with_keywords(
 
     if query_param.only_need_prompt:
         return sys_prompt
-    
+
     # Now call the LLM with the final system prompt
     response = await use_model_func(
         query,
@@ -802,6 +813,7 @@ async def kg_query_with_keywords(
         ),
     )
     return response
+
 
 async def extract_keywords_only(
     text: str,
@@ -880,6 +892,7 @@ async def extract_keywords_only(
         ),
     )
     return hl_keywords, ll_keywords
+
 
 async def _build_query_context(
     query: list,
