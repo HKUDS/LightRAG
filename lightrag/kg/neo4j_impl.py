@@ -45,21 +45,24 @@ class Neo4JStorage(BaseGraphStorage):
         self._DATABASE = DATABASE
         # 增加默认参数 by bumaple 2025-01-10
         self._timeout = 600
-        self._conn_pool_size = 20
+        self._check_timeout = 30
+        self._conn_pool_size = 50
 
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(
             URI, auth=(USERNAME, PASSWORD),
             connection_acquisition_timeout=self._timeout,
-            max_connection_lifetime=self._timeout,
+            max_connection_lifetime=self._timeout * 6,
             max_connection_pool_size=self._conn_pool_size,
-            connection_timeout=self._timeout,
+            connection_timeout=self._check_timeout,
+            liveness_check_timeout=self._check_timeout,
         )
         _database_name = "home database" if DATABASE is None else f"database {DATABASE}"
         with GraphDatabase.driver(URI, auth=(USERNAME, PASSWORD),
                                   connection_acquisition_timeout=self._timeout,
-                                  max_connection_lifetime=self._timeout,
+                                  max_connection_lifetime=self._timeout * 6,
                                   max_connection_pool_size=self._conn_pool_size,
-                                  connection_timeout=self._timeout,
+                                  connection_timeout=self._check_timeout,
+                                  liveness_check_timeout=self._check_timeout,
                                   ) as _sync_driver:
             try:
                 with _sync_driver.session(database=DATABASE, connection_acquisition_timeout=self._timeout) as session:
