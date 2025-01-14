@@ -175,7 +175,11 @@ def parse_args():
 class DocumentManager:
     """Handles document operations and tracking"""
 
-    def __init__(self, input_dir: str, supported_extensions: tuple = (".txt", ".md", ".pdf", ".docx", ".pptx")):
+    def __init__(
+        self,
+        input_dir: str,
+        supported_extensions: tuple = (".txt", ".md", ".pdf", ".docx", ".pptx"),
+    ):
         self.input_dir = Path(input_dir)
         self.supported_extensions = supported_extensions
         self.indexed_files = set()
@@ -357,26 +361,22 @@ def create_app(args):
         ),
     )
 
-
-
     async def index_file(file_path: Union[str, Path]) -> None:
-        """ Index all files inside the folder with support for multiple file formats
-        
+        """Index all files inside the folder with support for multiple file formats
+
         Args:
             file_path: Path to the file to be indexed (str or Path object)
-            
+
         Raises:
             ValueError: If file format is not supported
             FileNotFoundError: If file doesn't exist
         """
         if not pm.is_installed("aiofiles"):
             pm.install("aiofiles")
-        import aiofiles
-    
-    
+
         # Convert to Path object if string
         file_path = Path(file_path)
-        
+
         # Check if file exists
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -384,23 +384,24 @@ def create_app(args):
         content = ""
         # Get file extension in lowercase
         ext = file_path.suffix.lower()
-        
+
         match ext:
             case ".txt" | ".md":
                 # Text files handling
                 async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
                     content = await f.read()
-            
+
             case ".pdf":
                 if not pm.is_installed("pypdf2"):
                     pm.install("pypdf2")
                 from pypdf2 import PdfReader
+
                 # PDF handling
                 reader = PdfReader(str(file_path))
                 content = ""
                 for page in reader.pages:
                     content += page.extract_text() + "\n"
-            
+
             case ".docx":
                 if not pm.is_installed("docx"):
                     pm.install("docx")
@@ -409,11 +410,12 @@ def create_app(args):
                 # Word document handling
                 doc = Document(file_path)
                 content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-            
+
             case ".pptx":
                 if not pm.is_installed("pptx"):
                     pm.install("pptx")
                 from pptx import Presentation
+
                 # PowerPoint handling
                 prs = Presentation(file_path)
                 content = ""
@@ -421,7 +423,7 @@ def create_app(args):
                     for shape in slide.shapes:
                         if hasattr(shape, "text"):
                             content += shape.text + "\n"
-            
+
             case _:
                 raise ValueError(f"Unsupported file format: {ext}")
 
@@ -432,9 +434,6 @@ def create_app(args):
             logging.info(f"Successfully indexed file: {file_path}")
         else:
             logging.warning(f"No content extracted from file: {file_path}")
-
-
-
 
     @app.on_event("startup")
     async def startup_event():
@@ -559,6 +558,7 @@ def create_app(args):
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
     @app.post(
         "/documents/file",
         response_model=InsertResponse,
@@ -566,14 +566,14 @@ def create_app(args):
     )
     async def insert_file(file: UploadFile = File(...), description: str = Form(None)):
         """Insert a file directly into the RAG system
-        
+
         Args:
             file: Uploaded file
             description: Optional description of the file
-            
+
         Returns:
             InsertResponse: Status of the insertion operation
-            
+
         Raises:
             HTTPException: For unsupported file types or processing errors
         """
@@ -581,19 +581,19 @@ def create_app(args):
             content = ""
             # Get file extension in lowercase
             ext = Path(file.filename).suffix.lower()
-            
+
             match ext:
                 case ".txt" | ".md":
                     # Text files handling
                     text_content = await file.read()
                     content = text_content.decode("utf-8")
-                
+
                 case ".pdf":
                     if not pm.is_installed("pypdf2"):
                         pm.install("pypdf2")
                     from pypdf2 import PdfReader
                     from io import BytesIO
-                    
+
                     # Read PDF from memory
                     pdf_content = await file.read()
                     pdf_file = BytesIO(pdf_content)
@@ -601,25 +601,27 @@ def create_app(args):
                     content = ""
                     for page in reader.pages:
                         content += page.extract_text() + "\n"
-                
+
                 case ".docx":
                     if not pm.is_installed("docx"):
                         pm.install("docx")
                     from docx import Document
                     from io import BytesIO
-                    
+
                     # Read DOCX from memory
                     docx_content = await file.read()
                     docx_file = BytesIO(docx_content)
                     doc = Document(docx_file)
-                    content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-                
+                    content = "\n".join(
+                        [paragraph.text for paragraph in doc.paragraphs]
+                    )
+
                 case ".pptx":
                     if not pm.is_installed("pptx"):
                         pm.install("pptx")
                     from pptx import Presentation
                     from io import BytesIO
-                    
+
                     # Read PPTX from memory
                     pptx_content = await file.read()
                     pptx_file = BytesIO(pptx_content)
@@ -629,7 +631,7 @@ def create_app(args):
                         for shape in slide.shapes:
                             if hasattr(shape, "text"):
                                 content += shape.text + "\n"
-                
+
                 case _:
                     raise HTTPException(
                         status_code=400,
@@ -641,10 +643,10 @@ def create_app(args):
                 # Add description if provided
                 if description:
                     content = f"{description}\n\n{content}"
-                
+
                 await rag.ainsert(content)
                 logging.info(f"Successfully indexed file: {file.filename}")
-                
+
                 return InsertResponse(
                     status="success",
                     message=f"File '{file.filename}' successfully inserted",
@@ -661,6 +663,7 @@ def create_app(args):
         except Exception as e:
             logging.error(f"Error processing file {file.filename}: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
+
     @app.post(
         "/documents/batch",
         response_model=InsertResponse,
@@ -668,13 +671,13 @@ def create_app(args):
     )
     async def insert_batch(files: List[UploadFile] = File(...)):
         """Process multiple files in batch mode
-        
+
         Args:
             files: List of files to process
-            
+
         Returns:
             InsertResponse: Status of the batch insertion operation
-            
+
         Raises:
             HTTPException: For processing errors
         """
@@ -686,41 +689,43 @@ def create_app(args):
                 try:
                     content = ""
                     ext = Path(file.filename).suffix.lower()
-                    
+
                     match ext:
                         case ".txt" | ".md":
                             text_content = await file.read()
                             content = text_content.decode("utf-8")
-                        
+
                         case ".pdf":
                             if not pm.is_installed("pypdf2"):
                                 pm.install("pypdf2")
                             from pypdf2 import PdfReader
                             from io import BytesIO
-                            
+
                             pdf_content = await file.read()
                             pdf_file = BytesIO(pdf_content)
                             reader = PdfReader(pdf_file)
                             for page in reader.pages:
                                 content += page.extract_text() + "\n"
-                        
+
                         case ".docx":
                             if not pm.is_installed("docx"):
                                 pm.install("docx")
                             from docx import Document
                             from io import BytesIO
-                            
+
                             docx_content = await file.read()
                             docx_file = BytesIO(docx_content)
                             doc = Document(docx_file)
-                            content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-                        
+                            content = "\n".join(
+                                [paragraph.text for paragraph in doc.paragraphs]
+                            )
+
                         case ".pptx":
                             if not pm.is_installed("pptx"):
                                 pm.install("pptx")
                             from pptx import Presentation
                             from io import BytesIO
-                            
+
                             pptx_content = await file.read()
                             pptx_file = BytesIO(pptx_content)
                             prs = Presentation(pptx_file)
@@ -728,7 +733,7 @@ def create_app(args):
                                 for shape in slide.shapes:
                                     if hasattr(shape, "text"):
                                         content += shape.text + "\n"
-                        
+
                         case _:
                             failed_files.append(f"{file.filename} (unsupported type)")
                             continue
@@ -770,7 +775,6 @@ def create_app(args):
         except Exception as e:
             logging.error(f"Batch processing error: {str(e)}")
             raise HTTPException(status_code=500, detail=str(e))
-
 
     @app.delete(
         "/documents",
