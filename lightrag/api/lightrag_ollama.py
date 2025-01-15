@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
 from pydantic import BaseModel
 import logging
 import argparse
@@ -673,7 +673,10 @@ def create_app(args):
         return query, SearchMode.hybrid
 
     @app.post("/api/chat")
-    async def chat(request: OllamaChatRequest):
+    async def chat(raw_request: Request, request: OllamaChatRequest):
+        # 打印原始请求数据
+        body = await raw_request.body()
+        logging.info(f"收到 /api/chat 原始请求: {body.decode('utf-8')}")
         """Handle chat completion requests"""
         try:
             # 获取所有消息内容
@@ -776,17 +779,23 @@ def create_app(args):
                 if not response_text:
                     response_text = "No response generated"
                     
-                # 构造并返回响应
-                return OllamaChatResponse(
-                    model=LIGHTRAG_MODEL,
-                    created_at=LIGHTRAG_CREATED_AT,
-                    message=OllamaMessage(
-                        role="assistant",
-                        content=str(response_text),  # 确保转换为字符串
-                        images=None
-                    ),
-                    done=True
-                )
+                # 构造响应，包含性能统计信息
+                return {
+                    "model": LIGHTRAG_MODEL,
+                    "created_at": LIGHTRAG_CREATED_AT,
+                    "message": {
+                        "role": "assistant",
+                        "content": str(response_text),  # 确保转换为字符串
+                        "images": None
+                    },
+                    "done": True,
+                    "total_duration": 0,  # 由于我们没有实际统计这些指标，暂时使用默认值
+                    "load_duration": 0,
+                    "prompt_eval_count": 0,
+                    "prompt_eval_duration": 0,
+                    "eval_count": 0,
+                    "eval_duration": 0
+                }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
