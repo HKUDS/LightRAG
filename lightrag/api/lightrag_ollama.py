@@ -659,38 +659,55 @@ def create_app(args):
             cleaned_query, mode = parse_query_mode(query)
             
             # 调用RAG进行查询
-            response = await rag.aquery(
-                cleaned_query,
-                param=QueryParam(
-                    mode=mode,
-                    stream=request.stream,
-                )
-            )
-
             if request.stream:
+                response = await rag.aquery(
+                    cleaned_query,
+                    param=QueryParam(
+                        mode=mode,
+                        stream=True,
+                        only_need_context=False
+                    ),
+                )
+
                 async def stream_generator():
-                    async for chunk in response:
-                        yield OllamaChatResponse(
-                            model=LIGHTRAG_MODEL,
-                            created_at=LIGHTRAG_CREATED_AT,
-                            message=OllamaMessage(
-                                role="assistant",
-                                content=chunk
-                            ),
-                            done=False
-                        )
-                    # 发送一个空的完成消息
-                    yield OllamaChatResponse(
-                        model=LIGHTRAG_MODEL,
-                        created_at=LIGHTRAG_CREATED_AT,
-                        message=OllamaMessage(
-                            role="assistant",
-                            content=""
-                        ),
-                        done=True
-                    )
-                return stream_generator()
+                    try:
+                        async for chunk in response:
+                            yield {
+                                "model": LIGHTRAG_MODEL,
+                                "created_at": LIGHTRAG_CREATED_AT,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": chunk
+                                },
+                                "done": False
+                            }
+                        yield {
+                            "model": LIGHTRAG_MODEL,
+                            "created_at": LIGHTRAG_CREATED_AT,
+                            "message": {
+                                "role": "assistant",
+                                "content": ""
+                            },
+                            "done": True
+                        }
+                    except Exception as e:
+                        logging.error(f"Error in stream_generator: {str(e)}")
+                        raise
+                from fastapi.responses import StreamingResponse
+                import json
+                return StreamingResponse(
+                    (f"data: {json.dumps(chunk)}\n\n" async for chunk in stream_generator()),
+                    media_type="text/event-stream"
+                )
             else:
+                response = await rag.aquery(
+                    cleaned_query,
+                    param=QueryParam(
+                        mode=mode,
+                        stream=False,
+                        only_need_context=False
+                    ),
+                )
                 return OllamaChatResponse(
                     model=LIGHTRAG_MODEL,
                     created_at=LIGHTRAG_CREATED_AT,
