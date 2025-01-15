@@ -743,12 +743,12 @@ def create_app(args):
                                 "model": LIGHTRAG_MODEL,
                                 "created_at": LIGHTRAG_CREATED_AT,
                                 "done": True,
-                                "total_duration": 0,  # 由于我们没有实际统计这些指标，暂时使用默认值
-                                "load_duration": 0,
-                                "prompt_eval_count": 0,
-                                "prompt_eval_duration": 0,
-                                "eval_count": 0,
-                                "eval_duration": 0
+                                "total_duration": 1,  # 由于我们没有实际统计这些指标，暂时使用默认值
+                                "load_duration": 1,
+                                "prompt_eval_count": 999,
+                                "prompt_eval_duration": 1,
+                                "eval_count": 999,
+                                "eval_duration": 1
                             }
                             yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                             return  # 确保生成器在发送完成标记后立即结束
@@ -789,12 +789,12 @@ def create_app(args):
                         "images": None
                     },
                     "done": True,
-                    "total_duration": 0,  # 由于我们没有实际统计这些指标，暂时使用默认值
-                    "load_duration": 0,
-                    "prompt_eval_count": 0,
-                    "prompt_eval_duration": 0,
-                    "eval_count": 0,
-                    "eval_duration": 0
+                    "total_duration": 1,  # 由于我们没有实际统计这些指标，暂时使用默认值
+                    "load_duration": 1,
+                    "prompt_eval_count": 999,
+                    "prompt_eval_duration": 1,
+                    "eval_count": 999,
+                    "eval_duration": 1
                 }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
