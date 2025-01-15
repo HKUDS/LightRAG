@@ -674,9 +674,9 @@ def create_app(args):
 
     @app.post("/api/chat")
     async def chat(raw_request: Request, request: OllamaChatRequest):
-        # 打印原始请求数据
-        body = await raw_request.body()
-        logging.info(f"收到 /api/chat 原始请求: {body.decode('utf-8')}")
+        # # 打印原始请求数据
+        # body = await raw_request.body()
+        # logging.info(f"收到 /api/chat 原始请求: {body.decode('utf-8')}")
         """Handle chat completion requests"""
         try:
             # 获取所有消息内容
