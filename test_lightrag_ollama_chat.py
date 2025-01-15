@@ -70,7 +70,7 @@ def test_stream_chat():
         for event in client.events():
             try:
                 data = json.loads(event.data)
-                if data.get("done", False):  # 如果是完成标记
+                if data.get("done", True):  # 如果是完成标记
                     if "total_duration" in data:  # 最终的性能统计消息
                         print("\n=== 性能统计 ===")
                         print(json.dumps(data, ensure_ascii=False, indent=2))
