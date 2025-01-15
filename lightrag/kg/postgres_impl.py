@@ -231,6 +231,16 @@ class PGKVStorage(BaseKVStorage):
         else:
             return None
 
+    async def all_keys(self) -> list[dict]:
+        if "llm_response_cache" == self.namespace:
+            sql = "select workspace,mode,id from lightrag_llm_cache"
+            res = await self.db.query(sql, multirows=True)
+            return res
+        else:
+            logger.error(
+                f"all_keys is only implemented for llm_response_cache, not for {self.namespace}"
+            )
+
     async def filter_keys(self, keys: List[str]) -> Set[str]:
         """Filter out duplicated content"""
         sql = SQL_TEMPLATES["filter_keys"].format(
@@ -412,7 +422,10 @@ class PGDocStatusStorage(DocStatusStorage):
 
     async def filter_keys(self, data: list[str]) -> set[str]:
         """Return keys that don't exist in storage"""
-        sql = f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id IN ({",".join([f"'{_id}'" for _id in data])})"
+        keys = ",".join([f"'{_id}'" for _id in data])
+        sql = (
+            f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id IN ({keys})"
+        )
         result = await self.db.query(sql, {"workspace": self.db.workspace}, True)
         # The result is like [{'id': 'id1'}, {'id': 'id2'}, ...].
         if result is None:
