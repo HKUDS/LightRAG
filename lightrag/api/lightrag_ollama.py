@@ -706,50 +706,44 @@ def create_app(args):
                     try:
                         # 确保 response 是异步生成器
                         if isinstance(response, str):
-                            data = {
-                                'model': LIGHTRAG_MODEL,
-                                'created_at': LIGHTRAG_CREATED_AT,
-                                'message': {
-                                    'role': 'assistant',
-                                    'content': response
-                                },
-                                'done': True
-                            }
-                            yield f"data: {json.dumps(data)}\n\n"
-                        else:
-                            async for chunk in response:
-                                data = {
-                                    "model": LIGHTRAG_MODEL,
-                                    "created_at": LIGHTRAG_CREATED_AT,
-                                    "message": {
-                                        "role": "assistant",
-                                        "content": chunk
-                                    },
-                                    "done": False
-                                }
-                                yield f"data: {json.dumps(data)}\n\n"
+                            # 如果是字符串，作为单个完整响应发送
                             data = {
                                 "model": LIGHTRAG_MODEL,
                                 "created_at": LIGHTRAG_CREATED_AT,
                                 "message": {
                                     "role": "assistant",
-                                    "content": chunk
+                                    "content": response
                                 },
-                                "done": False
+                                "done": True
                             }
-                            yield f"data: {json.dumps(data)}\n\n"
+                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                        else:
+                            # 流式响应
+                            async for chunk in response:
+                                if chunk:  # 只发送非空内容
+                                    data = {
+                                        "model": LIGHTRAG_MODEL,
+                                        "created_at": LIGHTRAG_CREATED_AT,
+                                        "message": {
+                                            "role": "assistant",
+                                            "content": chunk
+                                        },
+                                        "done": False
+                                    }
+                                    yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                             
-                        # 发送完成标记
-                        data = {
-                            "model": LIGHTRAG_MODEL,
-                            "created_at": LIGHTRAG_CREATED_AT,
-                            "message": {
-                                "role": "assistant",
-                                "content": ""
-                            },
-                            "done": True
-                        }
-                        yield f"data: {json.dumps(data)}\n\n"
+                            # 发送完成标记
+                            data = {
+                                "model": LIGHTRAG_MODEL,
+                                "created_at": LIGHTRAG_CREATED_AT,
+                                "message": {
+                                    "role": "assistant",
+                                    "content": ""
+                                },
+                                "done": True
+                            }
+                            yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                            return  # 确保生成器在发送完成标记后立即结束
                     except Exception as e:
                         logging.error(f"Error in stream_generator: {str(e)}")
                         raise
