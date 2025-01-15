@@ -258,7 +258,6 @@ class OllamaModelDetails(BaseModel):
 class OllamaModel(BaseModel):
     name: str
     model: str
-    tag: str
     size: int
     digest: str
     modified_at: str
@@ -611,9 +610,8 @@ def create_app(args):
         """Get available models"""
         return OllamaTagResponse(
             models=[{
-                "name": LIGHTRAG_NAME,
-                "model": LIGHTRAG_NAME,
-                "tag": LIGHTRAG_TAG,
+                "name": LIGHTRAG_MODEL,
+                "model": LIGHTRAG_MODEL,
                 "size": LIGHTRAG_SIZE,
                 "digest": LIGHTRAG_DIGEST,
                 "modified_at": LIGHTRAG_CREATED_AT,
