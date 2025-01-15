@@ -261,15 +261,15 @@ def test_non_stream_chat():
         "message": response_json["message"]
     }, "响应内容")
     
-    # 打印性能统计
-    print_json_response({
-        "total_duration": response_json["total_duration"],
-        "load_duration": response_json["load_duration"],
-        "prompt_eval_count": response_json["prompt_eval_count"],
-        "prompt_eval_duration": response_json["prompt_eval_duration"],
-        "eval_count": response_json["eval_count"],
-        "eval_duration": response_json["eval_duration"]
-    }, "性能统计")
+    # # 打印性能统计
+    # print_json_response({
+    #     "total_duration": response_json["total_duration"],
+    #     "load_duration": response_json["load_duration"],
+    #     "prompt_eval_count": response_json["prompt_eval_count"],
+    #     "prompt_eval_duration": response_json["prompt_eval_duration"],
+    #     "eval_count": response_json["eval_count"],
+    #     "eval_duration": response_json["eval_duration"]
+    # }, "性能统计")
 
 def test_stream_chat():
     """测试流式调用 /api/chat 接口
@@ -309,7 +309,7 @@ def test_stream_chat():
                     data = json.loads(line.decode('utf-8'))
                     if data.get("done", True):  # 如果是完成标记
                         if "total_duration" in data:  # 最终的性能统计消息
-                            print_json_response(data, "性能统计")
+                            # print_json_response(data, "性能统计")
                             break
                     else:  # 正常的内容消息
                         message = data.get("message", {})
