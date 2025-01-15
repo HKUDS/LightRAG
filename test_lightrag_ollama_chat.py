@@ -23,7 +23,26 @@ def test_non_stream_chat():
     
     # 打印响应
     print("\n=== 非流式调用响应 ===")
-    print(json.dumps(response.json(), ensure_ascii=False, indent=2))
+    response_json = response.json()
+    
+    # 打印消息内容
+    print("=== 响应内容 ===")
+    print(json.dumps({
+        "model": response_json["model"],
+        "message": response_json["message"]
+    }, ensure_ascii=False, indent=2))
+    
+    # 打印性能统计
+    print("\n=== 性能统计 ===")
+    stats = {
+        "total_duration": response_json["total_duration"],
+        "load_duration": response_json["load_duration"],
+        "prompt_eval_count": response_json["prompt_eval_count"],
+        "prompt_eval_duration": response_json["prompt_eval_duration"],
+        "eval_count": response_json["eval_count"],
+        "eval_duration": response_json["eval_duration"]
+    }
+    print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 def test_stream_chat():
     """测试流式调用 /api/chat 接口"""
