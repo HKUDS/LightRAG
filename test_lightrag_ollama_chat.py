@@ -12,9 +12,8 @@ LightRAG Ollama 兼容接口测试脚本
 import requests
 import json
 import argparse
-import os
 import time
-from typing import Dict, Any, Optional, List, Callable, Tuple
+from typing import Dict, Any, Optional, List, Callable
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
