@@ -236,7 +236,7 @@ class OllamaMessage(BaseModel):
 class OllamaChatRequest(BaseModel):
     model: str = LIGHTRAG_MODEL
     messages: List[OllamaMessage]
-    stream: bool = False
+    stream: bool = True  # 默认为流式模式
     options: Optional[Dict[str, Any]] = None
 
 class OllamaChatResponse(BaseModel):
