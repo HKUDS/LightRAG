@@ -709,16 +709,31 @@ def create_app(args):
                     try:
                         # 确保 response 是异步生成器
                         if isinstance(response, str):
-                            # 如果是字符串，作为单个完整响应发送
+                            # 如果是字符串,分两次发送
+                            # 第一次发送查询内容
                             data = {
                                 "model": LIGHTRAG_MODEL,
                                 "created_at": LIGHTRAG_CREATED_AT,
                                 "message": {
-                                    "role": "assistant",
+                                    "role": "assistant", 
                                     "content": response,
                                     "images": None
                                 },
-                                "done": True
+                                "done": False
+                            }
+                            yield f"{json.dumps(data, ensure_ascii=False)}\n"
+                            
+                            # 第二次发送统计信息
+                            data = {
+                                "model": LIGHTRAG_MODEL,
+                                "created_at": LIGHTRAG_CREATED_AT,
+                                "done": True,
+                                "total_duration": 1,
+                                "load_duration": 1,
+                                "prompt_eval_count": 999,
+                                "prompt_eval_duration": 1,
+                                "eval_count": 999,
+                                "eval_duration": 1
                             }
                             yield f"{json.dumps(data, ensure_ascii=False)}\n"
                         else:
