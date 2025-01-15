@@ -118,8 +118,7 @@ DEFAULT_CONFIG = {
     },
     "test_cases": {
         "basic": {
-            "query": "孙悟空",
-            "stream_query": "孙悟空"
+            "query": "唐僧有几个徒弟"
         }
     }
 }
@@ -292,7 +291,7 @@ def test_stream_chat():
     """
     url = get_base_url()
     data = create_request_data(
-        CONFIG["test_cases"]["basic"]["stream_query"],
+        CONFIG["test_cases"]["basic"]["query"],
         stream=True
     )
     
@@ -344,7 +343,7 @@ def test_query_modes():
         if OutputControl.is_verbose():
             print(f"\n=== 测试 /{mode} 模式 ===")
         data = create_request_data(
-            f"/{mode} 孙悟空的特点",
+            f"/{mode} {CONFIG['test_cases']['basic']['query']}",
             stream=False
         )
         
@@ -534,11 +533,14 @@ def parse_args() -> argparse.Namespace:
 """
     )
     parser.add_argument(
-        "--tests",
-        nargs="+",
-        choices=list(get_test_cases().keys()) + ["all"],
-        default=["all"],
-        help="要运行的测试用例，可选: %(choices)s。使用 all 运行所有测试"
+        "-q", "--quiet",
+        action="store_true",
+        help="静默模式，只显示测试结果摘要"
+    )
+    parser.add_argument(
+        "-a", "--ask",
+        type=str,
+        help="指定查询内容，会覆盖配置文件中的查询设置"
     )
     parser.add_argument(
         "--init-config",
@@ -552,9 +554,11 @@ def parse_args() -> argparse.Namespace:
         help="测试结果输出文件路径"
     )
     parser.add_argument(
-        "-q", "--quiet",
-        action="store_true",
-        help="静默模式，只显示测试结果摘要"
+        "--tests",
+        nargs="+",
+        choices=list(get_test_cases().keys()) + ["all"],
+        default=["all"],
+        help="要运行的测试用例，可选: %(choices)s。使用 all 运行所有测试"
     )
     return parser.parse_args()
 
@@ -563,6 +567,10 @@ if __name__ == "__main__":
     
     # 设置输出模式
     OutputControl.set_verbose(not args.quiet)
+    
+    # 如果指定了查询内容，更新配置
+    if args.ask:
+        CONFIG["test_cases"]["basic"]["query"] = args.ask
     
     # 如果指定了创建配置文件
     if args.init_config:
