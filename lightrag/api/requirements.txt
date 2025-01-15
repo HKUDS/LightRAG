@@ -7,6 +7,7 @@ nest_asyncio
 numpy
 ollama
 openai
+pipmaster
 python-dotenv
 python-multipart
 tenacity
