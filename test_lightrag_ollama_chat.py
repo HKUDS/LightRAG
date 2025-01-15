@@ -119,7 +119,7 @@ DEFAULT_CONFIG = {
     "test_cases": {
         "basic": {
             "query": "孙悟空",
-            "stream_query": "孙悟空有什么法力，性格特征是什么"
+            "stream_query": "孙悟空"
         }
     }
 }
