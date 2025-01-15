@@ -35,7 +35,7 @@ def test_stream_chat():
         "messages": [
             {
                 "role": "user",
-                "content": "/naive 孙悟空有什么法力，性格特征是什么"
+                "content": "孙悟空有什么法力，性格特征是什么"
             }
         ],
         "stream": True
@@ -51,12 +51,16 @@ def test_stream_chat():
         for event in client.events():
             try:
                 data = json.loads(event.data)
-                message = data.get("message", {})
-                content = message.get("content", "")
-                if content:  # 只收集非空内容
-                    output_buffer.append(content)
-                if data.get("done", False):  # 如果收到完成标记，退出循环
-                    break
+                if data.get("done", False):  # 如果是完成标记
+                    if "total_duration" in data:  # 最终的性能统计消息
+                        print("\n=== 性能统计 ===")
+                        print(json.dumps(data, ensure_ascii=False, indent=2))
+                        break
+                else:  # 正常的内容消息
+                    message = data.get("message", {})
+                    content = message.get("content", "")
+                    if content:  # 只收集非空内容
+                        output_buffer.append(content)
             except json.JSONDecodeError:
                 print("Error decoding JSON from SSE event")
     finally:

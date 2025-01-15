@@ -231,6 +231,7 @@ class SearchMode(str, Enum):
 class OllamaMessage(BaseModel):
     role: str
     content: str
+    images: Optional[List[str]] = None
 
 class OllamaChatRequest(BaseModel):
     model: str = LIGHTRAG_MODEL
@@ -712,7 +713,8 @@ def create_app(args):
                                 "created_at": LIGHTRAG_CREATED_AT,
                                 "message": {
                                     "role": "assistant",
-                                    "content": response
+                                    "content": response,
+                                    "images": None
                                 },
                                 "done": True
                             }
@@ -726,21 +728,24 @@ def create_app(args):
                                         "created_at": LIGHTRAG_CREATED_AT,
                                         "message": {
                                             "role": "assistant",
-                                            "content": chunk
+                                            "content": chunk,
+                                            "images": None
                                         },
                                         "done": False
                                     }
                                     yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                             
-                            # 发送完成标记
+                            # 发送完成标记，包含性能统计信息
                             data = {
                                 "model": LIGHTRAG_MODEL,
                                 "created_at": LIGHTRAG_CREATED_AT,
-                                "message": {
-                                    "role": "assistant",
-                                    "content": ""
-                                },
-                                "done": True
+                                "done": True,
+                                "total_duration": 0,  # 由于我们没有实际统计这些指标，暂时使用默认值
+                                "load_duration": 0,
+                                "prompt_eval_count": 0,
+                                "prompt_eval_duration": 0,
+                                "eval_count": 0,
+                                "eval_duration": 0
                             }
                             yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                             return  # 确保生成器在发送完成标记后立即结束
@@ -777,7 +782,8 @@ def create_app(args):
                     created_at=LIGHTRAG_CREATED_AT,
                     message=OllamaMessage(
                         role="assistant",
-                        content=str(response_text)  # 确保转换为字符串
+                        content=str(response_text),  # 确保转换为字符串
+                        images=None
                     ),
                     done=True
                 )
