@@ -658,31 +658,14 @@ def create_app(args):
             # 解析查询模式
             cleaned_query, mode = parse_query_mode(query)
             
-            # 构建系统提示词（如果有历史消息）
-            system_prompt = None
-            history_messages = []
-            if len(messages) > 1:
-                # 如果第一条消息是系统消息，提取为system_prompt
-                if messages[0].role == "system":
-                    system_prompt = messages[0].content
-                    messages = messages[1:]
-                
-                # 收集历史消息（除了最后一条）
-                history_messages = [(msg.role, msg.content) for msg in messages[:-1]]
-            
             # 调用RAG进行查询
-            kwargs = {
-                "param": QueryParam(
+            response = await rag.aquery(
+                cleaned_query,
+                param=QueryParam(
                     mode=mode,
                     stream=request.stream,
                 )
-            }
-            if system_prompt is not None:
-                kwargs["system_prompt"] = system_prompt
-            if history_messages:
-                kwargs["history_messages"] = history_messages
-                
-            response = await rag.aquery(cleaned_query, **kwargs)
+            )
 
             if request.stream:
                 async def stream_generator():
