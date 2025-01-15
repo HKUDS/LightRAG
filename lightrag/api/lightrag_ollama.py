@@ -27,6 +27,7 @@ load_dotenv()
 LIGHTRAG_NAME = "lightrag"
 LIGHTRAG_TAG = "latest"
 LIGHTRAG_MODEL = "{LIGHTRAG_NAME}:{LIGHTRAG_TAG}"
+LIGHTRAG_SIZE = 7365960935
 LIGHTRAG_CREATED_AT = "2024-01-15T00:00:00Z"
 LIGHTRAG_DIGEST = "sha256:lightrag"
 
@@ -245,7 +246,6 @@ class OllamaChatResponse(BaseModel):
 
 class OllamaVersionResponse(BaseModel):
     version: str
-    build: str = "default"
 
 class OllamaTagResponse(BaseModel):
     models: List[Dict[str, str]]
@@ -586,7 +586,7 @@ def create_app(args):
     async def get_version():
         """Get Ollama version information"""
         return OllamaVersionResponse(
-            version="0.1.0"
+            version="0.5.4"
         )
 
     @app.get("/api/tags")
@@ -595,10 +595,19 @@ def create_app(args):
         return OllamaTagResponse(
             models=[{
                 "name": LIGHTRAG_NAME,
+                "model": LIGHTRAG_NAME,
                 "tag": LIGHTRAG_TAG,
-                "size": 0,
+                "size": LIGHTRAG_SIZE,
                 "digest": LIGHTRAG_DIGEST,
-                "modified_at": LIGHTRAG_CREATED_AT
+                "modified_at": LIGHTRAG_CREATED_AT,
+                "details": {
+                    "parent_model": "",
+                    "format": "gguf",
+                    "family": LIGHTRAG_NAME,
+                    "families": [LIGHTRAG_NAME],
+                    "parameter_size": "13B",
+                    "quantization_level": "Q4_0"
+                }                
             }]
         )
 
