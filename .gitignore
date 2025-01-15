@@ -21,3 +21,4 @@ rag_storage
 venv/
 examples/input/
 examples/output/
+test_results.json
