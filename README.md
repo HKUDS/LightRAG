@@ -334,7 +334,7 @@ with open("./newText.txt") as f:
 We've introduced a new function `query_with_separate_keyword_extraction` to enhance the keyword extraction capabilities. This function separates the keyword extraction process from the user's prompt, focusing solely on the query to improve the relevance of extracted keywords.
 
 ##### How It Works?
-The function operates by dividing the input into two parts: 
+The function operates by dividing the input into two parts:
 - `User Query`
 - `Prompt`
 
