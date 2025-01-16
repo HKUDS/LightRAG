@@ -95,19 +95,21 @@ book2 = open("./book_2.txt", encoding="utf-8")
 
 rag.insert([book1.read(), book2.read()])
 
+
 # Example function demonstrating the new query_with_separate_keyword_extraction usage
 async def run_example():
     query = "What are the top themes in this story?"
     prompt = "Please simplify the response for a young audience."
-    
+
     # Using the new method to ensure the keyword extraction is only applied to the query
     response = rag.query_with_separate_keyword_extraction(
         query=query,
         prompt=prompt,
-        param=QueryParam(mode="hybrid")  # Adjust QueryParam mode as necessary
+        param=QueryParam(mode="hybrid"),  # Adjust QueryParam mode as necessary
     )
-    
+
     print("Extracted Response:", response)
+
 
 # Run the example asynchronously
 if __name__ == "__main__":
