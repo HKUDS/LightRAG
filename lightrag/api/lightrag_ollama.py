@@ -684,7 +684,9 @@ def create_app(args):
         
         for prefix, mode in mode_map.items():
             if query.startswith(prefix):
-                return query[len(prefix):], mode
+                # 移除前缀后，清理开头的额外空格
+                cleaned_query = query[len(prefix):].lstrip()
+                return cleaned_query, mode
                 
         return query, SearchMode.hybrid
 
