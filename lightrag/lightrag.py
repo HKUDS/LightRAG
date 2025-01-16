@@ -26,7 +26,7 @@ from .utils import (
     convert_response_to_json,
     logger,
     set_logger,
-    statistic_data
+    statistic_data,
 )
 from .base import (
     BaseGraphStorage,
@@ -39,29 +39,29 @@ from .base import (
 
 from .prompt import GRAPH_FIELD_SEP
 
-STORAGES = {    
-    "JsonKVStorage": '.storage',
-    "NanoVectorDBStorage": '.storage',
-    "NetworkXStorage": '.storage',
-    "JsonDocStatusStorage": '.storage',
-
-    "Neo4JStorage":".kg.neo4j_impl",
-    "OracleKVStorage":".kg.oracle_impl",
-    "OracleGraphStorage":".kg.oracle_impl",
-    "OracleVectorDBStorage":".kg.oracle_impl",
-    "MilvusVectorDBStorge":".kg.milvus_impl",
-    "MongoKVStorage":".kg.mongo_impl",
-    "ChromaVectorDBStorage":".kg.chroma_impl",
-    "TiDBKVStorage":".kg.tidb_impl",
-    "TiDBVectorDBStorage":".kg.tidb_impl",
-    "TiDBGraphStorage":".kg.tidb_impl",
-    "PGKVStorage":".kg.postgres_impl",
-    "PGVectorStorage":".kg.postgres_impl",
-    "AGEStorage":".kg.age_impl",
-    "PGGraphStorage":".kg.postgres_impl",
-    "GremlinStorage":".kg.gremlin_impl",
-    "PGDocStatusStorage":".kg.postgres_impl",
+STORAGES = {
+    "JsonKVStorage": ".storage",
+    "NanoVectorDBStorage": ".storage",
+    "NetworkXStorage": ".storage",
+    "JsonDocStatusStorage": ".storage",
+    "Neo4JStorage": ".kg.neo4j_impl",
+    "OracleKVStorage": ".kg.oracle_impl",
+    "OracleGraphStorage": ".kg.oracle_impl",
+    "OracleVectorDBStorage": ".kg.oracle_impl",
+    "MilvusVectorDBStorge": ".kg.milvus_impl",
+    "MongoKVStorage": ".kg.mongo_impl",
+    "ChromaVectorDBStorage": ".kg.chroma_impl",
+    "TiDBKVStorage": ".kg.tidb_impl",
+    "TiDBVectorDBStorage": ".kg.tidb_impl",
+    "TiDBGraphStorage": ".kg.tidb_impl",
+    "PGKVStorage": ".kg.postgres_impl",
+    "PGVectorStorage": ".kg.postgres_impl",
+    "AGEStorage": ".kg.age_impl",
+    "PGGraphStorage": ".kg.postgres_impl",
+    "GremlinStorage": ".kg.gremlin_impl",
+    "PGDocStatusStorage": ".kg.postgres_impl",
 }
+
 
 def lazy_external_import(module_name: str, class_name: str):
     """Lazily import a class from an external module based on the package of the caller."""
@@ -75,6 +75,7 @@ def lazy_external_import(module_name: str, class_name: str):
 
     def import_class(*args, **kwargs):
         import importlib
+
         module = importlib.import_module(module_name, package=package)
         cls = getattr(module, class_name)
         return cls(*args, **kwargs)
@@ -190,7 +191,7 @@ class LightRAG:
             os.makedirs(self.working_dir)
 
         # show config
-        global_config=asdict(self)
+        global_config = asdict(self)
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
@@ -198,31 +199,33 @@ class LightRAG:
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(
             self.embedding_func
         )
-        
 
         # Initialize all storages
-        self.key_string_value_json_storage_cls: Type[BaseKVStorage] = self._get_storage_class(self.kv_storage)
-        self.vector_db_storage_cls: Type[BaseVectorStorage] = self._get_storage_class(self.vector_storage)
-        self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class(self.graph_storage)
-        
+        self.key_string_value_json_storage_cls: Type[BaseKVStorage] = (
+            self._get_storage_class(self.kv_storage)
+        )
+        self.vector_db_storage_cls: Type[BaseVectorStorage] = self._get_storage_class(
+            self.vector_storage
+        )
+        self.graph_storage_cls: Type[BaseGraphStorage] = self._get_storage_class(
+            self.graph_storage
+        )
+
         self.key_string_value_json_storage_cls = partial(
-            self.key_string_value_json_storage_cls,
-            global_config=global_config
+            self.key_string_value_json_storage_cls, global_config=global_config
         )
 
         self.vector_db_storage_cls = partial(
-            self.vector_db_storage_cls,
-            global_config=global_config
+            self.vector_db_storage_cls, global_config=global_config
         )
 
         self.graph_storage_cls = partial(
-            self.graph_storage_cls,
-            global_config=global_config
+            self.graph_storage_cls, global_config=global_config
         )
 
         self.json_doc_status_storage = self.key_string_value_json_storage_cls(
             namespace="json_doc_status_storage",
-            embedding_func=None,        
+            embedding_func=None,
         )
 
         self.llm_response_cache = self.key_string_value_json_storage_cls(
@@ -264,13 +267,15 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
 
-        if self.llm_response_cache and hasattr(self.llm_response_cache, "global_config"):
+        if self.llm_response_cache and hasattr(
+            self.llm_response_cache, "global_config"
+        ):
             hashing_kv = self.llm_response_cache
         else:
             hashing_kv = self.key_string_value_json_storage_cls(
-                    namespace="llm_response_cache",
-                    embedding_func=None,
-                )
+                namespace="llm_response_cache",
+                embedding_func=None,
+            )
 
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(
@@ -292,21 +297,24 @@ class LightRAG:
         import_path = STORAGES[storage_name]
         storage_class = lazy_external_import(import_path, storage_name)
         return storage_class
-    
-    def set_storage_client(self,db_client):
+
+    def set_storage_client(self, db_client):
         # Now only tested on Oracle Database
-        for storage in [self.vector_db_storage_cls, 
-                         self.graph_storage_cls,  
-                         self.doc_status, self.full_docs, 
-                         self.text_chunks, 
-                         self.llm_response_cache, 
-                         self.key_string_value_json_storage_cls,
-                         self.chunks_vdb,
-                         self.relationships_vdb,
-                         self.entities_vdb,
-                         self.graph_storage_cls,
-                         self.chunk_entity_relation_graph,
-                         self.llm_response_cache]:
+        for storage in [
+            self.vector_db_storage_cls,
+            self.graph_storage_cls,
+            self.doc_status,
+            self.full_docs,
+            self.text_chunks,
+            self.llm_response_cache,
+            self.key_string_value_json_storage_cls,
+            self.chunks_vdb,
+            self.relationships_vdb,
+            self.entities_vdb,
+            self.graph_storage_cls,
+            self.chunk_entity_relation_graph,
+            self.llm_response_cache,
+        ]:
             # set client
             storage.db = db_client
 
@@ -348,11 +356,6 @@ class LightRAG:
             }
             for content in unique_contents
         }
-        
-        # 3. Store original document and chunks
-        await self.full_docs.upsert(
-            {doc_id: {"content": doc["content"]}}
-        )
 
         # 3. Filter out already processed documents
         _add_doc_keys = await self.doc_status.filter_keys(list(new_docs.keys()))
@@ -401,7 +404,12 @@ class LightRAG:
                     }
 
                     # Update status with chunks information
-                    doc_status.update({"chunks_count": len(chunks),"updated_at": datetime.now().isoformat()})
+                    doc_status.update(
+                        {
+                            "chunks_count": len(chunks),
+                            "updated_at": datetime.now().isoformat(),
+                        }
+                    )
                     await self.doc_status.upsert({doc_id: doc_status})
 
                     try:
@@ -425,16 +433,30 @@ class LightRAG:
 
                         self.chunk_entity_relation_graph = maybe_new_kg
 
-                        
+                        # Store original document and chunks
+                        await self.full_docs.upsert(
+                            {doc_id: {"content": doc["content"]}}
+                        )
                         await self.text_chunks.upsert(chunks)
 
                         # Update status to processed
-                        doc_status.update({"status": DocStatus.PROCESSED,"updated_at": datetime.now().isoformat()})
+                        doc_status.update(
+                            {
+                                "status": DocStatus.PROCESSED,
+                                "updated_at": datetime.now().isoformat(),
+                            }
+                        )
                         await self.doc_status.upsert({doc_id: doc_status})
 
                     except Exception as e:
                         # Mark as failed if any step fails
-                        doc_status.update({"status": DocStatus.FAILED,"error": str(e),"updated_at": datetime.now().isoformat()})
+                        doc_status.update(
+                            {
+                                "status": DocStatus.FAILED,
+                                "error": str(e),
+                                "updated_at": datetime.now().isoformat(),
+                            }
+                        )
                         await self.doc_status.upsert({doc_id: doc_status})
                         raise e
 
@@ -527,7 +549,9 @@ class LightRAG:
         # 1. Remove duplicate contents from the list
         unique_contents = list(set(doc.strip() for doc in string_or_strings))
 
-        logger.info(f"Received {len(string_or_strings)} docs, contains {len(unique_contents)} new unique documents")
+        logger.info(
+            f"Received {len(string_or_strings)} docs, contains {len(unique_contents)} new unique documents"
+        )
 
         # 2. Generate document IDs and initial status
         new_docs = {
@@ -542,28 +566,34 @@ class LightRAG:
             for content in unique_contents
         }
 
-        # 3. Filter out already processed documents        
+        # 3. Filter out already processed documents
         _not_stored_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))
         if len(_not_stored_doc_keys) < len(new_docs):
-            logger.info(f"Skipping {len(new_docs)-len(_not_stored_doc_keys)} already existing documents")
+            logger.info(
+                f"Skipping {len(new_docs)-len(_not_stored_doc_keys)} already existing documents"
+            )
         new_docs = {k: v for k, v in new_docs.items() if k in _not_stored_doc_keys}
 
         if not new_docs:
-            logger.info(f"All documents have been processed or are duplicates")
+            logger.info("All documents have been processed or are duplicates")
             return None
 
-        # 4. Store original document 
+        # 4. Store original document
         for doc_id, doc in new_docs.items():
             await self.full_docs.upsert({doc_id: {"content": doc["content"]}})
             await self.full_docs.change_status(doc_id, DocStatus.PENDING)
         logger.info(f"Stored {len(new_docs)} new unique documents")
-        
+
     async def apipeline_process_chunks(self):
-        """Get pendding documents, split into chunks,insert chunks"""        
-        # 1. get all pending and failed documents 
+        """Get pendding documents, split into chunks,insert chunks"""
+        # 1. get all pending and failed documents
         _todo_doc_keys = []
-        _failed_doc = await self.full_docs.get_by_status_and_ids(status = DocStatus.FAILED,ids = None)
-        _pendding_doc = await self.full_docs.get_by_status_and_ids(status = DocStatus.PENDING,ids = None)
+        _failed_doc = await self.full_docs.get_by_status_and_ids(
+            status=DocStatus.FAILED, ids=None
+        )
+        _pendding_doc = await self.full_docs.get_by_status_and_ids(
+            status=DocStatus.PENDING, ids=None
+        )
         if _failed_doc:
             _todo_doc_keys.extend([doc["id"] for doc in _failed_doc])
         if _pendding_doc:
@@ -573,10 +603,9 @@ class LightRAG:
             return None
         else:
             logger.info(f"Filtered out {len(_todo_doc_keys)} not processed documents")
-        
+
         new_docs = {
-            doc["id"]: doc
-            for doc in await self.full_docs.get_by_ids(_todo_doc_keys)
+            doc["id"]: doc for doc in await self.full_docs.get_by_ids(_todo_doc_keys)
         }
 
         # 2. split docs into chunks, insert chunks, update doc status
@@ -585,8 +614,9 @@ class LightRAG:
         for i in range(0, len(new_docs), batch_size):
             batch_docs = dict(list(new_docs.items())[i : i + batch_size])
             for doc_id, doc in tqdm_async(
-                batch_docs.items(), desc=f"Level 1 - Spliting doc in batch {i//batch_size + 1}"
-            ):        
+                batch_docs.items(),
+                desc=f"Level 1 - Spliting doc in batch {i//batch_size + 1}",
+            ):
                 try:
                     # Generate chunks from document
                     chunks = {
@@ -616,18 +646,23 @@ class LightRAG:
                         await self.full_docs.change_status(doc_id, DocStatus.FAILED)
                         raise e
                 except Exception as e:
-                        import traceback
-                        error_msg = f"Failed to process document {doc_id}: {str(e)}\n{traceback.format_exc()}"
-                        logger.error(error_msg)
-                        continue
-        logger.info(f"Stored {chunk_cnt} chunks from {len(new_docs)} documents")    
+                    import traceback
+
+                    error_msg = f"Failed to process document {doc_id}: {str(e)}\n{traceback.format_exc()}"
+                    logger.error(error_msg)
+                    continue
+        logger.info(f"Stored {chunk_cnt} chunks from {len(new_docs)} documents")
 
     async def apipeline_process_extract_graph(self):
         """Get pendding or failed chunks, extract entities and relationships from each chunk"""
-        # 1. get all pending and failed chunks 
+        # 1. get all pending and failed chunks
         _todo_chunk_keys = []
-        _failed_chunks = await self.text_chunks.get_by_status_and_ids(status = DocStatus.FAILED,ids = None)
-        _pendding_chunks = await self.text_chunks.get_by_status_and_ids(status = DocStatus.PENDING,ids = None)
+        _failed_chunks = await self.text_chunks.get_by_status_and_ids(
+            status=DocStatus.FAILED, ids=None
+        )
+        _pendding_chunks = await self.text_chunks.get_by_status_and_ids(
+            status=DocStatus.PENDING, ids=None
+        )
         if _failed_chunks:
             _todo_chunk_keys.extend([doc["id"] for doc in _failed_chunks])
         if _pendding_chunks:
@@ -635,15 +670,19 @@ class LightRAG:
         if not _todo_chunk_keys:
             logger.info("All chunks have been processed or are duplicates")
             return None
-        
+
         # Process documents in batches
         batch_size = self.addon_params.get("insert_batch_size", 10)
 
-        semaphore = asyncio.Semaphore(batch_size)  # Control the number of tasks that are processed simultaneously
+        semaphore = asyncio.Semaphore(
+            batch_size
+        )  # Control the number of tasks that are processed simultaneously
 
-        async def process_chunk(chunk_id):            
+        async def process_chunk(chunk_id):
             async with semaphore:
-                chunks = {i["id"]: i for i in await self.text_chunks.get_by_ids([chunk_id])}
+                chunks = {
+                    i["id"]: i for i in await self.text_chunks.get_by_ids([chunk_id])
+                }
                 # Extract and store entities and relationships
                 try:
                     maybe_new_kg = await extract_entities(
@@ -662,25 +701,29 @@ class LightRAG:
                     logger.error("Failed to extract entities and relationships")
                     # Mark as failed if any step fails
                     await self.text_chunks.change_status(chunk_id, DocStatus.FAILED)
-                    raise e        
+                    raise e
 
-        with tqdm_async(total=len(_todo_chunk_keys), 
-                        desc="\nLevel 1 - Processing chunks", 
-                        unit="chunk", 
-                        position=0) as progress:
+        with tqdm_async(
+            total=len(_todo_chunk_keys),
+            desc="\nLevel 1 - Processing chunks",
+            unit="chunk",
+            position=0,
+        ) as progress:
             tasks = []
             for chunk_id in _todo_chunk_keys:
                 task = asyncio.create_task(process_chunk(chunk_id))
                 tasks.append(task)
-                
+
             for future in asyncio.as_completed(tasks):
                 await future
                 progress.update(1)
-                progress.set_postfix({
-                    'LLM call': statistic_data["llm_call"],
-                    'LLM cache': statistic_data["llm_cache"],
-                })
-        
+                progress.set_postfix(
+                    {
+                        "LLM call": statistic_data["llm_call"],
+                        "LLM cache": statistic_data["llm_cache"],
+                    }
+                )
+
         # Ensure all indexes are updated after each document
         await self._insert_done()
 

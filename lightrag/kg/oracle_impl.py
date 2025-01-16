@@ -3,7 +3,7 @@ import asyncio
 # import html
 # import os
 from dataclasses import dataclass
-from typing import Union, List, Dict, Set, Any, Tuple
+from typing import Union
 import numpy as np
 import array
 
@@ -170,7 +170,7 @@ class OracleKVStorage(BaseKVStorage):
 
     def __post_init__(self):
         self._data = {}
-        self._max_batch_size = self.global_config.get("embedding_batch_num",10)
+        self._max_batch_size = self.global_config.get("embedding_batch_num", 10)
 
     ################ QUERY METHODS ################
 
@@ -190,7 +190,7 @@ class OracleKVStorage(BaseKVStorage):
             return res
         else:
             return None
-        
+
     async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
         """Specifically for llm_response_cache."""
         SQL = SQL_TEMPLATES["get_by_mode_id_" + self.namespace]
@@ -199,11 +199,11 @@ class OracleKVStorage(BaseKVStorage):
             array_res = await self.db.query(SQL, params, multirows=True)
             res = {}
             for row in array_res:
-                res[row["id"]] = row        
+                res[row["id"]] = row
             return res
         else:
             return None
-    
+
     async def get_by_ids(self, ids: list[str], fields=None) -> Union[list[dict], None]:
         """get doc_chunks data based on id"""
         SQL = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
@@ -222,7 +222,7 @@ class OracleKVStorage(BaseKVStorage):
                     dict_res[mode] = {}
             for row in res:
                 dict_res[row["mode"]][row["id"]] = row
-            res = [{k: v} for k, v in dict_res.items()]            
+            res = [{k: v} for k, v in dict_res.items()]
         if res:
             data = res  # [{"data":i} for i in res]
             # print(data)
@@ -230,7 +230,9 @@ class OracleKVStorage(BaseKVStorage):
         else:
             return None
 
-    async def get_by_status_and_ids(self, status: str, ids: list[str]) -> Union[list[dict], None]:
+    async def get_by_status_and_ids(
+        self, status: str, ids: list[str]
+    ) -> Union[list[dict], None]:
         """Specifically for llm_response_cache."""
         if ids is not None:
             SQL = SQL_TEMPLATES["get_by_status_ids_" + self.namespace].format(
@@ -244,7 +246,7 @@ class OracleKVStorage(BaseKVStorage):
             return res
         else:
             return None
-        
+
     async def filter_keys(self, keys: list[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         SQL = SQL_TEMPLATES["filter_keys"].format(
@@ -258,7 +260,6 @@ class OracleKVStorage(BaseKVStorage):
             return data
         else:
             return set(keys)
-        
 
     ################ INSERT METHODS ################
     async def upsert(self, data: dict[str, dict]):
@@ -281,7 +282,7 @@ class OracleKVStorage(BaseKVStorage):
             embeddings = np.concatenate(embeddings_list)
             for i, d in enumerate(list_data):
                 d["__vector__"] = embeddings[i]
-            
+
             merge_sql = SQL_TEMPLATES["merge_chunk"]
             for item in list_data:
                 _data = {
@@ -320,11 +321,9 @@ class OracleKVStorage(BaseKVStorage):
 
                     await self.db.execute(upsert_sql, _data)
         return None
-    
+
     async def change_status(self, id: str, status: str):
-        SQL = SQL_TEMPLATES["change_status"].format(
-            table_name=N_T[self.namespace]
-        )
+        SQL = SQL_TEMPLATES["change_status"].format(table_name=N_T[self.namespace])
         params = {"workspace": self.db.workspace, "id": id, "status": status}
         await self.db.execute(SQL, params)
 
@@ -673,8 +672,8 @@ TABLES = {
     },
     "LIGHTRAG_LLM_CACHE": {
         "ddl": """CREATE TABLE LIGHTRAG_LLM_CACHE (
-                    id varchar(256) PRIMARY KEY, 
-                    workspace varchar(1024),                
+                    id varchar(256) PRIMARY KEY,
+                    workspace varchar(1024),
                     cache_mode varchar(256),
                     model_name varchar(256),
                     original_prompt clob,
@@ -708,47 +707,32 @@ TABLES = {
 SQL_TEMPLATES = {
     # SQL for KVStorage
     "get_by_id_full_docs": "select ID,content,status from LIGHTRAG_DOC_FULL where workspace=:workspace and ID=:id",
-    
     "get_by_id_text_chunks": "select ID,TOKENS,content,CHUNK_ORDER_INDEX,FULL_DOC_ID,status from LIGHTRAG_DOC_CHUNKS where workspace=:workspace and ID=:id",
-    
     "get_by_id_llm_response_cache": """SELECT id, original_prompt, NVL(return_value, '') as "return", cache_mode as "mode"
         FROM LIGHTRAG_LLM_CACHE WHERE workspace=:workspace AND id=:id""",
-    
     "get_by_mode_id_llm_response_cache": """SELECT id, original_prompt, NVL(return_value, '') as "return", cache_mode as "mode"
         FROM LIGHTRAG_LLM_CACHE WHERE workspace=:workspace AND cache_mode=:cache_mode AND id=:id""",
-
     "get_by_ids_llm_response_cache": """SELECT id, original_prompt, NVL(return_value, '') as "return", cache_mode as "mode"
         FROM LIGHTRAG_LLM_CACHE WHERE workspace=:workspace  AND id IN ({ids})""",
-    
     "get_by_ids_full_docs": "select t.*,createtime as created_at from LIGHTRAG_DOC_FULL t where workspace=:workspace and ID in ({ids})",
-    
     "get_by_ids_text_chunks": "select ID,TOKENS,content,CHUNK_ORDER_INDEX,FULL_DOC_ID  from LIGHTRAG_DOC_CHUNKS where workspace=:workspace and ID in ({ids})",
-
     "get_by_status_ids_full_docs": "select id,status from LIGHTRAG_DOC_FULL t where workspace=:workspace AND status=:status and ID in ({ids})",
-    
     "get_by_status_ids_text_chunks": "select id,status from LIGHTRAG_DOC_CHUNKS where workspace=:workspace and status=:status ID in ({ids})",
-
     "get_by_status_full_docs": "select id,status from LIGHTRAG_DOC_FULL t where workspace=:workspace AND status=:status",
-    
     "get_by_status_text_chunks": "select id,status from LIGHTRAG_DOC_CHUNKS where workspace=:workspace and status=:status",
-
     "filter_keys": "select id from {table_name} where workspace=:workspace and id in ({ids})",
-    
     "change_status": "update {table_name} set status=:status,updatetime=SYSDATE where workspace=:workspace and id=:id",
-
     "merge_doc_full": """MERGE INTO LIGHTRAG_DOC_FULL a
         USING DUAL
         ON (a.id = :id and a.workspace = :workspace)
         WHEN NOT MATCHED THEN
         INSERT(id,content,workspace) values(:id,:content,:workspace)""",
-    
     "merge_chunk": """MERGE INTO LIGHTRAG_DOC_CHUNKS
         USING DUAL
         ON (id = :id and workspace = :workspace)
         WHEN NOT MATCHED THEN INSERT
             (id,content,workspace,tokens,chunk_order_index,full_doc_id,content_vector,status)
             values (:id,:content,:workspace,:tokens,:chunk_order_index,:full_doc_id,:content_vector,:status) """,
-
     "upsert_llm_response_cache": """MERGE INTO LIGHTRAG_LLM_CACHE a
         USING DUAL
         ON (a.id = :id)
@@ -760,8 +744,6 @@ SQL_TEMPLATES = {
             return_value = :return_value,
             cache_mode = :cache_mode,
             updatetime = SYSDATE""",
-    
-    
     # SQL for VectorStorage
     "entities": """SELECT name as entity_name FROM
         (SELECT id,name,VECTOR_DISTANCE(content_vector,vector(:embedding_string,{dimension},{dtype}),COSINE) as distance
@@ -818,7 +800,7 @@ SQL_TEMPLATES = {
                     INSERT(workspace,name,entity_type,description,source_chunk_id,content,content_vector)
                     values (:workspace,:name,:entity_type,:description,:source_chunk_id,:content,:content_vector)
                 WHEN MATCHED THEN
-                    UPDATE SET 
+                    UPDATE SET
                     entity_type=:entity_type,description=:description,source_chunk_id=:source_chunk_id,content=:content,content_vector=:content_vector,updatetime=SYSDATE""",
     "merge_edge": """MERGE INTO LIGHTRAG_GRAPH_EDGES a
                     USING DUAL
@@ -827,7 +809,7 @@ SQL_TEMPLATES = {
                     INSERT(workspace,source_name,target_name,weight,keywords,description,source_chunk_id,content,content_vector)
                     values (:workspace,:source_name,:target_name,:weight,:keywords,:description,:source_chunk_id,:content,:content_vector)
                 WHEN MATCHED THEN
-                    UPDATE SET 
+                    UPDATE SET
                     weight=:weight,keywords=:keywords,description=:description,source_chunk_id=:source_chunk_id,content=:content,content_vector=:content_vector,updatetime=SYSDATE""",
     "get_all_nodes": """WITH t0 AS (
                         SELECT name AS id, entity_type AS label, entity_type, description,
