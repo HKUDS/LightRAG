@@ -330,6 +330,26 @@ rag = LightRAG(
 with open("./newText.txt") as f:
     rag.insert(f.read())
 ```
+### Separate Keyword Extraction
+We've introduced a new function `query_with_separate_keyword_extraction` to enhance the keyword extraction capabilities. This function separates the keyword extraction process from the user's prompt, focusing solely on the query to improve the relevance of extracted keywords.
+
+##### How It Works?
+The function operates by dividing the input into two parts:
+- `User Query`
+- `Prompt`
+
+It then performs keyword extraction exclusively on the `user query`. This separation ensures that the extraction process is focused and relevant, unaffected by any additional language in the `prompt`. It also allows the `prompt` to serve purely for response formatting, maintaining the intent and clarity of the user's original question.
+
+##### Usage Example
+This `example` shows how to tailor the function for educational content, focusing on detailed explanations for older students.
+
+```python
+rag.query_with_separate_keyword_extraction(
+    query="Explain the law of gravity",
+    prompt="Provide a detailed explanation suitable for high school students studying physics.",
+    param=QueryParam(mode="hybrid")
+)
+```
 
 ### Using Neo4J for Storage
 
