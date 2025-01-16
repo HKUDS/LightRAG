@@ -16,3 +16,4 @@ torch
 tqdm
 transformers
 uvicorn
+python-dotenv
