@@ -7,6 +7,7 @@ from lightrag.llm import lollms_model_complete, lollms_embed
 from lightrag.llm import ollama_model_complete, ollama_embed
 from lightrag.llm import openai_complete_if_cache, openai_embedding
 from lightrag.llm import azure_openai_complete_if_cache, azure_openai_embedding
+from lightrag.api import __api_version__
 
 from lightrag.utils import EmbeddingFunc
 from typing import Optional, List, Union, Any
@@ -14,7 +15,7 @@ from enum import Enum
 from pathlib import Path
 import shutil
 import aiofiles
-from ascii_colors import trace_exception
+from ascii_colors import trace_exception, ASCIIColors
 import os
 
 from fastapi import Depends, Security
@@ -62,6 +63,85 @@ def get_env_value(env_key: str, default: Any, value_type: type = str) -> Any:
         return value_type(value)
     except ValueError:
         return default
+
+def display_splash_screen(args: argparse.Namespace) -> None:
+    """
+    Display a colorful splash screen showing LightRAG server configuration
+    
+    Args:
+        args: Parsed command line arguments
+    """
+    # Banner
+    ASCIIColors.cyan(f"""
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                   🚀 LightRAG Server v{__api_version__}                  ║
+    ║          Fast, Lightweight RAG Server Implementation         ║
+    ╚══════════════════════════════════════════════════════════════╝
+    """)
+
+    # Server Configuration
+    ASCIIColors.magenta("\n📡 Server Configuration:")
+    ASCIIColors.white(f"    ├─ Host: ", end="")
+    ASCIIColors.yellow(f"{args.host}")
+    ASCIIColors.white(f"    ├─ Port: ", end="")
+    ASCIIColors.yellow(f"{args.port}")
+    ASCIIColors.white(f"    ├─ SSL Enabled: ", end="")
+    ASCIIColors.yellow(f"{args.ssl}")
+    if args.ssl:
+        ASCIIColors.white(f"    ├─ SSL Cert: ", end="")
+        ASCIIColors.yellow(f"{args.ssl_certfile}")
+        ASCIIColors.white(f"    └─ SSL Key: ", end="")
+        ASCIIColors.yellow(f"{args.ssl_keyfile}")
+
+    # Directory Configuration
+    ASCIIColors.magenta("\n📂 Directory Configuration:")
+    ASCIIColors.white(f"    ├─ Working Directory: ", end="")
+    ASCIIColors.yellow(f"{args.working_dir}")
+    ASCIIColors.white(f"    └─ Input Directory: ", end="")
+    ASCIIColors.yellow(f"{args.input_dir}")
+
+    # LLM Configuration
+    ASCIIColors.magenta("\n🤖 LLM Configuration:")
+    ASCIIColors.white(f"    ├─ Binding: ", end="")
+    ASCIIColors.yellow(f"{args.llm_binding}")
+    ASCIIColors.white(f"    ├─ Host: ", end="")
+    ASCIIColors.yellow(f"{args.llm_binding_host}")
+    ASCIIColors.white(f"    └─ Model: ", end="")
+    ASCIIColors.yellow(f"{args.llm_model}")
+
+    # Embedding Configuration
+    ASCIIColors.magenta("\n📊 Embedding Configuration:")
+    ASCIIColors.white(f"    ├─ Binding: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_binding}")
+    ASCIIColors.white(f"    ├─ Host: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_binding_host}")
+    ASCIIColors.white(f"    ├─ Model: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_model}")
+    ASCIIColors.white(f"    └─ Dimensions: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_dim}")
+
+    # RAG Configuration
+    ASCIIColors.magenta("\n⚙️ RAG Configuration:")
+    ASCIIColors.white(f"    ├─ Max Async Operations: ", end="")
+    ASCIIColors.yellow(f"{args.max_async}")
+    ASCIIColors.white(f"    ├─ Max Tokens: ", end="")
+    ASCIIColors.yellow(f"{args.max_tokens}")
+    ASCIIColors.white(f"    └─ Max Embed Tokens: ", end="")
+    ASCIIColors.yellow(f"{args.max_embed_tokens}")
+
+    # System Configuration
+    ASCIIColors.magenta("\n🛠️ System Configuration:")
+    ASCIIColors.white(f"    ├─ Log Level: ", end="")
+    ASCIIColors.yellow(f"{args.log_level}")
+    ASCIIColors.white(f"    ├─ Timeout: ", end="")
+    ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
+    ASCIIColors.white(f"    └─ API Key: ", end="")
+    ASCIIColors.yellow("Set" if args.key else "Not Set")
+
+    # Server Status
+    ASCIIColors.green("\n✨ Server starting up...\n")
+
+
 
 def parse_args() -> argparse.Namespace:
     """
@@ -216,7 +296,10 @@ def parse_args() -> argparse.Namespace:
         help="Path to SSL private key file (required if --ssl is enabled)",
     )
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    display_splash_screen(args)
+
+    return args
 
 
 class DocumentManager:
