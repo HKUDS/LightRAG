@@ -489,27 +489,21 @@ def create_app(args):
                 ),
             )
 
-            if request.stream:
-                from fastapi.responses import StreamingResponse
-
-                async def stream_generator():
-                    async for chunk in response:
-                        yield f"{json.dumps({'response': chunk})}\n"
-
-                return StreamingResponse(
-                    stream_generator(),
-                    media_type="application/x-ndjson",
-                    headers={
-                        "Cache-Control": "no-cache",
-                        "Connection": "keep-alive",
-                        "Content-Type": "application/x-ndjson",
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Methods": "POST, OPTIONS",
-                        "Access-Control-Allow-Headers": "Content-Type"
-                    }
-                )
-            else:
+            # 如果响应是字符串（比如命中缓存），直接返回
+            if isinstance(response, str):
                 return QueryResponse(response=response)
+            
+            # 如果是异步生成器，根据stream参数决定是否流式返回
+            if request.stream:
+                result = ""
+                async for chunk in response:
+                    result += chunk
+                return QueryResponse(response=result)
+            else:
+                result = ""
+                async for chunk in response:
+                    result += chunk
+                return QueryResponse(response=result)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -528,8 +522,18 @@ def create_app(args):
             from fastapi.responses import StreamingResponse
 
             async def stream_generator():
-                async for chunk in response:
-                    yield f"{json.dumps({'response': chunk})}\n"
+                if isinstance(response, str):
+                    # 如果是字符串，一次性发送
+                    yield f"{json.dumps({'response': response})}\n"
+                else:
+                    # 如果是异步生成器，逐块发送
+                    try:
+                        async for chunk in response:
+                            if chunk:  # 只发送非空内容
+                                yield f"{json.dumps({'response': chunk})}\n"
+                    except Exception as e:
+                        logging.error(f"Streaming error: {str(e)}")
+                        yield f"{json.dumps({'error': str(e)})}\n"
 
             return StreamingResponse(
                 stream_generator(),
@@ -540,7 +544,8 @@ def create_app(args):
                     "Content-Type": "application/x-ndjson",
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type"
+                    "Access-Control-Allow-Headers": "Content-Type",
+                    "X-Accel-Buffering": "no"  # 禁用 Nginx 缓冲
                 }
             )
         except Exception as e:
