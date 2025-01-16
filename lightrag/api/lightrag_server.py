@@ -9,7 +9,7 @@ from lightrag.llm import openai_complete_if_cache, openai_embedding
 from lightrag.llm import azure_openai_complete_if_cache, azure_openai_embedding
 
 from lightrag.utils import EmbeddingFunc
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Any
 from enum import Enum
 from pathlib import Path
 import shutil
