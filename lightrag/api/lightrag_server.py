@@ -141,6 +141,70 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     # Server Status
     ASCIIColors.green("\n✨ Server starting up...\n")
 
+    # Server Access Information
+    protocol = "https" if args.ssl else "http"
+    if args.host == "0.0.0.0":
+        ASCIIColors.magenta("\n🌐 Server Access Information:")
+        ASCIIColors.white("    ├─ Local Access: ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}")
+        ASCIIColors.white("    ├─ Remote Access: ", end="")
+        ASCIIColors.yellow(f"{protocol}://<your-ip-address>:{args.port}")
+        ASCIIColors.white("    ├─ API Documentation (local): ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
+        ASCIIColors.white("    └─ Alternative Documentation (local): ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
+        
+        ASCIIColors.yellow("\n📝 Note:")
+        ASCIIColors.white("""    Since the server is running on 0.0.0.0:
+    - Use 'localhost' or '127.0.0.1' for local access
+    - Use your machine's IP address for remote access
+    - To find your IP address:
+      • Windows: Run 'ipconfig' in terminal
+      • Linux/Mac: Run 'ifconfig' or 'ip addr' in terminal
+    """)
+    else:
+        base_url = f"{protocol}://{args.host}:{args.port}"
+        ASCIIColors.magenta("\n🌐 Server Access Information:")
+        ASCIIColors.white("    ├─ Base URL: ", end="")
+        ASCIIColors.yellow(f"{base_url}")
+        ASCIIColors.white("    ├─ API Documentation: ", end="")
+        ASCIIColors.yellow(f"{base_url}/docs")
+        ASCIIColors.white("    └─ Alternative Documentation: ", end="")
+        ASCIIColors.yellow(f"{base_url}/redoc")
+
+    # Usage Examples
+    ASCIIColors.magenta("\n📚 Quick Start Guide:")
+    ASCIIColors.cyan("""    
+    1. Access the Swagger UI:
+       Open your browser and navigate to the API documentation URL above
+       
+    2. API Authentication:""")
+    if args.key:
+        ASCIIColors.cyan("""       Add the following header to your requests:
+       X-API-Key: <your-api-key>
+    """)
+    else:
+        ASCIIColors.cyan("       No authentication required\n")
+    
+    ASCIIColors.cyan("""    3. Basic Operations:
+       - POST /upload_document: Upload new documents to RAG
+       - POST /query: Query your document collection
+       - GET /collections: List available collections
+       
+    4. Monitor the server:
+       - Check server logs for detailed operation information
+       - Use healthcheck endpoint: GET /health
+    """)
+
+    # Security Notice
+    if args.key:
+        ASCIIColors.yellow("\n⚠️  Security Notice:")
+        ASCIIColors.white("""    API Key authentication is enabled.
+    Make sure to include the X-API-Key header in all your requests.
+    """)
+    
+    ASCIIColors.green("Server is ready to accept connections! 🚀\n")
+
 
 
 def parse_args() -> argparse.Namespace:
