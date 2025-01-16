@@ -61,10 +61,69 @@ az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_
 The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
 
 
+## Configuration
 
-### Configuration Options
+LightRAG can be configured using either command-line arguments or environment variables. When both are provided, command-line arguments take precedence over environment variables.
 
-Each server has its own specific configuration options:
+### Environment Variables
+
+You can configure LightRAG using environment variables by creating a `.env` file in your project root directory. Here's a complete example of available environment variables:
+
+```env
+# Server Configuration
+HOST=0.0.0.0
+PORT=9621
+
+# Directory Configuration
+WORKING_DIR=/app/data/rag_storage
+INPUT_DIR=/app/data/inputs
+
+# LLM Configuration
+LLM_BINDING=ollama
+LLM_BINDING_HOST=http://localhost:11434
+LLM_MODEL=mistral-nemo:latest
+
+# Embedding Configuration
+EMBEDDING_BINDING=ollama
+EMBEDDING_BINDING_HOST=http://localhost:11434
+EMBEDDING_MODEL=bge-m3:latest
+
+# RAG Configuration
+MAX_ASYNC=4
+MAX_TOKENS=32768
+EMBEDDING_DIM=1024
+MAX_EMBED_TOKENS=8192
+
+# Security
+LIGHTRAG_API_KEY=
+
+# Logging
+LOG_LEVEL=INFO
+
+# Optional SSL Configuration
+#SSL=true
+#SSL_CERTFILE=/path/to/cert.pem
+#SSL_KEYFILE=/path/to/key.pem
+
+# Optional Timeout
+#TIMEOUT=30
+```
+
+### Configuration Priority
+
+The configuration values are loaded in the following order (highest priority first):
+1. Command-line arguments
+2. Environment variables
+3. Default values
+
+For example:
+```bash
+# This command-line argument will override both the environment variable and default value
+python lightrag.py --port 8080
+
+# The environment variable will override the default value but not the command-line argument
+PORT=7000 python lightrag.py
+```
 
 #### LightRag Server Options
 
