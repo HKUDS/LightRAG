@@ -921,7 +921,10 @@ def extract_queries(file_path):
 ```
 </details>
 
+## API
+LightRag can be installed with API support to serve a Fast api interface to perform data upload and indexing/Rag operations/Rescan of the input folder etc..
 
+The documentation can be found [https://github.com/ParisNeo/LightRAG/blob/main/docs/LightRagAPI.md](here)
 
 ## Star History
 
