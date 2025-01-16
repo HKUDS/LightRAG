@@ -20,6 +20,7 @@ from .utils import (
     handle_cache,
     save_to_cache,
     CacheData,
+    statistic_data
 )
 from .base import (
     BaseGraphStorage,
@@ -371,14 +372,16 @@ async def extract_entities(
             if need_to_restore:
                 llm_response_cache.global_config = global_config
             if cached_return:
+                logger.debug(f"Found cache for {arg_hash}")
+                statistic_data["llm_cache"] += 1
                 return cached_return
-
+            statistic_data["llm_call"] += 1
             if history_messages:
                 res: str = await use_llm_func(
                     input_text, history_messages=history_messages
                 )
             else:
-                res: str = await use_llm_func(input_text)
+                res: str = await use_llm_func(input_text)                
             await save_to_cache(
                 llm_response_cache,
                 CacheData(args_hash=arg_hash, content=res, prompt=_prompt),
@@ -459,10 +462,8 @@ async def extract_entities(
         now_ticks = PROMPTS["process_tickers"][
             already_processed % len(PROMPTS["process_tickers"])
         ]
-        print(
+        logger.debug(
             f"{now_ticks} Processed {already_processed} chunks, {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
-            end="",
-            flush=True,
         )
         return dict(maybe_nodes), dict(maybe_edges)
 
@@ -470,8 +471,8 @@ async def extract_entities(
     for result in tqdm_async(
         asyncio.as_completed([_process_single_content(c) for c in ordered_chunks]),
         total=len(ordered_chunks),
-        desc="Extracting entities from chunks",
-        unit="chunk",
+        desc="Level 2 - Extracting entities and relationships",
+        unit="chunk", position=1,leave=False
     ):
         results.append(await result)
 
@@ -482,7 +483,7 @@ async def extract_entities(
             maybe_nodes[k].extend(v)
         for k, v in m_edges.items():
             maybe_edges[tuple(sorted(k))].extend(v)
-    logger.info("Inserting entities into storage...")
+    logger.debug("Inserting entities into storage...")
     all_entities_data = []
     for result in tqdm_async(
         asyncio.as_completed(
@@ -492,12 +493,12 @@ async def extract_entities(
             ]
         ),
         total=len(maybe_nodes),
-        desc="Inserting entities",
-        unit="entity",
+        desc="Level 3 - Inserting entities",
+        unit="entity", position=2,leave=False
     ):
         all_entities_data.append(await result)
 
-    logger.info("Inserting relationships into storage...")
+    logger.debug("Inserting relationships into storage...")
     all_relationships_data = []
     for result in tqdm_async(
         asyncio.as_completed(
@@ -509,8 +510,8 @@ async def extract_entities(
             ]
         ),
         total=len(maybe_edges),
-        desc="Inserting relationships",
-        unit="relationship",
+        desc="Level 3 - Inserting relationships",
+        unit="relationship", position=3,leave=False
     ):
         all_relationships_data.append(await result)
 

@@ -30,7 +30,12 @@ class UnlimitedSemaphore:
 
 ENCODER = None
 
+statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
+
 logger = logging.getLogger("lightrag")
+
+# Set httpx logging level to WARNING
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def set_logger(log_file: str):
@@ -453,7 +458,8 @@ async def handle_cache(hashing_kv, args_hash, prompt, mode="default"):
         return None, None, None, None
 
     # For naive mode, only use simple cache matching
-    if mode == "naive":
+    #if mode == "naive":
+    if mode == "default":
         if exists_func(hashing_kv, "get_by_mode_and_id"):
             mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
         else:
