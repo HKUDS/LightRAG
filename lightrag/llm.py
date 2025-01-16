@@ -743,7 +743,7 @@ async def zhipu_complete_if_cache(
     messages = []
 
     if not system_prompt:
-        system_prompt = "You are a helpful assistant."
+        system_prompt = "You are a helpful assistant. Note that sensitive words in the content should be replaced with ***"
 
     # Add system prompt if provided
     if system_prompt:
