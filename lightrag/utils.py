@@ -30,13 +30,18 @@ class UnlimitedSemaphore:
 
 ENCODER = None
 
+statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
+
 logger = logging.getLogger("lightrag")
+
+# Set httpx logging level to WARNING
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 def set_logger(log_file: str):
     logger.setLevel(logging.DEBUG)
 
-    file_handler = logging.FileHandler(log_file)
+    file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
 
     formatter = logging.Formatter(
@@ -453,7 +458,8 @@ async def handle_cache(hashing_kv, args_hash, prompt, mode="default"):
         return None, None, None, None
 
     # For naive mode, only use simple cache matching
-    if mode == "naive":
+    # if mode == "naive":
+    if mode == "default":
         if exists_func(hashing_kv, "get_by_mode_and_id"):
             mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
         else:
@@ -473,7 +479,9 @@ async def handle_cache(hashing_kv, args_hash, prompt, mode="default"):
     quantized = min_val = max_val = None
     if is_embedding_cache_enabled:
         # Use embedding cache
-        embedding_model_func = hashing_kv.global_config["embedding_func"]["func"]
+        embedding_model_func = hashing_kv.global_config[
+            "embedding_func"
+        ].func  # ["func"]
         llm_model_func = hashing_kv.global_config.get("llm_model_func")
 
         current_embedding = await embedding_model_func([prompt])
