@@ -550,8 +550,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=str,
-        default="test_results.json",
-        help="测试结果输出文件路径"
+        default="",
+        help="测试结果输出文件路径，默认不输出到文件"
     )
     parser.add_argument(
         "--tests",
@@ -604,6 +604,8 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"\n发生错误: {str(e)}")
     finally:
-        # 打印并导出测试统计
+        # 打印测试统计
         STATS.print_summary()
-        STATS.export_results(args.output)
+        # 如果指定了输出文件路径，则导出结果
+        if args.output:
+            STATS.export_results(args.output)
