@@ -541,13 +541,13 @@ def create_app(args):
 
             async def stream_generator():
                 if isinstance(response, str):
-                    # 如果是字符串，一次性发送
+                    # If it's a string, send it all at once
                     yield f"{json.dumps({'response': response})}\n"
                 else:
-                    # 如果是异步生成器，逐块发送
+                    # If it's an async generator, send chunks one by one
                     try:
                         async for chunk in response:
-                            if chunk:  # 只发送非空内容
+                            if chunk:  # Only send non-empty content
                                 yield f"{json.dumps({'response': chunk})}\n"
                     except Exception as e:
                         logging.error(f"Streaming error: {str(e)}")
@@ -563,7 +563,7 @@ def create_app(args):
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "POST, OPTIONS",
                     "Access-Control-Allow-Headers": "Content-Type",
-                    "X-Accel-Buffering": "no",  # 禁用 Nginx 缓冲
+                    "X-Accel-Buffering": "no",  # Disable Nginx buffering
                 },
             )
         except Exception as e:
@@ -760,7 +760,6 @@ def create_app(args):
                             last_chunk_time = first_chunk_time
                             total_response = response
 
-                            # 第一次发送查询内容
                             data = {
                                 "model": LIGHTRAG_MODEL,
                                 "created_at": LIGHTRAG_CREATED_AT,
@@ -773,41 +772,35 @@ def create_app(args):
                             }
                             yield f"{json.dumps(data, ensure_ascii=False)}\n"
 
-                            # 计算各项指标
                             completion_tokens = estimate_tokens(total_response)
-                            total_time = last_chunk_time - start_time  # 总时间
+                            total_time = last_chunk_time - start_time
                             prompt_eval_time = (
                                 first_chunk_time - start_time
-                            )  # 首个响应之前的时间
+                            )
                             eval_time = (
                                 last_chunk_time - first_chunk_time
-                            )  # 生成响应的时间
+                            )
 
-                            # 第二次发送统计信息
                             data = {
                                 "model": LIGHTRAG_MODEL,
                                 "created_at": LIGHTRAG_CREATED_AT,
                                 "done": True,
-                                "total_duration": total_time,  # 总时间
-                                "load_duration": 0,  # 加载时间为0
-                                "prompt_eval_count": prompt_tokens,  # 输入token数
-                                "prompt_eval_duration": prompt_eval_time,  # 首个响应之前的时间
-                                "eval_count": completion_tokens,  # 输出token数
-                                "eval_duration": eval_time,  # 生成响应的时间
+                                "total_duration": total_time,
+                                "load_duration": 0,
+                                "prompt_eval_count": prompt_tokens,
+                                "prompt_eval_duration": prompt_eval_time,
+                                "eval_count": completion_tokens,
+                                "eval_duration": eval_time,
                             }
                             yield f"{json.dumps(data, ensure_ascii=False)}\n"
                         else:
-                            # 流式响应
                             async for chunk in response:
-                                if chunk:  # 只发送非空内容
-                                    # 记录第一个chunk的时间
+                                if chunk:
                                     if first_chunk_time is None:
                                         first_chunk_time = time.time_ns()
 
-                                    # 更新最后一个chunk的时间
                                     last_chunk_time = time.time_ns()
 
-                                    # 累积响应内容
                                     total_response += chunk
                                     data = {
                                         "model": LIGHTRAG_MODEL,
@@ -821,30 +814,28 @@ def create_app(args):
                                     }
                                     yield f"{json.dumps(data, ensure_ascii=False)}\n"
 
-                            # 计算各项指标
                             completion_tokens = estimate_tokens(total_response)
-                            total_time = last_chunk_time - start_time  # 总时间
+                            total_time = last_chunk_time - start_time
                             prompt_eval_time = (
                                 first_chunk_time - start_time
-                            )  # 首个响应之前的时间
+                            )
                             eval_time = (
                                 last_chunk_time - first_chunk_time
-                            )  # 生成响应的时间
+                            )
 
-                            # 发送完成标记，包含性能统计信息
                             data = {
                                 "model": LIGHTRAG_MODEL,
                                 "created_at": LIGHTRAG_CREATED_AT,
                                 "done": True,
-                                "total_duration": total_time,  # 总时间
-                                "load_duration": 0,  # 加载时间为0
-                                "prompt_eval_count": prompt_tokens,  # 输入token数
-                                "prompt_eval_duration": prompt_eval_time,  # 首个响应之前的时间
-                                "eval_count": completion_tokens,  # 输出token数
-                                "eval_duration": eval_time,  # 生成响应的时间
+                                "total_duration": total_time,
+                                "load_duration": 0,
+                                "prompt_eval_count": prompt_tokens,
+                                "prompt_eval_duration": prompt_eval_time,
+                                "eval_count": completion_tokens,
+                                "eval_duration": eval_time,
                             }
                             yield f"{json.dumps(data, ensure_ascii=False)}\n"
-                            return  # 确保生成器在发送完成标记后立即结束
+                            return  # Ensure the generator ends immediately after sending the completion marker
                     except Exception as e:
                         logging.error(f"Error in stream_generator: {str(e)}")
                         raise
@@ -862,37 +853,33 @@ def create_app(args):
                     },
                 )
             else:
-                # 非流式响应
                 first_chunk_time = time.time_ns()
                 response_text = await rag.aquery(cleaned_query, param=query_param)
                 last_chunk_time = time.time_ns()
 
-                # 确保响应不为空
                 if not response_text:
                     response_text = "No response generated"
 
-                # 计算各项指标
                 completion_tokens = estimate_tokens(str(response_text))
-                total_time = last_chunk_time - start_time  # 总时间
-                prompt_eval_time = first_chunk_time - start_time  # 首个响应之前的时间
-                eval_time = last_chunk_time - first_chunk_time  # 生成响应的时间
+                total_time = last_chunk_time - start_time
+                prompt_eval_time = first_chunk_time - start_time
+                eval_time = last_chunk_time - first_chunk_time
 
-                # 构造响应，包含性能统计信息
                 return {
                     "model": LIGHTRAG_MODEL,
                     "created_at": LIGHTRAG_CREATED_AT,
                     "message": {
                         "role": "assistant",
-                        "content": str(response_text),  # 确保转换为字符串
+                        "content": str(response_text),
                         "images": None,
                     },
                     "done": True,
-                    "total_duration": total_time,  # 总时间
-                    "load_duration": 0,  # 加载时间为0
-                    "prompt_eval_count": prompt_tokens,  # 输入token数
-                    "prompt_eval_duration": prompt_eval_time,  # 首个响应之前的时间
-                    "eval_count": completion_tokens,  # 输出token数
-                    "eval_duration": eval_time,  # 生成响应的时间
+                    "total_duration": total_time,
+                    "load_duration": 0,
+                    "prompt_eval_count": prompt_tokens,
+                    "prompt_eval_duration": prompt_eval_time,
+                    "eval_count": completion_tokens,
+                    "eval_duration": eval_time,
                 }
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
