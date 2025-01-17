@@ -9,6 +9,7 @@ ollama
 openai
 pipmaster
 python-dotenv
+python-dotenv
 python-multipart
 tenacity
 tiktoken
@@ -16,4 +17,3 @@ torch
 tqdm
 transformers
 uvicorn
-python-dotenv

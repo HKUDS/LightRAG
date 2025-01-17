@@ -5,7 +5,7 @@ A lightweight Knowledge Graph Retrieval-Augmented Generation system with multipl
 ## 🚀 Installation
 
 ### Prerequisites
-- Python 3.10+ 
+- Python 3.10+
 - Git
 - Docker (optional for Docker deployment)
 
