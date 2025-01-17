@@ -7,22 +7,26 @@ from lightrag.llm import lollms_model_complete, lollms_embed
 from lightrag.llm import ollama_model_complete, ollama_embed
 from lightrag.llm import openai_complete_if_cache, openai_embedding
 from lightrag.llm import azure_openai_complete_if_cache, azure_openai_embedding
+from lightrag.api import __api_version__
 
 from lightrag.utils import EmbeddingFunc
-from typing import Optional, List, Union
+from typing import Optional, List, Union, Any
 from enum import Enum
 from pathlib import Path
 import shutil
 import aiofiles
-from ascii_colors import trace_exception
+from ascii_colors import trace_exception, ASCIIColors
 import os
 
 from fastapi import Depends, Security
 from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
 
 from starlette.status import HTTP_403_FORBIDDEN
 import pipmaster as pm
+
+from dotenv import load_dotenv
 
 
 def get_default_host(binding_type: str) -> str:
@@ -37,73 +41,256 @@ def get_default_host(binding_type: str) -> str:
     )  # fallback to ollama if unknown
 
 
-def parse_args():
+def get_env_value(env_key: str, default: Any, value_type: type = str) -> Any:
+    """
+    Get value from environment variable with type conversion
+
+    Args:
+        env_key (str): Environment variable key
+        default (Any): Default value if env variable is not set
+        value_type (type): Type to convert the value to
+
+    Returns:
+        Any: Converted value from environment or default
+    """
+    value = os.getenv(env_key)
+    if value is None:
+        return default
+
+    if isinstance(value_type, bool):
+        return value.lower() in ("true", "1", "yes")
+    try:
+        return value_type(value)
+    except ValueError:
+        return default
+
+
+def display_splash_screen(args: argparse.Namespace) -> None:
+    """
+    Display a colorful splash screen showing LightRAG server configuration
+
+    Args:
+        args: Parsed command line arguments
+    """
+    # Banner
+    ASCIIColors.cyan(f"""
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                   🚀 LightRAG Server v{__api_version__}                  ║
+    ║          Fast, Lightweight RAG Server Implementation         ║
+    ╚══════════════════════════════════════════════════════════════╝
+    """)
+
+    # Server Configuration
+    ASCIIColors.magenta("\n📡 Server Configuration:")
+    ASCIIColors.white("    ├─ Host: ", end="")
+    ASCIIColors.yellow(f"{args.host}")
+    ASCIIColors.white("    ├─ Port: ", end="")
+    ASCIIColors.yellow(f"{args.port}")
+    ASCIIColors.white("    ├─ SSL Enabled: ", end="")
+    ASCIIColors.yellow(f"{args.ssl}")
+    if args.ssl:
+        ASCIIColors.white("    ├─ SSL Cert: ", end="")
+        ASCIIColors.yellow(f"{args.ssl_certfile}")
+        ASCIIColors.white("    └─ SSL Key: ", end="")
+        ASCIIColors.yellow(f"{args.ssl_keyfile}")
+
+    # Directory Configuration
+    ASCIIColors.magenta("\n📂 Directory Configuration:")
+    ASCIIColors.white("    ├─ Working Directory: ", end="")
+    ASCIIColors.yellow(f"{args.working_dir}")
+    ASCIIColors.white("    └─ Input Directory: ", end="")
+    ASCIIColors.yellow(f"{args.input_dir}")
+
+    # LLM Configuration
+    ASCIIColors.magenta("\n🤖 LLM Configuration:")
+    ASCIIColors.white("    ├─ Binding: ", end="")
+    ASCIIColors.yellow(f"{args.llm_binding}")
+    ASCIIColors.white("    ├─ Host: ", end="")
+    ASCIIColors.yellow(f"{args.llm_binding_host}")
+    ASCIIColors.white("    └─ Model: ", end="")
+    ASCIIColors.yellow(f"{args.llm_model}")
+
+    # Embedding Configuration
+    ASCIIColors.magenta("\n📊 Embedding Configuration:")
+    ASCIIColors.white("    ├─ Binding: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_binding}")
+    ASCIIColors.white("    ├─ Host: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_binding_host}")
+    ASCIIColors.white("    ├─ Model: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_model}")
+    ASCIIColors.white("    └─ Dimensions: ", end="")
+    ASCIIColors.yellow(f"{args.embedding_dim}")
+
+    # RAG Configuration
+    ASCIIColors.magenta("\n⚙️ RAG Configuration:")
+    ASCIIColors.white("    ├─ Max Async Operations: ", end="")
+    ASCIIColors.yellow(f"{args.max_async}")
+    ASCIIColors.white("    ├─ Max Tokens: ", end="")
+    ASCIIColors.yellow(f"{args.max_tokens}")
+    ASCIIColors.white("    └─ Max Embed Tokens: ", end="")
+    ASCIIColors.yellow(f"{args.max_embed_tokens}")
+
+    # System Configuration
+    ASCIIColors.magenta("\n🛠️ System Configuration:")
+    ASCIIColors.white("    ├─ Log Level: ", end="")
+    ASCIIColors.yellow(f"{args.log_level}")
+    ASCIIColors.white("    ├─ Timeout: ", end="")
+    ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
+    ASCIIColors.white("    └─ API Key: ", end="")
+    ASCIIColors.yellow("Set" if args.key else "Not Set")
+
+    # Server Status
+    ASCIIColors.green("\n✨ Server starting up...\n")
+
+    # Server Access Information
+    protocol = "https" if args.ssl else "http"
+    if args.host == "0.0.0.0":
+        ASCIIColors.magenta("\n🌐 Server Access Information:")
+        ASCIIColors.white("    ├─ Local Access: ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}")
+        ASCIIColors.white("    ├─ Remote Access: ", end="")
+        ASCIIColors.yellow(f"{protocol}://<your-ip-address>:{args.port}")
+        ASCIIColors.white("    ├─ API Documentation (local): ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
+        ASCIIColors.white("    └─ Alternative Documentation (local): ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
+
+        ASCIIColors.yellow("\n📝 Note:")
+        ASCIIColors.white("""    Since the server is running on 0.0.0.0:
+    - Use 'localhost' or '127.0.0.1' for local access
+    - Use your machine's IP address for remote access
+    - To find your IP address:
+      • Windows: Run 'ipconfig' in terminal
+      • Linux/Mac: Run 'ifconfig' or 'ip addr' in terminal
+    """)
+    else:
+        base_url = f"{protocol}://{args.host}:{args.port}"
+        ASCIIColors.magenta("\n🌐 Server Access Information:")
+        ASCIIColors.white("    ├─ Base URL: ", end="")
+        ASCIIColors.yellow(f"{base_url}")
+        ASCIIColors.white("    ├─ API Documentation: ", end="")
+        ASCIIColors.yellow(f"{base_url}/docs")
+        ASCIIColors.white("    └─ Alternative Documentation: ", end="")
+        ASCIIColors.yellow(f"{base_url}/redoc")
+
+    # Usage Examples
+    ASCIIColors.magenta("\n📚 Quick Start Guide:")
+    ASCIIColors.cyan("""
+    1. Access the Swagger UI:
+       Open your browser and navigate to the API documentation URL above
+
+    2. API Authentication:""")
+    if args.key:
+        ASCIIColors.cyan("""       Add the following header to your requests:
+       X-API-Key: <your-api-key>
+    """)
+    else:
+        ASCIIColors.cyan("       No authentication required\n")
+
+    ASCIIColors.cyan("""    3. Basic Operations:
+       - POST /upload_document: Upload new documents to RAG
+       - POST /query: Query your document collection
+       - GET /collections: List available collections
+
+    4. Monitor the server:
+       - Check server logs for detailed operation information
+       - Use healthcheck endpoint: GET /health
+    """)
+
+    # Security Notice
+    if args.key:
+        ASCIIColors.yellow("\n⚠️  Security Notice:")
+        ASCIIColors.white("""    API Key authentication is enabled.
+    Make sure to include the X-API-Key header in all your requests.
+    """)
+
+    ASCIIColors.green("Server is ready to accept connections! 🚀\n")
+
+
+def parse_args() -> argparse.Namespace:
+    """
+    Parse command line arguments with environment variable fallback
+
+    Returns:
+        argparse.Namespace: Parsed arguments
+    """
+    # Load environment variables from .env file
+    load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="LightRAG FastAPI Server with separate working and input directories"
     )
 
-    # Start by the bindings
+    # Bindings (with env var support)
     parser.add_argument(
         "--llm-binding",
-        default="ollama",
-        help="LLM binding to be used. Supported: lollms, ollama, openai (default: ollama)",
+        default=get_env_value("LLM_BINDING", "ollama"),
+        help="LLM binding to be used. Supported: lollms, ollama, openai (default: from env or ollama)",
     )
     parser.add_argument(
         "--embedding-binding",
-        default="ollama",
-        help="Embedding binding to be used. Supported: lollms, ollama, openai (default: ollama)",
+        default=get_env_value("EMBEDDING_BINDING", "ollama"),
+        help="Embedding binding to be used. Supported: lollms, ollama, openai (default: from env or ollama)",
     )
 
-    # Parse just these arguments first
+    # Parse temporary args for host defaults
     temp_args, _ = parser.parse_known_args()
 
-    # Add remaining arguments with dynamic defaults for hosts
     # Server configuration
     parser.add_argument(
-        "--host", default="0.0.0.0", help="Server host (default: 0.0.0.0)"
+        "--host",
+        default=get_env_value("HOST", "0.0.0.0"),
+        help="Server host (default: from env or 0.0.0.0)",
     )
     parser.add_argument(
-        "--port", type=int, default=9621, help="Server port (default: 9621)"
+        "--port",
+        type=int,
+        default=get_env_value("PORT", 9621, int),
+        help="Server port (default: from env or 9621)",
     )
 
     # Directory configuration
     parser.add_argument(
         "--working-dir",
-        default="./rag_storage",
-        help="Working directory for RAG storage (default: ./rag_storage)",
+        default=get_env_value("WORKING_DIR", "./rag_storage"),
+        help="Working directory for RAG storage (default: from env or ./rag_storage)",
     )
     parser.add_argument(
         "--input-dir",
-        default="./inputs",
-        help="Directory containing input documents (default: ./inputs)",
+        default=get_env_value("INPUT_DIR", "./inputs"),
+        help="Directory containing input documents (default: from env or ./inputs)",
     )
 
     # LLM Model configuration
-    default_llm_host = get_default_host(temp_args.llm_binding)
+    default_llm_host = get_env_value(
+        "LLM_BINDING_HOST", get_default_host(temp_args.llm_binding)
+    )
     parser.add_argument(
         "--llm-binding-host",
         default=default_llm_host,
-        help=f"llm server host URL (default: {default_llm_host})",
+        help=f"llm server host URL (default: from env or {default_llm_host})",
     )
 
     parser.add_argument(
         "--llm-model",
-        default="mistral-nemo:latest",
-        help="LLM model name (default: mistral-nemo:latest)",
+        default=get_env_value("LLM_MODEL", "mistral-nemo:latest"),
+        help="LLM model name (default: from env or mistral-nemo:latest)",
     )
 
     # Embedding model configuration
-    default_embedding_host = get_default_host(temp_args.embedding_binding)
+    default_embedding_host = get_env_value(
+        "EMBEDDING_BINDING_HOST", get_default_host(temp_args.embedding_binding)
+    )
     parser.add_argument(
         "--embedding-binding-host",
         default=default_embedding_host,
-        help=f"embedding server host URL (default: {default_embedding_host})",
+        help=f"embedding server host URL (default: from env or {default_embedding_host})",
     )
 
     parser.add_argument(
         "--embedding-model",
-        default="bge-m3:latest",
-        help="Embedding model name (default: bge-m3:latest)",
+        default=get_env_value("EMBEDDING_MODEL", "bge-m3:latest"),
+        help="Embedding model name (default: from env or bge-m3:latest)",
     )
 
     def timeout_type(value):
@@ -113,63 +300,74 @@ def parse_args():
 
     parser.add_argument(
         "--timeout",
-        default=None,
+        default=get_env_value("TIMEOUT", None, timeout_type),
         type=timeout_type,
         help="Timeout in seconds (useful when using slow AI). Use None for infinite timeout",
     )
+
     # RAG configuration
     parser.add_argument(
-        "--max-async", type=int, default=4, help="Maximum async operations (default: 4)"
+        "--max-async",
+        type=int,
+        default=get_env_value("MAX_ASYNC", 4, int),
+        help="Maximum async operations (default: from env or 4)",
     )
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=32768,
-        help="Maximum token size (default: 32768)",
+        default=get_env_value("MAX_TOKENS", 32768, int),
+        help="Maximum token size (default: from env or 32768)",
     )
     parser.add_argument(
         "--embedding-dim",
         type=int,
-        default=1024,
-        help="Embedding dimensions (default: 1024)",
+        default=get_env_value("EMBEDDING_DIM", 1024, int),
+        help="Embedding dimensions (default: from env or 1024)",
     )
     parser.add_argument(
         "--max-embed-tokens",
         type=int,
-        default=8192,
-        help="Maximum embedding token size (default: 8192)",
+        default=get_env_value("MAX_EMBED_TOKENS", 8192, int),
+        help="Maximum embedding token size (default: from env or 8192)",
     )
 
     # Logging configuration
     parser.add_argument(
         "--log-level",
-        default="INFO",
+        default=get_env_value("LOG_LEVEL", "INFO"),
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level (default: INFO)",
+        help="Logging level (default: from env or INFO)",
     )
 
     parser.add_argument(
         "--key",
         type=str,
+        default=get_env_value("LIGHTRAG_API_KEY", None),
         help="API key for authentication. This protects lightrag server against unauthorized access",
-        default=None,
     )
 
     # Optional https parameters
     parser.add_argument(
-        "--ssl", action="store_true", help="Enable HTTPS (default: False)"
+        "--ssl",
+        action="store_true",
+        default=get_env_value("SSL", False, bool),
+        help="Enable HTTPS (default: from env or False)",
     )
     parser.add_argument(
         "--ssl-certfile",
-        default=None,
+        default=get_env_value("SSL_CERTFILE", None),
         help="Path to SSL certificate file (required if --ssl is enabled)",
     )
     parser.add_argument(
         "--ssl-keyfile",
-        default=None,
+        default=get_env_value("SSL_KEYFILE", None),
         help="Path to SSL private key file (required if --ssl is enabled)",
     )
-    return parser.parse_args()
+
+    args = parser.parse_args()
+    display_splash_screen(args)
+
+    return args
 
 
 class DocumentManager:
@@ -435,9 +633,10 @@ def create_app(args):
         else:
             logging.warning(f"No content extracted from file: {file_path}")
 
-    @app.on_event("startup")
-    async def startup_event():
-        """Index all files in input directory during startup"""
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Lifespan context manager for startup and shutdown events"""
+        # Startup logic
         try:
             new_files = doc_manager.scan_directory()
             for file_path in new_files:
@@ -448,7 +647,6 @@ def create_app(args):
                     logging.error(f"Error indexing file {file_path}: {str(e)}")
 
             logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
-
         except Exception as e:
             logging.error(f"Error during startup indexing: {str(e)}")
 
@@ -521,6 +719,7 @@ def create_app(args):
             else:
                 return QueryResponse(response=response)
         except Exception as e:
+            trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post("/query/stream", dependencies=[Depends(optional_api_key)])
