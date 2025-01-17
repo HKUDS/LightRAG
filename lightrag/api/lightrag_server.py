@@ -26,6 +26,8 @@ from contextlib import asynccontextmanager
 from starlette.status import HTTP_403_FORBIDDEN
 import pipmaster as pm
 
+from dotenv import load_dotenv
+
 
 def get_default_host(binding_type: str) -> str:
     default_hosts = {
@@ -37,9 +39,6 @@ def get_default_host(binding_type: str) -> str:
     return default_hosts.get(
         binding_type, "http://localhost:11434"
     )  # fallback to ollama if unknown
-
-
-from dotenv import load_dotenv
 
 
 def get_env_value(env_key: str, default: Any, value_type: type = str) -> Any:
@@ -58,7 +57,7 @@ def get_env_value(env_key: str, default: Any, value_type: type = str) -> Any:
     if value is None:
         return default
 
-    if value_type == bool:
+    if isinstance(value_type, bool):
         return value.lower() in ("true", "1", "yes")
     try:
         return value_type(value)
