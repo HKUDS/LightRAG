@@ -103,12 +103,14 @@ data/
 1. Using with Ollama:
 ```env
 LLM_BINDING=ollama
-LLM_BINDING_HOST=http://localhost:11434
+LLM_BINDING_HOST=http://host.docker.internal:11434
 LLM_MODEL=mistral
 EMBEDDING_BINDING=ollama
-EMBEDDING_BINDING_HOST=http://localhost:11434
+EMBEDDING_BINDING_HOST=http://host.docker.internal:11434
 EMBEDDING_MODEL=bge-m3
 ```
+
+you can't just use localhost from docker, that's why you need to use host.docker.internal which is defined in the docker compose file and should allow you to access the localhost services.
 
 2. Using with OpenAI:
 ```env
