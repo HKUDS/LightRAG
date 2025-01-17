@@ -38,36 +38,38 @@ def get_default_host(binding_type: str) -> str:
         binding_type, "http://localhost:11434"
     )  # fallback to ollama if unknown
 
+
 from dotenv import load_dotenv
-import os
+
 
 def get_env_value(env_key: str, default: Any, value_type: type = str) -> Any:
     """
     Get value from environment variable with type conversion
-    
+
     Args:
         env_key (str): Environment variable key
         default (Any): Default value if env variable is not set
         value_type (type): Type to convert the value to
-        
+
     Returns:
         Any: Converted value from environment or default
     """
     value = os.getenv(env_key)
     if value is None:
         return default
-    
+
     if value_type == bool:
-        return value.lower() in ('true', '1', 'yes')
+        return value.lower() in ("true", "1", "yes")
     try:
         return value_type(value)
     except ValueError:
         return default
 
+
 def display_splash_screen(args: argparse.Namespace) -> None:
     """
     Display a colorful splash screen showing LightRAG server configuration
-    
+
     Args:
         args: Parsed command line arguments
     """
@@ -81,61 +83,61 @@ def display_splash_screen(args: argparse.Namespace) -> None:
 
     # Server Configuration
     ASCIIColors.magenta("\n📡 Server Configuration:")
-    ASCIIColors.white(f"    ├─ Host: ", end="")
+    ASCIIColors.white("    ├─ Host: ", end="")
     ASCIIColors.yellow(f"{args.host}")
-    ASCIIColors.white(f"    ├─ Port: ", end="")
+    ASCIIColors.white("    ├─ Port: ", end="")
     ASCIIColors.yellow(f"{args.port}")
-    ASCIIColors.white(f"    ├─ SSL Enabled: ", end="")
+    ASCIIColors.white("    ├─ SSL Enabled: ", end="")
     ASCIIColors.yellow(f"{args.ssl}")
     if args.ssl:
-        ASCIIColors.white(f"    ├─ SSL Cert: ", end="")
+        ASCIIColors.white("    ├─ SSL Cert: ", end="")
         ASCIIColors.yellow(f"{args.ssl_certfile}")
-        ASCIIColors.white(f"    └─ SSL Key: ", end="")
+        ASCIIColors.white("    └─ SSL Key: ", end="")
         ASCIIColors.yellow(f"{args.ssl_keyfile}")
 
     # Directory Configuration
     ASCIIColors.magenta("\n📂 Directory Configuration:")
-    ASCIIColors.white(f"    ├─ Working Directory: ", end="")
+    ASCIIColors.white("    ├─ Working Directory: ", end="")
     ASCIIColors.yellow(f"{args.working_dir}")
-    ASCIIColors.white(f"    └─ Input Directory: ", end="")
+    ASCIIColors.white("    └─ Input Directory: ", end="")
     ASCIIColors.yellow(f"{args.input_dir}")
 
     # LLM Configuration
     ASCIIColors.magenta("\n🤖 LLM Configuration:")
-    ASCIIColors.white(f"    ├─ Binding: ", end="")
+    ASCIIColors.white("    ├─ Binding: ", end="")
     ASCIIColors.yellow(f"{args.llm_binding}")
-    ASCIIColors.white(f"    ├─ Host: ", end="")
+    ASCIIColors.white("    ├─ Host: ", end="")
     ASCIIColors.yellow(f"{args.llm_binding_host}")
-    ASCIIColors.white(f"    └─ Model: ", end="")
+    ASCIIColors.white("    └─ Model: ", end="")
     ASCIIColors.yellow(f"{args.llm_model}")
 
     # Embedding Configuration
     ASCIIColors.magenta("\n📊 Embedding Configuration:")
-    ASCIIColors.white(f"    ├─ Binding: ", end="")
+    ASCIIColors.white("    ├─ Binding: ", end="")
     ASCIIColors.yellow(f"{args.embedding_binding}")
-    ASCIIColors.white(f"    ├─ Host: ", end="")
+    ASCIIColors.white("    ├─ Host: ", end="")
     ASCIIColors.yellow(f"{args.embedding_binding_host}")
-    ASCIIColors.white(f"    ├─ Model: ", end="")
+    ASCIIColors.white("    ├─ Model: ", end="")
     ASCIIColors.yellow(f"{args.embedding_model}")
-    ASCIIColors.white(f"    └─ Dimensions: ", end="")
+    ASCIIColors.white("    └─ Dimensions: ", end="")
     ASCIIColors.yellow(f"{args.embedding_dim}")
 
     # RAG Configuration
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
-    ASCIIColors.white(f"    ├─ Max Async Operations: ", end="")
+    ASCIIColors.white("    ├─ Max Async Operations: ", end="")
     ASCIIColors.yellow(f"{args.max_async}")
-    ASCIIColors.white(f"    ├─ Max Tokens: ", end="")
+    ASCIIColors.white("    ├─ Max Tokens: ", end="")
     ASCIIColors.yellow(f"{args.max_tokens}")
-    ASCIIColors.white(f"    └─ Max Embed Tokens: ", end="")
+    ASCIIColors.white("    └─ Max Embed Tokens: ", end="")
     ASCIIColors.yellow(f"{args.max_embed_tokens}")
 
     # System Configuration
     ASCIIColors.magenta("\n🛠️ System Configuration:")
-    ASCIIColors.white(f"    ├─ Log Level: ", end="")
+    ASCIIColors.white("    ├─ Log Level: ", end="")
     ASCIIColors.yellow(f"{args.log_level}")
-    ASCIIColors.white(f"    ├─ Timeout: ", end="")
+    ASCIIColors.white("    ├─ Timeout: ", end="")
     ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
-    ASCIIColors.white(f"    └─ API Key: ", end="")
+    ASCIIColors.white("    └─ API Key: ", end="")
     ASCIIColors.yellow("Set" if args.key else "Not Set")
 
     # Server Status
@@ -153,7 +155,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
         ASCIIColors.white("    └─ Alternative Documentation (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
-        
+
         ASCIIColors.yellow("\n📝 Note:")
         ASCIIColors.white("""    Since the server is running on 0.0.0.0:
     - Use 'localhost' or '127.0.0.1' for local access
@@ -174,10 +176,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
 
     # Usage Examples
     ASCIIColors.magenta("\n📚 Quick Start Guide:")
-    ASCIIColors.cyan("""    
+    ASCIIColors.cyan("""
     1. Access the Swagger UI:
        Open your browser and navigate to the API documentation URL above
-       
+
     2. API Authentication:""")
     if args.key:
         ASCIIColors.cyan("""       Add the following header to your requests:
@@ -185,12 +187,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     """)
     else:
         ASCIIColors.cyan("       No authentication required\n")
-    
+
     ASCIIColors.cyan("""    3. Basic Operations:
        - POST /upload_document: Upload new documents to RAG
        - POST /query: Query your document collection
        - GET /collections: List available collections
-       
+
     4. Monitor the server:
        - Check server logs for detailed operation information
        - Use healthcheck endpoint: GET /health
@@ -202,21 +204,20 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.white("""    API Key authentication is enabled.
     Make sure to include the X-API-Key header in all your requests.
     """)
-    
-    ASCIIColors.green("Server is ready to accept connections! 🚀\n")
 
+    ASCIIColors.green("Server is ready to accept connections! 🚀\n")
 
 
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
-    
+
     Returns:
         argparse.Namespace: Parsed arguments
     """
     # Load environment variables from .env file
     load_dotenv()
-    
+
     parser = argparse.ArgumentParser(
         description="LightRAG FastAPI Server with separate working and input directories"
     )
@@ -240,13 +241,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--host",
         default=get_env_value("HOST", "0.0.0.0"),
-        help="Server host (default: from env or 0.0.0.0)"
+        help="Server host (default: from env or 0.0.0.0)",
     )
     parser.add_argument(
         "--port",
         type=int,
         default=get_env_value("PORT", 9621, int),
-        help="Server port (default: from env or 9621)"
+        help="Server port (default: from env or 9621)",
     )
 
     # Directory configuration
@@ -262,7 +263,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     # LLM Model configuration
-    default_llm_host = get_env_value("LLM_BINDING_HOST", get_default_host(temp_args.llm_binding))
+    default_llm_host = get_env_value(
+        "LLM_BINDING_HOST", get_default_host(temp_args.llm_binding)
+    )
     parser.add_argument(
         "--llm-binding-host",
         default=default_llm_host,
@@ -276,7 +279,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Embedding model configuration
-    default_embedding_host = get_env_value("EMBEDDING_BINDING_HOST", get_default_host(temp_args.embedding_binding))
+    default_embedding_host = get_env_value(
+        "EMBEDDING_BINDING_HOST", get_default_host(temp_args.embedding_binding)
+    )
     parser.add_argument(
         "--embedding-binding-host",
         default=default_embedding_host,
@@ -306,7 +311,7 @@ def parse_args() -> argparse.Namespace:
         "--max-async",
         type=int,
         default=get_env_value("MAX_ASYNC", 4, int),
-        help="Maximum async operations (default: from env or 4)"
+        help="Maximum async operations (default: from env or 4)",
     )
     parser.add_argument(
         "--max-tokens",
@@ -347,7 +352,7 @@ def parse_args() -> argparse.Namespace:
         "--ssl",
         action="store_true",
         default=get_env_value("SSL", False, bool),
-        help="Enable HTTPS (default: from env or False)"
+        help="Enable HTTPS (default: from env or False)",
     )
     parser.add_argument(
         "--ssl-certfile",
@@ -628,8 +633,7 @@ def create_app(args):
             logging.info(f"Successfully indexed file: {file_path}")
         else:
             logging.warning(f"No content extracted from file: {file_path}")
-    
-    
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
