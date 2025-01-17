@@ -716,7 +716,7 @@ Output the results in the following structure:
 ```
 </details>
 
- ### Batch Eval
+### Batch Eval
 To evaluate the performance of two RAG systems on high-level queries, LightRAG uses the following prompt, with the specific code available in `example/batch_eval.py`.
 
 <details>
@@ -767,6 +767,7 @@ Output your evaluation in the following JSON format:
 </details>
 
 ### Overall Performance Table
+
 |                      | **Agriculture**         |                       | **CS**                |                       | **Legal**             |                       | **Mix**               |                       |
 |----------------------|-------------------------|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|-----------------------|
 |                      | NaiveRAG                | **LightRAG**          | NaiveRAG              | **LightRAG**          | NaiveRAG              | **LightRAG**          | NaiveRAG              | **LightRAG**          |
