@@ -9,7 +9,6 @@ ollama
 openai
 pipmaster
 python-dotenv
-python-dotenv
 python-multipart
 tenacity
 tiktoken
