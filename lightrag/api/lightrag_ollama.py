@@ -774,12 +774,8 @@ def create_app(args):
 
                             completion_tokens = estimate_tokens(total_response)
                             total_time = last_chunk_time - start_time
-                            prompt_eval_time = (
-                                first_chunk_time - start_time
-                            )
-                            eval_time = (
-                                last_chunk_time - first_chunk_time
-                            )
+                            prompt_eval_time = first_chunk_time - start_time
+                            eval_time = last_chunk_time - first_chunk_time
 
                             data = {
                                 "model": LIGHTRAG_MODEL,
@@ -816,12 +812,8 @@ def create_app(args):
 
                             completion_tokens = estimate_tokens(total_response)
                             total_time = last_chunk_time - start_time
-                            prompt_eval_time = (
-                                first_chunk_time - start_time
-                            )
-                            eval_time = (
-                                last_chunk_time - first_chunk_time
-                            )
+                            prompt_eval_time = first_chunk_time - start_time
+                            eval_time = last_chunk_time - first_chunk_time
 
                             data = {
                                 "model": LIGHTRAG_MODEL,
