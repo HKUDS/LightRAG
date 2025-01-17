@@ -27,15 +27,15 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def estimate_tokens(text: str) -> int:
-    """估算文本的token数量
-    中文每字约1.5个token
-    英文每字约0.25个token
+    """Estimate the number of tokens in text
+    Chinese characters: approximately 1.5 tokens per character
+    English characters: approximately 0.25 tokens per character
     """
-    # 使用正则表达式分别匹配中文字符和非中文字符
+    # Use regex to match Chinese and non-Chinese characters separately
     chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', text))
     non_chinese_chars = len(re.findall(r'[^\u4e00-\u9fff]', text))
     
-    # 计算估算的token数量
+    # Calculate estimated token count
     tokens = chinese_chars * 1.5 + non_chinese_chars * 0.25
     
     return int(tokens)
@@ -241,7 +241,7 @@ class DocumentManager:
 class SearchMode(str, Enum):
     naive = "naive"
     local = "local"
-    global_ = "global"  # 使用 global_ 因为 global 是 Python 保留关键字，但枚举值会转换为字符串 "global"
+    global_ = "global"  # Using global_ because global is a Python reserved keyword, but enum value will be converted to string "global"
     hybrid = "hybrid"
     mix = "mix"
 
@@ -254,7 +254,7 @@ class OllamaMessage(BaseModel):
 class OllamaChatRequest(BaseModel):
     model: str = LIGHTRAG_MODEL
     messages: List[OllamaMessage]
-    stream: bool = True  # 默认为流式模式
+    stream: bool = True  # Default to streaming mode
     options: Optional[Dict[str, Any]] = None
 
 class OllamaChatResponse(BaseModel):
@@ -490,11 +490,11 @@ def create_app(args):
                 ),
             )
 
-            # 如果响应是字符串（比如命中缓存），直接返回
+            # If response is a string (e.g. cache hit), return directly
             if isinstance(response, str):
                 return QueryResponse(response=response)
             
-            # 如果是异步生成器，根据stream参数决定是否流式返回
+            # If it's an async generator, decide whether to stream based on stream parameter
             if request.stream:
                 result = ""
                 async for chunk in response:
@@ -511,7 +511,7 @@ def create_app(args):
     @app.post("/query/stream", dependencies=[Depends(optional_api_key)])
     async def query_text_stream(request: QueryRequest):
         try:
-            response = await rag.aquery(  # 使用 aquery 而不是 query,并添加 await
+            response = await rag.aquery(  # Use aquery instead of query, and add await
                 request.query,
                 param=QueryParam(
                     mode=request.mode,
@@ -691,7 +691,7 @@ def create_app(args):
         
         for prefix, mode in mode_map.items():
             if query.startswith(prefix):
-                # 移除前缀后，清理开头的额外空格
+                # After removing prefix an leading spaces
                 cleaned_query = query[len(prefix):].lstrip()
                 return cleaned_query, mode
                 
@@ -699,17 +699,14 @@ def create_app(args):
 
     @app.post("/api/chat")
     async def chat(raw_request: Request, request: OllamaChatRequest):
-        # # 打印原始请求数据
-        # body = await raw_request.body()
-        # logging.info(f"收到 /api/chat 原始请求: {body.decode('utf-8')}")
         """Handle chat completion requests"""
         try:
-            # 获取所有消息内容
+            # Get all messages
             messages = request.messages
             if not messages:
                 raise HTTPException(status_code=400, detail="No messages provided")
             
-            # 获取最后一条消息作为查询
+            # Get the last message as query
             query = messages[-1].content
             
             # 解析查询模式
@@ -723,7 +720,7 @@ def create_app(args):
             
             # 调用RAG进行查询
             query_param = QueryParam(
-                mode=mode,  # 使用解析出的模式,如果没有前缀则为默认的 hybrid
+                mode=mode,
                 stream=request.stream,
                 only_need_context=False
             )
@@ -731,7 +728,7 @@ def create_app(args):
             if request.stream:
                 from fastapi.responses import StreamingResponse
                 
-                response = await rag.aquery(  # 需要 await 来获取异步生成器
+                response = await rag.aquery(  # Need await to get async generator
                     cleaned_query,
                     param=query_param
                 )
@@ -742,9 +739,9 @@ def create_app(args):
                         last_chunk_time = None
                         total_response = ""
                         
-                        # 确保 response 是异步生成器
+                        # Ensure response is an async generator
                         if isinstance(response, str):
-                            # 如果是字符串,分两次发送
+                            # If it's a string, send in two parts
                             first_chunk_time = time.time_ns()
                             last_chunk_time = first_chunk_time
                             total_response = response
