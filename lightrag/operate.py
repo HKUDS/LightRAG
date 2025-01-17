@@ -566,6 +566,7 @@ async def extract_entities(
 
 async def kg_query(
     query,
+    prompt_type,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
@@ -660,7 +661,7 @@ async def kg_query(
         return context
     if context is None:
         return PROMPTS["fail_response"]
-    sys_prompt_temp = PROMPTS["rag_response"]
+    sys_prompt_temp = PROMPTS["rag_response"][prompt_type]
     sys_prompt = sys_prompt_temp.format(
         context_data=context, response_type=query_param.response_type
     )

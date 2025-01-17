@@ -153,7 +153,9 @@ PROMPTS[
 
 PROMPTS["fail_response"] = "Sorry, I'm not able to provide an answer to that question."
 
-PROMPTS["rag_response"] = """---Role---
+PROMPTS["rag_response"] = {
+
+"default" : """---Role---
 
 You are a helpful assistant responding to questions about data in the tables provided.
 
@@ -178,7 +180,11 @@ When handling relationships with timestamps:
 
 {context_data}
 
-Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown."""
+Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.""",
+
+"your prompt category" :"""Your prompt"""
+
+}
 
 PROMPTS["keywords_extraction"] = """---Role---
 
