@@ -337,7 +337,7 @@ def test_query_modes():
     每个模式都会返回相同格式的响应，但检索策略不同。
     """
     url = get_base_url()
-    modes = ["local", "global", "naive", "hybrid"]  # 支持的查询模式
+    modes = ["local", "global", "naive", "hybrid", "mix"]  # 支持的查询模式
     
     for mode in modes:
         if OutputControl.is_verbose():

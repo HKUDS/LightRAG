@@ -243,6 +243,7 @@ class SearchMode(str, Enum):
     local = "local"
     global_ = "global"  # 使用 global_ 因为 global 是 Python 保留关键字，但枚举值会转换为字符串 "global"
     hybrid = "hybrid"
+    mix = "mix"
 
 # Ollama API compatible models
 class OllamaMessage(BaseModel):
@@ -684,7 +685,8 @@ def create_app(args):
             "/local ": SearchMode.local,
             "/global ": SearchMode.global_,  # global_ is used because 'global' is a Python keyword
             "/naive ": SearchMode.naive,
-            "/hybrid ": SearchMode.hybrid
+            "/hybrid ": SearchMode.hybrid,
+            "/mix ": SearchMode.mix
         }
         
         for prefix, mode in mode_map.items():
