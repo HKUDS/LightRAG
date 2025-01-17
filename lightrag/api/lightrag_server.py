@@ -270,6 +270,16 @@ def parse_args() -> argparse.Namespace:
         default=default_llm_host,
         help=f"llm server host URL (default: from env or {default_llm_host})",
     )
+    
+    default_llm_api_key = get_env_value(
+        "LLM_BINDING_API_KEY", ""
+    )
+    
+    parser.add_argument(
+        "--llm-binding-api-key",
+        default=default_llm_api_key,
+        help=f"llm server API key (default: from env or empty string)",
+    )
 
     parser.add_argument(
         "--llm-model",
@@ -285,6 +295,15 @@ def parse_args() -> argparse.Namespace:
         "--embedding-binding-host",
         default=default_embedding_host,
         help=f"embedding server host URL (default: from env or {default_embedding_host})",
+    )
+    
+    default_embedding_api_key = get_env_value(
+        "EMBEDDING_BINDING_API_KEY", ""
+    )
+    parser.add_argument(
+        "--embedding-binding-api-key",
+        default=default_embedding_api_key,
+        help=f"embedding server API key (default: from env or empty string)",
     )
 
     parser.add_argument(
