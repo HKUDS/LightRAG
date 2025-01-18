@@ -615,6 +615,32 @@ def create_app(args):
             **kwargs,
         )
 
+    embedding_func = EmbeddingFunc(
+        embedding_dim=args.embedding_dim,
+        max_token_size=args.max_embed_tokens,
+        func=lambda texts: lollms_embed(
+            texts,
+            embed_model=args.embedding_model,
+            host=args.embedding_binding_host,
+        )
+        if args.embedding_binding == "lollms"
+        else ollama_embed(
+            texts,
+            embed_model=args.embedding_model,
+            host=args.embedding_binding_host,
+        )
+        if args.embedding_binding == "ollama"
+        else azure_openai_embedding(
+            texts,
+            model=args.embedding_model,  # no host is used for openai
+        )
+        if args.embedding_binding == "azure_openai"
+        else openai_embedding(
+            texts,
+            model=args.embedding_model,  # no host is used for openai
+        ),
+    )
+
     # Initialize RAG
     if args.llm_binding in ["lollms", "ollama"] :
         rag = LightRAG(
@@ -630,31 +656,7 @@ def create_app(args):
                 "timeout": args.timeout,
                 "options": {"num_ctx": args.max_tokens},
             },
-            embedding_func=EmbeddingFunc(
-                embedding_dim=args.embedding_dim,
-                max_token_size=args.max_embed_tokens,
-                func=lambda texts: lollms_embed(
-                    texts,
-                    embed_model=args.embedding_model,
-                    host=args.embedding_binding_host,
-                )
-                if args.embedding_binding == "lollms"
-                else ollama_embed(
-                    texts,
-                    embed_model=args.embedding_model,
-                    host=args.embedding_binding_host,
-                )
-                if args.embedding_binding == "ollama"
-                else azure_openai_embedding(
-                    texts,
-                    model=args.embedding_model,  # no host is used for openai
-                )
-                if args.embedding_binding == "azure_openai"
-                else openai_embedding(
-                    texts,
-                    model=args.embedding_model,  # no host is used for openai
-                ),
-            ),
+            embedding_func=embedding_func,
         )        
     else :
         rag = LightRAG(
@@ -662,31 +664,7 @@ def create_app(args):
             llm_model_func=azure_openai_model_complete
             if args.llm_binding == "azure_openai"
             else openai_alike_model_complete,
-            embedding_func=EmbeddingFunc(
-                embedding_dim=args.embedding_dim,
-                max_token_size=args.max_embed_tokens,
-                func=lambda texts: lollms_embed(
-                    texts,
-                    embed_model=args.embedding_model,
-                    host=args.embedding_binding_host,
-                )
-                if args.embedding_binding == "lollms"
-                else ollama_embed(
-                    texts,
-                    embed_model=args.embedding_model,
-                    host=args.embedding_binding_host,
-                )
-                if args.embedding_binding == "ollama"
-                else azure_openai_embedding(
-                    texts,
-                    model=args.embedding_model,  # no host is used for openai
-                )
-                if args.embedding_binding == "azure_openai"
-                else openai_embedding(
-                    texts,
-                    model=args.embedding_model,  # no host is used for openai
-                ),
-            ),
+            embedding_func=embedding_func,
         )
 
     async def index_file(file_path: Union[str, Path]) -> None:
