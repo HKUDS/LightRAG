@@ -565,7 +565,7 @@ def create_app(args):
         + "(With authentication)"
         if api_key
         else "",
-        version="1.0.2",
+        version=__api_version__,
         openapi_tags=[{"name": "api"}],
     )
 
