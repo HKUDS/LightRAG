@@ -40,6 +40,7 @@ For example, you have the possibility to use ollama for the embedding and openai
 #### For OpenAI Server
 - Requires valid OpenAI API credentials set in environment variables
 - OPENAI_API_KEY must be set
+- LLM_BINDING or LLM_MODEL must be set by command line on in environment variables
 
 #### For Azure OpenAI Server
 Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
@@ -59,6 +60,20 @@ az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_
 
 ```
 The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
+
+### About Ollama API
+
+We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily. After starting the lightrag-ollama service, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named lightrag:latest will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface.
+
+A query prefix in the query string can determines which LightRAG query mode is used to generate the respond for the query. The supported prefixes include:
+
+/local
+/global
+/hybrid
+/naive
+/mix
+
+For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default
 
 
 ## Configuration
@@ -82,6 +97,9 @@ INPUT_DIR=/app/data/inputs
 LLM_BINDING=ollama
 LLM_BINDING_HOST=http://localhost:11434
 LLM_MODEL=mistral-nemo:latest
+
+# must be set if using OpenAI LLM (LLM_MODEL must be set or set by command line parms)
+OPENAI_API_KEY=you_api_key
 
 # Embedding Configuration
 EMBEDDING_BINDING=ollama
@@ -285,7 +303,37 @@ curl -X POST "http://localhost:9621/documents/batch" \
     -F "files=@/path/to/doc2.txt"
 ```
 
+### Ollama Emulation Endpoints
+
+#### GET /api/version
+
+Get Ollama version information
+
+```bash
+curl http://localhost:9621/api/version
+```
+
+#### GET /api/tags
+
+Get Ollama available models
+
+```bash
+curl http://localhost:9621/api/tags
+```
+
+#### POST /api/chat
+
+Handle chat completion requests
+
+```
+curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/json" -d \
+  '{"model":"lightrag:latest","messages":[{"role":"user","content":"猪八戒是谁"}],"stream":true}'
+```
+
+> For more information about Ollama API pls. visit :  [Ollama API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
+
 #### DELETE /documents
+
 Clear all documents from the RAG system.
 
 ```bash
