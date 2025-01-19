@@ -17,6 +17,7 @@ git clone https://github.com/HKUDS/lightrag.git
 # Change to the repository directory
 cd lightrag
 
+# create a Python virtual enviroment if neccesary
 # Install in editable mode with API support
 pip install -e ".[api]"
 ```
@@ -40,6 +41,7 @@ For example, you have the possibility to use ollama for the embedding and openai
 #### For OpenAI Server
 - Requires valid OpenAI API credentials set in environment variables
 - OPENAI_API_KEY must be set
+- LLM_BINDING or LLM_MODEL must be set by command line on in environment variables
 
 #### For Azure OpenAI Server
 Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
@@ -59,6 +61,26 @@ az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_
 
 ```
 The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
+
+### About Ollama API
+
+We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily.
+
+#### Choose Query mode in chat
+
+A query prefix in the query string can determines which LightRAG query mode is used to generate the respond for the query. The supported prefixes include:
+
+/local
+/global
+/hybrid
+/naive
+/mix
+
+For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default。
+
+#### Connect Open WebUI to LightRAG
+
+After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named lightrag:latest will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface.
 
 
 ## Configuration
@@ -82,6 +104,9 @@ INPUT_DIR=/app/data/inputs
 LLM_BINDING=ollama
 LLM_BINDING_HOST=http://localhost:11434
 LLM_MODEL=mistral-nemo:latest
+
+# must be set if using OpenAI LLM (LLM_MODEL must be set or set by command line parms)
+OPENAI_API_KEY=you_api_key
 
 # Embedding Configuration
 EMBEDDING_BINDING=ollama
@@ -285,7 +310,47 @@ curl -X POST "http://localhost:9621/documents/batch" \
     -F "files=@/path/to/doc2.txt"
 ```
 
+#### POST /documents/scan
+
+Trigger document scan for new files in the Input directory.
+
+```bash
+curl -X POST "http://localhost:9621/documents/scan" --max-time 1800
+```
+
+> Ajust max-time according to the estimated index time  for all new files.
+
+### Ollama Emulation Endpoints
+
+#### GET /api/version
+
+Get Ollama version information
+
+```bash
+curl http://localhost:9621/api/version
+```
+
+#### GET /api/tags
+
+Get Ollama available models
+
+```bash
+curl http://localhost:9621/api/tags
+```
+
+#### POST /api/chat
+
+Handle chat completion requests
+
+```shell
+curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/json" -d \
+  '{"model":"lightrag:latest","messages":[{"role":"user","content":"猪八戒是谁"}],"stream":true}'
+```
+
+> For more information about Ollama API pls. visit :  [Ollama API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
+
 #### DELETE /documents
+
 Clear all documents from the RAG system.
 
 ```bash
@@ -337,15 +402,15 @@ You can test the API endpoints using the provided curl commands or through the S
 2. Start the RAG server
 3. Upload some documents using the document management endpoints
 4. Query the system using the query endpoints
+5. Trigger document scan if new files is put into inputs directory
 
 ### Important Features
 
 #### Automatic Document Vectorization
 When starting any of the servers with the `--input-dir` parameter, the system will automatically:
-1. Scan the specified directory for documents
-2. Check for existing vectorized content in the database
-3. Only vectorize new documents that aren't already in the database
-4. Make all content immediately available for RAG queries
+1. Check for existing vectorized content in the database
+2. Only vectorize new documents that aren't already in the database
+3. Make all content immediately available for RAG queries
 
 This intelligent caching mechanism:
 - Prevents unnecessary re-vectorization of existing documents
@@ -359,3 +424,34 @@ This intelligent caching mechanism:
 - Only new documents in the input directory will be processed
 - This optimization significantly reduces startup time for subsequent runs
 - The working directory (`--working-dir`) stores the vectorized documents database
+
+## Install Lightrag as a Linux Service
+
+Create your service file: `lightrag.sevice`. Modified the following lines from `lightrag.sevice.example`
+
+```text
+Description=LightRAG Ollama Service
+WorkingDirectory=<lightrag installed directory>
+ExecStart=<lightrag installed directory>/lightrag/api/start_lightrag.sh
+```
+
+Create your service startup script: `start_lightrag.sh`. Change you python virtual environment activation method as need:
+
+```shell
+#!/bin/bash
+
+# python virtual environment activation
+source /home/netman/lightrag-xyj/venv/bin/activate
+# start lightrag api server
+lightrag-server
+```
+
+Install lightrag.service in Linux.  Sample commands in Ubuntu server look like:
+
+```shell
+sudo cp lightrag-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start lightrag-server.service
+sudo systemctl status lightrag-server.service
+sudo systemctl enable lightrag-server.service
+```
