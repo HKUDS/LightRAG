@@ -299,7 +299,7 @@ def parse_args() -> argparse.Namespace:
     )
     
     default_llm_api_key = get_env_value(
-        "LLM_BINDING_API_KEY", ""
+        "LLM_BINDING_API_KEY", None
     )
     
     parser.add_argument(
@@ -649,22 +649,26 @@ def create_app(args):
             texts,
             embed_model=args.embedding_model,
             host=args.embedding_binding_host,
+            api_key = args.embedding_binding_api_key
         )
         if args.embedding_binding == "lollms"
         else ollama_embed(
             texts,
             embed_model=args.embedding_model,
             host=args.embedding_binding_host,
+            api_key = args.embedding_binding_api_key
         )
         if args.embedding_binding == "ollama"
         else azure_openai_embedding(
             texts,
-            model=args.embedding_model,  # no host is used for openai
+            model=args.embedding_model,  # no host is used for openai,
+            api_key = args.embedding_binding_api_key
         )
         if args.embedding_binding == "azure_openai"
         else openai_embedding(
             texts,
-            model=args.embedding_model,  # no host is used for openai
+            model=args.embedding_model,  # no host is used for openai,
+            api_key = args.embedding_binding_api_key
         ),
     )
 
@@ -682,6 +686,7 @@ def create_app(args):
                 "host": args.llm_binding_host,
                 "timeout": args.timeout,
                 "options": {"num_ctx": args.max_tokens},
+                "api_key": args.llm_binding_api_key
             },
             embedding_func=embedding_func,
         )
