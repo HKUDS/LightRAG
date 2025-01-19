@@ -63,7 +63,7 @@ The output of the last command will give you the endpoint and the key for the Op
 
 ### About Ollama API
 
-We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily. 
+We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily.
 
 #### Choose Query mode in chat
 
