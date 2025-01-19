@@ -349,7 +349,9 @@ async def ollama_model_if_cache(
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
     kwargs.pop("hashing_kv", None)
-    ollama_client = ollama.AsyncClient(host=host, timeout=timeout)
+    api_key = kwargs.pop("api_key", None)    
+    headers={'Authorization': f'Bearer {api_key}'} if api_key else None
+    ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -380,6 +382,8 @@ async def lollms_model_if_cache(
     """Client implementation for lollms generation."""
 
     stream = True if kwargs.get("stream") else False
+    api_key = kwargs.pop("api_key", None)    
+    headers={'Authorization': f'Bearer {api_key}'} if api_key else None
 
     # Extract lollms specific parameters
     request_data = {
@@ -408,7 +412,7 @@ async def lollms_model_if_cache(
     request_data["prompt"] = full_prompt
     timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout", None))
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:
+    async with aiohttp.ClientSession(timeout=timeout,headers=headers) as session:
         if stream:
 
             async def inner():
@@ -622,7 +626,7 @@ async def nvidia_openai_complete(
 
 
 async def azure_openai_complete(
-    model: str = "gpt-4o-mini", prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    model: str = "gpt-4o-mini", prompt="", system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
     keyword_extraction = kwargs.pop("keyword_extraction", None)
     result = await azure_openai_complete_if_cache(
@@ -1148,6 +1152,9 @@ async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarra
 
 
 async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+    api_key = kwargs.pop("api_key",None)
+    headers = {"Authorization": api_key, "Content-Type": "application/json"} if api_key else None
+    kwargs["headers"]=headers
     ollama_client = ollama.Client(**kwargs)
     data = ollama_client.embed(model=embed_model, input=texts)
     return data["embeddings"]
@@ -1168,13 +1175,15 @@ async def lollms_embed(
     Returns:
         np.ndarray: Array of embeddings
     """
-    async with aiohttp.ClientSession() as session:
+    api_key = kwargs.pop("api_key",None)
+    headers = {"Authorization": api_key, "Content-Type": "application/json"} if api_key else None
+    async with aiohttp.ClientSession(headers=headers) as session:
         embeddings = []
         for text in texts:
             request_data = {"text": text}
 
             async with session.post(
-                f"{base_url}/lollms_embed", json=request_data
+                f"{base_url}/lollms_embed", json=request_data, 
             ) as response:
                 result = await response.json()
                 embeddings.append(result["vector"])
