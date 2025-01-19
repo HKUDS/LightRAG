@@ -342,7 +342,7 @@ curl http://localhost:9621/api/tags
 
 Handle chat completion requests
 
-```
+```shell
 curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/json" -d \
   '{"model":"lightrag:latest","messages":[{"role":"user","content":"猪八戒是谁"}],"stream":true}'
 ```
@@ -424,3 +424,34 @@ This intelligent caching mechanism:
 - Only new documents in the input directory will be processed
 - This optimization significantly reduces startup time for subsequent runs
 - The working directory (`--working-dir`) stores the vectorized documents database
+
+## Install Lightrag as a Linux Service
+
+Create your service file: `lightrag.sevice`. Modified the following lines from `lightrag.sevice.example`
+
+```text
+Description=LightRAG Ollama Service
+WorkingDirectory=<lightrag installed directory>
+ExecStart=<lightrag installed directory>/lightrag/api/start_lightrag.sh
+```
+
+Create your service startup script: `start_lightrag.sh`. Change you python virtual environment activation method as need:
+
+```shell
+#!/bin/bash
+
+# python virtual environment activation
+source /home/netman/lightrag-xyj/venv/bin/activate
+# start lightrag api server
+lightrag-server
+```
+
+Install lightrag.service in Linux.  Sample commands in Ubuntu server look like:
+
+```shell
+sudo cp lightrag-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start lightrag-server.service
+sudo systemctl status lightrag-server.service
+sudo systemctl enable lightrag-server.service
+```
