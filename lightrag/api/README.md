@@ -63,7 +63,9 @@ The output of the last command will give you the endpoint and the key for the Op
 
 ### About Ollama API
 
-We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily. After starting the lightrag-ollama service, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named lightrag:latest will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface.
+We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily. 
+
+#### Choose Query mode in chat
 
 A query prefix in the query string can determines which LightRAG query mode is used to generate the respond for the query. The supported prefixes include:
 
@@ -73,7 +75,11 @@ A query prefix in the query string can determines which LightRAG query mode is u
 /naive
 /mix
 
-For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default
+For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default。
+
+#### Connect Open WebUI to LightRAG
+
+After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named lightrag:latest will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface.
 
 
 ## Configuration
