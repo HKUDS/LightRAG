@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
 def estimate_tokens(text: str) -> int:
     """Estimate the number of tokens in text
     Chinese characters: approximately 1.5 tokens per character
@@ -52,7 +53,7 @@ def estimate_tokens(text: str) -> int:
 LIGHTRAG_NAME = "lightrag"
 LIGHTRAG_TAG = "latest"
 LIGHTRAG_MODEL = "lightrag:latest"
-LIGHTRAG_SIZE = 7365960935   # it's a dummy value
+LIGHTRAG_SIZE = 7365960935  # it's a dummy value
 LIGHTRAG_CREATED_AT = "2024-01-15T00:00:00Z"
 LIGHTRAG_DIGEST = "sha256:lightrag"
 
@@ -242,7 +243,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         argparse.Namespace: Parsed arguments
     """
-    
+
     parser = argparse.ArgumentParser(
         description="LightRAG FastAPI Server with separate working and input directories"
     )
@@ -587,9 +588,12 @@ def create_app(args):
     # Initialize document manager
     doc_manager = DocumentManager(args.input_dir)
 
-
     async def openai_alike_model_complete(
-        prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+        prompt,
+        system_prompt=None,
+        history_messages=[],
+        keyword_extraction=False,
+        **kwargs,
     ) -> str:
         return await openai_complete_if_cache(
             args.llm_model,
@@ -602,7 +606,11 @@ def create_app(args):
         )
 
     async def azure_openai_model_complete(
-        prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+        prompt,
+        system_prompt=None,
+        history_messages=[],
+        keyword_extraction=False,
+        **kwargs,
     ) -> str:
         return await azure_openai_complete_if_cache(
             args.llm_model,
@@ -642,12 +650,12 @@ def create_app(args):
     )
 
     # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama"] :
+    if args.llm_binding in ["lollms", "ollama"]:
         rag = LightRAG(
             working_dir=args.working_dir,
             llm_model_func=lollms_model_complete
             if args.llm_binding == "lollms"
-            else ollama_model_complete, 
+            else ollama_model_complete,
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
@@ -657,8 +665,8 @@ def create_app(args):
                 "options": {"num_ctx": args.max_tokens},
             },
             embedding_func=embedding_func,
-        )        
-    else :
+        )
+    else:
         rag = LightRAG(
             working_dir=args.working_dir,
             llm_model_func=azure_openai_model_complete
