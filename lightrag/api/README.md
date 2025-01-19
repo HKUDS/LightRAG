@@ -17,6 +17,7 @@ git clone https://github.com/HKUDS/lightrag.git
 # Change to the repository directory
 cd lightrag
 
+# create a Python virtual enviroment if neccesary
 # Install in editable mode with API support
 pip install -e ".[api]"
 ```
@@ -309,6 +310,16 @@ curl -X POST "http://localhost:9621/documents/batch" \
     -F "files=@/path/to/doc2.txt"
 ```
 
+#### POST /documents/scan
+
+Trigger document scan for new files in the Input directory.
+
+```bash
+curl -X POST "http://localhost:9621/documents/scan" --max-time 1800
+```
+
+> Ajust max-time according to the estimated index time  for all new files.
+
 ### Ollama Emulation Endpoints
 
 #### GET /api/version
@@ -391,15 +402,15 @@ You can test the API endpoints using the provided curl commands or through the S
 2. Start the RAG server
 3. Upload some documents using the document management endpoints
 4. Query the system using the query endpoints
+5. Trigger document scan if new files is put into inputs directory
 
 ### Important Features
 
 #### Automatic Document Vectorization
 When starting any of the servers with the `--input-dir` parameter, the system will automatically:
-1. Scan the specified directory for documents
-2. Check for existing vectorized content in the database
-3. Only vectorize new documents that aren't already in the database
-4. Make all content immediately available for RAG queries
+1. Check for existing vectorized content in the database
+2. Only vectorize new documents that aren't already in the database
+3. Make all content immediately available for RAG queries
 
 This intelligent caching mechanism:
 - Prevents unnecessary re-vectorization of existing documents
