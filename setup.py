@@ -101,7 +101,6 @@ setuptools.setup(
     entry_points={
         "console_scripts": [
             "lightrag-server=lightrag.api.lightrag_server:main [api]",
-            "lightrag-ollama=lightrag.api.lightrag_ollama:main [api]",
         ],
     },
 )
