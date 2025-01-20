@@ -35,13 +35,18 @@ For example, you have the possibility to use ollama for the embedding and openai
 
 #### For Ollama Server
 - Ollama must be running and accessible
-- Default connection: http://localhost:11434
-- Configure using --ollama-host if running on a different host/port
+- Requires environment variables setup or command line argument provided
+- Environment variables: LLM_BINDING=ollama, LLM_BINDING_HOST, LLM_MODEL
+- Command line arguments: --llm-binding=ollama, --llm-binding-host, --llm-model
+- Default connection is  http://localhost:11434 if not priveded
 
-#### For OpenAI Server
-- Requires valid OpenAI API credentials set in environment variables
-- OPENAI_API_KEY must be set
-- LLM_BINDING or LLM_MODEL must be set by command line on in environment variables
+> The default MAX_TOKENS(num_ctx) for Ollama is 32768. If your Ollama server is lacking or GPU memory, set it to a lower value.
+
+#### For OpenAI Alike Server
+- Requires environment variables setup or command line argument provided
+- Environment variables: LLM_BINDING=ollama, LLM_BINDING_HOST, LLM_MODEL, LLM_BINDING_API_KEY
+- Command line arguments: --llm-binding=ollama, --llm-binding-host, --llm-model, --llm-binding-api-key
+- Default connection is https://api.openai.com/v1 if not priveded
 
 #### For Azure OpenAI Server
 Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
@@ -61,6 +66,13 @@ az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_
 
 ```
 The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
+
+```
+LLM_BINDING=azure_openai
+LLM_BINDING_HOST=endpoint_of_azure_ai
+LLM_MODEL=model_name_of_azure_ai
+LLM_BINDING_API_KEY=api_key_of_azure_ai
+```
 
 ### About Ollama API
 
@@ -159,6 +171,7 @@ PORT=7000 python lightrag.py
 | --llm-binding | ollama | LLM binding to be used. Supported: lollms, ollama, openai |
 | --llm-binding-host | (dynamic) | LLM server host URL. Defaults based on binding: http://localhost:11434 (ollama), http://localhost:9600 (lollms), https://api.openai.com/v1 (openai) |
 | --llm-model | mistral-nemo:latest | LLM model name |
+| --llm-binding-api-key | None | API Key for OpenAI Alike LLM |
 | --embedding-binding | ollama | Embedding binding to be used. Supported: lollms, ollama, openai |
 | --embedding-binding-host | (dynamic) | Embedding server host URL. Defaults based on binding: http://localhost:11434 (ollama), http://localhost:9600 (lollms), https://api.openai.com/v1 (openai) |
 | --embedding-model | bge-m3:latest | Embedding model name |
