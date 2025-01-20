@@ -606,7 +606,7 @@ def create_app(args):
         else "",
         version=__api_version__,
         openapi_tags=[{"name": "api"}],
-        lifespan=lifespan
+        lifespan=lifespan,
     )
 
     # Add CORS middleware
