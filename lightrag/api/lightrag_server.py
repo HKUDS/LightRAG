@@ -51,8 +51,8 @@ def estimate_tokens(text: str) -> int:
 
 # Constants for emulated Ollama model information
 LIGHTRAG_NAME = "lightrag"
-LIGHTRAG_TAG = "latest"
-LIGHTRAG_MODEL = "lightrag:latest"
+LIGHTRAG_TAG = os.getenv("OLLAMA_EMULATING_MODEL_TAG", "latest")
+LIGHTRAG_MODEL = f"{LIGHTRAG_NAME}:{LIGHTRAG_TAG}"
 LIGHTRAG_SIZE = 7365960935  # it's a dummy value
 LIGHTRAG_CREATED_AT = "2024-01-15T00:00:00Z"
 LIGHTRAG_DIGEST = "sha256:lightrag"
@@ -161,6 +161,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
 
     # System Configuration
     ASCIIColors.magenta("\n🛠️ System Configuration:")
+    ASCIIColors.white("    ├─ Ollama Emulating Model: ", end="")
+    ASCIIColors.yellow(f"{LIGHTRAG_MODEL}")
     ASCIIColors.white("    ├─ Log Level: ", end="")
     ASCIIColors.yellow(f"{args.log_level}")
     ASCIIColors.white("    ├─ Timeout: ", end="")
