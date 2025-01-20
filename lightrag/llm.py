@@ -354,7 +354,7 @@ async def ollama_model_if_cache(
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}"
                 } if api_key else {"Content-Type": "application/json"}
-    ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
+    ollama_client = ollama.AsyncClient(host=host, timeout=timeout)# temporary fix: (TODO: rewrite this with better compatibility), headers=headers)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -418,7 +418,7 @@ async def lollms_model_if_cache(
     request_data["prompt"] = full_prompt
     timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout", None))
 
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
+    async with aiohttp.ClientSession(timeout=timeout) as session:# temporary fix: (TODO: rewrite this with better compatibility), headers=headers) as session:
         if stream:
 
             async def inner():
