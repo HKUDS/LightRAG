@@ -30,11 +30,8 @@ __author_email__ = "parisneoai@gmail.com"
 __description__ = "Lightrag integration for OpenWebui"
 
 
-import os
 import requests
 import json
-import csv
-from io import StringIO
 from pydantic import BaseModel, Field
 from typing import Callable, Any, Literal, Union, List, Tuple
 
@@ -238,7 +235,7 @@ class Tools:
                 remaining = remaining[index + 3 :]
                 first_index += index + 3
                 bloc_index += 1
-            except Exception as ex:
+            except Exception:
                 if bloc_index % 2 == 1:
                     index = len(remaining)
                     indices.append(index)
@@ -293,11 +290,11 @@ class Tools:
                 if len(sub_text) > 0:
                     try:
                         find_space = sub_text.index(" ")
-                    except:
+                    except Exception:
                         find_space = int(1e10)
                     try:
                         find_return = sub_text.index("\n")
-                    except:
+                    except Exception:
                         find_return = int(1e10)
                     next_index = min(find_return, find_space)
                     if "{" in sub_text[:next_index]:
