@@ -427,7 +427,7 @@ This intelligent caching mechanism:
 
 ## Install Lightrag as a Linux Service
 
-Create your service file: `lightrag.sevice`. Modified the following lines from `lightrag.sevice.example`
+Create your service file: `lightrag-server.sevice`. Modified the following lines from `lightrag-server.sevice.example`
 
 ```text
 Description=LightRAG Ollama Service
