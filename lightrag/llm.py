@@ -626,16 +626,11 @@ async def nvidia_openai_complete(
 
 
 async def azure_openai_complete(
-    model: str = "gpt-4o-mini",
-    prompt="",
-    system_prompt=None,
-    history_messages=[],
-    keyword_extraction=False,
-    **kwargs,
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
     keyword_extraction = kwargs.pop("keyword_extraction", None)
     result = await azure_openai_complete_if_cache(
-        model,
+        os.getenv("LLM_MODEL", "gpt-4o-mini"),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
