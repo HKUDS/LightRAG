@@ -574,6 +574,29 @@ def create_app(args):
     # Check if API key is provided either through env var or args
     api_key = os.getenv("LIGHTRAG_API_KEY") or args.key
 
+    # Initialize document manager
+    doc_manager = DocumentManager(args.input_dir)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Lifespan context manager for startup and shutdown events"""
+        # Startup logic
+        try:
+            new_files = doc_manager.scan_directory()
+            for file_path in new_files:
+                try:
+                    await index_file(file_path)
+                except Exception as e:
+                    trace_exception(e)
+                    logging.error(f"Error indexing file {file_path}: {str(e)}")
+
+            logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
+        except Exception as e:
+            logging.error(f"Error during startup indexing: {str(e)}")
+        yield
+        # Cleanup logic (if needed)
+        pass
+
     # Initialize FastAPI
     app = FastAPI(
         title="LightRAG API",
@@ -583,6 +606,7 @@ def create_app(args):
         else "",
         version=__api_version__,
         openapi_tags=[{"name": "api"}],
+        lifespan=lifespan
     )
 
     # Add CORS middleware
@@ -599,9 +623,6 @@ def create_app(args):
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
-
-    # Initialize document manager
-    doc_manager = DocumentManager(args.input_dir)
 
     async def openai_alike_model_complete(
         prompt,
@@ -737,8 +758,8 @@ def create_app(args):
                     content += page.extract_text() + "\n"
 
             case ".docx":
-                if not pm.is_installed("docx"):
-                    pm.install("docx")
+                if not pm.is_installed("python-docx"):
+                    pm.install("python-docx")
                 from docx import Document
 
                 # Word document handling
@@ -971,8 +992,8 @@ def create_app(args):
                         content += page.extract_text() + "\n"
 
                 case ".docx":
-                    if not pm.is_installed("docx"):
-                        pm.install("docx")
+                    if not pm.is_installed("python-docx"):
+                        pm.install("python-docx")
                     from docx import Document
                     from io import BytesIO
 
