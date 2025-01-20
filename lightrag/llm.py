@@ -354,7 +354,7 @@ async def ollama_model_if_cache(
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}"
                 } if api_key else {"Content-Type": "application/json"}
-    ollama_client = ollama.AsyncClient(host=host, timeout=timeout)# temporary fix: (TODO: rewrite this with better compatibility), headers=headers)
+    ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
@@ -418,7 +418,7 @@ async def lollms_model_if_cache(
     request_data["prompt"] = full_prompt
     timeout = aiohttp.ClientTimeout(total=kwargs.get("timeout", None))
 
-    async with aiohttp.ClientSession(timeout=timeout) as session:# temporary fix: (TODO: rewrite this with better compatibility), headers=headers) as session:
+    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
         if stream:
 
             async def inner():
@@ -1160,9 +1160,9 @@ async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarra
 async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     api_key = kwargs.pop("api_key", None)
     headers = (
-        {"Authorization": api_key, "Content-Type": "application/json"}
+        {"Content-Type": "application/json", "Authorization": api_key}
         if api_key
-        else None
+        else {"Content-Type": "application/json"}
     )
     kwargs["headers"] = headers
     ollama_client = ollama.Client(**kwargs)
@@ -1187,9 +1187,9 @@ async def lollms_embed(
     """
     api_key = kwargs.pop("api_key", None)
     headers = (
-        {"Authorization": api_key, "Content-Type": "application/json"}
+        {"Content-Type": "application/json", "Authorization": api_key}
         if api_key
-        else None
+        else {"Content-Type": "application/json"}
     )
     async with aiohttp.ClientSession(headers=headers) as session:
         embeddings = []
