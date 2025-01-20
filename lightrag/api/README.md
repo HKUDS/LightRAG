@@ -38,10 +38,9 @@ For example, you have the possibility to use ollama for the embedding and openai
 - Default connection: http://localhost:11434
 - Configure using --ollama-host if running on a different host/port
 
-#### For OpenAI Server
+#### For OpenAI Alike Server
 - Requires valid OpenAI API credentials set in environment variables
-- OPENAI_API_KEY must be set
-- LLM_BINDING or LLM_MODEL must be set by command line on in environment variables
+- LLM_BINDING, LLM_MODEL, LLM_BINDING_API_KEY  must be set by command line on in environment variables
 
 #### For Azure OpenAI Server
 Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
