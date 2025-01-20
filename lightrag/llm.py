@@ -350,10 +350,11 @@ async def ollama_model_if_cache(
     timeout = kwargs.pop("timeout", None)
     kwargs.pop("hashing_kv", None)
     api_key = kwargs.pop("api_key", None)
-    headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-                } if api_key else {"Content-Type": "application/json"}
+    headers = (
+        {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        if api_key
+        else {"Content-Type": "application/json"}
+    )
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     messages = []
     if system_prompt:
@@ -386,10 +387,11 @@ async def lollms_model_if_cache(
 
     stream = True if kwargs.get("stream") else False
     api_key = kwargs.pop("api_key", None)
-    headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}"
-                } if api_key else {"Content-Type": "application/json"}
+    headers = (
+        {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+        if api_key
+        else {"Content-Type": "application/json"}
+    )
 
     # Extract lollms specific parameters
     request_data = {
