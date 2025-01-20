@@ -616,7 +616,7 @@ def create_app(args):
             system_prompt=system_prompt,
             history_messages=history_messages,
             base_url=args.llm_binding_host,
-            api_key=os.getenv("OPENAI_API_KEY"),
+            api_key=args.llm_binding_api_key,
             **kwargs,
         )
 
