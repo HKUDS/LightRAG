@@ -21,6 +21,7 @@ psycopg[binary,pool]
 pydantic
 pymilvus
 pymongo
+aioredis
 pymysql
 python-dotenv
 pyvis
