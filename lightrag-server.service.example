@@ -9,7 +9,7 @@ User=netman
 MemoryHigh=8G
 MemoryMax=12G
 WorkingDirectory=/home/netman/lightrag-xyj
-ExecStart=/home/netman/lightrag-xyj/start_lightrag_server.sh
+ExecStart=/home/netman/lightrag-xyj/start_lightrag.sh
 Restart=always
 RestartSec=10
 
