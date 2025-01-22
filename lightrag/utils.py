@@ -6,6 +6,8 @@ import json
 import logging
 import os
 import re
+import hashlib
+import uuid
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
@@ -114,6 +116,31 @@ def compute_args_hash(*args):
 
 def compute_mdhash_id(content, prefix: str = ""):
     return prefix + md5(content.encode()).hexdigest()
+
+def compute_mdhash_id_for_qdrant(content: str, prefix: str = "", style: str = "simple") -> str:
+    """
+    根据内容生成一个 UUID 并支持多种格式表示。
+
+    :param content: 用于生成 UUID 的内容。
+    :param style: UUID 格式，可选值为 "simple", "hyphenated", "urn"。
+    :return: 符合 Qdrant 要求的 UUID。
+    """
+    if not content:
+        raise ValueError("Content must not be empty.")
+
+    # 使用内容的哈希值来创建 UUID
+    hashed_content = hashlib.sha256((prefix+content).encode("utf-8")).digest()
+    generated_uuid = uuid.UUID(bytes=hashed_content[:16], version=4)
+
+    # 根据指定的格式返回 UUID
+    if style == "simple":
+        return generated_uuid.hex
+    elif style == "hyphenated":
+        return str(generated_uuid)
+    elif style == "urn":
+        return f"urn:uuid:{generated_uuid}"
+    else:
+        raise ValueError("Invalid style. Choose from 'simple', 'hyphenated', or 'urn'.")
 
 
 def limit_async_func_call(max_size: int, waitting_time: float = 0.0001):

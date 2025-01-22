@@ -62,6 +62,7 @@ STORAGES = {
     "PGGraphStorage": ".kg.postgres_impl",
     "GremlinStorage": ".kg.gremlin_impl",
     "PGDocStatusStorage": ".kg.postgres_impl",
+    "QdrantVectorDBStorage": ".kg.qdrant_impl",
 }
 
 

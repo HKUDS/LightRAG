@@ -20,6 +20,7 @@ psycopg-pool
 psycopg[binary,pool]
 pydantic
 pymilvus
+qdrant_client
 pymongo
 pymysql
 python-dotenv
