@@ -14,12 +14,12 @@ A lightweight Knowledge Graph Retrieval-Augmented Generation system with multipl
 1. Clone the repository:
 ```bash
 # Linux/MacOS
-git clone https://github.com/ParisNeo/LightRAG.git
+git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 ```
 ```powershell
 # Windows PowerShell
-git clone https://github.com/ParisNeo/LightRAG.git
+git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 ```
 
