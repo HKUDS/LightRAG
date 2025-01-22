@@ -66,4 +66,5 @@ file = "../book.txt"
 with open(file, "r", encoding="utf-8") as f:
     rag.insert(f.read())
 
+
 print(rag.query("谁会3D建模 ？", param=QueryParam(mode="mix")))
