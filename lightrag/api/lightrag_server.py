@@ -715,6 +715,9 @@ def create_app(args):
             llm_model_func=azure_openai_model_complete
             if args.llm_binding == "azure_openai"
             else openai_alike_model_complete,
+            llm_model_name=args.llm_model,
+            llm_model_max_async=args.max_async,
+            llm_model_max_token_size=args.max_tokens,
             embedding_func=embedding_func,
         )
 
