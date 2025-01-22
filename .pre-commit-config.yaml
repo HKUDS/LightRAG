@@ -12,7 +12,7 @@ repos:
     hooks:
       - id: ruff-format
       - id: ruff
-        args: [--fix]
+        args: [--fix, --ignore=E402]
 
 
   - repo: https://github.com/mgedmin/check-manifest
