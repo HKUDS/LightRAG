@@ -4,6 +4,7 @@ aiofiles
 aiohttp
 aioredis
 asyncpg
+configparser
 
 # database packages
 graspologic
@@ -17,13 +18,19 @@ numpy
 ollama
 openai
 oracledb
+pipmaster
 psycopg-pool
 psycopg[binary,pool]
 pydantic
 pymilvus
 pymongo
 pymysql
+
+
+PyPDF2
+python-docx
 python-dotenv
+python-pptx
 pyvis
 setuptools
 # lmdeploy[all]
