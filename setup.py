@@ -40,15 +40,14 @@ def retrieve_metadata():
 
 
 # Reading dependencies from requirements.txt
-def read_requirements():
+def read_full_requirements():
+    """All dependencies for full functionality."""
     deps = []
     try:
         with open("./requirements.txt") as f:
-            deps = [line.strip() for line in f if line.strip()]
+            deps = [line.strip() for line in f if line.strip() and not line.startswith('#')]
     except FileNotFoundError:
-        print(
-            "Warning: 'requirements.txt' not found. No dependencies will be installed."
-        )
+        print("Warning: 'requirements.txt' not found. No dependencies will be installed.")
     return deps
 
 
@@ -62,9 +61,28 @@ def read_api_requirements():
     return api_deps
 
 
+def read_minimal_requirements():
+    """Core dependencies required for minimal functionality."""
+    return [
+        "numpy",
+        "pydantic",
+        "tiktoken",
+        "aiohttp",
+        "nano-vectordb",
+        "networkx",
+        "openai",
+        "ollama",
+        "tenacity",
+        "tqdm",
+        "xxhash",
+        "setuptools",
+        "python-dotenv",
+    ]
+
+
 metadata = retrieve_metadata()
 long_description = read_long_description()
-requirements = read_requirements()
+minimal_requirements = read_minimal_requirements()
 
 setuptools.setup(
     name="lightrag-hku",
@@ -76,7 +94,7 @@ setuptools.setup(
     long_description_content_type="text/markdown",
     packages=setuptools.find_packages(
         exclude=("tests*", "docs*")
-    ),  # Automatically find packages
+    ),
     classifiers=[
         "Development Status :: 4 - Beta",
         "Programming Language :: Python :: 3",
@@ -86,9 +104,9 @@ setuptools.setup(
         "Topic :: Software Development :: Libraries :: Python Modules",
     ],
     python_requires=">=3.9",
-    install_requires=requirements,
-    include_package_data=True,  # Includes non-code files from MANIFEST.in
-    project_urls={  # Additional project metadata
+    install_requires=minimal_requirements,
+    include_package_data=True,
+    project_urls={
         "Documentation": metadata.get("__url__", ""),
         "Source": metadata.get("__url__", ""),
         "Tracker": f"{metadata.get('__url__', '')}/issues"
@@ -97,6 +115,7 @@ setuptools.setup(
     },
     extras_require={
         "api": read_api_requirements(),  # API requirements as optional
+        "full": read_full_requirements(),
     },
     entry_points={
         "console_scripts": [

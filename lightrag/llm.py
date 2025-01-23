@@ -6,11 +6,9 @@ import re
 import struct
 from functools import lru_cache
 from typing import List, Dict, Callable, Any, Union, Optional
-import aioboto3
 import aiohttp
 import numpy as np
 import ollama
-import torch
 from openai import (
     AsyncOpenAI,
     APIConnectionError,
@@ -25,7 +23,6 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
-from transformers import AutoTokenizer, AutoModelForCausalLM
 
 from .utils import (
     wrap_embedding_func_with_attrs,
@@ -193,6 +190,8 @@ async def bedrock_complete_if_cache(
     aws_session_token=None,
     **kwargs,
 ) -> str:
+    import aioboto3
+
     os.environ["AWS_ACCESS_KEY_ID"] = os.environ.get(
         "AWS_ACCESS_KEY_ID", aws_access_key_id
     )
@@ -248,6 +247,8 @@ async def bedrock_complete_if_cache(
 
 @lru_cache(maxsize=1)
 def initialize_hf_model(model_name):
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+    
     hf_tokenizer = AutoTokenizer.from_pretrained(
         model_name, device_map="auto", trust_remote_code=True
     )
@@ -1083,6 +1084,8 @@ async def bedrock_embedding(
         "AWS_SESSION_TOKEN", aws_session_token
     )
 
+    import aioboto3
+
     session = aioboto3.Session()
     async with session.client("bedrock-runtime") as bedrock_async_client:
         if (model_provider := model.split(".")[0]) == "amazon":
@@ -1133,6 +1136,8 @@ async def bedrock_embedding(
 
 
 async def hf_embedding(texts: list[str], tokenizer, embed_model) -> np.ndarray:
+    import torch
+
     device = next(embed_model.parameters()).device
     input_ids = tokenizer(
         texts, return_tensors="pt", padding=True, truncation=True
