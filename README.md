@@ -51,16 +51,35 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 
 ## Install
 
-* Install from source (Recommend)
-
+* Install from source (Recommended)
 ```bash
 cd LightRAG
-pip install -e .
+pip install -e .  # Minimal install with core dependencies
+pip install -e ".[full]"  # Full install with all dependencies
 ```
+
 * Install from PyPI
 ```bash
-pip install lightrag-hku
+pip install lightrag-hku  # Minimal install with core dependencies
+pip install "lightrag-hku[full]"  # Full install with all dependencies
 ```
+
+The minimal install includes only core dependencies:
+- numpy
+- pydantic
+- tiktoken
+- aiohttp
+- nano-vectordb
+- networkx
+- openai
+- ollama
+- tenacity
+- tqdm
+- xxhash
+- setuptools
+- python-dotenv
+
+For additional features like using local models (torch, transformers) or specific storage backends, use the full install.
 
 ## Quick Start
 * [Video demo](https://www.youtube.com/watch?v=g21royNJ4fw) of running LightRAG locally.
