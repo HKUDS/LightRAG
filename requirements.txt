@@ -2,6 +2,7 @@ accelerate
 aioboto3
 aiofiles
 aiohttp
+aioredis
 asyncpg
 
 # database packages
