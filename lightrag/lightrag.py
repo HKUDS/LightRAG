@@ -361,7 +361,13 @@ class LightRAG:
         }
 
         # 3. Filter out already processed documents
-        _add_doc_keys = await self.doc_status.filter_keys(list(new_docs.keys()))
+        # _add_doc_keys = await self.doc_status.filter_keys(list(new_docs.keys()))
+        _add_doc_keys = {
+            doc_id
+            for doc_id in new_docs.keys()
+            if (current_doc := await self.doc_status.get_by_id(doc_id)) is None
+            or current_doc["status"] == DocStatus.FAILED
+        }
         new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
 
         if not new_docs:
@@ -573,7 +579,7 @@ class LightRAG:
         _not_stored_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))
         if len(_not_stored_doc_keys) < len(new_docs):
             logger.info(
-                f"Skipping {len(new_docs)-len(_not_stored_doc_keys)} already existing documents"
+                f"Skipping {len(new_docs) - len(_not_stored_doc_keys)} already existing documents"
             )
         new_docs = {k: v for k, v in new_docs.items() if k in _not_stored_doc_keys}
 
@@ -618,7 +624,7 @@ class LightRAG:
             batch_docs = dict(list(new_docs.items())[i : i + batch_size])
             for doc_id, doc in tqdm_async(
                 batch_docs.items(),
-                desc=f"Level 1 - Spliting doc in batch {i//batch_size + 1}",
+                desc=f"Level 1 - Spliting doc in batch {i // batch_size + 1}",
             ):
                 try:
                     # Generate chunks from document

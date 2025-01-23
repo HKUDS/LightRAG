@@ -20,6 +20,7 @@ import shutil
 import aiofiles
 from ascii_colors import trace_exception, ASCIIColors
 import os
+import configparser
 
 from fastapi import Depends, Security
 from fastapi.security import APIKeyHeader
@@ -56,6 +57,52 @@ LIGHTRAG_MODEL = f"{LIGHTRAG_NAME}:{LIGHTRAG_TAG}"
 LIGHTRAG_SIZE = 7365960935  # it's a dummy value
 LIGHTRAG_CREATED_AT = "2024-01-15T00:00:00Z"
 LIGHTRAG_DIGEST = "sha256:lightrag"
+
+KV_STORAGE = "JsonKVStorage"
+DOC_STATUS_STORAGE = "JsonDocStatusStorage"
+GRAPH_STORAGE = "NetworkXStorage"
+VECTOR_STORAGE = "NanoVectorDBStorage"
+
+# 读取配置文件
+config = configparser.ConfigParser()
+config.read("config.ini")
+# Redis 配置
+redis_uri = config.get("redis", "uri", fallback=None)
+if redis_uri:
+    os.environ["REDIS_URI"] = redis_uri
+    KV_STORAGE = "RedisKVStorage"
+    DOC_STATUS_STORAGE = "RedisKVStorage"
+
+# Neo4j 配置
+neo4j_uri = config.get("neo4j", "uri", fallback=None)
+neo4j_username = config.get("neo4j", "username", fallback=None)
+neo4j_password = config.get("neo4j", "password", fallback=None)
+if neo4j_uri:
+    os.environ["NEO4J_URI"] = neo4j_uri
+    os.environ["NEO4J_USERNAME"] = neo4j_username
+    os.environ["NEO4J_PASSWORD"] = neo4j_password
+    GRAPH_STORAGE = "Neo4JStorage"
+
+# Milvus 配置
+milvus_uri = config.get("milvus", "uri", fallback=None)
+milvus_user = config.get("milvus", "user", fallback=None)
+milvus_password = config.get("milvus", "password", fallback=None)
+milvus_db_name = config.get("milvus", "db_name", fallback=None)
+if milvus_uri:
+    os.environ["MILVUS_URI"] = milvus_uri
+    os.environ["MILVUS_USER"] = milvus_user
+    os.environ["MILVUS_PASSWORD"] = milvus_password
+    os.environ["MILVUS_DB_NAME"] = milvus_db_name
+    VECTOR_STORAGE = "MilvusVectorDBStorge"
+
+# MongoDB 配置
+mongo_uri = config.get("mongodb", "uri", fallback=None)
+mongo_database = config.get("mongodb", "LightRAG", fallback=None)
+if mongo_uri:
+    os.environ["MONGO_URI"] = mongo_uri
+    os.environ["MONGO_DATABASE"] = mongo_database
+    KV_STORAGE = "MongoKVStorage"
+    DOC_STATUS_STORAGE = "MongoKVStorage"
 
 
 def get_default_host(binding_type: str) -> str:
@@ -337,6 +384,18 @@ def parse_args() -> argparse.Namespace:
         help="Embedding model name (default: from env or bge-m3:latest)",
     )
 
+    parser.add_argument(
+        "--chunk_size",
+        default=1200,
+        help="chunk token size default 1200",
+    )
+
+    parser.add_argument(
+        "--chunk_overlap_size",
+        default=100,
+        help="chunk token size default 1200",
+    )
+
     def timeout_type(value):
         if value is None or value == "None":
             return None
@@ -551,7 +610,7 @@ def get_api_key_dependency(api_key: Optional[str]):
 
 def create_app(args):
     # Verify that bindings arer correctly setup
-    if args.llm_binding not in ["lollms", "ollama", "openai"]:
+    if args.llm_binding not in ["lollms", "ollama", "openai", "openai-ollama"]:
         raise Exception("llm binding not supported")
 
     if args.embedding_binding not in ["lollms", "ollama", "openai"]:
@@ -692,22 +751,32 @@ def create_app(args):
     )
 
     # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama"]:
+    if args.llm_binding in ["lollms", "ollama", "openai-ollama"]:
         rag = LightRAG(
             working_dir=args.working_dir,
             llm_model_func=lollms_model_complete
             if args.llm_binding == "lollms"
-            else ollama_model_complete,
+            else ollama_model_complete
+            if args.llm_binding == "ollama"
+            else openai_alike_model_complete,
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
+            chunk_token_size=int(args.chunk_size),
+            chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs={
                 "host": args.llm_binding_host,
                 "timeout": args.timeout,
                 "options": {"num_ctx": args.max_tokens},
                 "api_key": args.llm_binding_api_key,
-            },
+            }
+            if args.llm_binding == "lollms" or args.llm_binding == "ollama"
+            else {},
             embedding_func=embedding_func,
+            kv_storage=KV_STORAGE,
+            graph_storage=GRAPH_STORAGE,
+            vector_storage=VECTOR_STORAGE,
+            doc_status_storage=DOC_STATUS_STORAGE,
         )
     else:
         rag = LightRAG(
@@ -715,7 +784,13 @@ def create_app(args):
             llm_model_func=azure_openai_model_complete
             if args.llm_binding == "azure_openai"
             else openai_alike_model_complete,
+            chunk_token_size=int(args.chunk_size),
+            chunk_overlap_token_size=int(args.chunk_overlap_size),
             embedding_func=embedding_func,
+            kv_storage=KV_STORAGE,
+            graph_storage=GRAPH_STORAGE,
+            vector_storage=VECTOR_STORAGE,
+            doc_status_storage=DOC_STATUS_STORAGE,
         )
 
     async def index_file(file_path: Union[str, Path]) -> None:

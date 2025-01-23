@@ -445,6 +445,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         await self.index_done_callback()
         return data
 
+    async def get_by_id(self, id: str):
+        return self._data.get(id)
+
     async def get(self, doc_id: str) -> Union[DocProcessingStatus, None]:
         """Get document status by ID"""
         return self._data.get(doc_id)
