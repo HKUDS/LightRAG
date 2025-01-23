@@ -551,10 +551,10 @@ def get_api_key_dependency(api_key: Optional[str]):
 
 def create_app(args):
     # Verify that bindings arer correctly setup
-    if args.llm_binding not in ["lollms", "ollama", "openai"]:
+    if args.llm_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai"]:
+    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
         raise Exception("embedding binding not supported")
 
     # Add SSL validation
