@@ -479,9 +479,7 @@ async def handle_cache(hashing_kv, args_hash, prompt, mode="default"):
     quantized = min_val = max_val = None
     if is_embedding_cache_enabled:
         # Use embedding cache
-        embedding_model_func = hashing_kv.global_config[
-            "embedding_func"
-        ].func  # ["func"]
+        embedding_model_func = hashing_kv.global_config["embedding_func"]["func"]
         llm_model_func = hashing_kv.global_config.get("llm_model_func")
 
         current_embedding = await embedding_model_func([prompt])

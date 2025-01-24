@@ -469,9 +469,8 @@ class LightRAG:
                     error_msg = f"Failed to process document {doc_id}: {str(e)}\n{traceback.format_exc()}"
                     logger.error(error_msg)
                     continue
-
-                finally:
-                    # Ensure all indexes are updated after each document
+                else:
+                    # Only update index when processing succeeds
                     await self._insert_done()
 
     def insert_custom_chunks(self, full_text: str, text_chunks: list[str]):
