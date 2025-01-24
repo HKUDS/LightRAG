@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import logging
 import argparse
@@ -466,9 +467,15 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("SSL_KEYFILE", None),
         help="Path to SSL private key file (required if --ssl is enabled)",
     )
+    parser.add_argument(
+        '--auto-scan-at-startup',
+        action='store_true',
+        default=False,
+        help='Enable automatic scanning when the program starts'
+    )
+
 
     args = parser.parse_args()
-    display_splash_screen(args)
 
     return args
 
@@ -881,22 +888,42 @@ def create_app(args):
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
         # Startup logic
-        try:
-            new_files = doc_manager.scan_directory()
-            for file_path in new_files:
-                try:
-                    await index_file(file_path)
-                except Exception as e:
-                    trace_exception(e)
-                    logging.error(f"Error indexing file {file_path}: {str(e)}")
-
-            logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
-        except Exception as e:
-            logging.error(f"Error during startup indexing: {str(e)}")
+        # Now only if this option is active, we can scan. This is better for big databases where there are hundreds of
+        # files. Makes the startup faster 
+        if args.auto_scan_at_startup:
+            ASCIIColors.info("Auto scan is active, rescanning the input directory.")
+            try:
+                new_files = doc_manager.scan_directory()
+                for file_path in new_files:
+                    try:
+                        await index_file(file_path)
+                    except Exception as e:
+                        trace_exception(e)
+                        logging.error(f"Error indexing file {file_path}: {str(e)}")
+    
+                logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
+            except Exception as e:
+                logging.error(f"Error during startup indexing: {str(e)}")
 
     @app.post("/documents/scan", dependencies=[Depends(optional_api_key)])
     async def scan_for_new_documents():
-        """Manually trigger scanning for new documents"""
+        """
+        Manually trigger scanning for new documents in the directory managed by `doc_manager`.
+    
+        This endpoint facilitates manual initiation of a document scan to identify and index new files.
+        It processes all newly detected files, attempts indexing each file, logs any errors that occur,
+        and returns a summary of the operation.
+    
+        Returns:
+            dict: A dictionary containing:
+                - "status" (str): Indicates success or failure of the scanning process.
+                - "indexed_count" (int): The number of successfully indexed documents.
+                - "total_documents" (int): Total number of documents that have been indexed so far.
+    
+        Raises:
+            HTTPException: If an error occurs during the document scanning process, a 500 status
+                           code is returned with details about the exception.
+        """
         try:
             new_files = doc_manager.scan_directory()
             indexed_count = 0
@@ -918,7 +945,27 @@ def create_app(args):
 
     @app.post("/documents/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(file: UploadFile = File(...)):
-        """Upload a file to the input directory"""
+        """
+        Endpoint for uploading a file to the input directory and indexing it.
+    
+        This API endpoint accepts a file through an HTTP POST request, checks if the 
+        uploaded file is of a supported type, saves it in the specified input directory,
+        indexes it for retrieval, and returns a success status with relevant details.
+    
+        Parameters:
+            file (UploadFile): The file to be uploaded. It must have an allowed extension as per
+                               `doc_manager.supported_extensions`.
+    
+        Returns:
+            dict: A dictionary containing the upload status ("success"), 
+                  a message detailing the operation result, and 
+                  the total number of indexed documents.
+    
+        Raises:
+            HTTPException: If the file type is not supported, it raises a 400 Bad Request error.
+                           If any other exception occurs during the file handling or indexing,
+                           it raises a 500 Internal Server Error with details about the exception.
+        """        
         try:
             if not doc_manager.is_supported_file(file.filename):
                 raise HTTPException(
@@ -945,6 +992,25 @@ def create_app(args):
         "/query", response_model=QueryResponse, dependencies=[Depends(optional_api_key)]
     )
     async def query_text(request: QueryRequest):
+        """
+        Handle a POST request at the /query endpoint to process user queries using RAG capabilities.
+    
+        Parameters:
+            request (QueryRequest): A Pydantic model containing the following fields:
+                - query (str): The text of the user's query.
+                - mode (ModeEnum): Optional. Specifies the mode of retrieval augmentation.
+                - stream (bool): Optional. Determines if the response should be streamed.
+                - only_need_context (bool): Optional. If true, returns only the context without further processing.
+    
+        Returns:
+            QueryResponse: A Pydantic model containing the result of the query processing. 
+                           If a string is returned (e.g., cache hit), it's directly returned.
+                           Otherwise, an async generator may be used to build the response.
+    
+        Raises:
+            HTTPException: Raised when an error occurs during the request handling process,
+                           with status code 500 and detail containing the exception message.
+        """        
         try:
             response = await rag.aquery(
                 request.query,
@@ -976,6 +1042,16 @@ def create_app(args):
 
     @app.post("/query/stream", dependencies=[Depends(optional_api_key)])
     async def query_text_stream(request: QueryRequest):
+        """
+        This endpoint performs a retrieval-augmented generation (RAG) query and streams the response.
+
+        Args:
+            request (QueryRequest): The request object containing the query parameters.
+            optional_api_key (Optional[str], optional): An optional API key for authentication. Defaults to None.
+
+        Returns:
+            StreamingResponse: A streaming response containing the RAG query results.
+        """        
         try:
             response = await rag.aquery(  # Use aquery instead of query, and add await
                 request.query,
@@ -1025,6 +1101,17 @@ def create_app(args):
         dependencies=[Depends(optional_api_key)],
     )
     async def insert_text(request: InsertTextRequest):
+        """
+        Insert text into the Retrieval-Augmented Generation (RAG) system.
+
+        This endpoint allows you to insert text data into the RAG system for later retrieval and use in generating responses.
+
+        Args:
+            request (InsertTextRequest): The request body containing the text to be inserted.
+
+        Returns:
+            InsertResponse: A response object containing the status of the operation, a message, and the number of documents inserted.
+        """        
         try:
             await rag.ainsert(request.text)
             return InsertResponse(
@@ -1258,6 +1345,15 @@ def create_app(args):
         dependencies=[Depends(optional_api_key)],
     )
     async def clear_documents():
+        """
+        Clear all documents from the LightRAG system.
+
+        This endpoint deletes all text chunks, entities vector database, and relationships vector database,
+        effectively clearing all documents from the LightRAG system.
+
+        Returns:
+            InsertResponse: A response object containing the status, message, and the new document count (0 in this case).
+        """
         try:
             rag.text_chunks = []
             rag.entities_vdb = None
@@ -1270,7 +1366,9 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    # -------------------------------------------------
     # Ollama compatible API endpoints
+    # -------------------------------------------------
     @app.get("/api/version")
     async def get_version():
         """Get Ollama version information"""
@@ -1502,15 +1600,21 @@ def create_app(args):
                 "max_tokens": args.max_tokens,
             },
         }
+        
+    # Serve the static files
+    static_dir = Path(__file__).parent / "static"
+    static_dir.mkdir(exist_ok=True)
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 
     return app
 
-
+    
 def main():
     args = parse_args()
     import uvicorn
 
     app = create_app(args)
+    display_splash_screen(args)    
     uvicorn_config = {
         "app": app,
         "host": args.host,
