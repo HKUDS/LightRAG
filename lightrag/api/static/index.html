@@ -566,30 +566,6 @@
       }
     }
 
-    // Query Handler
-    async function handleQuery(query) {
-      queryResponse.innerHTML = '<p class="text-slate-600">Processing query...</p>';
-
-      try {
-        const response = await fetch('/query', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('apiKey')}`
-          },
-          body: JSON.stringify({ query })
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          queryResponse.innerHTML = marked.parse(data.response);
-        } else {
-          throw new Error('Failed to process query');
-        }
-      } catch (error) {
-        queryResponse.innerHTML = `<p class="text-red-500">Error: ${error.message}</p>`;
-      }
-    }
 
     // Form submission handlers
     uploadForm.addEventListener('submit', async (e) => {
@@ -599,16 +575,6 @@
         await handleUpload(files);
       } else {
         uploadStatus.innerHTML = '<span class="text-red-500">Please select files to upload</span>';
-      }
-    });
-
-    queryForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const query = queryInput.value.trim();
-      if (query) {
-        await handleQuery(query);
-      } else {
-        queryResponse.innerHTML = '<p class="text-red-500">Please enter a query</p>';
       }
     });
 
