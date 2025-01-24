@@ -3,75 +3,87 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RAG WebUI</title>
+  <title>LightRag</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script> <!-- Include Marked.js -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+  </style>
 </head>
-<body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
-  <div class="w-full max-w-4xl bg-white shadow-md rounded-lg p-6 relative">
+<body class="bg-gray-50 min-h-screen flex flex-col items-center justify-center p-4">
+  <div class="w-full max-w-4xl bg-white shadow-lg rounded-xl p-8 relative">
     <!-- Settings Button -->
-    <button id="settingsButton" class="absolute top-4 right-4 text-gray-600 hover:text-gray-800">
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a10 10 0 0110 10 10 10 0 01-10 10A10 10 0 012 12a10 10 0 0110-10zm0 2a8 8 0 100 16 8 8 0 000-16zm1 4h-2v4h2V8zm0 6h-2v2h2v-2z" />
+    <button id="settingsButton" class="absolute top-6 right-6 text-gray-600 hover:text-gray-800 transition-colors">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
       </svg>
     </button>
-
-    <!-- Modal for Settings -->
-    <div id="settingsModal" class="hidden fixed inset-0 bg-gray-800 bg-opacity-50 flex items-center justify-center">
-      <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-md">
-        <h2 class="text-lg font-semibold text-gray-700 mb-4">Settings</h2>
-        <div class="flex flex-col gap-4">
-          <input type="text" id="bearerKeyInput" class="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter Bearer Key">
-          <button id="saveBearerKey" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Save Key</button>
-          <button id="closeSettings" class="text-gray-500 hover:text-gray-700 text-sm">Close</button>
-        </div>
-        <div id="bearerKeyStatus" class="mt-2 text-sm text-gray-600"></div>
-      </div>
-    </div>
 
     <!-- Health Check Button -->
-    <button id="healthCheckButton" class="absolute top-4 left-4 text-gray-600 hover:text-gray-800">
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-3-3v6m-7 4a9 9 0 1118 0H5z" />
+    <button id="healthCheckButton" class="absolute top-6 left-6 text-gray-600 hover:text-gray-800 transition-colors">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m-6-8h6M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z"/>
       </svg>
     </button>
 
-    <!-- Modal for Health Check -->
-    <div id="healthModal" class="hidden fixed inset-0 bg-gray-800 bg-opacity-50 flex items-center justify-center">
-      <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-lg">
-        <h2 class="text-lg font-semibold text-gray-700 mb-4">System Health</h2>
-        <div id="healthInfo" class="text-sm text-gray-600"></div>
-        <button id="closeHealth" class="mt-4 bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">Close</button>
-      </div>
+    <!-- Main Content -->
+    <div class="text-center mb-8">
+      <h1 class="text-3xl font-bold text-gray-900 mb-2">LightRag</h1>
+      <p class="text-gray-600">Lightweight RAG System Interface</p>
     </div>
 
-    <!-- Main Content -->
-    <h1 class="text-2xl font-bold text-gray-800 mb-4">RAG WebUI</h1>
-
     <!-- File Upload Section -->
-    <div class="mb-6">
-      <h2 class="text-lg font-semibold text-gray-700 mb-2">Upload Files</h2>
-      <form id="uploadForm" class="flex flex-col gap-4">
-        <input type="file" id="fileInput" multiple class="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100">
-        <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Upload</button>
+    <div class="mb-8 bg-gray-50 p-6 rounded-lg">
+      <h2 class="text-xl font-semibold text-gray-800 mb-4">Document Upload</h2>
+      <form id="uploadForm" class="space-y-4">
+        <div class="flex items-center justify-center w-full">
+          <label class="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
+            <div class="flex flex-col items-center justify-center pt-5 pb-6">
+              <svg class="w-8 h-8 mb-4 text-gray-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+              </svg>
+              <p class="mb-2 text-sm text-gray-500"><span class="font-semibold">Click to upload</span> or drag and drop</p>
+              <p class="text-xs text-gray-500">PDF, TXT, DOC, DOCX (MAX. 10MB)</p>
+            </div>
+            <input type="file" id="fileInput" class="hidden" multiple />
+          </label>
+        </div>
+
+        <!-- Selected Files Preview -->
+        <div id="selectedFiles" class="space-y-2"></div>
+
+        <button type="submit" class="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
+          Upload Documents
+        </button>
       </form>
-      <div id="uploadStatus" class="mt-2 text-sm text-gray-600"></div>
+      <div id="uploadStatus" class="mt-4 text-sm text-gray-600"></div>
       <div id="progressContainer" class="mt-4 hidden">
-        <div id="progressBar" class="w-full bg-gray-200 rounded h-4">
-          <div class="bg-blue-500 h-4 rounded" style="width: 0%;"></div>
+        <div class="w-full bg-gray-200 rounded-full h-2">
+          <div id="progressBar" class="bg-blue-600 h-2 rounded-full transition-all duration-300"></div>
         </div>
         <p id="progressText" class="text-sm text-gray-600 mt-2"></p>
       </div>
     </div>
 
     <!-- Query Section -->
-    <div class="mb-6">
-      <h2 class="text-lg font-semibold text-gray-700 mb-2">Query</h2>
-      <form id="queryForm" class="flex flex-col gap-4">
-        <textarea id="queryInput" rows="4" class="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter your query here..."></textarea>
-        <button type="submit" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Submit Query</button>
+    <div class="bg-gray-50 p-6 rounded-lg">
+      <h2 class="text-xl font-semibold text-gray-800 mb-4">Query Documents</h2>
+      <form id="queryForm" class="space-y-4">
+        <textarea 
+          id="queryInput" 
+          rows="4" 
+          class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
+          placeholder="Enter your query here..."
+        ></textarea>
+        <button type="submit" class="w-full bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors">
+          Submit Query
+        </button>
       </form>
-      <div id="queryResponse" class="mt-4 p-4 bg-gray-50 border rounded text-gray-700"></div>
+      <div id="queryResponse" class="mt-6 p-4 bg-white border rounded-lg text-gray-700 prose max-w-none"></div>
     </div>
   </div>
 
@@ -140,6 +152,8 @@
     // File Upload Handler
     const uploadForm = document.getElementById('uploadForm');
     const fileInput = document.getElementById('fileInput');
+    const selectedFiles = document.getElementById('selectedFiles');
+
     const uploadStatus = document.getElementById('uploadStatus');
     const progressContainer = document.getElementById('progressContainer');
     const progressBar = document.getElementById('progressBar').firstElementChild;
@@ -230,6 +244,41 @@
         queryResponse.textContent = `Error: ${err.message}`;
       }
     });
+    
+    // File preview functionality
+    fileInput.addEventListener('change', () => {
+      selectedFiles.innerHTML = '';
+      Array.from(fileInput.files).forEach((file, index) => {
+        const fileDiv = document.createElement('div');
+        fileDiv.className = 'flex items-center justify-between p-2 bg-white rounded border';
+        fileDiv.innerHTML = `
+          <span class="text-sm text-gray-600">${file.name} (${(file.size / 1024).toFixed(1)} KB)</span>
+          <button type="button" class="text-red-500 hover:text-red-700 transition-colors" data-index="${index}">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+            </svg>
+          </button>
+        `;
+        selectedFiles.appendChild(fileDiv);
+      });
+    });
+
+    // Remove file functionality
+    selectedFiles.addEventListener('click', (e) => {
+      if (e.target.closest('button')) {
+        const index = e.target.closest('button').dataset.index;
+        const dt = new DataTransfer();
+        const files = fileInput.files;
+        
+        for (let i = 0; i < files.length; i++) {
+          if (i != index) dt.items.add(files[i]);
+        }
+        
+        fileInput.files = dt.files;
+        e.target.closest('div').remove();
+      }
+    });
+    
   </script>
 </body>
 </html>
