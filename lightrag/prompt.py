@@ -58,7 +58,7 @@ Entity_types: [person, technology, mission, organization, location]
 Text:
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
 
-Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. “If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us.”
+Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. "If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us."
 
 The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
 
@@ -160,7 +160,7 @@ You are a helpful assistant responding to questions about data in the tables pro
 
 ---Goal---
 
-Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
+Generate a response of the target length and format that responds to the user's question, considering both the conversation history and the current query. Summarize all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
 If you don't know the answer, just say so. Do not make anything up.
 Do not include information where the supporting evidence for it is not provided.
 
@@ -170,6 +170,9 @@ When handling relationships with timestamps:
 3. Don't automatically prefer the most recently created relationships - use judgment based on the context
 4. For time-specific queries, prioritize temporal information in the content before considering creation timestamps
 
+---Conversation History---
+{history}
+
 ---Target response length and format---
 
 {response_type}
@@ -178,22 +181,23 @@ When handling relationships with timestamps:
 
 {context_data}
 
-Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown."""
+Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown. Ensure the response maintains continuity with the conversation history."""
 
 PROMPTS["keywords_extraction"] = """---Role---
 
-You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query.
+You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query and conversation history.
 
 ---Goal---
 
-Given the query, list both high-level and low-level keywords. High-level keywords focus on overarching concepts or themes, while low-level keywords focus on specific entities, details, or concrete terms.
+Given the query and conversation history, list both high-level and low-level keywords. High-level keywords focus on overarching concepts or themes, while low-level keywords focus on specific entities, details, or concrete terms.
 
 ---Instructions---
 
-- Output the keywords in JSON format.
+- Consider both the current query and relevant conversation history when extracting keywords
+- Output the keywords in JSON format
 - The JSON should have two keys:
-  - "high_level_keywords" for overarching concepts or themes.
-  - "low_level_keywords" for specific entities or details.
+  - "high_level_keywords" for overarching concepts or themes
+  - "low_level_keywords" for specific entities or details
 
 ######################
 -Examples-
@@ -203,7 +207,10 @@ Given the query, list both high-level and low-level keywords. High-level keyword
 #############################
 -Real Data-
 ######################
-Query: {query}
+Conversation History:
+{history}
+
+Current Query: {query}
 ######################
 The `Output` should be human text, not unicode characters. Keep the same language as `Query`.
 Output:
@@ -248,10 +255,9 @@ PROMPTS["naive_rag_response"] = """---Role---
 
 You are a helpful assistant responding to questions about documents provided.
 
-
 ---Goal---
 
-Generate a response of the target length and format that responds to the user's question, summarizing all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
+Generate a response of the target length and format that responds to the user's question, considering both the conversation history and the current query. Summarize all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
 If you don't know the answer, just say so. Do not make anything up.
 Do not include information where the supporting evidence for it is not provided.
 
@@ -261,6 +267,9 @@ When handling content with timestamps:
 3. Don't automatically prefer the most recent content - use judgment based on the context
 4. For time-specific queries, prioritize temporal information in the content before considering creation timestamps
 
+---Conversation History---
+{history}
+
 ---Target response length and format---
 
 {response_type}
@@ -269,8 +278,7 @@ When handling content with timestamps:
 
 {content_data}
 
-Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown.
-"""
+Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown. Ensure the response maintains continuity with the conversation history."""
 
 PROMPTS[
     "similarity_check"
@@ -302,13 +310,16 @@ You are a professional assistant responsible for answering questions based on kn
 
 ---Goal---
 
-Generate a concise response that summarizes relevant points from the provided information. If you don't know the answer, just say so. Do not make anything up or include information where the supporting evidence is not provided.
+Generate a concise response that summarizes relevant points from the provided information, considering both the current query and conversation history. If you don't know the answer, just say so. Do not make anything up or include information where the supporting evidence is not provided.
 
 When handling information with timestamps:
 1. Each piece of information (both relationships and content) has a "created_at" timestamp indicating when we acquired this knowledge
 2. When encountering conflicting information, consider both the content/relationship and the timestamp
 3. Don't automatically prefer the most recent information - use judgment based on the context
 4. For time-specific queries, prioritize temporal information in the content before considering creation timestamps
+
+---Conversation History---
+{history}
 
 ---Data Sources---
 
@@ -326,6 +337,7 @@ When handling information with timestamps:
 - Each paragraph should be under a relevant section heading
 - Each section should focus on one main point or aspect of the answer
 - Use clear and descriptive section titles that reflect the content
+- Ensure the response maintains continuity with the conversation history
 - List up to 5 most important reference sources at the end under "References", clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (VD)
   Format: [KG/VD] Source content
 
