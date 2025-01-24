@@ -33,6 +33,13 @@ class QueryParam:
     max_token_for_local_context: int = 4000
     hl_keywords: list[str] = field(default_factory=list)
     ll_keywords: list[str] = field(default_factory=list)
+    # Conversation history support
+    conversation_history: list[dict] = field(
+        default_factory=list
+    )  # Format: [{"role": "user/assistant", "content": "message"}]
+    history_turns: int = (
+        3  # Number of complete conversation turns (user-assistant pairs) to consider
+    )
 
 
 @dataclass
