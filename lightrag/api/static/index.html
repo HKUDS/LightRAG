@@ -620,6 +620,9 @@
 
         if (response.ok) {
           const data = await response.json();
+          // Convert indexed_files to array if it's not already
+          const files = Array.isArray(data.indexed_files) ? data.indexed_files : data.indexed_files.split(',');
+          
           healthInfo.innerHTML = `
             <div class="space-y-4">
               <div class="flex items-center">
@@ -629,7 +632,14 @@
               <div class="space-y-2">
                 <p><span class="font-medium">Working Directory:</span> ${data.working_directory}</p>
                 <p><span class="font-medium">Input Directory:</span> ${data.input_directory}</p>
-                <p><span class="font-medium">Indexed Files:</span> ${data.indexed_files}</p>
+                <div>
+                  <p><span class="font-medium">Indexed Files:</span> <span class="text-slate-500">(${files.length} files)</span></p>
+                  <div class="mt-2 max-h-40 overflow-y-auto border rounded p-2">
+                    <ul class="space-y-1 text-sm">
+                      ${files.map(file => `<li class="text-slate-600">${file}</li>`).join('')}
+                    </ul>
+                  </div>
+                </div>
               </div>
               <div class="border-t pt-4">
                 <h4 class="font-medium mb-2">Configuration</h4>
@@ -649,6 +659,7 @@
         healthInfo.innerHTML = `<p class="text-red-500">Error: ${error.message}</p>`;
       }
     });
+
 
     $('#closeHealthBtn').addEventListener('click', () => {
       healthModal.classList.add('hidden');

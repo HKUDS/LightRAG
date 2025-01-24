@@ -1749,7 +1749,7 @@ def create_app(args):
             "status": "healthy",
             "working_directory": str(args.working_dir),
             "input_directory": str(args.input_dir),
-            "indexed_files": len(doc_manager.indexed_files),
+            "indexed_files": doc_manager.indexed_files,
             "configuration": {
                 # LLM configuration binding/host address (if applicable)/model (if applicable)
                 "llm_binding": args.llm_binding,
