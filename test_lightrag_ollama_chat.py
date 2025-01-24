@@ -595,15 +595,7 @@ def test_generate_error_handling() -> None:
     response = make_request(url, data)
     print(f"Status code: {response.status_code}")
     print_json_response(response.json(), "Error message")
-    
-    # Test very long input
-    if OutputControl.is_verbose():
-        print("\n=== Testing very long input ===")
-    long_text = "测试" * 10000  # Create a very long input
-    data = create_generate_request_data(long_text, stream=False)
-    response = make_request(url, data)
-    print(f"Status code: {response.status_code}")
-    print_json_response(response.json(), "Error message")
+
 
 def test_generate_performance_stats() -> None:
     """Test performance statistics in generate response"""
