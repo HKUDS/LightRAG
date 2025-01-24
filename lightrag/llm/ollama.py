@@ -41,11 +41,12 @@ __author__ = "lightrag Team"
 __status__ = "Production"
 
 import sys
+
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
 else:
     from collections.abc import AsyncIterator
-import pipmaster as pm # Pipmaster for dynamic library install
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("ollama"):
@@ -114,6 +115,7 @@ async def ollama_model_if_cache(
     else:
         return response["message"]["content"]
 
+
 async def ollama_model_complete(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> Union[str, AsyncIterator[str]]:
@@ -128,6 +130,7 @@ async def ollama_model_complete(
         history_messages=history_messages,
         **kwargs,
     )
+
 
 async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     """

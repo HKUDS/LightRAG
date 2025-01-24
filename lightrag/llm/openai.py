@@ -41,7 +41,6 @@ __author__ = "lightrag Team"
 __status__ = "Production"
 
 
-
 import sys
 import os
 
@@ -49,7 +48,7 @@ if sys.version_info < (3, 9):
     from typing import AsyncIterator
 else:
     from collections.abc import AsyncIterator
-import pipmaster as pm # Pipmaster for dynamic library install
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("openai"):
@@ -77,6 +76,7 @@ from lightrag.types import GPTKeywordExtractionFormat
 
 import numpy as np
 from typing import Union
+
 
 @retry(
     stop=stop_after_attempt(3),
@@ -141,7 +141,6 @@ async def openai_complete_if_cache(
         return content
 
 
-
 async def openai_complete(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> Union[str, AsyncIterator[str]]:
@@ -203,7 +202,6 @@ async def nvidia_openai_complete(
     if keyword_extraction:  # TODO: use JSON API
         return locate_json_string_body_from_string(result)
     return result
-
 
 
 @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)

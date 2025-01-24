@@ -42,7 +42,7 @@ __status__ = "Production"
 
 import copy
 import os
-import pipmaster as pm # Pipmaster for dynamic library install
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("transformers"):
@@ -69,8 +69,10 @@ from lightrag.utils import (
     locate_json_string_body_from_string,
 )
 import torch
+import numpy as np
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 @lru_cache(maxsize=1)
 def initialize_hf_model(model_name):
@@ -153,7 +155,6 @@ async def hf_model_if_cache(
     )
 
     return response_text
-
 
 
 async def hf_model_complete(

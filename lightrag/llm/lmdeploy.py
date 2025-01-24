@@ -40,7 +40,7 @@ __version__ = "1.0.0"
 __author__ = "lightrag Team"
 __status__ = "Production"
 
-import pipmaster as pm # Pipmaster for dynamic library install
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("lmdeploy"):
@@ -62,6 +62,7 @@ from tenacity import (
 
 
 from functools import lru_cache
+
 
 @lru_cache(maxsize=1)
 def initialize_lmdeploy_pipeline(

@@ -45,18 +45,16 @@ import re
 import json
 
 if sys.version_info < (3, 9):
-    from typing import AsyncIterator
+    pass
 else:
-    from collections.abc import AsyncIterator
-import pipmaster as pm # Pipmaster for dynamic library install
+    pass
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("zhipuai"):
     pm.install("zhipuai")
 
 from openai import (
-    AsyncOpenAI,
-    AsyncAzureOpenAI,
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
@@ -70,16 +68,14 @@ from tenacity import (
 
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
-    locate_json_string_body_from_string,
-    safe_unicode_decode,
     logger,
 )
 
 from lightrag.types import GPTKeywordExtractionFormat
-from functools import lru_cache
 
 import numpy as np
 from typing import Union, List, Optional, Dict
+
 
 @retry(
     stop=stop_after_attempt(3),
