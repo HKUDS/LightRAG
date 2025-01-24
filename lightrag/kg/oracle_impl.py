@@ -769,7 +769,7 @@ SQL_TEMPLATES = {
         COLUMNS (e.source_name,e.target_name)  )""",
     "node_degree": """SELECT count(1) as degree FROM GRAPH_TABLE (lightrag_graph
         MATCH (a)-[e]->(b)
-        WHERE a.workspace=:workspace and a.workspace=:workspace and b.workspace=:workspace
+        WHERE e.workspace=:workspace and a.workspace=:workspace and b.workspace=:workspace
         AND a.name=:node_id or b.name = :node_id
         COLUMNS (a.name))""",
     "get_node": """SELECT t1.name,t2.entity_type,t2.source_chunk_id as source_id,NVL(t2.description,'') AS description
