@@ -674,18 +674,19 @@ def create_app(args):
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
         # Startup logic
-        try:
-            new_files = doc_manager.scan_directory()
-            for file_path in new_files:
-                try:
-                    await index_file(file_path)
-                except Exception as e:
-                    trace_exception(e)
-                    logging.error(f"Error indexing file {file_path}: {str(e)}")
+        if args.auto_scan_at_startup:
+            try:
+                new_files = doc_manager.scan_directory()
+                for file_path in new_files:
+                    try:
+                        await index_file(file_path)
+                    except Exception as e:
+                        trace_exception(e)
+                        logging.error(f"Error indexing file {file_path}: {str(e)}")
 
-            logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
-        except Exception as e:
-            logging.error(f"Error during startup indexing: {str(e)}")
+                ASCIIColors.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
+            except Exception as e:
+                logging.error(f"Error during startup indexing: {str(e)}")
         yield
         # Cleanup logic (if needed)
         pass
@@ -916,28 +917,6 @@ def create_app(args):
         else:
             logging.warning(f"No content extracted from file: {file_path}")
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        """Lifespan context manager for startup and shutdown events"""
-        # Startup logic
-        # Now only if this option is active, we can scan. This is better for big databases where there are hundreds of
-        # files. Makes the startup faster
-        if args.auto_scan_at_startup:
-            ASCIIColors.info("Auto scan is active, rescanning the input directory.")
-            try:
-                new_files = doc_manager.scan_directory()
-                for file_path in new_files:
-                    try:
-                        await index_file(file_path)
-                    except Exception as e:
-                        trace_exception(e)
-                        logging.error(f"Error indexing file {file_path}: {str(e)}")
-
-                logging.info(
-                    f"Indexed {len(new_files)} documents from {args.input_dir}"
-                )
-            except Exception as e:
-                logging.error(f"Error during startup indexing: {str(e)}")
 
     @app.post("/documents/scan", dependencies=[Depends(optional_api_key)])
     async def scan_for_new_documents():
