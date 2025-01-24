@@ -6,169 +6,338 @@
   <title>LightRag</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     body {
       font-family: 'Inter', sans-serif;
     }
+    .prose {
+      max-width: 65ch;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .drop-zone {
+      border: 2px dashed #cbd5e1;
+      transition: all 0.3s ease;
+    }
+    .drop-zone.dragover {
+      border-color: #3b82f6;
+      background-color: #eff6ff;
+    }
   </style>
 </head>
-<body class="bg-gray-50 min-h-screen flex flex-col items-center justify-center p-4">
-  <div class="w-full max-w-4xl bg-white shadow-lg rounded-xl p-8 relative">
-    <!-- Settings Button -->
-    <button id="settingsButton" class="absolute top-6 right-6 text-gray-600 hover:text-gray-800 transition-colors">
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15a3 3 0 100-6 3 3 0 000 6z"/>
-      </svg>
-    </button>
+<body class="bg-slate-50 min-h-screen p-4">
+  <div class="max-w-4xl mx-auto">
+    <!-- Main Container -->
+    <div class="bg-white shadow-lg rounded-xl p-8 relative">
+      <!-- Top Navigation -->
+      <div class="absolute top-6 right-6 flex space-x-4">
+        <!-- Health Check Button -->
+        <button id="healthCheckBtn" class="p-2 text-slate-600 hover:text-slate-800 transition-colors rounded-lg hover:bg-slate-100">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </button>
+        <!-- Settings Button -->
+        <button id="settingsBtn" class="p-2 text-slate-600 hover:text-slate-800 transition-colors rounded-lg hover:bg-slate-100">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                  d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 15a3 3 0 100-6 3 3 0 000 6z" />
+          </svg>
+        </button>
+      </div>
 
-    <!-- Health Check Button -->
-    <button id="healthCheckButton" class="absolute top-6 left-6 text-gray-600 hover:text-gray-800 transition-colors">
-      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m-6-8h6M5 5h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7a2 2 0 012-2z"/>
-      </svg>
-    </button>
+      <!-- Header -->
+      <div class="text-center mb-8">
+        <h1 class="text-3xl font-bold text-slate-900">LightRag</h1>
+        <p class="text-slate-600 mt-2">Lightweight Retrieval-Augmented Generation Interface</p>
+      </div>
 
-    <!-- Main Content -->
-    <div class="text-center mb-8">
-      <h1 class="text-3xl font-bold text-gray-900 mb-2">LightRag</h1>
-      <p class="text-gray-600">Lightweight RAG System Interface</p>
+      <!-- File Upload Section -->
+      <section class="mb-8">
+        <div class="bg-slate-50 p-6 rounded-lg">
+          <h2 class="text-xl font-semibold text-slate-800 mb-4">Upload Documents</h2>
+          
+          <!-- Upload Form -->
+          <form id="uploadForm" class="space-y-4">
+            <!-- Drop Zone -->
+            <div class="drop-zone rounded-lg p-8 text-center cursor-pointer">
+              <input type="file" id="fileInput" class="hidden" multiple accept=".pdf,.txt,.doc,.docx">
+              <div class="flex flex-col items-center">
+                <svg class="w-12 h-12 text-slate-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <p class="text-slate-700 font-medium">Drop files here or click to upload</p>
+                <p class="text-slate-500 text-sm mt-1">PDF, TXT, DOC, DOCX (Max 10MB)</p>
+              </div>
+            </div>
+
+            <!-- Selected Files -->
+            <div id="selectedFiles" class="space-y-2"></div>
+
+            <!-- Upload Progress -->
+            <div id="uploadProgress" class="hidden">
+              <div class="w-full bg-slate-200 rounded-full h-2">
+                <div class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+              </div>
+              <p class="text-sm text-slate-600 mt-2" id="uploadStatus"></p>
+            </div>
+
+            <!-- Upload Button -->
+            <button type="submit" 
+                    class="w-full bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 
+                           transition-colors font-medium focus:outline-none focus:ring-2 
+                           focus:ring-blue-500 focus:ring-offset-2">
+              Upload Documents
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- Query Section -->
+      <section>
+        <div class="bg-slate-50 p-6 rounded-lg">
+          <h2 class="text-xl font-semibold text-slate-800 mb-4">Query Documents</h2>
+          
+          <form id="queryForm" class="space-y-4">
+            <textarea id="queryInput"
+                      class="w-full p-4 border border-slate-300 rounded-lg focus:ring-2 
+                             focus:ring-blue-500 focus:border-blue-500 transition-all
+                             min-h-[120px] resize-y"
+                      placeholder="Enter your query here..."
+            ></textarea>
+
+            <button type="submit"
+                    class="w-full bg-green-600 text-white px-6 py-3 rounded-lg 
+                           hover:bg-green-700 transition-colors font-medium
+                           focus:outline-none focus:ring-2 focus:ring-green-500 
+                           focus:ring-offset-2">
+              Submit Query
+            </button>
+          </form>
+
+          <!-- Query Response -->
+          <div id="queryResponse" class="mt-6 p-4 bg-white border rounded-lg prose"></div>
+        </div>
+      </section>
     </div>
 
-    <!-- File Upload Section -->
-    <div class="mb-8 bg-gray-50 p-6 rounded-lg">
-      <h2 class="text-xl font-semibold text-gray-800 mb-4">Document Upload</h2>
-      <form id="uploadForm" class="space-y-4">
-        <div class="flex items-center justify-center w-full">
-          <label class="flex flex-col items-center justify-center w-full h-32 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
-            <div class="flex flex-col items-center justify-center pt-5 pb-6">
-              <svg class="w-8 h-8 mb-4 text-gray-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
-              </svg>
-              <p class="mb-2 text-sm text-gray-500"><span class="font-semibold">Click to upload</span> or drag and drop</p>
-              <p class="text-xs text-gray-500">PDF, TXT, DOC, DOCX (MAX. 10MB)</p>
-            </div>
-            <input type="file" id="fileInput" class="hidden" multiple />
-          </label>
+    <!-- Modals -->
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center">
+      <div class="bg-white rounded-xl shadow-lg p-6 w-full max-w-md m-4">
+        <h3 class="text-lg font-semibold text-slate-900 mb-4">Settings</h3>
+        <input type="text" id="apiKeyInput" 
+               class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500" 
+               placeholder="Enter API Key">
+        <div class="mt-6 flex justify-end space-x-4">
+          <button id="closeSettingsBtn" 
+                  class="px-4 py-2 text-slate-700 hover:text-slate-900">
+            Cancel
+          </button>
+          <button id="saveSettingsBtn"
+                  class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+            Save Changes
+          </button>
         </div>
-
-        <!-- Selected Files Preview -->
-        <div id="selectedFiles" class="space-y-2"></div>
-
-        <button type="submit" class="w-full bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-          Upload Documents
-        </button>
-      </form>
-      <div id="uploadStatus" class="mt-4 text-sm text-gray-600"></div>
-      <div id="progressContainer" class="mt-4 hidden">
-        <div class="w-full bg-gray-200 rounded-full h-2">
-          <div id="progressBar" class="bg-blue-600 h-2 rounded-full transition-all duration-300"></div>
-        </div>
-        <p id="progressText" class="text-sm text-gray-600 mt-2"></p>
       </div>
     </div>
 
-    <!-- Query Section -->
-    <div class="bg-gray-50 p-6 rounded-lg">
-      <h2 class="text-xl font-semibold text-gray-800 mb-4">Query Documents</h2>
-      <form id="queryForm" class="space-y-4">
-        <textarea 
-          id="queryInput" 
-          rows="4" 
-          class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
-          placeholder="Enter your query here..."
-        ></textarea>
-        <button type="submit" class="w-full bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors">
-          Submit Query
-        </button>
-      </form>
-      <div id="queryResponse" class="mt-6 p-4 bg-white border rounded-lg text-gray-700 prose max-w-none"></div>
+    <!-- Health Check Modal -->
+    <div id="healthModal" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center">
+      <div class="bg-white rounded-xl shadow-lg p-6 w-full max-w-lg m-4">
+        <h3 class="text-lg font-semibold text-slate-900 mb-4">System Health</h3>
+        <div id="healthInfo" class="text-slate-600"></div>
+        <div class="mt-6 flex justify-end">
+          <button id="closeHealthBtn"
+                  class="px-4 py-2 bg-slate-600 text-white rounded hover:bg-slate-700">
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 
   <script>
-    // Modal Handling
-    const settingsButton = document.getElementById('settingsButton');
-    const settingsModal = document.getElementById('settingsModal');
-    const closeSettings = document.getElementById('closeSettings');
+    // Utility Functions
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => document.querySelectorAll(selector);
 
-    settingsButton.addEventListener('click', () => {
-      settingsModal.classList.remove('hidden');
+    // DOM Elements
+    const uploadForm = $('#uploadForm');
+    const fileInput = $('#fileInput');
+    const selectedFiles = $('#selectedFiles');
+    const uploadProgress = $('#uploadProgress');
+    const uploadStatus = $('#uploadStatus');
+    const queryForm = $('#queryForm');
+    const queryInput = $('#queryInput');
+    const queryResponse = $('#queryResponse');
+
+    // Modal Elements
+    const settingsModal = $('#settingsModal');
+    const healthModal = $('#healthModal');
+
+    // File Upload Handling
+    const handleFileSelect = (event) => {
+      const files = Array.from(event.target.files);
+      displaySelectedFiles(files);
+    };
+
+    const displaySelectedFiles = (files) => {
+      selectedFiles.innerHTML = files.map((file, index) => `
+        <div class="flex items-center justify-between p-3 bg-white rounded-lg border">
+          <div class="flex items-center">
+            <svg class="w-5 h-5 text-slate-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                    d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+            </svg>
+            <span class="text-sm text-slate-600">${file.name}</span>
+            <span class="ml-2 text-xs text-slate-400">(${formatFileSize(file.size)})</span>
+          </div>
+          <button type="button" data-index="${index}" class="text-red-500 hover:text-red-700 p-1">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" 
+                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" 
+                    clip-rule="evenodd" />
+            </svg>
+          </button>
+        </div>
+      `).join('');
+    };
+
+    const formatFileSize = (bytes) => {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    // Event Listeners
+    fileInput.addEventListener('change', handleFileSelect);
+
+    selectedFiles.addEventListener('click', (e) => {
+      const button = e.target.closest('button[data-index]');
+      if (button) {
+        const index = parseInt(button.dataset.index);
+        removeFile(index);
+      }
     });
 
-    closeSettings.addEventListener('click', () => {
+    const removeFile = (index) => {
+      const dt = new DataTransfer();
+      const files = fileInput.files;
+      for (let i = 0; i < files.length; i++) {
+        if (i !== index) dt.items.add(files[i]);
+      }
+      fileInput.files = dt.files;
+      displaySelectedFiles(Array.from(fileInput.files));
+    };
+
+    // Drag and Drop
+    const dropZone = $('.drop-zone');
+    
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      dropZone.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+    });
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dropZone.addEventListener(eventName, () => {
+        dropZone.classList.add('dragover');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      dropZone.addEventListener(eventName, () => {
+        dropZone.classList.remove('dragover');
+      });
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      fileInput.files = e.dataTransfer.files;
+      displaySelectedFiles(Array.from(fileInput.files));
+    });
+
+    // Form Submissions
+    uploadForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      // Add your upload logic here
+    });
+
+    queryForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      // Add your query logic here
+    });
+
+    // Modal Controls
+    $('#settingsBtn').addEventListener('click', () => settingsModal.classList.remove('hidden'));
+    $('#settingsBtn').addEventListener('click', () => settingsModal.classList.remove('hidden'));
+    $('#closeSettingsBtn').addEventListener('click', () => settingsModal.classList.add('hidden'));
+    $('#saveSettingsBtn').addEventListener('click', () => {
+      const apiKey = $('#apiKeyInput').value;
+      localStorage.setItem('apiKey', apiKey);
       settingsModal.classList.add('hidden');
     });
 
-    // Health Check Modal Handling
-    const healthCheckButton = document.getElementById('healthCheckButton');
-    const healthModal = document.getElementById('healthModal');
-    const closeHealth = document.getElementById('closeHealth');
-    const healthInfo = document.getElementById('healthInfo');
-
-    healthCheckButton.addEventListener('click', async () => {
+    $('#healthCheckBtn').addEventListener('click', async () => {
       healthModal.classList.remove('hidden');
-      healthInfo.textContent = "Fetching system health...";
+      const healthInfo = $('#healthInfo');
+      healthInfo.innerHTML = '<p class="text-slate-600">Checking system health...</p>';
+
       try {
         const response = await fetch('/health', {
-          method: 'GET',
           headers: {
-            'Authorization': `Bearer ${localStorage.getItem('bearerKey') || ''}`
+            'Authorization': `Bearer ${localStorage.getItem('apiKey')}`
           }
         });
 
         if (response.ok) {
           const data = await response.json();
           healthInfo.innerHTML = `
-            <p><strong>Status:</strong> ${data.status}</p>
-            <p><strong>Working Directory:</strong> ${data.working_directory}</p>
-            <p><strong>Input Directory:</strong> ${data.input_directory}</p>
-            <p><strong>Indexed Files:</strong> ${data.indexed_files}</p>
-            <p><strong>Configuration:</strong></p>
-            <ul class="list-disc ml-6">
-              <li><strong>LLM Binding:</strong> ${data.configuration.llm_binding}</li>
-              <li><strong>LLM Host:</strong> ${data.configuration.llm_binding_host}</li>
-              <li><strong>LLM Model:</strong> ${data.configuration.llm_model}</li>
-              <li><strong>Embedding Binding:</strong> ${data.configuration.embedding_binding}</li>
-              <li><strong>Embedding Host:</strong> ${data.configuration.embedding_binding_host}</li>
-              <li><strong>Embedding Model:</strong> ${data.configuration.embedding_model}</li>
-              <li><strong>Max Tokens:</strong> ${data.configuration.max_tokens}</li>
-            </ul>
+            <div class="space-y-4">
+              <div class="flex items-center">
+                <div class="w-3 h-3 rounded-full ${data.status === 'healthy' ? 'bg-green-500' : 'bg-red-500'} mr-2"></div>
+                <span class="font-medium">Status: ${data.status}</span>
+              </div>
+              <div class="space-y-2">
+                <p><span class="font-medium">Working Directory:</span> ${data.working_directory}</p>
+                <p><span class="font-medium">Input Directory:</span> ${data.input_directory}</p>
+                <p><span class="font-medium">Indexed Files:</span> ${data.indexed_files}</p>
+              </div>
+              <div class="border-t pt-4">
+                <h4 class="font-medium mb-2">Configuration</h4>
+                <ul class="space-y-1 text-sm">
+                  <li><span class="text-slate-500">LLM Binding:</span> ${data.configuration.llm_binding}</li>
+                  <li><span class="text-slate-500">LLM Model:</span> ${data.configuration.llm_model}</li>
+                  <li><span class="text-slate-500">Embedding Model:</span> ${data.configuration.embedding_model}</li>
+                  <li><span class="text-slate-500">Max Tokens:</span> ${data.configuration.max_tokens}</li>
+                </ul>
+              </div>
+            </div>
           `;
         } else {
-          const error = await response.json();
-          healthInfo.textContent = `Error: ${error.detail}`;
+          healthInfo.innerHTML = '<p class="text-red-500">Failed to fetch health status</p>';
         }
-      } catch (err) {
-        healthInfo.textContent = `Error: ${err.message}`;
+      } catch (error) {
+        healthInfo.innerHTML = `<p class="text-red-500">Error: ${error.message}</p>`;
       }
     });
 
-    closeHealth.addEventListener('click', () => {
+    $('#closeHealthBtn').addEventListener('click', () => {
       healthModal.classList.add('hidden');
     });
 
     // File Upload Handler
-    const uploadForm = document.getElementById('uploadForm');
-    const fileInput = document.getElementById('fileInput');
-    const selectedFiles = document.getElementById('selectedFiles');
-
-    const uploadStatus = document.getElementById('uploadStatus');
-    const progressContainer = document.getElementById('progressContainer');
-    const progressBar = document.getElementById('progressBar').firstElementChild;
-    const progressText = document.getElementById('progressText');
-
-    uploadForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const files = fileInput.files;
-      if (files.length === 0) {
-        uploadStatus.textContent = "Please select at least one file.";
-        return;
-      }
-
-      progressContainer.classList.remove('hidden');
-      uploadStatus.textContent = "Uploading files...";
+    async function handleUpload(files) {
+      uploadProgress.classList.remove('hidden');
+      const progressBar = uploadProgress.querySelector('.bg-blue-600');
       let uploadedCount = 0;
 
       for (const [index, file] of Array.from(files).entries()) {
@@ -178,107 +347,95 @@
         try {
           const response = await fetch('/documents/upload', {
             method: 'POST',
-            body: formData,
             headers: {
-              'Authorization': `Bearer ${localStorage.getItem('bearerKey') || ''}`
-            }
+              'Authorization': `Bearer ${localStorage.getItem('apiKey')}`
+            },
+            body: formData
           });
 
           if (response.ok) {
             uploadedCount++;
-            const progress = Math.round((uploadedCount / files.length) * 100);
+            const progress = (uploadedCount / files.length) * 100;
             progressBar.style.width = `${progress}%`;
-            progressText.textContent = `Uploading file ${index + 1} of ${files.length} (${progress}%)`;
+            uploadStatus.textContent = `Uploading ${uploadedCount} of ${files.length} files...`;
           } else {
-            const error = await response.json();
-            uploadStatus.textContent = `Error uploading file ${file.name}: ${error.detail}`;
-            break;
+            throw new Error(`Failed to upload ${file.name}`);
           }
-        } catch (err) {
-          uploadStatus.textContent = `Error uploading file ${file.name}: ${err.message}`;
+        } catch (error) {
+          uploadStatus.innerHTML = `<span class="text-red-500">Error: ${error.message}</span>`;
           break;
         }
       }
 
       if (uploadedCount === files.length) {
-        uploadStatus.textContent = "All files uploaded successfully!";
-      } else {
-        uploadStatus.textContent = "File upload interrupted.";
+        uploadStatus.innerHTML = '<span class="text-green-500">All files uploaded successfully!</span>';
+        setTimeout(() => {
+          uploadProgress.classList.add('hidden');
+          fileInput.value = '';
+          selectedFiles.innerHTML = '';
+        }, 3000);
       }
-
-      progressContainer.classList.add('hidden');
-    });
+    }
 
     // Query Handler
-    const queryForm = document.getElementById('queryForm');
-    const queryInput = document.getElementById('queryInput');
-    const queryResponse = document.getElementById('queryResponse');
+    async function handleQuery(query) {
+      queryResponse.innerHTML = '<p class="text-slate-600">Processing query...</p>';
 
-    queryForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-      const query = queryInput.value.trim();
-      if (!query) {
-        queryResponse.textContent = "Please enter a query.";
-        return;
-      }
-
-      queryResponse.textContent = "Processing...";
       try {
         const response = await fetch('/query', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${localStorage.getItem('bearerKey') || ''}`
+            'Authorization': `Bearer ${localStorage.getItem('apiKey')}`
           },
           body: JSON.stringify({ query })
         });
 
         if (response.ok) {
           const data = await response.json();
-          queryResponse.innerHTML = marked(data.response); // Render Markdown as HTML
+          queryResponse.innerHTML = marked(data.response);
         } else {
-          const error = await response.json();
-          queryResponse.textContent = `Error: ${error.detail}`;
+          throw new Error('Failed to process query');
         }
-      } catch (err) {
-        queryResponse.textContent = `Error: ${err.message}`;
+      } catch (error) {
+        queryResponse.innerHTML = `<p class="text-red-500">Error: ${error.message}</p>`;
       }
-    });
-    
-    // File preview functionality
-    fileInput.addEventListener('change', () => {
-      selectedFiles.innerHTML = '';
-      Array.from(fileInput.files).forEach((file, index) => {
-        const fileDiv = document.createElement('div');
-        fileDiv.className = 'flex items-center justify-between p-2 bg-white rounded border';
-        fileDiv.innerHTML = `
-          <span class="text-sm text-gray-600">${file.name} (${(file.size / 1024).toFixed(1)} KB)</span>
-          <button type="button" class="text-red-500 hover:text-red-700 transition-colors" data-index="${index}">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
-            </svg>
-          </button>
-        `;
-        selectedFiles.appendChild(fileDiv);
-      });
+    }
+
+    // Form submission handlers
+    uploadForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const files = fileInput.files;
+      if (files.length > 0) {
+        await handleUpload(files);
+      } else {
+        uploadStatus.innerHTML = '<span class="text-red-500">Please select files to upload</span>';
+      }
     });
 
-    // Remove file functionality
-    selectedFiles.addEventListener('click', (e) => {
-      if (e.target.closest('button')) {
-        const index = e.target.closest('button').dataset.index;
-        const dt = new DataTransfer();
-        const files = fileInput.files;
-        
-        for (let i = 0; i < files.length; i++) {
-          if (i != index) dt.items.add(files[i]);
-        }
-        
-        fileInput.files = dt.files;
-        e.target.closest('div').remove();
+    queryForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const query = queryInput.value.trim();
+      if (query) {
+        await handleQuery(query);
+      } else {
+        queryResponse.innerHTML = '<p class="text-red-500">Please enter a query</p>';
       }
     });
-    
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+      const apiKey = localStorage.getItem('apiKey');
+      if (apiKey) {
+        $('#apiKeyInput').value = apiKey;
+      }
+    });
+
+    // Close modals when clicking outside
+    window.addEventListener('click', (e) => {
+      if (e.target === settingsModal) settingsModal.classList.add('hidden');
+      if (e.target === healthModal) healthModal.classList.add('hidden');
+    });
   </script>
 </body>
 </html>
