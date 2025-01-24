@@ -3,7 +3,7 @@ import logging
 
 
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import zhipu_complete, zhipu_embedding
+from lightrag.llm.zhipu import zhipu_complete, zhipu_embedding
 from lightrag.utils import EmbeddingFunc
 
 WORKING_DIR = "./dickens"

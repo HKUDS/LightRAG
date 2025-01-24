@@ -5,7 +5,7 @@ import numpy as np
 
 from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
-from lightrag.llm import openai_complete_if_cache, openai_embedding
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 
 
 ## For Upstage API
@@ -25,7 +25,7 @@ async def llm_model_func(
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embedding(
+    return await openai_embed(
         texts,
         model="solar-embedding-1-large-query",
         api_key=os.getenv("UPSTAGE_API_KEY"),

@@ -4,7 +4,7 @@ import json
 import asyncio
 from lightrag import LightRAG, QueryParam
 from tqdm import tqdm
-from lightrag.llm import openai_complete_if_cache, openai_embedding
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
 
@@ -26,7 +26,7 @@ async def llm_model_func(
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embedding(
+    return await openai_embed(
         texts,
         model="solar-embedding-1-large-query",
         api_key=os.getenv("UPSTAGE_API_KEY"),

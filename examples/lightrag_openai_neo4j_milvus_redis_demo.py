@@ -1,6 +1,6 @@
 import os
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import ollama_embed, openai_complete_if_cache
+from lightrag.llm.ollama import ollama_embed, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 
 # WorkingDir

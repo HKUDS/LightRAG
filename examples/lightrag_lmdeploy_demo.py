@@ -1,7 +1,8 @@
 import os
 
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import lmdeploy_model_if_cache, hf_embedding
+from lightrag.llm.lmdeploy import lmdeploy_model_if_cache
+from lightrag.llm.hf import hf_embed
 from lightrag.utils import EmbeddingFunc
 from transformers import AutoModel, AutoTokenizer
 
@@ -42,7 +43,7 @@ rag = LightRAG(
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
         max_token_size=5000,
-        func=lambda texts: hf_embedding(
+        func=lambda texts: hf_embed(
             texts,
             tokenizer=AutoTokenizer.from_pretrained(
                 "sentence-transformers/all-MiniLM-L6-v2"

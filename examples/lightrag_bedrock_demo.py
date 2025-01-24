@@ -6,7 +6,7 @@ import os
 import logging
 
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import bedrock_complete, bedrock_embedding
+from lightrag.llm.bedrock import bedrock_complete, bedrock_embed
 from lightrag.utils import EmbeddingFunc
 
 logging.getLogger("aiobotocore").setLevel(logging.WARNING)
@@ -20,7 +20,7 @@ rag = LightRAG(
     llm_model_func=bedrock_complete,
     llm_model_name="Anthropic Claude 3 Haiku // Amazon Bedrock",
     embedding_func=EmbeddingFunc(
-        embedding_dim=1024, max_token_size=8192, func=bedrock_embedding
+        embedding_dim=1024, max_token_size=8192, func=bedrock_embed
     ),
 )
 
