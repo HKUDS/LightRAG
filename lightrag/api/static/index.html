@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LightRAG WebUI</title>
+  <title>RAG WebUI</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script> <!-- Include Marked.js -->
 </head>
@@ -12,11 +12,11 @@
     <!-- Settings Button -->
     <button id="settingsButton" class="absolute top-4 right-4 text-gray-600 hover:text-gray-800">
       <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c1.104 0 2-.896 2-2s-.896-2-2-2-2 .896-2 2 .896 2 2 2zm0 4c-1.104 0-2 .896-2 2s.896 2 2 2 2-.896 2-2-.896-2-2-2zm0 8c-1.104 0-2 .896-2 2s.896 2 2 2 2-.896 2-2-.896-2-2-2z" />
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 2a10 10 0 0110 10 10 10 0 01-10 10A10 10 0 012 12a10 10 0 0110-10zm0 2a8 8 0 100 16 8 8 0 000-16zm1 4h-2v4h2V8zm0 6h-2v2h2v-2z" />
       </svg>
     </button>
 
-    <!-- Modal for Bearer Key -->
+    <!-- Modal for Settings -->
     <div id="settingsModal" class="hidden fixed inset-0 bg-gray-800 bg-opacity-50 flex items-center justify-center">
       <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-md">
         <h2 class="text-lg font-semibold text-gray-700 mb-4">Settings</h2>
@@ -26,6 +26,22 @@
           <button id="closeSettings" class="text-gray-500 hover:text-gray-700 text-sm">Close</button>
         </div>
         <div id="bearerKeyStatus" class="mt-2 text-sm text-gray-600"></div>
+      </div>
+    </div>
+
+    <!-- Health Check Button -->
+    <button id="healthCheckButton" class="absolute top-4 left-4 text-gray-600 hover:text-gray-800">
+      <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-3-3v6m-7 4a9 9 0 1118 0H5z" />
+      </svg>
+    </button>
+
+    <!-- Modal for Health Check -->
+    <div id="healthModal" class="hidden fixed inset-0 bg-gray-800 bg-opacity-50 flex items-center justify-center">
+      <div class="bg-white rounded-lg shadow-lg p-6 w-full max-w-lg">
+        <h2 class="text-lg font-semibold text-gray-700 mb-4">System Health</h2>
+        <div id="healthInfo" class="text-sm text-gray-600"></div>
+        <button id="closeHealth" class="mt-4 bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">Close</button>
       </div>
     </div>
 
@@ -73,27 +89,52 @@
       settingsModal.classList.add('hidden');
     });
 
-    // Bearer Key Handling
-    const bearerKeyInput = document.getElementById('bearerKeyInput');
-    const saveBearerKey = document.getElementById('saveBearerKey');
-    const bearerKeyStatus = document.getElementById('bearerKeyStatus');
+    // Health Check Modal Handling
+    const healthCheckButton = document.getElementById('healthCheckButton');
+    const healthModal = document.getElementById('healthModal');
+    const closeHealth = document.getElementById('closeHealth');
+    const healthInfo = document.getElementById('healthInfo');
 
-    // Load Bearer Key from localStorage on page load
-    const storedBearerKey = localStorage.getItem('bearerKey');
-    if (storedBearerKey) {
-      bearerKeyInput.value = storedBearerKey;
-      bearerKeyStatus.textContent = "Bearer Key loaded from local storage.";
-    }
+    healthCheckButton.addEventListener('click', async () => {
+      healthModal.classList.remove('hidden');
+      healthInfo.textContent = "Fetching system health...";
+      try {
+        const response = await fetch('/health', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('bearerKey') || ''}`
+          }
+        });
 
-    // Save Bearer Key to localStorage
-    saveBearerKey.addEventListener('click', () => {
-      const key = bearerKeyInput.value.trim();
-      if (key) {
-        localStorage.setItem('bearerKey', key);
-        bearerKeyStatus.textContent = "Bearer Key saved successfully.";
-      } else {
-        bearerKeyStatus.textContent = "Please enter a valid Bearer Key.";
+        if (response.ok) {
+          const data = await response.json();
+          healthInfo.innerHTML = `
+            <p><strong>Status:</strong> ${data.status}</p>
+            <p><strong>Working Directory:</strong> ${data.working_directory}</p>
+            <p><strong>Input Directory:</strong> ${data.input_directory}</p>
+            <p><strong>Indexed Files:</strong> ${data.indexed_files}</p>
+            <p><strong>Configuration:</strong></p>
+            <ul class="list-disc ml-6">
+              <li><strong>LLM Binding:</strong> ${data.configuration.llm_binding}</li>
+              <li><strong>LLM Host:</strong> ${data.configuration.llm_binding_host}</li>
+              <li><strong>LLM Model:</strong> ${data.configuration.llm_model}</li>
+              <li><strong>Embedding Binding:</strong> ${data.configuration.embedding_binding}</li>
+              <li><strong>Embedding Host:</strong> ${data.configuration.embedding_binding_host}</li>
+              <li><strong>Embedding Model:</strong> ${data.configuration.embedding_model}</li>
+              <li><strong>Max Tokens:</strong> ${data.configuration.max_tokens}</li>
+            </ul>
+          `;
+        } else {
+          const error = await response.json();
+          healthInfo.textContent = `Error: ${error.detail}`;
+        }
+      } catch (err) {
+        healthInfo.textContent = `Error: ${err.message}`;
       }
+    });
+
+    closeHealth.addEventListener('click', () => {
+      healthModal.classList.add('hidden');
     });
 
     // File Upload Handler
