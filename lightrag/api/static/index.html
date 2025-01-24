@@ -10,6 +10,16 @@
   <div class="w-full max-w-4xl bg-white shadow-md rounded-lg p-6">
     <h1 class="text-2xl font-bold text-gray-800 mb-4">RAG WebUI</h1>
 
+    <!-- Bearer Key Section -->
+    <div class="mb-6">
+      <h2 class="text-lg font-semibold text-gray-700 mb-2">Bearer Key</h2>
+      <div class="flex flex-col gap-4">
+        <input type="text" id="bearerKeyInput" class="w-full p-2 border rounded focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="Enter Bearer Key">
+        <button id="saveBearerKey" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Save Key</button>
+        <div id="bearerKeyStatus" class="text-sm text-gray-600"></div>
+      </div>
+    </div>
+
     <!-- File Upload Section -->
     <div class="mb-6">
       <h2 class="text-lg font-semibold text-gray-700 mb-2">Upload Files</h2>
@@ -32,6 +42,29 @@
   </div>
 
   <script>
+    // Bearer Key Handling
+    const bearerKeyInput = document.getElementById('bearerKeyInput');
+    const saveBearerKey = document.getElementById('saveBearerKey');
+    const bearerKeyStatus = document.getElementById('bearerKeyStatus');
+
+    // Load Bearer Key from localStorage on page load
+    const storedBearerKey = localStorage.getItem('bearerKey');
+    if (storedBearerKey) {
+      bearerKeyInput.value = storedBearerKey;
+      bearerKeyStatus.textContent = "Bearer Key loaded from local storage.";
+    }
+
+    // Save Bearer Key to localStorage
+    saveBearerKey.addEventListener('click', () => {
+      const key = bearerKeyInput.value.trim();
+      if (key) {
+        localStorage.setItem('bearerKey', key);
+        bearerKeyStatus.textContent = "Bearer Key saved successfully.";
+      } else {
+        bearerKeyStatus.textContent = "Please enter a valid Bearer Key.";
+      }
+    });
+
     // File Upload Handler
     const uploadForm = document.getElementById('uploadForm');
     const fileInput = document.getElementById('fileInput');
@@ -55,6 +88,9 @@
         const response = await fetch('/documents/upload', {
           method: 'POST',
           body: formData,
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('bearerKey') || ''}`
+          }
         });
 
         if (response.ok) {
@@ -86,13 +122,16 @@
       try {
         const response = await fetch('/query', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query }),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('bearerKey') || ''}`
+          },
+          body: JSON.stringify({ query })
         });
 
         if (response.ok) {
           const data = await response.json();
-          queryResponse.textContent = `Response: ${data.result}`;
+          queryResponse.textContent = `Response: ${data.response}`;
         } else {
           const error = await response.json();
           queryResponse.textContent = `Error: ${error.detail}`;
