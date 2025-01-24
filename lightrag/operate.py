@@ -930,15 +930,6 @@ async def mix_kg_vector_query(
         stream=query_param.stream,
     )
 
-    if query_param.stream:
-        # 如果是流式响应，先收集完整响应
-        full_response = []
-        async for chunk in response:
-            full_response.append(chunk)
-
-        # 将完整响应组合起来用于缓存
-        response = "".join(full_response)
-
     # 清理响应内容
     if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
