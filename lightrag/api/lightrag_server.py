@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import logging
 import argparse
