@@ -1,5 +1,5 @@
 <center><h2>🚀 LightRAG: Simple and Fast Retrieval-Augmented Generation</h2></center>
-<div align="left" width="100%">
+<div align="center">
 <table border="0" width="100%">
 <tr>
 <td width="100" align="center">
