@@ -1,8 +1,11 @@
 <center><h2>🚀 LightRAG: Simple and Fast Retrieval-Augmented Generation</h2></center>
-<div align="center">
-
-# <img src="https://github.com/user-attachments/assets/cb5b8fc1-0859-4f7c-8ec3-63c8ec7aa54b" width="100" height="100" alt="lightrag">
-
+<div align="left">
+<table border="0">
+<tr>
+<td width="100" align="center">
+<img src="https://github.com/user-attachments/assets/cb5b8fc1-0859-4f7c-8ec3-63c8ec7aa54b" width="80" height="80" alt="lightrag">
+</td>
+<td>
 <div>
     <p>
         <a href='https://lightrag.github.io'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
@@ -10,30 +13,26 @@
         <a href='https://arxiv.org/abs/2410.05779'><img src='https://img.shields.io/badge/arXiv-2410.05779-b31b1b'></a>
         <a href='https://learnopencv.com/lightrag'><img src='https://img.shields.io/badge/LearnOpenCV-blue'></a>
     </p>
-</div>
-
-<div>
     <p>
         <img src='https://img.shields.io/github/stars/hkuds/lightrag?color=green&style=social' />
         <img src="https://img.shields.io/badge/python-3.10-blue">
         <a href="https://pypi.org/project/lightrag-hku/"><img src="https://img.shields.io/pypi/v/lightrag-hku.svg"></a>
         <a href="https://pepy.tech/project/lightrag-hku"><img src="https://static.pepy.tech/badge/lightrag-hku/month"></a>
     </p>
-</div>
-
-<div>
     <p>
         <a href='https://discord.gg/yF2MmDJyGJ'><img src='https://discordapp.com/api/guilds/1296348098003734629/widget.png?style=shield'></a>
         <a href='https://github.com/HKUDS/LightRAG/issues/285'><img src='https://img.shields.io/badge/群聊-wechat-green'></a>
     </p>
 </div>
+</td>
+</tr>
+</table>
 
----
-
-This repository hosts the code of LightRAG. The structure of this code is based on [nano-graphrag](https://github.com/gusye1234/nano-graphrag).
+<div align="center">
+This repository hosts the code of LightRAG. The structure of this code is based on <a href="https://github.com/gusye1234/nano-graphrag">nano-graphrag</a>.
 
 <img src="https://i-blog.csdnimg.cn/direct/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
-
+</div>
 </div>
 
 ## 🎉 News
@@ -52,6 +51,7 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 - [x] [2024.10.17]🎯📢We have created a [Discord channel](https://discord.gg/yF2MmDJyGJ)! Welcome to join for sharing and discussions! 🎉🎉
 - [x] [2024.10.16]🎯📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
 - [x] [2024.10.15]🎯📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
+
 
 ## Algorithm Flowchart
 
