@@ -467,6 +467,7 @@ class OllamaChatRequest(BaseModel):
     messages: List[OllamaMessage]
     stream: bool = True  # Default to streaming mode
     options: Optional[Dict[str, Any]] = None
+    system: Optional[str] = None
 
 
 class OllamaChatResponse(BaseModel):
@@ -1536,7 +1537,25 @@ def create_app(args):
                 )
             else:
                 first_chunk_time = time.time_ns()
-                response_text = await rag.aquery(cleaned_query, param=query_param)
+                
+                # 判断是否包含特定字符串，使用正则表达式进行匹配
+                logging.info(f"Cleaned query content: {cleaned_query}")
+                match_result = re.search(r'\\n<chat_history>\\nUSER:', cleaned_query)
+                logging.info(f"Regex match result: {bool(match_result)}")
+                
+                if match_result:
+
+                    if request.system:
+                        rag.llm_model_kwargs["system_prompt"] = request.system
+
+                    response_text = await rag.llm_model_func(
+                        cleaned_query,
+                        stream=False,
+                        **rag.llm_model_kwargs
+                    )
+                else:
+                    response_text = await rag.aquery(cleaned_query, param=query_param)
+                    
                 last_chunk_time = time.time_ns()
 
                 if not response_text:
