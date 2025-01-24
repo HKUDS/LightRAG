@@ -3,8 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LightRAG WebUI</title>
+  <title>RAG WebUI</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script> <!-- Include Marked.js -->
 </head>
 <body class="bg-gray-100 min-h-screen flex flex-col items-center justify-center p-4">
   <div class="w-full max-w-4xl bg-white shadow-md rounded-lg p-6 relative">
@@ -39,6 +40,12 @@
         <button type="submit" class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">Upload</button>
       </form>
       <div id="uploadStatus" class="mt-2 text-sm text-gray-600"></div>
+      <div id="progressContainer" class="mt-4 hidden">
+        <div id="progressBar" class="w-full bg-gray-200 rounded h-4">
+          <div class="bg-blue-500 h-4 rounded" style="width: 0%;"></div>
+        </div>
+        <p id="progressText" class="text-sm text-gray-600 mt-2"></p>
+      </div>
     </div>
 
     <!-- Query Section -->
@@ -93,6 +100,9 @@
     const uploadForm = document.getElementById('uploadForm');
     const fileInput = document.getElementById('fileInput');
     const uploadStatus = document.getElementById('uploadStatus');
+    const progressContainer = document.getElementById('progressContainer');
+    const progressBar = document.getElementById('progressBar').firstElementChild;
+    const progressText = document.getElementById('progressText');
 
     uploadForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -102,31 +112,46 @@
         return;
       }
 
-      const formData = new FormData();
-      for (const file of files) {
+      progressContainer.classList.remove('hidden');
+      uploadStatus.textContent = "Uploading files...";
+      let uploadedCount = 0;
+
+      for (const [index, file] of Array.from(files).entries()) {
+        const formData = new FormData();
         formData.append('file', file);
-      }
 
-      uploadStatus.textContent = "Uploading...";
-      try {
-        const response = await fetch('/documents/upload', {
-          method: 'POST',
-          body: formData,
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('bearerKey') || ''}`
+        try {
+          const response = await fetch('/documents/upload', {
+            method: 'POST',
+            body: formData,
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('bearerKey') || ''}`
+            }
+          });
+
+          if (response.ok) {
+            uploadedCount++;
+            const progress = Math.round((uploadedCount / files.length) * 100);
+            progressBar.style.width = `${progress}%`;
+            progressText.textContent = `Uploading file ${index + 1} of ${files.length} (${progress}%)`;
+          } else {
+            const error = await response.json();
+            uploadStatus.textContent = `Error uploading file ${file.name}: ${error.detail}`;
+            break;
           }
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          uploadStatus.textContent = `Upload successful! Indexed ${data.total_documents} documents.`;
-        } else {
-          const error = await response.json();
-          uploadStatus.textContent = `Error: ${error.detail}`;
+        } catch (err) {
+          uploadStatus.textContent = `Error uploading file ${file.name}: ${err.message}`;
+          break;
         }
-      } catch (err) {
-        uploadStatus.textContent = `Error: ${err.message}`;
       }
+
+      if (uploadedCount === files.length) {
+        uploadStatus.textContent = "All files uploaded successfully!";
+      } else {
+        uploadStatus.textContent = "File upload interrupted.";
+      }
+
+      progressContainer.classList.add('hidden');
     });
 
     // Query Handler
@@ -155,7 +180,7 @@
 
         if (response.ok) {
           const data = await response.json();
-          queryResponse.textContent = `Response: ${data.response}`;
+          queryResponse.innerHTML = marked(data.response); // Render Markdown as HTML
         } else {
           const error = await response.json();
           queryResponse.textContent = `Error: ${error.detail}`;
