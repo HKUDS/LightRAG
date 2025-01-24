@@ -582,7 +582,7 @@
 
         if (response.ok) {
           const data = await response.json();
-          queryResponse.innerHTML = marked(data.response);
+          queryResponse.innerHTML = marked.parse(data.response);
         } else {
           throw new Error('Failed to process query');
         }
