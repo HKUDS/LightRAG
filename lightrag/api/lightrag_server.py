@@ -417,7 +417,6 @@ def parse_args() -> argparse.Namespace:
 
 
     args = parser.parse_args()
-    display_splash_screen(args)
 
     return args
 
@@ -1533,6 +1532,7 @@ def main():
     import uvicorn
 
     app = create_app(args)
+    display_splash_screen(args)    
     uvicorn_config = {
         "app": app,
         "host": args.host,
