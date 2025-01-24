@@ -533,6 +533,7 @@ class OllamaChatRequest(BaseModel):
     messages: List[OllamaMessage]
     stream: bool = True  # Default to streaming mode
     options: Optional[Dict[str, Any]] = None
+    system: Optional[str] = None
 
 
 class OllamaChatResponse(BaseModel):
@@ -540,6 +541,28 @@ class OllamaChatResponse(BaseModel):
     created_at: str
     message: OllamaMessage
     done: bool
+
+
+class OllamaGenerateRequest(BaseModel):
+    model: str = LIGHTRAG_MODEL
+    prompt: str
+    system: Optional[str] = None
+    stream: bool = False
+    options: Optional[Dict[str, Any]] = None
+
+
+class OllamaGenerateResponse(BaseModel):
+    model: str
+    created_at: str
+    response: str
+    done: bool
+    context: Optional[List[int]]
+    total_duration: Optional[int]
+    load_duration: Optional[int]
+    prompt_eval_count: Optional[int]
+    prompt_eval_duration: Optional[int]
+    eval_count: Optional[int]
+    eval_duration: Optional[int]
 
 
 class OllamaVersionResponse(BaseModel):
@@ -1417,6 +1440,145 @@ def create_app(args):
 
         return query, SearchMode.hybrid
 
+    @app.post("/api/generate")
+    async def generate(raw_request: Request, request: OllamaGenerateRequest):
+        """Handle generate completion requests"""
+        try:
+            query = request.prompt
+            start_time = time.time_ns()
+            prompt_tokens = estimate_tokens(query)
+
+            if request.system:
+                rag.llm_model_kwargs["system_prompt"] = request.system
+
+            if request.stream:
+                from fastapi.responses import StreamingResponse
+
+                response = await rag.llm_model_func(
+                    query, stream=True, **rag.llm_model_kwargs
+                )
+
+                async def stream_generator():
+                    try:
+                        first_chunk_time = None
+                        last_chunk_time = None
+                        total_response = ""
+
+                        # Ensure response is an async generator
+                        if isinstance(response, str):
+                            # If it's a string, send in two parts
+                            first_chunk_time = time.time_ns()
+                            last_chunk_time = first_chunk_time
+                            total_response = response
+
+                            data = {
+                                "model": LIGHTRAG_MODEL,
+                                "created_at": LIGHTRAG_CREATED_AT,
+                                "response": response,
+                                "done": False,
+                            }
+                            yield f"{json.dumps(data, ensure_ascii=False)}\n"
+
+                            completion_tokens = estimate_tokens(total_response)
+                            total_time = last_chunk_time - start_time
+                            prompt_eval_time = first_chunk_time - start_time
+                            eval_time = last_chunk_time - first_chunk_time
+
+                            data = {
+                                "model": LIGHTRAG_MODEL,
+                                "created_at": LIGHTRAG_CREATED_AT,
+                                "done": True,
+                                "total_duration": total_time,
+                                "load_duration": 0,
+                                "prompt_eval_count": prompt_tokens,
+                                "prompt_eval_duration": prompt_eval_time,
+                                "eval_count": completion_tokens,
+                                "eval_duration": eval_time,
+                            }
+                            yield f"{json.dumps(data, ensure_ascii=False)}\n"
+                        else:
+                            async for chunk in response:
+                                if chunk:
+                                    if first_chunk_time is None:
+                                        first_chunk_time = time.time_ns()
+
+                                    last_chunk_time = time.time_ns()
+
+                                    total_response += chunk
+                                    data = {
+                                        "model": LIGHTRAG_MODEL,
+                                        "created_at": LIGHTRAG_CREATED_AT,
+                                        "response": chunk,
+                                        "done": False,
+                                    }
+                                    yield f"{json.dumps(data, ensure_ascii=False)}\n"
+
+                            completion_tokens = estimate_tokens(total_response)
+                            total_time = last_chunk_time - start_time
+                            prompt_eval_time = first_chunk_time - start_time
+                            eval_time = last_chunk_time - first_chunk_time
+
+                            data = {
+                                "model": LIGHTRAG_MODEL,
+                                "created_at": LIGHTRAG_CREATED_AT,
+                                "done": True,
+                                "total_duration": total_time,
+                                "load_duration": 0,
+                                "prompt_eval_count": prompt_tokens,
+                                "prompt_eval_duration": prompt_eval_time,
+                                "eval_count": completion_tokens,
+                                "eval_duration": eval_time,
+                            }
+                            yield f"{json.dumps(data, ensure_ascii=False)}\n"
+                            return
+
+                    except Exception as e:
+                        logging.error(f"Error in stream_generator: {str(e)}")
+                        raise
+
+                return StreamingResponse(
+                    stream_generator(),
+                    media_type="application/x-ndjson",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "Content-Type": "application/x-ndjson",
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "POST, OPTIONS",
+                        "Access-Control-Allow-Headers": "Content-Type",
+                    },
+                )
+            else:
+                first_chunk_time = time.time_ns()
+                response_text = await rag.llm_model_func(
+                    query, stream=False, **rag.llm_model_kwargs
+                )
+                last_chunk_time = time.time_ns()
+
+                if not response_text:
+                    response_text = "No response generated"
+
+                completion_tokens = estimate_tokens(str(response_text))
+                total_time = last_chunk_time - start_time
+                prompt_eval_time = first_chunk_time - start_time
+                eval_time = last_chunk_time - first_chunk_time
+
+                return {
+                    "model": LIGHTRAG_MODEL,
+                    "created_at": LIGHTRAG_CREATED_AT,
+                    "response": str(response_text),
+                    "done": True,
+                    "total_duration": total_time,
+                    "load_duration": 0,
+                    "prompt_eval_count": prompt_tokens,
+                    "prompt_eval_duration": prompt_eval_time,
+                    "eval_count": completion_tokens,
+                    "eval_duration": eval_time,
+                }
+        except Exception as e:
+            trace_exception(e)
+            raise HTTPException(status_code=500, detail=str(e))
+
     @app.post("/api/chat")
     async def chat(raw_request: Request, request: OllamaChatRequest):
         """Handle chat completion requests"""
@@ -1429,16 +1591,12 @@ def create_app(args):
             # Get the last message as query
             query = messages[-1].content
 
-            # 解析查询模式
+            # Check for query prefix
             cleaned_query, mode = parse_query_mode(query)
 
-            # 开始计时
             start_time = time.time_ns()
-
-            # 计算输入token数量
             prompt_tokens = estimate_tokens(cleaned_query)
 
-            # 调用RAG进行查询
             query_param = QueryParam(
                 mode=mode, stream=request.stream, only_need_context=False
             )
@@ -1549,7 +1707,21 @@ def create_app(args):
                 )
             else:
                 first_chunk_time = time.time_ns()
-                response_text = await rag.aquery(cleaned_query, param=query_param)
+
+                # Determine if the request is from Open WebUI's session title and session keyword generation task
+                match_result = re.search(
+                    r"\n<chat_history>\nUSER:", cleaned_query, re.MULTILINE
+                )
+                if match_result:
+                    if request.system:
+                        rag.llm_model_kwargs["system_prompt"] = request.system
+
+                    response_text = await rag.llm_model_func(
+                        cleaned_query, stream=False, **rag.llm_model_kwargs
+                    )
+                else:
+                    response_text = await rag.aquery(cleaned_query, param=query_param)
+
                 last_chunk_time = time.time_ns()
 
                 if not response_text:
