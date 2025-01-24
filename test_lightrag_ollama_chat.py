@@ -110,7 +110,7 @@ DEFAULT_CONFIG = {
     },
     "test_cases": {
         "basic": {"query": "唐僧有几个徒弟"},
-        "generate": {"query": "电视剧西游记导演是谁"}
+        "generate": {"query": "电视剧西游记导演是谁"},
     },
 }
 
@@ -205,12 +205,13 @@ def create_chat_request_data(
         "stream": stream,
     }
 
+
 def create_generate_request_data(
-    prompt: str, 
+    prompt: str,
     system: str = None,
-    stream: bool = False, 
+    stream: bool = False,
     model: str = None,
-    options: Dict[str, Any] = None
+    options: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """Create generate request data
     Args:
@@ -225,7 +226,7 @@ def create_generate_request_data(
     data = {
         "model": model or CONFIG["server"]["model"],
         "prompt": prompt,
-        "stream": stream
+        "stream": stream,
     }
     if system:
         data["system"] = system
@@ -258,7 +259,9 @@ def run_test(func: Callable, name: str) -> None:
 def test_non_stream_chat() -> None:
     """Test non-streaming call to /api/chat endpoint"""
     url = get_base_url()
-    data = create_chat_request_data(CONFIG["test_cases"]["basic"]["query"], stream=False)
+    data = create_chat_request_data(
+        CONFIG["test_cases"]["basic"]["query"], stream=False
+    )
 
     # Send request
     response = make_request(url, data)
@@ -487,8 +490,7 @@ def test_non_stream_generate() -> None:
     """Test non-streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
     data = create_generate_request_data(
-        CONFIG["test_cases"]["generate"]["query"],
-        stream=False
+        CONFIG["test_cases"]["generate"]["query"], stream=False
     )
 
     # Send request
@@ -504,17 +506,17 @@ def test_non_stream_generate() -> None:
         {
             "model": response_json["model"],
             "response": response_json["response"],
-            "done": response_json["done"]
+            "done": response_json["done"],
         },
-        "Response content"
+        "Response content",
     )
+
 
 def test_stream_generate() -> None:
     """Test streaming call to /api/generate endpoint"""
     url = get_base_url("generate")
     data = create_generate_request_data(
-        CONFIG["test_cases"]["generate"]["query"],
-        stream=True
+        CONFIG["test_cases"]["generate"]["query"], stream=True
     )
 
     # Send request and get streaming response
@@ -530,13 +532,17 @@ def test_stream_generate() -> None:
                     # Decode and parse JSON
                     data = json.loads(line.decode("utf-8"))
                     if data.get("done", True):  # If it's the completion marker
-                        if "total_duration" in data:  # Final performance statistics message
+                        if (
+                            "total_duration" in data
+                        ):  # Final performance statistics message
                             break
                     else:  # Normal content message
                         content = data.get("response", "")
                         if content:  # Only collect non-empty content
                             output_buffer.append(content)
-                            print(content, end="", flush=True)  # Print content in real-time
+                            print(
+                                content, end="", flush=True
+                            )  # Print content in real-time
                 except json.JSONDecodeError:
                     print("Error decoding JSON from response line")
     finally:
@@ -545,13 +551,14 @@ def test_stream_generate() -> None:
     # Print a newline
     print()
 
+
 def test_generate_with_system() -> None:
     """Test generate with system prompt"""
     url = get_base_url("generate")
     data = create_generate_request_data(
         CONFIG["test_cases"]["generate"]["query"],
         system="你是一个知识渊博的助手",
-        stream=False
+        stream=False,
     )
 
     # Send request
@@ -567,15 +574,16 @@ def test_generate_with_system() -> None:
         {
             "model": response_json["model"],
             "response": response_json["response"],
-            "done": response_json["done"]
+            "done": response_json["done"],
         },
-        "Response content"
+        "Response content",
     )
+
 
 def test_generate_error_handling() -> None:
     """Test error handling for generate endpoint"""
     url = get_base_url("generate")
-    
+
     # Test empty prompt
     if OutputControl.is_verbose():
         print("\n=== Testing empty prompt ===")
@@ -583,14 +591,14 @@ def test_generate_error_handling() -> None:
     response = make_request(url, data)
     print(f"Status code: {response.status_code}")
     print_json_response(response.json(), "Error message")
-    
+
     # Test invalid options
     if OutputControl.is_verbose():
         print("\n=== Testing invalid options ===")
     data = create_generate_request_data(
         CONFIG["test_cases"]["basic"]["query"],
         options={"invalid_option": "value"},
-        stream=False
+        stream=False,
     )
     response = make_request(url, data)
     print(f"Status code: {response.status_code}")
@@ -602,12 +610,12 @@ def test_generate_concurrent() -> None:
     import asyncio
     import aiohttp
     from contextlib import asynccontextmanager
-    
+
     @asynccontextmanager
     async def get_session():
         async with aiohttp.ClientSession() as session:
             yield session
-    
+
     async def make_request(session, prompt: str):
         url = get_base_url("generate")
         data = create_generate_request_data(prompt, stream=False)
@@ -616,31 +624,26 @@ def test_generate_concurrent() -> None:
                 return await response.json()
         except Exception as e:
             return {"error": str(e)}
-    
+
     async def run_concurrent_requests():
-        prompts = [
-            "第一个问题",
-            "第二个问题",
-            "第三个问题",
-            "第四个问题",
-            "第五个问题"
-        ]
-        
+        prompts = ["第一个问题", "第二个问题", "第三个问题", "第四个问题", "第五个问题"]
+
         async with get_session() as session:
             tasks = [make_request(session, prompt) for prompt in prompts]
             results = await asyncio.gather(*tasks)
             return results
-    
+
     if OutputControl.is_verbose():
         print("\n=== Testing concurrent generate requests ===")
-    
+
     # Run concurrent requests
     results = asyncio.run(run_concurrent_requests())
-    
+
     # Print results
     for i, result in enumerate(results, 1):
         print(f"\nRequest {i} result:")
         print_json_response(result)
+
 
 def get_test_cases() -> Dict[str, Callable]:
     """Get all available test cases
@@ -657,7 +660,7 @@ def get_test_cases() -> Dict[str, Callable]:
         "stream_generate": test_stream_generate,
         "generate_with_system": test_generate_with_system,
         "generate_errors": test_generate_error_handling,
-        "generate_concurrent": test_generate_concurrent
+        "generate_concurrent": test_generate_concurrent,
     }
 
 
