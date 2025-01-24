@@ -408,6 +408,13 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("SSL_KEYFILE", None),
         help="Path to SSL private key file (required if --ssl is enabled)",
     )
+    parser.add_argument(
+        '--auto-scan-at-startup',
+        action='store_true',
+        default=False,
+        help='Enable automatic scanning when the program starts'
+    )
+
 
     args = parser.parse_args()
     display_splash_screen(args)
@@ -800,18 +807,21 @@ def create_app(args):
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
         # Startup logic
-        try:
-            new_files = doc_manager.scan_directory()
-            for file_path in new_files:
-                try:
-                    await index_file(file_path)
-                except Exception as e:
-                    trace_exception(e)
-                    logging.error(f"Error indexing file {file_path}: {str(e)}")
-
-            logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
-        except Exception as e:
-            logging.error(f"Error during startup indexing: {str(e)}")
+        # Now only if this option is active, we can scan. This is better for big databases where there are hundreds of
+        # files. Makes the startup faster 
+        if args.auto_scan_at_startup: 
+            try:
+                new_files = doc_manager.scan_directory()
+                for file_path in new_files:
+                    try:
+                        await index_file(file_path)
+                    except Exception as e:
+                        trace_exception(e)
+                        logging.error(f"Error indexing file {file_path}: {str(e)}")
+    
+                logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
+            except Exception as e:
+                logging.error(f"Error during startup indexing: {str(e)}")
 
     @app.post("/documents/scan", dependencies=[Depends(optional_api_key)])
     async def scan_for_new_documents():
