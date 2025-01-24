@@ -63,17 +63,17 @@ DOC_STATUS_STORAGE = "JsonDocStatusStorage"
 GRAPH_STORAGE = "NetworkXStorage"
 VECTOR_STORAGE = "NanoVectorDBStorage"
 
-# 读取配置文件
+# read config.ini
 config = configparser.ConfigParser()
 config.read("config.ini")
-# Redis 配置
+# Redis config
 redis_uri = config.get("redis", "uri", fallback=None)
 if redis_uri:
     os.environ["REDIS_URI"] = redis_uri
     KV_STORAGE = "RedisKVStorage"
     DOC_STATUS_STORAGE = "RedisKVStorage"
 
-# Neo4j 配置
+# Neo4j config
 neo4j_uri = config.get("neo4j", "uri", fallback=None)
 neo4j_username = config.get("neo4j", "username", fallback=None)
 neo4j_password = config.get("neo4j", "password", fallback=None)
@@ -83,7 +83,7 @@ if neo4j_uri:
     os.environ["NEO4J_PASSWORD"] = neo4j_password
     GRAPH_STORAGE = "Neo4JStorage"
 
-# Milvus 配置
+# Milvus config
 milvus_uri = config.get("milvus", "uri", fallback=None)
 milvus_user = config.get("milvus", "user", fallback=None)
 milvus_password = config.get("milvus", "password", fallback=None)
@@ -95,7 +95,7 @@ if milvus_uri:
     os.environ["MILVUS_DB_NAME"] = milvus_db_name
     VECTOR_STORAGE = "MilvusVectorDBStorge"
 
-# MongoDB 配置
+# MongoDB config
 mongo_uri = config.get("mongodb", "uri", fallback=None)
 mongo_database = config.get("mongodb", "LightRAG", fallback=None)
 if mongo_uri:
@@ -611,8 +611,13 @@ def get_api_key_dependency(api_key: Optional[str]):
 def create_app(args):
     # Verify that bindings arer correctly setup
 
-    if args.llm_binding not in ["lollms", "ollama", "openai", "openai-ollama", "azure_openai"]:
-
+    if args.llm_binding not in [
+        "lollms",
+        "ollama",
+        "openai",
+        "openai-ollama",
+        "azure_openai",
+    ]:
         raise Exception("llm binding not supported")
 
     if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
