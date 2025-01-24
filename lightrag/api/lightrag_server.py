@@ -1260,17 +1260,13 @@ def create_app(args):
     async def generate(raw_request: Request, request: OllamaGenerateRequest):
         """Handle generate completion requests"""
         try:
-            # 获取查询内容
             query = request.prompt
-            
-            # 解析查询模式
-            cleaned_query, mode = parse_query_mode(query)
-            
+                        
             # 开始计时
             start_time = time.time_ns()
             
             # 计算输入token数量
-            prompt_tokens = estimate_tokens(cleaned_query)
+            prompt_tokens = estimate_tokens(query)
             
             # 直接使用 llm_model_func 进行查询
             if request.system:
@@ -1280,7 +1276,7 @@ def create_app(args):
                 from fastapi.responses import StreamingResponse
                 
                 response = await rag.llm_model_func(
-                    cleaned_query,
+                    query,
                     stream=True,
                     **rag.llm_model_kwargs
                 )
@@ -1378,7 +1374,7 @@ def create_app(args):
             else:
                 first_chunk_time = time.time_ns()
                 response_text = await rag.llm_model_func(
-                    cleaned_query,
+                    query,
                     stream=False,
                     **rag.llm_model_kwargs
                 )
