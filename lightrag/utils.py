@@ -535,7 +535,7 @@ class CacheData:
     min_val: Optional[float] = None
     max_val: Optional[float] = None
     mode: str = "default"
-
+    cache_type: str ="query"
 
 async def save_to_cache(hashing_kv, cache_data: CacheData):
     if hashing_kv is None or hasattr(cache_data.content, "__aiter__"):

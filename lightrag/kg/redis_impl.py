@@ -1,7 +1,8 @@
 import os
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
-import aioredis
+# aioredis is a depricated library, replaced with redis
+from redis.asyncio import Redis
 from lightrag.utils import logger
 from lightrag.base import BaseKVStorage
 import json
@@ -11,7 +12,7 @@ import json
 class RedisKVStorage(BaseKVStorage):
     def __post_init__(self):
         redis_url = os.environ.get("REDIS_URI", "redis://localhost:6379")
-        self._redis = aioredis.from_url(redis_url, decode_responses=True)
+        self._redis = Redis.from_url(redis_url, decode_responses=True)
         logger.info(f"Use Redis as KV {self.namespace}")
 
     async def all_keys(self) -> list[str]:
