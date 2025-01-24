@@ -1,6 +1,6 @@
 <center><h2>🚀 LightRAG: Simple and Fast Retrieval-Augmented Generation</h2></center>
 <div align="left">
-<table border="0" width="100%">
+<table border="0">
 <tr>
 <td width="120">
 <img src="https://github.com/user-attachments/assets/cb5b8fc1-0859-4f7c-8ec3-63c8ec7aa54b" width="100" height="100" alt="lightrag">
