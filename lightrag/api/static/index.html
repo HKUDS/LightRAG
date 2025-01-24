@@ -1,0 +1,727 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LightRag</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism.min.css" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-javascript.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-css.min.js"></script>  
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+    }
+    .prose {
+      max-width: 65ch;
+      margin-left: auto;
+      margin-right: auto;
+    }
+    .drop-zone {
+      border: 2px dashed #cbd5e1;
+      transition: all 0.3s ease;
+    }
+    .drop-zone.dragover {
+      border-color: #3b82f6;
+      background-color: #eff6ff;
+    }
+    /* Code block styling */
+    pre {
+        background: #f4f4f4;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        overflow-x: auto;
+        margin: 1rem 0;
+    }
+    
+    code {
+        font-family: 'Fira Code', monospace;
+        font-size: 0.9em;
+    }
+    
+    /* Inline code styling */
+    :not(pre) > code {
+        background: #f4f4f4;
+        padding: 0.2em 0.4em;
+        border-radius: 0.3em;
+        font-size: 0.9em;
+    }
+    
+    /* Prose modifications for better markdown rendering */
+    .prose pre {
+        background: #f4f4f4;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
+    
+    .prose code {
+        color: #374151;
+        background: #f4f4f4;
+        padding: 0.2em 0.4em;
+        border-radius: 0.3em;
+        font-size: 0.9em;
+    }
+    
+    .prose {
+        max-width: none;
+    }
+
+  </style>
+</head>
+<body class="bg-slate-50 min-h-screen p-4">
+  <div class="max-w-7xl mx-auto">
+    <!-- Main Container -->
+    <div class="bg-white shadow-lg rounded-xl p-8 relative">
+      <!-- Top Navigation -->
+      <div class="absolute top-6 right-6 flex space-x-4">
+        <!-- Health Check Button -->
+        <button id="healthCheckBtn" class="p-2 text-slate-600 hover:text-slate-800 transition-colors rounded-lg hover:bg-slate-100">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                  d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        </button>
+        <!-- Settings Button -->
+        <button id="settingsBtn" class="p-2 text-slate-600 hover:text-slate-800 transition-colors rounded-lg hover:bg-slate-100">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                  d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                  d="M12 15a3 3 0 100-6 3 3 0 000 6z" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Header -->
+      <div class="text-center mb-8">
+        <h1 class="text-3xl font-bold text-slate-900">LightRag</h1>
+        <p class="text-slate-600 mt-2">Lightweight Retrieval-Augmented Generation Interface</p>
+      </div>
+
+      <!-- File Upload Section -->
+      <section class="mb-8">
+        <div class="bg-slate-50 p-6 rounded-lg">
+          <h2 class="text-xl font-semibold text-slate-800 mb-4">Upload Documents</h2>
+          
+          <!-- Upload Form -->
+          <form id="uploadForm" class="space-y-4">
+            <!-- Drop Zone -->
+            <div class="drop-zone rounded-lg p-8 text-center cursor-pointer">
+              <input type="file" id="fileInput" class="hidden" multiple accept=".pdf,.txt,.doc,.docx">
+              <div class="flex flex-col items-center">
+                <svg class="w-12 h-12 text-slate-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                </svg>
+                <p class="text-slate-700 font-medium">Drop files here or click to upload</p>
+                <p class="text-slate-500 text-sm mt-1">PDF, TXT, DOC, DOCX (Max 10MB)</p>
+              </div>
+            </div>
+
+            <!-- Selected Files -->
+            <div id="selectedFiles" class="space-y-2"></div>
+
+            <!-- Upload Progress -->
+            <div id="uploadProgress" class="hidden">
+              <div class="w-full bg-slate-200 rounded-full h-2">
+                <div class="bg-blue-600 h-2 rounded-full transition-all duration-300" style="width: 0%"></div>
+              </div>
+              <p class="text-sm text-slate-600 mt-2" id="uploadStatus"></p>
+            </div>
+
+            <!-- Upload Button -->
+            <button type="submit" 
+                    class="w-full bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 
+                           transition-colors font-medium focus:outline-none focus:ring-2 
+                           focus:ring-blue-500 focus:ring-offset-2">
+              Upload Documents
+            </button>
+          </form>
+        </div>
+      </section>
+
+      <!-- Query Section -->
+      <section>
+        <div class="bg-slate-50 p-6 rounded-lg">
+          <h2 class="text-xl font-semibold text-slate-800 mb-4">Query Documents</h2>
+          
+          <form id="queryForm" class="space-y-4">
+            <textarea id="queryInput"
+                      class="w-full p-4 border border-slate-300 rounded-lg focus:ring-2 
+                             focus:ring-blue-500 focus:border-blue-500 transition-all
+                             min-h-[120px] resize-y"
+                      placeholder="Enter your query here..."
+            ></textarea>
+
+            <button type="submit"
+                    class="w-full bg-green-600 text-white px-6 py-3 rounded-lg 
+                           hover:bg-green-700 transition-colors font-medium
+                           focus:outline-none focus:ring-2 focus:ring-green-500 
+                           focus:ring-offset-2">
+              Submit Query
+            </button>
+          </form>
+
+          <!-- Query Response -->
+          <div id="queryResponse" class="mt-6 p-4 bg-white border rounded-lg prose"></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Modals -->
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center">
+      <div class="bg-white rounded-xl shadow-lg p-6 w-full max-w-md m-4">
+        <h3 class="text-lg font-semibold text-slate-900 mb-4">Settings</h3>
+        <input type="text" id="apiKeyInput" 
+               class="w-full p-2 border rounded focus:ring-2 focus:ring-blue-500" 
+               placeholder="Enter API Key">
+        <div class="mt-6 flex justify-end space-x-4">
+          <button id="closeSettingsBtn" 
+                  class="px-4 py-2 text-slate-700 hover:text-slate-900">
+            Cancel
+          </button>
+          <button id="saveSettingsBtn"
+                  class="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+            Save Changes
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Health Check Modal -->
+    <div id="healthModal" class="hidden fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center">
+      <div class="bg-white rounded-xl shadow-lg p-6 w-full max-w-lg m-4">
+        <h3 class="text-lg font-semibold text-slate-900 mb-4">System Health</h3>
+        <div id="healthInfo" class="text-slate-600"></div>
+        <div class="mt-6 flex justify-end">
+          <button id="closeHealthBtn"
+                  class="px-4 py-2 bg-slate-600 text-white rounded hover:bg-slate-700">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Utility Functions
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => document.querySelectorAll(selector);
+
+    // DOM Elements
+    const uploadForm = $('#uploadForm');
+    const fileInput = $('#fileInput');
+    const selectedFiles = $('#selectedFiles');
+    const uploadProgress = $('#uploadProgress');
+    const uploadStatus = $('#uploadStatus');
+    const queryForm = $('#queryForm');
+    const queryInput = $('#queryInput');
+    const queryResponse = $('#queryResponse');
+
+    // Modal Elements
+    const settingsModal = $('#settingsModal');
+    const healthModal = $('#healthModal');
+
+    // File Upload Handling
+    const handleFileSelect = (event) => {
+      const files = Array.from(event.target.files);
+      displaySelectedFiles(files);
+    };
+
+    const displaySelectedFiles = (files) => {
+      selectedFiles.innerHTML = files.map((file, index) => `
+        <div class="flex items-center justify-between p-3 bg-white rounded-lg border">
+          <div class="flex items-center">
+            <svg class="w-5 h-5 text-slate-400 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                    d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
+            </svg>
+            <span class="text-sm text-slate-600">${file.name}</span>
+            <span class="ml-2 text-xs text-slate-400">(${formatFileSize(file.size)})</span>
+          </div>
+          <button type="button" data-index="${index}" class="text-red-500 hover:text-red-700 p-1">
+            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" 
+                    d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" 
+                    clip-rule="evenodd" />
+            </svg>
+          </button>
+        </div>
+      `).join('');
+    };
+
+    const formatFileSize = (bytes) => {
+      if (bytes === 0) return '0 Bytes';
+      const k = 1024;
+      const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    };
+
+    // Event Listeners
+    fileInput.addEventListener('change', handleFileSelect);
+
+    selectedFiles.addEventListener('click', (e) => {
+      const button = e.target.closest('button[data-index]');
+      if (button) {
+        const index = parseInt(button.dataset.index);
+        removeFile(index);
+      }
+    });
+
+    const removeFile = (index) => {
+      const dt = new DataTransfer();
+      const files = fileInput.files;
+      for (let i = 0; i < files.length; i++) {
+        if (i !== index) dt.items.add(files[i]);
+      }
+      fileInput.files = dt.files;
+      displaySelectedFiles(Array.from(fileInput.files));
+    };
+
+    // Drag and Drop
+    const dropZone = $('.drop-zone');
+    dropZone.addEventListener('click', () => {
+        fileInput.click();
+    });
+    
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+      dropZone.addEventListener(eventName, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+    });
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+      dropZone.addEventListener(eventName, () => {
+        dropZone.classList.add('dragover');
+      });
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+      dropZone.addEventListener(eventName, () => {
+        dropZone.classList.remove('dragover');
+      });
+    });
+
+    dropZone.addEventListener('drop', (e) => {
+      fileInput.files = e.dataTransfer.files;
+      displaySelectedFiles(Array.from(fileInput.files));
+    });
+
+    // Form Submissions
+    uploadForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const files = fileInput.files;
+        
+        if (files.length === 0) {
+            uploadStatus.innerHTML = '<span class="text-red-500">Please select files to upload</span>';
+            return;
+        }
+    
+        uploadProgress.classList.remove('hidden');
+        const progressBar = uploadProgress.querySelector('.bg-blue-600');
+        uploadStatus.textContent = 'Starting upload...';
+    
+        try {
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                const formData = new FormData();
+                formData.append('file', file);
+    
+                uploadStatus.textContent = `Uploading ${file.name} (${i + 1}/${files.length})...`;
+                console.log(`Uploading file: ${file.name}`);
+    
+                try {
+                    const response = await fetch('/documents/upload', {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${localStorage.getItem('apiKey') || ''}`
+                        },
+                        body: formData
+                    });
+    
+                    console.log('Response status:', response.status);
+    
+                    if (!response.ok) {
+                        const errorData = await response.json();
+                        throw new Error(`Upload failed: ${errorData.detail || response.statusText}`);
+                    }
+    
+                    // Update progress
+                    const progress = ((i + 1) / files.length) * 100;
+                    progressBar.style.width = `${progress}%`;
+                    console.log(`Progress: ${progress}%`);
+    
+                } catch (error) {
+                    console.error('Upload error:', error);
+                    uploadStatus.innerHTML = `<span class="text-red-500">Error uploading ${file.name}: ${error.message}</span>`;
+                    return;
+                }
+            }
+    
+            // All files uploaded successfully
+            uploadStatus.innerHTML = '<span class="text-green-500">All files uploaded successfully!</span>';
+            progressBar.style.width = '100%';
+            
+            // Clear the file input and selection display
+            setTimeout(() => {
+                fileInput.value = '';
+                selectedFiles.innerHTML = '';
+                uploadProgress.classList.add('hidden');
+                progressBar.style.width = '0%';
+            }, 3000);
+    
+        } catch (error) {
+            console.error('General upload error:', error);
+            uploadStatus.innerHTML = `<span class="text-red-500">Upload failed: ${error.message}</span>`;
+        }
+    });
+
+    function addCopyButtons() {
+        document.querySelectorAll('pre').forEach(pre => {
+            if (!pre.querySelector('.copy-button')) {
+                const button = document.createElement('button');
+                button.className = 'copy-button absolute top-1 right-1 p-1 bg-slate-700/80 hover:bg-slate-700 text-white rounded text-xs opacity-0 group-hover:opacity-100 transition-opacity';
+                button.innerHTML = `
+                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                              d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                `;
+                
+                pre.style.position = 'relative';
+                pre.classList.add('group');
+                
+                button.addEventListener('click', async () => {
+                    const codeElement = pre.querySelector('code');
+                    if (!codeElement) return;
+    
+                    const text = codeElement.textContent;
+    
+                    try {
+                        // First try using the Clipboard API
+                        if (navigator.clipboard && window.isSecureContext) {
+                            await navigator.clipboard.writeText(text);
+                        } else {
+                            // Fallback for older browsers
+                            const textArea = document.createElement('textarea');
+                            textArea.value = text;
+                            textArea.style.position = 'fixed';
+                            textArea.style.left = '-999999px';
+                            textArea.style.top = '-999999px';
+                            document.body.appendChild(textArea);
+                            textArea.focus();
+                            textArea.select();
+                            try {
+                                document.execCommand('copy');
+                                textArea.remove();
+                            } catch (error) {
+                                console.error('Copy failed:', error);
+                                textArea.remove();
+                                return;
+                            }
+                        }
+    
+                        // Show success feedback
+                        button.innerHTML = `
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                            </svg>
+                        `;
+                        
+                        // Reset button after 2 seconds
+                        setTimeout(() => {
+                            button.innerHTML = `
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                          d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                                </svg>
+                            `;
+                        }, 2000);
+    
+                    } catch (err) {
+                        console.error('Copy failed:', err);
+                    }
+                });
+                
+                pre.appendChild(button);
+            }
+        });
+    }
+
+
+    queryForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const query = queryInput.value.trim();
+        
+        if (!query) {
+            queryResponse.innerHTML = '<p class="text-red-500">Please enter a query</p>';
+            return;
+        }
+    
+        // Show loading state
+        queryResponse.innerHTML = `
+            <div class="animate-pulse">
+                <div class="flex items-center space-x-2">
+                    <svg class="animate-spin h-5 w-5 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span class="text-slate-600">Processing your query...</span>
+                </div>
+            </div>
+        `;
+    
+        try {
+            console.log('Sending query:', query);
+            
+            const response = await fetch('/query', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${localStorage.getItem('apiKey') || ''}`
+                },
+                body: JSON.stringify({ query })
+            });
+    
+            console.log('Response status:', response.status);
+    
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(`Query failed: ${errorData.detail || response.statusText}`);
+            }
+    
+            const data = await response.json();
+            console.log('Query response:', data);
+    
+            // Format and display the response
+            if (data.response) {
+                const formattedResponse = marked.parse(data.response, {
+                    highlight: function(code, lang) {
+                        if (Prism.languages[lang]) {
+                            return Prism.highlight(code, Prism.languages[lang], lang);
+                        }
+                        return code;
+                    }
+                });              
+                queryResponse.innerHTML = `
+                    <div class="prose prose-slate max-w-none">
+                        ${formattedResponse}
+                    </div>
+                `;
+                
+                // Re-trigger Prism highlighting
+                Prism.highlightAllUnder(queryResponse);
+            } else {
+                queryResponse.innerHTML = '<p class="text-slate-600">No response data received</p>';
+            }
+    
+            // Call this after loading markdown content
+            addCopyButtons();
+            // Optional: Add sources if available
+            if (data.sources && data.sources.length > 0) {
+                const sourcesHtml = `
+                    <div class="mt-4 pt-4 border-t border-slate-200">
+                        <h4 class="text-sm font-medium text-slate-700 mb-2">Sources:</h4>
+                        <ul class="text-sm text-slate-600 space-y-1">
+                            ${data.sources.map(source => `
+                                <li class="flex items-center space-x-2">
+                                    <svg class="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                    <span>${source}</span>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                `;
+                queryResponse.insertAdjacentHTML('beforeend', sourcesHtml);
+            }
+    
+        } catch (error) {
+            console.error('Query error:', error);
+            queryResponse.innerHTML = `
+                <div class="text-red-500 space-y-2">
+                    <p class="font-medium">Error processing query:</p>
+                    <p class="text-sm">${error.message}</p>
+                </div>
+            `;
+        }
+    
+        // Optional: Add a copy button for the response
+        const copyButton = document.createElement('button');
+        copyButton.className = 'mt-4 px-3 py-1 text-sm text-slate-600 hover:text-slate-800 border border-slate-300 rounded hover:bg-slate-50 transition-colors';
+        copyButton.innerHTML = `
+            <span class="flex items-center space-x-1">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                          d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span>Copy Response</span>
+            </span>
+        `;
+        copyButton.onclick = () => {
+            const textToCopy = queryResponse.textContent;
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                copyButton.innerHTML = `
+                    <span class="flex items-center space-x-1">
+                        <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span>Copied!</span>
+                    </span>
+                `;
+                setTimeout(() => {
+                    copyButton.innerHTML = `
+                        <span class="flex items-center space-x-1">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                                      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                            <span>Copy Response</span>
+                        </span>
+                    `;
+                }, 2000);
+            });
+        };
+        queryResponse.appendChild(copyButton);
+    });
+
+
+    // Modal Controls
+    $('#settingsBtn').addEventListener('click', () => settingsModal.classList.remove('hidden'));
+    $('#settingsBtn').addEventListener('click', () => settingsModal.classList.remove('hidden'));
+    $('#closeSettingsBtn').addEventListener('click', () => settingsModal.classList.add('hidden'));
+    $('#saveSettingsBtn').addEventListener('click', () => {
+      const apiKey = $('#apiKeyInput').value;
+      localStorage.setItem('apiKey', apiKey);
+      settingsModal.classList.add('hidden');
+    });
+
+    $('#healthCheckBtn').addEventListener('click', async () => {
+      healthModal.classList.remove('hidden');
+      const healthInfo = $('#healthInfo');
+      healthInfo.innerHTML = '<p class="text-slate-600">Checking system health...</p>';
+
+      try {
+        const response = await fetch('/health', {
+          headers: {
+            'Authorization': `Bearer ${localStorage.getItem('apiKey')}`
+          }
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          healthInfo.innerHTML = `
+            <div class="space-y-4">
+              <div class="flex items-center">
+                <div class="w-3 h-3 rounded-full ${data.status === 'healthy' ? 'bg-green-500' : 'bg-red-500'} mr-2"></div>
+                <span class="font-medium">Status: ${data.status}</span>
+              </div>
+              <div class="space-y-2">
+                <p><span class="font-medium">Working Directory:</span> ${data.working_directory}</p>
+                <p><span class="font-medium">Input Directory:</span> ${data.input_directory}</p>
+                <p><span class="font-medium">Indexed Files:</span> ${data.indexed_files}</p>
+              </div>
+              <div class="border-t pt-4">
+                <h4 class="font-medium mb-2">Configuration</h4>
+                <ul class="space-y-1 text-sm">
+                  <li><span class="text-slate-500">LLM Binding:</span> ${data.configuration.llm_binding}</li>
+                  <li><span class="text-slate-500">LLM Model:</span> ${data.configuration.llm_model}</li>
+                  <li><span class="text-slate-500">Embedding Model:</span> ${data.configuration.embedding_model}</li>
+                  <li><span class="text-slate-500">Max Tokens:</span> ${data.configuration.max_tokens}</li>
+                </ul>
+              </div>
+            </div>
+          `;
+        } else {
+          healthInfo.innerHTML = '<p class="text-red-500">Failed to fetch health status</p>';
+        }
+      } catch (error) {
+        healthInfo.innerHTML = `<p class="text-red-500">Error: ${error.message}</p>`;
+      }
+    });
+
+    $('#closeHealthBtn').addEventListener('click', () => {
+      healthModal.classList.add('hidden');
+    });
+
+    // File Upload Handler
+    async function handleUpload(files) {
+      uploadProgress.classList.remove('hidden');
+      const progressBar = uploadProgress.querySelector('.bg-blue-600');
+      let uploadedCount = 0;
+
+      for (const [index, file] of Array.from(files).entries()) {
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+          const response = await fetch('/documents/upload', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${localStorage.getItem('apiKey')}`
+            },
+            body: formData
+          });
+
+          if (response.ok) {
+            uploadedCount++;
+            const progress = (uploadedCount / files.length) * 100;
+            progressBar.style.width = `${progress}%`;
+            uploadStatus.textContent = `Uploading ${uploadedCount} of ${files.length} files...`;
+          } else {
+            throw new Error(`Failed to upload ${file.name}`);
+          }
+        } catch (error) {
+          uploadStatus.innerHTML = `<span class="text-red-500">Error: ${error.message}</span>`;
+          break;
+        }
+      }
+
+      if (uploadedCount === files.length) {
+        uploadStatus.innerHTML = '<span class="text-green-500">All files uploaded successfully!</span>';
+        setTimeout(() => {
+          uploadProgress.classList.add('hidden');
+          fileInput.value = '';
+          selectedFiles.innerHTML = '';
+        }, 3000);
+      }
+    }
+
+
+    // Form submission handlers
+    uploadForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const files = fileInput.files;
+      if (files.length > 0) {
+        await handleUpload(files);
+      } else {
+        uploadStatus.innerHTML = '<span class="text-red-500">Please select files to upload</span>';
+      }
+    });
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+      const apiKey = localStorage.getItem('apiKey');
+      if (apiKey) {
+        $('#apiKeyInput').value = apiKey;
+      }
+    });
+
+    // Close modals when clicking outside
+    window.addEventListener('click', (e) => {
+      if (e.target === settingsModal) settingsModal.classList.add('hidden');
+      if (e.target === healthModal) healthModal.classList.add('hidden');
+    });
+  </script>
+</body>
+</html>
