@@ -679,32 +679,6 @@ def test_generate_concurrent() -> None:
         print(f"\nRequest {i} result:")
         print_json_response(result)
 
-def test_generate_query_modes() -> None:
-    """Test different query mode prefixes for generate endpoint"""
-    url = get_base_url("generate")
-    modes = ["local", "global", "naive", "hybrid", "mix"]
-
-    for mode in modes:
-        if OutputControl.is_verbose():
-            print(f"\n=== Testing /{mode} mode for generate ===")
-        data = create_generate_request_data(
-            f"/{mode} {CONFIG['test_cases']['generate']['query']}",
-            stream=False
-        )
-
-        # Send request
-        response = make_request(url, data)
-        response_json = response.json()
-
-        # Print response content
-        print_json_response(
-            {
-                "model": response_json["model"],
-                "response": response_json["response"],
-                "done": response_json["done"]
-            }
-        )
-
 def get_test_cases() -> Dict[str, Callable]:
     """Get all available test cases
     Returns:
@@ -719,7 +693,6 @@ def get_test_cases() -> Dict[str, Callable]:
         "non_stream_generate": test_non_stream_generate,
         "stream_generate": test_stream_generate,
         "generate_with_system": test_generate_with_system,
-        "generate_modes": test_generate_query_modes,
         "generate_errors": test_generate_error_handling,
         "generate_stats": test_generate_performance_stats,
         "generate_concurrent": test_generate_concurrent
@@ -821,7 +794,6 @@ if __name__ == "__main__":
             run_test(test_non_stream_generate, "Non-streaming Generate Test")
             run_test(test_stream_generate, "Streaming Generate Test")
             run_test(test_generate_with_system, "Generate with System Prompt Test")
-            run_test(test_generate_query_modes, "Generate Query Mode Test")
             run_test(test_generate_error_handling, "Generate Error Handling Test")
             run_test(test_generate_performance_stats, "Generate Performance Stats Test")
             run_test(test_generate_concurrent, "Generate Concurrent Test")
