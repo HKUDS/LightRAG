@@ -809,7 +809,8 @@ def create_app(args):
         # Startup logic
         # Now only if this option is active, we can scan. This is better for big databases where there are hundreds of
         # files. Makes the startup faster 
-        if args.auto_scan_at_startup: 
+        if args.auto_scan_at_startup:
+            ASCIIColors.info("Auto scan is active, rescanning the input directory.")
             try:
                 new_files = doc_manager.scan_directory()
                 for file_path in new_files:
