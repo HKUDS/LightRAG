@@ -1540,7 +1540,7 @@ def create_app(args):
                 
                 # 判断是否包含特定字符串，使用正则表达式进行匹配
                 logging.info(f"Cleaned query content: {cleaned_query}")
-                match_result = re.search(r'\\n<chat_history>\\nUSER:', cleaned_query)
+                match_result = re.search(r'\n<chat_history>\nUSER:', cleaned_query, re.MULTILINE)
                 logging.info(f"Regex match result: {bool(match_result)}")
                 
                 if match_result:
