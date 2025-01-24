@@ -1510,7 +1510,11 @@ def create_app(args):
 
     return app
 
-
+    # Serve the static files
+    static_dir = Path(__file__).parent / "static"
+    static_dir.mkdir(exist_ok=True)
+    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+    
 def main():
     args = parse_args()
     import uvicorn
