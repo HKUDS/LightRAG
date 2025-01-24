@@ -622,7 +622,7 @@
           const data = await response.json();
           // Convert indexed_files to array if it's not already
           const files = Array.isArray(data.indexed_files) ? data.indexed_files : data.indexed_files.split(',');
-          
+
           healthInfo.innerHTML = `
             <div class="space-y-4">
               <div class="flex items-center">

@@ -41,15 +41,14 @@ __author__ = "lightrag Team"
 __status__ = "Production"
 
 
-
 import sys
 import os
 
 if sys.version_info < (3, 9):
-    from typing import AsyncIterator
+    pass
 else:
-    from collections.abc import AsyncIterator
-import pipmaster as pm # Pipmaster for dynamic library install
+    pass
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("openai"):
@@ -70,14 +69,11 @@ from tenacity import (
 
 from lightrag.utils import (
     wrap_embedding_func_with_attrs,
-    locate_json_string_body_from_string,
-    safe_unicode_decode,
-    logger,
 )
 
-from lightrag.types import GPTKeywordExtractionFormat
 
 import numpy as np
+
 
 @wrap_embedding_func_with_attrs(embedding_dim=2048, max_token_size=512)
 @retry(

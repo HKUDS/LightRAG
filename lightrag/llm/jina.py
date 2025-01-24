@@ -39,7 +39,7 @@ __author__ = "lightrag Team"
 __status__ = "Production"
 
 import os
-import pipmaster as pm # Pipmaster for dynamic library install
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("lmdeploy"):
@@ -47,25 +47,8 @@ if not pm.is_installed("lmdeploy"):
 if not pm.is_installed("tenacity"):
     pm.install("tenacity")
 
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-)
-
-from lightrag.utils import (
-    wrap_embedding_func_with_attrs,
-    locate_json_string_body_from_string,
-    safe_unicode_decode,
-    logger,
-)
-
-from lightrag.types import GPTKeywordExtractionFormat
-from functools import lru_cache
 
 import numpy as np
-from typing import Union
 import aiohttp
 
 
@@ -101,4 +84,3 @@ async def jina_embed(
     }
     data_list = await fetch_data(url, headers, data)
     return np.array([dp["embedding"] for dp in data_list])
-

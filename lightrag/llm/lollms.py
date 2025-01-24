@@ -62,11 +62,13 @@ __status__ = "Production"
 __project_url__ = "https://github.com/ParisNeo/lollms"
 __doc_url__ = "https://github.com/ParisNeo/lollms/docs"
 import sys
+
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
 else:
     from collections.abc import AsyncIterator
-import pipmaster as pm # Pipmaster for dynamic library install
+import pipmaster as pm  # Pipmaster for dynamic library install
+
 if not pm.is_installed("aiohttp"):
     pm.install("aiohttp")
 if not pm.is_installed("tenacity"):
@@ -88,6 +90,7 @@ from lightrag.exceptions import (
 
 from typing import Union, List
 import numpy as np
+
 
 @retry(
     stop=stop_after_attempt(3),
@@ -183,7 +186,6 @@ async def lollms_model_complete(
         history_messages=history_messages,
         **kwargs,
     )
-
 
 
 async def lollms_embed(

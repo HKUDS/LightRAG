@@ -1,7 +1,6 @@
 accelerate
 aiofiles
 aiohttp
-redis
 asyncpg
 configparser
 
@@ -30,6 +29,7 @@ python-docx
 python-dotenv
 python-pptx
 pyvis
+redis
 setuptools
 sqlalchemy
 tenacity
@@ -39,4 +39,3 @@ tenacity
 tiktoken
 tqdm
 xxhash
-

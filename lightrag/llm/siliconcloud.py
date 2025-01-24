@@ -39,23 +39,18 @@ __author__ = "lightrag Team"
 __status__ = "Production"
 
 import sys
-import copy
-import os
-import json
 
 if sys.version_info < (3, 9):
-    from typing import AsyncIterator
+    pass
 else:
-    from collections.abc import AsyncIterator
-import pipmaster as pm # Pipmaster for dynamic library install
+    pass
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("lmdeploy"):
     pm.install("lmdeploy")
 
 from openai import (
-    AsyncOpenAI,
-    AsyncAzureOpenAI,
     APIConnectionError,
     RateLimitError,
     APITimeoutError,
@@ -67,19 +62,12 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from lightrag.utils import (
-    wrap_embedding_func_with_attrs,
-    locate_json_string_body_from_string,
-    safe_unicode_decode,
-    logger,
-)
-
-from lightrag.types import GPTKeywordExtractionFormat
-from functools import lru_cache
 
 import numpy as np
-from typing import Union
 import aiohttp
+import base64
+import struct
+
 
 @retry(
     stop=stop_after_attempt(3),

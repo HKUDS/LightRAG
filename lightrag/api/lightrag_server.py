@@ -684,7 +684,9 @@ def create_app(args):
                         trace_exception(e)
                         logging.error(f"Error indexing file {file_path}: {str(e)}")
 
-                ASCIIColors.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
+                ASCIIColors.info(
+                    f"Indexed {len(new_files)} documents from {args.input_dir}"
+                )
             except Exception as e:
                 logging.error(f"Error during startup indexing: {str(e)}")
         yield
@@ -916,7 +918,6 @@ def create_app(args):
             logging.info(f"Successfully indexed file: {file_path}")
         else:
             logging.warning(f"No content extracted from file: {file_path}")
-
 
     @app.post("/documents/scan", dependencies=[Depends(optional_api_key)])
     async def scan_for_new_documents():

@@ -42,7 +42,7 @@ __status__ = "Production"
 
 
 import os
-import pipmaster as pm # Pipmaster for dynamic library install
+import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
 if not pm.is_installed("openai"):
@@ -70,6 +70,7 @@ from lightrag.utils import (
 )
 
 import numpy as np
+
 
 @retry(
     stop=stop_after_attempt(3),
@@ -153,6 +154,7 @@ async def azure_openai_complete(
         return locate_json_string_body_from_string(result)
     return result
 
+
 @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8191)
 @retry(
     stop=stop_after_attempt(3),
@@ -185,4 +187,3 @@ async def azure_openai_embed(
         model=model, input=texts, encoding_format="float"
     )
     return np.array([dp.embedding for dp in response.data])
-
