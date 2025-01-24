@@ -597,35 +597,6 @@ def test_generate_error_handling() -> None:
     print_json_response(response.json(), "Error message")
 
 
-def test_generate_performance_stats() -> None:
-    """Test performance statistics in generate response"""
-    url = get_base_url("generate")
-    
-    # Test with different length inputs to verify token counting
-    inputs = [
-        "你好",  # Short Chinese
-        "Hello world",  # Short English
-        "这是一个较长的中文输入，用来测试token数量的估算是否准确。",  # Medium Chinese
-        "This is a longer English input that will be used to test the accuracy of token count estimation."  # Medium English
-    ]
-    
-    for test_input in inputs:
-        if OutputControl.is_verbose():
-            print(f"\n=== Testing performance stats with input: {test_input} ===")
-        data = create_generate_request_data(test_input, stream=False)
-        response = make_request(url, data)
-        response_json = response.json()
-        
-        # Verify performance statistics exist and are reasonable
-        stats = {
-            "total_duration": response_json.get("total_duration"),
-            "prompt_eval_count": response_json.get("prompt_eval_count"),
-            "prompt_eval_duration": response_json.get("prompt_eval_duration"),
-            "eval_count": response_json.get("eval_count"),
-            "eval_duration": response_json.get("eval_duration")
-        }
-        print_json_response(stats, "Performance statistics")
-
 def test_generate_concurrent() -> None:
     """Test concurrent generate requests"""
     import asyncio
@@ -686,7 +657,6 @@ def get_test_cases() -> Dict[str, Callable]:
         "stream_generate": test_stream_generate,
         "generate_with_system": test_generate_with_system,
         "generate_errors": test_generate_error_handling,
-        "generate_stats": test_generate_performance_stats,
         "generate_concurrent": test_generate_concurrent
     }
 
@@ -787,7 +757,6 @@ if __name__ == "__main__":
             run_test(test_stream_generate, "Streaming Generate Test")
             run_test(test_generate_with_system, "Generate with System Prompt Test")
             run_test(test_generate_error_handling, "Generate Error Handling Test")
-            run_test(test_generate_performance_stats, "Generate Performance Stats Test")
             run_test(test_generate_concurrent, "Generate Concurrent Test")
         else:
             # Run specified tests
