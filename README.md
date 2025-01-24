@@ -119,6 +119,34 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 print(rag.query("What are the top themes in this story?", param=QueryParam(
     mode="mix")))
 
+### Conversation History Support
+LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
+
+```python
+from lightrag import LightRAG, QueryParam
+
+# Initialize LightRAG
+rag = LightRAG(working_dir=WORKING_DIR)
+
+# Create conversation history
+conversation_history = [
+    {"role": "user", "content": "What is the main character's attitude towards Christmas?"},
+    {"role": "assistant", "content": "At the beginning of the story, Ebenezer Scrooge has a very negative attitude towards Christmas..."},
+    {"role": "user", "content": "How does his attitude change?"}
+]
+
+# Create query parameters with conversation history
+query_param = QueryParam(
+    mode="mix",  # or any other mode: "local", "global", "hybrid"
+    conversation_history=conversation_history,  # Add the conversation history
+    history_turns=3  # Number of recent conversation turns to consider
+)
+
+# Make a query that takes into account the conversation history
+response = rag.query(
+    "What causes this change in his character?",
+    param=query_param
+)
 ```
 
 
