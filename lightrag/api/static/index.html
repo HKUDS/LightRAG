@@ -7,6 +7,11 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/themes/prism.min.css" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/prism.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-python.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-javascript.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.24.1/components/prism-css.min.js"></script>  
   <style>
     body {
       font-family: 'Inter', sans-serif;
@@ -24,10 +29,52 @@
       border-color: #3b82f6;
       background-color: #eff6ff;
     }
+    /* Code block styling */
+    pre {
+        background: #f4f4f4;
+        border-radius: 0.5rem;
+        padding: 1rem;
+        overflow-x: auto;
+        margin: 1rem 0;
+    }
+    
+    code {
+        font-family: 'Fira Code', monospace;
+        font-size: 0.9em;
+    }
+    
+    /* Inline code styling */
+    :not(pre) > code {
+        background: #f4f4f4;
+        padding: 0.2em 0.4em;
+        border-radius: 0.3em;
+        font-size: 0.9em;
+    }
+    
+    /* Prose modifications for better markdown rendering */
+    .prose pre {
+        background: #f4f4f4;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin: 1rem 0;
+    }
+    
+    .prose code {
+        color: #374151;
+        background: #f4f4f4;
+        padding: 0.2em 0.4em;
+        border-radius: 0.3em;
+        font-size: 0.9em;
+    }
+    
+    .prose {
+        max-width: none;
+    }
+
   </style>
 </head>
 <body class="bg-slate-50 min-h-screen p-4">
-  <div class="max-w-4xl mx-auto">
+  <div class="max-w-7xl mx-auto">
     <!-- Main Container -->
     <div class="bg-white shadow-lg rounded-xl p-8 relative">
       <!-- Top Navigation -->
@@ -384,12 +431,22 @@
     
             // Format and display the response
             if (data.response) {
-                // Use marked.js to render markdown
+                const formattedResponse = marked.parse(data.response, {
+                    highlight: function(code, lang) {
+                        if (Prism.languages[lang]) {
+                            return Prism.highlight(code, Prism.languages[lang], lang);
+                        }
+                        return code;
+                    }
+                });              
                 queryResponse.innerHTML = `
                     <div class="prose prose-slate max-w-none">
-                        ${marked.parse(data.response)}
+                        ${formattedResponse}
                     </div>
                 `;
+                
+                // Re-trigger Prism highlighting
+                Prism.highlightAllUnder(queryResponse);
             } else {
                 queryResponse.innerHTML = '<p class="text-slate-600">No response data received</p>';
             }
