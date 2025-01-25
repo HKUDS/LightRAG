@@ -486,7 +486,7 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${localStorage.getItem('apiKey') || ''}`
+                    'X-API-Key': `${localStorage.getItem('apiKey') || ''}`
                 },
                 body: JSON.stringify({ query })
             });
