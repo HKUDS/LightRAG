@@ -1,6 +1,6 @@
 /* css/lightrag.css */
 
-/* 模态框样式 */
+/*Modal box style*/
 .modal {
     display: none;
     position: fixed;
@@ -50,7 +50,7 @@
     color: var(--text-primary);
 }
 
-/* 图谱节点样式 */
+/* graph style */
 .node {
     cursor: pointer;
     fill: var(--primary);
@@ -73,20 +73,14 @@
     pointer-events: none;
 }
 
-/* 添加边样式 */
+/* edge style */
 .link {
-    stroke: #999;       /* 连线颜色 */
-    stroke-width: 2px;  /* 连线粗细 */
-    stroke-opacity: 0.6;/* 透明度 */
-}
-/* 边样式 */
-.link {
-    stroke: #999;        /* 边颜色 */
-    stroke-width: 2px;   /* 边粗细 */
-    stroke-opacity: 0.8; /* 边透明度 */
+    stroke: #999;
+    stroke-width: 2px;
+    stroke-opacity: 0.8;
 }
 
-/* 箭头颜色匹配边颜色 */
+/* Arrow color matches edge color */
 #arrow path {
-    fill: #999 !important; /* 覆盖默认颜色 */
+    fill: #999 !important;
 }

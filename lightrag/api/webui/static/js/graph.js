@@ -38,7 +38,7 @@ async function getGraph(label) {
             node.id = Date.now().toString(36) + Math.random().toString(36).substring(2); // 使用 crypto.randomUUID() 生成唯一 UUID
         });
 
-        // 严格验证边数据 Strictly verify edge data
+        //  Strictly verify edge data
         const edges = (rawData.edges || []).map(edge => {
             const sourceNode = nodes.find(n => n.labels.includes(edge.source));
             const targetNode = nodes.find(n => n.labels.includes(edge.target)
@@ -72,20 +72,19 @@ async function renderGraph(label) {
         return;
     }
 
-    //
+
     const svg = d3.select("#graph-svg");
     const width = svg.node().clientWidth;
     const height = svg.node().clientHeight;
 
-    //
     svg.selectAll("*").remove();
 
-    // 创建力导向图布局 Create a force oriented diagram layout
+    //  Create a force oriented diagram layout
     const simulation = d3.forceSimulation(data.nodes)
         .force("charge", d3.forceManyBody().strength(-300))
         .force("center", d3.forceCenter(width / 2, height / 2));
 
-    // 添加连线（如果存在有效边） Add a connection (if there are valid edges)
+    //  Add a connection (if there are valid edges)
     if (data.edges.length > 0) {
         simulation.force("link",
             d3.forceLink(data.edges)
@@ -94,9 +93,7 @@ async function renderGraph(label) {
         );
     }
 
-
-
-    // 绘制节点 Draw nodes
+    //  Draw nodes
     const nodes = svg.selectAll(".node")
         .data(data.nodes)
         .enter()
@@ -123,21 +120,21 @@ async function renderGraph(label) {
         .attr("d", "M0,0 L10,5 L0,10 Z")
         .attr("fill", "#999");
 
-    // 绘制边（带箭头） Draw edges (with arrows)
+    //  Draw edges (with arrows)
     const links = svg.selectAll(".link")
         .data(data.edges)
         .enter()
         .append("line")
         .attr("class", "link")
-        .attr("marker-end", "url(#arrow-out)"); // 始终在 target 侧绘制箭头 Always draw arrows on the target side
+        .attr("marker-end", "url(#arrow-out)"); //  Always draw arrows on the target side
 
-    // 边样式配置 Edge style configuration
+    //  Edge style configuration
     links
         .attr("stroke", "#999")
         .attr("stroke-width", 2)
         .attr("stroke-opacity", 0.8);
 
-    // 绘制标签（带背景框） Draw label (with background box)
+    //  Draw label (with background box)
     const labels = svg.selectAll(".label")
         .data(data.nodes)
         .enter()
@@ -148,16 +145,16 @@ async function renderGraph(label) {
         .attr("dy", "0.3em")
         .attr("fill", "#333");
 
-    // 更新位置 Update Location
+    //  Update Location
     simulation.on("tick", () => {
         links
             .attr("x1", d => {
-                // 计算源节点到目标节点的方向向量 Calculate the direction vector from the source node to the target node
+                //  Calculate the direction vector from the source node to the target node
                 const dx = d.target.x - d.source.x;
                 const dy = d.target.y - d.source.y;
                 const distance = Math.sqrt(dx * dx + dy * dy);
                 if (distance === 0) return d.source.x; // 避免除以零 Avoid dividing by zero
-                // 根据半径 10 调整起点坐标（源节点边缘）Adjust the starting point coordinates (source node edge) based on radius 10
+                // Adjust the starting point coordinates (source node edge) based on radius 10
                 return d.source.x + (dx / distance) * 10;
             })
             .attr("y1", d => {
@@ -168,7 +165,7 @@ async function renderGraph(label) {
                 return d.source.y + (dy / distance) * 10;
             })
             .attr("x2", d => {
-                // 根据半径 10 调整终点坐标（目标节点边缘） Adjust the endpoint coordinates (target node edge) based on a radius of 10
+                // Adjust the endpoint coordinates (target node edge) based on a radius of 10
                 const dx = d.target.x - d.source.x;
                 const dy = d.target.y - d.source.y;
                 const distance = Math.sqrt(dx * dx + dy * dy);
@@ -183,7 +180,7 @@ async function renderGraph(label) {
                 return d.target.y - (dy / distance) * 10;
             });
 
-        // 更新节点和标签的位置（保持不变） Update the position of nodes and labels (keep unchanged)
+        // Update the position of nodes and labels (keep unchanged)
         nodes
             .attr("cx", d => d.x)
             .attr("cy", d => d.y);
@@ -193,7 +190,7 @@ async function renderGraph(label) {
             .attr("y", d => d.y + 4);
     });
 
-    // 拖拽逻辑 Drag and drop logic
+    // Drag and drop logic
     function dragStarted(event, d) {
         if (!event.active) simulation.alphaTarget(0.3).restart();
         d.fx = d.x;

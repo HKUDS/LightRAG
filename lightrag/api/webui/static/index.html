@@ -261,19 +261,19 @@
     }
 
     function showSection(sectionId) {
-        // 隐藏所有内容区块 Hide all content blocks
+        // Hide all content blocks
         const sections = document.querySelectorAll('.main-content .card');
         sections.forEach(section => {
             section.style.display = 'none';
         });
 
-        // 显示目标区块 Display target block
+        //  Display target block
         const targetSection = document.getElementById(sectionId);
         if (targetSection) {
             targetSection.style.display = 'block';
         }
 
-        // 更新按钮激活状态（可选）Update button activation status (optional)
+        // Update button activation status (optional)
         const buttons = document.querySelectorAll('.nav-menu button');
         buttons.forEach(button => {
             button.classList.remove('active');
@@ -281,10 +281,9 @@
         event.target.classList.add('active');
     }
 
-    // 初始化显示文档管理模块 Initialize the display document management module
+    // Initialize the display document management module
     showSection('documents');
 </script>
-<!-- 在页面底部添加 -->
 <script src="js/lightrag.js"></script>
 <script src="js/graph.js"></script>
 <script src="https://d3js.org/d3.v7.min.js"></script>
