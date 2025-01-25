@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, File, UploadFile
 from pydantic import BaseModel
 import os
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import ollama_embedding, ollama_model_complete
+from lightrag.llm.ollama import ollama_embed, ollama_model_complete
 from lightrag.utils import EmbeddingFunc
 from typing import Optional
 import asyncio
@@ -38,7 +38,7 @@ rag = LightRAG(
     embedding_func=EmbeddingFunc(
         embedding_dim=768,
         max_token_size=8192,
-        func=lambda texts: ollama_embedding(
+        func=lambda texts: ollama_embed(
             texts, embed_model="nomic-embed-text", host="http://localhost:11434"
         ),
     ),

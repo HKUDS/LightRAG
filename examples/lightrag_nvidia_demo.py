@@ -3,7 +3,7 @@ import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import (
     openai_complete_if_cache,
-    nvidia_openai_embedding,
+    nvidia_openai_embed,
 )
 from lightrag.utils import EmbeddingFunc
 import numpy as np
@@ -47,7 +47,7 @@ nvidia_embed_model = "nvidia/nv-embedqa-e5-v5"
 
 
 async def indexing_embedding_func(texts: list[str]) -> np.ndarray:
-    return await nvidia_openai_embedding(
+    return await nvidia_openai_embed(
         texts,
         model=nvidia_embed_model,  # maximum 512 token
         # model="nvidia/llama-3.2-nv-embedqa-1b-v1",
@@ -60,7 +60,7 @@ async def indexing_embedding_func(texts: list[str]) -> np.ndarray:
 
 
 async def query_embedding_func(texts: list[str]) -> np.ndarray:
-    return await nvidia_openai_embedding(
+    return await nvidia_openai_embed(
         texts,
         model=nvidia_embed_model,  # maximum 512 token
         # model="nvidia/llama-3.2-nv-embedqa-1b-v1",

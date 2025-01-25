@@ -22,3 +22,5 @@ venv/
 examples/input/
 examples/output/
 .DS_Store
+#Remove config.ini from repo
+*.ini

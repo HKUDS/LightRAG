@@ -1,7 +1,7 @@
 import os
 import time
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import ollama_model_complete, ollama_embedding
+from lightrag.llm.ollama import ollama_model_complete, ollama_embed
 from lightrag.utils import EmbeddingFunc
 
 # Working directory and the directory path for text files
@@ -20,7 +20,7 @@ rag = LightRAG(
     embedding_func=EmbeddingFunc(
         embedding_dim=768,
         max_token_size=8192,
-        func=lambda texts: ollama_embedding(texts, embed_model="nomic-embed-text"),
+        func=lambda texts: ollama_embed(texts, embed_model="nomic-embed-text"),
     ),
 )
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Union, cast, Dict
 import networkx as nx
 import numpy as np
+
 from nano_vectordb import NanoVectorDB
 import time
 

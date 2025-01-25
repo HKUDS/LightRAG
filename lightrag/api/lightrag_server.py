@@ -8,10 +8,6 @@ import time
 import re
 from typing import List, Dict, Any, Optional, Union
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import lollms_model_complete, lollms_embed
-from lightrag.llm import ollama_model_complete, ollama_embed
-from lightrag.llm import openai_complete_if_cache, openai_embedding
-from lightrag.llm import azure_openai_complete_if_cache, azure_openai_embedding
 from lightrag.api import __api_version__
 
 from lightrag.utils import EmbeddingFunc
@@ -468,12 +464,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to SSL private key file (required if --ssl is enabled)",
     )
     parser.add_argument(
-        '--auto-scan-at-startup',
-        action='store_true',
+        "--auto-scan-at-startup",
+        action="store_true",
         default=False,
-        help='Enable automatic scanning when the program starts'
+        help="Enable automatic scanning when the program starts",
     )
-
 
     args = parser.parse_args()
 
@@ -679,18 +674,21 @@ def create_app(args):
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
         # Startup logic
-        try:
-            new_files = doc_manager.scan_directory()
-            for file_path in new_files:
-                try:
-                    await index_file(file_path)
-                except Exception as e:
-                    trace_exception(e)
-                    logging.error(f"Error indexing file {file_path}: {str(e)}")
+        if args.auto_scan_at_startup:
+            try:
+                new_files = doc_manager.scan_directory()
+                for file_path in new_files:
+                    try:
+                        await index_file(file_path)
+                    except Exception as e:
+                        trace_exception(e)
+                        logging.error(f"Error indexing file {file_path}: {str(e)}")
 
-            logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
-        except Exception as e:
-            logging.error(f"Error during startup indexing: {str(e)}")
+                ASCIIColors.info(
+                    f"Indexed {len(new_files)} documents from {args.input_dir}"
+                )
+            except Exception as e:
+                logging.error(f"Error during startup indexing: {str(e)}")
         yield
         # Cleanup logic (if needed)
         pass
@@ -721,6 +719,20 @@ def create_app(args):
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
+    if args.llm_binding_host == "lollms" or args.embedding_binding == "lollms":
+        from lightrag.llm.lollms import lollms_model_complete, lollms_embed
+    if args.llm_binding_host == "ollama" or args.embedding_binding == "ollama":
+        from lightrag.llm.ollama import ollama_model_complete, ollama_embed
+    if args.llm_binding_host == "openai" or args.embedding_binding == "openai":
+        from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+    if (
+        args.llm_binding_host == "azure_openai"
+        or args.embedding_binding == "azure_openai"
+    ):
+        from lightrag.llm.azure_openai import (
+            azure_openai_complete_if_cache,
+            azure_openai_embed,
+        )
 
     async def openai_alike_model_complete(
         prompt,
@@ -774,13 +786,13 @@ def create_app(args):
             api_key=args.embedding_binding_api_key,
         )
         if args.embedding_binding == "ollama"
-        else azure_openai_embedding(
+        else azure_openai_embed(
             texts,
             model=args.embedding_model,  # no host is used for openai,
             api_key=args.embedding_binding_api_key,
         )
         if args.embedding_binding == "azure_openai"
-        else openai_embedding(
+        else openai_embed(
             texts,
             model=args.embedding_model,  # no host is used for openai,
             api_key=args.embedding_binding_api_key,
@@ -907,42 +919,21 @@ def create_app(args):
         else:
             logging.warning(f"No content extracted from file: {file_path}")
 
-    @asynccontextmanager
-    async def lifespan(app: FastAPI):
-        """Lifespan context manager for startup and shutdown events"""
-        # Startup logic
-        # Now only if this option is active, we can scan. This is better for big databases where there are hundreds of
-        # files. Makes the startup faster 
-        if args.auto_scan_at_startup:
-            ASCIIColors.info("Auto scan is active, rescanning the input directory.")
-            try:
-                new_files = doc_manager.scan_directory()
-                for file_path in new_files:
-                    try:
-                        await index_file(file_path)
-                    except Exception as e:
-                        trace_exception(e)
-                        logging.error(f"Error indexing file {file_path}: {str(e)}")
-    
-                logging.info(f"Indexed {len(new_files)} documents from {args.input_dir}")
-            except Exception as e:
-                logging.error(f"Error during startup indexing: {str(e)}")
-
     @app.post("/documents/scan", dependencies=[Depends(optional_api_key)])
     async def scan_for_new_documents():
         """
         Manually trigger scanning for new documents in the directory managed by `doc_manager`.
-    
+
         This endpoint facilitates manual initiation of a document scan to identify and index new files.
         It processes all newly detected files, attempts indexing each file, logs any errors that occur,
         and returns a summary of the operation.
-    
+
         Returns:
             dict: A dictionary containing:
                 - "status" (str): Indicates success or failure of the scanning process.
                 - "indexed_count" (int): The number of successfully indexed documents.
                 - "total_documents" (int): Total number of documents that have been indexed so far.
-    
+
         Raises:
             HTTPException: If an error occurs during the document scanning process, a 500 status
                            code is returned with details about the exception.
@@ -970,25 +961,25 @@ def create_app(args):
     async def upload_to_input_dir(file: UploadFile = File(...)):
         """
         Endpoint for uploading a file to the input directory and indexing it.
-    
-        This API endpoint accepts a file through an HTTP POST request, checks if the 
+
+        This API endpoint accepts a file through an HTTP POST request, checks if the
         uploaded file is of a supported type, saves it in the specified input directory,
         indexes it for retrieval, and returns a success status with relevant details.
-    
+
         Parameters:
             file (UploadFile): The file to be uploaded. It must have an allowed extension as per
                                `doc_manager.supported_extensions`.
-    
+
         Returns:
-            dict: A dictionary containing the upload status ("success"), 
-                  a message detailing the operation result, and 
+            dict: A dictionary containing the upload status ("success"),
+                  a message detailing the operation result, and
                   the total number of indexed documents.
-    
+
         Raises:
             HTTPException: If the file type is not supported, it raises a 400 Bad Request error.
                            If any other exception occurs during the file handling or indexing,
                            it raises a 500 Internal Server Error with details about the exception.
-        """        
+        """
         try:
             if not doc_manager.is_supported_file(file.filename):
                 raise HTTPException(
@@ -1017,23 +1008,23 @@ def create_app(args):
     async def query_text(request: QueryRequest):
         """
         Handle a POST request at the /query endpoint to process user queries using RAG capabilities.
-    
+
         Parameters:
             request (QueryRequest): A Pydantic model containing the following fields:
                 - query (str): The text of the user's query.
                 - mode (ModeEnum): Optional. Specifies the mode of retrieval augmentation.
                 - stream (bool): Optional. Determines if the response should be streamed.
                 - only_need_context (bool): Optional. If true, returns only the context without further processing.
-    
+
         Returns:
-            QueryResponse: A Pydantic model containing the result of the query processing. 
+            QueryResponse: A Pydantic model containing the result of the query processing.
                            If a string is returned (e.g., cache hit), it's directly returned.
                            Otherwise, an async generator may be used to build the response.
-    
+
         Raises:
             HTTPException: Raised when an error occurs during the request handling process,
                            with status code 500 and detail containing the exception message.
-        """        
+        """
         try:
             response = await rag.aquery(
                 request.query,
@@ -1074,7 +1065,7 @@ def create_app(args):
 
         Returns:
             StreamingResponse: A streaming response containing the RAG query results.
-        """        
+        """
         try:
             response = await rag.aquery(  # Use aquery instead of query, and add await
                 request.query,
@@ -1134,7 +1125,7 @@ def create_app(args):
 
         Returns:
             InsertResponse: A response object containing the status of the operation, a message, and the number of documents inserted.
-        """        
+        """
         try:
             await rag.ainsert(request.text)
             return InsertResponse(
@@ -1759,7 +1750,7 @@ def create_app(args):
             "status": "healthy",
             "working_directory": str(args.working_dir),
             "input_directory": str(args.input_dir),
-            "indexed_files": len(doc_manager.indexed_files),
+            "indexed_files": doc_manager.indexed_files,
             "configuration": {
                 # LLM configuration binding/host address (if applicable)/model (if applicable)
                 "llm_binding": args.llm_binding,
@@ -1772,7 +1763,7 @@ def create_app(args):
                 "max_tokens": args.max_tokens,
             },
         }
-        
+
     # Serve the static files
     static_dir = Path(__file__).parent / "static"
     static_dir.mkdir(exist_ok=True)
@@ -1780,13 +1771,13 @@ def create_app(args):
 
     return app
 
-    
+
 def main():
     args = parse_args()
     import uvicorn
 
     app = create_app(args)
-    display_splash_screen(args)    
+    display_splash_screen(args)
     uvicorn_config = {
         "app": app,
         "host": args.host,

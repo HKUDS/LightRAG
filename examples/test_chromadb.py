@@ -1,7 +1,7 @@
 import os
 import asyncio
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import gpt_4o_mini_complete, openai_embedding
+from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
 
@@ -35,7 +35,7 @@ EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192))
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embedding(
+    return await openai_embed(
         texts,
         model=EMBEDDING_MODEL,
     )
