@@ -1543,7 +1543,9 @@ async def naive_query(
 
     sys_prompt_temp = PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
-        content_data=section, response_type=query_param.response_type, history=history_context
+        content_data=section,
+        response_type=query_param.response_type,
+        history=history_context,
     )
 
     if query_param.only_need_prompt:

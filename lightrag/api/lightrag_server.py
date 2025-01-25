@@ -725,10 +725,7 @@ def create_app(args):
         from lightrag.llm.ollama import ollama_model_complete, ollama_embed
     if args.llm_binding == "openai" or args.embedding_binding == "openai":
         from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-    if (
-        args.llm_binding == "azure_openai"
-        or args.embedding_binding == "azure_openai"
-    ):
+    if args.llm_binding == "azure_openai" or args.embedding_binding == "azure_openai":
         from lightrag.llm.azure_openai import (
             azure_openai_complete_if_cache,
             azure_openai_embed,
