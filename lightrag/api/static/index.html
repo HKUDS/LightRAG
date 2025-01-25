@@ -679,7 +679,7 @@
           const response = await fetch('/documents/upload', {
             method: 'POST',
             headers: {
-              'Authorization': `Bearer ${localStorage.getItem('apiKey')}`
+              'X-API-Key': `${localStorage.getItem('apiKey')}`
             },
             body: formData
           });
