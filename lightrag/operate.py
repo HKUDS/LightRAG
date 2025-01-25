@@ -589,6 +589,9 @@ async def kg_query(
         query, query_param, global_config, hashing_kv
     )
 
+    logger.info(f"High-level keywords: {hl_keywords}")
+    logger.info(f"Low-level  keywords: {ll_keywords}")
+
     # Handle empty keywords
     if hl_keywords == [] and ll_keywords == []:
         logger.warning("low_level_keywords and high_level_keywords is empty")
