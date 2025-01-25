@@ -470,6 +470,13 @@ def parse_args() -> argparse.Namespace:
         help="Enable automatic scanning when the program starts",
     )
 
+    parser.add_argument(
+        "--history-turns",
+        type=int,
+        default=get_env_value("HISTORY_TURNS", None, int),
+        help="Number of conversation history turns to include (default: from env or None)",
+    )
+
     args = parser.parse_args()
 
     return args
@@ -1576,8 +1583,9 @@ def create_app(args):
             if not messages:
                 raise HTTPException(status_code=400, detail="No messages provided")
 
-            # Get the last message as query
+            # Get the last message as query and previous messages as history
             query = messages[-1].content
+            conversation_history = messages[:-1]  # 所有之前的消息作为历史记录
 
             # Check for query prefix
             cleaned_query, mode = parse_query_mode(query)
@@ -1585,9 +1593,19 @@ def create_app(args):
             start_time = time.time_ns()
             prompt_tokens = estimate_tokens(cleaned_query)
 
-            query_param = QueryParam(
-                mode=mode, stream=request.stream, only_need_context=False
-            )
+            # 构建 query_param
+            param_dict = {
+                "mode": mode,
+                "stream": request.stream,
+                "only_need_context": False,
+                "conversation_history": conversation_history,
+            }
+
+            # 如果设置了 history_turns，添加到参数中
+            if args.history_turns is not None:
+                param_dict["history_turns"] = args.history_turns
+
+            query_param = QueryParam(**param_dict)
 
             if request.stream:
                 from fastapi.responses import StreamingResponse
