@@ -476,8 +476,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--history-turns",
         type=int,
-        default=get_env_value("HISTORY_TURNS", None, int),
-        help="Number of conversation history turns to include (default: from env or None)",
+        default=get_env_value("HISTORY_TURNS", 3, int),
+        help="Number of conversation history turns to include (default: from env or 3)",
     )
 
     args = parser.parse_args()
