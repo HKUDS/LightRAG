@@ -12,7 +12,7 @@ body {
     color: var(--text-primary);
 }
 
-/* 主容器 */
+/* main container */
 .app-container {
     max-width: 1600px;
     margin: 0 auto;
@@ -23,7 +23,7 @@ body {
     min-height: 100vh;
 }
 
-/* 导航侧边栏 */
+/* Navigation sidebar */
 .nav-panel {
     position: sticky;
     top: 2rem;
@@ -43,14 +43,14 @@ body {
     border-bottom: 1px solid var(--border);
 }
 
-/* 主内容区 */
+/* Main content area */
 .main-content {
     display: grid;
     gap: 1.5rem;
     align-content: start;
 }
 
-/* 卡片式模块 */
+/* Card based module */
 .card {
     background: var(--surface);
     border-radius: 12px;
@@ -70,7 +70,7 @@ body {
     color: var(--primary);
 }
 
-/* 文件上传区域 */
+/* File upload area */
 .file-dropzone {
     border: 2px dashed var(--border);
     border-radius: 8px;
@@ -85,7 +85,7 @@ body {
     background: rgba(79, 70, 229, 0.05);
 }
 
-/* 按钮样式 */
+
 .btn {
     display: inline-flex;
     align-items: center;
@@ -116,7 +116,6 @@ body {
     background: #059669;
 }
 
-/* 输入框样式 */
 .input-field {
     width: 100%;
     padding: 0.875rem;
@@ -132,7 +131,7 @@ body {
     box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
 }
 
-/* 响应式设计 */
+
 @media (max-width: 768px) {
     .app-container {
         grid-template-columns: 1fr;
@@ -144,7 +143,6 @@ body {
         margin-bottom: 1.5rem;
     }
 
-    /* 添加按钮激活状态样式 */
     .btn.active {
         box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.1);
         transform: translateY(1px);
@@ -230,7 +228,6 @@ body {
     color: white;
 }
 
-/* 添加以下CSS样式 */
 .status-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -322,13 +319,11 @@ body {
     border: 1px solid rgba(16, 185, 129, 0.2);
 }
 
-/* 加载状态 */
 .status-badge.loading {
     background: rgba(79, 70, 229, 0.1);
     color: var(--primary);
 }
 
-/* 错误状态 */
 .status-badge.error {
     background: rgba(239, 68, 68, 0.1);
     color: #EF4444;
