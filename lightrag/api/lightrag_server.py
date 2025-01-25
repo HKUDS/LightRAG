@@ -733,6 +733,8 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
+    if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
+        from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 
     async def openai_alike_model_complete(
         prompt,
@@ -1380,7 +1382,16 @@ def create_app(args):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # -------------------------------------------------
+    # query all graph labels
+    @app.get("/graph/label/list")
+    async def get_graph_labels():
+        return await rag.get_graph_labels()
+
+    # query all graph
+    @app.get("/graphs")
+    async def get_graphs(label: str):
+        return await rag.get_graps(nodel_label=label, max_depth=100)
+
     # Ollama compatible API endpoints
     # -------------------------------------------------
     @app.get("/api/version")
@@ -1751,6 +1762,7 @@ def create_app(args):
             "working_directory": str(args.working_dir),
             "input_directory": str(args.input_dir),
             "indexed_files": doc_manager.indexed_files,
+            "indexed_files_count": len(doc_manager.scan_directory()),
             "configuration": {
                 # LLM configuration binding/host address (if applicable)/model (if applicable)
                 "llm_binding": args.llm_binding,
@@ -1761,8 +1773,21 @@ def create_app(args):
                 "embedding_binding_host": args.embedding_binding_host,
                 "embedding_model": args.embedding_model,
                 "max_tokens": args.max_tokens,
+                "kv_storage": KV_STORAGE,
+                "doc_status_storage": DOC_STATUS_STORAGE,
+                "graph_storage": GRAPH_STORAGE,
+                "vector_storage": VECTOR_STORAGE,
             },
         }
+
+    # webui mount /webui/index.html
+    app.mount(
+        "/webui",
+        StaticFiles(
+            directory=Path(__file__).resolve().parent / "webui" / "static", html=True
+        ),
+        name="webui_static",
+    )
 
     # Serve the static files
     static_dir = Path(__file__).parent / "static"

@@ -339,3 +339,175 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def _node2vec_embed(self):
         print("Implemented but never called.")
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> Dict[str, List[Dict]]:
+        """
+        获取指定节点的完整连通子图（包含起始节点本身）
+
+        修复要点：
+        1. 包含起始节点自身
+        2. 处理多标签节点
+        3. 明确关系方向
+        4. 添加深度控制
+        """
+        label = node_label.strip('"')
+        result = {"nodes": [], "edges": []}
+        seen_nodes = set()
+        seen_edges = set()
+
+        async with self._driver.session(database=self._DATABASE) as session:
+            try:
+                # 关键调试步骤：先验证起始节点是否存在
+                validate_query = f"MATCH (n:`{label}`) RETURN n LIMIT 1"
+                validate_result = await session.run(validate_query)
+                if not await validate_result.single():
+                    logger.warning(f"起始节点 {label} 不存在！")
+                    return result
+
+                # 优化后的查询语句（包含方向处理和自循环）
+                main_query = f"""
+                MATCH (start:`{label}`)
+                WITH start
+                CALL apoc.path.subgraphAll(start, {{
+                    relationshipFilter: '>',
+                    minLevel: 0,
+                    maxLevel: {max_depth},
+                    bfs: true
+                }})
+                YIELD nodes, relationships
+                RETURN nodes, relationships
+                """
+                result_set = await session.run(main_query)
+                record = await result_set.single()
+
+                if record:
+                    # 处理节点（兼容多标签情况）
+                    for node in record["nodes"]:
+                        # 使用节点ID + 标签组合作为唯一标识
+                        node_id = f"{node.id}_{'_'.join(node.labels)}"
+                        if node_id not in seen_nodes:
+                            node_data = dict(node)
+                            node_data["labels"] = list(node.labels)  # 保留所有标签
+                            result["nodes"].append(node_data)
+                            seen_nodes.add(node_id)
+
+                    # 处理关系（包含方向信息）
+                    for rel in record["relationships"]:
+                        edge_id = f"{rel.id}_{rel.type}"
+                        if edge_id not in seen_edges:
+                            start = rel.start_node
+                            end = rel.end_node
+                            edge_data = dict(rel)
+                            edge_data.update(
+                                {
+                                    "source": f"{start.id}_{'_'.join(start.labels)}",
+                                    "target": f"{end.id}_{'_'.join(end.labels)}",
+                                    "type": rel.type,
+                                    "direction": rel.element_id.split(
+                                        "->" if rel.end_node == end else "<-"
+                                    )[1],
+                                }
+                            )
+                            result["edges"].append(edge_data)
+                            seen_edges.add(edge_id)
+
+                    logger.info(
+                        f"子图查询成功 | 节点数: {len(result['nodes'])} | 边数: {len(result['edges'])}"
+                    )
+
+            except neo4jExceptions.ClientError as e:
+                logger.error(f"APOC查询失败: {str(e)}")
+                return await self._robust_fallback(label, max_depth)
+
+        return result
+
+    async def _robust_fallback(
+        self, label: str, max_depth: int
+    ) -> Dict[str, List[Dict]]:
+        """强化版降级查询方案"""
+        result = {"nodes": [], "edges": []}
+        visited_nodes = set()
+        visited_edges = set()
+
+        async def traverse(current_label: str, current_depth: int):
+            if current_depth > max_depth:
+                return
+
+            # 获取当前节点详情
+            node = await self.get_node(current_label)
+            if not node:
+                return
+
+            node_id = f"{current_label}"
+            if node_id in visited_nodes:
+                return
+            visited_nodes.add(node_id)
+
+            # 添加节点数据（带完整标签）
+            node_data = {k: v for k, v in node.items()}
+            node_data["labels"] = [current_label]  # 假设get_node方法返回包含标签信息
+            result["nodes"].append(node_data)
+
+            # 获取所有出边和入边
+            query = f"""
+            MATCH (a)-[r]-(b)
+            WHERE a:`{current_label}` OR b:`{current_label}`
+            RETURN a, r, b,
+                   CASE WHEN startNode(r) = a THEN 'OUTGOING' ELSE 'INCOMING' END AS direction
+            """
+            async with self._driver.session(database=self._DATABASE) as session:
+                results = await session.run(query)
+                async for record in results:
+                    # 处理边
+                    rel = record["r"]
+                    edge_id = f"{rel.id}_{rel.type}"
+                    if edge_id not in visited_edges:
+                        edge_data = dict(rel)
+                        edge_data.update(
+                            {
+                                "source": list(record["a"].labels)[0],
+                                "target": list(record["b"].labels)[0],
+                                "type": rel.type,
+                                "direction": record["direction"],
+                            }
+                        )
+                        result["edges"].append(edge_data)
+                        visited_edges.add(edge_id)
+
+                        # 递归遍历相邻节点
+                        next_label = (
+                            list(record["b"].labels)[0]
+                            if record["direction"] == "OUTGOING"
+                            else list(record["a"].labels)[0]
+                        )
+                        await traverse(next_label, current_depth + 1)
+
+        await traverse(label, 0)
+        return result
+
+    async def get_all_labels(self) -> List[str]:
+        """
+        获取数据库中所有存在的节点标签
+        Returns:
+            ["Person", "Company", ...]  # 按字母排序的标签列表
+        """
+        async with self._driver.session(database=self._DATABASE) as session:
+            # 方法1：直接查询元数据（Neo4j 4.3+ 可用）
+            # query = "CALL db.labels() YIELD label RETURN label"
+
+            # 方法2：兼容旧版本的查询方式
+            query = """
+            MATCH (n)
+            WITH DISTINCT labels(n) AS node_labels
+            UNWIND node_labels AS label
+            RETURN DISTINCT label
+            ORDER BY label
+            """
+
+            result = await session.run(query)
+            labels = []
+            async for record in result:
+                labels.append(record["label"])
+            return labels
