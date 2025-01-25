@@ -719,16 +719,13 @@ def create_app(args):
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
-    if args.llm_binding_host == "lollms" or args.embedding_binding == "lollms":
+    if args.llm_binding == "lollms" or args.embedding_binding == "lollms":
         from lightrag.llm.lollms import lollms_model_complete, lollms_embed
-    if args.llm_binding_host == "ollama" or args.embedding_binding == "ollama":
+    if args.llm_binding == "ollama" or args.embedding_binding == "ollama":
         from lightrag.llm.ollama import ollama_model_complete, ollama_embed
-    if args.llm_binding_host == "openai" or args.embedding_binding == "openai":
+    if args.llm_binding == "openai" or args.embedding_binding == "openai":
         from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-    if (
-        args.llm_binding_host == "azure_openai"
-        or args.embedding_binding == "azure_openai"
-    ):
+    if args.llm_binding == "azure_openai" or args.embedding_binding == "azure_openai":
         from lightrag.llm.azure_openai import (
             azure_openai_complete_if_cache,
             azure_openai_embed,
