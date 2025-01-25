@@ -1,13 +1,14 @@
 import numpy as np
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
-from lightrag.llm import jina_embedding, openai_complete_if_cache
+from lightrag.llm.jina import jina_embed
+from lightrag.llm.openai import openai_complete_if_cache
 import os
 import asyncio
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await jina_embedding(texts, api_key="YourJinaAPIKey")
+    return await jina_embed(texts, api_key="YourJinaAPIKey")
 
 
 WORKING_DIR = "./dickens"

@@ -1,7 +1,7 @@
 import os
 import inspect
 from lightrag import LightRAG
-from lightrag.llm import openai_complete, openai_embedding
+from lightrag.llm import openai_complete, openai_embed
 from lightrag.utils import EmbeddingFunc
 from lightrag.lightrag import always_get_an_event_loop
 from lightrag import QueryParam
@@ -24,7 +24,7 @@ rag = LightRAG(
     embedding_func=EmbeddingFunc(
         embedding_dim=1024,
         max_token_size=8192,
-        func=lambda texts: openai_embedding(
+        func=lambda texts: openai_embed(
             texts=texts,
             model="text-embedding-bge-m3",
             base_url="http://127.0.0.1:1234/v1",

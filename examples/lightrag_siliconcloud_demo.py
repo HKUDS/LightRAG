@@ -1,7 +1,8 @@
 import os
 import asyncio
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import openai_complete_if_cache, siliconcloud_embedding
+from lightrag.llm.openai import openai_complete_if_cache
+from lightrag.llm.siliconcloud import siliconcloud_embedding
 from lightrag.utils import EmbeddingFunc
 import numpy as np
 

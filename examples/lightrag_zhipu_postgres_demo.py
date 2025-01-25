@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 from lightrag import LightRAG, QueryParam
 from lightrag.kg.postgres_impl import PostgreSQLDB
-from lightrag.llm import ollama_embedding, zhipu_complete
+from lightrag.llm.zhipu import ollama_embedding, zhipu_complete
 from lightrag.utils import EmbeddingFunc
 
 load_dotenv()

@@ -13,7 +13,7 @@ from pathlib import Path
 import asyncio
 import nest_asyncio
 from lightrag import LightRAG, QueryParam
-from lightrag.llm import openai_complete_if_cache, openai_embedding
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
 
@@ -64,7 +64,7 @@ async def llm_model_func(
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await openai_embedding(
+    return await openai_embed(
         texts,
         model=EMBEDDING_MODEL,
         api_key=APIKEY,

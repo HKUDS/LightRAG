@@ -1,4 +1,3 @@
-aioboto3
 ascii_colors
 fastapi
 nano_vectordb

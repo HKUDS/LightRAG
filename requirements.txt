@@ -1,22 +1,19 @@
 accelerate
-aioboto3
 aiofiles
 aiohttp
-aioredis
 asyncpg
 configparser
 
 # database packages
 graspologic
 gremlinpython
-hnswlib
 nano-vectordb
 neo4j
 networkx
 
+# TODO : Remove specific databases and move the installation to their corresponding files
+# Use pipmaster for install if needed
 numpy
-ollama
-openai
 oracledb
 pipmaster
 psycopg-pool
@@ -32,15 +29,13 @@ python-docx
 python-dotenv
 python-pptx
 pyvis
+redis
 setuptools
-# lmdeploy[all]
 sqlalchemy
 tenacity
 
 
 # LLM packages
 tiktoken
-torch
 tqdm
-transformers
 xxhash
