@@ -200,8 +200,14 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.max_async}")
     ASCIIColors.white("    ├─ Max Tokens: ", end="")
     ASCIIColors.yellow(f"{args.max_tokens}")
-    ASCIIColors.white("    └─ Max Embed Tokens: ", end="")
+    ASCIIColors.white("    ├─ Max Embed Tokens: ", end="")
     ASCIIColors.yellow(f"{args.max_embed_tokens}")
+    ASCIIColors.white("    ├─ Chunk Size: ", end="")
+    ASCIIColors.yellow(f"{args.chunk_size}")
+    ASCIIColors.white("    ├─ Chunk Overlap Size: ", end="")
+    ASCIIColors.yellow(f"{args.chunk_overlap_size}")
+    ASCIIColors.white("    └─ History Turns: ", end="")
+    ASCIIColors.yellow(f"{args.history_turns}")
 
     # System Configuration
     ASCIIColors.magenta("\n🛠️ System Configuration:")
@@ -294,7 +300,7 @@ def parse_args() -> argparse.Namespace:
         description="LightRAG FastAPI Server with separate working and input directories"
     )
 
-    # Bindings (with env var support)
+    # Bindings configuration
     parser.add_argument(
         "--llm-binding",
         default=get_env_value("LLM_BINDING", "ollama"),
@@ -306,8 +312,6 @@ def parse_args() -> argparse.Namespace:
         help="Embedding binding to be used. Supported: lollms, ollama, openai (default: from env or ollama)",
     )
 
-    # Parse temporary args for host defaults
-    temp_args, _ = parser.parse_known_args()
 
     # Server configuration
     parser.add_argument(
@@ -335,13 +339,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     # LLM Model configuration
-    default_llm_host = get_env_value(
-        "LLM_BINDING_HOST", get_default_host(temp_args.llm_binding)
-    )
     parser.add_argument(
         "--llm-binding-host",
-        default=default_llm_host,
-        help=f"llm server host URL (default: from env or {default_llm_host})",
+        default=get_env_value("LLM_BINDING_HOST", None),
+        help="LLM server host URL. If not provided, defaults based on llm-binding:\n" +
+             "- ollama: http://localhost:11434\n" +
+             "- lollms: http://localhost:9600\n" +
+             "- openai: https://api.openai.com/v1",
     )
 
     default_llm_api_key = get_env_value("LLM_BINDING_API_KEY", None)
@@ -359,13 +363,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Embedding model configuration
-    default_embedding_host = get_env_value(
-        "EMBEDDING_BINDING_HOST", get_default_host(temp_args.embedding_binding)
-    )
     parser.add_argument(
         "--embedding-binding-host",
-        default=default_embedding_host,
-        help=f"embedding server host URL (default: from env or {default_embedding_host})",
+        default=get_env_value("EMBEDDING_BINDING_HOST", None),
+        help="Embedding server host URL. If not provided, defaults based on embedding-binding:\n" +
+             "- ollama: http://localhost:11434\n" +
+             "- lollms: http://localhost:9600\n" +
+             "- openai: https://api.openai.com/v1",
     )
 
     default_embedding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
@@ -641,8 +645,7 @@ def get_api_key_dependency(api_key: Optional[str]):
 
 
 def create_app(args):
-    # Verify that bindings arer correctly setup
-
+    # Verify that bindings are correctly setup
     if args.llm_binding not in [
         "lollms",
         "ollama",
@@ -654,6 +657,13 @@ def create_app(args):
 
     if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
         raise Exception("embedding binding not supported")
+
+    # Set default hosts if not provided
+    if args.llm_binding_host is None:
+        args.llm_binding_host = get_default_host(args.llm_binding)
+    
+    if args.embedding_binding_host is None:
+        args.embedding_binding_host = get_default_host(args.embedding_binding)
 
     # Add SSL validation
     if args.ssl:
