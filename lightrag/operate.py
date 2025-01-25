@@ -589,6 +589,9 @@ async def kg_query(
         query, query_param, global_config, hashing_kv
     )
 
+    logger.info(f"High-level keywords: {hl_keywords}")
+    logger.info(f"Low-level  keywords: {ll_keywords}")
+
     # Handle empty keywords
     if hl_keywords == [] and ll_keywords == []:
         logger.warning("low_level_keywords and high_level_keywords is empty")
@@ -1534,9 +1537,18 @@ async def naive_query(
     if query_param.only_need_context:
         return section
 
+    # Process conversation history
+    history_context = ""
+    if query_param.conversation_history:
+        history_context = get_conversation_turns(
+            query_param.conversation_history, query_param.history_turns
+        )
+
     sys_prompt_temp = PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
-        content_data=section, response_type=query_param.response_type
+        content_data=section,
+        response_type=query_param.response_type,
+        history=history_context,
     )
 
     if query_param.only_need_prompt:
