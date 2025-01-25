@@ -1585,7 +1585,10 @@ def create_app(args):
 
             # Get the last message as query and previous messages as history
             query = messages[-1].content
-            conversation_history = messages[:-1]  # 所有之前的消息作为历史记录
+            # Convert OllamaMessage objects to dictionaries
+            conversation_history = [
+                {"role": msg.role, "content": msg.content} for msg in messages[:-1]
+            ]
 
             # Check for query prefix
             cleaned_query, mode = parse_query_mode(query)
