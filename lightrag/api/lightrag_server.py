@@ -312,7 +312,6 @@ def parse_args() -> argparse.Namespace:
         help="Embedding binding to be used. Supported: lollms, ollama, openai (default: from env or ollama)",
     )
 
-
     # Server configuration
     parser.add_argument(
         "--host",
@@ -342,10 +341,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--llm-binding-host",
         default=get_env_value("LLM_BINDING_HOST", None),
-        help="LLM server host URL. If not provided, defaults based on llm-binding:\n" +
-             "- ollama: http://localhost:11434\n" +
-             "- lollms: http://localhost:9600\n" +
-             "- openai: https://api.openai.com/v1",
+        help="LLM server host URL. If not provided, defaults based on llm-binding:\n"
+        + "- ollama: http://localhost:11434\n"
+        + "- lollms: http://localhost:9600\n"
+        + "- openai: https://api.openai.com/v1",
     )
 
     default_llm_api_key = get_env_value("LLM_BINDING_API_KEY", None)
@@ -366,10 +365,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--embedding-binding-host",
         default=get_env_value("EMBEDDING_BINDING_HOST", None),
-        help="Embedding server host URL. If not provided, defaults based on embedding-binding:\n" +
-             "- ollama: http://localhost:11434\n" +
-             "- lollms: http://localhost:9600\n" +
-             "- openai: https://api.openai.com/v1",
+        help="Embedding server host URL. If not provided, defaults based on embedding-binding:\n"
+        + "- ollama: http://localhost:11434\n"
+        + "- lollms: http://localhost:9600\n"
+        + "- openai: https://api.openai.com/v1",
     )
 
     default_embedding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
@@ -661,7 +660,7 @@ def create_app(args):
     # Set default hosts if not provided
     if args.llm_binding_host is None:
         args.llm_binding_host = get_default_host(args.llm_binding)
-    
+
     if args.embedding_binding_host is None:
         args.embedding_binding_host = get_default_host(args.embedding_binding)
 
