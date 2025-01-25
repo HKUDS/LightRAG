@@ -1,0 +1,92 @@
+/* css/lightrag.css */
+
+/* 模态框样式 */
+.modal {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.modal-content {
+    background-color: var(--surface);
+    padding: 1.5rem;
+    border-radius: 8px;
+    width: 80%;
+    max-width: 1200px;
+    box-shadow: var(--shadow);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.modal-body {
+    margin-bottom: 1rem;
+}
+
+.modal-footer {
+    text-align: right;
+}
+
+.btn-close {
+    background: none;
+    border: none;
+    font-size: 1.5rem;
+    cursor: pointer;
+    color: var(--text-secondary);
+}
+
+.btn-close:hover {
+    color: var(--text-primary);
+}
+
+/* 图谱节点样式 */
+.node {
+    cursor: pointer;
+    fill: var(--primary);
+    stroke: var(--surface);
+    stroke-width: 2px;
+}
+
+.node:hover {
+    fill: var(--secondary);
+}
+
+.link {
+    stroke: var(--text-secondary);
+    stroke-width: 2px;
+}
+
+.label {
+    font-size: 12px;
+    fill: var(--text-primary);
+    pointer-events: none;
+}
+
+/* 添加边样式 */
+.link {
+    stroke: #999;       /* 连线颜色 */
+    stroke-width: 2px;  /* 连线粗细 */
+    stroke-opacity: 0.6;/* 透明度 */
+}
+/* 边样式 */
+.link {
+    stroke: #999;        /* 边颜色 */
+    stroke-width: 2px;   /* 边粗细 */
+    stroke-opacity: 0.8; /* 边透明度 */
+}
+
+/* 箭头颜色匹配边颜色 */
+#arrow path {
+    fill: #999 !important; /* 覆盖默认颜色 */
+}

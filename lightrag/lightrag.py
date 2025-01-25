@@ -292,6 +292,15 @@ class LightRAG:
             embedding_func=None,
         )
 
+    async def get_graph_labels(self):
+        text = await self.chunk_entity_relation_graph.get_all_labels()
+        return text
+
+    async def get_graps(self, nodel_label: str, max_depth: int):
+        return await self.chunk_entity_relation_graph.get_knowledge_graph(
+            node_label=nodel_label, max_depth=max_depth
+        )
+
     def _get_storage_class(self, storage_name: str) -> dict:
         import_path = STORAGES[storage_name]
         storage_class = lazy_external_import(import_path, storage_name)
