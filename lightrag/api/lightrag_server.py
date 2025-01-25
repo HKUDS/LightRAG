@@ -383,14 +383,14 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--chunk_size",
-        default=1200,
-        help="chunk token size default 1200",
+        default=get_env_value("CHUNK_SIZE", 1200),
+        help="chunk chunk size default 1200",
     )
 
     parser.add_argument(
         "--chunk_overlap_size",
-        default=100,
-        help="chunk token size default 1200",
+        default=get_env_value("CHUNK_OVERLAP_SIZE", 100),
+        help="chunk overlap size default 100",
     )
 
     def timeout_type(value):
