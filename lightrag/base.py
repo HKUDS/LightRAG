@@ -1,5 +1,15 @@
 from dataclasses import dataclass, field
-from typing import TypedDict, Union, Literal, Generic, TypeVar, Optional, Dict, Any
+from typing import (
+    TypedDict,
+    Union,
+    Literal,
+    Generic,
+    TypeVar,
+    Optional,
+    Dict,
+    Any,
+    List,
+)
 from enum import Enum
 
 import numpy as np
@@ -139,6 +149,14 @@ class BaseGraphStorage(StorageNameSpace):
 
     async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:
         raise NotImplementedError("Node embedding is not used in lightrag.")
+
+    async def get_all_labels(self) -> List[str]:
+        raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> Dict[str, List[Dict]]:
+        raise NotImplementedError
 
 
 class DocStatus(str, Enum):
