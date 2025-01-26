@@ -1446,7 +1446,10 @@ def create_app(args):
 
     @app.post("/api/generate")
     async def generate(raw_request: Request, request: OllamaGenerateRequest):
-        """Handle generate completion requests"""
+        """Handle generate completion requests
+        For compatiblity purpuse, the request is not processed by LightRAG,
+        and will be handled by underlying LLM model.
+        """
         try:
             query = request.prompt
             start_time = time.time_ns()
@@ -1585,7 +1588,10 @@ def create_app(args):
 
     @app.post("/api/chat")
     async def chat(raw_request: Request, request: OllamaChatRequest):
-        """Handle chat completion requests"""
+        """Process chat completion requests.
+        Routes user queries through LightRAG by selecting query mode based on prefix indicators.
+        Detects and forwards OpenWebUI session-related requests (for meta data generation task) directly to LLM.
+        """
         try:
             # Get all messages
             messages = request.messages
@@ -1605,7 +1611,6 @@ def create_app(args):
             start_time = time.time_ns()
             prompt_tokens = estimate_tokens(cleaned_query)
 
-            # 构建 query_param
             param_dict = {
                 "mode": mode,
                 "stream": request.stream,
@@ -1613,7 +1618,6 @@ def create_app(args):
                 "conversation_history": conversation_history,
             }
 
-            # 如果设置了 history_turns，添加到参数中
             if args.history_turns is not None:
                 param_dict["history_turns"] = args.history_turns
 
