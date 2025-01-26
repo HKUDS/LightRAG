@@ -1,5 +1,6 @@
 // lightrag.js
-const API_BASE = 'http://localhost:9621'; // 根据实际API地址修改
+// Modify according to the actual API address
+const API_BASE = 'http://localhost:9621';
 
 // init
 function initializeApp() {
@@ -7,7 +8,7 @@ function initializeApp() {
     setupQueryHandler();
     setupSectionObserver();
     updateFileList();
-    // 文本输入框实时字数统计 textarea count
+    // textarea count
     const textArea = document.getElementById('textContent');
     if (textArea) {
         const charCount = document.createElement('div');
@@ -22,7 +23,7 @@ function initializeApp() {
     }
 }
 
-// 通用请求方法 api request
+// api request
 async function apiRequest(endpoint, method = 'GET', body = null) {
     const options = {
         method,
@@ -53,11 +54,11 @@ async function handleTextUpload() {
     const content = document.getElementById('textContent').value.trim();
     const statusDiv = document.getElementById('textUploadStatus');
 
-    // 清空状态提示 clear status tip
+    //  clear status tip
     statusDiv.className = 'status-indicator';
     statusDiv.textContent = '';
 
-    // 输入验证 input valid
+    //  input valid
     if (!content) {
         showStatus('error', 'TEXT CONTENT NOT NULL', statusDiv);
         return;
@@ -66,7 +67,6 @@ async function handleTextUpload() {
     try {
         showStatus('loading', 'UPLOADING...', statusDiv);
 
-        //
         const payload = {
             text: content,
             ...(description && {description})
@@ -82,17 +82,17 @@ async function handleTextUpload() {
 
         if (!response.ok) {
             const errorData = await response.json();
-            throw new Error(errorData.detail || '上传失败');
+            throw new Error(errorData.detail || 'UPLOAD FAILED');
         }
 
         const result = await response.json();
 
-        showStatus('success', `✅ ${result.message} (文档数: ${result.document_count})`, statusDiv);
+        showStatus('success', `✅ ${result.message} (documents: ${result.document_count})`, statusDiv);
 
 
         document.getElementById('textContent').value = '';
 
-        // 更新文件列表 update file list
+        //  update file list
         updateFileList();
 
     } catch (error) {
@@ -105,7 +105,7 @@ function showStatus(type, message, container) {
     container.textContent = message;
     container.className = `status-indicator ${type}`;
 
-    // 自动清除成功状态 auto clear success status
+    //auto clear success status
     if (type === 'success') {
         setTimeout(() => {
             container.textContent = '';
@@ -114,13 +114,13 @@ function showStatus(type, message, container) {
     }
 }
 
-// 文件上传处理 upload file
+// upload file
 function setupFileUpload() {
     const dropzone = document.getElementById('dropzone');
     const fileInput = document.getElementById('fileInput');
 
 
-    // 拖放事件处理 Drag and drop event handling
+    // Drag and drop event handling
     dropzone.addEventListener('dragover', (e) => {
         e.preventDefault();
         dropzone.classList.add('active');
@@ -179,7 +179,7 @@ async function updateFileList() {
     }
 }
 
-// 智能检索处理 Intelligent retrieval processing
+// Intelligent retrieval processing
 function setupQueryHandler() {
     document.querySelector('#query .btn-primary').addEventListener('click', handleQuery);
 }
@@ -210,7 +210,7 @@ async function handleQuery() {
     }
 }
 
-// 处理流式响应 handle stream api
+// handle stream api
 async function handleStreamingQuery(payload, resultsDiv) {
     try {
         const response = await fetch(`${API_BASE}/query/stream`, {
@@ -238,7 +238,7 @@ async function handleStreamingQuery(payload, resultsDiv) {
 
             buffer += decoder.decode(value, {stream: true});
 
-            // 按换行符分割（NDJSON格式要求） Split by line break (NDJSON format requirement)
+            //  Split by line break (NDJSON format requirement)
             let lineEndIndex;
             while ((lineEndIndex = buffer.indexOf('\n')) >= 0) {
                 const line = buffer.slice(0, lineEndIndex).trim();
@@ -267,7 +267,7 @@ async function handleStreamingQuery(payload, resultsDiv) {
             }
         }
 
-        // 处理剩余数据 Process remaining data
+        // Process remaining data
         if (buffer.trim()) {
             try {
                 const data = JSON.parse(buffer.trim());
@@ -285,7 +285,7 @@ async function handleStreamingQuery(payload, resultsDiv) {
 }
 
 
-// 知识问答处理 Knowledge Q&A Processing
+// Knowledge Q&A Processing
 function setupChatHandler() {
     const sendButton = document.querySelector('#chat button');
     const chatInput = document.querySelector('#chat input');
@@ -344,7 +344,7 @@ async function handleChat(chatInput) {
     chatInput.value = '';
 }
 
-// 系统状态更新 system status update
+// system status update
 async function updateSystemStatus() {
     const statusElements = {
         health: document.getElementById('healthStatus'),
@@ -365,27 +365,27 @@ async function updateSystemStatus() {
     try {
         const status = await apiRequest('/health');
 
-        // 健康状态 heath status
+        //  heath status
         statusElements.health.className = 'status-badge';
         statusElements.health.textContent = status.status === 'healthy' ?
             '✅ Healthy operation in progress' : '⚠️ Service exception';
 
-        // 存储状态（示例逻辑，可根据实际需求修改） kv status
+        //  kv status
         const progressValue = Math.min(Math.round((status.indexed_files_count / 1000) * 100), 100);
         statusElements.storageProgress.value = progressValue;
         statusElements.indexedFiles.textContent = `INDEXED FILES：${status.indexed_files_count}`;
         statusElements.storageUsage.textContent = `USE PERCENT：${progressValue}%`;
 
-        // 模型配置 model state
+        //  model state
         statusElements.llmModel.textContent = `${status.configuration.llm_model} (${status.configuration.llm_binding})`;
         statusElements.embedModel.textContent = `${status.configuration.embedding_model} (${status.configuration.embedding_binding})`;
         statusElements.maxTokens.textContent = status.configuration.max_tokens.toLocaleString();
 
-        // 目录信息 dir msg
+        //  dir msg
         statusElements.workingDir.textContent = status.working_directory;
         statusElements.inputDir.textContent = status.input_directory;
 
-        //存储信息 stack msg
+        // stack msg
         statusElements.kv_storage.textContent = status.configuration.kv_storage;
         statusElements.doc_status_storage.textContent = status.configuration.doc_status_storage;
         statusElements.graph_storage.textContent = status.configuration.graph_storage;
@@ -401,7 +401,7 @@ async function updateSystemStatus() {
 }
 
 
-// 区域切换监听 Area switching monitoring
+//  Area switching monitoring
 function setupSectionObserver() {
     const observer = new MutationObserver(mutations => {
         mutations.forEach(mutation => {
@@ -419,7 +419,7 @@ function setupSectionObserver() {
     });
 }
 
-// 显示提示信息 Display prompt information
+// Display prompt information
 function showToast(message, type = 'info') {
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
@@ -432,7 +432,7 @@ function showToast(message, type = 'info') {
 }
 
 
-// 动态加载标签列表 Dynamically load tag list
+// Dynamically load tag list
 async function loadLabels() {
     try {
         const response = await fetch('/graph/label/list');
@@ -445,7 +445,7 @@ async function loadLabels() {
 
 async function loadGraph(label) {
     try {
-        // 渲染标签列表 render label list
+        // render label list
         openGraphModal(label)
     } catch (error) {
         console.error('LOADING LABEL FAILED:', error);
@@ -460,7 +460,7 @@ async function loadGraph(label) {
     }
 }
 
-// 渲染标签列表 render graph label list
+// render graph label list
 function renderLabels(labels) {
     const container = document.getElementById('label-list');
     container.innerHTML = labels.map(label => `
