@@ -62,7 +62,7 @@ VECTOR_STORAGE = "NanoVectorDBStorage"
 
 # read config.ini
 config = configparser.ConfigParser()
-config.read("config.ini")
+config.read("config.ini", "utf-8")
 # Redis config
 redis_uri = config.get("redis", "uri", fallback=None)
 if redis_uri:
@@ -734,7 +734,8 @@ def create_app(args):
             azure_openai_embed,
         )
     if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
-        from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+        from lightrag.llm.openai import openai_complete_if_cache
+        from lightrag.llm.ollama import ollama_embed
 
     async def openai_alike_model_complete(
         prompt,
