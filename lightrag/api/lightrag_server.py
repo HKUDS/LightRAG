@@ -17,6 +17,7 @@ import shutil
 import aiofiles
 from ascii_colors import trace_exception, ASCIIColors
 import os
+import sys
 import configparser
 
 from fastapi import Depends, Security
@@ -287,6 +288,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
 
     ASCIIColors.green("Server is ready to accept connections! 🚀\n")
 
+    # Ensure splash output flush to system log
+    sys.stdout.flush()
 
 def parse_args() -> argparse.Namespace:
     """
