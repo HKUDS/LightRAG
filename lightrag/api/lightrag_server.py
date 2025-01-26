@@ -291,6 +291,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     # Ensure splash output flush to system log
     sys.stdout.flush()
 
+
 def parse_args() -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
