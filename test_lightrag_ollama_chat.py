@@ -104,7 +104,7 @@ DEFAULT_CONFIG = {
         "host": "localhost",
         "port": 9621,
         "model": "lightrag:latest",
-        "timeout": 30,
+        "timeout": 120,
         "max_retries": 3,
         "retry_delay": 1,
     },
