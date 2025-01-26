@@ -104,7 +104,7 @@ DEFAULT_CONFIG = {
         "host": "localhost",
         "port": 9621,
         "model": "lightrag:latest",
-        "timeout": 30,
+        "timeout": 120,
         "max_retries": 3,
         "retry_delay": 1,
     },
@@ -189,19 +189,32 @@ def get_base_url(endpoint: str = "chat") -> str:
 
 
 def create_chat_request_data(
-    content: str, stream: bool = False, model: str = None
+    content: str,
+    stream: bool = False,
+    model: str = None,
+    conversation_history: List[Dict[str, str]] = None,
+    history_turns: int = None,
 ) -> Dict[str, Any]:
     """Create chat request data
     Args:
         content: User message content
         stream: Whether to use streaming response
         model: Model name
+        conversation_history: List of previous conversation messages
+        history_turns: Number of history turns to include
     Returns:
         Dictionary containing complete chat request data
     """
+    messages = conversation_history or []
+    if history_turns is not None and conversation_history:
+        messages = messages[
+            -2 * history_turns :
+        ]  # Each turn has 2 messages (user + assistant)
+    messages.append({"role": "user", "content": content})
+
     return {
         "model": model or CONFIG["server"]["model"],
-        "messages": [{"role": "user", "content": content}],
+        "messages": messages,
         "stream": stream,
     }
 
@@ -259,11 +272,25 @@ def run_test(func: Callable, name: str) -> None:
 def test_non_stream_chat() -> None:
     """Test non-streaming call to /api/chat endpoint"""
     url = get_base_url()
-    data = create_chat_request_data(
-        CONFIG["test_cases"]["basic"]["query"], stream=False
-    )
 
-    # Send request
+    # Example conversation history
+    conversation_history = [
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "你好!我是一个AI助手,很高兴为你服务。"},
+        {"role": "user", "content": "西游记里有几个主要人物?"},
+        {
+            "role": "assistant",
+            "content": "西游记的主要人物有唐僧、孙悟空、猪八戒、沙和尚这四位主角。",
+        },
+    ]
+
+    # Send request with conversation history and history turns
+    data = create_chat_request_data(
+        CONFIG["test_cases"]["basic"]["query"],
+        stream=False,
+        conversation_history=conversation_history,
+        history_turns=2,  # Only include last 2 turns
+    )
     response = make_request(url, data)
 
     # Print response
@@ -297,9 +324,25 @@ def test_stream_chat() -> None:
     The last message will contain performance statistics, with done set to true.
     """
     url = get_base_url()
-    data = create_chat_request_data(CONFIG["test_cases"]["basic"]["query"], stream=True)
 
-    # Send request and get streaming response
+    # Example conversation history
+    conversation_history = [
+        {"role": "user", "content": "你好"},
+        {"role": "assistant", "content": "你好!我是一个AI助手,很高兴为你服务。"},
+        {"role": "user", "content": "西游记里有几个主要人物?"},
+        {
+            "role": "assistant",
+            "content": "西游记的主要人物有唐僧、孙悟空、猪八戒、沙和尚这四位主角。",
+        },
+    ]
+
+    # Send request with conversation history and history turns
+    data = create_chat_request_data(
+        CONFIG["test_cases"]["basic"]["query"],
+        stream=True,
+        conversation_history=conversation_history,
+        history_turns=2,  # Only include last 2 turns
+    )
     response = make_request(url, data, stream=True)
 
     if OutputControl.is_verbose():
