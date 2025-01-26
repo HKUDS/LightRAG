@@ -127,6 +127,7 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(mode=
 # - Allows control over retrieval depth via top_k parameter
 print(rag.query("What are the top themes in this story?", param=QueryParam(
     mode="mix")))
+```
 
 ### Conversation History Support
 LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
