@@ -633,9 +633,7 @@ async def kg_query(
     # Process conversation history
     history_context = ""
     if query_param.conversation_history:
-        recent_history = query_param.conversation_history[
-            -query_param.history_window_size :
-        ]
+        recent_history = query_param.conversation_history[-query_param.history_turns :]
         history_context = "\n".join(
             [f"{turn['role']}: {turn['content']}" for turn in recent_history]
         )
