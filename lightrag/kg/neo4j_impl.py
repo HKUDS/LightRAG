@@ -499,11 +499,11 @@ class Neo4JStorage(BaseGraphStorage):
 
             # 方法2：兼容旧版本的查询方式
             query = """
-            MATCH (n)
-            WITH DISTINCT labels(n) AS node_labels
-            UNWIND node_labels AS label
-            RETURN DISTINCT label
-            ORDER BY label
+                MATCH (n)
+                WITH DISTINCT labels(n) AS node_labels
+                UNWIND node_labels AS label
+                RETURN DISTINCT label
+                ORDER BY label
             """
 
             result = await session.run(query)
