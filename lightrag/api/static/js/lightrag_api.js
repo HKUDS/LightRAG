@@ -256,7 +256,7 @@ const handlers = {
         const queryInput = document.getElementById('queryInput');
         const queryMode = document.getElementById('queryMode');
         const queryResult = document.getElementById('queryResult');
-        
+
         let apiKey = localStorage.getItem('apiKey') || '';
 
         queryBtn.addEventListener('click', async () => {

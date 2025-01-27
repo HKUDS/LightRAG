@@ -2,10 +2,10 @@ accelerate
 aiofiles
 aiohttp
 configparser
+graspologic
 
 # database packages
 networkx
-graspologic
 
 # Basic modules
 numpy
