@@ -918,7 +918,7 @@ def create_app(args):
             case ".pptx":
                 if not pm.is_installed("pptx"):
                     pm.install("pptx")
-                from pptx import Presentation
+                from pptx import Presentation  # type: ignore
 
                 # PowerPoint handling
                 prs = Presentation(file_path)
@@ -1216,7 +1216,7 @@ def create_app(args):
                 case ".pptx":
                     if not pm.is_installed("pptx"):
                         pm.install("pptx")
-                    from pptx import Presentation
+                    from pptx import Presentation  # type: ignore
                     from io import BytesIO
 
                     # Read PPTX from memory
@@ -1320,7 +1320,7 @@ def create_app(args):
                         case ".pptx":
                             if not pm.is_installed("pptx"):
                                 pm.install("pptx")
-                            from pptx import Presentation
+                            from pptx import Presentation  # type: ignore
                             from io import BytesIO
 
                             pptx_content = await file.read()
