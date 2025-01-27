@@ -892,11 +892,13 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
-    def query(self, query: str, param: QueryParam = QueryParam()):
+    def query(self, query: str, prompt: str = "", param: QueryParam = QueryParam()):
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.aquery(query, param))
+        return loop.run_until_complete(self.aquery(query, prompt, param))
 
-    async def aquery(self, query: str, param: QueryParam = QueryParam()):
+    async def aquery(
+        self, query: str, prompt: str = "", param: QueryParam = QueryParam()
+    ):
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query(
                 query,
@@ -914,6 +916,7 @@ class LightRAG:
                     global_config=asdict(self),
                     embedding_func=None,
                 ),
+                prompt=prompt,
             )
         elif param.mode == "naive":
             response = await naive_query(
