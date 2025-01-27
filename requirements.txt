@@ -1,37 +1,24 @@
 accelerate
 aiofiles
 aiohttp
-asyncpg
 configparser
 
 # database packages
-graspologic
-gremlinpython
-nano-vectordb
-neo4j
 networkx
+graspologic
 
-# TODO : Remove specific databases and move the installation to their corresponding files
-# Use pipmaster for install if needed
+# Basic modules
 numpy
-oracledb
 pipmaster
-psycopg-pool
-psycopg[binary,pool]
 pydantic
-pymilvus
-pymongo
-pymysql
 
-
+# File manipulation libraries
 PyPDF2
 python-docx
 python-dotenv
 python-pptx
-pyvis
-redis
+
 setuptools
-sqlalchemy
 tenacity
 
 
@@ -39,3 +26,5 @@ tenacity
 tiktoken
 tqdm
 xxhash
+
+# Extra libraries are installed when needed using pipmaster
