@@ -6,6 +6,14 @@ import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+import pipmaster as pm
+
+if not pm.is_installed("psycopg-pool"):
+    pm.install("psycopg-pool")
+    pm.install("psycopg[binary,pool]")
+if not pm.is_installed("asyncpg"):
+    pm.install("asyncpg")
+
 
 import psycopg
 from psycopg.rows import namedtuple_row
