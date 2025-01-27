@@ -340,17 +340,18 @@ class Neo4JStorage(BaseGraphStorage):
     async def _node2vec_embed(self):
         print("Implemented but never called.")
 
+        
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> Dict[str, List[Dict]]:
         """
-        获取指定节点的完整连通子图（包含起始节点本身）
+        Get complete connected subgraph for specified node (including the starting node itself)
 
-        修复要点：
-        1. 包含起始节点自身
-        2. 处理多标签节点
-        3. 明确关系方向
-        4. 添加深度控制
+        Key fixes:
+        1. Include the starting node itself
+        2. Handle multi-label nodes
+        3. Clarify relationship directions
+        4. Add depth control
         """
         label = node_label.strip('"')
         result = {"nodes": [], "edges": []}
@@ -359,14 +360,14 @@ class Neo4JStorage(BaseGraphStorage):
 
         async with self._driver.session(database=self._DATABASE) as session:
             try:
-                # 关键调试步骤：先验证起始节点是否存在
+                # Critical debug step: first verify if starting node exists
                 validate_query = f"MATCH (n:`{label}`) RETURN n LIMIT 1"
                 validate_result = await session.run(validate_query)
                 if not await validate_result.single():
-                    logger.warning(f"起始节点 {label} 不存在！")
+                    logger.warning(f"Starting node {label} does not exist!")
                     return result
 
-                # 优化后的查询语句（包含方向处理和自循环）
+                # Optimized query (including direction handling and self-loops)
                 main_query = f"""
                 MATCH (start:`{label}`)
                 WITH start
@@ -383,17 +384,17 @@ class Neo4JStorage(BaseGraphStorage):
                 record = await result_set.single()
 
                 if record:
-                    # 处理节点（兼容多标签情况）
+                    # Handle nodes (compatible with multi-label cases)
                     for node in record["nodes"]:
-                        # 使用节点ID + 标签组合作为唯一标识
+                        # Use node ID + label combination as unique identifier
                         node_id = f"{node.id}_{'_'.join(node.labels)}"
                         if node_id not in seen_nodes:
                             node_data = dict(node)
-                            node_data["labels"] = list(node.labels)  # 保留所有标签
+                            node_data["labels"] = list(node.labels)  # Keep all labels
                             result["nodes"].append(node_data)
                             seen_nodes.add(node_id)
 
-                    # 处理关系（包含方向信息）
+                    # Handle relationships (including direction information)
                     for rel in record["relationships"]:
                         edge_id = f"{rel.id}_{rel.type}"
                         if edge_id not in seen_edges:
@@ -414,11 +415,11 @@ class Neo4JStorage(BaseGraphStorage):
                             seen_edges.add(edge_id)
 
                     logger.info(
-                        f"子图查询成功 | 节点数: {len(result['nodes'])} | 边数: {len(result['edges'])}"
+                        f"Subgraph query successful | Node count: {len(result['nodes'])} | Edge count: {len(result['edges'])}"
                     )
 
             except neo4jExceptions.ClientError as e:
-                logger.error(f"APOC查询失败: {str(e)}")
+                logger.error(f"APOC query failed: {str(e)}")
                 return await self._robust_fallback(label, max_depth)
 
         return result
@@ -426,7 +427,7 @@ class Neo4JStorage(BaseGraphStorage):
     async def _robust_fallback(
         self, label: str, max_depth: int
     ) -> Dict[str, List[Dict]]:
-        """强化版降级查询方案"""
+        """Enhanced fallback query solution"""
         result = {"nodes": [], "edges": []}
         visited_nodes = set()
         visited_edges = set()
@@ -435,7 +436,7 @@ class Neo4JStorage(BaseGraphStorage):
             if current_depth > max_depth:
                 return
 
-            # 获取当前节点详情
+            # Get current node details
             node = await self.get_node(current_label)
             if not node:
                 return
@@ -445,12 +446,12 @@ class Neo4JStorage(BaseGraphStorage):
                 return
             visited_nodes.add(node_id)
 
-            # 添加节点数据（带完整标签）
+            # Add node data (with complete labels)
             node_data = {k: v for k, v in node.items()}
-            node_data["labels"] = [current_label]  # 假设get_node方法返回包含标签信息
+            node_data["labels"] = [current_label]  # Assume get_node method returns label information
             result["nodes"].append(node_data)
 
-            # 获取所有出边和入边
+            # Get all outgoing and incoming edges
             query = f"""
             MATCH (a)-[r]-(b)
             WHERE a:`{current_label}` OR b:`{current_label}`
@@ -460,7 +461,7 @@ class Neo4JStorage(BaseGraphStorage):
             async with self._driver.session(database=self._DATABASE) as session:
                 results = await session.run(query)
                 async for record in results:
-                    # 处理边
+                    # Handle edges
                     rel = record["r"]
                     edge_id = f"{rel.id}_{rel.type}"
                     if edge_id not in visited_edges:
@@ -476,7 +477,7 @@ class Neo4JStorage(BaseGraphStorage):
                         result["edges"].append(edge_data)
                         visited_edges.add(edge_id)
 
-                        # 递归遍历相邻节点
+                        # Recursively traverse adjacent nodes
                         next_label = (
                             list(record["b"].labels)[0]
                             if record["direction"] == "OUTGOING"
@@ -489,15 +490,15 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> List[str]:
         """
-        获取数据库中所有存在的节点标签
+        Get all existing node labels in the database
         Returns:
-            ["Person", "Company", ...]  # 按字母排序的标签列表
+            ["Person", "Company", ...]  # Alphabetically sorted label list
         """
         async with self._driver.session(database=self._DATABASE) as session:
-            # 方法1：直接查询元数据（Neo4j 4.3+ 可用）
+            # Method 1: Direct metadata query (Available for Neo4j 4.3+)
             # query = "CALL db.labels() YIELD label RETURN label"
 
-            # 方法2：兼容旧版本的查询方式
+            # Method 2: Query compatible with older versions
             query = """
                 MATCH (n)
                 WITH DISTINCT labels(n) AS node_labels
