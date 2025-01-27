@@ -10,25 +10,25 @@
         .fade-in {
             animation: fadeIn 0.3s ease-in;
         }
-        
+
         @keyframes fadeIn {
             from { opacity: 0; }
             to { opacity: 1; }
         }
-        
+
         .spin {
             animation: spin 1s linear infinite;
         }
-        
+
         @keyframes spin {
             from { transform: rotate(0deg); }
             to { transform: rotate(360deg); }
         }
-        
+
         .slide-in {
             animation: slideIn 0.3s ease-out;
         }
-        
+
         @keyframes slideIn {
             from { transform: translateX(-100%); }
             to { transform: translateX(0); }
@@ -128,7 +128,7 @@
             'file-manager': () => `
                 <div class="space-y-6">
                     <h2 class="text-2xl font-bold text-gray-800">File Manager</h2>
-                    
+
                     <div class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center hover:border-gray-400 transition-colors">
                         <input type="file" id="fileInput" multiple accept=".txt,.md,.doc,.docx,.pdf,.pptx" class="hidden">
                         <label for="fileInput" class="cursor-pointer">
@@ -166,7 +166,7 @@
             'query': () => `
                 <div class="space-y-6">
                     <h2 class="text-2xl font-bold text-gray-800">Query Database</h2>
-                    
+
                     <div class="space-y-4">
                         <div>
                             <label class="block text-sm font-medium text-gray-700">Query Mode</label>
@@ -223,15 +223,15 @@
             'settings': () => `
                 <div class="space-y-6">
                     <h2 class="text-2xl font-bold text-gray-800">Settings</h2>
-                    
+
                     <div class="max-w-xl">
                         <div class="space-y-4">
                             <div>
                                 <label class="block text-sm font-medium text-gray-700">API Key</label>
-                                <input type="password" id="apiKeyInput" value="${state.apiKey}" 
+                                <input type="password" id="apiKeyInput" value="${state.apiKey}"
                                     class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500">
                             </div>
-                            
+
                             <button id="saveSettings" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
                                 Save Settings
                             </button>
