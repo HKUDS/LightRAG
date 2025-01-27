@@ -1798,12 +1798,13 @@ def create_app(args):
     @app.get("/health", dependencies=[Depends(optional_api_key)])
     async def get_status():
         """Get current system status"""
+        files = doc_manager.scan_directory()
         return {
             "status": "healthy",
             "working_directory": str(args.working_dir),
             "input_directory": str(args.input_dir),
-            "indexed_files": doc_manager.indexed_files,
-            "indexed_files_count": len(doc_manager.indexed_files),
+            "indexed_files": files,
+            "indexed_files_count": len(files),
             "configuration": {
                 # LLM configuration binding/host address (if applicable)/model (if applicable)
                 "llm_binding": args.llm_binding,
