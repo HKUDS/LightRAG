@@ -253,9 +253,23 @@ def list_of_list_to_csv(data: List[List[str]]) -> str:
 
 
 def csv_string_to_list(csv_string: str) -> List[List[str]]:
-    output = io.StringIO(csv_string)
-    reader = csv.reader(output)
-    return [row for row in reader]
+    # Clean the string by removing NUL characters
+    cleaned_string = csv_string.replace('\0', '')
+    
+    output = io.StringIO(cleaned_string)
+    reader = csv.reader(
+        output,
+        quoting=csv.QUOTE_ALL,       # Match the writer configuration
+        escapechar='\\',             # Use backslash as escape character
+        quotechar='"',               # Use double quotes
+    )
+    
+    try:
+        return [row for row in reader]
+    except csv.Error as e:
+        raise ValueError(f"Failed to parse CSV string: {str(e)}")
+    finally:
+        output.close()
 
 
 def save_data_to_file(data, file_name):
