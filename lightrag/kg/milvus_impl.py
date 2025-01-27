@@ -6,6 +6,9 @@ import numpy as np
 from lightrag.utils import logger
 from ..base import BaseVectorStorage
 
+import pipmaster as pm
+if not pm.is_installed("pymilvus"):
+    pm.install("pymilvus")
 from pymilvus import MilvusClient
 
 
