@@ -225,7 +225,7 @@ const handlers = {
 
                     const percentage = ((i + 1) / state.files.length) * 100;
                     progressBar.style.width = `${percentage}%`;
-                    statusText.textContent = i + 1;
+                    statusText.textContent = `${i + 1}/${state.files.length}`;
                 } catch (error) {
                     console.error('Upload error:', error);
                 }
