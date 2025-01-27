@@ -1790,6 +1790,11 @@ def create_app(args):
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
 
+    @app.get("/documents", dependencies=[Depends(optional_api_key)])
+    async def documents():
+        """Get current system status"""
+        return doc_manager.indexed_files
+
     @app.get("/health", dependencies=[Depends(optional_api_key)])
     async def get_status():
         """Get current system status"""
@@ -1798,7 +1803,7 @@ def create_app(args):
             "working_directory": str(args.working_dir),
             "input_directory": str(args.input_dir),
             "indexed_files": doc_manager.indexed_files,
-            "indexed_files_count": len(doc_manager.scan_directory()),
+            "indexed_files_count": len(doc_manager.indexed_files),
             "configuration": {
                 # LLM configuration binding/host address (if applicable)/model (if applicable)
                 "llm_binding": args.llm_binding,
@@ -1817,13 +1822,13 @@ def create_app(args):
         }
 
     # webui mount /webui/index.html
-    app.mount(
-        "/webui",
-        StaticFiles(
-            directory=Path(__file__).resolve().parent / "webui" / "static", html=True
-        ),
-        name="webui_static",
-    )
+    # app.mount(
+    #     "/webui",
+    #     StaticFiles(
+    #         directory=Path(__file__).resolve().parent / "webui" / "static", html=True
+    #     ),
+    #     name="webui_static",
+    # )
 
     # Serve the static files
     static_dir = Path(__file__).parent / "static"

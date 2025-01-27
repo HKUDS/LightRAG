@@ -1,7 +1,4 @@
 // lightrag.js
-// Modify according to the actual API address
-const API_BASE = 'http://localhost:9621';
-
 // init
 function initializeApp() {
     setupFileUpload();
@@ -37,7 +34,7 @@ async function apiRequest(endpoint, method = 'GET', body = null) {
     }
 
     try {
-        const response = await fetch(`${API_BASE}${endpoint}`, options);
+        const response = await fetch(`${endpoint}`, options);
         if (!response.ok) {
             throw new Error(`request failed: ${response.status}`);
         }
@@ -72,7 +69,7 @@ async function handleTextUpload() {
             ...(description && {description})
         };
 
-        const response = await fetch(`${API_BASE}/documents/text`, {
+        const response = await fetch(`/documents/text`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json'
@@ -154,7 +151,7 @@ async function handleFiles(files) {
     statusDiv.textContent = '';
     try {
         showStatus('loading', 'UPLOADING...', statusDiv);
-        const response = await fetch(`${API_BASE}/documents/upload`, {
+        const response = await fetch(`/documents/upload`, {
             method: 'POST',
             body: formData
         });
@@ -213,7 +210,7 @@ async function handleQuery() {
 // handle stream api
 async function handleStreamingQuery(payload, resultsDiv) {
     try {
-        const response = await fetch(`${API_BASE}/query/stream`, {
+        const response = await fetch(`/query/stream`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
@@ -313,7 +310,7 @@ async function handleChat(chatInput) {
     chatHistory.scrollTop = chatHistory.scrollHeight;
 
     try {
-        const response = await fetch(`${API_BASE}/api/chat`, {
+        const response = await fetch(`/api/chat`, {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
