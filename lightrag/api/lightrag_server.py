@@ -1789,9 +1789,9 @@ def create_app(args):
         except Exception as e:
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
- 
+
     @app.get("/documents", dependencies=[Depends(optional_api_key)])
-    async def get_status():
+    async def documents():
         """Get current system status"""
         return doc_manager.indexed_files
 
@@ -1831,7 +1831,7 @@ def create_app(args):
     # )
 
     # Serve the static files
-    static_dir = Path(__file__).parent  / "static"
+    static_dir = Path(__file__).parent / "static"
     static_dir.mkdir(exist_ok=True)
     app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
 

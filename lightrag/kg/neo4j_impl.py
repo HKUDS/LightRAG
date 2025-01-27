@@ -340,7 +340,6 @@ class Neo4JStorage(BaseGraphStorage):
     async def _node2vec_embed(self):
         print("Implemented but never called.")
 
-        
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> Dict[str, List[Dict]]:
@@ -448,7 +447,9 @@ class Neo4JStorage(BaseGraphStorage):
 
             # Add node data (with complete labels)
             node_data = {k: v for k, v in node.items()}
-            node_data["labels"] = [current_label]  # Assume get_node method returns label information
+            node_data["labels"] = [
+                current_label
+            ]  # Assume get_node method returns label information
             result["nodes"].append(node_data)
 
             # Get all outgoing and incoming edges
