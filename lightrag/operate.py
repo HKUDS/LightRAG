@@ -574,6 +574,7 @@ async def kg_query(
     query_param: QueryParam,
     global_config: dict,
     hashing_kv: BaseKVStorage = None,
+    prompt: str = "",
 ) -> str:
     # Handle cache
     use_model_func = global_config["llm_model_func"]
@@ -637,7 +638,7 @@ async def kg_query(
             query_param.conversation_history, query_param.history_turns
         )
 
-    sys_prompt_temp = PROMPTS["rag_response"]
+    sys_prompt_temp = prompt if prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
         context_data=context,
         response_type=query_param.response_type,
