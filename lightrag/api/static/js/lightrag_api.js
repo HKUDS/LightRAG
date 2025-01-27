@@ -58,6 +58,12 @@ const pages = {
                 <h3 class="text-lg font-semibold text-gray-700">Indexed Files</h3>
                 <div class="space-y-2"></div>
             </div>
+            <button id="rescanBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
+                <path d="M12 4a8 8 0 1 1-8 8H2.5a9.5 9.5 0 1 0 2.8-6.7L2 3v6h6L5.7 6.7A7.96 7.96 0 0 1 12 4z"/>
+                </svg>Rescan Files 
+
+            </button>
 
         </div>
     `,
@@ -225,7 +231,22 @@ const handlers = {
             }
             progress.classList.add('hidden');
         });
-
+        rescanBtn.addEventListener('click', async () => {
+            let apiKey = localStorage.getItem('apiKey') || '';
+            const progress = document.getElementById('uploadProgress');
+            const progressBar = progress.querySelector('div');
+            const statusText = document.getElementById('uploadStatus');
+            progress.classList.remove('hidden');
+            try {
+                const scan_output = await fetch('/documents/scan', {
+                    method: 'GET',
+                });
+                statusText.textContent = scan_output.data;
+            } catch (error) {
+                console.error('Upload error:', error);
+            }
+            progress.classList.add('hidden');
+        });
         updateIndexedFiles();
     },
 
