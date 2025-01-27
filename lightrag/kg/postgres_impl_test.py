@@ -1,8 +1,15 @@
 import asyncio
-import asyncpg
 import sys
 import os
+import pipmaster as pm
 
+if not pm.is_installed("psycopg-pool"):
+    pm.install("psycopg-pool")
+    pm.install("psycopg[binary,pool]")
+if not pm.is_installed("asyncpg"):
+    pm.install("asyncpg")
+
+import asyncpg
 import psycopg
 from psycopg_pool import AsyncConnectionPool
 from lightrag.kg.postgres_impl import PostgreSQLDB, PGGraphStorage
