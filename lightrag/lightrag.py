@@ -38,10 +38,10 @@ from .base import (
 from .prompt import GRAPH_FIELD_SEP
 
 STORAGES = {
-    "JsonKVStorage": ".storage",
-    "NanoVectorDBStorage": ".storage",
-    "NetworkXStorage": ".storage",
-    "JsonDocStatusStorage": ".storage",
+    "NetworkXStorage": ".storage.networkx_storage",
+    "JsonKVStorage": ".storage.json_kv_storage",
+    "NanoVectorDBStorage": ".storage.nano_vector_db",
+    "JsonDocStatusStorage": ".storage.jsondocstatus_storage",
     "Neo4JStorage": ".kg.neo4j_impl",
     "OracleKVStorage": ".kg.oracle_impl",
     "OracleGraphStorage": ".kg.oracle_impl",
