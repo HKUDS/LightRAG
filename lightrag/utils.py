@@ -16,7 +16,9 @@ import numpy as np
 import tiktoken
 
 from lightrag.prompt import PROMPTS
-
+from typing import List
+import csv
+import io
 
 class UnlimitedSemaphore:
     """A context manager that allows unlimited access."""
@@ -235,17 +237,39 @@ def truncate_list_by_token_size(list_data: list, key: callable, max_token_size: 
     return list_data
 
 
+
+
 def list_of_list_to_csv(data: List[List[str]]) -> str:
     output = io.StringIO()
-    writer = csv.writer(output, quoting=csv.QUOTE_ALL)
+    writer = csv.writer(
+        output,
+        quoting=csv.QUOTE_ALL,       # Quote all fields
+        escapechar='\\',             # Use backslash as escape character
+        quotechar='"',               # Use double quotes
+        lineterminator='\n'          # Explicit line terminator
+    )
     writer.writerows(data)
     return output.getvalue()
 
 
 def csv_string_to_list(csv_string: str) -> List[List[str]]:
-    output = io.StringIO(csv_string.replace("\x00", ""))
-    reader = csv.reader(output)
-    return [row for row in reader]
+    # Clean the string by removing NUL characters
+    cleaned_string = csv_string.replace('\0', '')
+    
+    output = io.StringIO(cleaned_string)
+    reader = csv.reader(
+        output,
+        quoting=csv.QUOTE_ALL,       # Match the writer configuration
+        escapechar='\\',             # Use backslash as escape character
+        quotechar='"',               # Use double quotes
+    )
+    
+    try:
+        return [row for row in reader]
+    except csv.Error as e:
+        raise ValueError(f"Failed to parse CSV string: {str(e)}")
+    finally:
+        output.close()
 
 
 def save_data_to_file(data, file_name):

@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from typing import Union
 import numpy as np
 import array
+import pipmaster as pm
+
+if not pm.is_installed("oracledb"):
+    pm.install("oracledb")
+
 
 from ..utils import logger
 from ..base import (

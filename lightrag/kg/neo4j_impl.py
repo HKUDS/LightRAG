@@ -3,6 +3,9 @@ import inspect
 import os
 from dataclasses import dataclass
 from typing import Any, Union, Tuple, List, Dict
+import pipmaster as pm
+if not pm.is_installed("neo4j"):
+    pm.install("neo4j")
 
 from neo4j import (
     AsyncGraphDatabase,

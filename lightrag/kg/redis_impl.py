@@ -1,6 +1,9 @@
 import os
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
+import pipmaster as pm
+if not pm.is_installed("redis"):
+    pm.install("redis")
 
 # aioredis is a depricated library, replaced with redis
 from redis.asyncio import Redis
