@@ -48,7 +48,6 @@ Usage:
 
 """
 
-
 import asyncio
 import os
 from dataclasses import dataclass
@@ -133,5 +132,3 @@ class JsonKVStorage(BaseKVStorage):
                     del self._data[id]
             await self.index_done_callback()
             logger.info(f"Successfully deleted {len(ids)} items from {self.namespace}")
-
-

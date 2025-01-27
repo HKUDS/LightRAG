@@ -2,6 +2,7 @@ import os
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import pipmaster as pm
+
 if not pm.is_installed("pymongo"):
     pm.install("pymongo")
 

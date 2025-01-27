@@ -8,6 +8,7 @@ from typing import Union, List, Dict, Set, Any, Tuple
 import numpy as np
 
 import pipmaster as pm
+
 if not pm.is_installed("asyncpg"):
     pm.install("asyncpg")
 
