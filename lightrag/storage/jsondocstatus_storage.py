@@ -48,28 +48,17 @@ Usage:
 
 """
 
-
-import asyncio
-import html
 import os
-from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
-from typing import Any, Union, cast, Dict
-import numpy as np
-
-import time
+from typing import Union, Dict
 
 from lightrag.utils import (
     logger,
     load_json,
     write_json,
-    compute_mdhash_id,
 )
 
 from lightrag.base import (
-    BaseGraphStorage,
-    BaseKVStorage,
-    BaseVectorStorage,
     DocStatus,
     DocProcessingStatus,
     DocStatusStorage,
