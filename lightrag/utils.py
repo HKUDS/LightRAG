@@ -243,7 +243,7 @@ def list_of_list_to_csv(data: List[List[str]]) -> str:
 
 
 def csv_string_to_list(csv_string: str) -> List[List[str]]:
-    output = io.StringIO(csv_string.replace('\x00', ''))
+    output = io.StringIO(csv_string.replace("\x00", ""))
     reader = csv.reader(output)
     return [row for row in reader]
 
