@@ -47,6 +47,7 @@ def estimate_tokens(text: str) -> int:
 
     return int(tokens)
 
+
 class OllamaServerInfos:
     # Constants for emulated Ollama model information
     LIGHTRAG_NAME = "lightrag"
@@ -55,11 +56,12 @@ class OllamaServerInfos:
     LIGHTRAG_SIZE = 7365960935  # it's a dummy value
     LIGHTRAG_CREATED_AT = "2024-01-15T00:00:00Z"
     LIGHTRAG_DIGEST = "sha256:lightrag"
-    
+
     KV_STORAGE = "JsonKVStorage"
     DOC_STATUS_STORAGE = "JsonDocStatusStorage"
     GRAPH_STORAGE = "NetworkXStorage"
     VECTOR_STORAGE = "NanoVectorDBStorage"
+
 
 # Add infos
 ollama_server_infos = OllamaServerInfos()
@@ -490,7 +492,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--simulated-model-name",
         type=str,
-        default=get_env_value("SIMULATED_MODEL_NAME", ollama_server_infos.LIGHTRAG_MODEL),
+        default=get_env_value(
+            "SIMULATED_MODEL_NAME", ollama_server_infos.LIGHTRAG_MODEL
+        ),
         help="Number of conversation history turns to include (default: from env or 3)",
     )
 
