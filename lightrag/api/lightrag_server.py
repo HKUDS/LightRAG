@@ -489,8 +489,8 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--simulated-model-name",
-        type=int,
-        default=get_env_value("SIMULATED_MODEL_NAME", ollama_server_infos.LIGHTRAG_MODEL, str),
+        type=str,
+        default=get_env_value("SIMULATED_MODEL_NAME", ollama_server_infos.LIGHTRAG_MODEL),
         help="Number of conversation history turns to include (default: from env or 3)",
     )
 
