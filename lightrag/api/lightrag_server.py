@@ -484,7 +484,16 @@ def parse_args() -> argparse.Namespace:
         help="Number of conversation history turns to include (default: from env or 3)",
     )
 
+    parser.add_argument(
+        "--simulated-model-name",
+        type=int,
+        default=get_env_value("SIMULATED_MODEL_NAME", LIGHTRAG_MODEL, str),
+        help="Number of conversation history turns to include (default: from env or 3)",
+    )
+
     args = parser.parse_args()
+
+    LIGHTRAG_MODEL = args.simulated_model_name
 
     return args
 
