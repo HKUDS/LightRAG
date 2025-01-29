@@ -491,7 +491,7 @@ def dequantize_embedding(
     return (quantized * scale + min_val).astype(np.float32)
 
 
-async def handle_cache(hashing_kv, args_hash, prompt, mode="default", cache_type=None):
+async def handle_cache(hashing_kv, args_hash, prompt, mode="default", cache_type=None, llm=None):
     """Generic cache handling function"""
     if hashing_kv is None or not hashing_kv.global_config.get("enable_llm_cache"):
         return None, None, None, None
@@ -528,7 +528,7 @@ async def handle_cache(hashing_kv, args_hash, prompt, mode="default", cache_type
             similarity_threshold=embedding_cache_config["similarity_threshold"],
             mode=mode,
             use_llm_check=use_llm_check,
-            llm_func=llm_model_func if use_llm_check else None,
+            llm_func=llm if (use_llm_check and llm is not None) else (llm_model_func if use_llm_check else None),
             original_prompt=prompt if use_llm_check else None,
             cache_type=cache_type,
         )
