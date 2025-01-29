@@ -48,6 +48,7 @@ STORAGES = {
     "OracleVectorDBStorage": ".kg.oracle_impl",
     "MilvusVectorDBStorge": ".kg.milvus_impl",
     "MongoKVStorage": ".kg.mongo_impl",
+    "MongoGraphStorage": ".kg.mongo_impl",
     "RedisKVStorage": ".kg.redis_impl",
     "ChromaVectorDBStorage": ".kg.chroma_impl",
     "TiDBKVStorage": ".kg.tidb_impl",
