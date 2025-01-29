@@ -1,3 +1,4 @@
+import os
 import asyncio
 
 # import html
@@ -341,10 +342,14 @@ class OracleKVStorage(BaseKVStorage):
 class OracleVectorDBStorage(BaseVectorStorage):
     # should pass db object to self.db
     db: OracleDB = None
-    cosine_better_than_threshold: float = 0.2
+    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
 
     def __post_init__(self):
-        pass
+        # Use global config value if specified, otherwise use default
+        config = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        self.cosine_better_than_threshold = config.get(
+            "cosine_better_than_threshold", self.cosine_better_than_threshold
+        )
 
     async def upsert(self, data: dict[str, dict]):
         """向向量数据库中插入数据"""
