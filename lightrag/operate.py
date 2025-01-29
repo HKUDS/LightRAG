@@ -1028,7 +1028,7 @@ async def _build_query_context(
     # not necessary to use LLM to generate a response
     if not entities_context.strip() and not relations_context.strip():
         return None
-        
+
     return f"""
 -----Entities-----
 ```csv

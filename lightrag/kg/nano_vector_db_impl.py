@@ -87,7 +87,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         vector_db_kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         self.cosine_better_than_threshold = vector_db_kwargs.get(
             "cosine_better_than_threshold",
-            self.global_config.get("cosine_better_than_threshold", self.cosine_better_than_threshold)
+            self.global_config.get(
+                "cosine_better_than_threshold", self.cosine_better_than_threshold
+            ),
         )
 
     async def upsert(self, data: dict[str, dict]):
@@ -137,7 +139,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def query(self, query: str, top_k=5):
         embedding = await self.embedding_func([query])
         embedding = embedding[0]
-        logger.info(f"Query: {query}, top_k: {top_k}, cosine_better_than_threshold: {self.cosine_better_than_threshold}")
+        logger.info(
+            f"Query: {query}, top_k: {top_k}, cosine_better_than_threshold: {self.cosine_better_than_threshold}"
+        )
         results = self._client.query(
             query=embedding,
             top_k=top_k,
