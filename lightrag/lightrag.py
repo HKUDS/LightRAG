@@ -158,8 +158,8 @@ class LightRAG:
     # LLM
     llm_model_func: callable = None  # This must be set (we do want to separate llm from the corte, so no more default initialization)
     llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  # 'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
-    llm_model_max_token_size: int = 32768
-    llm_model_max_async: int = 16
+    llm_model_max_token_size: int = int(os.getenv("MAX_TOKENS", "32768"))
+    llm_model_max_async: int = int(os.getenv("MAX_ASYNC", "16"))
     llm_model_kwargs: dict = field(default_factory=dict)
 
     # storage
