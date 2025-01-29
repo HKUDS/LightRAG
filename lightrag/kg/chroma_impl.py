@@ -1,3 +1,4 @@
+import os
 import asyncio
 from dataclasses import dataclass
 from typing import Union
@@ -12,16 +13,16 @@ from lightrag.utils import logger
 class ChromaVectorDBStorage(BaseVectorStorage):
     """ChromaDB vector storage implementation."""
 
-    cosine_better_than_threshold: float = 0.2
+    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
 
     def __post_init__(self):
         try:
             # Use global config value if specified, otherwise use default
-            self.cosine_better_than_threshold = self.global_config.get(
+            config = self.global_config.get("vector_db_storage_cls_kwargs", {})
+            self.cosine_better_than_threshold = config.get(
                 "cosine_better_than_threshold", self.cosine_better_than_threshold
             )
 
-            config = self.global_config.get("vector_db_storage_cls_kwargs", {})
             user_collection_settings = config.get("collection_settings", {})
             # Default HNSW index settings for ChromaDB
             default_collection_settings = {
