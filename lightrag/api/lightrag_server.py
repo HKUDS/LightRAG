@@ -48,18 +48,23 @@ def estimate_tokens(text: str) -> int:
     return int(tokens)
 
 
-# Constants for emulated Ollama model information
-LIGHTRAG_NAME = "lightrag"
-LIGHTRAG_TAG = os.getenv("OLLAMA_EMULATING_MODEL_TAG", "latest")
-LIGHTRAG_MODEL = f"{LIGHTRAG_NAME}:{LIGHTRAG_TAG}"
-LIGHTRAG_SIZE = 7365960935  # it's a dummy value
-LIGHTRAG_CREATED_AT = "2024-01-15T00:00:00Z"
-LIGHTRAG_DIGEST = "sha256:lightrag"
+class OllamaServerInfos:
+    # Constants for emulated Ollama model information
+    LIGHTRAG_NAME = "lightrag"
+    LIGHTRAG_TAG = os.getenv("OLLAMA_EMULATING_MODEL_TAG", "latest")
+    LIGHTRAG_MODEL = f"{LIGHTRAG_NAME}:{LIGHTRAG_TAG}"
+    LIGHTRAG_SIZE = 7365960935  # it's a dummy value
+    LIGHTRAG_CREATED_AT = "2024-01-15T00:00:00Z"
+    LIGHTRAG_DIGEST = "sha256:lightrag"
 
-KV_STORAGE = "JsonKVStorage"
-DOC_STATUS_STORAGE = "JsonDocStatusStorage"
-GRAPH_STORAGE = "NetworkXStorage"
-VECTOR_STORAGE = "NanoVectorDBStorage"
+    KV_STORAGE = "JsonKVStorage"
+    DOC_STATUS_STORAGE = "JsonDocStatusStorage"
+    GRAPH_STORAGE = "NetworkXStorage"
+    VECTOR_STORAGE = "NanoVectorDBStorage"
+
+
+# Add infos
+ollama_server_infos = OllamaServerInfos()
 
 # read config.ini
 config = configparser.ConfigParser()
@@ -68,8 +73,8 @@ config.read("config.ini", "utf-8")
 redis_uri = config.get("redis", "uri", fallback=None)
 if redis_uri:
     os.environ["REDIS_URI"] = redis_uri
-    KV_STORAGE = "RedisKVStorage"
-    DOC_STATUS_STORAGE = "RedisKVStorage"
+    ollama_server_infos.KV_STORAGE = "RedisKVStorage"
+    ollama_server_infos.DOC_STATUS_STORAGE = "RedisKVStorage"
 
 # Neo4j config
 neo4j_uri = config.get("neo4j", "uri", fallback=None)
@@ -79,7 +84,7 @@ if neo4j_uri:
     os.environ["NEO4J_URI"] = neo4j_uri
     os.environ["NEO4J_USERNAME"] = neo4j_username
     os.environ["NEO4J_PASSWORD"] = neo4j_password
-    GRAPH_STORAGE = "Neo4JStorage"
+    ollama_server_infos.GRAPH_STORAGE = "Neo4JStorage"
 
 # Milvus config
 milvus_uri = config.get("milvus", "uri", fallback=None)
@@ -91,7 +96,7 @@ if milvus_uri:
     os.environ["MILVUS_USER"] = milvus_user
     os.environ["MILVUS_PASSWORD"] = milvus_password
     os.environ["MILVUS_DB_NAME"] = milvus_db_name
-    VECTOR_STORAGE = "MilvusVectorDBStorge"
+    ollama_server_infos.VECTOR_STORAGE = "MilvusVectorDBStorge"
 
 # MongoDB config
 mongo_uri = config.get("mongodb", "uri", fallback=None)
@@ -99,8 +104,8 @@ mongo_database = config.get("mongodb", "LightRAG", fallback=None)
 if mongo_uri:
     os.environ["MONGO_URI"] = mongo_uri
     os.environ["MONGO_DATABASE"] = mongo_database
-    KV_STORAGE = "MongoKVStorage"
-    DOC_STATUS_STORAGE = "MongoKVStorage"
+    ollama_server_infos.KV_STORAGE = "MongoKVStorage"
+    ollama_server_infos.DOC_STATUS_STORAGE = "MongoKVStorage"
 
 
 def get_default_host(binding_type: str) -> str:
@@ -217,7 +222,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     # System Configuration
     ASCIIColors.magenta("\n🛠️ System Configuration:")
     ASCIIColors.white("    ├─ Ollama Emulating Model: ", end="")
-    ASCIIColors.yellow(f"{LIGHTRAG_MODEL}")
+    ASCIIColors.yellow(f"{ollama_server_infos.LIGHTRAG_MODEL}")
     ASCIIColors.white("    ├─ Log Level: ", end="")
     ASCIIColors.yellow(f"{args.log_level}")
     ASCIIColors.white("    ├─ Timeout: ", end="")
@@ -502,7 +507,18 @@ def parse_args() -> argparse.Namespace:
         help="Cosine similarity threshold (default: from env or 0.4)",
     )
 
+    parser.add_argument(
+        "--simulated-model-name",
+        type=str,
+        default=get_env_value(
+            "SIMULATED_MODEL_NAME", ollama_server_infos.LIGHTRAG_MODEL
+        ),
+        help="Number of conversation history turns to include (default: from env or 3)",
+    )
+
     args = parser.parse_args()
+
+    ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
     return args
 
@@ -556,7 +572,7 @@ class OllamaMessage(BaseModel):
 
 
 class OllamaChatRequest(BaseModel):
-    model: str = LIGHTRAG_MODEL
+    model: str = ollama_server_infos.LIGHTRAG_MODEL
     messages: List[OllamaMessage]
     stream: bool = True  # Default to streaming mode
     options: Optional[Dict[str, Any]] = None
@@ -571,7 +587,7 @@ class OllamaChatResponse(BaseModel):
 
 
 class OllamaGenerateRequest(BaseModel):
-    model: str = LIGHTRAG_MODEL
+    model: str = ollama_server_infos.LIGHTRAG_MODEL
     prompt: str
     system: Optional[str] = None
     stream: bool = False
@@ -860,10 +876,10 @@ def create_app(args):
             if args.llm_binding == "lollms" or args.llm_binding == "ollama"
             else {},
             embedding_func=embedding_func,
-            kv_storage=KV_STORAGE,
-            graph_storage=GRAPH_STORAGE,
-            vector_storage=VECTOR_STORAGE,
-            doc_status_storage=DOC_STATUS_STORAGE,
+            kv_storage=ollama_server_infos.KV_STORAGE,
+            graph_storage=ollama_server_infos.GRAPH_STORAGE,
+            vector_storage=ollama_server_infos.VECTOR_STORAGE,
+            doc_status_storage=ollama_server_infos.DOC_STATUS_STORAGE,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
@@ -883,10 +899,10 @@ def create_app(args):
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
             embedding_func=embedding_func,
-            kv_storage=KV_STORAGE,
-            graph_storage=GRAPH_STORAGE,
-            vector_storage=VECTOR_STORAGE,
-            doc_status_storage=DOC_STATUS_STORAGE,
+            kv_storage=ollama_server_infos.KV_STORAGE,
+            graph_storage=ollama_server_infos.GRAPH_STORAGE,
+            vector_storage=ollama_server_infos.VECTOR_STORAGE,
+            doc_status_storage=ollama_server_infos.DOC_STATUS_STORAGE,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
@@ -1452,16 +1468,16 @@ def create_app(args):
         return OllamaTagResponse(
             models=[
                 {
-                    "name": LIGHTRAG_MODEL,
-                    "model": LIGHTRAG_MODEL,
-                    "size": LIGHTRAG_SIZE,
-                    "digest": LIGHTRAG_DIGEST,
-                    "modified_at": LIGHTRAG_CREATED_AT,
+                    "name": ollama_server_infos.LIGHTRAG_MODEL,
+                    "model": ollama_server_infos.LIGHTRAG_MODEL,
+                    "size": ollama_server_infos.LIGHTRAG_SIZE,
+                    "digest": ollama_server_infos.LIGHTRAG_DIGEST,
+                    "modified_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                     "details": {
                         "parent_model": "",
                         "format": "gguf",
-                        "family": LIGHTRAG_NAME,
-                        "families": [LIGHTRAG_NAME],
+                        "family": ollama_server_infos.LIGHTRAG_NAME,
+                        "families": [ollama_server_infos.LIGHTRAG_NAME],
                         "parameter_size": "13B",
                         "quantization_level": "Q4_0",
                     },
@@ -1524,8 +1540,8 @@ def create_app(args):
                             total_response = response
 
                             data = {
-                                "model": LIGHTRAG_MODEL,
-                                "created_at": LIGHTRAG_CREATED_AT,
+                                "model": ollama_server_infos.LIGHTRAG_MODEL,
+                                "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                 "response": response,
                                 "done": False,
                             }
@@ -1537,8 +1553,8 @@ def create_app(args):
                             eval_time = last_chunk_time - first_chunk_time
 
                             data = {
-                                "model": LIGHTRAG_MODEL,
-                                "created_at": LIGHTRAG_CREATED_AT,
+                                "model": ollama_server_infos.LIGHTRAG_MODEL,
+                                "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                 "done": True,
                                 "total_duration": total_time,
                                 "load_duration": 0,
@@ -1558,8 +1574,8 @@ def create_app(args):
 
                                     total_response += chunk
                                     data = {
-                                        "model": LIGHTRAG_MODEL,
-                                        "created_at": LIGHTRAG_CREATED_AT,
+                                        "model": ollama_server_infos.LIGHTRAG_MODEL,
+                                        "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                         "response": chunk,
                                         "done": False,
                                     }
@@ -1571,8 +1587,8 @@ def create_app(args):
                             eval_time = last_chunk_time - first_chunk_time
 
                             data = {
-                                "model": LIGHTRAG_MODEL,
-                                "created_at": LIGHTRAG_CREATED_AT,
+                                "model": ollama_server_infos.LIGHTRAG_MODEL,
+                                "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                 "done": True,
                                 "total_duration": total_time,
                                 "load_duration": 0,
@@ -1616,8 +1632,8 @@ def create_app(args):
                 eval_time = last_chunk_time - first_chunk_time
 
                 return {
-                    "model": LIGHTRAG_MODEL,
-                    "created_at": LIGHTRAG_CREATED_AT,
+                    "model": ollama_server_infos.LIGHTRAG_MODEL,
+                    "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                     "response": str(response_text),
                     "done": True,
                     "total_duration": total_time,
@@ -1690,8 +1706,8 @@ def create_app(args):
                             total_response = response
 
                             data = {
-                                "model": LIGHTRAG_MODEL,
-                                "created_at": LIGHTRAG_CREATED_AT,
+                                "model": ollama_server_infos.LIGHTRAG_MODEL,
+                                "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                 "message": {
                                     "role": "assistant",
                                     "content": response,
@@ -1707,8 +1723,8 @@ def create_app(args):
                             eval_time = last_chunk_time - first_chunk_time
 
                             data = {
-                                "model": LIGHTRAG_MODEL,
-                                "created_at": LIGHTRAG_CREATED_AT,
+                                "model": ollama_server_infos.LIGHTRAG_MODEL,
+                                "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                 "done": True,
                                 "total_duration": total_time,
                                 "load_duration": 0,
@@ -1728,8 +1744,8 @@ def create_app(args):
 
                                     total_response += chunk
                                     data = {
-                                        "model": LIGHTRAG_MODEL,
-                                        "created_at": LIGHTRAG_CREATED_AT,
+                                        "model": ollama_server_infos.LIGHTRAG_MODEL,
+                                        "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                         "message": {
                                             "role": "assistant",
                                             "content": chunk,
@@ -1745,8 +1761,8 @@ def create_app(args):
                             eval_time = last_chunk_time - first_chunk_time
 
                             data = {
-                                "model": LIGHTRAG_MODEL,
-                                "created_at": LIGHTRAG_CREATED_AT,
+                                "model": ollama_server_infos.LIGHTRAG_MODEL,
+                                "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                 "done": True,
                                 "total_duration": total_time,
                                 "load_duration": 0,
@@ -1801,8 +1817,8 @@ def create_app(args):
                 eval_time = last_chunk_time - first_chunk_time
 
                 return {
-                    "model": LIGHTRAG_MODEL,
-                    "created_at": LIGHTRAG_CREATED_AT,
+                    "model": ollama_server_infos.LIGHTRAG_MODEL,
+                    "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                     "message": {
                         "role": "assistant",
                         "content": str(response_text),
@@ -1845,10 +1861,10 @@ def create_app(args):
                 "embedding_binding_host": args.embedding_binding_host,
                 "embedding_model": args.embedding_model,
                 "max_tokens": args.max_tokens,
-                "kv_storage": KV_STORAGE,
-                "doc_status_storage": DOC_STATUS_STORAGE,
-                "graph_storage": GRAPH_STORAGE,
-                "vector_storage": VECTOR_STORAGE,
+                "kv_storage": ollama_server_infos.KV_STORAGE,
+                "doc_status_storage": ollama_server_infos.DOC_STATUS_STORAGE,
+                "graph_storage": ollama_server_infos.GRAPH_STORAGE,
+                "vector_storage": ollama_server_infos.VECTOR_STORAGE,
             },
         }
 
