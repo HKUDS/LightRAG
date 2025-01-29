@@ -83,8 +83,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
         self._client = NanoVectorDB(
             self.embedding_func.embedding_dim, storage_file=self._client_file_name
         )
-        self.cosine_better_than_threshold = self.global_config.get(
-            "cosine_better_than_threshold", self.cosine_better_than_threshold
+        # get cosine_better_than_threshold from LightRAG
+        vector_db_kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        self.cosine_better_than_threshold = vector_db_kwargs.get(
+            "cosine_better_than_threshold",
+            self.global_config.get("cosine_better_than_threshold", self.cosine_better_than_threshold)
         )
 
     async def upsert(self, data: dict[str, dict]):
