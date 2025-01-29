@@ -876,6 +876,9 @@ def create_app(args):
             else openai_alike_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
+            llm_model_kwargs={
+                "timeout": args.timeout,
+            },
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
