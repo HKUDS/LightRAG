@@ -98,6 +98,8 @@ After starting the lightrag-server, you can add an Ollama-type connection in the
 
 LightRAG can be configured using either command-line arguments or environment variables. When both are provided, command-line arguments take precedence over environment variables.
 
+For better performance, the API server's default values for TOP_K and COSINE_THRESHOLD are set to 50 and 0.4 respectively. If COSINE_THRESHOLD remains at its default value of 0.2 in LightRAG, many irrelevant entities and relations would be retrieved and sent to the LLM.
+
 ### Environment Variables
 
 You can configure LightRAG using environment variables by creating a `.env` file in your project root directory. Here's a complete example of available environment variables:
@@ -110,6 +112,17 @@ PORT=9621
 # Directory Configuration
 WORKING_DIR=/app/data/rag_storage
 INPUT_DIR=/app/data/inputs
+
+# RAG Configuration
+MAX_ASYNC=4
+MAX_TOKENS=32768
+EMBEDDING_DIM=1024
+MAX_EMBED_TOKENS=8192
+#HISTORY_TURNS=3
+#CHUNK_SIZE=1200
+#CHUNK_OVERLAP_SIZE=100
+#COSINE_THRESHOLD=0.4
+#TOP_K=50
 
 # LLM Configuration
 LLM_BINDING=ollama
@@ -124,14 +137,8 @@ EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
 EMBEDDING_MODEL=bge-m3:latest
 
-# RAG Configuration
-MAX_ASYNC=4
-MAX_TOKENS=32768
-EMBEDDING_DIM=1024
-MAX_EMBED_TOKENS=8192
-
 # Security
-LIGHTRAG_API_KEY=
+#LIGHTRAG_API_KEY=you-api-key-for-accessing-LightRAG
 
 # Logging
 LOG_LEVEL=INFO
@@ -186,10 +193,9 @@ PORT=7000 python lightrag.py
 | --ssl | False | Enable HTTPS |
 | --ssl-certfile | None | Path to SSL certificate file (required if --ssl is enabled) |
 | --ssl-keyfile | None | Path to SSL private key file (required if --ssl is enabled) |
+| --top-k | 50 | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode. |
+| --cosine-threshold | 0.4 | The cossine threshold for nodes and relations retrieval, works with top-k to control the retrieval of nodes and relations. |
 
-
-
-For protecting the server using an authentication key, you can also use an environment variable named `LIGHTRAG_API_KEY`.
 ### Example Usage
 
 #### Running a Lightrag server with ollama default local server as llm and embedding backends
