@@ -655,7 +655,7 @@ def get_conversation_turns(conversation_history: list[dict], num_turns: int) -> 
             else:
                 turn = [msg1, msg2]  # user, assistant
             turns.append(turn)
-        i += 1
+        i += 2
 
     # Keep only the most recent num_turns
     if len(turns) > num_turns:
