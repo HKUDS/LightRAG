@@ -891,7 +891,7 @@ async def mix_kg_vector_query(
                 if c["created_at"]:
                     chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
                 formatted_chunks.append(chunk_text)
-            
+
             logger.info(f"Truncate {len(chunks)} to {len(formatted_chunks)} chunks")
             return "\n--New Chunk--\n".join(formatted_chunks)
         except Exception as e:
