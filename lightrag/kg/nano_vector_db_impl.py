@@ -73,18 +73,21 @@ from lightrag.base import (
 
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
-    cosine_better_than_threshold: float = 0.2
+    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
 
     def __post_init__(self):
+        # Use global config value if specified, otherwise use default
+        config = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        self.cosine_better_than_threshold = config.get(
+            "cosine_better_than_threshold", self.cosine_better_than_threshold
+        )
+
         self._client_file_name = os.path.join(
             self.global_config["working_dir"], f"vdb_{self.namespace}.json"
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
         self._client = NanoVectorDB(
             self.embedding_func.embedding_dim, storage_file=self._client_file_name
-        )
-        self.cosine_better_than_threshold = self.global_config.get(
-            "cosine_better_than_threshold", self.cosine_better_than_threshold
         )
 
     async def upsert(self, data: dict[str, dict]):
@@ -134,6 +137,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def query(self, query: str, top_k=5):
         embedding = await self.embedding_func([query])
         embedding = embedding[0]
+        logger.info(
+            f"Query: {query}, top_k: {top_k}, cosine_better_than_threshold: {self.cosine_better_than_threshold}"
+        )
         results = self._client.query(
             query=embedding,
             top_k=top_k,

@@ -590,8 +590,8 @@ async def kg_query(
         query, query_param, global_config, hashing_kv
     )
 
-    logger.info(f"High-level keywords: {hl_keywords}")
-    logger.info(f"Low-level  keywords: {ll_keywords}")
+    logger.debug(f"High-level keywords: {hl_keywords}")
+    logger.debug(f"Low-level  keywords: {ll_keywords}")
 
     # Handle empty keywords
     if hl_keywords == [] and ll_keywords == []:
@@ -1026,6 +1026,10 @@ async def _build_query_context(
             [hl_relations_context, ll_relations_context],
             [hl_text_units_context, ll_text_units_context],
         )
+    # not necessary to use LLM to generate a response
+    if not entities_context.strip() and not relations_context.strip():
+        return None
+
     return f"""
 -----Entities-----
 ```csv
