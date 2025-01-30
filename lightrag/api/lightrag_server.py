@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
+
 # Backend (Python)
 # Add this to store progress globally
 from typing import Dict
@@ -10,7 +11,7 @@ scan_progress: Dict = {
     "current_file": "",
     "indexed_count": 0,
     "total_files": 0,
-    "progress": 0
+    "progress": 0,
 }
 
 # Lock for thread-safe operations
@@ -23,7 +24,6 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import logging
 import argparse
-import json
 import time
 import re
 from typing import List, Dict, Any, Optional, Union
@@ -36,7 +36,6 @@ from pathlib import Path
 import shutil
 import aiofiles
 from ascii_colors import trace_exception, ASCIIColors
-import os
 import sys
 import configparser
 
@@ -1010,21 +1009,20 @@ def create_app(args):
         else:
             logging.warning(f"No content extracted from file: {file_path}")
 
-
     @app.post("/documents/scan", dependencies=[Depends(optional_api_key)])
     async def scan_for_new_documents():
         """Trigger the scanning process"""
         global scan_progress
-        
+
         try:
             with progress_lock:
                 if scan_progress["is_scanning"]:
                     return {"status": "already_scanning"}
-                
+
                 scan_progress["is_scanning"] = True
                 scan_progress["indexed_count"] = 0
                 scan_progress["progress"] = 0
-                
+
             new_files = doc_manager.scan_directory_for_new_files()
             scan_progress["total_files"] = len(new_files)
 
@@ -1032,13 +1030,16 @@ def create_app(args):
                 try:
                     with progress_lock:
                         scan_progress["current_file"] = os.path.basename(file_path)
-                    
+
                     await index_file(file_path)
-                    
+
                     with progress_lock:
                         scan_progress["indexed_count"] += 1
-                        scan_progress["progress"] = (scan_progress["indexed_count"] / scan_progress["total_files"]) * 100
-                        
+                        scan_progress["progress"] = (
+                            scan_progress["indexed_count"]
+                            / scan_progress["total_files"]
+                        ) * 100
+
                 except Exception as e:
                     logging.error(f"Error indexing file {file_path}: {str(e)}")
 
@@ -1058,8 +1059,6 @@ def create_app(args):
         """Get the current scanning progress"""
         with progress_lock:
             return scan_progress
-
-
 
     @app.post("/documents/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(file: UploadFile = File(...)):
