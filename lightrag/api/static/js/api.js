@@ -256,7 +256,7 @@ const handlers = {
 
                     // Update progress bar
                     progressBar.style.width = `${progressData.progress}%`;
-                    
+
                     // Update status text
                     if (progressData.total_files > 0) {
                         statusText.textContent = `Processing ${progressData.current_file} (${progressData.indexed_count}/${progressData.total_files})`;
