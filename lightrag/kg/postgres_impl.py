@@ -301,12 +301,14 @@ class PGKVStorage(BaseKVStorage):
 
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
-    cosine_better_than_threshold: float = 0.2
+    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
     db: PostgreSQLDB = None
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
-        self.cosine_better_than_threshold = self.global_config.get(
+        # Use global config value if specified, otherwise use default
+        config = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        self.cosine_better_than_threshold = config.get(
             "cosine_better_than_threshold", self.cosine_better_than_threshold
         )
 

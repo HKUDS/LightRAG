@@ -212,8 +212,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.chunk_size}")
     ASCIIColors.white("    ├─ Chunk Overlap Size: ", end="")
     ASCIIColors.yellow(f"{args.chunk_overlap_size}")
-    ASCIIColors.white("    └─ History Turns: ", end="")
+    ASCIIColors.white("    ├─ History Turns: ", end="")
     ASCIIColors.yellow(f"{args.history_turns}")
+    ASCIIColors.white("    ├─ Cosine Threshold: ", end="")
+    ASCIIColors.yellow(f"{args.cosine_threshold}")
+    ASCIIColors.white("    └─ Top-K: ", end="")
+    ASCIIColors.yellow(f"{args.top_k}")
 
     # System Configuration
     ASCIIColors.magenta("\n🛠️ System Configuration:")
@@ -487,6 +491,20 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=get_env_value("HISTORY_TURNS", 3, int),
         help="Number of conversation history turns to include (default: from env or 3)",
+    )
+
+    # Search parameters
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=get_env_value("TOP_K", 50, int),
+        help="Number of most similar results to return (default: from env or 50)",
+    )
+    parser.add_argument(
+        "--cosine-threshold",
+        type=float,
+        default=get_env_value("COSINE_THRESHOLD", 0.4, float),
+        help="Cosine similarity threshold (default: from env or 0.4)",
     )
 
     parser.add_argument(
@@ -862,6 +880,9 @@ def create_app(args):
             graph_storage=ollama_server_infos.GRAPH_STORAGE,
             vector_storage=ollama_server_infos.VECTOR_STORAGE,
             doc_status_storage=ollama_server_infos.DOC_STATUS_STORAGE,
+            vector_db_storage_cls_kwargs={
+                "cosine_better_than_threshold": args.cosine_threshold
+            },
         )
     else:
         rag = LightRAG(
@@ -871,6 +892,9 @@ def create_app(args):
             else openai_alike_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
+            llm_model_kwargs={
+                "timeout": args.timeout,
+            },
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
@@ -879,6 +903,9 @@ def create_app(args):
             graph_storage=ollama_server_infos.GRAPH_STORAGE,
             vector_storage=ollama_server_infos.VECTOR_STORAGE,
             doc_status_storage=ollama_server_infos.DOC_STATUS_STORAGE,
+            vector_db_storage_cls_kwargs={
+                "cosine_better_than_threshold": args.cosine_threshold
+            },
         )
 
     async def index_file(file_path: Union[str, Path]) -> None:
@@ -1068,6 +1095,7 @@ def create_app(args):
                     mode=request.mode,
                     stream=request.stream,
                     only_need_context=request.only_need_context,
+                    top_k=args.top_k,
                 ),
             )
 
@@ -1109,6 +1137,7 @@ def create_app(args):
                     mode=request.mode,
                     stream=True,
                     only_need_context=request.only_need_context,
+                    top_k=args.top_k,
                 ),
             )
 
@@ -1648,6 +1677,7 @@ def create_app(args):
                 "stream": request.stream,
                 "only_need_context": False,
                 "conversation_history": conversation_history,
+                "top_k": args.top_k,
             }
 
             if args.history_turns is not None:
