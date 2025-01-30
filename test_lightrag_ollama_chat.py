@@ -18,6 +18,29 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 
+DEFAULT_CONFIG = {
+    "server": {
+        "host": "localhost",
+        "port": 9621,
+        "model": "lightrag:latest",
+        "timeout": 120,
+        "max_retries": 3,
+        "retry_delay": 1,
+    },
+    "test_cases": {
+        "basic": {"query": "唐僧有几个徒弟"},
+        "generate": {"query": "电视剧西游记导演是谁"},
+    },
+}
+
+# Example conversation history for testing
+EXAMPLE_CONVERSATION = [
+    {"role": "user", "content": "你好"},
+    {"role": "assistant", "content": "你好!我是一个AI助手,很高兴为你服务。"},
+    {"role": "user", "content": "Who are you?"},
+    {"role": "assistant", "content": "I'm a Knowledge base query assistant."},
+]
+
 
 class OutputControl:
     """Output control class, manages the verbosity of test output"""
@@ -99,22 +122,6 @@ class TestStats:
                     print(f"- {result.name}: {result.error}")
 
 
-DEFAULT_CONFIG = {
-    "server": {
-        "host": "localhost",
-        "port": 9621,
-        "model": "lightrag:latest",
-        "timeout": 120,
-        "max_retries": 3,
-        "retry_delay": 1,
-    },
-    "test_cases": {
-        "basic": {"query": "唐僧有几个徒弟"},
-        "generate": {"query": "电视剧西游记导演是谁"},
-    },
-}
-
-
 def make_request(
     url: str, data: Dict[str, Any], stream: bool = False
 ) -> requests.Response:
@@ -193,7 +200,6 @@ def create_chat_request_data(
     stream: bool = False,
     model: str = None,
     conversation_history: List[Dict[str, str]] = None,
-    history_turns: int = None,
 ) -> Dict[str, Any]:
     """Create chat request data
     Args:
@@ -206,10 +212,6 @@ def create_chat_request_data(
         Dictionary containing complete chat request data
     """
     messages = conversation_history or []
-    if history_turns is not None and conversation_history:
-        messages = messages[
-            -2 * history_turns :
-        ]  # Each turn has 2 messages (user + assistant)
     messages.append({"role": "user", "content": content})
 
     return {
@@ -273,23 +275,11 @@ def test_non_stream_chat() -> None:
     """Test non-streaming call to /api/chat endpoint"""
     url = get_base_url()
 
-    # Example conversation history
-    conversation_history = [
-        {"role": "user", "content": "你好"},
-        {"role": "assistant", "content": "你好!我是一个AI助手,很高兴为你服务。"},
-        {"role": "user", "content": "西游记里有几个主要人物?"},
-        {
-            "role": "assistant",
-            "content": "西游记的主要人物有唐僧、孙悟空、猪八戒、沙和尚这四位主角。",
-        },
-    ]
-
-    # Send request with conversation history and history turns
+    # Send request with conversation history
     data = create_chat_request_data(
         CONFIG["test_cases"]["basic"]["query"],
         stream=False,
-        conversation_history=conversation_history,
-        history_turns=2,  # Only include last 2 turns
+        conversation_history=EXAMPLE_CONVERSATION,
     )
     response = make_request(url, data)
 
@@ -325,23 +315,11 @@ def test_stream_chat() -> None:
     """
     url = get_base_url()
 
-    # Example conversation history
-    conversation_history = [
-        {"role": "user", "content": "你好"},
-        {"role": "assistant", "content": "你好!我是一个AI助手,很高兴为你服务。"},
-        {"role": "user", "content": "西游记里有几个主要人物?"},
-        {
-            "role": "assistant",
-            "content": "西游记的主要人物有唐僧、孙悟空、猪八戒、沙和尚这四位主角。",
-        },
-    ]
-
-    # Send request with conversation history and history turns
+    # Send request with conversation history
     data = create_chat_request_data(
         CONFIG["test_cases"]["basic"]["query"],
         stream=True,
-        conversation_history=conversation_history,
-        history_turns=2,  # Only include last 2 turns
+        conversation_history=EXAMPLE_CONVERSATION,
     )
     response = make_request(url, data, stream=True)
 
