@@ -1,4 +1,13 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request, BackgroundTasks
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    File,
+    UploadFile,
+    Form,
+    Request,
+    BackgroundTasks,
+)
+
 # Backend (Python)
 # Add this to store progress globally
 from typing import Dict
@@ -1012,45 +1021,45 @@ def create_app(args):
     async def scan_for_new_documents(background_tasks: BackgroundTasks):
         """Trigger the scanning process"""
         global scan_progress
-    
+
         with progress_lock:
             if scan_progress["is_scanning"]:
                 return {"status": "already_scanning"}
-    
+
             scan_progress["is_scanning"] = True
             scan_progress["indexed_count"] = 0
             scan_progress["progress"] = 0
-    
+
         # Start the scanning process in the background
         background_tasks.add_task(run_scanning_process)
-    
+
         return {"status": "scanning_started"}
-    
+
     async def run_scanning_process():
         """Background task to scan and index documents"""
         global scan_progress
-    
+
         try:
             new_files = doc_manager.scan_directory_for_new_files()
             scan_progress["total_files"] = len(new_files)
-    
+
             for file_path in new_files:
                 try:
                     with progress_lock:
                         scan_progress["current_file"] = os.path.basename(file_path)
-    
+
                     await index_file(file_path)
-    
+
                     with progress_lock:
                         scan_progress["indexed_count"] += 1
                         scan_progress["progress"] = (
                             scan_progress["indexed_count"]
                             / scan_progress["total_files"]
                         ) * 100
-    
+
                 except Exception as e:
                     logging.error(f"Error indexing file {file_path}: {str(e)}")
-    
+
         except Exception as e:
             logging.error(f"Error during scanning process: {str(e)}")
         finally:
