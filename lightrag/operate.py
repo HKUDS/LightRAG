@@ -352,7 +352,7 @@ async def extract_entities(
         input_text: str, history_messages: list[dict[str, str]] = None
     ) -> str:
         if enable_llm_cache_for_entity_extract and llm_response_cache:
-            custom_llm = None            
+            custom_llm = None
             if (
                 global_config["embedding_cache_config"]
                 and global_config["embedding_cache_config"]["enabled"]
@@ -360,10 +360,14 @@ async def extract_entities(
                 new_config = global_config.copy()
                 new_config["embedding_cache_config"] = None
                 new_config["enable_llm_cache"] = True
-                
+
                 # create a llm function with new_config for handle_cache
                 async def custom_llm(
-                    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+                    prompt,
+                    system_prompt=None,
+                    history_messages=[],
+                    keyword_extraction=False,
+                    **kwargs,
                 ) -> str:
                     # 合并 new_config 和其他 kwargs,保证其他参数不被覆盖
                     merged_config = {**kwargs, **new_config}
@@ -374,7 +378,7 @@ async def extract_entities(
                         keyword_extraction=keyword_extraction,
                         **merged_config,
                     )
-                
+
             if history_messages:
                 history = json.dumps(history_messages, ensure_ascii=False)
                 _prompt = history + "\n" + input_text
@@ -383,12 +387,12 @@ async def extract_entities(
 
             arg_hash = compute_args_hash(_prompt)
             cached_return, _1, _2, _3 = await handle_cache(
-                llm_response_cache, 
-                arg_hash, 
-                _prompt, 
-                "default", 
+                llm_response_cache,
+                arg_hash,
+                _prompt,
+                "default",
                 cache_type="default",
-                llm=custom_llm
+                llm=custom_llm,
             )
             if cached_return:
                 logger.debug(f"Found cache for {arg_hash}")
