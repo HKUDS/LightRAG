@@ -8,7 +8,6 @@ from sentence_transformers import SentenceTransformer
 from openai import AzureOpenAI
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
-from lightrag.kg.faiss_impl import FaissVectorDBStorage
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -20,14 +19,10 @@ AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 
+
 async def llm_model_func(
-    prompt,
-    system_prompt=None,
-    history_messages=[],
-    keyword_extraction=False,
-    **kwargs
+    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
-    
     # Create a client for AzureOpenAI
     client = AzureOpenAI(
         api_key=AZURE_OPENAI_API_KEY,
@@ -56,12 +51,12 @@ async def llm_model_func(
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    model = SentenceTransformer('all-MiniLM-L6-v2')
+    model = SentenceTransformer("all-MiniLM-L6-v2")
     embeddings = model.encode(texts, convert_to_numpy=True)
     return embeddings
 
+
 def main():
-    
     WORKING_DIR = "./dickens"
 
     # Initialize LightRAG with the LLM model function and embedding function
@@ -76,7 +71,7 @@ def main():
         vector_storage="FaissVectorDBStorage",
         vector_db_storage_cls_kwargs={
             "cosine_better_than_threshold": 0.3  # Your desired threshold
-        }
+        },
     )
 
     # Insert the custom chunks into LightRAG
