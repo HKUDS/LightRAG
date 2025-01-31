@@ -22,6 +22,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
     A Faiss-based Vector DB Storage for LightRAG.
     Uses cosine similarity by storing normalized vectors in a Faiss index with inner product search.
     """
+
     cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
 
     def __post_init__(self):
@@ -46,7 +47,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # For demonstration, we use a simple IndexFlatIP.
         self._index = faiss.IndexFlatIP(self._dim)
 
-        # Keep a local store for metadata, IDs, etc. 
+        # Keep a local store for metadata, IDs, etc.
         # Maps <int faiss_id> → metadata (including your original ID).
         self._id_to_meta = {}
 
@@ -93,7 +94,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
-        pbar = tqdm_async(total=len(batches), desc="Generating embeddings", unit="batch")
+        pbar = tqdm_async(
+            total=len(batches), desc="Generating embeddings", unit="batch"
+        )
 
         async def wrapped_task(batch):
             result = await self.embedding_func(batch)
@@ -200,7 +203,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         if to_remove:
             self._remove_faiss_ids(to_remove)
-        logger.info(f"Successfully deleted {len(to_remove)} vectors from {self.namespace}")
+        logger.info(
+            f"Successfully deleted {len(to_remove)} vectors from {self.namespace}"
+        )
 
     async def delete_entity(self, entity_name: str):
         """
@@ -288,7 +293,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
     def _load_faiss_index(self):
         """
-        Load the Faiss index + metadata from disk if it exists, 
+        Load the Faiss index + metadata from disk if it exists,
         and rebuild in-memory structures so we can query.
         """
         if not os.path.exists(self._faiss_index_file):
