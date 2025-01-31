@@ -259,7 +259,7 @@ You are a helpful assistant responding to user query about Document Chunks provi
 
 ---Goal---
 
-GGenerate a concise response based on Document Chunks and follow Response Rules, considering both the conversation history and the current query. Summarize all information in the provided Document Chunks, and incorporating general knowledge relevant to the Document Chunks. Do not include information not provided by Document Chunks.
+Generate a concise response based on Document Chunks and follow Response Rules, considering both the conversation history and the current query. Summarize all information in the provided Document Chunks, and incorporating general knowledge relevant to the Document Chunks. Do not include information not provided by Document Chunks.
 
 When handling content with timestamps:
 1. Each piece of content has a "created_at" timestamp indicating when we acquired this knowledge
