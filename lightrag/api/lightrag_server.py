@@ -556,7 +556,7 @@ class DocumentManager:
     def __init__(
         self,
         input_dir: str,
-        supported_extensions: tuple = (".txt", ".md", ".pdf", ".docx", ".pptx"),
+        supported_extensions: tuple = (".txt", ".md", ".pdf", ".docx", ".pptx", "xlsx"),
     ):
         self.input_dir = Path(input_dir)
         self.supported_extensions = supported_extensions
@@ -974,37 +974,36 @@ def create_app(args):
                     content = await f.read()
 
             case ".pdf":
-                if not pm.is_installed("pypdf2"):
-                    pm.install("pypdf2")
-                from PyPDF2 import PdfReader
+                if not pm.is_installed("docling"):
+                    pm.install("docling")
+                from docling.document_converter import DocumentConverter
+                converter = DocumentConverter()
+                result = converter.convert(file_path)
+                content = result.document.export_to_markdown()
 
-                # PDF handling
-                reader = PdfReader(str(file_path))
-                content = ""
-                for page in reader.pages:
-                    content += page.extract_text() + "\n"
 
             case ".docx":
-                if not pm.is_installed("python-docx"):
-                    pm.install("python-docx")
-                from docx import Document
-
-                # Word document handling
-                doc = Document(file_path)
-                content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+                if not pm.is_installed("docling"):
+                    pm.install("docling")
+                from docling.document_converter import DocumentConverter
+                converter = DocumentConverter()
+                result = converter.convert(file_path)
+                content = result.document.export_to_markdown()
 
             case ".pptx":
-                if not pm.is_installed("pptx"):
-                    pm.install("pptx")
-                from pptx import Presentation  # type: ignore
-
-                # PowerPoint handling
-                prs = Presentation(file_path)
-                content = ""
-                for slide in prs.slides:
-                    for shape in slide.shapes:
-                        if hasattr(shape, "text"):
-                            content += shape.text + "\n"
+                if not pm.is_installed("docling"):
+                    pm.install("docling")
+                from docling.document_converter import DocumentConverter
+                converter = DocumentConverter()
+                result = converter.convert(file_path)
+                content = result.document.export_to_markdown()
+            case ".xlsx":
+                if not pm.is_installed("docling"):
+                    pm.install("docling")
+                from docling.document_converter import DocumentConverter
+                converter = DocumentConverter()
+                result = converter.convert(file_path)
+                content = result.document.export_to_markdown()
 
             case _:
                 raise ValueError(f"Unsupported file format: {ext}")
@@ -1283,49 +1282,36 @@ def create_app(args):
                     content = text_content.decode("utf-8")
 
                 case ".pdf":
-                    if not pm.is_installed("pypdf2"):
-                        pm.install("pypdf2")
-                    from PyPDF2 import PdfReader
-                    from io import BytesIO
+                    if not pm.is_installed("docling"):
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
 
-                    # Read PDF from memory
-                    pdf_content = await file.read()
-                    pdf_file = BytesIO(pdf_content)
-                    reader = PdfReader(pdf_file)
-                    content = ""
-                    for page in reader.pages:
-                        content += page.extract_text() + "\n"
 
                 case ".docx":
-                    if not pm.is_installed("python-docx"):
-                        pm.install("python-docx")
-                    from docx import Document
-                    from io import BytesIO
-
-                    # Read DOCX from memory
-                    docx_content = await file.read()
-                    docx_file = BytesIO(docx_content)
-                    doc = Document(docx_file)
-                    content = "\n".join(
-                        [paragraph.text for paragraph in doc.paragraphs]
-                    )
+                    if not pm.is_installed("docling"):
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
 
                 case ".pptx":
-                    if not pm.is_installed("pptx"):
-                        pm.install("pptx")
-                    from pptx import Presentation  # type: ignore
-                    from io import BytesIO
-
-                    # Read PPTX from memory
-                    pptx_content = await file.read()
-                    pptx_file = BytesIO(pptx_content)
-                    prs = Presentation(pptx_file)
-                    content = ""
-                    for slide in prs.slides:
-                        for shape in slide.shapes:
-                            if hasattr(shape, "text"):
-                                content += shape.text + "\n"
-
+                    if not pm.is_installed("docling"):
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
+                case ".xlsx":
+                    if not pm.is_installed("docling"):
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
                 case _:
                     raise HTTPException(
                         status_code=400,

@@ -14,10 +14,7 @@ pydantic
 
 # File manipulation libraries
 docling
-PyPDF2
-python-docx
 python-dotenv
-python-pptx
 
 setuptools
 tenacity
