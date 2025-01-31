@@ -151,18 +151,18 @@ PROMPTS[
 ] = """It appears some entities may have still been missed.  Answer YES | NO if there are still entities that need to be added.
 """
 
-PROMPTS["fail_response"] = "Sorry, I'm not able to provide an answer to that question."
+PROMPTS["fail_response"] = (
+    "Sorry, I'm not able to provide an answer to that question.[no-context]"
+)
 
 PROMPTS["rag_response"] = """---Role---
 
-You are a helpful assistant responding to questions about data in the tables provided.
+You are a helpful assistant responding to user query about Knowledge Base provided below.
 
 
 ---Goal---
 
-Generate a response of the target length and format that responds to the user's question, considering both the conversation history and the current query. Summarize all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
-If you don't know the answer, just say so. Do not make anything up.
-Do not include information where the supporting evidence for it is not provided.
+Generate a concise response based on Knowledge Base and follow Response Rules, considering both the conversation history and the current query. Summarize all information in the provided Knowledge Base, and incorporating general knowledge relevant to the Knowledge Base. Do not include information not provided by Knowledge Base.
 
 When handling relationships with timestamps:
 1. Each relationship has a "created_at" timestamp indicating when we acquired this knowledge
@@ -173,15 +173,17 @@ When handling relationships with timestamps:
 ---Conversation History---
 {history}
 
----Target response length and format---
-
-{response_type}
-
----Data tables---
-
+---Knowledge Base---
 {context_data}
 
-Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown. Ensure the response maintains continuity with the conversation history."""
+---Response Rules---
+
+- Target format and length: {response_type}
+- Use markdown formatting with appropriate section headings
+- Please respond in the same language as the user's question.
+- Ensure the response maintains continuity with the conversation history.
+- If you don't know the answer, just say so.
+- Do not make anything up. Do not include information not provided by the Knowledge Base."""
 
 PROMPTS["keywords_extraction"] = """---Role---
 
@@ -253,13 +255,11 @@ Output:
 
 PROMPTS["naive_rag_response"] = """---Role---
 
-You are a helpful assistant responding to questions about documents provided.
+You are a helpful assistant responding to user query about Document Chunks provided below.
 
 ---Goal---
 
-Generate a response of the target length and format that responds to the user's question, considering both the conversation history and the current query. Summarize all information in the input data tables appropriate for the response length and format, and incorporating any relevant general knowledge.
-If you don't know the answer, just say so. Do not make anything up.
-Do not include information where the supporting evidence for it is not provided.
+Generate a concise response based on Document Chunks and follow Response Rules, considering both the conversation history and the current query. Summarize all information in the provided Document Chunks, and incorporating general knowledge relevant to the Document Chunks. Do not include information not provided by Document Chunks.
 
 When handling content with timestamps:
 1. Each piece of content has a "created_at" timestamp indicating when we acquired this knowledge
@@ -270,15 +270,18 @@ When handling content with timestamps:
 ---Conversation History---
 {history}
 
----Target response length and format---
-
-{response_type}
-
----Documents---
-
+---Document Chunks---
 {content_data}
 
-Add sections and commentary to the response as appropriate for the length and format. Style the response in markdown. Ensure the response maintains continuity with the conversation history."""
+---Response Rules---
+
+- Target format and length: {response_type}
+- Use markdown formatting with appropriate section headings
+- Please respond in the same language as the user's question.
+- Ensure the response maintains continuity with the conversation history.
+- If you don't know the answer, just say so.
+- Do not include information not provided by the Document Chunks."""
+
 
 PROMPTS[
     "similarity_check"
@@ -306,11 +309,12 @@ Return only a number between 0-1, without any additional content.
 
 PROMPTS["mix_rag_response"] = """---Role---
 
-You are a professional assistant responsible for answering questions based on knowledge graph and textual information. Please respond in the same language as the user's question.
+You are a helpful assistant responding to user query about Data Sources provided below.
+
 
 ---Goal---
 
-Generate a concise response that summarizes relevant points from the provided information, considering both the current query and conversation history. If you don't know the answer, just say so. Do not make anything up or include information where the supporting evidence is not provided.
+Generate a concise response based on Data Sources and follow Response Rules, considering both the conversation history and the current query. Data sources contain two parts: Knowledge Graph(KG) and Document Chunks(DC). Summarize all information in the provided Data Sources, and incorporating general knowledge relevant to the Data Sources. Do not include information not provided by Data Sources.
 
 When handling information with timestamps:
 1. Each piece of information (both relationships and content) has a "created_at" timestamp indicating when we acquired this knowledge
@@ -323,22 +327,20 @@ When handling information with timestamps:
 
 ---Data Sources---
 
-1. Knowledge Graph Data:
+1. From Knowledge Graph(KG):
 {kg_context}
 
-2. Vector Data:
+2. From Document Chunks(DC):
 {vector_context}
 
----Response Requirements---
+---Response Rules---
 
 - Target format and length: {response_type}
 - Use markdown formatting with appropriate section headings
-- Aim to keep content around 3 paragraphs for conciseness
-- Each paragraph should be under a relevant section heading
-- Each section should focus on one main point or aspect of the answer
+- Please respond in the same language as the user's question.
+- Ensure the response maintains continuity with the conversation history.
+- Organize answer in sesctions focusing on one main point or aspect of the answer
 - Use clear and descriptive section titles that reflect the content
-- Ensure the response maintains continuity with the conversation history
-- List up to 5 most important reference sources at the end under "References", clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (VD)
-  Format: [KG/VD] Source content
-
-Add sections and commentary to the response as appropriate for the length and format. If the provided information is insufficient to answer the question, clearly state that you don't know or cannot provide an answer in the same language as the user's question."""
+- List up to 5 most important reference sources at the end under "References" sesction. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), in the following format: [KG/DC] Source content
+- If you don't know the answer, just say so. Do not make anything up.
+- Do not include information not provided by the Data Sources."""
