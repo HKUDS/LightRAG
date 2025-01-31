@@ -49,16 +49,18 @@ const pages = {
                 </div>
                 <p class="text-sm text-gray-600 mt-2"><span id="uploadStatus">0</span> files processed</p>
             </div>
-            <button id="rescanBtn" class="flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" class="mr-2">
-                    <path d="M12 4a8 8 0 1 1-8 8H2.5a9.5 9.5 0 1 0 2.8-6.7L2 3v6h6L5.7 6.7A7.96 7.96 0 0 1 12 4z"/>
-                </svg>
-                Rescan Files
-            </button>
-
-            <button id="uploadBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-                Upload & Index Files
-            </button>
+            <div class="flex items-center space-x-4 bg-gray-100 p-4 rounded-lg shadow-md">
+                <button id="rescanBtn" class="flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="currentColor" class="mr-2">
+                        <path d="M12 4a8 8 0 1 1-8 8H2.5a9.5 9.5 0 1 0 2.8-6.7L2 3v6h6L5.7 6.7A7.96 7.96 0 0 1 12 4z"/>
+                    </svg>
+                    Rescan Files
+                </button>
+            
+                <button id="uploadBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
+                    Upload & Index Files
+                </button>
+            </div>
 
             <div id="indexedFiles" class="space-y-2">
                 <h3 class="text-lg font-semibold text-gray-700">Indexed Files</h3>
