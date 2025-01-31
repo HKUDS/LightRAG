@@ -197,12 +197,12 @@ class LightRAG:
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
         # Init embedding functions with separate instances for insert and query
-        self.insert_embedding_func = limit_async_func_call(self.embedding_func_max_async)(
-            self.embedding_func
-        )
-        self.query_embedding_func = limit_async_func_call(self.embedding_func_max_async_query)(
-            self.embedding_func
-        )
+        self.insert_embedding_func = limit_async_func_call(
+            self.embedding_func_max_async
+        )(self.embedding_func)
+        self.query_embedding_func = limit_async_func_call(
+            self.embedding_func_max_async_query
+        )(self.embedding_func)
 
         # Initialize all storages
         self.key_string_value_json_storage_cls: Type[BaseKVStorage] = (
