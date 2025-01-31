@@ -465,7 +465,36 @@ For production level scenarios you will most likely want to leverage an enterpri
   >
   > You can Compile the AGE from source code and fix it.
 
+### Using Faiss for Storage
+- Install the required dependencies:
+```
+pip install faiss-cpu
+```
+You can also install `faiss-gpu` if you have GPU support.
 
+- Here we are using `sentence-transformers` but you can also use `OpenAIEmbedding` model with `3072` dimensions.
+
+```
+async def embedding_func(texts: list[str]) -> np.ndarray:
+    model = SentenceTransformer('all-MiniLM-L6-v2')
+    embeddings = model.encode(texts, convert_to_numpy=True)
+    return embeddings
+
+# Initialize LightRAG with the LLM model function and embedding function
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=384,
+            max_token_size=8192,
+            func=embedding_func,
+        ),
+        vector_storage="FaissVectorDBStorage",
+        vector_db_storage_cls_kwargs={
+            "cosine_better_than_threshold": 0.3  # Your desired threshold
+        }
+    )
+```
 
 ### Insert Custom KG
 
