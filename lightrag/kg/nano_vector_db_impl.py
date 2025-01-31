@@ -140,7 +140,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         embedding = await self.embedding_func([query])
         embedding = embedding[0]
         logger.info(
-            f"Query: {query}, top_k: {top_k}, cosine_better_than_threshold: {self.cosine_better_than_threshold}"
+            f"Query: {query}, top_k: {top_k}, cosine: {self.cosine_better_than_threshold}"
         )
         results = self._client.query(
             query=embedding,
