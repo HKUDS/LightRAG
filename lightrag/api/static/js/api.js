@@ -17,10 +17,11 @@ const showToast = (message, duration = 3000) => {
 const fetchWithAuth = async (url, options = {}) => {
     const headers = {
         ...(options.headers || {}),
-        ...(state.apiKey ? { 'Authorization': `Bearer ${state.apiKey}` } : {})
+        ...(state.apiKey ? { 'X-API-Key': state.apiKey } : {}) // Use X-API-Key instead of Bearer
     };
     return fetch(url, { ...options, headers });
 };
+
 
 // Page renderers
 const pages = {
