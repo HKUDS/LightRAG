@@ -15,7 +15,7 @@ const showToast = (message, duration = 3000) => {
 };
 
 const fetchWithAuth = async (url, options = {}) => {
-    console.log(`Calling server with api key : ${}`)
+    console.log(`Calling server with api key : ${state.apiKey}`)
     const headers = {
         ...(options.headers || {}),
         ...(state.apiKey ? { 'X-API-Key': state.apiKey } : {}) // Use X-API-Key instead of Bearer
