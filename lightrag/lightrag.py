@@ -916,7 +916,7 @@ class LightRAG:
                 else self.key_string_value_json_storage_cls(
                     namespace="llm_response_cache",
                     global_config=asdict(self),
-                    embedding_func=self.embedding_func,  
+                    embedding_func=self.embedding_func,
                 ),
                 prompt=prompt,
             )
