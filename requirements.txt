@@ -2,6 +2,9 @@ accelerate
 aiofiles
 aiohttp
 configparser
+
+# File manipulation libraries
+docling
 graspologic
 
 # database packages
@@ -11,9 +14,6 @@ networkx
 numpy
 pipmaster
 pydantic
-
-# File manipulation libraries
-docling
 python-dotenv
 
 setuptools

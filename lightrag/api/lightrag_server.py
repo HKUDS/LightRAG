@@ -977,15 +977,16 @@ def create_app(args):
                 if not pm.is_installed("docling"):
                     pm.install("docling")
                 from docling.document_converter import DocumentConverter
+
                 converter = DocumentConverter()
                 result = converter.convert(file_path)
                 content = result.document.export_to_markdown()
-
 
             case ".docx":
                 if not pm.is_installed("docling"):
                     pm.install("docling")
                 from docling.document_converter import DocumentConverter
+
                 converter = DocumentConverter()
                 result = converter.convert(file_path)
                 content = result.document.export_to_markdown()
@@ -994,6 +995,7 @@ def create_app(args):
                 if not pm.is_installed("docling"):
                     pm.install("docling")
                 from docling.document_converter import DocumentConverter
+
                 converter = DocumentConverter()
                 result = converter.convert(file_path)
                 content = result.document.export_to_markdown()
@@ -1001,6 +1003,7 @@ def create_app(args):
                 if not pm.is_installed("docling"):
                     pm.install("docling")
                 from docling.document_converter import DocumentConverter
+
                 converter = DocumentConverter()
                 result = converter.convert(file_path)
                 content = result.document.export_to_markdown()
@@ -1285,32 +1288,35 @@ def create_app(args):
                     if not pm.is_installed("docling"):
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter
-                    converter = DocumentConverter()
-                    result = converter.convert(file_path)
-                    content = result.document.export_to_markdown()
 
+                    converter = DocumentConverter()
+                    result = converter.convert(file.filename)
+                    content = result.document.export_to_markdown()
 
                 case ".docx":
                     if not pm.is_installed("docling"):
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter
+
                     converter = DocumentConverter()
-                    result = converter.convert(file_path)
+                    result = converter.convert(file.filename)
                     content = result.document.export_to_markdown()
 
                 case ".pptx":
                     if not pm.is_installed("docling"):
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter
+
                     converter = DocumentConverter()
-                    result = converter.convert(file_path)
+                    result = converter.convert(file.filename)
                     content = result.document.export_to_markdown()
                 case ".xlsx":
                     if not pm.is_installed("docling"):
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter
+
                     converter = DocumentConverter()
-                    result = converter.convert(file_path)
+                    result = converter.convert(file.filename)
                     content = result.document.export_to_markdown()
                 case _:
                     raise HTTPException(
