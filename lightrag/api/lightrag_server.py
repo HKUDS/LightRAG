@@ -1,9 +1,37 @@
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Request
+from fastapi import (
+    FastAPI,
+    HTTPException,
+    File,
+    UploadFile,
+    Form,
+    Request,
+    BackgroundTasks,
+)
+
+# Backend (Python)
+# Add this to store progress globally
+from typing import Dict
+import threading
+
+# Global progress tracker
+scan_progress: Dict = {
+    "is_scanning": False,
+    "current_file": "",
+    "indexed_count": 0,
+    "total_files": 0,
+    "progress": 0,
+}
+
+# Lock for thread-safe operations
+progress_lock = threading.Lock()
+
+import json
+import os
+
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 import logging
 import argparse
-import json
 import time
 import re
 from typing import List, Dict, Any, Optional, Union
@@ -16,7 +44,6 @@ from pathlib import Path
 import shutil
 import aiofiles
 from ascii_colors import trace_exception, ASCIIColors
-import os
 import sys
 import configparser
 
@@ -538,13 +565,21 @@ class DocumentManager:
         # Create input directory if it doesn't exist
         self.input_dir.mkdir(parents=True, exist_ok=True)
 
-    def scan_directory(self) -> List[Path]:
+    def scan_directory_for_new_files(self) -> List[Path]:
         """Scan input directory for new files"""
         new_files = []
         for ext in self.supported_extensions:
             for file_path in self.input_dir.rglob(f"*{ext}"):
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)
+        return new_files
+
+    def scan_directory(self) -> List[Path]:
+        """Scan input directory for new files"""
+        new_files = []
+        for ext in self.supported_extensions:
+            for file_path in self.input_dir.rglob(f"*{ext}"):
+                new_files.append(file_path)
         return new_files
 
     def mark_as_indexed(self, file_path: Path):
@@ -730,7 +765,7 @@ def create_app(args):
         # Startup logic
         if args.auto_scan_at_startup:
             try:
-                new_files = doc_manager.scan_directory()
+                new_files = doc_manager.scan_directory_for_new_files()
                 for file_path in new_files:
                     try:
                         await index_file(file_path)
@@ -983,42 +1018,59 @@ def create_app(args):
             logging.warning(f"No content extracted from file: {file_path}")
 
     @app.post("/documents/scan", dependencies=[Depends(optional_api_key)])
-    async def scan_for_new_documents():
-        """
-        Manually trigger scanning for new documents in the directory managed by `doc_manager`.
+    async def scan_for_new_documents(background_tasks: BackgroundTasks):
+        """Trigger the scanning process"""
+        global scan_progress
 
-        This endpoint facilitates manual initiation of a document scan to identify and index new files.
-        It processes all newly detected files, attempts indexing each file, logs any errors that occur,
-        and returns a summary of the operation.
+        with progress_lock:
+            if scan_progress["is_scanning"]:
+                return {"status": "already_scanning"}
 
-        Returns:
-            dict: A dictionary containing:
-                - "status" (str): Indicates success or failure of the scanning process.
-                - "indexed_count" (int): The number of successfully indexed documents.
-                - "total_documents" (int): Total number of documents that have been indexed so far.
+            scan_progress["is_scanning"] = True
+            scan_progress["indexed_count"] = 0
+            scan_progress["progress"] = 0
 
-        Raises:
-            HTTPException: If an error occurs during the document scanning process, a 500 status
-                           code is returned with details about the exception.
-        """
+        # Start the scanning process in the background
+        background_tasks.add_task(run_scanning_process)
+
+        return {"status": "scanning_started"}
+
+    async def run_scanning_process():
+        """Background task to scan and index documents"""
+        global scan_progress
+
         try:
-            new_files = doc_manager.scan_directory()
-            indexed_count = 0
+            new_files = doc_manager.scan_directory_for_new_files()
+            scan_progress["total_files"] = len(new_files)
 
             for file_path in new_files:
                 try:
+                    with progress_lock:
+                        scan_progress["current_file"] = os.path.basename(file_path)
+
                     await index_file(file_path)
-                    indexed_count += 1
+
+                    with progress_lock:
+                        scan_progress["indexed_count"] += 1
+                        scan_progress["progress"] = (
+                            scan_progress["indexed_count"]
+                            / scan_progress["total_files"]
+                        ) * 100
+
                 except Exception as e:
                     logging.error(f"Error indexing file {file_path}: {str(e)}")
 
-            return {
-                "status": "success",
-                "indexed_count": indexed_count,
-                "total_documents": len(doc_manager.indexed_files),
-            }
         except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+            logging.error(f"Error during scanning process: {str(e)}")
+        finally:
+            with progress_lock:
+                scan_progress["is_scanning"] = False
+
+    @app.get("/documents/scan-progress")
+    async def get_scan_progress():
+        """Get the current scanning progress"""
+        with progress_lock:
+            return scan_progress
 
     @app.post("/documents/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(file: UploadFile = File(...)):
@@ -1849,7 +1901,7 @@ def create_app(args):
             "status": "healthy",
             "working_directory": str(args.working_dir),
             "input_directory": str(args.input_dir),
-            "indexed_files": files,
+            "indexed_files": [str(f) for f in files],
             "indexed_files_count": len(files),
             "configuration": {
                 # LLM configuration binding/host address (if applicable)/model (if applicable)
