@@ -391,7 +391,7 @@ async def extract_entities(
                 arg_hash,
                 _prompt,
                 "default",
-                cache_type="default",
+                cache_type="extract",
                 llm=custom_llm,
             )
             if cached_return:
@@ -407,7 +407,7 @@ async def extract_entities(
                 res: str = await use_llm_func(input_text)
             await save_to_cache(
                 llm_response_cache,
-                CacheData(args_hash=arg_hash, content=res, prompt=_prompt),
+                CacheData(args_hash=arg_hash, content=res, prompt=_prompt, cache_type="extract"),
             )
             return res
 
