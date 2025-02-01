@@ -760,7 +760,7 @@ async def extract_keywords_only(
     # 6. Parse out JSON from the LLM response
     match = re.search(r"\{.*\}", result, re.DOTALL)
     if not match:
-        logger.error("No JSON-like structure found in the result.")
+        logger.error("No JSON-like structure found in the LLM respond.")
         return [], []
     try:
         keywords_data = json.loads(match.group(0))
@@ -772,20 +772,21 @@ async def extract_keywords_only(
     ll_keywords = keywords_data.get("low_level_keywords", [])
 
     # 7. Cache only the processed keywords with cache type
-    cache_data = {"high_level_keywords": hl_keywords, "low_level_keywords": ll_keywords}
-    await save_to_cache(
-        hashing_kv,
-        CacheData(
-            args_hash=args_hash,
-            content=json.dumps(cache_data),
-            prompt=text,
-            quantized=quantized,
-            min_val=min_val,
-            max_val=max_val,
-            mode=param.mode,
-            cache_type="keywords",
-        ),
-    )
+    if hl_keywords or ll_keywords:
+        cache_data = {"high_level_keywords": hl_keywords, "low_level_keywords": ll_keywords}
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=json.dumps(cache_data),
+                prompt=text,
+                quantized=quantized,
+                min_val=min_val,
+                max_val=max_val,
+                mode=param.mode,
+                cache_type="keywords",
+            ),
+        )
     return hl_keywords, ll_keywords
 
 
