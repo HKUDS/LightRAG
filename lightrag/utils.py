@@ -60,15 +60,8 @@ class EmbeddingFunc:
     func: callable
     concurrent_limit: int = 16
 
-    def __post_init__(self):
-        if self.concurrent_limit != 0:
-            self._semaphore = asyncio.Semaphore(self.concurrent_limit)
-        else:
-            self._semaphore = UnlimitedSemaphore()
-
     async def __call__(self, *args, **kwargs) -> np.ndarray:
-        async with self._semaphore:
-            return await self.func(*args, **kwargs)
+        return await self.func(*args, **kwargs)
 
 
 def locate_json_string_body_from_string(content: str) -> Union[str, None]:
