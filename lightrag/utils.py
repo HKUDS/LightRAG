@@ -368,6 +368,7 @@ async def get_best_cached_response(
     original_prompt=None,
     cache_type=None,
 ) -> Union[str, None]:
+    logger.debug(f"get_best_cached_response:  mode={mode} cache_type={cache_type}")
     mode_cache = await hashing_kv.get_by_id(mode)
     if not mode_cache:
         return None
