@@ -523,7 +523,7 @@ async def handle_cache(
                 mode=mode,
                 use_llm_check=use_llm_check,
                 llm_func=llm_model_func if use_llm_check else None,
-                original_prompt=prompt if use_llm_check else None,
+                original_prompt=prompt,
                 cache_type=cache_type,
             )
             if best_cached_response is not None:
