@@ -352,32 +352,6 @@ async def extract_entities(
         input_text: str, history_messages: list[dict[str, str]] = None
     ) -> str:
         if enable_llm_cache_for_entity_extract and llm_response_cache:
-            custom_llm = None
-            if (
-                global_config["embedding_cache_config"]
-                and global_config["embedding_cache_config"]["enabled"]
-            ):
-                new_config = global_config.copy()
-                new_config["embedding_cache_config"] = None
-                new_config["enable_llm_cache"] = True
-
-                # create a llm function with new_config for handle_cache
-                async def custom_llm(
-                    prompt,
-                    system_prompt=None,
-                    history_messages=[],
-                    keyword_extraction=False,
-                    **kwargs,
-                ) -> str:
-                    # 合并 new_config 和其他 kwargs,保证其他参数不被覆盖
-                    merged_config = {**kwargs, **new_config}
-                    return await use_llm_func(
-                        prompt,
-                        system_prompt=system_prompt,
-                        history_messages=history_messages,
-                        keyword_extraction=keyword_extraction,
-                        **merged_config,
-                    )
 
             if history_messages:
                 history = json.dumps(history_messages, ensure_ascii=False)
@@ -392,7 +366,7 @@ async def extract_entities(
                 _prompt,
                 "default",
                 cache_type="extract",
-                llm=custom_llm,
+                force_llm_cache=True,
             )
             if cached_return:
                 logger.debug(f"Found cache for {arg_hash}")
