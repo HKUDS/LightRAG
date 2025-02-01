@@ -13,18 +13,6 @@ from fastapi import (
 from typing import Dict
 import threading
 
-# Global progress tracker
-scan_progress: Dict = {
-    "is_scanning": False,
-    "current_file": "",
-    "indexed_count": 0,
-    "total_files": 0,
-    "progress": 0,
-}
-
-# Lock for thread-safe operations
-progress_lock = threading.Lock()
-
 import json
 import os
 
@@ -34,7 +22,7 @@ import logging
 import argparse
 import time
 import re
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Any, Optional, Union
 from lightrag import LightRAG, QueryParam
 from lightrag.api import __api_version__
 
@@ -57,7 +45,20 @@ import pipmaster as pm
 
 from dotenv import load_dotenv
 
+# Load environment variables
 load_dotenv()
+
+# Global progress tracker
+scan_progress: Dict = {
+    "is_scanning": False,
+    "current_file": "",
+    "indexed_count": 0,
+    "total_files": 0,
+    "progress": 0,
+}
+
+# Lock for thread-safe operations
+progress_lock = threading.Lock()
 
 
 def estimate_tokens(text: str) -> int:
