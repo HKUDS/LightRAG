@@ -368,7 +368,7 @@ async def get_best_cached_response(
     original_prompt=None,
     cache_type=None,
 ) -> Union[str, None]:
-    logger.debug(f"get_best_cached_response:  mode={mode} cache_type={cache_type}")
+    logger.debug(f"get_best_cached_response:  mode={mode} cache_type={cache_type} use_llm_check={use_llm_check}")
     mode_cache = await hashing_kv.get_by_id(mode)
     if not mode_cache:
         return None
@@ -511,11 +511,7 @@ async def handle_cache(
         if is_embedding_cache_enabled:
             # Use embedding cache
             current_embedding = await hashing_kv.embedding_func([prompt])
-            llm_model_func = (
-                hashing_kv.llm_model_func
-                if hasattr(hashing_kv, "llm_model_func")
-                else None
-            )
+            llm_model_func = hashing_kv.global_config.get('llm_model_func')
             quantized, min_val, max_val = quantize_embedding(current_embedding[0])
             best_cached_response = await get_best_cached_response(
                 hashing_kv,
