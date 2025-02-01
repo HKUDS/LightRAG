@@ -290,9 +290,8 @@ PROMPTS[
 Question 1: {original_prompt}
 Question 2: {cached_prompt}
 
-Please evaluate the following two points and provide a similarity score between 0 and 1 directly:
-1. Whether these two questions are semantically similar
-2. Whether the answer to Question 2 can be used to answer Question 1
+Please evaluate whether these two questions are semantically similar, and whether the answer to Question 2 can be used to answer Question 1, provide a similarity score between 0 and 1 directly.
+
 Similarity score criteria:
 0: Completely unrelated or answer cannot be reused, including but not limited to:
    - The questions have different topics
