@@ -58,7 +58,7 @@ class EmbeddingFunc:
     embedding_dim: int
     max_token_size: int
     func: callable
-    concurrent_limit: int = 16
+    # concurrent_limit: int = 16
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         return await self.func(*args, **kwargs)
