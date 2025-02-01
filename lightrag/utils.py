@@ -463,7 +463,7 @@ def quantize_embedding(embedding: Union[np.ndarray, list], bits=8) -> tuple:
     # Convert list to numpy array if needed
     if isinstance(embedding, list):
         embedding = np.array(embedding)
-        
+
     # Calculate min/max values for reconstruction
     min_val = embedding.min()
     max_val = embedding.max()
