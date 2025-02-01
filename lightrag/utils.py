@@ -463,8 +463,12 @@ def cosine_similarity(v1, v2):
     return dot_product / (norm1 * norm2)
 
 
-def quantize_embedding(embedding: np.ndarray, bits=8) -> tuple:
+def quantize_embedding(embedding: Union[np.ndarray, list], bits=8) -> tuple:
     """Quantize embedding to specified bits"""
+    # Convert list to numpy array if needed
+    if isinstance(embedding, list):
+        embedding = np.array(embedding)
+        
     # Calculate min/max values for reconstruction
     min_val = embedding.min()
     max_val = embedding.max()
