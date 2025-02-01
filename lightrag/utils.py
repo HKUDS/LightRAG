@@ -105,7 +105,7 @@ def compute_args_hash(*args, cache_type: str = None) -> str:
     """Compute a hash for the given arguments.
     Args:
         *args: Arguments to hash
-        cache_type: Type of cache (e.g., 'keywords', 'query')
+        cache_type: Type of cache (e.g., 'keywords', 'query', 'extract')
     Returns:
         str: Hash string
     """
