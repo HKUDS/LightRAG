@@ -556,7 +556,7 @@ class DocumentManager:
     def __init__(
         self,
         input_dir: str,
-        supported_extensions: tuple = (".txt", ".md", ".pdf", ".docx", ".pptx"),
+        supported_extensions: tuple = (".txt", ".md", ".pdf", ".docx", ".pptx", "xlsx"),
     ):
         self.input_dir = Path(input_dir)
         self.supported_extensions = supported_extensions
@@ -973,38 +973,14 @@ def create_app(args):
                 async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
                     content = await f.read()
 
-            case ".pdf":
-                if not pm.is_installed("pypdf2"):
-                    pm.install("pypdf2")
-                from PyPDF2 import PdfReader
+            case ".pdf" | ".docx" | ".pptx" | ".xlsx":
+                if not pm.is_installed("docling"):
+                    pm.install("docling")
+                from docling.document_converter import DocumentConverter
 
-                # PDF handling
-                reader = PdfReader(str(file_path))
-                content = ""
-                for page in reader.pages:
-                    content += page.extract_text() + "\n"
-
-            case ".docx":
-                if not pm.is_installed("python-docx"):
-                    pm.install("python-docx")
-                from docx import Document
-
-                # Word document handling
-                doc = Document(file_path)
-                content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-
-            case ".pptx":
-                if not pm.is_installed("pptx"):
-                    pm.install("pptx")
-                from pptx import Presentation  # type: ignore
-
-                # PowerPoint handling
-                prs = Presentation(file_path)
-                content = ""
-                for slide in prs.slides:
-                    for shape in slide.shapes:
-                        if hasattr(shape, "text"):
-                            content += shape.text + "\n"
+                converter = DocumentConverter()
+                result = converter.convert(file_path)
+                content = result.document.export_to_markdown()
 
             case _:
                 raise ValueError(f"Unsupported file format: {ext}")
@@ -1282,55 +1258,26 @@ def create_app(args):
                     text_content = await file.read()
                     content = text_content.decode("utf-8")
 
-                case ".pdf":
-                    if not pm.is_installed("pypdf2"):
-                        pm.install("pypdf2")
-                    from PyPDF2 import PdfReader
-                    from io import BytesIO
+                case ".pdf" | ".docx" | ".pptx" | ".xlsx":
+                    if not pm.is_installed("docling"):
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter
 
-                    # Read PDF from memory
-                    pdf_content = await file.read()
-                    pdf_file = BytesIO(pdf_content)
-                    reader = PdfReader(pdf_file)
-                    content = ""
-                    for page in reader.pages:
-                        content += page.extract_text() + "\n"
+                    # Create a temporary file to save the uploaded content
+                    temp_path = Path("temp") / file.filename
+                    temp_path.parent.mkdir(exist_ok=True)
 
-                case ".docx":
-                    if not pm.is_installed("python-docx"):
-                        pm.install("python-docx")
-                    from docx import Document
-                    from io import BytesIO
+                    # Save the uploaded file
+                    with temp_path.open("wb") as f:
+                        f.write(await file.read())
 
-                    # Read DOCX from memory
-                    docx_content = await file.read()
-                    docx_file = BytesIO(docx_content)
-                    doc = Document(docx_file)
-                    content = "\n".join(
-                        [paragraph.text for paragraph in doc.paragraphs]
-                    )
-
-                case ".pptx":
-                    if not pm.is_installed("pptx"):
-                        pm.install("pptx")
-                    from pptx import Presentation  # type: ignore
-                    from io import BytesIO
-
-                    # Read PPTX from memory
-                    pptx_content = await file.read()
-                    pptx_file = BytesIO(pptx_content)
-                    prs = Presentation(pptx_file)
-                    content = ""
-                    for slide in prs.slides:
-                        for shape in slide.shapes:
-                            if hasattr(shape, "text"):
-                                content += shape.text + "\n"
-
-                case _:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
-                    )
+                    try:
+                        converter = DocumentConverter()
+                        result = converter.convert(str(temp_path))
+                        content = result.document.export_to_markdown()
+                    finally:
+                        # Clean up the temporary file
+                        temp_path.unlink()
 
             # Insert content into RAG system
             if content:
