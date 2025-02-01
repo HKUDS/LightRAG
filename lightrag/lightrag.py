@@ -231,7 +231,7 @@ class LightRAG:
 
         self.llm_response_cache = self.key_string_value_json_storage_cls(
             namespace="llm_response_cache",
-            embedding_func=None,
+            embedding_func=self.embedding_func,
         )
 
         ####
@@ -275,7 +275,7 @@ class LightRAG:
         else:
             hashing_kv = self.key_string_value_json_storage_cls(
                 namespace="llm_response_cache",
-                embedding_func=None,
+                embedding_func=self.embedding_func,
             )
 
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
