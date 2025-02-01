@@ -973,33 +973,7 @@ def create_app(args):
                 async with aiofiles.open(file_path, "r", encoding="utf-8") as f:
                     content = await f.read()
 
-            case ".pdf":
-                if not pm.is_installed("docling"):
-                    pm.install("docling")
-                from docling.document_converter import DocumentConverter
-
-                converter = DocumentConverter()
-                result = converter.convert(file_path)
-                content = result.document.export_to_markdown()
-
-            case ".docx":
-                if not pm.is_installed("docling"):
-                    pm.install("docling")
-                from docling.document_converter import DocumentConverter
-
-                converter = DocumentConverter()
-                result = converter.convert(file_path)
-                content = result.document.export_to_markdown()
-
-            case ".pptx":
-                if not pm.is_installed("docling"):
-                    pm.install("docling")
-                from docling.document_converter import DocumentConverter
-
-                converter = DocumentConverter()
-                result = converter.convert(file_path)
-                content = result.document.export_to_markdown()
-            case ".xlsx":
+            case ".pdf" | ".docx" | ".pptx" | ".xlsx":
                 if not pm.is_installed("docling"):
                     pm.install("docling")
                 from docling.document_converter import DocumentConverter
@@ -1284,45 +1258,26 @@ def create_app(args):
                     text_content = await file.read()
                     content = text_content.decode("utf-8")
 
-                case ".pdf":
+                case ".pdf" | ".docx" | ".pptx" | ".xlsx":
                     if not pm.is_installed("docling"):
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter
 
-                    converter = DocumentConverter()
-                    result = converter.convert(file.filename)
-                    content = result.document.export_to_markdown()
+                    # Create a temporary file to save the uploaded content
+                    temp_path = Path("temp") / file.filename
+                    temp_path.parent.mkdir(exist_ok=True)
 
-                case ".docx":
-                    if not pm.is_installed("docling"):
-                        pm.install("docling")
-                    from docling.document_converter import DocumentConverter
+                    # Save the uploaded file
+                    with temp_path.open("wb") as f:
+                        f.write(await file.read())
 
-                    converter = DocumentConverter()
-                    result = converter.convert(file.filename)
-                    content = result.document.export_to_markdown()
-
-                case ".pptx":
-                    if not pm.is_installed("docling"):
-                        pm.install("docling")
-                    from docling.document_converter import DocumentConverter
-
-                    converter = DocumentConverter()
-                    result = converter.convert(file.filename)
-                    content = result.document.export_to_markdown()
-                case ".xlsx":
-                    if not pm.is_installed("docling"):
-                        pm.install("docling")
-                    from docling.document_converter import DocumentConverter
-
-                    converter = DocumentConverter()
-                    result = converter.convert(file.filename)
-                    content = result.document.export_to_markdown()
-                case _:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
-                    )
+                    try:
+                        converter = DocumentConverter()
+                        result = converter.convert(str(temp_path))
+                        content = result.document.export_to_markdown()
+                    finally:
+                        # Clean up the temporary file
+                        temp_path.unlink()
 
             # Insert content into RAG system
             if content:
