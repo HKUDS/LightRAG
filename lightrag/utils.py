@@ -484,10 +484,17 @@ def dequantize_embedding(
 
 
 async def handle_cache(
-    hashing_kv, args_hash, prompt, mode="default", cache_type=None, force_llm_cache=False
+    hashing_kv,
+    args_hash,
+    prompt,
+    mode="default",
+    cache_type=None,
+    force_llm_cache=False,
 ):
     """Generic cache handling function"""
-    if hashing_kv is None or not (force_llm_cache or hashing_kv.global_config.get("enable_llm_cache")):
+    if hashing_kv is None or not (
+        force_llm_cache or hashing_kv.global_config.get("enable_llm_cache")
+    ):
         return None, None, None, None
 
     if mode != "default":
@@ -504,7 +511,9 @@ async def handle_cache(
             # Use embedding cache
             current_embedding = await hashing_kv.embedding_func([prompt])
             llm_model_func = (
-                hashing_kv.llm_model_func if hasattr(hashing_kv, "llm_model_func") else None
+                hashing_kv.llm_model_func
+                if hasattr(hashing_kv, "llm_model_func")
+                else None
             )
             quantized, min_val, max_val = quantize_embedding(current_embedding[0])
             best_cached_response = await get_best_cached_response(

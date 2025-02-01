@@ -352,7 +352,6 @@ async def extract_entities(
         input_text: str, history_messages: list[dict[str, str]] = None
     ) -> str:
         if enable_llm_cache_for_entity_extract and llm_response_cache:
-
             if history_messages:
                 history = json.dumps(history_messages, ensure_ascii=False)
                 _prompt = history + "\n" + input_text
@@ -381,7 +380,12 @@ async def extract_entities(
                 res: str = await use_llm_func(input_text)
             await save_to_cache(
                 llm_response_cache,
-                CacheData(args_hash=arg_hash, content=res, prompt=_prompt, cache_type="extract"),
+                CacheData(
+                    args_hash=arg_hash,
+                    content=res,
+                    prompt=_prompt,
+                    cache_type="extract",
+                ),
             )
             return res
 
@@ -747,7 +751,10 @@ async def extract_keywords_only(
 
     # 7. Cache only the processed keywords with cache type
     if hl_keywords or ll_keywords:
-        cache_data = {"high_level_keywords": hl_keywords, "low_level_keywords": ll_keywords}
+        cache_data = {
+            "high_level_keywords": hl_keywords,
+            "low_level_keywords": ll_keywords,
+        }
         await save_to_cache(
             hashing_kv,
             CacheData(
