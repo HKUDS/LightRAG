@@ -124,22 +124,17 @@ def compute_mdhash_id(content, prefix: str = ""):
     return prefix + md5(content.encode()).hexdigest()
 
 
-def limit_async_func_call(max_size: int, waitting_time: float = 0.0001):
-    """Add restriction of maximum async calling times for a async func"""
+def limit_async_func_call(max_size: int):
+    """Add restriction of maximum concurrent async calls using asyncio.Semaphore"""
 
     def final_decro(func):
-        """Not using async.Semaphore to aovid use nest-asyncio"""
-        __current_size = 0
+        sem = asyncio.Semaphore(max_size)
 
         @wraps(func)
         async def wait_func(*args, **kwargs):
-            nonlocal __current_size
-            while __current_size >= max_size:
-                await asyncio.sleep(waitting_time)
-            __current_size += 1
-            result = await func(*args, **kwargs)
-            __current_size -= 1
-            return result
+            async with sem:
+                result = await func(*args, **kwargs)
+                return result
 
         return wait_func
 
