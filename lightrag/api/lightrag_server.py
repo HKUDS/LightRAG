@@ -919,7 +919,7 @@ def create_app(args):
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
-            enable_llm_cache_for_entity_extract=False,
+            enable_llm_cache_for_entity_extract=False,  # set to True for debuging to reduce llm fee
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
@@ -948,7 +948,7 @@ def create_app(args):
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
-            enable_llm_cache_for_entity_extract=False,
+            enable_llm_cache_for_entity_extract=False,  # set to True for debuging to reduce llm fee
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
