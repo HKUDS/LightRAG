@@ -568,6 +568,7 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
 
     mode_cache[cache_data.args_hash] = {
         "return": cache_data.content,
+        "cache_type": cache_data.cache_data,
         "embedding": cache_data.quantized.tobytes().hex()
         if cache_data.quantized is not None
         else None,
