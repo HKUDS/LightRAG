@@ -919,6 +919,12 @@ def create_app(args):
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
+            enable_llm_cache_for_entity_extract=False,
+            embedding_cache_config={
+                "enabled": True,
+                "similarity_threshold": 0.95,
+                "use_llm_check": False,
+            },
         )
     else:
         rag = LightRAG(
@@ -941,6 +947,12 @@ def create_app(args):
             doc_status_storage=ollama_server_infos.DOC_STATUS_STORAGE,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
+            },
+            enable_llm_cache_for_entity_extract=False,
+            embedding_cache_config={
+                "enabled": True,
+                "similarity_threshold": 0.95,
+                "use_llm_check": False,
             },
         )
 
