@@ -778,7 +778,7 @@ if __name__ == "__main__":
             run_test(test_non_stream_chat, "Non-streaming Chat Test")
             run_test(test_stream_chat, "Streaming Chat Test")
             run_test(test_query_modes, "Chat Query Mode Test")
-    
+
             if OutputControl.is_verbose():
                 print("\n【Generate API Tests】")
             run_test(test_non_stream_generate, "Non-streaming Generate Test")
