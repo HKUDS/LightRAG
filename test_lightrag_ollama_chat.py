@@ -742,7 +742,7 @@ Configuration file (config.json):
         nargs="+",
         choices=list(get_test_cases().keys()) + ["all"],
         default=["all"],
-        help="Test cases to run, options: %(choices)s. Use 'all' to run all tests",
+        help="Test cases to run, options: %(choices)s. Use 'all' to run all tests （except error tests)",
     )
     return parser.parse_args()
 
@@ -766,21 +766,18 @@ if __name__ == "__main__":
 
     try:
         if "all" in args.tests:
-            # Run all tests
+            # Run all tests except error handling tests
             if OutputControl.is_verbose():
                 print("\n【Chat API Tests】")
             run_test(test_non_stream_chat, "Non-streaming Chat Test")
             run_test(test_stream_chat, "Streaming Chat Test")
             run_test(test_query_modes, "Chat Query Mode Test")
-            run_test(test_error_handling, "Chat Error Handling Test")
-            run_test(test_stream_error_handling, "Chat Streaming Error Test")
-
+    
             if OutputControl.is_verbose():
                 print("\n【Generate API Tests】")
             run_test(test_non_stream_generate, "Non-streaming Generate Test")
             run_test(test_stream_generate, "Streaming Generate Test")
             run_test(test_generate_with_system, "Generate with System Prompt Test")
-            run_test(test_generate_error_handling, "Generate Error Handling Test")
             run_test(test_generate_concurrent, "Generate Concurrent Test")
         else:
             # Run specified tests
