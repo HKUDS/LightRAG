@@ -373,7 +373,7 @@ class LightRAG:
             doc_id
             for doc_id in new_docs.keys()
             if (current_doc := await self.doc_status.get_by_id(doc_id)) is None
-            or current_doc["status"] == DocStatus.FAILED
+            or current_doc.status == DocStatus.FAILED
         }
         new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
 
