@@ -129,7 +129,7 @@ class LightRAG:
     # logging
     current_log_level = logger.level
     log_level: str = field(default=current_log_level)
-    logging_dir: str = field(default="logs")
+    logging_dir: str = field(default="./")
 
     # text chunking
     chunk_token_size: int = 1200
