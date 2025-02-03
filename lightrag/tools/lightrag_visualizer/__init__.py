@@ -17,6 +17,8 @@ if not pm.is_installed("imgui_bundle"):
     pm.install("imgui_bundle")
 if not pm.is_installed("pyglm"):
     pm.install("pyglm")
+if not pm.is_installed("community"):
+    pm.install("community")
 
 import moderngl
 from imgui_bundle import imgui, immapp, hello_imgui
