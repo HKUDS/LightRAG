@@ -58,17 +58,10 @@ class EmbeddingFunc:
     embedding_dim: int
     max_token_size: int
     func: callable
-    concurrent_limit: int = 16
-
-    def __post_init__(self):
-        if self.concurrent_limit != 0:
-            self._semaphore = asyncio.Semaphore(self.concurrent_limit)
-        else:
-            self._semaphore = UnlimitedSemaphore()
+    # concurrent_limit: int = 16
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
-        async with self._semaphore:
-            return await self.func(*args, **kwargs)
+        return await self.func(*args, **kwargs)
 
 
 def locate_json_string_body_from_string(content: str) -> Union[str, None]:
@@ -112,7 +105,7 @@ def compute_args_hash(*args, cache_type: str = None) -> str:
     """Compute a hash for the given arguments.
     Args:
         *args: Arguments to hash
-        cache_type: Type of cache (e.g., 'keywords', 'query')
+        cache_type: Type of cache (e.g., 'keywords', 'query', 'extract')
     Returns:
         str: Hash string
     """
@@ -131,22 +124,17 @@ def compute_mdhash_id(content, prefix: str = ""):
     return prefix + md5(content.encode()).hexdigest()
 
 
-def limit_async_func_call(max_size: int, waitting_time: float = 0.0001):
-    """Add restriction of maximum async calling times for a async func"""
+def limit_async_func_call(max_size: int):
+    """Add restriction of maximum concurrent async calls using asyncio.Semaphore"""
 
     def final_decro(func):
-        """Not using async.Semaphore to aovid use nest-asyncio"""
-        __current_size = 0
+        sem = asyncio.Semaphore(max_size)
 
         @wraps(func)
         async def wait_func(*args, **kwargs):
-            nonlocal __current_size
-            while __current_size >= max_size:
-                await asyncio.sleep(waitting_time)
-            __current_size += 1
-            result = await func(*args, **kwargs)
-            __current_size -= 1
-            return result
+            async with sem:
+                result = await func(*args, **kwargs)
+                return result
 
         return wait_func
 
@@ -380,6 +368,9 @@ async def get_best_cached_response(
     original_prompt=None,
     cache_type=None,
 ) -> Union[str, None]:
+    logger.debug(
+        f"get_best_cached_response:  mode={mode} cache_type={cache_type} use_llm_check={use_llm_check}"
+    )
     mode_cache = await hashing_kv.get_by_id(mode)
     if not mode_cache:
         return None
@@ -470,8 +461,12 @@ def cosine_similarity(v1, v2):
     return dot_product / (norm1 * norm2)
 
 
-def quantize_embedding(embedding: np.ndarray, bits=8) -> tuple:
+def quantize_embedding(embedding: Union[np.ndarray, list], bits=8) -> tuple:
     """Quantize embedding to specified bits"""
+    # Convert list to numpy array if needed
+    if isinstance(embedding, list):
+        embedding = np.array(embedding)
+
     # Calculate min/max values for reconstruction
     min_val = embedding.min()
     max_val = embedding.max()
@@ -491,59 +486,60 @@ def dequantize_embedding(
     return (quantized * scale + min_val).astype(np.float32)
 
 
-async def handle_cache(hashing_kv, args_hash, prompt, mode="default", cache_type=None):
+async def handle_cache(
+    hashing_kv,
+    args_hash,
+    prompt,
+    mode="default",
+    cache_type=None,
+    force_llm_cache=False,
+):
     """Generic cache handling function"""
-    if hashing_kv is None or not hashing_kv.global_config.get("enable_llm_cache"):
+    if hashing_kv is None or not (
+        force_llm_cache or hashing_kv.global_config.get("enable_llm_cache")
+    ):
         return None, None, None, None
 
-    # For default mode, only use simple cache matching
-    if mode == "default":
-        if exists_func(hashing_kv, "get_by_mode_and_id"):
-            mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
-        else:
-            mode_cache = await hashing_kv.get_by_id(mode) or {}
-        if args_hash in mode_cache:
-            return mode_cache[args_hash]["return"], None, None, None
-        return None, None, None, None
-
-    # Get embedding cache configuration
-    embedding_cache_config = hashing_kv.global_config.get(
-        "embedding_cache_config",
-        {"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False},
-    )
-    is_embedding_cache_enabled = embedding_cache_config["enabled"]
-    use_llm_check = embedding_cache_config.get("use_llm_check", False)
-
-    quantized = min_val = max_val = None
-    if is_embedding_cache_enabled:
-        # Use embedding cache
-        embedding_model_func = hashing_kv.global_config["embedding_func"]["func"]
-        llm_model_func = hashing_kv.global_config.get("llm_model_func")
-
-        current_embedding = await embedding_model_func([prompt])
-        quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-        best_cached_response = await get_best_cached_response(
-            hashing_kv,
-            current_embedding[0],
-            similarity_threshold=embedding_cache_config["similarity_threshold"],
-            mode=mode,
-            use_llm_check=use_llm_check,
-            llm_func=llm_model_func if use_llm_check else None,
-            original_prompt=prompt if use_llm_check else None,
-            cache_type=cache_type,
+    if mode != "default":
+        # Get embedding cache configuration
+        embedding_cache_config = hashing_kv.global_config.get(
+            "embedding_cache_config",
+            {"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False},
         )
-        if best_cached_response is not None:
-            return best_cached_response, None, None, None
-    else:
-        # Use regular cache
-        if exists_func(hashing_kv, "get_by_mode_and_id"):
-            mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
-        else:
-            mode_cache = await hashing_kv.get_by_id(mode) or {}
-        if args_hash in mode_cache:
-            return mode_cache[args_hash]["return"], None, None, None
+        is_embedding_cache_enabled = embedding_cache_config["enabled"]
+        use_llm_check = embedding_cache_config.get("use_llm_check", False)
 
-    return None, quantized, min_val, max_val
+        quantized = min_val = max_val = None
+        if is_embedding_cache_enabled:
+            # Use embedding cache
+            current_embedding = await hashing_kv.embedding_func([prompt])
+            llm_model_func = hashing_kv.global_config.get("llm_model_func")
+            quantized, min_val, max_val = quantize_embedding(current_embedding[0])
+            best_cached_response = await get_best_cached_response(
+                hashing_kv,
+                current_embedding[0],
+                similarity_threshold=embedding_cache_config["similarity_threshold"],
+                mode=mode,
+                use_llm_check=use_llm_check,
+                llm_func=llm_model_func if use_llm_check else None,
+                original_prompt=prompt,
+                cache_type=cache_type,
+            )
+            if best_cached_response is not None:
+                return best_cached_response, None, None, None
+            else:
+                return None, quantized, min_val, max_val
+
+    # For default mode(extract_entities or naive query) or is_embedding_cache_enabled is False
+    # Use regular cache
+    if exists_func(hashing_kv, "get_by_mode_and_id"):
+        mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
+    else:
+        mode_cache = await hashing_kv.get_by_id(mode) or {}
+    if args_hash in mode_cache:
+        return mode_cache[args_hash]["return"], None, None, None
+
+    return None, None, None, None
 
 
 @dataclass
@@ -572,6 +568,7 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
 
     mode_cache[cache_data.args_hash] = {
         "return": cache_data.content,
+        "cache_type": cache_data.cache_type,
         "embedding": cache_data.quantized.tobytes().hex()
         if cache_data.quantized is not None
         else None,
