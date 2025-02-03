@@ -2,6 +2,8 @@
 
 An interactive 3D graph visualization tool included in the LightRAG package for visualizing and analyzing RAG (Retrieval-Augmented Generation) graphs and other graph structures.
 
+![image](https://github.com/user-attachments/assets/b0d86184-99fc-468c-96ed-c611f14292bf)
+
 ## Installation
 
 ### Quick Install
