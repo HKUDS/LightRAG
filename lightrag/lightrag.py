@@ -129,7 +129,7 @@ class LightRAG:
     # logging
     current_log_level = logger.level
     log_level: str = field(default=current_log_level)
-    logging_dir: str = field(default=os.getcwd())
+    log_dir: str = field(default=os.getcwd())
 
     # text chunking
     chunk_token_size: int = 1200
@@ -184,8 +184,8 @@ class LightRAG:
     chunking_func_kwargs: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        os.makedirs(self.logging_dir, exist_ok=True)
-        log_file = os.path.join(self.logging_dir, "lightrag.log")
+        os.makedirs(self.log_dir, exist_ok=True)
+        log_file = os.path.join(self.log_dir, "lightrag.log")
         set_logger(log_file)
 
         logger.setLevel(self.log_level)
