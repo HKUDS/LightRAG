@@ -649,7 +649,7 @@ class LightRAG:
                     }
                     chunk_cnt += len(chunks)
                     await self.text_chunks.upsert(chunks)
-                    await self.text_chunks.change_status(doc_id, DocStatus.PROCESSED)
+                    await self.text_chunks.change_status(doc_id, DocStatus.PROCESSING)
 
                     try:
                         # Store chunks in vector database
