@@ -1707,10 +1707,10 @@ def create_app(args):
                     if request.system:
                         rag.llm_model_kwargs["system_prompt"] = request.system
                     response = await rag.llm_model_func(
-                        cleaned_query, 
+                        cleaned_query,
                         stream=True,
                         history_messages=conversation_history,
-                        **rag.llm_model_kwargs
+                        **rag.llm_model_kwargs,
                     )
                 else:
                     response = await rag.aquery(  # Need await to get async generator
@@ -1826,10 +1826,10 @@ def create_app(args):
                         rag.llm_model_kwargs["system_prompt"] = request.system
 
                     response_text = await rag.llm_model_func(
-                        cleaned_query, 
+                        cleaned_query,
                         stream=False,
                         history_messages=conversation_history,
-                        **rag.llm_model_kwargs
+                        **rag.llm_model_kwargs,
                     )
                 else:
                     response_text = await rag.aquery(cleaned_query, param=query_param)
