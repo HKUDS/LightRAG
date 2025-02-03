@@ -1477,7 +1477,7 @@ def create_app(args):
 
     @app.get("/api/tags")
     async def get_tags():
-        """Get available models"""
+        """Retrun available models acting as an Ollama server"""
         return OllamaTagResponse(
             models=[
                 {
@@ -1521,7 +1521,7 @@ def create_app(args):
 
     @app.post("/api/generate")
     async def generate(raw_request: Request, request: OllamaGenerateRequest):
-        """Handle generate completion requests
+        """Handle generate completion requests acting as an Ollama model
         For compatiblity purpuse, the request is not processed by LightRAG,
         and will be handled by underlying LLM model.
         """
@@ -1663,7 +1663,7 @@ def create_app(args):
 
     @app.post("/api/chat")
     async def chat(raw_request: Request, request: OllamaChatRequest):
-        """Process chat completion requests.
+        """Process chat completion requests acting as an Ollama model
         Routes user queries through LightRAG by selecting query mode based on prefix indicators.
         Detects and forwards OpenWebUI session-related requests (for meta data generation task) directly to LLM.
         """
