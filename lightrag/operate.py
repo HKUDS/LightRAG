@@ -352,16 +352,6 @@ async def extract_entities(
         input_text: str, history_messages: list[dict[str, str]] = None
     ) -> str:
         if enable_llm_cache_for_entity_extract and llm_response_cache:
-            need_to_restore = False
-            if (
-                global_config["embedding_cache_config"]
-                and global_config["embedding_cache_config"]["enabled"]
-            ):
-                new_config = global_config.copy()
-                new_config["embedding_cache_config"] = None
-                new_config["enable_llm_cache"] = True
-                llm_response_cache.global_config = new_config
-                need_to_restore = True
             if history_messages:
                 history = json.dumps(history_messages, ensure_ascii=False)
                 _prompt = history + "\n" + input_text
@@ -370,10 +360,13 @@ async def extract_entities(
 
             arg_hash = compute_args_hash(_prompt)
             cached_return, _1, _2, _3 = await handle_cache(
-                llm_response_cache, arg_hash, _prompt, "default", cache_type="default"
+                llm_response_cache,
+                arg_hash,
+                _prompt,
+                "default",
+                cache_type="extract",
+                force_llm_cache=True,
             )
-            if need_to_restore:
-                llm_response_cache.global_config = global_config
             if cached_return:
                 logger.debug(f"Found cache for {arg_hash}")
                 statistic_data["llm_cache"] += 1
@@ -387,7 +380,12 @@ async def extract_entities(
                 res: str = await use_llm_func(input_text)
             await save_to_cache(
                 llm_response_cache,
-                CacheData(args_hash=arg_hash, content=res, prompt=_prompt),
+                CacheData(
+                    args_hash=arg_hash,
+                    content=res,
+                    prompt=_prompt,
+                    cache_type="extract",
+                ),
             )
             return res
 
@@ -740,7 +738,7 @@ async def extract_keywords_only(
     # 6. Parse out JSON from the LLM response
     match = re.search(r"\{.*\}", result, re.DOTALL)
     if not match:
-        logger.error("No JSON-like structure found in the result.")
+        logger.error("No JSON-like structure found in the LLM respond.")
         return [], []
     try:
         keywords_data = json.loads(match.group(0))
@@ -752,20 +750,24 @@ async def extract_keywords_only(
     ll_keywords = keywords_data.get("low_level_keywords", [])
 
     # 7. Cache only the processed keywords with cache type
-    cache_data = {"high_level_keywords": hl_keywords, "low_level_keywords": ll_keywords}
-    await save_to_cache(
-        hashing_kv,
-        CacheData(
-            args_hash=args_hash,
-            content=json.dumps(cache_data),
-            prompt=text,
-            quantized=quantized,
-            min_val=min_val,
-            max_val=max_val,
-            mode=param.mode,
-            cache_type="keywords",
-        ),
-    )
+    if hl_keywords or ll_keywords:
+        cache_data = {
+            "high_level_keywords": hl_keywords,
+            "low_level_keywords": ll_keywords,
+        }
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=json.dumps(cache_data),
+                prompt=text,
+                quantized=quantized,
+                min_val=min_val,
+                max_val=max_val,
+                mode=param.mode,
+                cache_type="keywords",
+            ),
+        )
     return hl_keywords, ll_keywords
 
 
