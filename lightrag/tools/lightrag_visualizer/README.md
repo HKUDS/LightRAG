@@ -93,7 +93,7 @@ Adjustable via UI control panel:
    ```bash
    # Make sure you installed with the 'tools' option
    pip install lightrag-hku[tools]
-   
+
    # Verify installation
    pip list | grep lightrag-hku
    ```
@@ -102,7 +102,7 @@ Adjustable via UI control panel:
    ```bash
    # Check OpenGL version
    glxinfo | grep "OpenGL version"
-   
+
    # Update graphics drivers if needed
    ```
 
@@ -134,4 +134,3 @@ The viewer is particularly useful for:
 This tool is part of LightRAG and is distributed under the MIT License. See `LICENSE` for more information.
 
 Note: This visualization tool is an optional component of the LightRAG package. Install with the [tools] option to access the viewer functionality.
-
