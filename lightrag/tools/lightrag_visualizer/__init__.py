@@ -10,7 +10,7 @@ import numpy as np
 import networkx as nx
 import pipmaster as pm
 
-#Added automatic libraries install using pipmaster
+# Added automatic libraries install using pipmaster
 if not pm.is_installed("moderngl"):
     pm.install("moderngl")
 if not pm.is_installed("imgui_bundle"):
