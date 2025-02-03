@@ -599,6 +599,7 @@ class SearchMode(str, Enum):
     global_ = "global"
     hybrid = "hybrid"
     mix = "mix"
+    bypass = "bypass"
 
 
 class OllamaMessage(BaseModel):
@@ -1476,7 +1477,7 @@ def create_app(args):
 
     @app.get("/api/tags")
     async def get_tags():
-        """Get available models"""
+        """Retrun available models acting as an Ollama server"""
         return OllamaTagResponse(
             models=[
                 {
@@ -1507,6 +1508,7 @@ def create_app(args):
             "/naive ": SearchMode.naive,
             "/hybrid ": SearchMode.hybrid,
             "/mix ": SearchMode.mix,
+            "/bypass ": SearchMode.bypass,
         }
 
         for prefix, mode in mode_map.items():
@@ -1519,7 +1521,7 @@ def create_app(args):
 
     @app.post("/api/generate")
     async def generate(raw_request: Request, request: OllamaGenerateRequest):
-        """Handle generate completion requests
+        """Handle generate completion requests acting as an Ollama model
         For compatiblity purpuse, the request is not processed by LightRAG,
         and will be handled by underlying LLM model.
         """
@@ -1661,7 +1663,7 @@ def create_app(args):
 
     @app.post("/api/chat")
     async def chat(raw_request: Request, request: OllamaChatRequest):
-        """Process chat completion requests.
+        """Process chat completion requests acting as an Ollama model
         Routes user queries through LightRAG by selecting query mode based on prefix indicators.
         Detects and forwards OpenWebUI session-related requests (for meta data generation task) directly to LLM.
         """
@@ -1700,9 +1702,20 @@ def create_app(args):
             if request.stream:
                 from fastapi.responses import StreamingResponse
 
-                response = await rag.aquery(  # Need await to get async generator
-                    cleaned_query, param=query_param
-                )
+                # Determine if the request is prefix with "/bypass"
+                if mode == SearchMode.bypass:
+                    if request.system:
+                        rag.llm_model_kwargs["system_prompt"] = request.system
+                    response = await rag.llm_model_func(
+                        cleaned_query,
+                        stream=True,
+                        history_messages=conversation_history,
+                        **rag.llm_model_kwargs,
+                    )
+                else:
+                    response = await rag.aquery(  # Need await to get async generator
+                        cleaned_query, param=query_param
+                    )
 
                 async def stream_generator():
                     try:
@@ -1804,16 +1817,19 @@ def create_app(args):
             else:
                 first_chunk_time = time.time_ns()
 
-                # Determine if the request is from Open WebUI's session title and session keyword generation task
+                # Determine if the request is prefix with "/bypass" or from Open WebUI's session title and session keyword generation task
                 match_result = re.search(
                     r"\n<chat_history>\nUSER:", cleaned_query, re.MULTILINE
                 )
-                if match_result:
+                if match_result or mode == SearchMode.bypass:
                     if request.system:
                         rag.llm_model_kwargs["system_prompt"] = request.system
 
                     response_text = await rag.llm_model_func(
-                        cleaned_query, stream=False, **rag.llm_model_kwargs
+                        cleaned_query,
+                        stream=False,
+                        history_messages=conversation_history,
+                        **rag.llm_model_kwargs,
                     )
                 else:
                     response_text = await rag.aquery(cleaned_query, param=query_param)
