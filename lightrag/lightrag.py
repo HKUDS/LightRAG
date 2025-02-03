@@ -126,8 +126,10 @@ class LightRAG:
     vector_storage: str = field(default="NanoVectorDBStorage")
     graph_storage: str = field(default="NetworkXStorage")
 
+    # logging
     current_log_level = logger.level
     log_level: str = field(default=current_log_level)
+    log_dir: str = field(default=os.getcwd())
 
     # text chunking
     chunk_token_size: int = 1200
@@ -182,10 +184,11 @@ class LightRAG:
     chunking_func_kwargs: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        log_file = os.path.join("lightrag.log")
+        os.makedirs(self.log_dir, exist_ok=True)
+        log_file = os.path.join(self.log_dir, "lightrag.log")
         set_logger(log_file)
-        logger.setLevel(self.log_level)
 
+        logger.setLevel(self.log_level)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
