@@ -65,7 +65,7 @@ def read_api_requirements():
 def read_extra_requirements():
     api_deps = []
     try:
-        with open("./lightrag/extra/VisualizationTool/requirements.txt") as f:
+        with open("./lightrag/tools/lightrag_visualizer/requirements.txt") as f:
             api_deps = [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
         print("Warning: API requirements.txt not found.")
