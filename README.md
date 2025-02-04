@@ -1058,6 +1058,12 @@ LightRag can be installed with API support to serve a Fast api interface to perf
 
 The documentation can be found [here](lightrag/api/README.md)
 
+## Graph viewer
+LightRag can be installed with Tools support to add extra tools like the graphml 3d visualizer.
+
+The documentation can be found [here](lightrag/tools/lightrag_visualizer/README.md)
+
+
 ## Star History
 
 <a href="https://star-history.com/#HKUDS/LightRAG&Date">
