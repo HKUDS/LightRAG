@@ -20,6 +20,9 @@ import os
 
 CUSTOM_FONT = "font.ttf"
 
+DEFAULT_FONT_ENG = "Geist-Regular.ttf"
+DEFAULT_FONT_CHI = "SmileySans-Oblique.ttf"
+
 
 class Node3D:
     """Class representing a 3D node in the graph"""
@@ -1169,39 +1172,38 @@ def main():
         # You will need to provide it yourself, or use another font.
         font_filename = CUSTOM_FONT
 
-        use_custom_font = False
-        if not hello_imgui.asset_exists(font_filename):
-            asset_dir = os.path.join(os.path.dirname(__file__), "assets")
-            if os.path.isfile(os.path.join(asset_dir, font_filename)):
-                hello_imgui.set_assets_folder(asset_dir)
-                use_custom_font = True
-
         io = imgui.get_io()
         io.fonts.tex_desired_width = 4096  # Larger texture for better CJK font quality
+        font_size_pixels = 14
+        asset_dir = os.path.join(os.path.dirname(__file__), "assets")
 
-        if not use_custom_font:
-            io.fonts.add_font_default()
+        # Try to load custom font
+        if not os.path.isfile(font_filename):
+            font_filename = os.path.join(asset_dir, font_filename)
+        if os.path.isfile(font_filename):
+            custom_font = io.fonts.add_font_from_file_ttf(
+                filename=font_filename,
+                size_pixels=font_size_pixels,
+                glyph_ranges_as_int_list=io.fonts.get_glyph_ranges_chinese_full(),
+            )
+            io.font_default = custom_font
             return
 
-        # Set up font loading parameters with Chinese character support
-        font_loading_params = hello_imgui.FontLoadingParams()
-        font_loading_params.glyph_ranges = hello_imgui.translate_common_glyph_ranges(
-            imgui.get_io().fonts.get_glyph_ranges_chinese_full()
+        # Load default fonts
+        io.fonts.add_font_from_file_ttf(
+            filename=os.path.join(asset_dir, DEFAULT_FONT_ENG),
+            size_pixels=font_size_pixels,
         )
 
-        custom_font = hello_imgui.load_font(font_filename, 16.0, font_loading_params)
+        font_config = imgui.ImFontConfig()
+        font_config.merge_mode = True
 
-        # # Merge with default font
-        # font_config = imgui.ImFontConfig()
-        # font_config.merge_mode = True
-        # custom_font = io.fonts.add_font_from_file_ttf(
-        #     filename= "assets/" + font_filename,
-        #     size_pixels=16.0,
-        #     font_cfg=font_config,
-        #     glyph_ranges_as_int_list=cn_glyph_ranges_imgui,
-        # )
-
-        io.font_default = custom_font
+        io.font_default = io.fonts.add_font_from_file_ttf(
+            filename=os.path.join(asset_dir, DEFAULT_FONT_CHI),
+            size_pixels=font_size_pixels,
+            font_cfg=font_config,
+            glyph_ranges_as_int_list=io.fonts.get_glyph_ranges_chinese_full(),
+        )
 
     runner_params.callbacks.load_additional_fonts = load_font
 
