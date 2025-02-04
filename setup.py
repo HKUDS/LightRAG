@@ -112,7 +112,7 @@ setuptools.setup(
     entry_points={
         "console_scripts": [
             "lightrag-server=lightrag.api.lightrag_server:main [api]",
-            "lightrag-viewer=lightrag.tools.lightrag_visualizer:main [tools]",
+            "lightrag-viewer=lightrag.tools.lightrag_visualizer.graph_visualizer:main [tools]",
         ],
     },
 )
