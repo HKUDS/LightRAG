@@ -2,13 +2,10 @@ import os
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import pipmaster as pm
-import numpy as np
+import np
 
 if not pm.is_installed("pymongo"):
     pm.install("pymongo")
-
-if not pm.is_installed("motor"):
-    pm.install("motor")
 
 from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
