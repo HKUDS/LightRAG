@@ -372,12 +372,23 @@ class LightRAG:
 
         # 3. Filter out already processed documents
         # _add_doc_keys = await self.doc_status.filter_keys(list(new_docs.keys()))
-        _add_doc_keys = {
-            doc_id
-            for doc_id in new_docs.keys()
-            if (current_doc := await self.doc_status.get_by_id(doc_id)) is None
-            or current_doc.status == DocStatus.FAILED
-        }
+        _add_doc_keys = set()
+        for doc_id in new_docs.keys():
+            current_doc = await self.doc_status.get_by_id(doc_id)
+
+            if current_doc is None:
+                _add_doc_keys.add(doc_id)
+                continue  # skip to the next doc_id
+
+            status = None
+            if isinstance(current_doc, dict):
+                status = current_doc["status"]
+            else:
+                status = current_doc.status
+
+            if status == DocStatus.FAILED:
+                _add_doc_keys.add(doc_id)
+
         new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
 
         if not new_docs:
