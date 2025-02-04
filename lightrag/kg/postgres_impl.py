@@ -447,7 +447,7 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"
         params = {"workspace": self.db.workspace, "id": id}
         result = await self.db.query(sql, params, True)
-        if result is None:
+        if result is None or result == []:
             return None
         else:
             return DocProcessingStatus(
