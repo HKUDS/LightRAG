@@ -557,14 +557,7 @@ class DocumentManager:
     def __init__(
         self,
         input_dir: str,
-        supported_extensions: tuple = (
-            ".txt",
-            ".md",
-            ".pdf",
-            ".docx",
-            ".pptx",
-            ".xlsx",
-        ),
+        supported_extensions: tuple = (".txt", ".md", ".pdf", ".docx", ".pptx", "xlsx"),
     ):
         self.input_dir = Path(input_dir)
         self.supported_extensions = supported_extensions
