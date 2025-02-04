@@ -1,6 +1,6 @@
 """
 3D GraphML Viewer using Dear ImGui and ModernGL
-Author: ParisNeo, ArnoChen
+Author: LoLLMs, ArnoChen
 Description: An interactive 3D GraphML viewer using imgui_bundle and ModernGL
 Version: 2.0
 """
@@ -8,18 +8,6 @@ Version: 2.0
 from typing import Optional, Tuple, Dict, List
 import numpy as np
 import networkx as nx
-import pipmaster as pm
-
-# Added automatic libraries install using pipmaster
-if not pm.is_installed("moderngl"):
-    pm.install("moderngl")
-if not pm.is_installed("imgui_bundle"):
-    pm.install("imgui_bundle")
-if not pm.is_installed("pyglm"):
-    pm.install("pyglm")
-if not pm.is_installed("python-louvain"):
-    pm.install("python-louvain")
-
 import moderngl
 from imgui_bundle import imgui, immapp, hello_imgui
 import community
