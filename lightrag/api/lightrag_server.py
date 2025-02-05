@@ -1721,7 +1721,7 @@ def create_app(args):
                     first_chunk_time = None
                     last_chunk_time = None
                     total_response = ""
-                    
+
                     try:
                         # Ensure response is an async generator
                         if isinstance(response, str):
@@ -1786,9 +1786,9 @@ def create_app(args):
                                     "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                     "error": {
                                         "code": "STREAM_CANCELLED",
-                                        "message": "Stream was cancelled by server"
+                                        "message": "Stream was cancelled by server",
                                     },
-                                    "done": False
+                                    "done": False,
                                 }
                                 yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
                                 raise
@@ -1815,24 +1815,21 @@ def create_app(args):
                     except Exception as e:
                         error_msg = f"Error in stream_generator: {str(e)}"
                         logging.error(error_msg)
-                        
+
                         # 发送错误消息给客户端
                         error_data = {
                             "model": ollama_server_infos.LIGHTRAG_MODEL,
                             "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
-                            "error": {
-                                "code": "STREAM_ERROR",
-                                "message": error_msg
-                            },
-                            "done": False
+                            "error": {"code": "STREAM_ERROR", "message": error_msg},
+                            "done": False,
                         }
                         yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
-                        
+
                         # 确保发送结束标记
                         final_data = {
                             "model": ollama_server_infos.LIGHTRAG_MODEL,
                             "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
-                            "done": True
+                            "done": True,
                         }
                         yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
                         raise
