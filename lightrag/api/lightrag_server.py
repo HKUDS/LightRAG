@@ -1793,9 +1793,9 @@ def create_app(args):
                                     error_msg = "Stream was cancelled by server"
                                 else:
                                     error_msg = f"Provider error: {error_msg}"
-                                
+
                                 logging.error(f"Stream error: {error_msg}")
-                                
+
                                 # Send error message to client
                                 error_data = {
                                     "model": ollama_server_infos.LIGHTRAG_MODEL,
@@ -1803,12 +1803,12 @@ def create_app(args):
                                     "message": {
                                         "role": "assistant",
                                         "content": f"\n\nError: {error_msg}",
-                                        "images": None
+                                        "images": None,
                                     },
-                                    "done": False
+                                    "done": False,
                                 }
                                 yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
-                                
+
                                 # Send final message to close the stream
                                 final_data = {
                                     "model": ollama_server_infos.LIGHTRAG_MODEL,
@@ -1845,10 +1845,7 @@ def create_app(args):
                         error_data = {
                             "model": ollama_server_infos.LIGHTRAG_MODEL,
                             "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
-                            "error": {
-                                "code": "STREAM_ERROR",
-                                "message": error_msg
-                            },
+                            "error": {"code": "STREAM_ERROR", "message": error_msg},
                         }
                         yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
 
