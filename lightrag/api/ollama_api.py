@@ -11,6 +11,11 @@ from fastapi.responses import StreamingResponse
 import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
+from dotenv import load_dotenv
+
+
+# Load environment variables
+load_dotenv()
 
 
 class OllamaServerInfos:
