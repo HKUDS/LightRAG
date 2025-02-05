@@ -203,14 +203,15 @@ class OllamaAPI:
                     )
 
                     async def stream_generator():
-                        first_chunk_time = time.time_ns()
-                        last_chunk_time = first_chunk_time
+                        first_chunk_time = None
+                        last_chunk_time = time.time_ns()
                         total_response = ""
 
                         try:
                             # Ensure response is an async generator
                             if isinstance(response, str):
                                 # If it's a string, send in two parts
+                                first_chunk_time = last_chunk_time
                                 last_chunk_time = time.time_ns()
                                 total_response = response
 
@@ -282,7 +283,8 @@ class OllamaAPI:
                                     }
                                     yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
                                     return
-
+                                if first_chunk_time is None:
+                                    first_chunk_time = last_chunk_time
                                 completion_tokens = estimate_tokens(total_response)
                                 total_time = last_chunk_time - start_time
                                 prompt_eval_time = first_chunk_time - start_time
@@ -407,14 +409,15 @@ class OllamaAPI:
                         )
 
                     async def stream_generator():
-                        first_chunk_time = time.time_ns()
-                        last_chunk_time = first_chunk_time
+                        first_chunk_time = None
+                        last_chunk_time = time.time_ns()
                         total_response = ""
 
                         try:
                             # Ensure response is an async generator
                             if isinstance(response, str):
                                 # If it's a string, send in two parts
+                                first_chunk_time = last_chunk_time
                                 last_chunk_time = time.time_ns()
                                 total_response = response
 
@@ -499,6 +502,8 @@ class OllamaAPI:
                                     yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
                                     return
 
+                                if first_chunk_time is None:
+                                    first_chunk_time = last_chunk_time
                                 completion_tokens = estimate_tokens(total_response)
                                 total_time = last_chunk_time - start_time
                                 prompt_eval_time = first_chunk_time - start_time
