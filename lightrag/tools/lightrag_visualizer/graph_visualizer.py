@@ -1221,7 +1221,7 @@ def main():
 
     immapp.run(runner_params)
 
-    tk_root.destroy() # Destroy the main window
+    tk_root.destroy()  # Destroy the main window
 
 
 if __name__ == "__main__":
