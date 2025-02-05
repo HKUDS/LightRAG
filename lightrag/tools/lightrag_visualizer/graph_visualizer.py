@@ -981,13 +981,10 @@ def generate_colors(n: int) -> List[glm.vec3]:
 
 def show_file_dialog() -> Optional[str]:
     """Show a file dialog for selecting GraphML files"""
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
     file_path = filedialog.askopenfilename(
         title="Select GraphML File",
         filetypes=[("GraphML files", "*.graphml"), ("All files", "*.*")],
     )
-    root.destroy()
     return file_path if file_path else None
 
 
@@ -1219,7 +1216,12 @@ def main():
 
     runner_params.callbacks.load_additional_fonts = load_font
 
+    tk_root = tk.Tk()
+    tk_root.withdraw()  # Hide the main window
+
     immapp.run(runner_params)
+
+    tk_root.destroy() # Destroy the main window
 
 
 if __name__ == "__main__":
