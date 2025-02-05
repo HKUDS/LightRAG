@@ -1780,18 +1780,34 @@ def create_app(args):
                                             "done": False,
                                         }
                                         yield f"{json.dumps(data, ensure_ascii=False)}\n"
-                            except asyncio.CancelledError:
+                            except (asyncio.CancelledError, Exception) as e:
+                                error_msg = str(e)
+                                if isinstance(e, asyncio.CancelledError):
+                                    error_msg = "Stream was cancelled by server"
+                                else:
+                                    error_msg = f"Provider error: {error_msg}"
+                                
+                                logging.error(f"Stream error: {error_msg}")
+                                
+                                # Send error message to client
                                 error_data = {
                                     "model": ollama_server_infos.LIGHTRAG_MODEL,
                                     "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                                     "error": {
-                                        "code": "STREAM_CANCELLED",
-                                        "message": "Stream was cancelled by server",
+                                        "code": "STREAM_ERROR",
+                                        "message": error_msg
                                     },
-                                    "done": False,
                                 }
                                 yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
-                                raise
+                                
+                                # Send final message to close the stream
+                                final_data = {
+                                    "model": ollama_server_infos.LIGHTRAG_MODEL,
+                                    "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "done": True,
+                                }
+                                yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
+                                return
 
                             if last_chunk_time is not None:
                                 completion_tokens = estimate_tokens(total_response)
@@ -1816,23 +1832,25 @@ def create_app(args):
                         error_msg = f"Error in stream_generator: {str(e)}"
                         logging.error(error_msg)
 
-                        # 发送错误消息给客户端
+                        # Send error message to client
                         error_data = {
                             "model": ollama_server_infos.LIGHTRAG_MODEL,
                             "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
-                            "error": {"code": "STREAM_ERROR", "message": error_msg},
-                            "done": False,
+                            "error": {
+                                "code": "STREAM_ERROR",
+                                "message": error_msg
+                            },
                         }
                         yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
 
-                        # 确保发送结束标记
+                        # Ensure sending end marker
                         final_data = {
                             "model": ollama_server_infos.LIGHTRAG_MODEL,
                             "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
                             "done": True,
                         }
                         yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
-                        raise
+                        return
 
                 return StreamingResponse(
                     stream_generator(),
