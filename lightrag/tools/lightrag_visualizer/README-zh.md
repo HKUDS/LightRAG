@@ -38,8 +38,8 @@
 
 1. **启动程序**:
    ```bash
-   python -m pip install -r requirements.txt
-   python graph_visualizer.py
+   pip install lightrag-hku[tools]
+   lightrag-viewer
    ```
 
 2. **加载字体**:

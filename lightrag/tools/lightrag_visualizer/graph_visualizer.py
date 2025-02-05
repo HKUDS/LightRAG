@@ -1,6 +1,6 @@
 """
 3D GraphML Viewer using Dear ImGui and ModernGL
-Author: LoLLMs, ArnoChen
+Author: ParisNeo, ArnoChen
 Description: An interactive 3D GraphML viewer using imgui_bundle and ModernGL
 Version: 2.0
 """
@@ -8,6 +8,18 @@ Version: 2.0
 from typing import Optional, Tuple, Dict, List
 import numpy as np
 import networkx as nx
+import pipmaster as pm
+
+# Added automatic libraries install using pipmaster
+if not pm.is_installed("moderngl"):
+    pm.install("moderngl")
+if not pm.is_installed("imgui_bundle"):
+    pm.install("imgui_bundle")
+if not pm.is_installed("pyglm"):
+    pm.install("pyglm")
+if not pm.is_installed("python-louvain"):
+    pm.install("python-louvain")
+
 import moderngl
 from imgui_bundle import imgui, immapp, hello_imgui
 import community
@@ -19,6 +31,9 @@ import colorsys
 import os
 
 CUSTOM_FONT = "font.ttf"
+
+DEFAULT_FONT_ENG = "Geist-Regular.ttf"
+DEFAULT_FONT_CHI = "SmileySans-Oblique.ttf"
 
 
 class Node3D:
@@ -172,6 +187,10 @@ class GraphViewer:
                     np.sin(np.radians(self.pitch)),
                 )
             )
+
+        if not imgui.is_window_hovered():
+            return
+
         if io.mouse_wheel != 0:
             self.move_speed += io.mouse_wheel * 0.05
             self.move_speed = np.max([self.move_speed, 0.01])
@@ -502,6 +521,14 @@ class GraphViewer:
     def load_file(self, filepath: str):
         """Load a GraphML file with error handling"""
         try:
+            # Clear existing data
+            self.id_node_map.clear()
+            self.nodes.clear()
+            self.selected_node = None
+            self.highlighted_node = None
+            self.setup_buffers()
+
+            # Load new graph
             self.graph = nx.read_graphml(filepath)
             self.calculate_layout()
             self.update_buffers()
@@ -672,10 +699,6 @@ class GraphViewer:
             self.position, self.position + self.front, self.up
         )
 
-        io = imgui.get_io()
-        self.window_width = int(io.display_size.x)
-        self.window_height = int(io.display_size.y)
-
         aspect_ratio = self.window_width / self.window_height
         self.proj_matrix = glm.perspective(
             glm.radians(60.0),  # FOV
@@ -839,7 +862,7 @@ class GraphViewer:
     def render(self):
         """Render the graph"""
         # Clear screen
-        self.glctx.clear(*self.background_color)
+        self.glctx.clear(*self.background_color, depth=1)
 
         if not self.graph:
             return
@@ -886,10 +909,14 @@ class GraphViewer:
         # Render id map
         self.render_id_map(mvp)
 
+    def render_labels(self):
         # Render labels if enabled
-        if self.show_labels:
+        if self.show_labels and self.nodes:
             # Save current font scale
             original_scale = imgui.get_font_size()
+
+            self.update_view_proj_matrix()
+            mvp = self.proj_matrix * self.view_matrix
 
             for node in self.nodes:
                 # Project node position to screen space
@@ -1013,13 +1040,39 @@ def create_sphere(sectors: int = 32, rings: int = 16) -> Tuple:
     return (vbo_vertices, vbo_elements)
 
 
+def draw_text_with_bg(
+    text: str,
+    text_pos: imgui.ImVec2Like,
+    text_size: imgui.ImVec2Like,
+    bg_color: int,
+):
+    imgui.get_window_draw_list().add_rect_filled(
+        (text_pos[0] - 5, text_pos[1] - 5),
+        (text_pos[0] + text_size[0] + 5, text_pos[1] + text_size[1] + 5),
+        bg_color,
+        3.0,
+    )
+    imgui.set_cursor_pos(text_pos)
+    imgui.text(text)
+
+
 def main():
     """Main application entry point"""
     viewer = GraphViewer()
 
+    show_fps = True
+    text_bg_color = imgui.IM_COL32(0, 0, 0, 100)
+
     def gui():
         if not viewer.initialized:
             viewer.setup()
+            # # Change the theme
+            # tweaked_theme = hello_imgui.get_runner_params().imgui_window_params.tweaked_theme
+            # tweaked_theme.theme = hello_imgui.ImGuiTheme_.darcula_darker
+            # hello_imgui.apply_tweaked_theme(tweaked_theme)
+
+        viewer.window_width = int(imgui.get_window_width())
+        viewer.window_height = int(imgui.get_window_height())
 
         # Handle keyboard and mouse input
         viewer.handle_keyboard_input()
@@ -1089,11 +1142,34 @@ def main():
         # Render graph settings window
         viewer.render_settings()
 
-        window_bg_color.w = 0.0
+        # Render FPS
+        if show_fps:
+            imgui.set_window_font_scale(1)
+            fps_text = f"FPS: {hello_imgui.frame_rate():.1f}"
+            text_size = imgui.calc_text_size(fps_text)
+            cursor_pos = (10, viewer.window_height - text_size.y - 10)
+            draw_text_with_bg(fps_text, cursor_pos, text_size, text_bg_color)
+
+        # Render highlighted node ID
+        if viewer.highlighted_node:
+            imgui.set_window_font_scale(1)
+            node_text = f"Node ID: {viewer.highlighted_node.label}"
+            text_size = imgui.calc_text_size(node_text)
+            cursor_pos = (
+                viewer.window_width - text_size.x - 10,
+                viewer.window_height - text_size.y - 10,
+            )
+            draw_text_with_bg(node_text, cursor_pos, text_size, text_bg_color)
+
+        window_bg_color.w = 0
         style.set_color_(imgui.Col_.window_bg.value, window_bg_color)
 
-        # Render the graph
-        viewer.render()
+        # Render labels
+        viewer.render_labels()
+
+    def custom_background():
+        if viewer.initialized:
+            viewer.render()
 
     runner_params = hello_imgui.RunnerParams()
     runner_params.app_window_params.window_geometry.size = (
@@ -1102,47 +1178,48 @@ def main():
     )
     runner_params.app_window_params.window_title = "3D GraphML Viewer"
     runner_params.callbacks.show_gui = gui
-    addons = immapp.AddOnsParams()
-    addons.with_markdown = True
+    runner_params.callbacks.custom_background = custom_background
 
     def load_font():
-        io = imgui.get_io()
-        io.fonts.add_font_default()
-
-        # Load font for Chinese character support
         # You will need to provide it yourself, or use another font.
         font_filename = CUSTOM_FONT
 
-        if not os.path.exists("assets/" + font_filename):
+        io = imgui.get_io()
+        io.fonts.tex_desired_width = 4096  # Larger texture for better CJK font quality
+        font_size_pixels = 14
+        asset_dir = os.path.join(os.path.dirname(__file__), "assets")
+
+        # Try to load custom font
+        if not os.path.isfile(font_filename):
+            font_filename = os.path.join(asset_dir, font_filename)
+        if os.path.isfile(font_filename):
+            custom_font = io.fonts.add_font_from_file_ttf(
+                filename=font_filename,
+                size_pixels=font_size_pixels,
+                glyph_ranges_as_int_list=io.fonts.get_glyph_ranges_chinese_full(),
+            )
+            io.font_default = custom_font
             return
 
-        # Get the full Chinese character range for ImGui
-        # This includes all Chinese characters supported by ImGui
-        cn_glyph_ranges_imgui = imgui.get_io().fonts.get_glyph_ranges_chinese_full()
-
-        # Set up font loading parameters with Chinese character support
-        font_loading_params = hello_imgui.FontLoadingParams()
-        font_loading_params.glyph_ranges = hello_imgui.translate_common_glyph_ranges(
-            cn_glyph_ranges_imgui
+        # Load default fonts
+        io.fonts.add_font_from_file_ttf(
+            filename=os.path.join(asset_dir, DEFAULT_FONT_ENG),
+            size_pixels=font_size_pixels,
         )
-        custom_font = hello_imgui.load_font(font_filename, 16.0, font_loading_params)
 
-        # # Merge with default font
-        # font_config = imgui.ImFontConfig()
-        # font_config.merge_mode = True
-        # custom_font = io.fonts.add_font_from_file_ttf(
-        #     filename= "assets/" + font_filename,
-        #     size_pixels=16.0,
-        #     font_cfg=font_config,
-        #     glyph_ranges_as_int_list=cn_glyph_ranges_imgui,
-        # )
+        font_config = imgui.ImFontConfig()
+        font_config.merge_mode = True
 
-        io.fonts.tex_desired_width = 4096  # Larger texture for better CJK font quality
-        io.font_default = custom_font
+        io.font_default = io.fonts.add_font_from_file_ttf(
+            filename=os.path.join(asset_dir, DEFAULT_FONT_CHI),
+            size_pixels=font_size_pixels,
+            font_cfg=font_config,
+            glyph_ranges_as_int_list=io.fonts.get_glyph_ranges_chinese_full(),
+        )
 
     runner_params.callbacks.load_additional_fonts = load_font
 
-    immapp.run(runner_params, addons)
+    immapp.run(runner_params)
 
 
 if __name__ == "__main__":
