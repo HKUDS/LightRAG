@@ -54,6 +54,10 @@ from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import numpy as np
 import pipmaster as pm
+from lightrag.base import EmbeddingFunc
+from lightrag.llm.openai import gpt_4o_mini_complete
+
+
 
 if not pm.is_installed("nano-vectordb"):
     pm.install("nano-vectordb")
@@ -88,6 +92,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self.global_config["working_dir"], f"vdb_{self.namespace}.json"
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
+
+        self.embedding_func=EmbeddingFunc(
+        embedding_dim=4096, max_token_size=8192, func=gpt_4o_mini_complete
+    )
         self._client = NanoVectorDB(
             self.embedding_func.embedding_dim, storage_file=self._client_file_name
         )
@@ -137,6 +145,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
             )
 
     async def query(self, query: str, top_k=5):
+
+        self.embedding_func=EmbeddingFunc(
+        embedding_dim=4096, max_token_size=8192, func=gpt_4o_mini_complete
+        )
+
         embedding = await self.embedding_func([query])
         embedding = embedding[0]
         logger.info(
