@@ -12,6 +12,7 @@ import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
 
+
 class OllamaServerInfos:
     # Constants for emulated Ollama model information
     LIGHTRAG_NAME = "lightrag"
@@ -21,7 +22,9 @@ class OllamaServerInfos:
     LIGHTRAG_CREATED_AT = "2024-01-15T00:00:00Z"
     LIGHTRAG_DIGEST = "sha256:lightrag"
 
+
 ollama_server_infos = OllamaServerInfos()
+
 
 # query mode according to query prefix (bypass is not LightRAG quer mode)
 class SearchMode(str, Enum):
@@ -32,10 +35,12 @@ class SearchMode(str, Enum):
     mix = "mix"
     bypass = "bypass"
 
+
 class OllamaMessage(BaseModel):
     role: str
     content: str
     images: Optional[List[str]] = None
+
 
 class OllamaChatRequest(BaseModel):
     model: str
@@ -44,11 +49,13 @@ class OllamaChatRequest(BaseModel):
     options: Optional[Dict[str, Any]] = None
     system: Optional[str] = None
 
+
 class OllamaChatResponse(BaseModel):
     model: str
     created_at: str
     message: OllamaMessage
     done: bool
+
 
 class OllamaGenerateRequest(BaseModel):
     model: str
@@ -56,6 +63,7 @@ class OllamaGenerateRequest(BaseModel):
     system: Optional[str] = None
     stream: bool = False
     options: Optional[Dict[str, Any]] = None
+
 
 class OllamaGenerateResponse(BaseModel):
     model: str
@@ -70,8 +78,10 @@ class OllamaGenerateResponse(BaseModel):
     eval_count: Optional[int]
     eval_duration: Optional[int]
 
+
 class OllamaVersionResponse(BaseModel):
     version: str
+
 
 class OllamaModelDetails(BaseModel):
     parent_model: str
@@ -81,6 +91,7 @@ class OllamaModelDetails(BaseModel):
     parameter_size: str
     quantization_level: str
 
+
 class OllamaModel(BaseModel):
     name: str
     model: str
@@ -89,8 +100,10 @@ class OllamaModel(BaseModel):
     modified_at: str
     details: OllamaModelDetails
 
+
 class OllamaTagResponse(BaseModel):
     models: List[OllamaModel]
+
 
 def estimate_tokens(text: str) -> int:
     """Estimate the number of tokens in text
@@ -105,6 +118,7 @@ def estimate_tokens(text: str) -> int:
     tokens = chinese_chars * 1.5 + non_chinese_chars * 0.25
 
     return int(tokens)
+
 
 def parse_query_mode(query: str) -> tuple[str, SearchMode]:
     """Parse query prefix to determine search mode
@@ -126,6 +140,7 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode]:
             return cleaned_query, mode
 
     return query, SearchMode.hybrid
+
 
 class OllamaAPI:
     def __init__(self, rag: LightRAG):
@@ -333,10 +348,13 @@ class OllamaAPI:
                     "stream": request.stream,
                     "only_need_context": False,
                     "conversation_history": conversation_history,
-                    "top_k": self.rag.args.top_k if hasattr(self.rag, 'args') else 50,
+                    "top_k": self.rag.args.top_k if hasattr(self.rag, "args") else 50,
                 }
 
-                if hasattr(self.rag, 'args') and self.rag.args.history_turns is not None:
+                if (
+                    hasattr(self.rag, "args")
+                    and self.rag.args.history_turns is not None
+                ):
                     param_dict["history_turns"] = self.rag.args.history_turns
 
                 query_param = QueryParam(**param_dict)
@@ -521,7 +539,9 @@ class OllamaAPI:
                             **self.rag.llm_model_kwargs,
                         )
                     else:
-                        response_text = await self.rag.aquery(cleaned_query, param=query_param)
+                        response_text = await self.rag.aquery(
+                            cleaned_query, param=query_param
+                        )
 
                     last_chunk_time = time.time_ns()
 
