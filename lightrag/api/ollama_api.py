@@ -208,7 +208,6 @@ class OllamaAPI:
                         total_response = ""
 
                         try:
-
                             # Ensure response is an async generator
                             if isinstance(response, str):
                                 # If it's a string, send in two parts
@@ -282,7 +281,7 @@ class OllamaAPI:
                                         "done": True,
                                     }
                                     yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
-                                    return                                    
+                                    return
 
                                 completion_tokens = estimate_tokens(total_response)
                                 total_time = last_chunk_time - start_time
