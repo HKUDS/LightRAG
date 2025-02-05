@@ -1793,10 +1793,12 @@ def create_app(args):
                                 error_data = {
                                     "model": ollama_server_infos.LIGHTRAG_MODEL,
                                     "created_at": ollama_server_infos.LIGHTRAG_CREATED_AT,
-                                    "error": {
-                                        "code": "STREAM_ERROR",
-                                        "message": error_msg
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": f"\n\nError: {error_msg}",
+                                        "images": None
                                     },
+                                    "done": False
                                 }
                                 yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
                                 
