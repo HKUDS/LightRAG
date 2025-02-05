@@ -179,7 +179,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.host}")
     ASCIIColors.white("    ├─ Port: ", end="")
     ASCIIColors.yellow(f"{args.port}")
-    ASCIIColors.white("    ├─ SSL Enabled: ", end="")
+    ASCIIColors.white("    └─ SSL Enabled: ", end="")
     ASCIIColors.yellow(f"{args.ssl}")
     if args.ssl:
         ASCIIColors.white("    ├─ SSL Cert: ", end="")
