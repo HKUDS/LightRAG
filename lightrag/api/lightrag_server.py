@@ -41,11 +41,13 @@ from .ollama_api import ollama_server_infos
 # Load environment variables
 load_dotenv()
 
+
 class RAGStorageConfig:
     KV_STORAGE = "JsonKVStorage"
     DOC_STATUS_STORAGE = "JsonDocStatusStorage"
     GRAPH_STORAGE = "NetworkXStorage"
     VECTOR_STORAGE = "NanoVectorDBStorage"
+
 
 # Initialize rag storage config
 rag_storage_config = RAGStorageConfig()
@@ -591,6 +593,7 @@ class SearchMode(str, Enum):
     global_ = "global"
     hybrid = "hybrid"
     mix = "mix"
+
 
 class QueryRequest(BaseModel):
     query: str
