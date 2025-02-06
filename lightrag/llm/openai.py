@@ -148,7 +148,11 @@ async def openai_complete_if_cache(
 
 
 async def openai_complete(
-    prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=None,
+    keyword_extraction=False,
+    **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     if history_messages is None:
         history_messages = []
@@ -166,7 +170,11 @@ async def openai_complete(
 
 
 async def gpt_4o_complete(
-    prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=None,
+    keyword_extraction=False,
+    **kwargs,
 ) -> str:
     if history_messages is None:
         history_messages = []
@@ -183,7 +191,11 @@ async def gpt_4o_complete(
 
 
 async def gpt_4o_mini_complete(
-    prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=None,
+    keyword_extraction=False,
+    **kwargs,
 ) -> str:
     if history_messages is None:
         history_messages = []
@@ -200,7 +212,11 @@ async def gpt_4o_mini_complete(
 
 
 async def nvidia_openai_complete(
-    prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs
+    prompt,
+    system_prompt=None,
+    history_messages=None,
+    keyword_extraction=False,
+    **kwargs,
 ) -> str:
     if history_messages is None:
         history_messages = []
