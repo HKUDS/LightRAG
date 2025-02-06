@@ -73,6 +73,7 @@ from lightrag.utils import (
     logger,
 )
 from lightrag.types import GPTKeywordExtractionFormat
+from lightrag.api import __api_version__
 
 import numpy as np
 from typing import Union
@@ -102,8 +103,13 @@ async def openai_complete_if_cache(
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
+    default_headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
+        "Content-Type": "application/json"
+    }
     openai_async_client = (
-        AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
+        AsyncOpenAI(default_headers=default_headers) if base_url is None 
+        else AsyncOpenAI(base_url=base_url, default_headers=default_headers)
     )
     kwargs.pop("hashing_kv", None)
     kwargs.pop("keyword_extraction", None)
@@ -287,8 +293,13 @@ async def openai_embed(
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
+    default_headers = {
+        "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
+        "Content-Type": "application/json"
+    }
     openai_async_client = (
-        AsyncOpenAI() if base_url is None else AsyncOpenAI(base_url=base_url)
+        AsyncOpenAI(default_headers=default_headers) if base_url is None 
+        else AsyncOpenAI(base_url=base_url, default_headers=default_headers)
     )
     response = await openai_async_client.embeddings.create(
         model=model, input=texts, encoding_format="float"
