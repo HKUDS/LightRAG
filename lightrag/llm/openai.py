@@ -77,12 +77,15 @@ from lightrag.types import GPTKeywordExtractionFormat
 import numpy as np
 from typing import Union
 
+class InvalidResponseError(Exception):
+    """Custom exception class for triggering retry mechanism"""
+    pass
 
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=10),
     retry=retry_if_exception_type(
-        (RateLimitError, APIConnectionError, APITimeoutError)
+        (RateLimitError, APIConnectionError, APITimeoutError, InvalidResponseError)
     ),
 )
 async def openai_complete_if_cache(
@@ -112,17 +115,35 @@ async def openai_complete_if_cache(
 
     # 添加日志输出
     logger.debug("===== Query Input to LLM =====")
+    logger.debug(f"Model: {model}   Base URL: {base_url}")
+    logger.debug(f"Additional kwargs: {kwargs}")
     logger.debug(f"Query: {prompt}")
     logger.debug(f"System prompt: {system_prompt}")
-    logger.debug("Full context:")
-    if "response_format" in kwargs:
-        response = await openai_async_client.beta.chat.completions.parse(
-            model=model, messages=messages, **kwargs
-        )
-    else:
-        response = await openai_async_client.chat.completions.create(
-            model=model, messages=messages, **kwargs
-        )
+    # logger.debug(f"Messages: {messages}")
+
+    try:
+        if "response_format" in kwargs:
+            response = await openai_async_client.beta.chat.completions.parse(
+                model=model, messages=messages, **kwargs
+            )
+        else:
+            response = await openai_async_client.chat.completions.create(
+                model=model, messages=messages, **kwargs
+            )
+    except APIConnectionError as e:
+        logger.error(f"OpenAI API Connection Error: {str(e)}")
+        raise
+    except RateLimitError as e:
+        logger.error(f"OpenAI API Rate Limit Error: {str(e)}")
+        raise
+    except APITimeoutError as e:
+        logger.error(f"OpenAI API Timeout Error: {str(e)}")
+        raise
+    except Exception as e:
+        logger.error(f"OpenAI API Call Failed: {str(e)}")
+        logger.error(f"Model: {model}")
+        logger.error(f"Request parameters: {kwargs}")
+        raise
 
     if hasattr(response, "__aiter__"):
 
@@ -140,8 +161,23 @@ async def openai_complete_if_cache(
                 raise
 
         return inner()
+
     else:
+        if (
+            not response
+            or not response.choices
+            or not hasattr(response.choices[0], "message")
+            or not hasattr(response.choices[0].message, "content")
+        ):
+            logger.error("Invalid response from OpenAI API")
+            raise InvalidResponseError("Invalid response from OpenAI API")
+
         content = response.choices[0].message.content
+
+        if not content or content.strip() == "":
+            logger.error("Received empty content from OpenAI API")
+            raise InvalidResponseError("Received empty content from OpenAI API")
+
         if r"\u" in content:
             content = safe_unicode_decode(content.encode("utf-8"))
         return content
