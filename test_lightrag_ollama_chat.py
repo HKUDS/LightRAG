@@ -688,7 +688,6 @@ def test_generate_concurrent() -> None:
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # 收集成功和失败的结果
             success_results = []
             error_messages = []
 
@@ -698,15 +697,12 @@ def test_generate_concurrent() -> None:
                 else:
                     success_results.append((i + 1, result))
 
-            # 如果有任何错误,在打印完所有结果后抛出异常
             if error_messages:
-                # 先打印成功的结果
                 for req_id, result in success_results:
                     if OutputControl.is_verbose():
                         print(f"\nRequest {req_id} succeeded:")
                         print_json_response(result)
 
-                # 打印所有错误信息
                 error_summary = "\n".join(error_messages)
                 raise McpError(
                     ErrorCode.InternalError,
@@ -721,12 +717,12 @@ def test_generate_concurrent() -> None:
     # Run concurrent requests
     try:
         results = asyncio.run(run_concurrent_requests())
-        # 如果没有异常,打印所有成功的结果
+        # all success, print out results
         for i, result in enumerate(results, 1):
             print(f"\nRequest {i} result:")
             print_json_response(result)
     except McpError:
-        # 错误信息已经在之前打印过了,这里直接抛出
+        # error message already printed
         raise
 
 
