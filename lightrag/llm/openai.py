@@ -89,11 +89,13 @@ async def openai_complete_if_cache(
     model,
     prompt,
     system_prompt=None,
-    history_messages=[],
+    history_messages=None,
     base_url=None,
     api_key=None,
     **kwargs,
 ) -> str:
+    if history_messages is None:
+        history_messages = []
     if api_key:
         os.environ["OPENAI_API_KEY"] = api_key
 
@@ -146,8 +148,10 @@ async def openai_complete_if_cache(
 
 
 async def openai_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs
 ) -> Union[str, AsyncIterator[str]]:
+    if history_messages is None:
+        history_messages = []
     keyword_extraction = kwargs.pop("keyword_extraction", None)
     if keyword_extraction:
         kwargs["response_format"] = "json"
@@ -162,8 +166,10 @@ async def openai_complete(
 
 
 async def gpt_4o_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs
 ) -> str:
+    if history_messages is None:
+        history_messages = []
     keyword_extraction = kwargs.pop("keyword_extraction", None)
     if keyword_extraction:
         kwargs["response_format"] = GPTKeywordExtractionFormat
@@ -177,8 +183,10 @@ async def gpt_4o_complete(
 
 
 async def gpt_4o_mini_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs
 ) -> str:
+    if history_messages is None:
+        history_messages = []
     keyword_extraction = kwargs.pop("keyword_extraction", None)
     if keyword_extraction:
         kwargs["response_format"] = GPTKeywordExtractionFormat
@@ -192,8 +200,10 @@ async def gpt_4o_mini_complete(
 
 
 async def nvidia_openai_complete(
-    prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
+    prompt, system_prompt=None, history_messages=None, keyword_extraction=False, **kwargs
 ) -> str:
+    if history_messages is None:
+        history_messages = []
     keyword_extraction = kwargs.pop("keyword_extraction", None)
     result = await openai_complete_if_cache(
         "nvidia/llama-3.1-nemotron-70b-instruct",  # context length 128k

@@ -752,10 +752,12 @@ def create_app(args):
     async def openai_alike_model_complete(
         prompt,
         system_prompt=None,
-        history_messages=[],
+        history_messages=None,
         keyword_extraction=False,
         **kwargs,
     ) -> str:
+        if history_messages is None:
+            history_messages = []
         return await openai_complete_if_cache(
             args.llm_model,
             prompt,
@@ -769,10 +771,12 @@ def create_app(args):
     async def azure_openai_model_complete(
         prompt,
         system_prompt=None,
-        history_messages=[],
+        history_messages=None,
         keyword_extraction=False,
         **kwargs,
     ) -> str:
+        if history_messages is None:
+            history_messages = []
         return await azure_openai_complete_if_cache(
             args.llm_model,
             prompt,
