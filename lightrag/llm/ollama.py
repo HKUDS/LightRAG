@@ -66,6 +66,7 @@ from lightrag.exceptions import (
     RateLimitError,
     APITimeoutError,
 )
+from lightrag.api import __api_version__
 import numpy as np
 from typing import Union
 
@@ -91,11 +92,12 @@ async def ollama_model_if_cache(
     timeout = kwargs.pop("timeout", None)
     kwargs.pop("hashing_kv", None)
     api_key = kwargs.pop("api_key", None)
-    headers = (
-        {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-        if api_key
-        else {"Content-Type": "application/json"}
-    )
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": f"LightRAG/{__api_version__}",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     messages = []
     if system_prompt:
@@ -147,11 +149,12 @@ async def ollama_embedding(texts: list[str], embed_model, **kwargs) -> np.ndarra
 
 async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     api_key = kwargs.pop("api_key", None)
-    headers = (
-        {"Content-Type": "application/json", "Authorization": api_key}
-        if api_key
-        else {"Content-Type": "application/json"}
-    )
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": f"LightRAG/{__api_version__}",
+    }
+    if api_key:
+        headers["Authorization"] = api_key
     kwargs["headers"] = headers
     ollama_client = ollama.Client(**kwargs)
     data = ollama_client.embed(model=embed_model, input=texts)
