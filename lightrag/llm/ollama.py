@@ -94,7 +94,7 @@ async def ollama_model_if_cache(
     api_key = kwargs.pop("api_key", None)
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": f"LightRAG/{__api_version__}"
+        "User-Agent": f"LightRAG/{__api_version__}",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -151,7 +151,7 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     api_key = kwargs.pop("api_key", None)
     headers = {
         "Content-Type": "application/json",
-        "User-Agent": f"LightRAG/{__api_version__}"
+        "User-Agent": f"LightRAG/{__api_version__}",
     }
     if api_key:
         headers["Authorization"] = api_key

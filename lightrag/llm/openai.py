@@ -78,9 +78,12 @@ from lightrag.api import __api_version__
 import numpy as np
 from typing import Union
 
+
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""
+
     pass
+
 
 @retry(
     stop=stop_after_attempt(3),
@@ -105,10 +108,11 @@ async def openai_complete_if_cache(
 
     default_headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
     openai_async_client = (
-        AsyncOpenAI(default_headers=default_headers) if base_url is None 
+        AsyncOpenAI(default_headers=default_headers)
+        if base_url is None
         else AsyncOpenAI(base_url=base_url, default_headers=default_headers)
     )
     kwargs.pop("hashing_kv", None)
@@ -295,10 +299,11 @@ async def openai_embed(
 
     default_headers = {
         "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
     }
     openai_async_client = (
-        AsyncOpenAI(default_headers=default_headers) if base_url is None 
+        AsyncOpenAI(default_headers=default_headers)
+        if base_url is None
         else AsyncOpenAI(base_url=base_url, default_headers=default_headers)
     )
     response = await openai_async_client.embeddings.create(
