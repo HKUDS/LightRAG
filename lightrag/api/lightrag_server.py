@@ -17,6 +17,7 @@ import argparse
 from typing import List, Any, Optional, Union, Dict
 from pydantic import BaseModel
 from lightrag import LightRAG, QueryParam
+from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
 from enum import Enum
@@ -756,6 +757,9 @@ def create_app(args):
         keyword_extraction=False,
         **kwargs,
     ) -> str:
+        keyword_extraction = kwargs.pop("keyword_extraction", None)
+        if keyword_extraction:
+            kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
         return await openai_complete_if_cache(
@@ -775,6 +779,9 @@ def create_app(args):
         keyword_extraction=False,
         **kwargs,
     ) -> str:
+        keyword_extraction = kwargs.pop("keyword_extraction", None)
+        if keyword_extraction:
+            kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
         return await azure_openai_complete_if_cache(
