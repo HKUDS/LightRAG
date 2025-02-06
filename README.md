@@ -338,6 +338,12 @@ rag = LightRAG(
 
 There fully functional example `examples/lightrag_ollama_demo.py` that utilizes `gemma2:2b` model, runs only 4 requests in parallel and set context size to 32k.
 
+#### Using "Thinking" Models (e.g., DeepSeek)
+
+To return only the model's response, you can pass `reasoning_tag` in `llm_model_kwargs`.
+
+For example, for DeepSeek models, `reasoning_tag` should be set to `think`.
+
 #### Low RAM GPUs
 
 In order to run this experiment on low RAM GPU you should select small model and tune context window (increasing context increase memory consumption). For example, running this ollama example on repurposed mining GPU with 6Gb of RAM required to set context size to 26k while using `gemma2:2b`. It was able to find 197 entities and 19 relations on `book.txt`.
