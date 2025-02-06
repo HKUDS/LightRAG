@@ -23,8 +23,8 @@ DEFAULT_CONFIG = {
         "host": "localhost",
         "port": 9621,
         "model": "lightrag:latest",
-        "timeout": 120,
-        "max_retries": 3,
+        "timeout": 300,
+        "max_retries": 1,
         "retry_delay": 1,
     },
     "test_cases": {
@@ -527,14 +527,7 @@ def test_non_stream_generate() -> None:
     response_json = response.json()
 
     # Print response content
-    print_json_response(
-        {
-            "model": response_json["model"],
-            "response": response_json["response"],
-            "done": response_json["done"],
-        },
-        "Response content",
-    )
+    print(json.dumps(response_json, ensure_ascii=False, indent=2))
 
 
 def test_stream_generate() -> None:
