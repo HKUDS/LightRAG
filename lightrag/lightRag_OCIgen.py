@@ -9,7 +9,9 @@ from lightrag import LightRAG, QueryParam
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.oracle_impl import OracleDB
 
-from images.ingestion.src.alembic.env import config
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+
 
 print(os.getcwd())
 
@@ -20,6 +22,9 @@ REGION = os.getenv("REGION", "us-ashburn-1")
 COMPARTMENT_ID = os.getenv("COMPARTMENT_ID")
 ENVIRONMENT = os.getenv("ENVIRONMENT")
 COHERE_API_KEY = os.getenv("COHERE_API_KEY")
+ORACLE_DB_DSN = os.getenv("ORACLE_DB_DSN")
+ORACLE_DB_USER = os.getenv("ORACLE_DB_USER")
+ORACLE_DB_PASSWORD = os.getenv("ORACLE_DB_PASSWORD")
 CHATMODEL = "cohere.command-r-plus"
 EMBEDMODEL = "cohere.embed-multilingual-v3.0"
 
@@ -122,9 +127,7 @@ class OCICohereCommandRLLM:
 
         chat_request.documents = documents
 
-        chat_detail.serving_mode = (
-            oci.generative_ai_inference.models.OnDemandServingMode(model_id=self.model)
-        )
+        chat_detail.serving_mode = (oci.generative_ai_inference.models.OnDemandServingMode(model_id=self.model))
 
         chat_detail.compartment_id = compartment_id
         chat_detail.chat_request = chat_request
@@ -147,9 +150,21 @@ async def embeddings():
 
 async def llm_model_ociCohereRLLM(prompt, preamble, documents):
     commandr = OCICohereCommandRLLM()
-    return await commandr.generate_answer(
-        preamble=preamble, prompt=prompt, documents=documents
-    )
+    return await commandr.generate_answer(preamble=preamble, prompt=prompt, documents=documents)
+
+# multithread llm call with blocking functions
+async def llm_model_ociCohereRLLM_multithread(prompt, preamble, documents):
+    commandr = OCICohereCommandRLLM()
+
+    # Define a blocking function to run in a thread
+    def generate_answer():
+        return commandr.generate_answer(preamble=preamble, prompt=prompt, documents=documents)
+
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor() as executor:
+        result = await loop.run_in_executor(executor, generate_answer)
+
+    return result
 
 async def llm_model():
     return await LLMModel().llm
