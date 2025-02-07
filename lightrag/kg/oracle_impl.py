@@ -185,7 +185,7 @@ class OracleKVStorage(BaseKVStorage):
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
         # print("get_by_id:"+SQL)
-        if "llm_response_cache" == self.namespace:
+        if self.namespace.endswith("llm_response_cache"):
             array_res = await self.db.query(SQL, params, multirows=True)
             res = {}
             for row in array_res:
@@ -201,7 +201,7 @@ class OracleKVStorage(BaseKVStorage):
         """Specifically for llm_response_cache."""
         SQL = SQL_TEMPLATES["get_by_mode_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "cache_mode": mode, "id": id}
-        if "llm_response_cache" == self.namespace:
+        if self.namespace.endswith("llm_response_cache"):
             array_res = await self.db.query(SQL, params, multirows=True)
             res = {}
             for row in array_res:
@@ -218,7 +218,7 @@ class OracleKVStorage(BaseKVStorage):
         params = {"workspace": self.db.workspace}
         # print("get_by_ids:"+SQL)
         res = await self.db.query(SQL, params, multirows=True)
-        if "llm_response_cache" == self.namespace:
+        if self.namespace.endswith("llm_response_cache"):
             modes = set()
             dict_res: dict[str, dict] = {}
             for row in res:
@@ -269,7 +269,7 @@ class OracleKVStorage(BaseKVStorage):
 
     ################ INSERT METHODS ################
     async def upsert(self, data: dict[str, dict]):
-        if self.namespace == "text_chunks":
+        if self.namespace.endswith("text_chunks"):
             list_data = [
                 {
                     "id": k,
@@ -302,7 +302,7 @@ class OracleKVStorage(BaseKVStorage):
                     "status": item["status"],
                 }
                 await self.db.execute(merge_sql, _data)
-        if self.namespace == "full_docs":
+        if self.namespace.endswith("full_docs"):
             for k, v in data.items():
                 # values.clear()
                 merge_sql = SQL_TEMPLATES["merge_doc_full"]
@@ -313,7 +313,7 @@ class OracleKVStorage(BaseKVStorage):
                 }
                 await self.db.execute(merge_sql, _data)
 
-        if self.namespace == "llm_response_cache":
+        if self.namespace.endswith("llm_response_cache"):
             for mode, items in data.items():
                 for k, v in items.items():
                     upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
@@ -334,8 +334,10 @@ class OracleKVStorage(BaseKVStorage):
         await self.db.execute(SQL, params)
 
     async def index_done_callback(self):
-        if self.namespace in ["full_docs", "text_chunks"]:
-            logger.info("full doc and chunk data had been saved into oracle db!")
+        for n in ("full_docs", "text_chunks"):
+            if self.namespace.endswith(n):
+                logger.info("full doc and chunk data had been saved into oracle db!")
+                break
 
 
 @dataclass
