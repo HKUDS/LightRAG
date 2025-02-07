@@ -450,31 +450,31 @@ This intelligent caching mechanism:
 
 ## Install Lightrag as a Linux Service
 
-Create your service file: `lightrag-server.sevice`. Modified the following lines from `lightrag-server.sevice.example`
+Create a your service file `lightrag.sevice` from the sample file : `lightrag.sevice.example`. Modified the WorkingDirectoryand EexecStart in the service file:
 
 ```text
 Description=LightRAG Ollama Service
 WorkingDirectory=<lightrag installed directory>
-ExecStart=<lightrag installed directory>/lightrag/api/start_lightrag.sh
+ExecStart=<lightrag installed directory>/lightrag/api/lightrag-api
 ```
 
-Create your service startup script: `start_lightrag.sh`. Change you python virtual environment activation method as need:
+Modify your service startup script: `lightrag-api`. Change you python virtual environment activation command as needed:
 
 ```shell
 #!/bin/bash
 
-# python virtual environment activation
+# your python virtual environment activation
 source /home/netman/lightrag-xyj/venv/bin/activate
 # start lightrag api server
 lightrag-server
 ```
 
-Install lightrag.service in Linux.  Sample commands in Ubuntu server look like:
+Install LightRAG service. If your system is Ubuntu, the following commands will work:
 
 ```shell
-sudo cp lightrag-server.service /etc/systemd/system/
+sudo cp lightrag.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl start lightrag-server.service
-sudo systemctl status lightrag-server.service
-sudo systemctl enable lightrag-server.service
+sudo systemctl start lightrag.service
+sudo systemctl status lightrag.service
+sudo systemctl enable lightrag.service
 ```
