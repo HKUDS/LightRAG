@@ -40,7 +40,7 @@ from .ollama_api import (
 from .ollama_api import ollama_server_infos
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 
 class RAGStorageConfig:
@@ -532,6 +532,16 @@ def parse_args() -> argparse.Namespace:
         help="Number of conversation history turns to include (default: from env or 3)",
     )
 
+    # Namespace
+    parser.add_argument(
+        "--namespace-prefix",
+        type=str,
+        default=get_env_value(
+            "NAMESPACE_PREFIX", ""
+        ),
+        help="Prefix of the namespace",
+    )
+
     args = parser.parse_args()
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
@@ -861,6 +871,8 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
+            log_level=args.log_level,
+            namespace_prefix=args.namespace_prefix,
         )
     else:
         rag = LightRAG(
@@ -890,6 +902,8 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
+            log_level=args.log_level,
+            namespace_prefix=args.namespace_prefix,
         )
 
     async def index_file(file_path: Union[str, Path]) -> None:

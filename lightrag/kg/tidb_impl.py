@@ -160,7 +160,7 @@ class TiDBKVStorage(BaseKVStorage):
     async def upsert(self, data: dict[str, dict]):
         left_data = {k: v for k, v in data.items() if k not in self._data}
         self._data.update(left_data)
-        if self.namespace == "text_chunks":
+        if self.namespace.endswith("text_chunks"):
             list_data = [
                 {
                     "__id__": k,
@@ -196,7 +196,7 @@ class TiDBKVStorage(BaseKVStorage):
                 )
             await self.db.execute(merge_sql, data)
 
-        if self.namespace == "full_docs":
+        if self.namespace.endswith("full_docs"):
             merge_sql = SQL_TEMPLATES["upsert_doc_full"]
             data = []
             for k, v in self._data.items():
@@ -211,8 +211,10 @@ class TiDBKVStorage(BaseKVStorage):
         return left_data
 
     async def index_done_callback(self):
-        if self.namespace in ["full_docs", "text_chunks"]:
-            logger.info("full doc and chunk data had been saved into TiDB db!")
+        for n in ("full_docs", "text_chunks"):
+            if self.namespace.endswith(n):
+                logger.info("full doc and chunk data had been saved into TiDB db!")
+                break
 
 
 @dataclass
@@ -258,7 +260,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
             return []
-        if self.namespace == "chunks":
+        if self.namespace.endswith("chunks"):
             return []
         logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
 
@@ -288,7 +290,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         for i, d in enumerate(list_data):
             d["content_vector"] = embeddings[i]
 
-        if self.namespace == "entities":
+        if self.namespace.endswith("entities"):
             data = []
             for item in list_data:
                 param = {
@@ -309,7 +311,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 merge_sql = SQL_TEMPLATES["insert_entity"]
                 await self.db.execute(merge_sql, data)
 
-        elif self.namespace == "relationships":
+        elif self.namespace.endswith("relationships"):
             data = []
             for item in list_data:
                 param = {
