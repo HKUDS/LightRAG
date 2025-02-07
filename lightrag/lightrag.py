@@ -1,10 +1,14 @@
 import asyncio
 import os
 from tqdm.asyncio import tqdm as tqdm_async
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from functools import partial
 from typing import Type, cast, Dict
+
+def asdict_exclude(obj, exclude):
+    """Return the fields of a dataclass instance as a dictionary, excluding some fields."""
+    return {f.name: getattr(obj, f.name) for f in fields(obj) if f.name not in exclude}
 
 from .operate import (
     chunking_by_token_size,
@@ -195,7 +199,8 @@ class LightRAG:
             os.makedirs(self.working_dir)
 
         # show config
-        global_config = asdict(self)
+        exclude_fields = {'embedding_func', 'llm_model_func'}
+        global_config = asdict_exclude(self, exclude_fields)
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
