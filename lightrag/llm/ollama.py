@@ -67,6 +67,7 @@ from lightrag.exceptions import (
     APITimeoutError,
 )
 from lightrag.api import __api_version__
+from lightrag.utils import extract_reasoning
 import numpy as np
 from typing import Union
 
@@ -86,6 +87,7 @@ async def ollama_model_if_cache(
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     stream = True if kwargs.get("stream") else False
+    reasoning_tag = kwargs.pop("reasoning_tag", None)
     kwargs.pop("max_tokens", None)
     # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)
@@ -107,7 +109,7 @@ async def ollama_model_if_cache(
 
     response = await ollama_client.chat(model=model, messages=messages, **kwargs)
     if stream:
-        """cannot cache stream response"""
+        """cannot cache stream response and process reasoning"""
 
         async def inner():
             async for chunk in response:
@@ -115,7 +117,19 @@ async def ollama_model_if_cache(
 
         return inner()
     else:
-        return response["message"]["content"]
+        model_response = response["message"]["content"]
+
+        """
+        If the model also wraps its thoughts in a specific tag,
+        this information is not needed for the final
+        response and can simply be trimmed.
+        """
+
+        return (
+            model_response
+            if reasoning_tag is None
+            else extract_reasoning(model_response, reasoning_tag).response_content
+        )
 
 
 async def ollama_model_complete(
