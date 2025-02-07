@@ -1,6 +1,6 @@
 import asyncio
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from functools import partial
 from typing import Any, Callable, Optional, Type, Union, cast
@@ -62,6 +62,11 @@ STORAGES = {
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
 }
+
+
+def asdict_exclude(obj, exclude):
+    """Return the fields of a dataclass instance as a dictionary, excluding some fields."""
+    return {f.name: getattr(obj, f.name) for f in fields(obj) if f.name not in exclude}
 
 
 def lazy_external_import(module_name: str, class_name: str):
@@ -263,7 +268,8 @@ class LightRAG:
             os.makedirs(self.working_dir)
 
         # show config
-        global_config = asdict(self)
+        exclude_fields = {'embedding_func', 'llm_model_func'}
+        global_config = asdict_exclude(self, exclude_fields)
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
