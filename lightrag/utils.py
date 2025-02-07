@@ -11,6 +11,7 @@ from functools import wraps
 from hashlib import md5
 from typing import Any, Union, List, Optional
 import xml.etree.ElementTree as ET
+import bs4
 
 import numpy as np
 import tiktoken
@@ -62,6 +63,13 @@ class EmbeddingFunc:
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         return await self.func(*args, **kwargs)
+
+
+@dataclass
+class ReasoningResponse:
+    reasoning_content: str
+    response_content: str
+    tag: str
 
 
 def locate_json_string_body_from_string(content: str) -> Union[str, None]:
@@ -666,3 +674,28 @@ def get_conversation_turns(conversation_history: list[dict], num_turns: int) -> 
         )
 
     return "\n".join(formatted_turns)
+
+
+def extract_reasoning(response: str, tag: str) -> ReasoningResponse:
+    """Extract the reasoning section and the following section from the LLM response.
+
+    Args:
+        response: LLM response
+        tag: Tag to extract
+    Returns:
+        ReasoningResponse: Reasoning section and following section
+
+    """
+    soup = bs4.BeautifulSoup(response, "html.parser")
+
+    reasoning_section = soup.find(tag)
+    if reasoning_section is None:
+        return ReasoningResponse(None, response, tag)
+    reasoning_content = reasoning_section.get_text().strip()
+
+    after_reasoning_section = reasoning_section.next_sibling
+    if after_reasoning_section is None:
+        return ReasoningResponse(reasoning_content, "", tag)
+    after_reasoning_content = after_reasoning_section.get_text().strip()
+
+    return ReasoningResponse(reasoning_content, after_reasoning_content, tag)
