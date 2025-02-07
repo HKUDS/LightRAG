@@ -536,9 +536,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--namespace-prefix",
         type=str,
-        default=get_env_value(
-            "NAMESPACE_PREFIX", ""
-        ),
+        default=get_env_value("NAMESPACE_PREFIX", ""),
         help="Prefix of the namespace",
     )
 
