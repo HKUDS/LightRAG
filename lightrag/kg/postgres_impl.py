@@ -298,7 +298,9 @@ class PGKVStorage(BaseKVStorage):
     async def index_done_callback(self):
         for n in ("full_docs", "text_chunks"):
             if self.namespace.endswith(n):
-                logger.info("full doc and chunk data had been saved into postgresql db!")
+                logger.info(
+                    "full doc and chunk data had been saved into postgresql db!"
+                )
                 break
 
 

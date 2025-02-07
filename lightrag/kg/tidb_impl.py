@@ -190,7 +190,7 @@ class TiDBKVStorage(BaseKVStorage):
                         "tokens": item["tokens"],
                         "chunk_order_index": item["chunk_order_index"],
                         "full_doc_id": item["full_doc_id"],
-                        "content_vector": f"{item["__vector__"].tolist()}",
+                        "content_vector": f"{item['__vector__'].tolist()}",
                         "workspace": self.db.workspace,
                     }
                 )
@@ -297,7 +297,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                     "id": item["id"],
                     "name": item["entity_name"],
                     "content": item["content"],
-                    "content_vector": f"{item["content_vector"].tolist()}",
+                    "content_vector": f"{item['content_vector'].tolist()}",
                     "workspace": self.db.workspace,
                 }
                 # update entity_id if node inserted by graph_storage_instance before
@@ -319,7 +319,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                     "source_name": item["src_id"],
                     "target_name": item["tgt_id"],
                     "content": item["content"],
-                    "content_vector": f"{item["content_vector"].tolist()}",
+                    "content_vector": f"{item['content_vector'].tolist()}",
                     "workspace": self.db.workspace,
                 }
                 # update relation_id if node inserted by graph_storage_instance before
