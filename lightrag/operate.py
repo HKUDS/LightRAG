@@ -568,7 +568,7 @@ async def kg_query(
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
+    text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     global_config: dict,
     hashing_kv: BaseKVStorage = None,
@@ -777,7 +777,7 @@ async def mix_kg_vector_query(
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
     chunks_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
+    text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     global_config: dict,
     hashing_kv: BaseKVStorage = None,
@@ -969,7 +969,7 @@ async def _build_query_context(
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
+    text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
     # ll_entities_context, ll_relations_context, ll_text_units_context = "", "", ""
@@ -1052,7 +1052,7 @@ async def _get_node_data(
     query,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
+    text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
     # get similar entities
@@ -1145,7 +1145,7 @@ async def _get_node_data(
 async def _find_most_related_text_unit_from_entities(
     node_datas: list[dict],
     query_param: QueryParam,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
+    text_chunks_db: BaseKVStorage,
     knowledge_graph_inst: BaseGraphStorage,
 ):
     text_units = [
@@ -1268,7 +1268,7 @@ async def _get_edge_data(
     keywords,
     knowledge_graph_inst: BaseGraphStorage,
     relationships_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
+    text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
     results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
@@ -1421,7 +1421,7 @@ async def _find_most_related_entities_from_relationships(
 async def _find_related_text_unit_from_relationships(
     edge_datas: list[dict],
     query_param: QueryParam,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
+    text_chunks_db: BaseKVStorage,
     knowledge_graph_inst: BaseGraphStorage,
 ):
     text_units = [
@@ -1496,7 +1496,7 @@ def combine_contexts(entities, relationships, sources):
 async def naive_query(
     query,
     chunks_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
+    text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     global_config: dict,
     hashing_kv: BaseKVStorage = None,
@@ -1599,7 +1599,7 @@ async def kg_query_with_keywords(
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage[TextChunkSchema],
+    text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     global_config: dict,
     hashing_kv: BaseKVStorage = None,
