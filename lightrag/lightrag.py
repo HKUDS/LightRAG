@@ -109,38 +109,65 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
 
 @dataclass
 class LightRAG:
+    """LightRAG: Simple and Fast Retrieval-Augmented Generation."""
+
     working_dir: str = field(
         default_factory=lambda: f'./lightrag_cache_{datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
     )
-    # Default not to use embedding cache
-    embedding_cache_config: dict = field(
+    """Directory where cache and temporary files are stored."""
+
+    embedding_cache_config: dict[str, Any] = field(
         default_factory=lambda: {
             "enabled": False,
             "similarity_threshold": 0.95,
             "use_llm_check": False,
         }
     )
+    """Configuration for embedding cache.
+    - enabled: If True, enables caching to avoid redundant computations.
+    - similarity_threshold: Minimum similarity score to use cached embeddings.
+    - use_llm_check: If True, validates cached embeddings using an LLM.
+    """
+
     kv_storage: str = field(default="JsonKVStorage")
+    """Storage backend for key-value data."""
+
     vector_storage: str = field(default="NanoVectorDBStorage")
+    """Storage backend for vector embeddings."""
+
     graph_storage: str = field(default="NetworkXStorage")
+    """Storage backend for knowledge graphs."""
 
-    # logging
+    # Logging
     current_log_level = logger.level
-    log_level: str = field(default=current_log_level)
+    log_level: int = field(default=current_log_level)
+    """Logging level for the system (e.g., 'DEBUG', 'INFO', 'WARNING')."""
+
     log_dir: str = field(default=os.getcwd())
+    """Directory where logs are stored. Defaults to the current working directory."""
 
-    # text chunking
+    # Text chunking
     chunk_token_size: int = 1200
+    """Maximum number of tokens per text chunk when splitting documents."""
+
     chunk_overlap_token_size: int = 100
+    """Number of overlapping tokens between consecutive text chunks to preserve context."""
+
     tiktoken_model_name: str = "gpt-4o-mini"
+    """Model name used for tokenization when chunking text."""
 
-    # entity extraction
+    # Entity extraction
     entity_extract_max_gleaning: int = 1
-    entity_summary_to_max_tokens: int = 500
+    """Maximum number of entity extraction attempts for ambiguous content."""
 
-    # node embedding
+    entity_summary_to_max_tokens: int = 500
+    """Maximum number of tokens used for summarizing extracted entities."""
+
+    # Node embedding
     node_embedding_algorithm: str = "node2vec"
-    node2vec_params: dict = field(
+    """Algorithm used for node embedding in knowledge graphs."""
+
+    node2vec_params: dict[str, int] = field(
         default_factory=lambda: {
             "dimensions": 1536,
             "num_walks": 10,
@@ -150,26 +177,56 @@ class LightRAG:
             "random_seed": 3,
         }
     )
+    """Configuration for the node2vec embedding algorithm:
+    - dimensions: Number of dimensions for embeddings.
+    - num_walks: Number of random walks per node.
+    - walk_length: Number of steps per random walk.
+    - window_size: Context window size for training.
+    - iterations: Number of iterations for training.
+    - random_seed: Seed value for reproducibility.
+    """
 
-    # embedding_func: EmbeddingFunc = field(default_factory=lambda:hf_embedding)
-    embedding_func: EmbeddingFunc = None  # This must be set (we do want to separate llm from the corte, so no more default initialization)
+    embedding_func: EmbeddingFunc = None
+    """Function for computing text embeddings. Must be set before use."""
+
     embedding_batch_num: int = 32
+    """Batch size for embedding computations."""
+
     embedding_func_max_async: int = 16
+    """Maximum number of concurrent embedding function calls."""
 
-    # LLM
-    llm_model_func: callable = None  # This must be set (we do want to separate llm from the corte, so no more default initialization)
-    llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"  # 'meta-llama/Llama-3.2-1B'#'google/gemma-2-2b-it'
+    # LLM Configuration
+    llm_model_func: callable = None
+    """Function for interacting with the large language model (LLM). Must be set before use."""
+
+    llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
+    """Name of the LLM model used for generating responses."""
+
     llm_model_max_token_size: int = int(os.getenv("MAX_TOKENS", "32768"))
-    llm_model_max_async: int = int(os.getenv("MAX_ASYNC", "16"))
-    llm_model_kwargs: dict = field(default_factory=dict)
+    """Maximum number of tokens allowed per LLM response."""
 
-    # storage
-    vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
+    llm_model_max_async: int = int(os.getenv("MAX_ASYNC", "16"))
+    """Maximum number of concurrent LLM calls."""
+
+    llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
+    """Additional keyword arguments passed to the LLM model function."""
+
+    # Storage
+    vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
+    """Additional parameters for vector database storage."""
+
     namespace_prefix: str = field(default="")
+    """Prefix for namespacing stored data across different environments."""
 
     enable_llm_cache: bool = True
-    # Sometimes there are some reason the LLM failed at Extracting Entities, and we want to continue without LLM cost, we can use this flag
+    """Enables caching for LLM responses to avoid redundant computations."""
+
     enable_llm_cache_for_entity_extract: bool = True
+    """If True, enables caching for entity extraction steps to reduce LLM costs."""
+
+    # Extensions
+    addon_params: dict[str, Any] = field(default_factory=dict)
+    """Dictionary for additional parameters and extensions."""
 
     # extension
     addon_params: dict[str, Any] = field(default_factory=dict)
@@ -177,8 +234,8 @@ class LightRAG:
         convert_response_to_json
     )
 
-    # Add new field for document status storage type
     doc_status_storage: str = field(default="JsonDocStatusStorage")
+    """Storage type for tracking document processing statuses."""
 
     # Custom Chunking Function
     chunking_func: Callable[
