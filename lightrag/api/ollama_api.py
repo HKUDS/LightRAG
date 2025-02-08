@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 
 class OllamaServerInfos:

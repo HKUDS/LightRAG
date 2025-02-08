@@ -52,7 +52,7 @@ class MongoKVStorage(BaseKVStorage):
         return set([s for s in data if s not in existing_ids])
 
     async def upsert(self, data: dict[str, dict]):
-        if self.namespace == "llm_response_cache":
+        if self.namespace.endswith("llm_response_cache"):
             for mode, items in data.items():
                 for k, v in tqdm_async(items.items(), desc="Upserting"):
                     key = f"{mode}_{k}"
@@ -69,7 +69,7 @@ class MongoKVStorage(BaseKVStorage):
         return data
 
     async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
-        if "llm_response_cache" == self.namespace:
+        if self.namespace.endswith("llm_response_cache"):
             res = {}
             v = self._data.find_one({"_id": mode + "_" + id})
             if v:

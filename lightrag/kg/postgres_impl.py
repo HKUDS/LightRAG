@@ -187,7 +187,7 @@ class PGKVStorage(BaseKVStorage):
         """Get doc_full data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
-        if "llm_response_cache" == self.namespace:
+        if self.namespace.endswith("llm_response_cache"):
             array_res = await self.db.query(sql, params, multirows=True)
             res = {}
             for row in array_res:
@@ -203,7 +203,7 @@ class PGKVStorage(BaseKVStorage):
         """Specifically for llm_response_cache."""
         sql = SQL_TEMPLATES["get_by_mode_id_" + self.namespace]
         params = {"workspace": self.db.workspace, mode: mode, "id": id}
-        if "llm_response_cache" == self.namespace:
+        if self.namespace.endswith("llm_response_cache"):
             array_res = await self.db.query(sql, params, multirows=True)
             res = {}
             for row in array_res:
@@ -219,7 +219,7 @@ class PGKVStorage(BaseKVStorage):
             ids=",".join([f"'{id}'" for id in ids])
         )
         params = {"workspace": self.db.workspace}
-        if "llm_response_cache" == self.namespace:
+        if self.namespace.endswith("llm_response_cache"):
             array_res = await self.db.query(sql, params, multirows=True)
             modes = set()
             dict_res: dict[str, dict] = {}
@@ -239,7 +239,7 @@ class PGKVStorage(BaseKVStorage):
             return None
 
     async def all_keys(self) -> list[dict]:
-        if "llm_response_cache" == self.namespace:
+        if self.namespace.endswith("llm_response_cache"):
             sql = "select workspace,mode,id from lightrag_llm_cache"
             res = await self.db.query(sql, multirows=True)
             return res
@@ -270,9 +270,9 @@ class PGKVStorage(BaseKVStorage):
 
     ################ INSERT METHODS ################
     async def upsert(self, data: Dict[str, dict]):
-        if self.namespace == "text_chunks":
+        if self.namespace.endswith("text_chunks"):
             pass
-        elif self.namespace == "full_docs":
+        elif self.namespace.endswith("full_docs"):
             for k, v in data.items():
                 upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
                 _data = {
@@ -281,7 +281,7 @@ class PGKVStorage(BaseKVStorage):
                     "workspace": self.db.workspace,
                 }
                 await self.db.execute(upsert_sql, _data)
-        elif self.namespace == "llm_response_cache":
+        elif self.namespace.endswith("llm_response_cache"):
             for mode, items in data.items():
                 for k, v in items.items():
                     upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
@@ -296,8 +296,12 @@ class PGKVStorage(BaseKVStorage):
                     await self.db.execute(upsert_sql, _data)
 
     async def index_done_callback(self):
-        if self.namespace in ["full_docs", "text_chunks"]:
-            logger.info("full doc and chunk data had been saved into postgresql db!")
+        for n in ("full_docs", "text_chunks"):
+            if self.namespace.endswith(n):
+                logger.info(
+                    "full doc and chunk data had been saved into postgresql db!"
+                )
+                break
 
 
 @dataclass
@@ -389,11 +393,11 @@ class PGVectorStorage(BaseVectorStorage):
         for i, d in enumerate(list_data):
             d["__vector__"] = embeddings[i]
         for item in list_data:
-            if self.namespace == "chunks":
+            if self.namespace.endswith("chunks"):
                 upsert_sql, data = self._upsert_chunks(item)
-            elif self.namespace == "entities":
+            elif self.namespace.endswith("entities"):
                 upsert_sql, data = self._upsert_entities(item)
-            elif self.namespace == "relationships":
+            elif self.namespace.endswith("relationships"):
                 upsert_sql, data = self._upsert_relationships(item)
             else:
                 raise ValueError(f"{self.namespace} is not supported")
