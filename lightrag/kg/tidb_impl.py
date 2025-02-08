@@ -122,7 +122,7 @@ class TiDBKVStorage(BaseKVStorage):
             return None
 
     # Query by id
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:   
+    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
         """根据 id 获取 doc_chunks 数据"""
         SQL = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
@@ -333,10 +333,13 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 merge_sql = SQL_TEMPLATES["insert_relationship"]
                 await self.db.execute(merge_sql, data)
 
-    async def get_by_status_and_ids(self, status: str) -> Union[list[dict[str, Any]], None]:
+    async def get_by_status_and_ids(
+        self, status: str
+    ) -> Union[list[dict[str, Any]], None]:
         SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
         params = {"workspace": self.db.workspace, "status": status}
-        return await self.db.query(SQL, params, multirows=True)  
+        return await self.db.query(SQL, params, multirows=True)
+
 
 @dataclass
 class TiDBGraphStorage(BaseGraphStorage):
