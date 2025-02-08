@@ -326,7 +326,8 @@ class OracleKVStorage(BaseKVStorage):
             (NameSpace.KV_STORE_FULL_DOCS, NameSpace.KV_STORE_TEXT_CHUNKS),
         ):
             logger.info("full doc and chunk data had been saved into oracle db!")
-    
+
+
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):
     # should pass db object to self.db

@@ -12,6 +12,7 @@ from lightrag.base import (
     BaseKVStorage,
 )
 
+
 @dataclass
 class JsonKVStorage(BaseKVStorage):
     def __post_init__(self):
@@ -30,7 +31,7 @@ class JsonKVStorage(BaseKVStorage):
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         return self._data.get(id, None)
 
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]: 
+    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
         return [
             (
                 {k: v for k, v in self._data[id].items()}
@@ -50,6 +51,8 @@ class JsonKVStorage(BaseKVStorage):
     async def drop(self) -> None:
         self._data = {}
 
-    async def get_by_status_and_ids(self, status: str) -> Union[list[dict[str, Any]], None]:
+    async def get_by_status_and_ids(
+        self, status: str
+    ) -> Union[list[dict[str, Any]], None]:
         result = [v for _, v in self._data.items() if v["status"] == status]
         return result if result else None

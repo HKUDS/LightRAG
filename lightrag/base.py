@@ -91,7 +91,7 @@ class BaseKVStorage(StorageNameSpace):
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         raise NotImplementedError
 
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:        
+    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
         raise NotImplementedError
 
     async def filter_keys(self, data: list[str]) -> set[str]:
@@ -103,10 +103,13 @@ class BaseKVStorage(StorageNameSpace):
 
     async def drop(self) -> None:
         raise NotImplementedError
-    
-    async def get_by_status_and_ids(self, status: str) -> Union[list[dict[str, Any]], None]:
+
+    async def get_by_status_and_ids(
+        self, status: str
+    ) -> Union[list[dict[str, Any]], None]:
         raise NotImplementedError
-    
+
+
 @dataclass
 class BaseGraphStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc = None

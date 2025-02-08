@@ -213,7 +213,7 @@ class PGKVStorage(BaseKVStorage):
             return None
 
     # Query by id
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:   
+    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
         """Get doc_chunks data by id"""
         sql = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
@@ -237,12 +237,14 @@ class PGKVStorage(BaseKVStorage):
             return res
         else:
             return None
-        
-    async def get_by_status_and_ids(self, status: str) -> Union[list[dict[str, Any]], None]:
+
+    async def get_by_status_and_ids(
+        self, status: str
+    ) -> Union[list[dict[str, Any]], None]:
         """Specifically for llm_response_cache."""
         SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
         params = {"workspace": self.db.workspace, "status": status}
-        return await self.db.query(SQL, params, multirows=True)    
+        return await self.db.query(SQL, params, multirows=True)
 
     async def all_keys(self) -> list[dict]:
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
