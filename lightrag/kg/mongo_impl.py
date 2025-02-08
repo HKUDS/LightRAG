@@ -12,7 +12,7 @@ if not pm.is_installed("motor"):
 
 from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Any, TypeVar, Union, List, Tuple
+from typing import Any, Union, List, Tuple
 
 from ..utils import logger
 from ..base import BaseKVStorage, BaseGraphStorage
@@ -77,9 +77,7 @@ class MongoKVStorage(BaseKVStorage):
         """Drop the collection"""
         await self._data.drop()
 
-    async def get_by_status_and_ids(
-        self, status: str
-    ) -> Union[list[dict[str, Any]], None]:
+    async def get_by_status_and_ids(self, status: str) -> Union[list[dict[str, Any]], None]:
         """Get documents by status and ids"""
         return self._data.find({"status": status})
 

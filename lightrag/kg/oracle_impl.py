@@ -4,7 +4,7 @@ import asyncio
 # import html
 # import os
 from dataclasses import dataclass
-from typing import Any, TypeVar, Union
+from typing import Any, Union
 import numpy as np
 import array
 import pipmaster as pm
@@ -243,11 +243,7 @@ class OracleKVStorage(BaseKVStorage):
         """Specifically for llm_response_cache."""
         SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
         params = {"workspace": self.db.workspace, "status": status}
-        res = await self.db.query(SQL, params, multirows=True)
-        if res:
-            return res
-        else:
-            return None
+        return await self.db.query(SQL, params, multirows=True)
 
     async def filter_keys(self, keys: list[str]) -> set[str]:
         """Return keys that don't exist in storage"""
