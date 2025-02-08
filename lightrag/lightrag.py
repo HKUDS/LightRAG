@@ -167,6 +167,7 @@ class LightRAG:
 
     # storage
     vector_db_storage_cls_kwargs: dict = field(default_factory=dict)
+    namespace_prefix: str = field(default="")
 
     enable_llm_cache: bool = True
     # Sometimes there are some reason the LLM failed at Extracting Entities, and we want to continue without LLM cost, we can use this flag
@@ -227,13 +228,8 @@ class LightRAG:
             self.graph_storage_cls, global_config=global_config
         )
 
-        self.json_doc_status_storage = self.key_string_value_json_storage_cls(
-            namespace="json_doc_status_storage",
-            embedding_func=None,
-        )
-
         self.llm_response_cache = self.key_string_value_json_storage_cls(
-            namespace="llm_response_cache",
+            namespace=self.namespace_prefix + "llm_response_cache",
             embedding_func=self.embedding_func,
         )
 
@@ -241,33 +237,34 @@ class LightRAG:
         # add embedding func by walter
         ####
         self.full_docs = self.key_string_value_json_storage_cls(
-            namespace="full_docs",
+            namespace=self.namespace_prefix + "full_docs",
             embedding_func=self.embedding_func,
         )
         self.text_chunks = self.key_string_value_json_storage_cls(
-            namespace="text_chunks",
+            namespace=self.namespace_prefix + "text_chunks",
             embedding_func=self.embedding_func,
         )
         self.chunk_entity_relation_graph = self.graph_storage_cls(
-            namespace="chunk_entity_relation",
+            namespace=self.namespace_prefix + "chunk_entity_relation",
             embedding_func=self.embedding_func,
         )
+
         ####
         # add embedding func by walter over
         ####
 
         self.entities_vdb = self.vector_db_storage_cls(
-            namespace="entities",
+            namespace=self.namespace_prefix + "entities",
             embedding_func=self.embedding_func,
             meta_fields={"entity_name"},
         )
         self.relationships_vdb = self.vector_db_storage_cls(
-            namespace="relationships",
+            namespace=self.namespace_prefix + "relationships",
             embedding_func=self.embedding_func,
             meta_fields={"src_id", "tgt_id"},
         )
         self.chunks_vdb = self.vector_db_storage_cls(
-            namespace="chunks",
+            namespace=self.namespace_prefix + "chunks",
             embedding_func=self.embedding_func,
         )
 
@@ -277,7 +274,7 @@ class LightRAG:
             hashing_kv = self.llm_response_cache
         else:
             hashing_kv = self.key_string_value_json_storage_cls(
-                namespace="llm_response_cache",
+                namespace=self.namespace_prefix + "llm_response_cache",
                 embedding_func=self.embedding_func,
             )
 
@@ -292,7 +289,7 @@ class LightRAG:
         # Initialize document status storage
         self.doc_status_storage_cls = self._get_storage_class(self.doc_status_storage)
         self.doc_status = self.doc_status_storage_cls(
-            namespace="doc_status",
+            namespace=self.namespace_prefix + "doc_status",
             global_config=global_config,
             embedding_func=None,
         )
@@ -928,7 +925,7 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace="llm_response_cache",
+                    namespace=self.namespace_prefix + "llm_response_cache",
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
@@ -945,7 +942,7 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace="llm_response_cache",
+                    namespace=self.namespace_prefix + "llm_response_cache",
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
@@ -964,7 +961,7 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace="llm_response_cache",
+                    namespace=self.namespace_prefix + "llm_response_cache",
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
@@ -1005,7 +1002,7 @@ class LightRAG:
             global_config=asdict(self),
             hashing_kv=self.llm_response_cache
             or self.key_string_value_json_storage_cls(
-                namespace="llm_response_cache",
+                namespace=self.namespace_prefix + "llm_response_cache",
                 global_config=asdict(self),
                 embedding_func=self.embedding_func,
             ),
@@ -1036,7 +1033,7 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace="llm_response_cache",
+                    namespace=self.namespace_prefix + "llm_response_cache",
                     global_config=asdict(self),
                     embedding_func=self.embedding_funcne,
                 ),
@@ -1052,7 +1049,7 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace="llm_response_cache",
+                    namespace=self.namespace_prefix + "llm_response_cache",
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
@@ -1071,7 +1068,7 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace="llm_response_cache",
+                    namespace=self.namespace_prefix + "llm_response_cache",
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
