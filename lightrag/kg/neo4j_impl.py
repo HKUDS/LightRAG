@@ -1,6 +1,7 @@
 import asyncio
 import inspect
 import os
+import re
 from dataclasses import dataclass
 from typing import Any, Union, Tuple, List, Dict
 import pipmaster as pm
@@ -22,7 +23,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from lightrag.utils import logger
+from ..utils import logger
 from ..base import BaseGraphStorage
 
 
@@ -45,50 +46,68 @@ class Neo4JStorage(BaseGraphStorage):
         PASSWORD = os.environ["NEO4J_PASSWORD"]
         MAX_CONNECTION_POOL_SIZE = os.environ.get("NEO4J_MAX_CONNECTION_POOL_SIZE", 800)
         DATABASE = os.environ.get(
-            "NEO4J_DATABASE"
-        )  # If this param is None, the home database will be used. If it is not None, the specified database will be used.
-        self._DATABASE = DATABASE
+            "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", namespace)
+        )
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(
             URI, auth=(USERNAME, PASSWORD)
         )
-        _database_name = "home database" if DATABASE is None else f"database {DATABASE}"
+
+        # Try to connect to the database
         with GraphDatabase.driver(
             URI,
             auth=(USERNAME, PASSWORD),
             max_connection_pool_size=MAX_CONNECTION_POOL_SIZE,
         ) as _sync_driver:
-            try:
-                with _sync_driver.session(database=DATABASE) as session:
-                    try:
-                        session.run("MATCH (n) RETURN n LIMIT 0")
-                        logger.info(f"Connected to {DATABASE} at {URI}")
-                    except neo4jExceptions.ServiceUnavailable as e:
-                        logger.error(
-                            f"{DATABASE} at {URI} is not available".capitalize()
-                        )
-                        raise e
-            except neo4jExceptions.AuthError as e:
-                logger.error(f"Authentication failed for {DATABASE} at {URI}")
-                raise e
-            except neo4jExceptions.ClientError as e:
-                if e.code == "Neo.ClientError.Database.DatabaseNotFound":
-                    logger.info(
-                        f"{DATABASE} at {URI} not found. Try to create specified database.".capitalize()
-                    )
+            for database in (DATABASE, None):
+                self._DATABASE = database
+                connected = False
+
                 try:
-                    with _sync_driver.session() as session:
-                        session.run(f"CREATE DATABASE `{DATABASE}` IF NOT EXISTS")
-                        logger.info(f"{DATABASE} at {URI} created".capitalize())
-                except neo4jExceptions.ClientError as e:
-                    if (
-                        e.code
-                        == "Neo.ClientError.Statement.UnsupportedAdministrationCommand"
-                    ):
-                        logger.warning(
-                            "This Neo4j instance does not support creating databases. Try to use Neo4j Desktop/Enterprise version or DozerDB instead."
-                        )
-                    logger.error(f"Failed to create {DATABASE} at {URI}")
+                    with _sync_driver.session(database=database) as session:
+                        try:
+                            session.run("MATCH (n) RETURN n LIMIT 0")
+                            logger.info(f"Connected to {database} at {URI}")
+                            connected = True
+                        except neo4jExceptions.ServiceUnavailable as e:
+                            logger.error(
+                                f"{database} at {URI} is not available".capitalize()
+                            )
+                            raise e
+                except neo4jExceptions.AuthError as e:
+                    logger.error(f"Authentication failed for {database} at {URI}")
                     raise e
+                except neo4jExceptions.ClientError as e:
+                    if e.code == "Neo.ClientError.Database.DatabaseNotFound":
+                        logger.info(
+                            f"{database} at {URI} not found. Try to create specified database.".capitalize()
+                        )
+                        try:
+                            with _sync_driver.session() as session:
+                                session.run(
+                                    f"CREATE DATABASE `{database}` IF NOT EXISTS"
+                                )
+                                logger.info(f"{database} at {URI} created".capitalize())
+                                connected = True
+                        except (
+                            neo4jExceptions.ClientError,
+                            neo4jExceptions.DatabaseError,
+                        ) as e:
+                            if (
+                                e.code
+                                == "Neo.ClientError.Statement.UnsupportedAdministrationCommand"
+                            ) or (
+                                e.code == "Neo.DatabaseError.Statement.ExecutionFailed"
+                            ):
+                                if database is not None:
+                                    logger.warning(
+                                        "This Neo4j instance does not support creating databases. Try to use Neo4j Desktop/Enterprise version or DozerDB instead. Fallback to use the default database."
+                                    )
+                            if database is None:
+                                logger.error(f"Failed to create {database} at {URI}")
+                                raise e
+
+                if connected:
+                    break
 
     def __post_init__(self):
         self._node_embed_algorithms = {
@@ -117,7 +136,7 @@ class Neo4JStorage(BaseGraphStorage):
             result = await session.run(query)
             single_result = await result.single()
             logger.debug(
-                f'{inspect.currentframe().f_code.co_name}:query:{query}:result:{single_result["node_exists"]}'
+                f"{inspect.currentframe().f_code.co_name}:query:{query}:result:{single_result['node_exists']}"
             )
             return single_result["node_exists"]
 
@@ -133,7 +152,7 @@ class Neo4JStorage(BaseGraphStorage):
             result = await session.run(query)
             single_result = await result.single()
             logger.debug(
-                f'{inspect.currentframe().f_code.co_name}:query:{query}:result:{single_result["edgeExists"]}'
+                f"{inspect.currentframe().f_code.co_name}:query:{query}:result:{single_result['edgeExists']}"
             )
             return single_result["edgeExists"]
 

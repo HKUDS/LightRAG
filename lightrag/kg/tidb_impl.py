@@ -14,8 +14,9 @@ if not pm.is_installed("sqlalchemy"):
 from sqlalchemy import create_engine, text
 from tqdm import tqdm
 
-from lightrag.base import BaseVectorStorage, BaseKVStorage, BaseGraphStorage
-from lightrag.utils import logger
+from ..base import BaseVectorStorage, BaseKVStorage, BaseGraphStorage
+from ..utils import logger
+from ..namespace import NameSpace, is_namespace
 
 
 class TiDB(object):
@@ -138,8 +139,8 @@ class TiDBKVStorage(BaseKVStorage):
     async def filter_keys(self, keys: list[str]) -> set[str]:
         """过滤掉重复内容"""
         SQL = SQL_TEMPLATES["filter_keys"].format(
-            table_name=N_T[self.namespace],
-            id_field=N_ID[self.namespace],
+            table_name=namespace_to_table_name(self.namespace),
+            id_field=namespace_to_id(self.namespace),
             ids=",".join([f"'{id}'" for id in keys]),
         )
         try:
@@ -160,7 +161,7 @@ class TiDBKVStorage(BaseKVStorage):
     async def upsert(self, data: dict[str, dict]):
         left_data = {k: v for k, v in data.items() if k not in self._data}
         self._data.update(left_data)
-        if self.namespace.endswith("text_chunks"):
+        if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             list_data = [
                 {
                     "__id__": k,
@@ -196,7 +197,7 @@ class TiDBKVStorage(BaseKVStorage):
                 )
             await self.db.execute(merge_sql, data)
 
-        if self.namespace.endswith("full_docs"):
+        if is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
             merge_sql = SQL_TEMPLATES["upsert_doc_full"]
             data = []
             for k, v in self._data.items():
@@ -211,10 +212,11 @@ class TiDBKVStorage(BaseKVStorage):
         return left_data
 
     async def index_done_callback(self):
-        for n in ("full_docs", "text_chunks"):
-            if self.namespace.endswith(n):
-                logger.info("full doc and chunk data had been saved into TiDB db!")
-                break
+        if is_namespace(
+            self.namespace,
+            (NameSpace.KV_STORE_FULL_DOCS, NameSpace.KV_STORE_TEXT_CHUNKS),
+        ):
+            logger.info("full doc and chunk data had been saved into TiDB db!")
 
 
 @dataclass
@@ -260,7 +262,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
             return []
-        if self.namespace.endswith("chunks"):
+        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
             return []
         logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
 
@@ -290,7 +292,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         for i, d in enumerate(list_data):
             d["content_vector"] = embeddings[i]
 
-        if self.namespace.endswith("entities"):
+        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
             data = []
             for item in list_data:
                 param = {
@@ -311,7 +313,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 merge_sql = SQL_TEMPLATES["insert_entity"]
                 await self.db.execute(merge_sql, data)
 
-        elif self.namespace.endswith("relationships"):
+        elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
             data = []
             for item in list_data:
                 param = {
@@ -470,19 +472,32 @@ class TiDBGraphStorage(BaseGraphStorage):
 
 
 N_T = {
-    "full_docs": "LIGHTRAG_DOC_FULL",
-    "text_chunks": "LIGHTRAG_DOC_CHUNKS",
-    "chunks": "LIGHTRAG_DOC_CHUNKS",
-    "entities": "LIGHTRAG_GRAPH_NODES",
-    "relationships": "LIGHTRAG_GRAPH_EDGES",
+    NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",
+    NameSpace.KV_STORE_TEXT_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
+    NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
+    NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_GRAPH_NODES",
+    NameSpace.VECTOR_STORE_RELATIONSHIPS: "LIGHTRAG_GRAPH_EDGES",
 }
 N_ID = {
-    "full_docs": "doc_id",
-    "text_chunks": "chunk_id",
-    "chunks": "chunk_id",
-    "entities": "entity_id",
-    "relationships": "relation_id",
+    NameSpace.KV_STORE_FULL_DOCS: "doc_id",
+    NameSpace.KV_STORE_TEXT_CHUNKS: "chunk_id",
+    NameSpace.VECTOR_STORE_CHUNKS: "chunk_id",
+    NameSpace.VECTOR_STORE_ENTITIES: "entity_id",
+    NameSpace.VECTOR_STORE_RELATIONSHIPS: "relation_id",
 }
+
+
+def namespace_to_table_name(namespace: str) -> str:
+    for k, v in N_T.items():
+        if is_namespace(namespace, k):
+            return v
+
+
+def namespace_to_id(namespace: str) -> str:
+    for k, v in N_ID.items():
+        if is_namespace(namespace, k):
+            return v
+
 
 TABLES = {
     "LIGHTRAG_DOC_FULL": {

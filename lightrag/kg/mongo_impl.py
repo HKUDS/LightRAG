@@ -13,10 +13,10 @@ if not pm.is_installed("motor"):
 from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Union, List, Tuple
-from lightrag.utils import logger
 
-from lightrag.base import BaseKVStorage
-from lightrag.base import BaseGraphStorage
+from ..utils import logger
+from ..base import BaseKVStorage, BaseGraphStorage
+from ..namespace import NameSpace, is_namespace
 
 
 @dataclass
@@ -52,7 +52,7 @@ class MongoKVStorage(BaseKVStorage):
         return set([s for s in data if s not in existing_ids])
 
     async def upsert(self, data: dict[str, dict]):
-        if self.namespace.endswith("llm_response_cache"):
+        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
             for mode, items in data.items():
                 for k, v in tqdm_async(items.items(), desc="Upserting"):
                     key = f"{mode}_{k}"
@@ -69,7 +69,7 @@ class MongoKVStorage(BaseKVStorage):
         return data
 
     async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
-        if self.namespace.endswith("llm_response_cache"):
+        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
             res = {}
             v = self._data.find_one({"_id": mode + "_" + id})
             if v:
