@@ -56,7 +56,7 @@ class QueryParam:
 @dataclass
 class StorageNameSpace:
     namespace: str
-    global_config: dict
+    global_config: dict[str, Any]
 
     async def index_done_callback(self):
         """commit the storage operations after indexing"""
@@ -92,22 +92,24 @@ class BaseKVStorage(Generic[T], StorageNameSpace):
     async def get_by_id(self, id: str) -> Union[T, None]:
         raise NotImplementedError
 
-    async def get_by_ids(
-        self, ids: list[str], fields: Union[set[str], None] = None
-    ) -> list[Union[T, None]]:
+    async def get_by_ids(self, ids: list[str]) -> list[Union[T, None]]:        
         raise NotImplementedError
 
     async def filter_keys(self, data: list[str]) -> set[str]:
         """return un-exist keys"""
         raise NotImplementedError
 
-    async def upsert(self, data: dict[str, T]):
+    async def upsert(self, data: dict[str, T]) -> None:
         raise NotImplementedError
 
-    async def drop(self):
+    async def drop(self) -> None:
         raise NotImplementedError
-
-
+    
+    async def get_by_status_and_ids(
+        self, status: str, ids: list[str]
+    ) -> list[dict[str, Any]]:
+        raise NotImplementedError
+    
 @dataclass
 class BaseGraphStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc = None
