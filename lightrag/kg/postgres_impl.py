@@ -30,7 +30,6 @@ from ..base import (
     DocStatus,
     DocProcessingStatus,
     BaseGraphStorage,
-    T,
 )
 from ..namespace import NameSpace, is_namespace
 
@@ -184,7 +183,7 @@ class PGKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict, None]:
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         """Get doc_full data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
@@ -214,7 +213,7 @@ class PGKVStorage(BaseKVStorage):
             return None
 
     # Query by id
-    async def get_by_ids(self, ids: List[str], fields=None) -> Union[List[dict], None]:
+    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:   
         """Get doc_chunks data by id"""
         sql = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
@@ -238,6 +237,14 @@ class PGKVStorage(BaseKVStorage):
             return res
         else:
             return None
+        
+    async def get_by_status_and_ids(
+        self, status: str
+    ) -> Union[list[dict[str, Any]], None]:
+        """Specifically for llm_response_cache."""
+        SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
+        params = {"workspace": self.db.workspace, "status": status}
+        return await self.db.query(SQL, params, multirows=True)    
 
     async def all_keys(self) -> list[dict]:
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
@@ -270,7 +277,7 @@ class PGKVStorage(BaseKVStorage):
             print(params)
 
     ################ INSERT METHODS ################
-    async def upsert(self, data: Dict[str, dict]):
+    async def upsert(self, data: dict[str, Any]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             pass
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
@@ -447,7 +454,7 @@ class PGDocStatusStorage(DocStatusStorage):
             existed = set([element["id"] for element in result])
             return set(data) - existed
 
-    async def get_by_id(self, id: str) -> Union[T, None]:
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"
         params = {"workspace": self.db.workspace, "id": id}
         result = await self.db.query(sql, params, True)
