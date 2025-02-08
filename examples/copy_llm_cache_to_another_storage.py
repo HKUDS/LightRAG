@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from lightrag.kg.postgres_impl import PostgreSQLDB, PGKVStorage
 from lightrag.storage import JsonKVStorage
+from lightrag.namespace import NameSpace
 
 load_dotenv()
 ROOT_DIR = os.environ.get("ROOT_DIR")
@@ -39,14 +40,14 @@ async def copy_from_postgres_to_json():
     await postgres_db.initdb()
 
     from_llm_response_cache = PGKVStorage(
-        namespace="llm_response_cache",
+        namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
         global_config={"embedding_batch_num": 6},
         embedding_func=None,
         db=postgres_db,
     )
 
     to_llm_response_cache = JsonKVStorage(
-        namespace="llm_response_cache",
+        namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
         global_config={"working_dir": WORKING_DIR},
         embedding_func=None,
     )
@@ -72,13 +73,13 @@ async def copy_from_json_to_postgres():
     await postgres_db.initdb()
 
     from_llm_response_cache = JsonKVStorage(
-        namespace="llm_response_cache",
+        namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
         global_config={"working_dir": WORKING_DIR},
         embedding_func=None,
     )
 
     to_llm_response_cache = PGKVStorage(
-        namespace="llm_response_cache",
+        namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
         global_config={"embedding_batch_num": 6},
         embedding_func=None,
         db=postgres_db,
