@@ -1,7 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, TypeVar, Union
+from typing import Any, Union
 
 import numpy as np
 import pipmaster as pm
@@ -333,9 +333,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 merge_sql = SQL_TEMPLATES["insert_relationship"]
                 await self.db.execute(merge_sql, data)
 
-    async def get_by_status_and_ids(
-        self, status: str
-    ) -> Union[list[dict], None]:
+    async def get_by_status_and_ids(self, status: str) -> Union[list[dict[str, Any]], None]:
         SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
         params = {"workspace": self.db.workspace, "status": status}
         return await self.db.query(SQL, params, multirows=True)  

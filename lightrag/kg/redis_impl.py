@@ -1,5 +1,5 @@
 import os
-from typing import Any, TypeVar, Union
+from typing import Any, Union
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import pipmaster as pm
@@ -59,9 +59,7 @@ class RedisKVStorage(BaseKVStorage):
         if keys:
             await self._redis.delete(*keys)
             
-    async def get_by_status_and_ids(
-        self, status: str,
-    ) -> Union[list[dict[str, Any]], None]:
+    async def get_by_status_and_ids(self, status: str) -> Union[list[dict[str, Any]], None]:
         pipe = self._redis.pipeline()
         for key in await self._redis.keys(f"{self.namespace}:*"):
             pipe.hgetall(key)
