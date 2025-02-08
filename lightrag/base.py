@@ -104,9 +104,7 @@ class BaseKVStorage(StorageNameSpace):
     async def drop(self) -> None:
         raise NotImplementedError
     
-    async def get_by_status_and_ids(
-        self, status: str
-    ) -> list[dict[str, Any]]:
+    async def get_by_status_and_ids(self, status: str) -> Union[list[dict[str, Any]], None]:
         raise NotImplementedError
     
 @dataclass
