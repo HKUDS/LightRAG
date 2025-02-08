@@ -4,7 +4,6 @@ from typing import (
     TypedDict,
     Union,
     Literal,
-    Generic,
     TypeVar,
     Optional,
     Dict,
@@ -83,30 +82,30 @@ class BaseVectorStorage(StorageNameSpace):
 
 
 @dataclass
-class BaseKVStorage(Generic[T], StorageNameSpace):
+class BaseKVStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc
 
     async def all_keys(self) -> list[str]:
         raise NotImplementedError
 
-    async def get_by_id(self, id: str) -> Union[T, None]:
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         raise NotImplementedError
 
-    async def get_by_ids(self, ids: list[str]) -> list[Union[T, None]]:        
+    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:        
         raise NotImplementedError
 
     async def filter_keys(self, data: list[str]) -> set[str]:
         """return un-exist keys"""
         raise NotImplementedError
 
-    async def upsert(self, data: dict[str, T]) -> None:
+    async def upsert(self, data: dict[str, Any]) -> None:
         raise NotImplementedError
 
     async def drop(self) -> None:
         raise NotImplementedError
     
     async def get_by_status_and_ids(
-        self, status: str, ids: list[str]
+        self, status: str
     ) -> list[dict[str, Any]]:
         raise NotImplementedError
     
