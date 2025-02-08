@@ -257,7 +257,8 @@ class OracleKVStorage(BaseKVStorage):
     async def filter_keys(self, keys: list[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         SQL = SQL_TEMPLATES["filter_keys"].format(
-            table_name=namespace_to_table_name(self.namespace), ids=",".join([f"'{id}'" for id in keys])
+            table_name=namespace_to_table_name(self.namespace),
+            ids=",".join([f"'{id}'" for id in keys]),
         )
         params = {"workspace": self.db.workspace}
         res = await self.db.query(SQL, params, multirows=True)
@@ -330,7 +331,9 @@ class OracleKVStorage(BaseKVStorage):
         return None
 
     async def change_status(self, id: str, status: str):
-        SQL = SQL_TEMPLATES["change_status"].format(table_name=namespace_to_table_name(self.namespace))
+        SQL = SQL_TEMPLATES["change_status"].format(
+            table_name=namespace_to_table_name(self.namespace)
+        )
         params = {"workspace": self.db.workspace, "id": id, "status": status}
         await self.db.execute(SQL, params)
 
@@ -622,6 +625,7 @@ N_T = {
     NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_GRAPH_NODES",
     NameSpace.VECTOR_STORE_RELATIONSHIPS: "LIGHTRAG_GRAPH_EDGES",
 }
+
 
 def namespace_to_table_name(namespace: str) -> str:
     for k, v in N_T.items():

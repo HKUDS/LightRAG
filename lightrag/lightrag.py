@@ -236,7 +236,9 @@ class LightRAG:
         )
 
         self.llm_response_cache = self.key_string_value_json_storage_cls(
-            namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE),
+            namespace=make_namespace(
+                self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+            ),
             embedding_func=self.embedding_func,
         )
 
@@ -244,15 +246,21 @@ class LightRAG:
         # add embedding func by walter
         ####
         self.full_docs = self.key_string_value_json_storage_cls(
-            namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_FULL_DOCS),
+            namespace=make_namespace(
+                self.namespace_prefix, NameSpace.KV_STORE_FULL_DOCS
+            ),
             embedding_func=self.embedding_func,
         )
         self.text_chunks = self.key_string_value_json_storage_cls(
-            namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_TEXT_CHUNKS),
+            namespace=make_namespace(
+                self.namespace_prefix, NameSpace.KV_STORE_TEXT_CHUNKS
+            ),
             embedding_func=self.embedding_func,
         )
         self.chunk_entity_relation_graph = self.graph_storage_cls(
-            namespace=make_namespace(self.namespace_prefix, NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION),
+            namespace=make_namespace(
+                self.namespace_prefix, NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION
+            ),
             embedding_func=self.embedding_func,
         )
         ####
@@ -260,17 +268,23 @@ class LightRAG:
         ####
 
         self.entities_vdb = self.vector_db_storage_cls(
-            namespace=make_namespace(self.namespace_prefix, NameSpace.VECTOR_STORE_ENTITIES),
+            namespace=make_namespace(
+                self.namespace_prefix, NameSpace.VECTOR_STORE_ENTITIES
+            ),
             embedding_func=self.embedding_func,
             meta_fields={"entity_name"},
         )
         self.relationships_vdb = self.vector_db_storage_cls(
-            namespace=make_namespace(self.namespace_prefix, NameSpace.VECTOR_STORE_RELATIONSHIPS),
+            namespace=make_namespace(
+                self.namespace_prefix, NameSpace.VECTOR_STORE_RELATIONSHIPS
+            ),
             embedding_func=self.embedding_func,
             meta_fields={"src_id", "tgt_id"},
         )
         self.chunks_vdb = self.vector_db_storage_cls(
-            namespace=make_namespace(self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS),
+            namespace=make_namespace(
+                self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS
+            ),
             embedding_func=self.embedding_func,
         )
 
@@ -280,7 +294,9 @@ class LightRAG:
             hashing_kv = self.llm_response_cache
         else:
             hashing_kv = self.key_string_value_json_storage_cls(
-                namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE),
+                namespace=make_namespace(
+                    self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                ),
                 embedding_func=self.embedding_func,
             )
 
@@ -931,7 +947,9 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE),
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                    ),
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
@@ -948,7 +966,9 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE),
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                    ),
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
@@ -967,7 +987,9 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE),
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                    ),
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
@@ -1008,7 +1030,9 @@ class LightRAG:
             global_config=asdict(self),
             hashing_kv=self.llm_response_cache
             or self.key_string_value_json_storage_cls(
-                namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE),
+                namespace=make_namespace(
+                    self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                ),
                 global_config=asdict(self),
                 embedding_func=self.embedding_func,
             ),
@@ -1039,7 +1063,9 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE),
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                    ),
                     global_config=asdict(self),
                     embedding_func=self.embedding_funcne,
                 ),
@@ -1055,7 +1081,9 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE),
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                    ),
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
@@ -1074,7 +1102,9 @@ class LightRAG:
                 if self.llm_response_cache
                 and hasattr(self.llm_response_cache, "global_config")
                 else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE),
+                    namespace=make_namespace(
+                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                    ),
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
