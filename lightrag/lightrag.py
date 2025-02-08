@@ -228,11 +228,6 @@ class LightRAG:
             self.graph_storage_cls, global_config=global_config
         )
 
-        self.json_doc_status_storage = self.key_string_value_json_storage_cls(
-            namespace=self.namespace_prefix + "json_doc_status_storage",
-            embedding_func=None,
-        )
-
         self.llm_response_cache = self.key_string_value_json_storage_cls(
             namespace=self.namespace_prefix + "llm_response_cache",
             embedding_func=self.embedding_func,
@@ -253,6 +248,7 @@ class LightRAG:
             namespace=self.namespace_prefix + "chunk_entity_relation",
             embedding_func=self.embedding_func,
         )
+
         ####
         # add embedding func by walter over
         ####
