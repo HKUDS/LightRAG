@@ -1,4 +1,5 @@
 import os
+from typing import Any, TypeVar, Union
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import pipmaster as pm
@@ -28,21 +29,11 @@ class RedisKVStorage(BaseKVStorage):
         data = await self._redis.get(f"{self.namespace}:{id}")
         return json.loads(data) if data else None
 
-    async def get_by_ids(self, ids, fields=None):
+    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:    
         pipe = self._redis.pipeline()
         for id in ids:
             pipe.get(f"{self.namespace}:{id}")
         results = await pipe.execute()
-
-        if fields:
-            # Filter fields if specified
-            return [
-                {field: value.get(field) for field in fields if field in value}
-                if (value := json.loads(result))
-                else None
-                for result in results
-            ]
-
         return [json.loads(result) if result else None for result in results]
 
     async def filter_keys(self, data: list[str]) -> set[str]:
@@ -54,7 +45,7 @@ class RedisKVStorage(BaseKVStorage):
         existing_ids = {data[i] for i, exists in enumerate(results) if exists}
         return set(data) - existing_ids
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, Any]) -> None:
         pipe = self._redis.pipeline()
         for k, v in tqdm_async(data.items(), desc="Upserting"):
             pipe.set(f"{self.namespace}:{k}", json.dumps(v))
@@ -62,9 +53,18 @@ class RedisKVStorage(BaseKVStorage):
 
         for k in data:
             data[k]["_id"] = k
-        return data
 
-    async def drop(self):
+    async def drop(self) -> None:
         keys = await self._redis.keys(f"{self.namespace}:*")
         if keys:
             await self._redis.delete(*keys)
+            
+    async def get_by_status_and_ids(
+        self, status: str,
+    ) -> Union[list[dict[str, Any]], None]:
+        pipe = self._redis.pipeline()
+        for key in await self._redis.keys(f"{self.namespace}:*"):
+            pipe.hgetall(key)
+        results = await pipe.execute()
+        return [data for data in results if data.get("status") == status] or None
+

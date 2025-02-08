@@ -4,7 +4,7 @@ import asyncio
 # import html
 # import os
 from dataclasses import dataclass
-from typing import Union
+from typing import Any, TypeVar, Union
 import numpy as np
 import array
 import pipmaster as pm
@@ -181,7 +181,7 @@ class OracleKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict, None]:
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         """get doc_full data based on id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
@@ -211,7 +211,7 @@ class OracleKVStorage(BaseKVStorage):
         else:
             return None
 
-    async def get_by_ids(self, ids: list[str], fields=None) -> Union[list[dict], None]:
+    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
         """get doc_chunks data based on id"""
         SQL = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
@@ -238,15 +238,10 @@ class OracleKVStorage(BaseKVStorage):
             return None
 
     async def get_by_status_and_ids(
-        self, status: str, ids: list[str]
-    ) -> Union[list[dict], None]:
+        self, status: str
+    ) -> Union[list[dict[str, Any]], None]:
         """Specifically for llm_response_cache."""
-        if ids is not None:
-            SQL = SQL_TEMPLATES["get_by_status_ids_" + self.namespace].format(
-                ids=",".join([f"'{id}'" for id in ids])
-            )
-        else:
-            SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
+        SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
         params = {"workspace": self.db.workspace, "status": status}
         res = await self.db.query(SQL, params, multirows=True)
         if res:
@@ -270,7 +265,7 @@ class OracleKVStorage(BaseKVStorage):
             return set(keys)
 
     ################ INSERT METHODS ################
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, Any]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             list_data = [
                 {
@@ -328,14 +323,6 @@ class OracleKVStorage(BaseKVStorage):
                     }
 
                     await self.db.execute(upsert_sql, _data)
-        return None
-
-    async def change_status(self, id: str, status: str):
-        SQL = SQL_TEMPLATES["change_status"].format(
-            table_name=namespace_to_table_name(self.namespace)
-        )
-        params = {"workspace": self.db.workspace, "id": id, "status": status}
-        await self.db.execute(SQL, params)
 
     async def index_done_callback(self):
         if is_namespace(
@@ -343,8 +330,7 @@ class OracleKVStorage(BaseKVStorage):
             (NameSpace.KV_STORE_FULL_DOCS, NameSpace.KV_STORE_TEXT_CHUNKS),
         ):
             logger.info("full doc and chunk data had been saved into oracle db!")
-
-
+    
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):
     # should pass db object to self.db
@@ -745,7 +731,6 @@ SQL_TEMPLATES = {
     "get_by_status_full_docs": "select id,status from LIGHTRAG_DOC_FULL t where workspace=:workspace AND status=:status",
     "get_by_status_text_chunks": "select id,status from LIGHTRAG_DOC_CHUNKS where workspace=:workspace and status=:status",
     "filter_keys": "select id from {table_name} where workspace=:workspace and id in ({ids})",
-    "change_status": "update {table_name} set status=:status,updatetime=SYSDATE where workspace=:workspace and id=:id",
     "merge_doc_full": """MERGE INTO LIGHTRAG_DOC_FULL a
         USING DUAL
         ON (a.id = :id and a.workspace = :workspace)

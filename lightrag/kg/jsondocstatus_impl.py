@@ -50,7 +50,7 @@ Usage:
 
 import os
 from dataclasses import dataclass
-from typing import Union, Dict
+from typing import Any, Union, Dict
 
 from lightrag.utils import (
     logger,
@@ -104,7 +104,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         """Save data to file after indexing"""
         write_json(self._data, self._file_name)
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, Any]) -> None:
         """Update or insert document status
 
         Args:
@@ -114,7 +114,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         await self.index_done_callback()
         return data
 
-    async def get_by_id(self, id: str):
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         return self._data.get(id)
 
     async def get(self, doc_id: str) -> Union[DocProcessingStatus, None]:

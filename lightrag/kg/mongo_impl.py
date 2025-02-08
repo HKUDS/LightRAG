@@ -12,7 +12,7 @@ if not pm.is_installed("motor"):
 
 from pymongo import MongoClient
 from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Union, List, Tuple
+from typing import Any, TypeVar, Union, List, Tuple
 
 from ..utils import logger
 from ..base import BaseKVStorage, BaseGraphStorage
@@ -32,18 +32,11 @@ class MongoKVStorage(BaseKVStorage):
     async def all_keys(self) -> list[str]:
         return [x["_id"] for x in self._data.find({}, {"_id": 1})]
 
-    async def get_by_id(self, id):
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         return self._data.find_one({"_id": id})
 
-    async def get_by_ids(self, ids, fields=None):
-        if fields is None:
-            return list(self._data.find({"_id": {"$in": ids}}))
-        return list(
-            self._data.find(
-                {"_id": {"$in": ids}},
-                {field: 1 for field in fields},
-            )
-        )
+    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:   
+        return list(self._data.find({"_id": {"$in": ids}}))
 
     async def filter_keys(self, data: list[str]) -> set[str]:
         existing_ids = [
@@ -51,7 +44,7 @@ class MongoKVStorage(BaseKVStorage):
         ]
         return set([s for s in data if s not in existing_ids])
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
             for mode, items in data.items():
                 for k, v in tqdm_async(items.items(), desc="Upserting"):
@@ -66,7 +59,6 @@ class MongoKVStorage(BaseKVStorage):
             for k, v in tqdm_async(data.items(), desc="Upserting"):
                 self._data.update_one({"_id": k}, {"$set": v}, upsert=True)
                 data[k]["_id"] = k
-        return data
 
     async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
@@ -81,9 +73,15 @@ class MongoKVStorage(BaseKVStorage):
         else:
             return None
 
-    async def drop(self):
-        """ """
-        pass
+    async def drop(self) -> None:
+        """Drop the collection"""
+        await self._data.drop()
+
+    async def get_by_status_and_ids(
+        self, status: str
+    ) -> Union[list[dict[str, Any]], None]:
+        """Get documents by status and ids"""
+        return self._data.find({"status": status})
 
 
 @dataclass
