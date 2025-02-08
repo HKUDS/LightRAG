@@ -245,19 +245,19 @@ class LightRAG:
         ####
         # add embedding func by walter
         ####
-        self.full_docs = self.key_string_value_json_storage_cls(
+        self.full_docs: BaseKVStorage = self.key_string_value_json_storage_cls(
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_FULL_DOCS
             ),
             embedding_func=self.embedding_func,
         )
-        self.text_chunks = self.key_string_value_json_storage_cls(
+        self.text_chunks: BaseVectorStorage = self.key_string_value_json_storage_cls(
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_TEXT_CHUNKS
             ),
             embedding_func=self.embedding_func,
         )
-        self.chunk_entity_relation_graph = self.graph_storage_cls(
+        self.chunk_entity_relation_graph: BaseGraphStorage = self.graph_storage_cls(
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION
             ),
