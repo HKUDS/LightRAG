@@ -108,31 +108,20 @@ class TiDBKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
-        """根据 id 获取 doc_full 数据."""
+    async def get_by_id(self, id: str) -> dict[str, Any]:
+        """Fetch doc_full data by id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"id": id}
         # print("get_by_id:"+SQL)
-        res = await self.db.query(SQL, params)
-        if res:
-            data = res  # {"data":res}
-            # print (data)
-            return data
-        else:
-            return None
+        return await self.db.query(SQL, params)
 
     # Query by id
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
-        """根据 id 获取 doc_chunks 数据"""
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch doc_chunks data by id"""
         SQL = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
         )
-        res = await self.db.query(SQL, multirows=True)
-        if res:
-            data = res  # [{"data":i} for i in res]
-            return data
-        else:
-            return None
+        return await self.db.query(SQL, multirows=True)
 
     async def filter_keys(self, keys: list[str]) -> set[str]:
         """过滤掉重复内容"""
@@ -333,7 +322,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 merge_sql = SQL_TEMPLATES["insert_relationship"]
                 await self.db.execute(merge_sql, data)
 
-    async def get_by_status_and_ids(
+    async def get_by_status(
         self, status: str
     ) -> Union[list[dict[str, Any]], None]:
         SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]

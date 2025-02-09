@@ -72,7 +72,7 @@ class JsonDocStatusStorage(DocStatusStorage):
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
-        self._data = load_json(self._file_name) or {}
+        self._data: dict[str, Any] = load_json(self._file_name) or {}
         logger.info(f"Loaded document status storage with {len(self._data)} records")
 
     async def filter_keys(self, data: list[str]) -> set[str]:
@@ -112,10 +112,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         """
         self._data.update(data)
         await self.index_done_callback()
-        return data
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
-        return self._data.get(id)
+    async def get_by_id(self, id: str) -> dict[str, Any]:
+        return self._data.get(id, {})
 
     async def get(self, doc_id: str) -> Union[DocProcessingStatus, None]:
         """Get document status by ID"""

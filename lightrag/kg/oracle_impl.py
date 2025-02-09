@@ -181,7 +181,7 @@ class OracleKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any]:
         """get doc_full data based on id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
@@ -191,12 +191,9 @@ class OracleKVStorage(BaseKVStorage):
             res = {}
             for row in array_res:
                 res[row["id"]] = row
-        else:
-            res = await self.db.query(SQL, params)
-        if res:
             return res
         else:
-            return None
+            return await self.db.query(SQL, params)
 
     async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
         """Specifically for llm_response_cache."""
@@ -211,7 +208,7 @@ class OracleKVStorage(BaseKVStorage):
         else:
             return None
 
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """get doc_chunks data based on id"""
         SQL = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
@@ -230,14 +227,9 @@ class OracleKVStorage(BaseKVStorage):
             for row in res:
                 dict_res[row["mode"]][row["id"]] = row
             res = [{k: v} for k, v in dict_res.items()]
-        if res:
-            data = res  # [{"data":i} for i in res]
-            # print(data)
-            return data
-        else:
-            return None
+        return res
 
-    async def get_by_status_and_ids(
+    async def get_by_status(
         self, status: str
     ) -> Union[list[dict[str, Any]], None]:
         """Specifically for llm_response_cache."""

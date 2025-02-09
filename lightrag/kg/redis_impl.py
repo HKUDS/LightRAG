@@ -29,7 +29,7 @@ class RedisKVStorage(BaseKVStorage):
         data = await self._redis.get(f"{self.namespace}:{id}")
         return json.loads(data) if data else None
 
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         pipe = self._redis.pipeline()
         for id in ids:
             pipe.get(f"{self.namespace}:{id}")
@@ -59,7 +59,7 @@ class RedisKVStorage(BaseKVStorage):
         if keys:
             await self._redis.delete(*keys)
 
-    async def get_by_status_and_ids(
+    async def get_by_status(
         self, status: str
     ) -> Union[list[dict[str, Any]], None]:
         pipe = self._redis.pipeline()
