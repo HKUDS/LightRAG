@@ -487,14 +487,13 @@ class LightRAG:
         }
 
         # 3. Filter out already processed documents
-        _add_doc_keys: set[str] = set()
+        add_doc_keys: set[str] = set()
         for doc_id in new_docs.keys():
             current_doc = await self.doc_status.get_by_id(doc_id)
-
             if not current_doc or current_doc["status"] == DocStatus.FAILED:
-                _add_doc_keys.add(doc_id)
+                add_doc_keys.add(doc_id)
 
-        new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
+        new_docs = {k: v for k, v in new_docs.items() if k in add_doc_keys}
 
         if not new_docs:
             logger.info("All documents have been processed or are duplicates")
@@ -503,7 +502,7 @@ class LightRAG:
         # 4. Store original document
         for doc_id, doc in new_docs.items():
             await self.full_docs.upsert(
-                {doc_id: {"content": doc["content"], "status": DocStatus.PENDING}}
+                {doc_id: doc}
             )
         logger.info(f"Stored {len(new_docs)} new unique documents")
 
@@ -610,7 +609,23 @@ class LightRAG:
                     continue
 
     async def apipeline_process_extract_graph(self):
-        """Get pendding or failed chunks, extract entities and relationships from each chunk"""
+        """
+        Process pending or failed chunks to extract entities and relationships.
+
+        This method retrieves all chunks that are currently marked as pending or have previously failed.
+        It then extracts entities and relationships from each chunk and updates the status accordingly.
+
+        Steps:
+        1. Retrieve all pending and failed chunks.
+        2. For each chunk, attempt to extract entities and relationships.
+        3. Update the chunk's status to processed if successful, or failed if an error occurs.
+
+        Raises:
+            Exception: If there is an error during the extraction process.
+
+        Returns:
+            None
+        """
         # 1. get all pending and failed chunks
         to_process_doc_keys: list[str] = []
 
