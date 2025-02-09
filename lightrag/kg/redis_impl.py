@@ -1,5 +1,5 @@
 import os
-from typing import Any
+from typing import Any, Union
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import pipmaster as pm
@@ -21,7 +21,7 @@ class RedisKVStorage(BaseKVStorage):
         self._redis = Redis.from_url(redis_url, decode_responses=True)
         logger.info(f"Use Redis as KV {self.namespace}")
 
-    async def get_by_id(self, id):
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         data = await self._redis.get(f"{self.namespace}:{id}")
         return json.loads(data) if data else None
 
