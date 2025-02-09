@@ -19,7 +19,7 @@ from .utils import (
     convert_response_to_json,
     logger,
     set_logger,
-    statistic_data,
+    statistic_data
 )
 from .base import (
     BaseGraphStorage,
@@ -31,7 +31,6 @@ from .base import (
 from .namespace import NameSpace, make_namespace
 
 from .prompt import GRAPH_FIELD_SEP
-
 STORAGES = {
     "NetworkXStorage": ".kg.networkx_impl",
     "JsonKVStorage": ".kg.json_kv_impl",
@@ -560,8 +559,8 @@ class LightRAG:
                             "updated_at": datetime.now().isoformat(),
                         }
                     )
-                    await self.doc_status.upsert({doc_id: doc_status})
                     await self.chunks_vdb.upsert(chunks)
+                    await self.doc_status.upsert({doc_id: doc_status})
 
                 except Exception as e:
                     doc_status.update(
@@ -621,7 +620,7 @@ class LightRAG:
                         global_config=asdict(self),
                     )
                     if maybe_new_kg is None:
-                        logger.info("No entities or relationships extracted!")
+                        logger.warning("No entities or relationships extracted!")
                     # Update status to processed
                     await self.text_chunks.upsert(
                         {chunk_id: {"status": DocStatus.PROCESSED}}
