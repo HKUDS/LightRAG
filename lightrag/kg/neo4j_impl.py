@@ -383,7 +383,7 @@ class Neo4JStorage(BaseGraphStorage):
         async with self._driver.session(database=self._DATABASE) as session:
             try:
                 main_query = ""
-                if label == '*':
+                if label == "*":
                     main_query = """
                     MATCH (n)
                     WITH collect(DISTINCT n) AS nodes

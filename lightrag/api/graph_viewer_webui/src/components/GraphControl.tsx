@@ -191,4 +191,3 @@ const GraphControl = ({
 }
 
 export default GraphControl
-

@@ -31,4 +31,3 @@ export default tseslint.config({ ignores: ['dist'] }, prettier, {
     '@typescript-eslint/no-explicit-any': ['off']
   }
 })
-
