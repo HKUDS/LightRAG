@@ -493,15 +493,14 @@ class LightRAG:
         }
 
         # 3. Filter out already processed documents
-        new_doc_keys: set[str] = set()
         # Get docs ids
-        in_process_keys = set(new_docs.keys())
-        # Get in progress docs ids
-        excluded_ids = await self.doc_status.filter_keys(list(in_process_keys))
-        # Exclude already in process
-        new_doc_keys = in_process_keys - excluded_ids
-        # Filter
-        new_docs = {doc_id: new_docs[doc_id] for doc_id in new_doc_keys}
+        all_new_doc_ids = set(new_docs.keys())
+        # Retrieve IDs that are already being processed
+        existing_ids = await self.doc_status.filter_keys(all_new_doc_ids)
+        # Exclude IDs of documents that are already in progress
+        unique_new_doc_ids = all_new_doc_ids - existing_ids
+        # Filter new_docs to only include documents with unique IDs
+        new_docs = {doc_id: new_docs[doc_id] for doc_id in unique_new_doc_ids}
 
         if not new_docs:
             logger.info("All documents have been processed or are duplicates")
