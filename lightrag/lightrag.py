@@ -396,7 +396,6 @@ class LightRAG:
         """
         await self.apipeline_process_documents(string_or_strings)
         await self.apipeline_process_chunks(split_by_character, split_by_character_only)
-        await self.apipeline_process_extract_graph()
 
     def insert_custom_chunks(self, full_text: str, text_chunks: list[str]):
         loop = always_get_an_event_loop()
@@ -544,9 +543,11 @@ class LightRAG:
             return
         
         # If included in text_chunks is all processed, return
-        new_docs_ids = await self.text_chunks.filter_keys(to_process_doc_keys)
-        new_docs = await self.doc_status.get_by_ids(list(new_docs_ids))
+        new_docs = await self.doc_status.get_by_ids(to_process_doc_keys)
 
+        text_chunks_new_docs_ids = await self.text_chunks.filter_keys(to_process_doc_keys)
+        full_docs_new_docs_ids = await self.full_docs.filter_keys(to_process_doc_keys)
+        
         if not new_docs:
             logger.info("All documents have been processed or are duplicates")
             return
@@ -582,12 +583,19 @@ class LightRAG:
                             self.tiktoken_model_name,
                         )
                     }
-
-                    # Update status with chunks information
-
-                    await self._process_entity_relation_graph(chunks)
                     await self.chunks_vdb.upsert(chunks)
-                    await self.text_chunks.upsert(chunks)
+                    
+                    # Update status with chunks information
+                    await self._process_entity_relation_graph(chunks)
+                    
+                    if not doc_id in full_docs_new_docs_ids:
+                        await self.full_docs.upsert(
+                                {doc_id: {"content": doc["content"]}}
+                            ) 
+                            
+                    if not doc_id in text_chunks_new_docs_ids:
+                        await self.text_chunks.upsert(chunks)
+                        
                     doc_status.update(
                         {
                             "status": DocStatus.PROCESSED,
