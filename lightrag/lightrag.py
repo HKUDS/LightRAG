@@ -541,8 +541,10 @@ class LightRAG:
         to_process_docs: dict[str, DocProcessingStatus] = {}
 
         # Fetch failed documents
-        to_process_docs.update(await self.doc_status.get_failed_docs())
-        to_process_docs.update(await self.doc_status.get_pending_docs())
+        failed_docs = await self.doc_status.get_failed_docs()
+        to_process_docs.update(failed_docs)
+        pendings_docs = await self.doc_status.get_pending_docs()
+        to_process_docs.update(pendings_docs)
 
         if not to_process_docs:
             logger.info("All documents have been processed or are duplicates")
@@ -558,15 +560,15 @@ class LightRAG:
         logger.info(f"Number of batches to process: {len(docs_batches)}.")
 
         # 3. iterate over batches
-        tasks: dict[str, list[Coroutine[Any, Any, None]]] = {}
         for batch_idx, docs_batch in enumerate(docs_batches):
             # 4. iterate over batch
             for doc_id_processing_status in docs_batch:
                 doc_id, status_doc = doc_id_processing_status
                 # Update status in processing
+                doc_status_id = compute_mdhash_id(status_doc.content, prefix="doc-")
                 await self.doc_status.upsert(
                     {
-                        doc_id: {
+                        doc_status_id: {
                             "status": DocStatus.PROCESSING,
                             "updated_at": datetime.now().isoformat(),
                             "content_summary": status_doc.content_summary,
@@ -591,32 +593,32 @@ class LightRAG:
                     )
                 }
 
-                # Ensure chunk insertion and graph processing happen sequentially, not in parallel
-                await self.chunks_vdb.upsert(chunks)
-                await self._process_entity_relation_graph(chunks)
-
                 # Process document (text chunks and full docs) in parallel
-                tasks = []
+                tasks: list[Coroutine[Any, Any, None]] = []
+                tasks.append(self.chunks_vdb.upsert(chunks))
+                tasks.append(self._process_entity_relation_graph(chunks))
                 tasks.append(insert_full_doc(doc_id, status_doc.content))
                 tasks.append(insert_doc_status(doc_id, chunks))
+
                 try:
                     await asyncio.gather(*tasks)
                     await self.doc_status.upsert(
                         {
-                            doc_id: {
+                            doc_status_id: {
                                 "status": DocStatus.PROCESSED,
                                 "chunks_count": len(chunks),
                                 "updated_at": datetime.now().isoformat(),
                             }
                         }
                     )
+                    logger.error(f"Complete {doc_id}")
                     await self._insert_done()
 
                 except Exception as e:
                     logger.error(f"Failed to process document {doc_id}: {str(e)}")
                     await self.doc_status.upsert(
                         {
-                            doc_id: {
+                            doc_status_id: {
                                 "status": DocStatus.FAILED,
                                 "error": str(e),
                                 "updated_at": datetime.now().isoformat(),
