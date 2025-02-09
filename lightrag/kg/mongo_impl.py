@@ -35,7 +35,7 @@ class MongoKVStorage(BaseKVStorage):
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         return list(self._data.find({"_id": {"$in": ids}}))
 
-    async def filter_keys(self, data: list[str]) -> set[str]:
+    async def filter_keys(self, data: set[str]) -> set[str]:
         existing_ids = [
             str(x["_id"]) for x in self._data.find({"_id": {"$in": data}}, {"_id": 1})
         ]

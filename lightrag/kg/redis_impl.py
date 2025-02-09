@@ -32,7 +32,7 @@ class RedisKVStorage(BaseKVStorage):
         results = await pipe.execute()
         return [json.loads(result) if result else None for result in results]
 
-    async def filter_keys(self, data: list[str]) -> set[str]:
+    async def filter_keys(self, data: set[str]) -> set[str]:
         pipe = self._redis.pipeline()
         for key in data:
             pipe.exists(f"{self.namespace}:{key}")

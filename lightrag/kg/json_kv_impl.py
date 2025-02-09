@@ -38,7 +38,7 @@ class JsonKVStorage(BaseKVStorage):
             for id in ids
         ]
 
-    async def filter_keys(self, data: list[str]) -> set[str]:
+    async def filter_keys(self, data: set[str]) -> set[str]:
         return set([s for s in data if s not in self._data])
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:

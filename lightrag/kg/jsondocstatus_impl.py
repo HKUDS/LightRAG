@@ -52,16 +52,15 @@ import os
 from dataclasses import dataclass
 from typing import Any, Union
 
-from lightrag.utils import (
-    logger,
-    load_json,
-    write_json,
-)
-
 from lightrag.base import (
-    DocStatus,
     DocProcessingStatus,
+    DocStatus,
     DocStatusStorage,
+)
+from lightrag.utils import (
+    load_json,
+    logger,
+    write_json,
 )
 
 
@@ -75,15 +74,17 @@ class JsonDocStatusStorage(DocStatusStorage):
         self._data: dict[str, Any] = load_json(self._file_name) or {}
         logger.info(f"Loaded document status storage with {len(self._data)} records")
 
-    async def filter_keys(self, data: list[str]) -> set[str]:
+    async def filter_keys(self, data: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
-        return set(
-            [
-                k
-                for k in data
-                if k not in self._data or self._data[k]["status"] != DocStatus.PROCESSED
-            ]
-        )
+        return {k for k, _ in self._data.items() if k in data}
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        result: list[dict[str, Any]] = []
+        for id in ids:
+            data = self._data.get(id, None)
+            if data:
+                result.append(data)
+        return result
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -94,11 +95,19 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def get_failed_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all failed documents"""
-        return {k: v for k, v in self._data.items() if v["status"] == DocStatus.FAILED}
+        return {
+            k: DocProcessingStatus(**v)
+            for k, v in self._data.items()
+            if v["status"] == DocStatus.FAILED
+        }
 
     async def get_pending_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all pending documents"""
-        return {k: v for k, v in self._data.items() if v["status"] == DocStatus.PENDING}
+        return {
+            k: DocProcessingStatus(**v)
+            for k, v in self._data.items()
+            if v["status"] == DocStatus.PENDING
+        }
 
     async def index_done_callback(self):
         """Save data to file after indexing"""
@@ -118,7 +127,11 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def get(self, doc_id: str) -> Union[DocProcessingStatus, None]:
         """Get document status by ID"""
-        return self._data.get(doc_id)
+        data = self._data.get(doc_id)
+        if data:
+            return DocProcessingStatus(**data)
+        else:
+            return None
 
     async def delete(self, doc_ids: list[str]):
         """Delete document status by IDs"""

@@ -90,7 +90,7 @@ class BaseKVStorage(StorageNameSpace):
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         raise NotImplementedError
 
-    async def filter_keys(self, data: list[str]) -> set[str]:
+    async def filter_keys(self, data: set[str]) -> set[str]:
         """return un-exist keys"""
         raise NotImplementedError
 
