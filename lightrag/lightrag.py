@@ -494,10 +494,8 @@ class LightRAG:
         # 3. Filter out already processed documents
         # Get docs ids
         all_new_doc_ids = set(new_docs.keys())
-        # Retrieve IDs that are already being processed
-        existing_ids = await self.doc_status.filter_keys(all_new_doc_ids)
         # Exclude IDs of documents that are already in progress
-        unique_new_doc_ids = all_new_doc_ids - existing_ids
+        unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
         # Filter new_docs to only include documents with unique IDs
         new_docs = {doc_id: new_docs[doc_id] for doc_id in unique_new_doc_ids}
 
