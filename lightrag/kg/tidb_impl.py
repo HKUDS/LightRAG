@@ -1,7 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Union
+from typing import Any, Union
 
 import numpy as np
 import pipmaster as pm
@@ -108,33 +108,20 @@ class TiDBKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict, None]:
-        """根据 id 获取 doc_full 数据."""
+    async def get_by_id(self, id: str) -> dict[str, Any]:
+        """Fetch doc_full data by id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"id": id}
         # print("get_by_id:"+SQL)
-        res = await self.db.query(SQL, params)
-        if res:
-            data = res  # {"data":res}
-            # print (data)
-            return data
-        else:
-            return None
+        return await self.db.query(SQL, params)
 
     # Query by id
-    async def get_by_ids(self, ids: list[str], fields=None) -> Union[list[dict], None]:
-        """根据 id 获取 doc_chunks 数据"""
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Fetch doc_chunks data by id"""
         SQL = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
         )
-        # print("get_by_ids:"+SQL)
-        res = await self.db.query(SQL, multirows=True)
-        if res:
-            data = res  # [{"data":i} for i in res]
-            # print(data)
-            return data
-        else:
-            return None
+        return await self.db.query(SQL, multirows=True)
 
     async def filter_keys(self, keys: list[str]) -> set[str]:
         """过滤掉重复内容"""
@@ -158,7 +145,7 @@ class TiDBKVStorage(BaseKVStorage):
         return data
 
     ################ INSERT full_doc AND chunks ################
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, Any]) -> None:
         left_data = {k: v for k, v in data.items() if k not in self._data}
         self._data.update(left_data)
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
@@ -334,6 +321,11 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             if data:
                 merge_sql = SQL_TEMPLATES["insert_relationship"]
                 await self.db.execute(merge_sql, data)
+
+    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
+        SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
+        params = {"workspace": self.db.workspace, "status": status}
+        return await self.db.query(SQL, params, multirows=True)
 
 
 @dataclass

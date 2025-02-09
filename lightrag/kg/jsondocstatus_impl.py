@@ -50,7 +50,7 @@ Usage:
 
 import os
 from dataclasses import dataclass
-from typing import Union, Dict
+from typing import Any, Union
 
 from lightrag.utils import (
     logger,
@@ -72,7 +72,7 @@ class JsonDocStatusStorage(DocStatusStorage):
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
-        self._data = load_json(self._file_name) or {}
+        self._data: dict[str, Any] = load_json(self._file_name) or {}
         logger.info(f"Loaded document status storage with {len(self._data)} records")
 
     async def filter_keys(self, data: list[str]) -> set[str]:
@@ -85,18 +85,18 @@ class JsonDocStatusStorage(DocStatusStorage):
             ]
         )
 
-    async def get_status_counts(self) -> Dict[str, int]:
+    async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         counts = {status: 0 for status in DocStatus}
         for doc in self._data.values():
             counts[doc["status"]] += 1
         return counts
 
-    async def get_failed_docs(self) -> Dict[str, DocProcessingStatus]:
+    async def get_failed_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all failed documents"""
         return {k: v for k, v in self._data.items() if v["status"] == DocStatus.FAILED}
 
-    async def get_pending_docs(self) -> Dict[str, DocProcessingStatus]:
+    async def get_pending_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all pending documents"""
         return {k: v for k, v in self._data.items() if v["status"] == DocStatus.PENDING}
 
@@ -104,7 +104,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         """Save data to file after indexing"""
         write_json(self._data, self._file_name)
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, Any]) -> None:
         """Update or insert document status
 
         Args:
@@ -112,10 +112,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         """
         self._data.update(data)
         await self.index_done_callback()
-        return data
 
-    async def get_by_id(self, id: str):
-        return self._data.get(id)
+    async def get_by_id(self, id: str) -> dict[str, Any]:
+        return self._data.get(id, {})
 
     async def get(self, doc_id: str) -> Union[DocProcessingStatus, None]:
         """Get document status by ID"""
