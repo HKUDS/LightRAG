@@ -457,7 +457,13 @@ class LightRAG:
                 await self._insert_done()
 
     async def apipeline_process_documents(self, string_or_strings: str | list[str]):
-        """Input list remove duplicates, generate document IDs and initial pendding status, filter out already stored documents, store docs
+        """Pipeline process documents
+
+        1. Remove duplicate contents from the list
+        2. Generate document IDs and initial status
+        3. Filter out already stored documents
+        4. Store docs
+
         Args:
             string_or_strings: Single document string or list of document strings
         """
@@ -506,7 +512,18 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
     ) -> None:
-        """Get pendding documents, split into chunks,insert chunks"""
+        """Pipeline process chunks
+
+        1. Get pending documents
+        2. Split documents into chunks
+        3. Insert chunks
+
+        Args:
+            split_by_character (str | None): If not None, split the string by character, if chunk longer than
+                chunk_size, split the sub chunk by token size.
+            split_by_character_only (bool): If split_by_character_only is True, split the string by character only,
+                when split_by_character is None, this parameter is ignored.
+        """
         # 1. get all pending and failed documents
         to_process_doc_keys: list[str] = []
 
