@@ -351,8 +351,20 @@ class LightRAG:
             storage.db = db_client
 
     def insert(
-        self, string_or_strings, split_by_character=None, split_by_character_only=False
+        self,         
+        string_or_strings: Union[str, list[str]],
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
     ):
+        """Sync Insert documents with checkpoint support
+
+        Args:
+            string_or_strings: Single document string or list of document strings
+            split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
+            chunk_size, split the sub chunk by token size.
+            split_by_character_only: if split_by_character_only is True, split the string by character only, when
+            split_by_character is None, this parameter is ignored.
+        """        
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.ainsert(string_or_strings, split_by_character, split_by_character_only)
@@ -364,7 +376,7 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
     ):
-        """Insert documents with checkpoint support
+        """Async Insert documents with checkpoint support
 
         Args:
             string_or_strings: Single document string or list of document strings
