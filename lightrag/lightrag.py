@@ -4,11 +4,16 @@ from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, Type, Union
+from typing import Any, Type, Union, cast
 import traceback
 from .operate import (
     chunking_by_token_size,
-    extract_entities
+    extract_entities,
+    extract_keywords_only,
+    kg_query,
+    kg_query_with_keywords,
+    mix_kg_vector_query,
+    naive_query,
     # local_query,global_query,hybrid_query,,
 )
 
@@ -19,18 +24,21 @@ from .utils import (
     convert_response_to_json,
     logger,
     set_logger,
-    statistic_data
+    statistic_data,
 )
 from .base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
     DocStatus,
+    QueryParam,
+    StorageNameSpace,
 )
 
 from .namespace import NameSpace, make_namespace
 
 from .prompt import GRAPH_FIELD_SEP
+
 STORAGES = {
     "NetworkXStorage": ".kg.networkx_impl",
     "JsonKVStorage": ".kg.json_kv_impl",
@@ -351,9 +359,10 @@ class LightRAG:
         )
 
     async def ainsert(
-        self, string_or_strings: Union[str, list[str]], 
-        split_by_character: str | None = None, 
-        split_by_character_only: bool = False
+        self,
+        string_or_strings: Union[str, list[str]],
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
     ):
         """Insert documents with checkpoint support
 
@@ -367,7 +376,6 @@ class LightRAG:
         await self.apipeline_process_documents(string_or_strings)
         await self.apipeline_process_chunks(split_by_character, split_by_character_only)
         await self.apipeline_process_extract_graph()
-
 
     def insert_custom_chunks(self, full_text: str, text_chunks: list[str]):
         loop = always_get_an_event_loop()
@@ -482,31 +490,27 @@ class LightRAG:
         logger.info(f"Stored {len(new_docs)} new unique documents")
 
     async def apipeline_process_chunks(
-            self,         
-            split_by_character: str | None = None, 
-            split_by_character_only: bool = False
-        ) -> None:
+        self,
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+    ) -> None:
         """Get pendding documents, split into chunks,insert chunks"""
         # 1. get all pending and failed documents
         to_process_doc_keys: list[str] = []
 
         # Process failes
-        to_process_docs = await self.full_docs.get_by_status(
-            status=DocStatus.FAILED
-        )
+        to_process_docs = await self.full_docs.get_by_status(status=DocStatus.FAILED)
         if to_process_docs:
             to_process_doc_keys.extend([doc["id"] for doc in to_process_docs])
-            
+
         # Process Pending
-        to_process_docs = await self.full_docs.get_by_status(
-            status=DocStatus.PENDING
-        )
+        to_process_docs = await self.full_docs.get_by_status(status=DocStatus.PENDING)
         if to_process_docs:
             to_process_doc_keys.extend([doc["id"] for doc in to_process_docs])
 
         if not to_process_doc_keys:
             logger.info("All documents have been processed or are duplicates")
-            return     
+            return
 
         full_docs_ids = await self.full_docs.get_by_ids(to_process_doc_keys)
         new_docs = {}
@@ -515,8 +519,8 @@ class LightRAG:
 
         if not new_docs:
             logger.info("All documents have been processed or are duplicates")
-            return   
-        
+            return
+
         # 2. split docs into chunks, insert chunks, update doc status
         batch_size = self.addon_params.get("insert_batch_size", 10)
         for i in range(0, len(new_docs), batch_size):
@@ -526,11 +530,11 @@ class LightRAG:
                 batch_docs.items(), desc=f"Processing batch {i // batch_size + 1}"
             ):
                 doc_status: dict[str, Any] = {
-                        "content_summary": doc["content_summary"],
-                        "content_length": doc["content_length"],
-                        "status": DocStatus.PROCESSING,
-                        "created_at": doc["created_at"],
-                        "updated_at": datetime.now().isoformat(),
+                    "content_summary": doc["content_summary"],
+                    "content_length": doc["content_length"],
+                    "status": DocStatus.PROCESSING,
+                    "created_at": doc["created_at"],
+                    "updated_at": datetime.now().isoformat(),
                 }
                 try:
                     await self.doc_status.upsert({doc_id: doc_status})
@@ -564,14 +568,16 @@ class LightRAG:
 
                 except Exception as e:
                     doc_status.update(
-                            {
-                                "status": DocStatus.FAILED,
-                                "error": str(e),
-                                "updated_at": datetime.now().isoformat(),
-                            }
-                        )
+                        {
+                            "status": DocStatus.FAILED,
+                            "error": str(e),
+                            "updated_at": datetime.now().isoformat(),
+                        }
+                    )
                     await self.doc_status.upsert({doc_id: doc_status})
-                    logger.error(f"Failed to process document {doc_id}: {str(e)}\n{traceback.format_exc()}")
+                    logger.error(
+                        f"Failed to process document {doc_id}: {str(e)}\n{traceback.format_exc()}"
+                    )
                     continue
 
     async def apipeline_process_extract_graph(self):
@@ -580,22 +586,18 @@ class LightRAG:
         to_process_doc_keys: list[str] = []
 
         # Process failes
-        to_process_docs = await self.full_docs.get_by_status(
-            status=DocStatus.FAILED
-        )
+        to_process_docs = await self.full_docs.get_by_status(status=DocStatus.FAILED)
         if to_process_docs:
             to_process_doc_keys.extend([doc["id"] for doc in to_process_docs])
-            
+
         # Process Pending
-        to_process_docs = await self.full_docs.get_by_status(
-            status=DocStatus.PENDING
-        )
+        to_process_docs = await self.full_docs.get_by_status(status=DocStatus.PENDING)
         if to_process_docs:
             to_process_doc_keys.extend([doc["id"] for doc in to_process_docs])
 
         if not to_process_doc_keys:
             logger.info("All documents have been processed or are duplicates")
-            return   
+            return
 
         # Process documents in batches
         batch_size = self.addon_params.get("insert_batch_size", 10)
@@ -606,7 +608,7 @@ class LightRAG:
 
         async def process_chunk(chunk_id: str):
             async with semaphore:
-                chunks:dict[str, Any] = {
+                chunks: dict[str, Any] = {
                     i["id"]: i for i in await self.text_chunks.get_by_ids([chunk_id])
                 }
                 # Extract and store entities and relationships
@@ -1051,7 +1053,7 @@ class LightRAG:
             return content
         return content[:max_length] + "..."
 
-    async def get_processing_status(self) -> Dict[str, int]:
+    async def get_processing_status(self) -> dict[str, int]:
         """Get current document processing status counts
 
         Returns:

@@ -322,9 +322,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 merge_sql = SQL_TEMPLATES["insert_relationship"]
                 await self.db.execute(merge_sql, data)
 
-    async def get_by_status(
-        self, status: str
-    ) -> Union[list[dict[str, Any]], None]:
+    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
         params = {"workspace": self.db.workspace, "status": status}
         return await self.db.query(SQL, params, multirows=True)
