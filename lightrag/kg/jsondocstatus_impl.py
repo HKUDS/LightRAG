@@ -50,7 +50,7 @@ Usage:
 
 import os
 from dataclasses import dataclass
-from typing import Any, Union, Dict
+from typing import Any, Union
 
 from lightrag.utils import (
     logger,
@@ -85,18 +85,18 @@ class JsonDocStatusStorage(DocStatusStorage):
             ]
         )
 
-    async def get_status_counts(self) -> Dict[str, int]:
+    async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         counts = {status: 0 for status in DocStatus}
         for doc in self._data.values():
             counts[doc["status"]] += 1
         return counts
 
-    async def get_failed_docs(self) -> Dict[str, DocProcessingStatus]:
+    async def get_failed_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all failed documents"""
         return {k: v for k, v in self._data.items() if v["status"] == DocStatus.FAILED}
 
-    async def get_pending_docs(self) -> Dict[str, DocProcessingStatus]:
+    async def get_pending_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all pending documents"""
         return {k: v for k, v in self._data.items() if v["status"] == DocStatus.PENDING}
 

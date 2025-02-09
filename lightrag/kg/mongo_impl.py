@@ -74,6 +74,7 @@ class MongoKVStorage(BaseKVStorage):
         """Drop the collection"""
         await self._data.drop()
 
+
 @dataclass
 class MongoGraphStorage(BaseGraphStorage):
     """
