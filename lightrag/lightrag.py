@@ -540,7 +540,7 @@ class LightRAG:
 
         # 2. split docs into chunks, insert chunks, update doc status
         batch_size = self.addon_params.get("insert_batch_size", 10)
-        batch_docs_list = [
+        docs_batches = [
             list(to_process_docs.items())[i : i + batch_size]
             for i in range(0, len(to_process_docs), batch_size)
         ]
@@ -548,12 +548,12 @@ class LightRAG:
         # 3. iterate over batches
         tasks: dict[str, list[Coroutine[Any, Any, None]]] = {}
 
-        logger.info(f"Number of batches to process: {len(batch_docs_list)}.")
+        logger.info(f"Number of batches to process: {len(docs_batches)}.")
 
-        for batch_idx, ids_doc_processing_status in enumerate(batch_docs_list):
+        for batch_idx, docs_batch in enumerate(docs_batches):
             # 4. iterate over batch
-            for id_doc_processing_status in ids_doc_processing_status:
-                doc_id, status_doc = id_doc_processing_status
+            for doc_id_processing_status in docs_batch:
+                doc_id, status_doc = doc_id_processing_status
                 # Update status in processing
                 await self.doc_status.upsert(
                     {
@@ -570,7 +570,7 @@ class LightRAG:
                 chunks: dict[str, Any] = {
                     compute_mdhash_id(dp["content"], prefix="chunk-"): {
                         **dp,
-                        "full_doc_id": id_doc_processing_status,
+                        "full_doc_id": doc_id,
                     }
                     for dp in self.chunking_func(
                         status_doc.content,
@@ -627,7 +627,7 @@ class LightRAG:
                             }
                         )
                         continue
-            logger.info(f"Completed batch {batch_idx + 1} of {len(batch_docs_list)}.")
+            logger.info(f"Completed batch {batch_idx + 1} of {len(docs_batches)}.")
 
     async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
         try:
