@@ -421,7 +421,7 @@ class PGDocStatusStorage(DocStatusStorage):
     def __post_init__(self):
         pass
 
-    async def filter_keys(self, data: list[str]) -> set[str]:
+    async def filter_keys(self, data: set[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         keys = ",".join([f"'{_id}'" for _id in data])
         sql = (

@@ -1,28 +1,11 @@
 import asyncio
 import os
-from tqdm.asyncio import tqdm as tqdm_async
+from collections.abc import Coroutine
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, Callable, Coroutine, Optional, Type, Union, cast
-from .operate import (
-    chunking_by_token_size,
-    extract_entities,
-    extract_keywords_only,
-    kg_query,
-    kg_query_with_keywords,
-    mix_kg_vector_query,
-    naive_query,
-)
+from typing import Any, Callable, Optional, Type, Union, cast
 
-from .utils import (
-    EmbeddingFunc,
-    compute_mdhash_id,
-    limit_async_func_call,
-    convert_response_to_json,
-    logger,
-    set_logger,
-)
 from .base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -33,10 +16,25 @@ from .base import (
     QueryParam,
     StorageNameSpace,
 )
-
 from .namespace import NameSpace, make_namespace
-
+from .operate import (
+    chunking_by_token_size,
+    extract_entities,
+    extract_keywords_only,
+    kg_query,
+    kg_query_with_keywords,
+    mix_kg_vector_query,
+    naive_query,
+)
 from .prompt import GRAPH_FIELD_SEP
+from .utils import (
+    EmbeddingFunc,
+    compute_mdhash_id,
+    convert_response_to_json,
+    limit_async_func_call,
+    logger,
+    set_logger,
+)
 
 STORAGES = {
     "NetworkXStorage": ".kg.networkx_impl",
@@ -67,7 +65,6 @@ STORAGES = {
 
 def lazy_external_import(module_name: str, class_name: str):
     """Lazily import a class from an external module based on the package of the caller."""
-
     # Get the caller's module and package
     import inspect
 
@@ -113,7 +110,7 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
 @dataclass
 class LightRAG:
     working_dir: str = field(
-        default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
+        default_factory=lambda: f'./lightrag_cache_{datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
     )
     # Default not to use embedding cache
     embedding_cache_config: dict = field(
@@ -496,15 +493,15 @@ class LightRAG:
         }
 
         # 3. Filter out already processed documents
-        add_doc_keys: set[str] = set()
+        new_doc_keys: set[str] = set()
         # Get docs ids
-        in_process_keys = list(new_docs.keys())
+        in_process_keys = set(new_docs.keys())
         # Get in progress docs ids
-        excluded_ids = await self.doc_status.get_by_ids(in_process_keys)
+        excluded_ids = await self.doc_status.filter_keys(list(in_process_keys))
         # Exclude already in process
-        add_doc_keys = new_docs.keys() - excluded_ids
+        new_doc_keys = in_process_keys - excluded_ids
         # Filter
-        new_docs = {k: v for k, v in new_docs.items() if k in add_doc_keys}
+        new_docs = {doc_id: new_docs[doc_id] for doc_id in new_doc_keys}
 
         if not new_docs:
             logger.info("All documents have been processed or are duplicates")
@@ -562,15 +559,12 @@ class LightRAG:
 
         # 3. iterate over batches
         tasks: dict[str, list[Coroutine[Any, Any, None]]] = {}
-        for batch_idx, ids_doc_processing_status in tqdm_async(
-            enumerate(batch_docs_list),
-            desc="Process Batches",
-        ):
+
+        logger.info(f"Number of batches to process: {len(batch_docs_list)}.")
+
+        for batch_idx, ids_doc_processing_status in enumerate(batch_docs_list):
             # 4. iterate over batch
-            for id_doc_processing_status in tqdm_async(
-                ids_doc_processing_status,
-                desc=f"Process Batch {batch_idx}",
-            ):
+            for id_doc_processing_status in ids_doc_processing_status:
                 id_doc, status_doc = id_doc_processing_status
                 # Update status in processing
                 await self.doc_status.upsert(
@@ -644,6 +638,7 @@ class LightRAG:
                             }
                         )
                         continue
+            logger.info(f"Completed batch {batch_idx + 1} of {len(batch_docs_list)}.")
 
     async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
         try:
@@ -895,7 +890,6 @@ class LightRAG:
         1. Extract keywords from the 'query' using new function in operate.py.
         2. Then run the standard aquery() flow with the final prompt (formatted_question).
         """
-
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.aquery_with_separate_keyword_extraction(query, prompt, param)
@@ -908,7 +902,6 @@ class LightRAG:
         1. Calls extract_keywords_only to get HL/LL keywords from 'query'.
         2. Then calls kg_query(...) or naive_query(...), etc. as the main query, while also injecting the newly extracted keywords if needed.
         """
-
         # ---------------------
         # STEP 1: Keyword Extraction
         # ---------------------
