@@ -500,10 +500,7 @@ class LightRAG:
             return
 
         # 4. Store original document
-        for doc_id, doc in new_docs.items():
-            await self.full_docs.upsert(
-                {doc_id: doc}
-            )
+        await self.full_docs.upsert(new_docs)
         logger.info(f"Stored {len(new_docs)} new unique documents")
 
     async def apipeline_process_chunks(
