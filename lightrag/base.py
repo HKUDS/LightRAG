@@ -165,15 +165,24 @@ class DocStatus(str, Enum):
 @dataclass
 class DocProcessingStatus:
     """Document processing status data structure"""
-
-    content_summary: str  # First 100 chars of document content
-    content_length: int  # Total length of document
-    status: DocStatus  # Current processing status
-    created_at: str  # ISO format timestamp
-    updated_at: str  # ISO format timestamp
-    chunks_count: Optional[int] = None  # Number of chunks after splitting
-    error: Optional[str] = None  # Error message if failed
-    metadata: dict[str, Any] = field(default_factory=dict)  # Additional metadata
+    content: str
+    """Original content of the document"""
+    content_summary: str
+    """First 100 chars of document content, used for preview"""
+    content_length: int
+    """Total length of document"""
+    status: DocStatus
+    """Current processing status"""
+    created_at: str
+    """ISO format timestamp when document was created"""
+    updated_at: str
+    """ISO format timestamp when document was last updated"""
+    chunks_count: Optional[int] = None
+    """Number of chunks after splitting, used for processing"""
+    error: Optional[str] = None
+    """Error message if failed"""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    """Additional metadata"""
 
 
 class DocStatusStorage(BaseKVStorage):
