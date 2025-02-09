@@ -125,11 +125,14 @@ if qdrant_uri:
 # MongoDB config
 mongo_uri = config.get("mongodb", "uri", fallback=None)
 mongo_database = config.get("mongodb", "database", fallback="LightRAG")
+mongo_graph = config.getboolean("mongodb", "graph", fallback=False)
 if mongo_uri:
     os.environ["MONGO_URI"] = mongo_uri
     os.environ["MONGO_DATABASE"] = mongo_database
     rag_storage_config.KV_STORAGE = "MongoKVStorage"
     rag_storage_config.DOC_STATUS_STORAGE = "MongoKVStorage"
+    if mongo_graph:
+        rag_storage_config.GRAPH_STORAGE = "MongoGraphStorage"
 
 
 def get_default_host(binding_type: str) -> str:
