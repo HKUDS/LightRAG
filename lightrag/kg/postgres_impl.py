@@ -30,7 +30,6 @@ from ..base import (
     DocStatus,
     DocProcessingStatus,
     BaseGraphStorage,
-    T,
 )
 from ..namespace import NameSpace, is_namespace
 
@@ -184,7 +183,7 @@ class PGKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict, None]:
+    async def get_by_id(self, id: str) -> dict[str, Any]:
         """Get doc_full data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
@@ -193,12 +192,9 @@ class PGKVStorage(BaseKVStorage):
             res = {}
             for row in array_res:
                 res[row["id"]] = row
-        else:
-            res = await self.db.query(sql, params)
-        if res:
             return res
         else:
-            return None
+            return await self.db.query(sql, params)
 
     async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
         """Specifically for llm_response_cache."""
@@ -214,7 +210,7 @@ class PGKVStorage(BaseKVStorage):
             return None
 
     # Query by id
-    async def get_by_ids(self, ids: List[str], fields=None) -> Union[List[dict], None]:
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get doc_chunks data by id"""
         sql = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
@@ -231,23 +227,15 @@ class PGKVStorage(BaseKVStorage):
                     dict_res[mode] = {}
             for row in array_res:
                 dict_res[row["mode"]][row["id"]] = row
-            res = [{k: v} for k, v in dict_res.items()]
+            return [{k: v} for k, v in dict_res.items()]
         else:
-            res = await self.db.query(sql, params, multirows=True)
-        if res:
-            return res
-        else:
-            return None
+            return await self.db.query(sql, params, multirows=True)
 
-    async def all_keys(self) -> list[dict]:
-        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            sql = "select workspace,mode,id from lightrag_llm_cache"
-            res = await self.db.query(sql, multirows=True)
-            return res
-        else:
-            logger.error(
-                f"all_keys is only implemented for llm_response_cache, not for {self.namespace}"
-            )
+    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
+        """Specifically for llm_response_cache."""
+        SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
+        params = {"workspace": self.db.workspace, "status": status}
+        return await self.db.query(SQL, params, multirows=True)
 
     async def filter_keys(self, keys: List[str]) -> Set[str]:
         """Filter out duplicated content"""
@@ -270,7 +258,7 @@ class PGKVStorage(BaseKVStorage):
             print(params)
 
     ################ INSERT METHODS ################
-    async def upsert(self, data: Dict[str, dict]):
+    async def upsert(self, data: dict[str, Any]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             pass
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
@@ -447,14 +435,15 @@ class PGDocStatusStorage(DocStatusStorage):
             existed = set([element["id"] for element in result])
             return set(data) - existed
 
-    async def get_by_id(self, id: str) -> Union[T, None]:
+    async def get_by_id(self, id: str) -> dict[str, Any]:
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"
         params = {"workspace": self.db.workspace, "id": id}
         result = await self.db.query(sql, params, True)
         if result is None or result == []:
-            return None
+            return {}
         else:
             return DocProcessingStatus(
+                content=result[0]["content"],
                 content_length=result[0]["content_length"],
                 content_summary=result[0]["content_summary"],
                 status=result[0]["status"],
@@ -483,10 +472,9 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$1"
         params = {"workspace": self.db.workspace, "status": status}
         result = await self.db.query(sql, params, True)
-        # Result is like [{'id': 'id1', 'status': 'PENDING', 'updated_at': '2023-07-01 00:00:00'}, {'id': 'id2', 'status': 'PENDING', 'updated_at': '2023-07-01 00:00:00'}, ...]
-        # Converting to be a dict
         return {
             element["id"]: DocProcessingStatus(
+                content=result[0]["content"],
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
@@ -518,6 +506,7 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status)
                  values($1,$2,$3,$4,$5,$6)
                   on conflict(id,workspace) do update set
+                  content = EXCLUDED.content,
                   content_summary = EXCLUDED.content_summary,
                   content_length = EXCLUDED.content_length,
                   chunks_count = EXCLUDED.chunks_count,
@@ -530,6 +519,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 {
                     "workspace": self.db.workspace,
                     "id": k,
+                    "content": v["content"],
                     "content_summary": v["content_summary"],
                     "content_length": v["content_length"],
                     "chunks_count": v["chunks_count"] if "chunks_count" in v else -1,

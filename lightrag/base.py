@@ -1,19 +1,17 @@
+from enum import Enum
 import os
 from dataclasses import dataclass, field
 from typing import (
+    Optional,
     TypedDict,
     Union,
     Literal,
-    Generic,
     TypeVar,
-    Optional,
-    Dict,
     Any,
-    List,
 )
-from enum import Enum
 
 import numpy as np
+
 
 from .utils import EmbeddingFunc
 
@@ -45,7 +43,7 @@ class QueryParam:
     hl_keywords: list[str] = field(default_factory=list)
     ll_keywords: list[str] = field(default_factory=list)
     # Conversation history support
-    conversation_history: list[dict] = field(
+    conversation_history: list[dict[str, str]] = field(
         default_factory=list
     )  # Format: [{"role": "user/assistant", "content": "message"}]
     history_turns: int = (
@@ -56,7 +54,7 @@ class QueryParam:
 @dataclass
 class StorageNameSpace:
     namespace: str
-    global_config: dict
+    global_config: dict[str, Any]
 
     async def index_done_callback(self):
         """commit the storage operations after indexing"""
@@ -72,10 +70,10 @@ class BaseVectorStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc
     meta_fields: set = field(default_factory=set)
 
-    async def query(self, query: str, top_k: int) -> list[dict]:
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         raise NotImplementedError
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Use 'content' field from value for embedding, use key as id.
         If embedding_func is None, use 'embedding' field from value
         """
@@ -83,28 +81,23 @@ class BaseVectorStorage(StorageNameSpace):
 
 
 @dataclass
-class BaseKVStorage(Generic[T], StorageNameSpace):
+class BaseKVStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc
 
-    async def all_keys(self) -> list[str]:
+    async def get_by_id(self, id: str) -> dict[str, Any]:
         raise NotImplementedError
 
-    async def get_by_id(self, id: str) -> Union[T, None]:
-        raise NotImplementedError
-
-    async def get_by_ids(
-        self, ids: list[str], fields: Union[set[str], None] = None
-    ) -> list[Union[T, None]]:
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     async def filter_keys(self, data: list[str]) -> set[str]:
         """return un-exist keys"""
         raise NotImplementedError
 
-    async def upsert(self, data: dict[str, T]):
+    async def upsert(self, data: dict[str, Any]) -> None:
         raise NotImplementedError
 
-    async def drop(self):
+    async def drop(self) -> None:
         raise NotImplementedError
 
 
@@ -151,12 +144,12 @@ class BaseGraphStorage(StorageNameSpace):
     async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:
         raise NotImplementedError("Node embedding is not used in lightrag.")
 
-    async def get_all_labels(self) -> List[str]:
+    async def get_all_labels(self) -> list[str]:
         raise NotImplementedError
 
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
-    ) -> Dict[str, List[Dict]]:
+    ) -> dict[str, list[dict]]:
         raise NotImplementedError
 
 
@@ -173,27 +166,37 @@ class DocStatus(str, Enum):
 class DocProcessingStatus:
     """Document processing status data structure"""
 
-    content_summary: str  # First 100 chars of document content
-    content_length: int  # Total length of document
-    status: DocStatus  # Current processing status
-    created_at: str  # ISO format timestamp
-    updated_at: str  # ISO format timestamp
-    chunks_count: Optional[int] = None  # Number of chunks after splitting
-    error: Optional[str] = None  # Error message if failed
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
+    content: str
+    """Original content of the document"""
+    content_summary: str
+    """First 100 chars of document content, used for preview"""
+    content_length: int
+    """Total length of document"""
+    status: DocStatus
+    """Current processing status"""
+    created_at: str
+    """ISO format timestamp when document was created"""
+    updated_at: str
+    """ISO format timestamp when document was last updated"""
+    chunks_count: Optional[int] = None
+    """Number of chunks after splitting, used for processing"""
+    error: Optional[str] = None
+    """Error message if failed"""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    """Additional metadata"""
 
 
 class DocStatusStorage(BaseKVStorage):
     """Base class for document status storage"""
 
-    async def get_status_counts(self) -> Dict[str, int]:
+    async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         raise NotImplementedError
 
-    async def get_failed_docs(self) -> Dict[str, DocProcessingStatus]:
+    async def get_failed_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all failed documents"""
         raise NotImplementedError
 
-    async def get_pending_docs(self) -> Dict[str, DocProcessingStatus]:
+    async def get_pending_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all pending documents"""
         raise NotImplementedError
