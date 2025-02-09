@@ -229,12 +229,6 @@ class OracleKVStorage(BaseKVStorage):
             res = [{k: v} for k, v in dict_res.items()]
         return res
 
-    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
-        """Specifically for llm_response_cache."""
-        SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
-        params = {"workspace": self.db.workspace, "status": status}
-        return await self.db.query(SQL, params, multirows=True)
-
     async def filter_keys(self, keys: list[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         SQL = SQL_TEMPLATES["filter_keys"].format(

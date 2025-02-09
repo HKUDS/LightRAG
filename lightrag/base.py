@@ -84,9 +84,6 @@ class BaseVectorStorage(StorageNameSpace):
 class BaseKVStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc
 
-    async def all_keys(self) -> list[str]:
-        raise NotImplementedError
-
     async def get_by_id(self, id: str) -> dict[str, Any]:
         raise NotImplementedError
 
@@ -101,9 +98,6 @@ class BaseKVStorage(StorageNameSpace):
         raise NotImplementedError
 
     async def drop(self) -> None:
-        raise NotImplementedError
-
-    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         raise NotImplementedError
 
 

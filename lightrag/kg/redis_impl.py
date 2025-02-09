@@ -1,5 +1,5 @@
 import os
-from typing import Any, Union
+from typing import Any
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import pipmaster as pm
@@ -20,11 +20,7 @@ class RedisKVStorage(BaseKVStorage):
         redis_url = os.environ.get("REDIS_URI", "redis://localhost:6379")
         self._redis = Redis.from_url(redis_url, decode_responses=True)
         logger.info(f"Use Redis as KV {self.namespace}")
-
-    async def all_keys(self) -> list[str]:
-        keys = await self._redis.keys(f"{self.namespace}:*")
-        return [key.split(":", 1)[-1] for key in keys]
-
+        
     async def get_by_id(self, id):
         data = await self._redis.get(f"{self.namespace}:{id}")
         return json.loads(data) if data else None
@@ -58,10 +54,3 @@ class RedisKVStorage(BaseKVStorage):
         keys = await self._redis.keys(f"{self.namespace}:*")
         if keys:
             await self._redis.delete(*keys)
-
-    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
-        pipe = self._redis.pipeline()
-        for key in await self._redis.keys(f"{self.namespace}:*"):
-            pipe.hgetall(key)
-        results = await pipe.execute()
-        return [data for data in results if data.get("status") == status] or None

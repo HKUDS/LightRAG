@@ -29,9 +29,6 @@ class MongoKVStorage(BaseKVStorage):
         self._data = database.get_collection(self.namespace)
         logger.info(f"Use MongoDB as KV {self.namespace}")
 
-    async def all_keys(self) -> list[str]:
-        return [x["_id"] for x in self._data.find({}, {"_id": 1})]
-
     async def get_by_id(self, id: str) -> dict[str, Any]:
         return self._data.find_one({"_id": id})
 
@@ -76,11 +73,6 @@ class MongoKVStorage(BaseKVStorage):
     async def drop(self) -> None:
         """Drop the collection"""
         await self._data.drop()
-
-    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
-        """Get documents by status and ids"""
-        return self._data.find({"status": status})
-
 
 @dataclass
 class MongoGraphStorage(BaseGraphStorage):

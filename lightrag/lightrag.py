@@ -29,6 +29,7 @@ from .base import (
     BaseKVStorage,
     BaseVectorStorage,
     DocStatus,
+    DocStatusStorage,
     QueryParam,
     StorageNameSpace,
 )
@@ -319,7 +320,7 @@ class LightRAG:
 
         # Initialize document status storage
         self.doc_status_storage_cls = self._get_storage_class(self.doc_status_storage)
-        self.doc_status: BaseKVStorage = self.doc_status_storage_cls(
+        self.doc_status: DocStatusStorage = self.doc_status_storage_cls(
             namespace=make_namespace(self.namespace_prefix, NameSpace.DOC_STATUS),
             global_config=global_config,
             embedding_func=None,
@@ -394,10 +395,8 @@ class LightRAG:
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
         """
-        await self.apipeline_process_documents(string_or_strings)
-        await self.apipeline_process_enqueue_documents(
-            split_by_character, split_by_character_only
-        )
+        await self.apipeline_enqueue_documents(string_or_strings)
+        await self.apipeline_process_enqueue_documents(split_by_character, split_by_character_only)
 
     def insert_custom_chunks(self, full_text: str, text_chunks: list[str]):
         loop = always_get_an_event_loop()
@@ -496,8 +495,13 @@ class LightRAG:
 
         # 3. Filter out already processed documents
         add_doc_keys: set[str] = set()
-        excluded_ids = await self.doc_status.all_keys()
+        # Get docs ids
+        in_process_keys = list(new_docs.keys())
+        # Get in progress docs ids
+        excluded_ids = await self.doc_status.get_by_ids(in_process_keys)
+        # Exclude already in process
         add_doc_keys = new_docs.keys() - excluded_ids
+        # Filter
         new_docs = {k: v for k, v in new_docs.items() if k in add_doc_keys}
 
         if not new_docs:
@@ -513,12 +517,12 @@ class LightRAG:
         to_process_doc_keys: list[str] = []
 
         # Fetch failed documents
-        failed_docs = await self.doc_status.get_by_status(status=DocStatus.FAILED)
+        failed_docs = await self.doc_status.get_failed_docs()
         if failed_docs:
             to_process_doc_keys.extend([doc["id"] for doc in failed_docs])
 
         # Fetch pending documents
-        pending_docs = await self.doc_status.get_by_status(status=DocStatus.PENDING)
+        pending_docs = await self.doc_status.get_pending_docs()
         if pending_docs:
             to_process_doc_keys.extend([doc["id"] for doc in pending_docs])
 

@@ -1,7 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any
 
 from lightrag.utils import (
     logger,
@@ -21,10 +21,7 @@ class JsonKVStorage(BaseKVStorage):
         self._data: dict[str, Any] = load_json(self._file_name) or {}
         self._lock = asyncio.Lock()
         logger.info(f"Load KV {self.namespace} with {len(self._data)} data")
-
-    async def all_keys(self) -> list[str]:
-        return list(self._data.keys())
-
+        
     async def index_done_callback(self):
         write_json(self._data, self._file_name)
 
@@ -50,7 +47,3 @@ class JsonKVStorage(BaseKVStorage):
 
     async def drop(self) -> None:
         self._data = {}
-
-    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
-        result = [v for _, v in self._data.items() if v["status"] == status]
-        return result if result else None

@@ -237,16 +237,6 @@ class PGKVStorage(BaseKVStorage):
         params = {"workspace": self.db.workspace, "status": status}
         return await self.db.query(SQL, params, multirows=True)
 
-    async def all_keys(self) -> list[dict]:
-        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            sql = "select workspace,mode,id from lightrag_llm_cache"
-            res = await self.db.query(sql, multirows=True)
-            return res
-        else:
-            logger.error(
-                f"all_keys is only implemented for llm_response_cache, not for {self.namespace}"
-            )
-
     async def filter_keys(self, keys: List[str]) -> Set[str]:
         """Filter out duplicated content"""
         sql = SQL_TEMPLATES["filter_keys"].format(
