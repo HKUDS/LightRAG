@@ -231,9 +231,7 @@ class PGKVStorage(BaseKVStorage):
         else:
             return await self.db.query(sql, params, multirows=True)
 
-    async def get_by_status(
-        self, status: str
-    ) -> Union[list[dict[str, Any]], None]:
+    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         """Specifically for llm_response_cache."""
         SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
         params = {"workspace": self.db.workspace, "status": status}

@@ -77,9 +77,7 @@ class MongoKVStorage(BaseKVStorage):
         """Drop the collection"""
         await self._data.drop()
 
-    async def get_by_status(
-        self, status: str
-    ) -> Union[list[dict[str, Any]], None]:
+    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         """Get documents by status and ids"""
         return self._data.find({"status": status})
 

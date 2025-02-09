@@ -51,8 +51,6 @@ class JsonKVStorage(BaseKVStorage):
     async def drop(self) -> None:
         self._data = {}
 
-    async def get_by_status(
-        self, status: str
-    ) -> Union[list[dict[str, Any]], None]:
+    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         result = [v for _, v in self._data.items() if v["status"] == status]
         return result if result else None

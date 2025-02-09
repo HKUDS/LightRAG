@@ -1,12 +1,16 @@
+from enum import Enum
 import os
 from dataclasses import dataclass, field
 from typing import (
+    Optional,
     TypedDict,
     Union,
     Literal,
     TypeVar,
     Any,
 )
+
+import numpy as np
 
 
 from .utils import EmbeddingFunc
@@ -99,9 +103,7 @@ class BaseKVStorage(StorageNameSpace):
     async def drop(self) -> None:
         raise NotImplementedError
 
-    async def get_by_status(
-        self, status: str
-    ) -> Union[list[dict[str, Any]], None]:
+    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         raise NotImplementedError
 
 
@@ -148,12 +150,12 @@ class BaseGraphStorage(StorageNameSpace):
     async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:
         raise NotImplementedError("Node embedding is not used in lightrag.")
 
-    async def get_all_labels(self) -> List[str]:
+    async def get_all_labels(self) -> list[str]:
         raise NotImplementedError
 
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
-    ) -> Dict[str, List[Dict]]:
+    ) -> dict[str, list[dict]]:
         raise NotImplementedError
 
 
@@ -177,20 +179,20 @@ class DocProcessingStatus:
     updated_at: str  # ISO format timestamp
     chunks_count: Optional[int] = None  # Number of chunks after splitting
     error: Optional[str] = None  # Error message if failed
-    metadata: Dict[str, Any] = field(default_factory=dict)  # Additional metadata
+    metadata: dict[str, Any] = field(default_factory=dict)  # Additional metadata
 
 
 class DocStatusStorage(BaseKVStorage):
     """Base class for document status storage"""
 
-    async def get_status_counts(self) -> Dict[str, int]:
+    async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         raise NotImplementedError
 
-    async def get_failed_docs(self) -> Dict[str, DocProcessingStatus]:
+    async def get_failed_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all failed documents"""
         raise NotImplementedError
 
-    async def get_pending_docs(self) -> Dict[str, DocProcessingStatus]:
+    async def get_pending_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all pending documents"""
         raise NotImplementedError
