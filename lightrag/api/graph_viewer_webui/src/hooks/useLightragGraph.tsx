@@ -89,7 +89,7 @@ export type NodeType = {
 export type EdgeType = { label: string }
 
 const fetchGraph = async (label: string) => {
-  const response = await fetch(`http://localhost:9621/graphs?label=${label}`)
+  const response = await fetch(`/graphs?label=${label}`)
   const rawData = await response.json()
 
   let rawGraph = null
