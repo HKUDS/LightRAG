@@ -467,16 +467,14 @@ class LightRAG:
                 await self._insert_done()
 
     async def apipeline_enqueue_documents(self, string_or_strings: str | list[str]):
-        """Pipeline process documents
-
+        """
+        Pipeline for Processing Documents
+            
         1. Remove duplicate contents from the list
         2. Generate document IDs and initial status
-        3. Filter out already stored documents
-        4. Store docs
-
-        Args:
-            string_or_strings: Single document string or list of document strings
-        """
+        3. Filter out already processed documents
+        4. Enqueue document in status 
+        """        
         if isinstance(string_or_strings, str):
             string_or_strings = [string_or_strings]
 
