@@ -62,19 +62,20 @@ class QueryParam:
     max_token_for_local_context: int = 4000
     """Maximum number of tokens allocated for entity descriptions in local retrieval."""
 
-    hl_keywords: List[str] = field(default_factory=list)
+    hl_keywords: list[str] = field(default_factory=list)
     """List of high-level keywords to prioritize in retrieval."""
 
-    ll_keywords: List[str] = field(default_factory=list)
+    ll_keywords: list[str] = field(default_factory=list)
     """List of low-level keywords to refine retrieval focus."""
 
-    conversation_history: List[dict[str, Any]] = field(default_factory=list)
+    conversation_history: list[dict[str, Any]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
     history_turns: int = 3
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
+
 
 @dataclass
 class StorageNameSpace:
