@@ -32,10 +32,10 @@ class MongoKVStorage(BaseKVStorage):
     async def all_keys(self) -> list[str]:
         return [x["_id"] for x in self._data.find({}, {"_id": 1})]
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any]:
         return self._data.find_one({"_id": id})
 
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         return list(self._data.find({"_id": {"$in": ids}}))
 
     async def filter_keys(self, data: list[str]) -> set[str]:
@@ -77,7 +77,7 @@ class MongoKVStorage(BaseKVStorage):
         """Drop the collection"""
         await self._data.drop()
 
-    async def get_by_status_and_ids(
+    async def get_by_status(
         self, status: str
     ) -> Union[list[dict[str, Any]], None]:
         """Get documents by status and ids"""

@@ -28,10 +28,10 @@ class JsonKVStorage(BaseKVStorage):
     async def index_done_callback(self):
         write_json(self._data, self._file_name)
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
-        return self._data.get(id, None)
+    async def get_by_id(self, id: str) -> dict[str, Any]:
+        return self._data.get(id, {})
 
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         return [
             (
                 {k: v for k, v in self._data[id].items()}
@@ -51,7 +51,7 @@ class JsonKVStorage(BaseKVStorage):
     async def drop(self) -> None:
         self._data = {}
 
-    async def get_by_status_and_ids(
+    async def get_by_status(
         self, status: str
     ) -> Union[list[dict[str, Any]], None]:
         result = [v for _, v in self._data.items() if v["status"] == status]
