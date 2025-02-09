@@ -609,7 +609,6 @@ class LightRAG:
                             }
                         }
                     )
-                    logger.error(f"Complete {doc_id}")
                     await self._insert_done()
 
                 except Exception as e:
