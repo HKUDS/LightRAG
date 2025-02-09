@@ -553,11 +553,11 @@ class LightRAG:
         for batch_idx, ids_doc_processing_status in enumerate(batch_docs_list):
             # 4. iterate over batch
             for id_doc_processing_status in ids_doc_processing_status:
-                id_doc, status_doc = id_doc_processing_status
+                doc_id, status_doc = id_doc_processing_status
                 # Update status in processing
                 await self.doc_status.upsert(
                     {
-                        id_doc: {
+                        doc_id: {
                             "status": DocStatus.PROCESSING,
                             "updated_at": datetime.now().isoformat(),
                             "content_summary": status_doc.content_summary,
@@ -586,25 +586,25 @@ class LightRAG:
                 await self.chunks_vdb.upsert(chunks)
                 await self._process_entity_relation_graph(chunks)
 
-                tasks[id_doc] = []
+                tasks[doc_id] = []
 
                 # Check if document already processed the doc
-                if await self.full_docs.get_by_id(id_doc) is None:
-                    tasks[id_doc].append(
-                        self.full_docs.upsert({id_doc: {"content": status_doc.content}})
+                if await self.full_docs.get_by_id(doc_id) is None:
+                    tasks[doc_id].append(
+                        self.full_docs.upsert({doc_id: {"content": status_doc.content}})
                     )
 
                 # Check if chunks already processed  the doc
-                if await self.text_chunks.get_by_id(id_doc) is None:
-                    tasks[id_doc].append(self.text_chunks.upsert(chunks))
+                if await self.text_chunks.get_by_id(doc_id) is None:
+                    tasks[doc_id].append(self.text_chunks.upsert(chunks))
 
                 # Process document (text chunks and full docs) in parallel
-                for id_doc_processing_status, task in tasks.items():
+                for task_doc_id, task in tasks.items():
                     try:
                         await asyncio.gather(*task)
                         await self.doc_status.upsert(
                             {
-                                id_doc_processing_status: {
+                                task_doc_id: {
                                     "status": DocStatus.PROCESSED,
                                     "chunks_count": len(chunks),
                                     "updated_at": datetime.now().isoformat(),
@@ -615,11 +615,11 @@ class LightRAG:
 
                     except Exception as e:
                         logger.error(
-                            f"Failed to process document {id_doc_processing_status}: {str(e)}"
+                            f"Failed to process document {task_doc_id}: {str(e)}"
                         )
                         await self.doc_status.upsert(
                             {
-                                id_doc_processing_status: {
+                                task_doc_id: {
                                     "status": DocStatus.FAILED,
                                     "error": str(e),
                                     "updated_at": datetime.now().isoformat(),
