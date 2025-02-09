@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 from tqdm.asyncio import tqdm as tqdm_async
-from typing import Union
+from typing import Any, Union
 from collections import Counter, defaultdict
 from .utils import (
     logger,
@@ -42,9 +42,9 @@ def chunking_by_token_size(
     max_token_size=1024,
     tiktoken_model="gpt-4o",
     **kwargs,
-):
+) -> list[dict[str, Any]]:
     tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
-    results = []
+    results: list[dict[str, Any]] = []
     if split_by_character:
         raw_chunks = content.split(split_by_character)
         new_chunks = []
