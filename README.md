@@ -410,7 +410,7 @@ with open("./newText.txt") as f:
 ```
 
 ### Insert using Pipeline
-The `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` functions allow you to perform incremental insertion of documents into the graph. 
+The `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` functions allow you to perform incremental insertion of documents into the graph.
 
 This is useful for scenarios where you want to process documents in the background while still allowing the main thread to continue executing.
 
