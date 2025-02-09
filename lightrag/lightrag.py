@@ -5,7 +5,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
 from typing import Any, Callable, Coroutine, Optional, Type, Union, cast
-import traceback
 from .operate import (
     chunking_by_token_size,
     extract_entities,
@@ -560,16 +559,17 @@ class LightRAG:
         batch_docs_list = [
             pending_doc_ids[i : i + batch_size] for i in range(0, len(pending_doc_ids), batch_size)
         ]
-        batch_len = len(batch_docs_list) + 1
-        
+                
         # 3. iterate over batches
         tasks: dict[str, list[Coroutine[Any, Any, None]]] = {}
-        for batch_idx, doc_ids in enumerate(batch_docs_list):
-
+        for batch_idx, doc_ids in tqdm_async(
+            enumerate(batch_docs_list),
+            desc=f"Process Batches",
+        ):
             # 4. iterate over batch
             for doc_id in tqdm_async(
                 doc_ids,
-                desc=f"Level 1 - Batch {batch_idx} /  {batch_len}",
+                desc=f"Process Batch {batch_idx}",
             ):
                 # Update status in processing
                 status_doc = await self.doc_status.get_by_id(doc_id)
@@ -631,7 +631,7 @@ class LightRAG:
 
                     except Exception as e:
                         logger.error(
-                            f"Failed to process document {doc_id}: {str(e)}\n{traceback.format_exc()}"
+                            f"Failed to process document {doc_id}: {str(e)}"
                         )                        
                         await self.doc_status.upsert(
                             {
