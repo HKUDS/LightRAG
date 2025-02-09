@@ -5,14 +5,9 @@ from typing import (
     Union,
     Literal,
     TypeVar,
-    Optional,
-    Dict,
     Any,
-    List,
 )
-from enum import Enum
 
-import numpy as np
 
 from .utils import EmbeddingFunc
 
@@ -88,10 +83,10 @@ class BaseKVStorage(StorageNameSpace):
     async def all_keys(self) -> list[str]:
         raise NotImplementedError
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any]:
         raise NotImplementedError
 
-    async def get_by_ids(self, ids: list[str]) -> list[Union[dict[str, Any], None]]:
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         raise NotImplementedError
 
     async def filter_keys(self, data: list[str]) -> set[str]:
@@ -104,7 +99,7 @@ class BaseKVStorage(StorageNameSpace):
     async def drop(self) -> None:
         raise NotImplementedError
 
-    async def get_by_status_and_ids(
+    async def get_by_status(
         self, status: str
     ) -> Union[list[dict[str, Any]], None]:
         raise NotImplementedError
