@@ -20,7 +20,7 @@ class RedisKVStorage(BaseKVStorage):
         redis_url = os.environ.get("REDIS_URI", "redis://localhost:6379")
         self._redis = Redis.from_url(redis_url, decode_responses=True)
         logger.info(f"Use Redis as KV {self.namespace}")
-        
+
     async def get_by_id(self, id):
         data = await self._redis.get(f"{self.namespace}:{id}")
         return json.loads(data) if data else None
