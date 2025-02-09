@@ -538,16 +538,6 @@ class LightRAG:
             logger.info("All documents have been processed or are duplicates")
             return
 
-        to_process_docs_ids = set(to_process_docs.keys())
-
-        # Get allready processed documents (text chunks and full docs)
-        text_chunks_processed_doc_ids = await self.text_chunks.filter_keys(
-            to_process_docs_ids
-        )
-        full_docs_processed_doc_ids = await self.full_docs.filter_keys(
-            to_process_docs_ids
-        )
-
         # 2. split docs into chunks, insert chunks, update doc status
         batch_size = self.addon_params.get("insert_batch_size", 10)
         batch_docs_list = [
@@ -597,14 +587,15 @@ class LightRAG:
                 await self._process_entity_relation_graph(chunks)
 
                 tasks[id_doc] = []
+
                 # Check if document already processed the doc
-                if id_doc not in full_docs_processed_doc_ids:
+                if await self.full_docs.get_by_id(id_doc) is None:
                     tasks[id_doc].append(
                         self.full_docs.upsert({id_doc: {"content": status_doc.content}})
                     )
 
                 # Check if chunks already processed  the doc
-                if id_doc not in text_chunks_processed_doc_ids:
+                if await self.text_chunks.get_by_id(id_doc) is None:
                     tasks[id_doc].append(self.text_chunks.upsert(chunks))
 
                 # Process document (text chunks and full docs) in parallel
