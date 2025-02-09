@@ -113,6 +113,15 @@ if milvus_uri:
     os.environ["MILVUS_DB_NAME"] = milvus_db_name
     rag_storage_config.VECTOR_STORAGE = "MilvusVectorDBStorge"
 
+# Qdrant config
+qdrant_uri = config.get("qdrant", "uri", fallback=None)
+qdrant_api_key = config.get("qdrant", "apikey", fallback=None)
+if qdrant_uri:
+    os.environ["QDRANT_URL"] = qdrant_uri
+    if qdrant_api_key:
+        os.environ["QDRANT_API_KEY"] = qdrant_api_key
+    rag_storage_config.VECTOR_STORAGE = "QdrantVectorDBStorage"
+
 # MongoDB config
 mongo_uri = config.get("mongodb", "uri", fallback=None)
 mongo_database = config.get("mongodb", "LightRAG", fallback=None)
