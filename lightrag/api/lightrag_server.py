@@ -123,6 +123,7 @@ if mongo_uri:
     rag_storage_config.DOC_STATUS_STORAGE = "MongoKVStorage"
 
 
+
 def get_default_host(binding_type: str) -> str:
     default_hosts = {
         "ollama": os.getenv("LLM_BINDING_HOST", "http://localhost:11434"),
@@ -1451,14 +1452,13 @@ def create_app(args):
             },
         }
 
-    # webui mount /webui/index.html
-    # app.mount(
-    #     "/webui",
-    #     StaticFiles(
-    #         directory=Path(__file__).resolve().parent / "webui" / "static", html=True
-    #     ),
-    #     name="webui_static",
-    # )
+    # Webui mount graph_viewer_webui/dist/index.html
+    webui_dir = Path(__file__).parent / "graph_viewer_webui" / "dist"
+    app.mount(
+        "/webui",
+        StaticFiles(directory=webui_dir, html=True),
+        name="webui_static",
+    )
 
     # Serve the static files
     static_dir = Path(__file__).parent / "static"
