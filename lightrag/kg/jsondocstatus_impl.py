@@ -48,8 +48,8 @@ Usage:
 
 """
 
-import os
 from dataclasses import dataclass
+import os
 from typing import Any, Union
 
 from lightrag.base import (
@@ -76,7 +76,7 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def filter_keys(self, data: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
-        return set(self._data.keys()).difference(data)
+        return set(data) - set(self._data.keys())
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
