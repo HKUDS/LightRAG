@@ -409,7 +409,7 @@ class LightRAG:
             doc_key = compute_mdhash_id(full_text.strip(), prefix="doc-")
             new_docs = {doc_key: {"content": full_text.strip()}}
 
-            _add_doc_keys = await self.full_docs.filter_keys([doc_key])
+            _add_doc_keys = await self.full_docs.filter_keys(set(doc_key))
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
             if not len(new_docs):
                 logger.warning("This document is already in the storage.")
@@ -418,7 +418,7 @@ class LightRAG:
             update_storage = True
             logger.info(f"[New Docs] inserting {len(new_docs)} docs")
 
-            inserting_chunks = {}
+            inserting_chunks: dict[str, Any] = {}
             for chunk_text in text_chunks:
                 chunk_text_stripped = chunk_text.strip()
                 chunk_key = compute_mdhash_id(chunk_text_stripped, prefix="chunk-")
@@ -428,11 +428,10 @@ class LightRAG:
                     "full_doc_id": doc_key,
                 }
 
-            _add_chunk_keys = await self.text_chunks.filter_keys(
-                list(inserting_chunks.keys())
-            )
+            doc_ids = set(inserting_chunks.keys())
+            add_chunk_keys = await self.text_chunks.filter_keys(doc_ids)
             inserting_chunks = {
-                k: v for k, v in inserting_chunks.items() if k in _add_chunk_keys
+                k: v for k, v in inserting_chunks.items() if k in add_chunk_keys
             }
             if not len(inserting_chunks):
                 logger.warning("All chunks are already in the storage.")
@@ -539,7 +538,7 @@ class LightRAG:
             logger.info("All documents have been processed or are duplicates")
             return
 
-        to_process_docs_ids = list(to_process_docs.keys())
+        to_process_docs_ids = set(to_process_docs.keys())
 
         # Get allready processed documents (text chunks and full docs)
         text_chunks_processed_doc_ids = await self.text_chunks.filter_keys(
