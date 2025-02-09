@@ -194,8 +194,6 @@ class LightRAG:
         ],
         list[dict[str, Any]],
     ] = chunking_by_token_size
-    
-    chunking_func_kwargs: dict = field(default_factory=dict)
 
     def __post_init__(self):
         os.makedirs(self.log_dir, exist_ok=True)
@@ -581,12 +579,11 @@ class LightRAG:
                         }
                         for dp in self.chunking_func(
                             doc["content"],
-                            split_by_character=split_by_character,
-                            split_by_character_only=split_by_character_only,
-                            overlap_token_size=self.chunk_overlap_token_size,
-                            max_token_size=self.chunk_token_size,
-                            tiktoken_model=self.tiktoken_model_name,
-                            **self.chunking_func_kwargs,
+                            split_by_character,
+                            split_by_character_only,
+                            self.chunk_overlap_token_size,
+                            self.chunk_token_size,
+                            self.tiktoken_model_name,
                         )
                     }
 
