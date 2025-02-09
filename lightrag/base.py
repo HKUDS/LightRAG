@@ -165,6 +165,7 @@ class DocStatus(str, Enum):
 @dataclass
 class DocProcessingStatus:
     """Document processing status data structure"""
+
     content: str
     """Original content of the document"""
     content_summary: str
