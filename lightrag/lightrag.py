@@ -4,17 +4,15 @@ from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Type, cast, Dict
-
+from typing import Any, Callable, Coroutine, Optional, Type, Union, cast
 from .operate import (
     chunking_by_token_size,
     extract_entities,
-    # local_query,global_query,hybrid_query,
-    kg_query,
-    naive_query,
-    mix_kg_vector_query,
     extract_keywords_only,
+    kg_query,
     kg_query_with_keywords,
+    mix_kg_vector_query,
+    naive_query,
 )
 
 from .utils import (
@@ -24,15 +22,16 @@ from .utils import (
     convert_response_to_json,
     logger,
     set_logger,
-    statistic_data,
 )
 from .base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
-    StorageNameSpace,
-    QueryParam,
+    DocProcessingStatus,
     DocStatus,
+    DocStatusStorage,
+    QueryParam,
+    StorageNameSpace,
 )
 
 from .namespace import NameSpace, make_namespace
@@ -176,15 +175,26 @@ class LightRAG:
     enable_llm_cache_for_entity_extract: bool = True
 
     # extension
-    addon_params: dict = field(default_factory=dict)
-    convert_response_to_json_func: callable = convert_response_to_json
+    addon_params: dict[str, Any] = field(default_factory=dict)
+    convert_response_to_json_func: Callable[[str], dict[str, Any]] = (
+        convert_response_to_json
+    )
 
     # Add new field for document status storage type
     doc_status_storage: str = field(default="JsonDocStatusStorage")
 
     # Custom Chunking Function
-    chunking_func: callable = chunking_by_token_size
-    chunking_func_kwargs: dict = field(default_factory=dict)
+    chunking_func: Callable[
+        [
+            str,
+            Optional[str],
+            bool,
+            int,
+            int,
+            str,
+        ],
+        list[dict[str, Any]],
+    ] = chunking_by_token_size
 
     def __post_init__(self):
         os.makedirs(self.log_dir, exist_ok=True)
@@ -245,19 +255,19 @@ class LightRAG:
         ####
         # add embedding func by walter
         ####
-        self.full_docs = self.key_string_value_json_storage_cls(
+        self.full_docs: BaseKVStorage = self.key_string_value_json_storage_cls(
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_FULL_DOCS
             ),
             embedding_func=self.embedding_func,
         )
-        self.text_chunks = self.key_string_value_json_storage_cls(
+        self.text_chunks: BaseKVStorage = self.key_string_value_json_storage_cls(
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_TEXT_CHUNKS
             ),
             embedding_func=self.embedding_func,
         )
-        self.chunk_entity_relation_graph = self.graph_storage_cls(
+        self.chunk_entity_relation_graph: BaseGraphStorage = self.graph_storage_cls(
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION
             ),
@@ -281,7 +291,7 @@ class LightRAG:
             embedding_func=self.embedding_func,
             meta_fields={"src_id", "tgt_id"},
         )
-        self.chunks_vdb = self.vector_db_storage_cls(
+        self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS
             ),
@@ -310,7 +320,7 @@ class LightRAG:
 
         # Initialize document status storage
         self.doc_status_storage_cls = self._get_storage_class(self.doc_status_storage)
-        self.doc_status = self.doc_status_storage_cls(
+        self.doc_status: DocStatusStorage = self.doc_status_storage_cls(
             namespace=make_namespace(self.namespace_prefix, NameSpace.DOC_STATUS),
             global_config=global_config,
             embedding_func=None,
@@ -351,17 +361,12 @@ class LightRAG:
             storage.db = db_client
 
     def insert(
-        self, string_or_strings, split_by_character=None, split_by_character_only=False
+        self,
+        string_or_strings: Union[str, list[str]],
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
     ):
-        loop = always_get_an_event_loop()
-        return loop.run_until_complete(
-            self.ainsert(string_or_strings, split_by_character, split_by_character_only)
-        )
-
-    async def ainsert(
-        self, string_or_strings, split_by_character=None, split_by_character_only=False
-    ):
-        """Insert documents with checkpoint support
+        """Sync Insert documents with checkpoint support
 
         Args:
             string_or_strings: Single document string or list of document strings
@@ -370,154 +375,30 @@ class LightRAG:
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
         """
-        if isinstance(string_or_strings, str):
-            string_or_strings = [string_or_strings]
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(
+            self.ainsert(string_or_strings, split_by_character, split_by_character_only)
+        )
 
-        # 1. Remove duplicate contents from the list
-        unique_contents = list(set(doc.strip() for doc in string_or_strings))
+    async def ainsert(
+        self,
+        string_or_strings: Union[str, list[str]],
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+    ):
+        """Async Insert documents with checkpoint support
 
-        # 2. Generate document IDs and initial status
-        new_docs = {
-            compute_mdhash_id(content, prefix="doc-"): {
-                "content": content,
-                "content_summary": self._get_content_summary(content),
-                "content_length": len(content),
-                "status": DocStatus.PENDING,
-                "created_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat(),
-            }
-            for content in unique_contents
-        }
-
-        # 3. Filter out already processed documents
-        # _add_doc_keys = await self.doc_status.filter_keys(list(new_docs.keys()))
-        _add_doc_keys = set()
-        for doc_id in new_docs.keys():
-            current_doc = await self.doc_status.get_by_id(doc_id)
-
-            if current_doc is None:
-                _add_doc_keys.add(doc_id)
-                continue  # skip to the next doc_id
-
-            status = None
-            if isinstance(current_doc, dict):
-                status = current_doc["status"]
-            else:
-                status = current_doc.status
-
-            if status == DocStatus.FAILED:
-                _add_doc_keys.add(doc_id)
-
-        new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
-
-        if not new_docs:
-            logger.info("All documents have been processed or are duplicates")
-            return
-
-        logger.info(f"Processing {len(new_docs)} new unique documents")
-
-        # Process documents in batches
-        batch_size = self.addon_params.get("insert_batch_size", 10)
-        for i in range(0, len(new_docs), batch_size):
-            batch_docs = dict(list(new_docs.items())[i : i + batch_size])
-
-            for doc_id, doc in tqdm_async(
-                batch_docs.items(), desc=f"Processing batch {i // batch_size + 1}"
-            ):
-                try:
-                    # Update status to processing
-                    doc_status = {
-                        "content_summary": doc["content_summary"],
-                        "content_length": doc["content_length"],
-                        "status": DocStatus.PROCESSING,
-                        "created_at": doc["created_at"],
-                        "updated_at": datetime.now().isoformat(),
-                    }
-                    await self.doc_status.upsert({doc_id: doc_status})
-
-                    # Generate chunks from document
-                    chunks = {
-                        compute_mdhash_id(dp["content"], prefix="chunk-"): {
-                            **dp,
-                            "full_doc_id": doc_id,
-                        }
-                        for dp in self.chunking_func(
-                            doc["content"],
-                            split_by_character=split_by_character,
-                            split_by_character_only=split_by_character_only,
-                            overlap_token_size=self.chunk_overlap_token_size,
-                            max_token_size=self.chunk_token_size,
-                            tiktoken_model=self.tiktoken_model_name,
-                            **self.chunking_func_kwargs,
-                        )
-                    }
-
-                    # Update status with chunks information
-                    doc_status.update(
-                        {
-                            "chunks_count": len(chunks),
-                            "updated_at": datetime.now().isoformat(),
-                        }
-                    )
-                    await self.doc_status.upsert({doc_id: doc_status})
-
-                    try:
-                        # Store chunks in vector database
-                        await self.chunks_vdb.upsert(chunks)
-
-                        # Extract and store entities and relationships
-                        maybe_new_kg = await extract_entities(
-                            chunks,
-                            knowledge_graph_inst=self.chunk_entity_relation_graph,
-                            entity_vdb=self.entities_vdb,
-                            relationships_vdb=self.relationships_vdb,
-                            llm_response_cache=self.llm_response_cache,
-                            global_config=asdict(self),
-                        )
-
-                        if maybe_new_kg is None:
-                            raise Exception(
-                                "Failed to extract entities and relationships"
-                            )
-
-                        self.chunk_entity_relation_graph = maybe_new_kg
-
-                        # Store original document and chunks
-                        await self.full_docs.upsert(
-                            {doc_id: {"content": doc["content"]}}
-                        )
-                        await self.text_chunks.upsert(chunks)
-
-                        # Update status to processed
-                        doc_status.update(
-                            {
-                                "status": DocStatus.PROCESSED,
-                                "updated_at": datetime.now().isoformat(),
-                            }
-                        )
-                        await self.doc_status.upsert({doc_id: doc_status})
-
-                    except Exception as e:
-                        # Mark as failed if any step fails
-                        doc_status.update(
-                            {
-                                "status": DocStatus.FAILED,
-                                "error": str(e),
-                                "updated_at": datetime.now().isoformat(),
-                            }
-                        )
-                        await self.doc_status.upsert({doc_id: doc_status})
-                        raise e
-
-                except Exception as e:
-                    import traceback
-
-                    error_msg = f"Failed to process document {doc_id}: {str(e)}\n{traceback.format_exc()}"
-                    logger.error(error_msg)
-                    continue
-                else:
-                    # Only update index when processing succeeds
-                    await self._insert_done()
+        Args:
+            string_or_strings: Single document string or list of document strings
+            split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
+            chunk_size, split the sub chunk by token size.
+            split_by_character_only: if split_by_character_only is True, split the string by character only, when
+            split_by_character is None, this parameter is ignored.
+        """
+        await self.apipeline_enqueue_documents(string_or_strings)
+        await self.apipeline_process_enqueue_documents(
+            split_by_character, split_by_character_only
+        )
 
     def insert_custom_chunks(self, full_text: str, text_chunks: list[str]):
         loop = always_get_an_event_loop()
@@ -586,10 +467,14 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
-    async def apipeline_process_documents(self, string_or_strings):
-        """Input list remove duplicates, generate document IDs and initial pendding status, filter out already stored documents, store docs
-        Args:
-            string_or_strings: Single document string or list of document strings
+    async def apipeline_enqueue_documents(self, string_or_strings: str | list[str]):
+        """
+        Pipeline for Processing Documents
+
+        1. Remove duplicate contents from the list
+        2. Generate document IDs and initial status
+        3. Filter out already processed documents
+        4. Enqueue document in status
         """
         if isinstance(string_or_strings, str):
             string_or_strings = [string_or_strings]
@@ -597,183 +482,187 @@ class LightRAG:
         # 1. Remove duplicate contents from the list
         unique_contents = list(set(doc.strip() for doc in string_or_strings))
 
-        logger.info(
-            f"Received {len(string_or_strings)} docs, contains {len(unique_contents)} new unique documents"
-        )
-
         # 2. Generate document IDs and initial status
-        new_docs = {
+        new_docs: dict[str, Any] = {
             compute_mdhash_id(content, prefix="doc-"): {
                 "content": content,
                 "content_summary": self._get_content_summary(content),
                 "content_length": len(content),
                 "status": DocStatus.PENDING,
                 "created_at": datetime.now().isoformat(),
-                "updated_at": None,
+                "updated_at": datetime.now().isoformat(),
             }
             for content in unique_contents
         }
 
         # 3. Filter out already processed documents
-        _not_stored_doc_keys = await self.full_docs.filter_keys(list(new_docs.keys()))
-        if len(_not_stored_doc_keys) < len(new_docs):
-            logger.info(
-                f"Skipping {len(new_docs) - len(_not_stored_doc_keys)} already existing documents"
-            )
-        new_docs = {k: v for k, v in new_docs.items() if k in _not_stored_doc_keys}
+        add_doc_keys: set[str] = set()
+        # Get docs ids
+        in_process_keys = list(new_docs.keys())
+        # Get in progress docs ids
+        excluded_ids = await self.doc_status.get_by_ids(in_process_keys)
+        # Exclude already in process
+        add_doc_keys = new_docs.keys() - excluded_ids
+        # Filter
+        new_docs = {k: v for k, v in new_docs.items() if k in add_doc_keys}
 
         if not new_docs:
             logger.info("All documents have been processed or are duplicates")
-            return None
+            return
 
-        # 4. Store original document
-        for doc_id, doc in new_docs.items():
-            await self.full_docs.upsert({doc_id: {"content": doc["content"]}})
-            await self.full_docs.change_status(doc_id, DocStatus.PENDING)
+        # 4. Store status document
+        await self.doc_status.upsert(new_docs)
         logger.info(f"Stored {len(new_docs)} new unique documents")
 
-    async def apipeline_process_chunks(self):
-        """Get pendding documents, split into chunks,insert chunks"""
-        # 1. get all pending and failed documents
-        _todo_doc_keys = []
-        _failed_doc = await self.full_docs.get_by_status_and_ids(
-            status=DocStatus.FAILED, ids=None
-        )
-        _pendding_doc = await self.full_docs.get_by_status_and_ids(
-            status=DocStatus.PENDING, ids=None
-        )
-        if _failed_doc:
-            _todo_doc_keys.extend([doc["id"] for doc in _failed_doc])
-        if _pendding_doc:
-            _todo_doc_keys.extend([doc["id"] for doc in _pendding_doc])
-        if not _todo_doc_keys:
-            logger.info("All documents have been processed or are duplicates")
-            return None
-        else:
-            logger.info(f"Filtered out {len(_todo_doc_keys)} not processed documents")
+    async def apipeline_process_enqueue_documents(
+        self,
+        split_by_character: str | None = None,
+        split_by_character_only: bool = False,
+    ) -> None:
+        """
+        Process pending documents by splitting them into chunks, processing
+        each chunk for entity and relation extraction, and updating the
+        document status.
 
-        new_docs = {
-            doc["id"]: doc for doc in await self.full_docs.get_by_ids(_todo_doc_keys)
-        }
+        1. Get all pending and failed documents
+        2. Split document content into chunks
+        3. Process each chunk for entity and relation extraction
+        4. Update the document status
+        """
+        # 1. get all pending and failed documents
+        to_process_docs: dict[str, DocProcessingStatus] = {}
+
+        # Fetch failed documents
+        failed_docs = await self.doc_status.get_failed_docs()
+        to_process_docs.update(failed_docs)
+
+        pending_docs = await self.doc_status.get_pending_docs()
+        to_process_docs.update(pending_docs)
+
+        if not to_process_docs:
+            logger.info("All documents have been processed or are duplicates")
+            return
+
+        to_process_docs_ids = list(to_process_docs.keys())
+
+        # Get allready processed documents (text chunks and full docs)
+        text_chunks_processed_doc_ids = await self.text_chunks.filter_keys(
+            to_process_docs_ids
+        )
+        full_docs_processed_doc_ids = await self.full_docs.filter_keys(
+            to_process_docs_ids
+        )
 
         # 2. split docs into chunks, insert chunks, update doc status
-        chunk_cnt = 0
         batch_size = self.addon_params.get("insert_batch_size", 10)
-        for i in range(0, len(new_docs), batch_size):
-            batch_docs = dict(list(new_docs.items())[i : i + batch_size])
-            for doc_id, doc in tqdm_async(
-                batch_docs.items(),
-                desc=f"Level 1 - Spliting doc in batch {i // batch_size + 1}",
+        batch_docs_list = [
+            list(to_process_docs.items())[i : i + batch_size]
+            for i in range(0, len(to_process_docs), batch_size)
+        ]
+
+        # 3. iterate over batches
+        tasks: dict[str, list[Coroutine[Any, Any, None]]] = {}
+        for batch_idx, ids_doc_processing_status in tqdm_async(
+            enumerate(batch_docs_list),
+            desc="Process Batches",
+        ):
+            # 4. iterate over batch
+            for id_doc_processing_status in tqdm_async(
+                ids_doc_processing_status,
+                desc=f"Process Batch {batch_idx}",
             ):
-                try:
-                    # Generate chunks from document
-                    chunks = {
-                        compute_mdhash_id(dp["content"], prefix="chunk-"): {
-                            **dp,
-                            "full_doc_id": doc_id,
-                            "status": DocStatus.PENDING,
-                        }
-                        for dp in chunking_by_token_size(
-                            doc["content"],
-                            overlap_token_size=self.chunk_overlap_token_size,
-                            max_token_size=self.chunk_token_size,
-                            tiktoken_model=self.tiktoken_model_name,
-                        )
-                    }
-                    chunk_cnt += len(chunks)
-                    await self.text_chunks.upsert(chunks)
-                    await self.text_chunks.change_status(doc_id, DocStatus.PROCESSING)
-
-                    try:
-                        # Store chunks in vector database
-                        await self.chunks_vdb.upsert(chunks)
-                        # Update doc status
-                        await self.full_docs.change_status(doc_id, DocStatus.PROCESSED)
-                    except Exception as e:
-                        # Mark as failed if any step fails
-                        await self.full_docs.change_status(doc_id, DocStatus.FAILED)
-                        raise e
-                except Exception as e:
-                    import traceback
-
-                    error_msg = f"Failed to process document {doc_id}: {str(e)}\n{traceback.format_exc()}"
-                    logger.error(error_msg)
-                    continue
-        logger.info(f"Stored {chunk_cnt} chunks from {len(new_docs)} documents")
-
-    async def apipeline_process_extract_graph(self):
-        """Get pendding or failed chunks, extract entities and relationships from each chunk"""
-        # 1. get all pending and failed chunks
-        _todo_chunk_keys = []
-        _failed_chunks = await self.text_chunks.get_by_status_and_ids(
-            status=DocStatus.FAILED, ids=None
-        )
-        _pendding_chunks = await self.text_chunks.get_by_status_and_ids(
-            status=DocStatus.PENDING, ids=None
-        )
-        if _failed_chunks:
-            _todo_chunk_keys.extend([doc["id"] for doc in _failed_chunks])
-        if _pendding_chunks:
-            _todo_chunk_keys.extend([doc["id"] for doc in _pendding_chunks])
-        if not _todo_chunk_keys:
-            logger.info("All chunks have been processed or are duplicates")
-            return None
-
-        # Process documents in batches
-        batch_size = self.addon_params.get("insert_batch_size", 10)
-
-        semaphore = asyncio.Semaphore(
-            batch_size
-        )  # Control the number of tasks that are processed simultaneously
-
-        async def process_chunk(chunk_id):
-            async with semaphore:
-                chunks = {
-                    i["id"]: i for i in await self.text_chunks.get_by_ids([chunk_id])
-                }
-                # Extract and store entities and relationships
-                try:
-                    maybe_new_kg = await extract_entities(
-                        chunks,
-                        knowledge_graph_inst=self.chunk_entity_relation_graph,
-                        entity_vdb=self.entities_vdb,
-                        relationships_vdb=self.relationships_vdb,
-                        llm_response_cache=self.llm_response_cache,
-                        global_config=asdict(self),
-                    )
-                    if maybe_new_kg is None:
-                        logger.info("No entities or relationships extracted!")
-                    # Update status to processed
-                    await self.text_chunks.change_status(chunk_id, DocStatus.PROCESSED)
-                except Exception as e:
-                    logger.error("Failed to extract entities and relationships")
-                    # Mark as failed if any step fails
-                    await self.text_chunks.change_status(chunk_id, DocStatus.FAILED)
-                    raise e
-
-        with tqdm_async(
-            total=len(_todo_chunk_keys),
-            desc="\nLevel 1 - Processing chunks",
-            unit="chunk",
-            position=0,
-        ) as progress:
-            tasks = []
-            for chunk_id in _todo_chunk_keys:
-                task = asyncio.create_task(process_chunk(chunk_id))
-                tasks.append(task)
-
-            for future in asyncio.as_completed(tasks):
-                await future
-                progress.update(1)
-                progress.set_postfix(
+                id_doc, status_doc = id_doc_processing_status
+                # Update status in processing
+                await self.doc_status.upsert(
                     {
-                        "LLM call": statistic_data["llm_call"],
-                        "LLM cache": statistic_data["llm_cache"],
+                        id_doc: {
+                            "status": DocStatus.PROCESSING,
+                            "updated_at": datetime.now().isoformat(),
+                            "content_summary": status_doc.content_summary,
+                            "content_length": status_doc.content_length,
+                            "created_at": status_doc.created_at,
+                        }
                     }
                 )
+                # Generate chunks from document
+                chunks: dict[str, Any] = {
+                    compute_mdhash_id(dp["content"], prefix="chunk-"): {
+                        **dp,
+                        "full_doc_id": id_doc_processing_status,
+                    }
+                    for dp in self.chunking_func(
+                        status_doc.content,
+                        split_by_character,
+                        split_by_character_only,
+                        self.chunk_overlap_token_size,
+                        self.chunk_token_size,
+                        self.tiktoken_model_name,
+                    )
+                }
 
-        # Ensure all indexes are updated after each document
-        await self._insert_done()
+                # Ensure chunk insertion and graph processing happen sequentially, not in parallel
+                await self.chunks_vdb.upsert(chunks)
+                await self._process_entity_relation_graph(chunks)
+
+                tasks[id_doc] = []
+                # Check if document already processed the doc
+                if id_doc not in full_docs_processed_doc_ids:
+                    tasks[id_doc].append(
+                        self.full_docs.upsert({id_doc: {"content": status_doc.content}})
+                    )
+
+                # Check if chunks already processed  the doc
+                if id_doc not in text_chunks_processed_doc_ids:
+                    tasks[id_doc].append(self.text_chunks.upsert(chunks))
+
+                # Process document (text chunks and full docs) in parallel
+                for id_doc_processing_status, task in tasks.items():
+                    try:
+                        await asyncio.gather(*task)
+                        await self.doc_status.upsert(
+                            {
+                                id_doc_processing_status: {
+                                    "status": DocStatus.PROCESSED,
+                                    "chunks_count": len(chunks),
+                                    "updated_at": datetime.now().isoformat(),
+                                }
+                            }
+                        )
+                        await self._insert_done()
+
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to process document {id_doc_processing_status}: {str(e)}"
+                        )
+                        await self.doc_status.upsert(
+                            {
+                                id_doc_processing_status: {
+                                    "status": DocStatus.FAILED,
+                                    "error": str(e),
+                                    "updated_at": datetime.now().isoformat(),
+                                }
+                            }
+                        )
+                        continue
+
+    async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
+        try:
+            new_kg = await extract_entities(
+                chunk,
+                knowledge_graph_inst=self.chunk_entity_relation_graph,
+                entity_vdb=self.entities_vdb,
+                relationships_vdb=self.relationships_vdb,
+                llm_response_cache=self.llm_response_cache,
+                global_config=asdict(self),
+            )
+            if new_kg is None:
+                logger.info("No entities or relationships extracted!")
+            else:
+                self.chunk_entity_relation_graph = new_kg
+
+        except Exception as e:
+            logger.error("Failed to extract entities and relationships")
+            raise e
 
     async def _insert_done(self):
         tasks = []
@@ -1169,7 +1058,7 @@ class LightRAG:
             return content
         return content[:max_length] + "..."
 
-    async def get_processing_status(self) -> Dict[str, int]:
+    async def get_processing_status(self) -> dict[str, int]:
         """Get current document processing status counts
 
         Returns:
