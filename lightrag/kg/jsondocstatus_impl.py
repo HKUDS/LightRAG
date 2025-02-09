@@ -76,7 +76,7 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def filter_keys(self, data: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
-        return set(k for k in data if k not in self._data)
+        return set(self._data.keys()).difference(data)
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
