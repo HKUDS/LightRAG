@@ -121,9 +121,8 @@ async def main():
             texts = [x for x in all_text.split("\n") if x]
 
         # New mode use pipeline
-        await rag.apipeline_process_documents(texts)
-        await rag.apipeline_process_chunks()
-        await rag.apipeline_process_extract_graph()
+        await rag.apipeline_enqueue_documents(texts)
+        await rag.apipeline_process_enqueue_documents()
 
         # Old method use ainsert
         # await rag.ainsert(texts)
