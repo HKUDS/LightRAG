@@ -361,7 +361,7 @@ class QueryParam:
     - "hybrid": Combines local and global retrieval methods.
     - "naive": Performs a basic search without advanced techniques.
     - "mix": Integrates knowledge graph and vector retrieval.
-    """    
+    """
     only_need_context: bool = False
     """If True, only returns the retrieved context without generating a response."""
     response_type: str = "Multiple Paragraphs"
