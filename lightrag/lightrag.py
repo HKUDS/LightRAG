@@ -531,7 +531,7 @@ class LightRAG:
             if not doc:
                 await self.full_docs.upsert({doc_id: {"content": content}})
 
-        async def insert_doc_status(doc_id: str, chunks: dict[str, Any]):
+        async def insert_text_chunks(doc_id: str, chunks: dict[str, Any]):
             # Check if chunks are already processed
             doc = await self.text_chunks.get_by_id(doc_id)
             if not doc:
@@ -598,7 +598,7 @@ class LightRAG:
                 tasks.append(self.chunks_vdb.upsert(chunks))
                 tasks.append(self._process_entity_relation_graph(chunks))
                 tasks.append(insert_full_doc(doc_id, status_doc.content))
-                tasks.append(insert_doc_status(doc_id, chunks))
+                tasks.append(insert_text_chunks(doc_id, chunks))
 
                 try:
                     await asyncio.gather(*tasks)

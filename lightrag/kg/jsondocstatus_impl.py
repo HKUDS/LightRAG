@@ -122,16 +122,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         self._data.update(data)
         await self.index_done_callback()
 
-    async def get_by_id(self, id: str) -> dict[str, Any]:
-        return self._data.get(id, {})
-
-    async def get(self, doc_id: str) -> Union[DocProcessingStatus, None]:
-        """Get document status by ID"""
-        data = self._data.get(doc_id)
-        if data:
-            return DocProcessingStatus(**data)
-        else:
-            return None
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+        return self._data.get(id)
 
     async def delete(self, doc_ids: list[str]):
         """Delete document status by IDs"""
