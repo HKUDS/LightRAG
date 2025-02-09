@@ -408,6 +408,21 @@ rag = LightRAG(
 with open("./newText.txt") as f:
     rag.insert(f.read())
 ```
+
+### Insert using Pipeline
+The `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` functions allow you to perform incremental insertion of documents into the graph. 
+
+This is useful for scenarios where you want to process documents in the background while still allowing the main thread to continue executing.
+
+And using a routine to process news documents.
+
+```python
+rag = LightRAG(..)
+await rag.apipeline_enqueue_documents(string_or_strings)
+# Your routine in loop
+await rag.apipeline_process_enqueue_documents(string_or_strings)
+```
+
 ### Separate Keyword Extraction
 We've introduced a new function `query_with_separate_keyword_extraction` to enhance the keyword extraction capabilities. This function separates the keyword extraction process from the user's prompt, focusing solely on the query to improve the relevance of extracted keywords.
 
