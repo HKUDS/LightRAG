@@ -123,7 +123,6 @@ if mongo_uri:
     rag_storage_config.DOC_STATUS_STORAGE = "MongoKVStorage"
 
 
-
 def get_default_host(binding_type: str) -> str:
     default_hosts = {
         "ollama": os.getenv("LLM_BINDING_HOST", "http://localhost:11434"),
