@@ -43,7 +43,7 @@ class QueryParam:
     hl_keywords: list[str] = field(default_factory=list)
     ll_keywords: list[str] = field(default_factory=list)
     # Conversation history support
-    conversation_history: list[dict] = field(
+    conversation_history: list[dict[str, str]] = field(
         default_factory=list
     )  # Format: [{"role": "user/assistant", "content": "message"}]
     history_turns: int = (
