@@ -437,27 +437,13 @@ class LightRAG:
                 logger.warning("All chunks are already in the storage.")
                 return
 
-            logger.info(f"[New Chunks] inserting {len(inserting_chunks)} chunks")
-
-            await self.chunks_vdb.upsert(inserting_chunks)
-
-            logger.info("[Entity Extraction]...")
-            maybe_new_kg = await extract_entities(
-                inserting_chunks,
-                knowledge_graph_inst=self.chunk_entity_relation_graph,
-                entity_vdb=self.entities_vdb,
-                relationships_vdb=self.relationships_vdb,
-                global_config=asdict(self),
-            )
-
-            if maybe_new_kg is None:
-                logger.warning("No new entities and relationships found")
-                return
-            else:
-                self.chunk_entity_relation_graph = maybe_new_kg
-
-            await self.full_docs.upsert(new_docs)
-            await self.text_chunks.upsert(inserting_chunks)
+            tasks = [
+                self.chunks_vdb.upsert(inserting_chunks),
+                self._process_entity_relation_graph(inserting_chunks),
+                self.full_docs.upsert(new_docs),
+                self.text_chunks.upsert(inserting_chunks),
+            ]
+            await asyncio.gather(*tasks)
 
         finally:
             if update_storage:
