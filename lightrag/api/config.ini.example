@@ -1,0 +1,15 @@
+[neo4j]
+uri = neo4j+s://xxxxxxxx.databases.neo4j.io
+username = neo4j
+password = your-password
+
+[mongodb]
+uri = mongodb+srv://name:password@your-cluster-address
+database = lightrag
+graph = false
+
+[redis]
+uri=redis://localhost:6379/1
+
+[qdrant]
+uri = http://localhost:16333
