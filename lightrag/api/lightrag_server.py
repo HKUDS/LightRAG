@@ -124,7 +124,7 @@ if qdrant_uri:
 
 # MongoDB config
 mongo_uri = config.get("mongodb", "uri", fallback=None)
-mongo_database = config.get("mongodb", "LightRAG", fallback=None)
+mongo_database = config.get("mongodb", "database", fallback="LightRAG")
 if mongo_uri:
     os.environ["MONGO_URI"] = mongo_uri
     os.environ["MONGO_DATABASE"] = mongo_database
