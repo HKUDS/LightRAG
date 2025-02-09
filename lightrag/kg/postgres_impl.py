@@ -443,6 +443,7 @@ class PGDocStatusStorage(DocStatusStorage):
             return {}
         else:
             return DocProcessingStatus(
+                content=result[0]["content"],
                 content_length=result[0]["content_length"],
                 content_summary=result[0]["content_summary"],
                 status=result[0]["status"],
@@ -471,10 +472,9 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$1"
         params = {"workspace": self.db.workspace, "status": status}
         result = await self.db.query(sql, params, True)
-        # Result is like [{'id': 'id1', 'status': 'PENDING', 'updated_at': '2023-07-01 00:00:00'}, {'id': 'id2', 'status': 'PENDING', 'updated_at': '2023-07-01 00:00:00'}, ...]
-        # Converting to be a dict
         return {
             element["id"]: DocProcessingStatus(
+                content=result[0]["content"],
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
@@ -506,6 +506,7 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status)
                  values($1,$2,$3,$4,$5,$6)
                   on conflict(id,workspace) do update set
+                  content = EXCLUDED.content,
                   content_summary = EXCLUDED.content_summary,
                   content_length = EXCLUDED.content_length,
                   chunks_count = EXCLUDED.chunks_count,
@@ -518,6 +519,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 {
                     "workspace": self.db.workspace,
                     "id": k,
+                    "content": v["content"],
                     "content_summary": v["content_summary"],
                     "content_length": v["content_length"],
                     "chunks_count": v["chunks_count"] if "chunks_count" in v else -1,

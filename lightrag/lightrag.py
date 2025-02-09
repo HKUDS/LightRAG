@@ -544,6 +544,7 @@ class LightRAG:
             return
 
         to_process_docs_ids = list(to_process_docs.keys())
+
         # Get allready processed documents (text chunks and full docs)
         text_chunks_processed_doc_ids = await self.text_chunks.filter_keys(
             to_process_docs_ids
@@ -570,9 +571,8 @@ class LightRAG:
                 ids_doc_processing_status,
                 desc=f"Process Batch {batch_idx}",
             ):
-                # Update status in processing
                 id_doc, status_doc = id_doc_processing_status
-
+                # Update status in processing
                 await self.doc_status.upsert(
                     {
                         id_doc: {
@@ -601,8 +601,8 @@ class LightRAG:
                 }
 
                 # Ensure chunk insertion and graph processing happen sequentially, not in parallel
-                await self._process_entity_relation_graph(chunks)
                 await self.chunks_vdb.upsert(chunks)
+                await self._process_entity_relation_graph(chunks)
 
                 tasks[id_doc] = []
                 # Check if document already processed the doc
