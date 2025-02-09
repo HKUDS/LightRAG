@@ -1,6 +1,5 @@
 import asyncio
 import os
-from collections.abc import Coroutine
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
@@ -508,19 +507,6 @@ class LightRAG:
         3. Process each chunk for entity and relation extraction
         4. Update the document status
         """
-
-        async def insert_full_doc(doc_id: str, content: str):
-            # Check if document is already processed
-            doc = await self.full_docs.get_by_id(doc_id)
-            if not doc:
-                await self.full_docs.upsert({doc_id: {"content": content}})
-
-        async def insert_text_chunks(doc_id: str, chunks: dict[str, Any]):
-            # Check if chunks are already processed
-            doc = await self.text_chunks.get_by_id(doc_id)
-            if not doc:
-                await self.text_chunks.upsert(chunks)
-
         # 1. get all pending and failed documents
         to_process_docs: dict[str, DocProcessingStatus] = {}
 
@@ -578,12 +564,12 @@ class LightRAG:
                 }
 
                 # Process document (text chunks and full docs) in parallel
-                tasks: list[Coroutine[Any, Any, None]] = []
-                tasks.append(self.chunks_vdb.upsert(chunks))
-                tasks.append(self._process_entity_relation_graph(chunks))
-                tasks.append(insert_full_doc(doc_id, status_doc.content))
-                tasks.append(insert_text_chunks(doc_id, chunks))
-
+                tasks = [
+                    self.chunks_vdb.upsert(chunks),
+                    self._process_entity_relation_graph(chunks),
+                    self.full_docs.upsert({doc_id: {"content": status_doc.content}}),
+                    self.text_chunks.upsert(chunks),
+                ]
                 try:
                     await asyncio.gather(*tasks)
                     await self.doc_status.upsert(
