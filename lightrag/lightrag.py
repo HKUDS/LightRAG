@@ -4,7 +4,7 @@ from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, Type, Union, cast
+from typing import Any, Callable, Optional, Type, Union, cast
 import traceback
 from .operate import (
     chunking_by_token_size,
@@ -177,13 +177,24 @@ class LightRAG:
 
     # extension
     addon_params: dict[str, Any] = field(default_factory=dict)
-    convert_response_to_json_func: callable = convert_response_to_json
+    convert_response_to_json_func: Callable[[str], dict[str, Any]] = convert_response_to_json
 
     # Add new field for document status storage type
     doc_status_storage: str = field(default="JsonDocStatusStorage")
 
     # Custom Chunking Function
-    chunking_func: callable = chunking_by_token_size
+    chunking_func: Callable[
+        [
+            str,
+            Optional[str],
+            bool,
+            int,
+            int,
+            str,
+        ],
+        list[dict[str, Any]],
+    ] = chunking_by_token_size
+    
     chunking_func_kwargs: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -538,9 +549,7 @@ class LightRAG:
             return
 
         full_docs_ids = await self.full_docs.get_by_ids(to_process_doc_keys)
-        new_docs = {}
-        if full_docs_ids:
-            new_docs = {doc["id"]: doc for doc in full_docs_ids or []}
+        new_docs = {doc["id"]: doc for doc in full_docs_ids or []}    
 
         if not new_docs:
             logger.info("All documents have been processed or are duplicates")

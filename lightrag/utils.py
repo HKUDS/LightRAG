@@ -98,7 +98,7 @@ def locate_json_string_body_from_string(content: str) -> Union[str, None]:
         return None
 
 
-def convert_response_to_json(response: str) -> dict:
+def convert_response_to_json(response: str) -> dict[str, Any]:
     json_str = locate_json_string_body_from_string(response)
     assert json_str is not None, f"Unable to parse JSON from response: {response}"
     try:
