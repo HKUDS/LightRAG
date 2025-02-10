@@ -19,6 +19,7 @@ from qdrant_client import QdrantClient, models
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
+
 def compute_mdhash_id_for_qdrant(
     content: str, prefix: str = "", style: str = "simple"
 ) -> str:
@@ -59,8 +60,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
     def __post_init__(self):
         self._client = QdrantClient(
-            url=os.environ.get("QDRANT_URL", config.get("qdrant", "uri", fallback=None)),
-            api_key=os.environ.get("QDRANT_API_KEY", config.get("qdrant", "apikey", fallback=None)),
+            url=os.environ.get(
+                "QDRANT_URL", config.get("qdrant", "uri", fallback=None)
+            ),
+            api_key=os.environ.get(
+                "QDRANT_API_KEY", config.get("qdrant", "apikey", fallback=None)
+            ),
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
         QdrantVectorDBStorage.create_collection_if_not_exist(

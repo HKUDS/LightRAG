@@ -18,10 +18,13 @@ import json
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
+
 @dataclass
 class RedisKVStorage(BaseKVStorage):
     def __post_init__(self):
-        redis_url = os.environ.get("REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379"))
+        redis_url = os.environ.get(
+            "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
+        )
         self._redis = Redis.from_url(redis_url, decode_responses=True)
         logger.info(f"Use Redis as KV {self.namespace}")
 
