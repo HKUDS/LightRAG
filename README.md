@@ -3,7 +3,7 @@
 <table border="0" width="100%">
 <tr>
 <td width="100" align="center">
-<img src="https://github.com/user-attachments/assets/cb5b8fc1-0859-4f7c-8ec3-63c8ec7aa54b" width="80" height="80" alt="lightrag">
+<img src="https://i-blog.csdnimg.cn/direct/0d97ea81439442a19ac3972ad537a811.png" width="80" height="80" alt="lightrag">
 </td>
 <td>
 <div>
