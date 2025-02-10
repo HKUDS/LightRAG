@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState } from 'react'
 import { randomColor } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
 import { useGraphStore, RawGraph } from '@/stores/graph'
+import { queryGraphs } from '@/api/lightrag'
+import { useBackendState } from '@/stores/state'
 
 const validateGraph = (graph: RawGraph) => {
   if (!graph) {
@@ -46,8 +48,14 @@ export type NodeType = {
 export type EdgeType = { label: string }
 
 const fetchGraph = async (label: string) => {
-  const response = await fetch(`/graphs?label=${label}`)
-  const rawData = await response.json()
+  let rawData: any = null
+
+  try {
+    rawData = await queryGraphs(label)
+  } catch (e) {
+    useBackendState.getState().setErrorMessage(`${e}`, 'Query Graphs Error!')
+    return null
+  }
 
   let rawGraph = null
 

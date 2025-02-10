@@ -153,7 +153,7 @@ export const GraphViewer = () => {
         />
       </div>
 
-      <div className="bg-background/20 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
+      <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
         <Settings />
         <ZoomControl />
         <LayoutsControl />
