@@ -92,7 +92,12 @@ STORAGE_ENV_REQUIREMENTS = {
     "RedisKVStorage": ["REDIS_URI"],
     "TiDBKVStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
-    "OracleKVStorage": ["ORACLE_DSN", "ORACLE_USER", "ORACLE_PASSWORD", "ORACLE_CONFIG_DIR"],
+    "OracleKVStorage": [
+        "ORACLE_DSN",
+        "ORACLE_USER",
+        "ORACLE_PASSWORD",
+        "ORACLE_CONFIG_DIR",
+    ],
     # Graph Storage Implementations
     "NetworkXStorage": [],
     "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
@@ -106,7 +111,12 @@ STORAGE_ENV_REQUIREMENTS = {
     ],
     "GremlinStorage": ["GREMLIN_HOST", "GREMLIN_PORT", "GREMLIN_GRAPH"],
     "PGGraphStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
-    "OracleGraphStorage": ["ORACLE_DSN", "ORACLE_USER", "ORACLE_PASSWORD", , "ORACLE_CONFIG_DIR"],
+    "OracleGraphStorage": [
+        "ORACLE_DSN",
+        "ORACLE_USER",
+        "ORACLE_PASSWORD",
+        "ORACLE_CONFIG_DIR",
+    ],
     # Vector Storage Implementations
     "NanoVectorDBStorage": [],
     "MilvusVectorDBStorge": [],
@@ -115,7 +125,12 @@ STORAGE_ENV_REQUIREMENTS = {
     "PGVectorStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     "FaissVectorDBStorage": [],
     "QdrantVectorDBStorage": ["QDRANT_URL"],  # QDRANT_API_KEY has default value None
-    "OracleVectorDBStorage": ["ORACLE_DSN", "ORACLE_USER", "ORACLE_PASSWORD", "ORACLE_CONFIG_DIR"],
+    "OracleVectorDBStorage": [
+        "ORACLE_DSN",
+        "ORACLE_USER",
+        "ORACLE_PASSWORD",
+        "ORACLE_CONFIG_DIR",
+    ],
     # Document Status Storage Implementations
     "JsonDocStatusStorage": [],
     "PGDocStatusStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
@@ -445,6 +460,7 @@ class LightRAG:
 
             # 初始化 OracleDB 对象
             from .kg.oracle_impl import OracleDB
+
             oracle_db = OracleDB(dbconfig)
             # Check if DB tables exist, if not, tables will be created
             loop = always_get_an_event_loop()
@@ -471,8 +487,7 @@ class LightRAG:
                     config.get("tidb", "host", fallback="localhost"),
                 ),
                 "port": os.environ.get(
-                    "TIDB_PORT", 
-                    config.get("tidb", "port", fallback=4000)
+                    "TIDB_PORT", config.get("tidb", "port", fallback=4000)
                 ),
                 "user": os.environ.get(
                     "TIDB_USER",
@@ -494,6 +509,7 @@ class LightRAG:
 
             # 初始化 TiDB 对象
             from .kg.tidb_impl import TiDB
+
             tidb_db = TiDB(dbconfig)
             # Check if DB tables exist, if not, tables will be created
             loop = always_get_an_event_loop()
@@ -547,6 +563,7 @@ class LightRAG:
 
             # 初始化 PostgreSQLDB 对象
             from .kg.postgres_impl import PostgreSQLDB
+
             postgres_db = PostgreSQLDB(dbconfig)
             # Initialize and check tables
             loop = always_get_an_event_loop()
