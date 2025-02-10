@@ -53,7 +53,9 @@ const fetchGraph = async (label: string) => {
   try {
     rawData = await queryGraphs(label)
   } catch (e) {
-    useBackendState.getState().setErrorMessage(`${e}`, 'Query Graphs Error!')
+    useBackendState
+      .getState()
+      .setErrorMessage(e instanceof Error ? e.message : `${e}`, 'Query Graphs Error!')
     return null
   }
 

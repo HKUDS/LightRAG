@@ -81,7 +81,7 @@ export const checkHealth = async (): Promise<
   } catch (e) {
     return {
       status: 'error',
-      message: `${e}`
+      message: e instanceof Error ? e.message : `${e}`
     }
   }
 }
