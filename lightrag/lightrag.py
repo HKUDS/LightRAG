@@ -542,6 +542,7 @@ class LightRAG:
                         doc_status_id: {
                             "status": DocStatus.PROCESSING,
                             "updated_at": datetime.now().isoformat(),
+                            "content": status_doc.content,
                             "content_summary": status_doc.content_summary,
                             "content_length": status_doc.content_length,
                             "created_at": status_doc.created_at,
@@ -573,7 +574,7 @@ class LightRAG:
                 ]
                 try:
                     await asyncio.gather(*tasks)
-                    await self.doc_status.upsert(
+                    await self.doc_status.update_doc_status(
                         {
                             doc_status_id: {
                                 "status": DocStatus.PROCESSED,
@@ -586,7 +587,7 @@ class LightRAG:
 
                 except Exception as e:
                     logger.error(f"Failed to process document {doc_id}: {str(e)}")
-                    await self.doc_status.upsert(
+                    await self.doc_status.update_doc_status(
                         {
                             doc_status_id: {
                                 "status": DocStatus.FAILED,
