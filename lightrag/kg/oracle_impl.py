@@ -1,27 +1,28 @@
-import os
+import array
 import asyncio
+import os
 
 # import html
 # import os
 from dataclasses import dataclass
 from typing import Any, Union
+
 import numpy as np
-import array
 import pipmaster as pm
 
 if not pm.is_installed("oracledb"):
     pm.install("oracledb")
 
 
-from ..utils import logger
+import oracledb
+
 from ..base import (
     BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
 )
 from ..namespace import NameSpace, is_namespace
-
-import oracledb
+from ..utils import logger
 
 
 class OracleDB:
@@ -107,7 +108,7 @@ class OracleDB:
                         "SELECT id FROM GRAPH_TABLE (lightrag_graph MATCH (a) COLUMNS (a.id)) fetch first row only"
                     )
                 else:
-                    await self.query("SELECT 1 FROM {k}".format(k=k))
+                    await self.query(f"SELECT 1 FROM {k}")
             except Exception as e:
                 logger.error(f"Failed to check table {k} in Oracle database")
                 logger.error(f"Oracle database error: {e}")
@@ -181,8 +182,8 @@ class OracleKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> dict[str, Any]:
-        """get doc_full data based on id."""
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+        """Get doc_full data based on id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
         # print("get_by_id:"+SQL)
@@ -191,7 +192,10 @@ class OracleKVStorage(BaseKVStorage):
             res = {}
             for row in array_res:
                 res[row["id"]] = row
-            return res
+            if res:
+                return res
+            else:
+                return None
         else:
             return await self.db.query(SQL, params)
 
@@ -209,7 +213,7 @@ class OracleKVStorage(BaseKVStorage):
             return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """get doc_chunks data based on id"""
+        """Get doc_chunks data based on id"""
         SQL = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
         )
