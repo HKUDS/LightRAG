@@ -144,7 +144,7 @@ export function AsyncSelect<T>({
         setOptions(originalOptions)
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetcher, debouncedSearchTerm, mounted, preload, filterFn])
 
   const handleSelect = useCallback(
@@ -191,7 +191,7 @@ export function AsyncSelect<T>({
             </div>
           )}
         </div>
-        <CommandList className="max-h-auto" hidden={!open}>
+        <CommandList className="max-h-auto" hidden={!open || debouncedSearchTerm.length === 0}>
           {error && <div className="text-destructive p-4 text-center">{error}</div>}
           {loading && options.length === 0 && (loadingSkeleton || <DefaultLoadingSkeleton />)}
           {!loading &&

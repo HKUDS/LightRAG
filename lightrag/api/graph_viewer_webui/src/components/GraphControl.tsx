@@ -1,13 +1,15 @@
 import { useLoadGraph, useRegisterEvents, useSetSettings, useSigma } from '@react-sigma/core'
 // import { useLayoutCircular } from '@react-sigma/layout-circular'
 import { useLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
 
 // import useRandomGraph, { EdgeType, NodeType } from '@/hooks/useRandomGraph'
 import useLightragGraph, { EdgeType, NodeType } from '@/hooks/useLightragGraph'
 import useTheme from '@/hooks/useTheme'
 import * as Constants from '@/lib/constants'
-import { useSettingsStore } from '@/lib/settings'
+
+import { useSettingsStore } from '@/stores/settings'
+import { useGraphStore } from '@/stores/graph'
 
 const isButtonPressed = (ev: MouseEvent | TouchEvent) => {
   if (ev.type.startsWith('mouse')) {
@@ -18,19 +20,7 @@ const isButtonPressed = (ev: MouseEvent | TouchEvent) => {
   return false
 }
 
-const GraphControl = ({
-  disableHoverEffect,
-  selectedNode,
-  setSelectedNode,
-  focusedNode,
-  setFocusedNode
-}: {
-  disableHoverEffect?: boolean
-  selectedNode: string | null
-  setSelectedNode: (node: string | null) => void
-  focusedNode: string | null
-  setFocusedNode: (node: string | null) => void
-}) => {
+const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) => {
   const { lightrageGraph } = useLightragGraph()
   const sigma = useSigma<NodeType, EdgeType>()
   const registerEvents = useRegisterEvents<NodeType, EdgeType>()
@@ -39,11 +29,13 @@ const GraphControl = ({
   const { assign: assignLayout } = useLayoutForceAtlas2({
     iterations: 20
   })
-  const [focusedEdge, setfocusedEdge] = useState<string | null>(null)
-  const [selectedEdge, setSelectedEdge] = useState<string | null>(null)
 
   const { theme } = useTheme()
   const hideUnselectedEdges = useSettingsStore.use.enableHideUnselectedEdges()
+  const selectedNode = useGraphStore.use.selectedNode()
+  const focusedNode = useGraphStore.use.focusedNode()
+  const selectedEdge = useGraphStore.use.selectedEdge()
+  const focusedEdge = useGraphStore.use.focusedEdge()
 
   /**
    * When component mount
@@ -57,6 +49,9 @@ const GraphControl = ({
       assignLayout()
       Object.assign(graph, { __force_applied: true })
     }
+
+    const { setFocusedNode, setSelectedNode, setFocusedEdge, setSelectedEdge, clearSelection } =
+      useGraphStore.getState()
 
     // Register the events
     registerEvents({
@@ -80,20 +75,17 @@ const GraphControl = ({
       },
       enterEdge: (event) => {
         if (!isButtonPressed(event.event.original)) {
-          setfocusedEdge(event.edge)
+          setFocusedEdge(event.edge)
         }
       },
       leaveEdge: (event) => {
         if (!isButtonPressed(event.event.original)) {
-          setfocusedEdge(null)
+          setFocusedEdge(null)
         }
       },
-      clickStage: () => {
-        setSelectedEdge(null)
-        setSelectedNode(null)
-      }
+      clickStage: () => clearSelection()
     })
-  }, [assignLayout, loadGraph, registerEvents, lightrageGraph, setFocusedNode, setSelectedNode])
+  }, [assignLayout, loadGraph, registerEvents, lightrageGraph])
 
   /**
    * When component mount or hovered node change

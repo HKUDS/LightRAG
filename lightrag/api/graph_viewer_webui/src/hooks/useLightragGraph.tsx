@@ -2,50 +2,7 @@ import Graph, { DirectedGraph } from 'graphology'
 import { useCallback, useEffect, useState } from 'react'
 import { randomColor } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
-
-type RawNodeType = {
-  id: string
-  labels: string[]
-  properties: Record<string, any>
-
-  size: number
-  x: number
-  y: number
-  color: string
-
-  degree: number
-}
-
-type RawEdgeType = {
-  id: string
-  source: string
-  target: string
-  type: string
-  properties: Record<string, any>
-}
-
-class RawGraph {
-  nodes: RawNodeType[] = []
-  edges: RawEdgeType[] = []
-  nodeIdMap: Record<string, number> = {}
-  edgeIdMap: Record<string, number> = {}
-
-  getNode = (nodeId: string) => {
-    const nodeIndex = this.nodeIdMap[nodeId]
-    if (nodeIndex !== undefined) {
-      return this.nodes[nodeIndex]
-    }
-    return undefined
-  }
-
-  getEdge = (edgeId: string) => {
-    const edgeIndex = this.edgeIdMap[edgeId]
-    if (edgeIndex !== undefined) {
-      return this.edges[edgeIndex]
-    }
-    return undefined
-  }
-}
+import { useGraphStore, RawGraph } from '@/stores/graph'
 
 const validateGraph = (graph: RawGraph) => {
   if (!graph) {
@@ -158,67 +115,79 @@ const fetchGraph = async (label: string) => {
   return rawGraph
 }
 
-const graphCache: {
-  label: string | null
-  rawGraph: RawGraph | null
-  convertedGraph: DirectedGraph | null
-} = {
-  label: null,
-  rawGraph: null,
-  convertedGraph: null
+const createSigmaGraph = (rawGraph: RawGraph | null) => {
+  const graph = new DirectedGraph()
+
+  for (const rawNode of rawGraph?.nodes ?? []) {
+    graph.addNode(rawNode.id, {
+      label: rawNode.labels.join(', '),
+      color: rawNode.color,
+      x: rawNode.x,
+      y: rawNode.y,
+      size: rawNode.size,
+      // for node-border
+      borderColor: Constants.nodeBorderColor,
+      borderSize: 0.2
+    })
+  }
+
+  for (const rawEdge of rawGraph?.edges ?? []) {
+    rawEdge.dynamicId = graph.addDirectedEdge(rawEdge.source, rawEdge.target, {
+      label: rawEdge.type
+    })
+  }
+
+  return graph
 }
 
 const useLightrangeGraph = () => {
   const [fetchLabel, setFetchLabel] = useState<string>('*')
-  const [rawGraph, setRawGraph] = useState<RawGraph | null>(graphCache.rawGraph)
+  const rawGraph = useGraphStore.use.rawGraph()
+  const sigmaGraph = useGraphStore.use.sigmaGraph()
+
+  const getNode = useCallback(
+    (nodeId: string) => {
+      return rawGraph?.getNode(nodeId) || null
+    },
+    [rawGraph]
+  )
+
+  const getEdge = useCallback(
+    (edgeId: string, dynamicId: boolean = true) => {
+      return rawGraph?.getEdge(edgeId, dynamicId) || null
+    },
+    [rawGraph]
+  )
 
   useEffect(() => {
     if (fetchLabel) {
-      if (graphCache.label !== fetchLabel) {
+      const state = useGraphStore.getState()
+      if (state.queryLabel !== fetchLabel) {
+        state.reset()
         fetchGraph(fetchLabel).then((data) => {
-          graphCache.convertedGraph = null
-          graphCache.rawGraph = data
-          graphCache.label = fetchLabel
-          setRawGraph(data)
+          state.setQueryLabel(fetchLabel)
+          state.setSigmaGraph(createSigmaGraph(data))
+          data?.buildDynamicMap()
+          state.setRawGraph(data)
         })
       }
     } else {
-      setRawGraph(null)
+      const state = useGraphStore.getState()
+      state.reset()
+      state.setSigmaGraph(new DirectedGraph())
     }
-  }, [fetchLabel, setRawGraph])
+  }, [fetchLabel])
 
   const lightrageGraph = useCallback(() => {
-    if (graphCache.convertedGraph) {
-      return graphCache.convertedGraph as Graph<NodeType, EdgeType>
+    if (sigmaGraph) {
+      return sigmaGraph as Graph<NodeType, EdgeType>
     }
-
-    // Create the graph
     const graph = new DirectedGraph()
-
-    for (const rawNode of rawGraph?.nodes ?? []) {
-      graph.addNode(rawNode.id, {
-        label: rawNode.labels.join(' '),
-        color: rawNode.color,
-        x: rawNode.x,
-        y: rawNode.y,
-        size: rawNode.size,
-        // for node-border
-        borderColor: Constants.nodeBorderColor,
-        borderSize: 0.2
-      })
-    }
-
-    for (const rawEdge of rawGraph?.edges ?? []) {
-      graph.addDirectedEdge(rawEdge.source, rawEdge.target, {
-        label: rawEdge.type
-      })
-    }
-
-    graphCache.convertedGraph = graph
+    useGraphStore.getState().setSigmaGraph(graph)
     return graph as Graph<NodeType, EdgeType>
-  }, [rawGraph])
+  }, [sigmaGraph])
 
-  return { lightrageGraph, fetchLabel, setFetchLabel }
+  return { lightrageGraph, fetchLabel, setFetchLabel, getNode, getEdge }
 }
 
 export default useLightrangeGraph

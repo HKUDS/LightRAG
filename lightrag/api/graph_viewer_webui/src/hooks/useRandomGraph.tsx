@@ -5,6 +5,7 @@ import { useCallback, useEffect, useState } from 'react'
 import seedrandom from 'seedrandom'
 import { randomColor } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
+import { useGraphStore } from '@/stores/graph'
 
 export type NodeType = {
   x: number
@@ -36,6 +37,8 @@ const useRandomGraph = () => {
   }, [])
 
   const randomGraph = useCallback(() => {
+    useGraphStore.getState().reset()
+
     // Create the graph
     const graph = erdosRenyi(UndirectedGraph, { order: 100, probability: 0.1 })
     graph.nodes().forEach((node: string) => {
