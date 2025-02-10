@@ -4,34 +4,35 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Union, List, Dict, Set, Any, Tuple
-import numpy as np
+from typing import Any, Dict, List, Set, Tuple, Union
 
+import numpy as np
 import pipmaster as pm
 
 if not pm.is_installed("asyncpg"):
     pm.install("asyncpg")
 
-import asyncpg
 import sys
-from tqdm.asyncio import tqdm as tqdm_async
+
+import asyncpg
 from tenacity import (
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
+from tqdm.asyncio import tqdm as tqdm_async
 
-from ..utils import logger
 from ..base import (
+    BaseGraphStorage,
     BaseKVStorage,
     BaseVectorStorage,
-    DocStatusStorage,
-    DocStatus,
     DocProcessingStatus,
-    BaseGraphStorage,
+    DocStatus,
+    DocStatusStorage,
 )
 from ..namespace import NameSpace, is_namespace
+from ..utils import logger
 
 if sys.platform.startswith("win"):
     import asyncio.windows_events
@@ -82,7 +83,7 @@ class PostgreSQLDB:
     async def check_tables(self):
         for k, v in TABLES.items():
             try:
-                await self.query("SELECT 1 FROM {k} LIMIT 1".format(k=k))
+                await self.query(f"SELECT 1 FROM {k} LIMIT 1")
             except Exception as e:
                 logger.error(f"Failed to check table {k} in PostgreSQL database")
                 logger.error(f"PostgreSQL database error: {e}")
@@ -183,7 +184,7 @@ class PGKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> dict[str, Any]:
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         """Get doc_full data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
@@ -192,9 +193,10 @@ class PGKVStorage(BaseKVStorage):
             res = {}
             for row in array_res:
                 res[row["id"]] = row
-            return res
+            return res if res else None
         else:
-            return await self.db.query(sql, params)
+            response = await self.db.query(sql, params)
+            return response if response else None
 
     async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
         """Specifically for llm_response_cache."""
@@ -421,7 +423,7 @@ class PGDocStatusStorage(DocStatusStorage):
     def __post_init__(self):
         pass
 
-    async def filter_keys(self, data: list[str]) -> set[str]:
+    async def filter_keys(self, data: set[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         keys = ",".join([f"'{_id}'" for _id in data])
         sql = (
@@ -435,12 +437,12 @@ class PGDocStatusStorage(DocStatusStorage):
             existed = set([element["id"] for element in result])
             return set(data) - existed
 
-    async def get_by_id(self, id: str) -> dict[str, Any]:
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"
         params = {"workspace": self.db.workspace, "id": id}
         result = await self.db.query(sql, params, True)
         if result is None or result == []:
-            return {}
+            return None
         else:
             return DocProcessingStatus(
                 content=result[0]["content"],

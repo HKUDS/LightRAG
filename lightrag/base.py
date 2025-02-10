@@ -1,24 +1,26 @@
-from enum import Enum
 import os
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import (
+    Any,
+    Literal,
     Optional,
     TypedDict,
-    Union,
-    Literal,
     TypeVar,
-    Any,
+    Union,
 )
 
 import numpy as np
 
-
 from .utils import EmbeddingFunc
 
-TextChunkSchema = TypedDict(
-    "TextChunkSchema",
-    {"tokens": int, "content": str, "full_doc_id": str, "chunk_order_index": int},
-)
+
+class TextChunkSchema(TypedDict):
+    tokens: int
+    content: str
+    full_doc_id: str
+    chunk_order_index: int
+
 
 T = TypeVar("T")
 
@@ -57,11 +59,11 @@ class StorageNameSpace:
     global_config: dict[str, Any]
 
     async def index_done_callback(self):
-        """commit the storage operations after indexing"""
+        """Commit the storage operations after indexing"""
         pass
 
     async def query_done_callback(self):
-        """commit the storage operations after querying"""
+        """Commit the storage operations after querying"""
         pass
 
 
@@ -84,14 +86,14 @@ class BaseVectorStorage(StorageNameSpace):
 class BaseKVStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc
 
-    async def get_by_id(self, id: str) -> dict[str, Any]:
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         raise NotImplementedError
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         raise NotImplementedError
 
-    async def filter_keys(self, data: list[str]) -> set[str]:
-        """return un-exist keys"""
+    async def filter_keys(self, data: set[str]) -> set[str]:
+        """Return un-exist keys"""
         raise NotImplementedError
 
     async def upsert(self, data: dict[str, Any]) -> None:
