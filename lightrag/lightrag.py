@@ -447,6 +447,9 @@ class LightRAG:
 
             # 初始化 OracleDB 对象
             oracle_db = OracleDB(dbconfig)
+            # Check if DB tables exist, if not, tables will be created
+            loop = always_get_an_event_loop()
+            loop.run_until_complete(oracle_db.check_tables())
 
             # 只对 Oracle 实现的存储类注入 db 对象
             if self.kv_storage == "OracleKVStorage":
@@ -496,8 +499,11 @@ class LightRAG:
 
             # 初始化 PostgreSQLDB 对象
             postgres_db = PostgreSQLDB(dbconfig)
+            # Initialize and check tables
             loop = always_get_an_event_loop()
             loop.run_until_complete(postgres_db.initdb())
+            # Check if DB tables exist, if not, tables will be created
+            loop.run_until_complete(postgres_db.check_tables())
 
             # 只对 PostgreSQL 实现的存储类注入 db 对象
             if self.kv_storage == "PGKVStorage":
