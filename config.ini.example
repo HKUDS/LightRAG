@@ -13,3 +13,28 @@ uri=redis://localhost:6379/1
 
 [qdrant]
 uri = http://localhost:16333
+
+[oracle]
+dsn = localhost:1521/XEPDB1
+user = your_username
+password = your_password
+config_dir = /path/to/oracle/config
+wallet_location = /path/to/wallet  # 可选
+wallet_password = your_wallet_password  # 可选
+workspace = default  # 可选,默认为default
+
+[tidb]
+host = localhost
+port = 4000
+user = your_username
+password = your_password
+database = your_database
+workspace = default  # 可选,默认为default
+
+[postgres]
+host = localhost
+port = 5432
+user = your_username
+password = your_password
+database = your_database
+workspace = default  # 可选,默认为default
