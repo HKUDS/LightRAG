@@ -361,7 +361,8 @@ class OracleVectorDBStorage(BaseVectorStorage):
 
 @dataclass
 class OracleGraphStorage(BaseGraphStorage):
-    """基于Oracle的图存储模块"""
+    # should pass db object to self.db
+    db: OracleDB = None
 
     def __post_init__(self):
         """从graphml文件加载图"""
