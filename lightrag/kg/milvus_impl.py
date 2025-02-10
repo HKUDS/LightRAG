@@ -16,6 +16,7 @@ from pymilvus import MilvusClient
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
+
 @dataclass
 class MilvusVectorDBStorge(BaseVectorStorage):
     @staticmethod
@@ -30,11 +31,28 @@ class MilvusVectorDBStorge(BaseVectorStorage):
 
     def __post_init__(self):
         self._client = MilvusClient(
-            uri = os.environ.get("MILVUS_URI", config.get("milvus", "uri", fallback=os.path.join(self.global_config["working_dir"], "milvus_lite.db"))),
-            user = os.environ.get("MILVUS_USER", config.get("milvus", "user", fallback=None)),
-            password = os.environ.get("MILVUS_PASSWORD",  config.get("milvus", "password", fallback=None)),
-            token = os.environ.get("MILVUS_TOKEN", config.get("milvus", "token", fallback=None)),
-            db_name = os.environ.get("MILVUS_DB_NAME", config.get("milvus", "db_name", fallback=None)),
+            uri=os.environ.get(
+                "MILVUS_URI",
+                config.get(
+                    "milvus",
+                    "uri",
+                    fallback=os.path.join(
+                        self.global_config["working_dir"], "milvus_lite.db"
+                    ),
+                ),
+            ),
+            user=os.environ.get(
+                "MILVUS_USER", config.get("milvus", "user", fallback=None)
+            ),
+            password=os.environ.get(
+                "MILVUS_PASSWORD", config.get("milvus", "password", fallback=None)
+            ),
+            token=os.environ.get(
+                "MILVUS_TOKEN", config.get("milvus", "token", fallback=None)
+            ),
+            db_name=os.environ.get(
+                "MILVUS_DB_NAME", config.get("milvus", "db_name", fallback=None)
+            ),
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
         MilvusVectorDBStorge.create_collection_if_not_exist(
