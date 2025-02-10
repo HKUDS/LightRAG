@@ -420,13 +420,13 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
 
-        # 检查是否使用了 Oracle 存储实现
+        # Check if Oracle storage implementation is used
         if (
             self.kv_storage == "OracleKVStorage"
             or self.vector_storage == "OracleVectorDBStorage"
             or self.graph_storage == "OracleGraphStorage"
         ):
-            # 从环境变量或配置文件获取参数
+            # Get parameters from environment variables or config file
             dbconfig = {
                 "user": os.environ.get(
                     "ORACLE_USER",
@@ -458,7 +458,7 @@ class LightRAG:
                 ),
             }
 
-            # 初始化 OracleDB 对象
+            # Initialize OracleDB object
             from .kg.oracle_impl import OracleDB
 
             oracle_db = OracleDB(dbconfig)
@@ -466,7 +466,7 @@ class LightRAG:
             loop = always_get_an_event_loop()
             loop.run_until_complete(oracle_db.check_tables())
 
-            # 只对 Oracle 实现的存储类注入 db 对象
+            # Only inject db object for Oracle storage implementations
             if self.kv_storage == "OracleKVStorage":
                 self.key_string_value_json_storage_cls.db = oracle_db
             if self.vector_storage == "OracleVectorDBStorage":
@@ -474,13 +474,13 @@ class LightRAG:
             if self.graph_storage == "OracleGraphStorage":
                 self.graph_storage_cls.db = oracle_db
 
-        # 检查是否使用了 TiDB 存储实现
+        # Check if TiDB storage implementation is used
         if (
             self.kv_storage == "TiDBKVStorage"
             or self.vector_storage == "TiDBVectorDBStorage"
             or self.graph_storage == "TiDBGraphStorage"
         ):
-            # 从环境变量或配置文件获取参数
+            # Get parameters from environment variables or config file
             dbconfig = {
                 "host": os.environ.get(
                     "TIDB_HOST",
@@ -507,7 +507,7 @@ class LightRAG:
                 ),
             }
 
-            # 初始化 TiDB 对象
+            # Initialize TiDB object
             from .kg.tidb_impl import TiDB
 
             tidb_db = TiDB(dbconfig)
@@ -515,7 +515,7 @@ class LightRAG:
             loop = always_get_an_event_loop()
             loop.run_until_complete(tidb_db.check_tables())
 
-            # 只对 TiDB 实现的存储类注入 db 对象
+            # Only inject db object for TiDB storage implementations
             if self.kv_storage == "TiDBKVStorage":
                 self.key_string_value_json_storage_cls.db = tidb_db
             if self.vector_storage == "TiDBVectorDBStorage":
@@ -523,19 +523,19 @@ class LightRAG:
             if self.graph_storage == "TiDBGraphStorage":
                 self.graph_storage_cls.db = tidb_db
 
-        # 检查是否使用了 PostgreSQL 存储实现
+        # Check if PostgreSQL storage implementation is used
         if (
             self.kv_storage == "PGKVStorage"
             or self.vector_storage == "PGVectorStorage"
             or self.graph_storage == "PGGraphStorage"
             or self.json_doc_status_storage == "PGDocStatusStorage"
         ):
-            # 读取配置文件
+            # Read configuration file
             config_parser = configparser.ConfigParser()
             if os.path.exists("config.ini"):
                 config_parser.read("config.ini")
 
-            # 从环境变量或配置文件获取参数
+            # Get parameters from environment variables or config file
             dbconfig = {
                 "host": os.environ.get(
                     "POSTGRES_HOST",
@@ -561,7 +561,7 @@ class LightRAG:
                 ),
             }
 
-            # 初始化 PostgreSQLDB 对象
+            # Initialize PostgreSQLDB object
             from .kg.postgres_impl import PostgreSQLDB
 
             postgres_db = PostgreSQLDB(dbconfig)
@@ -571,7 +571,7 @@ class LightRAG:
             # Check if DB tables exist, if not, tables will be created
             loop.run_until_complete(postgres_db.check_tables())
 
-            # 只对 PostgreSQL 实现的存储类注入 db 对象
+            # Only inject db object for PostgreSQL storage implementations
             if self.kv_storage == "PGKVStorage":
                 self.key_string_value_json_storage_cls.db = postgres_db
             if self.vector_storage == "PGVectorStorage":
@@ -582,7 +582,7 @@ class LightRAG:
                 self.json_doc_status_storage = postgres_db
 
         ####
-        # add embedding func by walter
+        # Add embedding function by walter
         ####
         self.full_docs: BaseKVStorage = self.key_string_value_json_storage_cls(
             namespace=make_namespace(
@@ -603,7 +603,7 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
         ####
-        # add embedding func by walter over
+        # End of adding embedding function by walter
         ####
 
         self.entities_vdb = self.vector_db_storage_cls(
