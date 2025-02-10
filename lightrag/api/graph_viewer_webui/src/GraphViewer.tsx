@@ -15,6 +15,7 @@ import ZoomControl from '@/components/ZoomControl'
 import FullScreenControl from '@/components/FullScreenControl'
 import Settings from '@/components/Settings'
 import GraphSearch from '@/components/GraphSearch'
+import GraphLabels from '@/components/GraphLabels'
 import PropertiesView from '@/components/PropertiesView'
 
 import { useSettingsStore } from '@/stores/settings'
@@ -144,9 +145,9 @@ export const GraphViewer = () => {
 
       <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-      <div className="absolute top-2 left-2">
+      <div className="absolute top-2 left-2 flex items-start gap-2">
+        <GraphLabels />
         <GraphSearch
-          type="nodes"
           value={searchInitSelectedNode}
           onFocus={onSearchFocus}
           onChange={onSearchSelect}

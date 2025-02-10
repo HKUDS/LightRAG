@@ -1,14 +1,14 @@
-import { FC, useCallback } from 'react'
+import { FC, useCallback, useMemo } from 'react'
 import {
   EdgeById,
   NodeById,
-  useGraphSearch,
   GraphSearchInputProps,
-  GraphSearchContextProvider,
   GraphSearchContextProviderProps
 } from '@react-sigma/graph-search'
-import { AsyncSelect } from '@/components/ui/AsyncSelect'
+import { AsyncSearch } from '@/components/ui/AsyncSearch'
 import { searchResultLimit } from '@/lib/constants'
+import { useGraphStore } from '@/stores/graph'
+import MiniSearch from 'minisearch'
 
 interface OptionItem {
   id: string
@@ -27,6 +27,10 @@ function OptionComponent(item: OptionItem) {
 }
 
 const messageId = '__message_item'
+const lastGraph: any = {
+  graph: null,
+  searchEngine: null
+}
 
 /**
  * Component thats display the search input.
@@ -34,15 +38,44 @@ const messageId = '__message_item'
 export const GraphSearchInput = ({
   onChange,
   onFocus,
-  type,
   value
 }: {
   onChange: GraphSearchInputProps['onChange']
   onFocus?: GraphSearchInputProps['onFocus']
-  type?: GraphSearchInputProps['type']
   value?: GraphSearchInputProps['value']
 }) => {
-  const { search } = useGraphSearch()
+  const graph = useGraphStore.use.sigmaGraph()
+
+  const search = useMemo(() => {
+    if (lastGraph.graph == graph) {
+      return lastGraph.searchEngine
+    }
+    if (!graph || graph.nodes().length == 0) return
+
+    lastGraph.graph = graph
+
+    const searchEngine = new MiniSearch({
+      idField: 'id',
+      fields: ['label'],
+      searchOptions: {
+        prefix: true,
+        fuzzy: 0.2,
+        boost: {
+          label: 2
+        }
+      }
+    })
+
+    // Add documents
+    const documents = graph.nodes().map((id: string) => ({
+      id: id,
+      label: graph.getNodeAttribute(id, 'label')
+    }))
+    searchEngine.addAll(documents)
+
+    lastGraph.searchEngine = searchEngine
+    return searchEngine
+  }, [graph])
 
   /**
    * Loading the options while the user is typing.
@@ -50,8 +83,11 @@ export const GraphSearchInput = ({
   const loadOptions = useCallback(
     async (query?: string): Promise<OptionItem[]> => {
       if (onFocus) onFocus(null)
-      if (!query) return []
-      const result = (await search(query, type)) as OptionItem[]
+      if (!query || !search) return []
+      const result: OptionItem[] = search.search(query).map((result) => ({
+        id: result.id,
+        type: 'nodes'
+      }))
 
       // prettier-ignore
       return result.length <= searchResultLimit
@@ -65,25 +101,24 @@ export const GraphSearchInput = ({
           }
         ]
     },
-    [type, search, onFocus]
+    [search, onFocus]
   )
 
   return (
-    <AsyncSelect
-      className="bg-background/60 w-52 rounded-xl border-1 opacity-60 backdrop-blur-lg transition-opacity hover:opacity-100"
+    <AsyncSearch
+      className="bg-background/60 w-24 rounded-xl border-1 opacity-60 backdrop-blur-lg transition-all hover:w-fit hover:opacity-100"
       fetcher={loadOptions}
       renderOption={OptionComponent}
       getOptionValue={(item) => item.id}
       value={value && value.type !== 'message' ? value.id : null}
       onChange={(id) => {
-        if (id !== messageId && type) onChange(id ? { id, type } : null)
+        if (id !== messageId) onChange(id ? { id, type: 'nodes' } : null)
       }}
       onFocus={(id) => {
-        if (id !== messageId && onFocus && type) onFocus(id ? { id, type } : null)
+        if (id !== messageId && onFocus) onFocus(id ? { id, type: 'nodes' } : null)
       }}
       label={'item'}
-      preload={false}
-      placeholder="Type search here..."
+      placeholder="Search nodes..."
     />
   )
 }
@@ -91,13 +126,8 @@ export const GraphSearchInput = ({
 /**
  * Component that display the search.
  */
-const GraphSearch: FC<GraphSearchInputProps & GraphSearchContextProviderProps> = ({
-  minisearchOptions,
-  ...props
-}) => (
-  <GraphSearchContextProvider minisearchOptions={minisearchOptions}>
-    <GraphSearchInput {...props} />
-  </GraphSearchContextProvider>
-)
+const GraphSearch: FC<GraphSearchInputProps & GraphSearchContextProviderProps> = ({ ...props }) => {
+  return <GraphSearchInput {...props} />
+}
 
 export default GraphSearch
