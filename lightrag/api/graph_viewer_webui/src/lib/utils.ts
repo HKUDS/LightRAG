@@ -15,6 +15,10 @@ export function randomColor() {
   return code
 }
 
+export function errorMessage(error: any) {
+  return error instanceof Error ? error.message : `${error}`
+}
+
 type WithSelectors<S> = S extends { getState: () => infer T }
   ? S & { use: { [K in keyof T]: () => T[K] } }
   : never

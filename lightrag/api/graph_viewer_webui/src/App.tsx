@@ -1,18 +1,28 @@
 import ThemeProvider from '@/components/ThemeProvider'
-import BackendMessageAlert from '@/components/BackendMessageAlert'
+import MessageAlert from '@/components/MessageAlert'
 import { GraphViewer } from '@/GraphViewer'
 import { cn } from '@/lib/utils'
+import { healthCheckInterval } from '@/lib/constants'
 import { useBackendState } from '@/stores/state'
+import { useEffect } from 'react'
 
 function App() {
-  const health = useBackendState.use.health()
+  const message = useBackendState.use.message()
+
+  // health check
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      await useBackendState.getState().check()
+    }, healthCheckInterval * 1000)
+    return () => clearInterval(interval)
+  }, [])
 
   return (
     <ThemeProvider>
-      <div className={cn('h-screen w-screen', !health && 'pointer-events-none')}>
+      <div className={cn('h-screen w-screen', message !== null && 'pointer-events-none')}>
         <GraphViewer />
       </div>
-      {!health && <BackendMessageAlert />}
+      {message !== null && <MessageAlert />}
     </ThemeProvider>
   )
 }

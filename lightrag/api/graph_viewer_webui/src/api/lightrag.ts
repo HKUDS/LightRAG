@@ -1,4 +1,5 @@
 import { backendBaseUrl } from '@/lib/constants'
+import { errorMessage } from '@/lib/utils'
 
 export type LightragNodeType = {
   id: string
@@ -81,7 +82,7 @@ export const checkHealth = async (): Promise<
   } catch (e) {
     return {
       status: 'error',
-      message: e instanceof Error ? e.message : `${e}`
+      message: errorMessage(e)
     }
   }
 }

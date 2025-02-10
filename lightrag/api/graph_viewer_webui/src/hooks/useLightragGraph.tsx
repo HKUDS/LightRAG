@@ -1,10 +1,13 @@
 import Graph, { DirectedGraph } from 'graphology'
-import { useCallback, useEffect, useState } from 'react'
-import { randomColor } from '@/lib/utils'
+import { useCallback, useEffect } from 'react'
+import { randomColor, errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
 import { useGraphStore, RawGraph } from '@/stores/graph'
 import { queryGraphs } from '@/api/lightrag'
 import { useBackendState } from '@/stores/state'
+import { useSettingsStore } from '@/stores/settings'
+
+import seedrandom from 'seedrandom'
 
 const validateGraph = (graph: RawGraph) => {
   if (!graph) {
@@ -53,9 +56,7 @@ const fetchGraph = async (label: string) => {
   try {
     rawData = await queryGraphs(label)
   } catch (e) {
-    useBackendState
-      .getState()
-      .setErrorMessage(e instanceof Error ? e.message : `${e}`, 'Query Graphs Error!')
+    useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!')
     return null
   }
 
@@ -69,9 +70,11 @@ const fetchGraph = async (label: string) => {
       const node = rawData.nodes[i]
       nodeIdMap[node.id] = i
 
+      // const seed = node.labels.length > 0 ? node.labels[0] : node.id
+      seedrandom(node.id, { global: true })
+      node.color = randomColor()
       node.x = Math.random()
       node.y = Math.random()
-      node.color = randomColor()
       node.degree = 0
       node.size = 10
     }
@@ -150,8 +153,10 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   return graph
 }
 
+const lastQueryLabel = { label: '' }
+
 const useLightrangeGraph = () => {
-  const [fetchLabel, setFetchLabel] = useState<string>('*')
+  const queryLabel = useSettingsStore.use.queryLabel()
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
 
@@ -170,12 +175,13 @@ const useLightrangeGraph = () => {
   )
 
   useEffect(() => {
-    if (fetchLabel) {
-      const state = useGraphStore.getState()
-      if (state.queryLabel !== fetchLabel) {
+    if (queryLabel) {
+      if (lastQueryLabel.label !== queryLabel) {
+        lastQueryLabel.label = queryLabel
+        const state = useGraphStore.getState()
         state.reset()
-        fetchGraph(fetchLabel).then((data) => {
-          state.setQueryLabel(fetchLabel)
+        fetchGraph(queryLabel).then((data) => {
+          // console.debug('Query label: ' + queryLabel)
           state.setSigmaGraph(createSigmaGraph(data))
           data?.buildDynamicMap()
           state.setRawGraph(data)
@@ -186,7 +192,7 @@ const useLightrangeGraph = () => {
       state.reset()
       state.setSigmaGraph(new DirectedGraph())
     }
-  }, [fetchLabel])
+  }, [queryLabel])
 
   const lightrageGraph = useCallback(() => {
     if (sigmaGraph) {
@@ -197,7 +203,7 @@ const useLightrangeGraph = () => {
     return graph as Graph<NodeType, EdgeType>
   }, [sigmaGraph])
 
-  return { lightrageGraph, fetchLabel, setFetchLabel, getNode, getEdge }
+  return { lightrageGraph, getNode, getEdge }
 }
 
 export default useLightrangeGraph

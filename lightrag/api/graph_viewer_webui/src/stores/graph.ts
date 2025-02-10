@@ -63,7 +63,6 @@ interface GraphState {
   selectedEdge: string | null
   focusedEdge: string | null
 
-  queryLabel: string | null
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
 
@@ -78,7 +77,6 @@ interface GraphState {
 
   setMoveToSelectedNode: (moveToSelectedNode: boolean) => void
 
-  setQueryLabel: (queryLabel: string | null) => void
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
 }
@@ -91,7 +89,6 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   moveToSelectedNode: false,
 
-  queryLabel: null,
   rawGraph: null,
   sigmaGraph: null,
 
@@ -113,15 +110,9 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       focusedNode: null,
       selectedEdge: null,
       focusedEdge: null,
-      queryLabel: null,
       rawGraph: null,
       sigmaGraph: null,
       moveToSelectedNode: false
-    }),
-
-  setQueryLabel: (queryLabel: string | null) =>
-    set({
-      queryLabel
     }),
 
   setRawGraph: (rawGraph: RawGraph | null) =>

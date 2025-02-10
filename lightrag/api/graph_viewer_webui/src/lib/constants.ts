@@ -19,3 +19,7 @@ export const searchResultLimit = 20
 
 export const minNodeSize = 4
 export const maxNodeSize = 20
+
+export const healthCheckInterval = 15 // seconds
+
+export const defaultQueryLabel = '*'
