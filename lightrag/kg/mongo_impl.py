@@ -1,8 +1,9 @@
 import os
-from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
-import pipmaster as pm
+
 import numpy as np
+import pipmaster as pm
+from tqdm.asyncio import tqdm as tqdm_async
 
 if not pm.is_installed("pymongo"):
     pm.install("pymongo")
@@ -10,13 +11,14 @@ if not pm.is_installed("pymongo"):
 if not pm.is_installed("motor"):
     pm.install("motor")
 
-from pymongo import MongoClient
-from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Any, Union, List, Tuple
+from typing import Any, List, Tuple, Union
 
-from ..utils import logger
-from ..base import BaseKVStorage, BaseGraphStorage
+from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import MongoClient
+
+from ..base import BaseGraphStorage, BaseKVStorage
 from ..namespace import NameSpace, is_namespace
+from ..utils import logger
 
 
 @dataclass
@@ -29,13 +31,13 @@ class MongoKVStorage(BaseKVStorage):
         self._data = database.get_collection(self.namespace)
         logger.info(f"Use MongoDB as KV {self.namespace}")
 
-    async def get_by_id(self, id: str) -> dict[str, Any]:
+    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         return self._data.find_one({"_id": id})
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         return list(self._data.find({"_id": {"$in": ids}}))
 
-    async def filter_keys(self, data: list[str]) -> set[str]:
+    async def filter_keys(self, data: set[str]) -> set[str]:
         existing_ids = [
             str(x["_id"]) for x in self._data.find({"_id": {"$in": data}}, {"_id": 1})
         ]
@@ -170,7 +172,6 @@ class MongoGraphStorage(BaseGraphStorage):
         But typically for a direct edge, we might just do a find_one.
         Below is a demonstration approach.
         """
-
         # We can do a single-hop graphLookup (maxDepth=0 or 1).
         # Then check if the target_node appears among the edges array.
         pipeline = [
