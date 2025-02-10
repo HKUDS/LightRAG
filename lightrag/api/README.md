@@ -107,62 +107,19 @@ For better performance, the API server's default values for TOP_K and COSINE_THR
 
 ### Environment Variables
 
-You can configure LightRAG using environment variables by creating a `.env` file in your project root directory. Here's a complete example of available environment variables:
+You can configure LightRAG using environment variables by creating a `.env` file in your project root directory. A sample file `.env.example` is provided for your convenience.
 
-```env
-# Server Configuration
-HOST=0.0.0.0
-PORT=9621
+### Config.ini
 
-# Directory Configuration
-WORKING_DIR=/app/data/rag_storage
-INPUT_DIR=/app/data/inputs
-
-# RAG Configuration
-MAX_ASYNC=4
-MAX_TOKENS=32768
-EMBEDDING_DIM=1024
-MAX_EMBED_TOKENS=8192
-#HISTORY_TURNS=3
-#CHUNK_SIZE=1200
-#CHUNK_OVERLAP_SIZE=100
-#COSINE_THRESHOLD=0.4
-#TOP_K=50
-
-# LLM Configuration
-LLM_BINDING=ollama
-LLM_BINDING_HOST=http://localhost:11434
-LLM_MODEL=mistral-nemo:latest
-
-# must be set if using OpenAI LLM (LLM_MODEL must be set or set by command line parms)
-OPENAI_API_KEY=you_api_key
-
-# Embedding Configuration
-EMBEDDING_BINDING=ollama
-EMBEDDING_BINDING_HOST=http://localhost:11434
-EMBEDDING_MODEL=bge-m3:latest
-
-# Security
-#LIGHTRAG_API_KEY=you-api-key-for-accessing-LightRAG
-
-# Logging
-LOG_LEVEL=INFO
-
-# Optional SSL Configuration
-#SSL=true
-#SSL_CERTFILE=/path/to/cert.pem
-#SSL_KEYFILE=/path/to/key.pem
-
-# Optional Timeout
-#TIMEOUT=30
-```
+Datastorage configuration can be also set by config.ini. A sample file `config.ini.example` is provided for your convenience.
 
 ### Configuration Priority
 
 The configuration values are loaded in the following order (highest priority first):
 1. Command-line arguments
 2. Environment variables
-3. Default values
+3. Config.ini
+4. Defaul values
 
 For example:
 ```bash
@@ -172,6 +129,66 @@ python lightrag.py --port 8080
 # The environment variable will override the default value but not the command-line argument
 PORT=7000 python lightrag.py
 ```
+
+#### Storage Types Supported
+
+LightRAG uses 4 types of storage for difference purposes:
+
+* KV_STORAGE：llm response cache, text chunks, document information
+* VECTOR_STORAGE：entities vectors, relation vectors, chunks vectors
+* GRAPH_STORAGE：entity relation graph
+* DOC_STATUS_STORAGE：documents indexing status
+
+Each storage type have servals implementations:
+
+* KV_STORAGE supported implement-name
+
+```
+JsonKVStorage    JsonFile(default)
+MongoKVStorage   MogonDB
+RedisKVStorage   Redis
+TiDBKVStorage    TiDB
+PGKVStorage      Postgres
+OracleKVStorage  Oracle
+```
+
+* GRAPH_STORAGE supported implement-name
+
+```
+NetworkXStorage      NetworkX(defualt)
+Neo4JStorage         Neo4J
+MongoGraphStorage    MongoDB
+TiDBGraphStorage     TiDB
+AGEStorage           AGE
+GremlinStorage       Gremlin
+PGGraphStorage       Postgres
+OracleGraphStorage   Postgres
+```
+
+* VECTOR_STORAGE supported implement-name
+
+```
+NanoVectorDBStorage         NanoVector(default)
+MilvusVectorDBStorge        Milvus
+ChromaVectorDBStorage       Chroma
+TiDBVectorDBStorage         TiDB
+PGVectorStorage             Postgres
+FaissVectorDBStorage        Faiss
+QdrantVectorDBStorage       Qdrant
+OracleVectorDBStorag        Oracle
+```
+
+* DOC_STATUS_STORAGE：supported implement-name
+
+```
+JsonDocStatusStorage        JsonFile(default)
+PGDocStatusStorage          Postgres
+```
+
+#### How Select Storage Type
+
+* Bye enviroment variables
+* By command line arguments
 
 #### LightRag Server Options
 
@@ -200,6 +217,10 @@ PORT=7000 python lightrag.py
 | --ssl-keyfile | None | Path to SSL private key file (required if --ssl is enabled) |
 | --top-k | 50 | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode. |
 | --cosine-threshold | 0.4 | The cossine threshold for nodes and relations retrieval, works with top-k to control the retrieval of nodes and relations. |
+| --kv-storage | JsonKVStorage | implement-name of  KV_STORAGE |
+| --graph-storage | NetworkXStorage | implement-name of  GRAPH_STORAGE |
+| --vector-storage | NanoVectorDBStorage | implement-name of  VECTOR_STORAGE |
+| --doc-status-storage | JsonDocStatusStorage | implement-name of  DOC_STATUS_STORAGE |
 
 ### Example Usage
 
