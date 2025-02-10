@@ -113,14 +113,26 @@ if milvus_uri:
     os.environ["MILVUS_DB_NAME"] = milvus_db_name
     rag_storage_config.VECTOR_STORAGE = "MilvusVectorDBStorge"
 
+# Qdrant config
+qdrant_uri = config.get("qdrant", "uri", fallback=None)
+qdrant_api_key = config.get("qdrant", "apikey", fallback=None)
+if qdrant_uri:
+    os.environ["QDRANT_URL"] = qdrant_uri
+    if qdrant_api_key:
+        os.environ["QDRANT_API_KEY"] = qdrant_api_key
+    rag_storage_config.VECTOR_STORAGE = "QdrantVectorDBStorage"
+
 # MongoDB config
 mongo_uri = config.get("mongodb", "uri", fallback=None)
-mongo_database = config.get("mongodb", "LightRAG", fallback=None)
+mongo_database = config.get("mongodb", "database", fallback="LightRAG")
+mongo_graph = config.getboolean("mongodb", "graph", fallback=False)
 if mongo_uri:
     os.environ["MONGO_URI"] = mongo_uri
     os.environ["MONGO_DATABASE"] = mongo_database
     rag_storage_config.KV_STORAGE = "MongoKVStorage"
     rag_storage_config.DOC_STATUS_STORAGE = "MongoKVStorage"
+    if mongo_graph:
+        rag_storage_config.GRAPH_STORAGE = "MongoGraphStorage"
 
 
 def get_default_host(binding_type: str) -> str:
