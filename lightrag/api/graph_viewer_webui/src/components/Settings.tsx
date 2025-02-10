@@ -3,7 +3,7 @@ import { Checkbox } from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
 import { useState, useCallback } from 'react'
 import { controlButtonVariant } from '@/lib/constants'
-import { useSettingsStore } from '@/lib/settings'
+import { useSettingsStore } from '@/stores/settings'
 
 import { SettingsIcon } from 'lucide-react'
 

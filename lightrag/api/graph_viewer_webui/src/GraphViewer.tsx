@@ -1,8 +1,8 @@
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
 import { Settings as SigmaSettings } from 'sigma/settings'
-import { GraphSearchOption } from '@react-sigma/graph-search'
+import { GraphSearchOption, OptionItem } from '@react-sigma/graph-search'
 import { EdgeArrowProgram, NodePointProgram, NodeCircleProgram } from 'sigma/rendering'
 import { NodeBorderProgram } from '@sigma/node-border'
 import EdgeCurveProgram, { EdgeCurvedArrowProgram } from '@sigma/edge-curve'
@@ -15,8 +15,10 @@ import ZoomControl from '@/components/ZoomControl'
 import FullScreenControl from '@/components/FullScreenControl'
 import Settings from '@/components/Settings'
 import GraphSearch from '@/components/GraphSearch'
+import PropertiesView from '@/components/PropertiesView'
 
-import { useSettingsStore } from '@/lib/settings'
+import { useSettingsStore } from '@/stores/settings'
+import { useGraphStore } from '@/stores/graph'
 
 import '@react-sigma/core/lib/style.css'
 import '@react-sigma/graph-search/lib/style.css'
@@ -97,10 +99,11 @@ const GraphEvents = () => {
 }
 
 export const GraphViewer = () => {
-  const [selectedNode, setSelectedNode] = useState<string | null>(null)
-  const [focusedNode, setFocusedNode] = useState<string | null>(null)
   const [sigmaSettings, setSigmaSettings] = useState(defaultSigmaSettings)
-  const [autoMoveToFocused, setAutoMoveToFocused] = useState(false)
+
+  const selectedNode = useGraphStore.use.selectedNode()
+  const focusedNode = useGraphStore.use.focusedNode()
+  const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
 
   const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
@@ -114,45 +117,39 @@ export const GraphViewer = () => {
     })
   }, [enableEdgeEvents, renderEdgeLabels])
 
-  const onFocus = useCallback(
-    (value: GraphSearchOption | null) => {
-      if (value === null) setFocusedNode(null)
-      else if (value.type === 'nodes') setFocusedNode(value.id)
-    },
-    [setFocusedNode]
-  )
+  const onSearchFocus = useCallback((value: GraphSearchOption | null) => {
+    if (value === null) useGraphStore.getState().setFocusedNode(null)
+    else if (value.type === 'nodes') useGraphStore.getState().setFocusedNode(value.id)
+  }, [])
 
-  const onSelect = useCallback(
-    (value: GraphSearchOption | null) => {
-      if (value === null) setSelectedNode(null)
-      else if (value.type === 'nodes') {
-        setAutoMoveToFocused(true)
-        setSelectedNode(value.id)
-        setTimeout(() => setAutoMoveToFocused(false), 100)
-      }
-    },
-    [setSelectedNode, setAutoMoveToFocused]
+  const onSearchSelect = useCallback((value: GraphSearchOption | null) => {
+    if (value === null) {
+      useGraphStore.getState().setSelectedNode(null)
+    } else if (value.type === 'nodes') {
+      useGraphStore.getState().setSelectedNode(value.id, true)
+    }
+  }, [])
+
+  const autoFocusedNode = useMemo(() => focusedNode ?? selectedNode, [focusedNode, selectedNode])
+  const searchInitSelectedNode = useMemo(
+    (): OptionItem | null => (selectedNode ? { type: 'nodes', id: selectedNode } : null),
+    [selectedNode]
   )
 
   return (
     <SigmaContainer settings={sigmaSettings} className="!bg-background !size-full overflow-hidden">
-      <GraphControl
-        selectedNode={selectedNode}
-        setSelectedNode={setSelectedNode}
-        focusedNode={focusedNode}
-        setFocusedNode={setFocusedNode}
-      />
+      <GraphControl />
 
       {enableNodeDrag && <GraphEvents />}
 
-      <FocusOnNode node={focusedNode ?? selectedNode} move={autoMoveToFocused} />
+      <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-      <div className="absolute top-2 right-2">
+      <div className="absolute top-2 left-2">
         <GraphSearch
           type="nodes"
-          value={selectedNode ? { type: 'nodes', id: selectedNode } : null}
-          onFocus={onFocus}
-          onChange={onSelect}
+          value={searchInitSelectedNode}
+          onFocus={onSearchFocus}
+          onChange={onSearchSelect}
         />
       </div>
 
@@ -162,6 +159,10 @@ export const GraphViewer = () => {
         <LayoutsControl />
         <FullScreenControl />
         <ThemeToggle />
+      </div>
+
+      <div className="absolute top-2 right-2">
+        <PropertiesView />
       </div>
 
       {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
