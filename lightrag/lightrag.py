@@ -35,6 +35,89 @@ from .utils import (
     set_logger,
 )
 
+# Storage type and implementation compatibility validation table
+STORAGE_IMPLEMENTATIONS = {
+    "KV_STORAGE": {
+        "implementations": [
+            "JsonKVStorage",
+            "MongoKVStorage",
+            "RedisKVStorage",
+            "TiDBKVStorage",
+            "PGKVStorage",
+            "OracleKVStorage",
+        ],
+        "required_methods": ["get_by_id", "upsert"],
+    },
+    "GRAPH_STORAGE": {
+        "implementations": [
+            "NetworkXStorage",
+            "Neo4JStorage",
+            "MongoGraphStorage",
+            "TiDBGraphStorage",
+            "AGEStorage",
+            "GremlinStorage",
+            "PGGraphStorage",
+            "OracleGraphStorage",
+        ],
+        "required_methods": ["upsert_node", "upsert_edge"],
+    },
+    "VECTOR_STORAGE": {
+        "implementations": [
+            "NanoVectorDBStorage",
+            "MilvusVectorDBStorge",
+            "ChromaVectorDBStorage",
+            "TiDBVectorDBStorage",
+            "PGVectorStorage",
+            "FaissVectorDBStorage",
+            "QdrantVectorDBStorage",
+            "OracleVectorDBStorage",
+        ],
+        "required_methods": ["query", "upsert"],
+    },
+    "DOC_STATUS_STORAGE": {
+        "implementations": ["JsonDocStatusStorage", "PGDocStatusStorage"],
+        "required_methods": ["get_pending_docs"],
+    },
+}
+
+# Storage implementation environment variable without default value
+STORAGE_ENV_REQUIREMENTS = {
+    # KV Storage Implementations
+    "JsonKVStorage": [],
+    "MongoKVStorage": [],
+    "RedisKVStorage": ["REDIS_URI"],
+    "TiDBKVStorage": ["TIDB_URI", "TIDB_DATABASE"],
+    "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
+    "OracleKVStorage": ["ORACLE_URI", "ORACLE_USER", "ORACLE_PASSWORD"],
+    # Graph Storage Implementations
+    "NetworkXStorage": [],
+    "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
+    "MongoGraphStorage": [],
+    "TiDBGraphStorage": ["TIDB_URI", "TIDB_DATABASE"],
+    "AGEStorage": [
+        "AGE_POSTGRES_DB",
+        "AGE_POSTGRES_USER",
+        "AGE_POSTGRES_PASSWORD",
+        "AGE_GRAPH_NAME",
+    ],
+    "GremlinStorage": ["GREMLIN_HOST", "GREMLIN_PORT", "GREMLIN_GRAPH"],
+    "PGGraphStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
+    "OracleGraphStorage": ["ORACLE_URI", "ORACLE_USER", "ORACLE_PASSWORD"],
+    # Vector Storage Implementations
+    "NanoVectorDBStorage": [],
+    "MilvusVectorDBStorge": [],
+    "ChromaVectorDBStorage": [],
+    "TiDBVectorDBStorage": ["TIDB_URI", "TIDB_DATABASE"],
+    "PGVectorStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
+    "FaissVectorDBStorage": [],
+    "QdrantVectorDBStorage": ["QDRANT_URL"],  # QDRANT_API_KEY has default value None
+    "OracleVectorDBStorage": ["ORACLE_URI", "ORACLE_USER", "ORACLE_PASSWORD"],
+    # Document Status Storage Implementations
+    "JsonDocStatusStorage": [],
+    "PGDocStatusStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
+}
+
+# Storage implementation module mapping
 STORAGES = {
     "NetworkXStorage": ".kg.networkx_impl",
     "JsonKVStorage": ".kg.json_kv_impl",
@@ -193,6 +276,61 @@ class LightRAG:
         list[dict[str, Any]],
     ] = chunking_by_token_size
 
+    def verify_storage_implementation(
+        self, storage_type: str, storage_name: str
+    ) -> None:
+        """Verify if storage implementation is compatible with specified storage type
+
+        Args:
+            storage_type: Storage type (KV_STORAGE, GRAPH_STORAGE etc.)
+            storage_name: Storage implementation name
+
+        Raises:
+            ValueError: If storage implementation is incompatible or missing required methods
+        """
+        if storage_type not in STORAGE_IMPLEMENTATIONS:
+            raise ValueError(f"Unknown storage type: {storage_type}")
+
+        storage_info = STORAGE_IMPLEMENTATIONS[storage_type]
+        if storage_name not in storage_info["implementations"]:
+            raise ValueError(
+                f"Storage implementation '{storage_name}' is not compatible with {storage_type}. "
+                f"Compatible implementations are: {', '.join(storage_info['implementations'])}"
+            )
+
+        # Get storage class
+        storage_class = self._get_storage_class(storage_name)
+
+        # Check required methods
+        missing_methods = []
+        for method in storage_info["required_methods"]:
+            if not hasattr(storage_class, method):
+                missing_methods.append(method)
+
+        if missing_methods:
+            raise ValueError(
+                f"Storage implementation '{storage_name}' is missing required methods: "
+                f"{', '.join(missing_methods)}"
+            )
+
+    def check_storage_env_vars(self, storage_name: str) -> None:
+        """Check if all required environment variables for storage implementation exist
+
+        Args:
+            storage_name: Storage implementation name
+
+        Raises:
+            ValueError: If required environment variables are missing
+        """
+        required_vars = STORAGE_ENV_REQUIREMENTS.get(storage_name, [])
+        missing_vars = [var for var in required_vars if var not in os.environ]
+
+        if missing_vars:
+            raise ValueError(
+                f"Storage implementation '{storage_name}' requires the following "
+                f"environment variables: {', '.join(missing_vars)}"
+            )
+
     def __post_init__(self):
         os.makedirs(self.log_dir, exist_ok=True)
         log_file = os.path.join(self.log_dir, "lightrag.log")
@@ -203,6 +341,20 @@ class LightRAG:
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
+
+        # Verify storage implementation compatibility and environment variables
+        storage_configs = [
+            ("KV_STORAGE", self.kv_storage),
+            ("VECTOR_STORAGE", self.vector_storage),
+            ("GRAPH_STORAGE", self.graph_storage),
+            ("DOC_STATUS_STORAGE", self.doc_status_storage),
+        ]
+
+        for storage_type, storage_name in storage_configs:
+            # Verify storage implementation compatibility
+            self.verify_storage_implementation(storage_type, storage_name)
+            # Check environment variables
+            self.check_storage_env_vars(storage_name)
 
         # show config
         global_config = asdict(self)

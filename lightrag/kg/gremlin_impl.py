@@ -47,7 +47,9 @@ class GremlinStorage(BaseGraphStorage):
 
         # All vertices will have graph={GRAPH} property, so that we can
         # have several logical graphs for one source
-        GRAPH = GremlinStorage._to_value_map(os.environ["GREMLIN_GRAPH"])
+        GRAPH = GremlinStorage._to_value_map(
+            os.environ.get("GREMLIN_GRAPH", "LightRAG")
+        )
 
         self.graph_name = GRAPH
 
