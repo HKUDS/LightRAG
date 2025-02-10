@@ -1,5 +1,7 @@
 import { ButtonVariantType } from '@/components/ui/Button'
 
+export const backendBaseUrl = ''
+
 export const controlButtonVariant: ButtonVariantType = 'ghost'
 
 export const labelColorDarkTheme = '#B2EBF2'

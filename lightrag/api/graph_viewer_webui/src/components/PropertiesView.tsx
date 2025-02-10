@@ -59,7 +59,7 @@ const PropertiesView = () => {
     return <></>
   }
   return (
-    <div className="bg-background/20 max-w-sm rounded-xl border-2 p-2 backdrop-blur-lg">
+    <div className="bg-background/80 max-w-sm rounded-xl border-2 p-2 backdrop-blur-lg">
       {currentType == 'node' ? (
         <NodePropertiesView node={currentElement as any} />
       ) : (
