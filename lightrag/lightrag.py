@@ -90,14 +90,14 @@ STORAGE_ENV_REQUIREMENTS = {
     "JsonKVStorage": [],
     "MongoKVStorage": [],
     "RedisKVStorage": ["REDIS_URI"],
-    "TiDBKVStorage": ["TIDB_URI", "TIDB_DATABASE"],
+    "TiDBKVStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
-    "OracleKVStorage": ["ORACLE_URI", "ORACLE_USER", "ORACLE_PASSWORD"],
+    "OracleKVStorage": ["ORACLE_DSN", "ORACLE_USER", "ORACLE_PASSWORD", "ORACLE_CONFIG_DIR"],
     # Graph Storage Implementations
     "NetworkXStorage": [],
     "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
     "MongoGraphStorage": [],
-    "TiDBGraphStorage": ["TIDB_URI", "TIDB_DATABASE"],
+    "TiDBGraphStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "AGEStorage": [
         "AGE_POSTGRES_DB",
         "AGE_POSTGRES_USER",
@@ -106,16 +106,16 @@ STORAGE_ENV_REQUIREMENTS = {
     ],
     "GremlinStorage": ["GREMLIN_HOST", "GREMLIN_PORT", "GREMLIN_GRAPH"],
     "PGGraphStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
-    "OracleGraphStorage": ["ORACLE_URI", "ORACLE_USER", "ORACLE_PASSWORD"],
+    "OracleGraphStorage": ["ORACLE_DSN", "ORACLE_USER", "ORACLE_PASSWORD", , "ORACLE_CONFIG_DIR"],
     # Vector Storage Implementations
     "NanoVectorDBStorage": [],
     "MilvusVectorDBStorge": [],
     "ChromaVectorDBStorage": [],
-    "TiDBVectorDBStorage": ["TIDB_URI", "TIDB_DATABASE"],
+    "TiDBVectorDBStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "PGVectorStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     "FaissVectorDBStorage": [],
     "QdrantVectorDBStorage": ["QDRANT_URL"],  # QDRANT_API_KEY has default value None
-    "OracleVectorDBStorage": ["ORACLE_URI", "ORACLE_USER", "ORACLE_PASSWORD"],
+    "OracleVectorDBStorage": ["ORACLE_DSN", "ORACLE_USER", "ORACLE_PASSWORD", "ORACLE_CONFIG_DIR"],
     # Document Status Storage Implementations
     "JsonDocStatusStorage": [],
     "PGDocStatusStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
