@@ -7,8 +7,6 @@ import { useSettingsStore } from '@/stores/settings'
 
 import { SettingsIcon } from 'lucide-react'
 
-import * as Api from '@/api/lightrag'
-
 /**
  * Component that displays a checkbox with a label.
  */
@@ -97,13 +95,6 @@ export default function Settings() {
             onCheckedChange={setShowEdgeLabel}
             label="Show Edge Label"
           />
-          <Button
-            onClick={async () => {
-              console.log(Api.checkHealth())
-            }}
-          >
-            Test Api
-          </Button>
         </div>
       </PopoverContent>
     </Popover>
