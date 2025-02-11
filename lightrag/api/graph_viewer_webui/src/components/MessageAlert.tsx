@@ -1,7 +1,10 @@
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/Alert'
-import Button from '@/components/ui/Button'
 import { useBackendState } from '@/stores/state'
-import { controlButtonVariant } from '@/lib/constants'
+import { useEffect, useState } from 'react'
+import { cn } from '@/lib/utils'
+
+// import Button from '@/components/ui/Button'
+// import { controlButtonVariant } from '@/lib/constants'
 
 import { AlertCircle } from 'lucide-react'
 
@@ -9,18 +12,32 @@ const MessageAlert = () => {
   const health = useBackendState.use.health()
   const message = useBackendState.use.message()
   const messageTitle = useBackendState.use.messageTitle()
+  const [isMounted, setIsMounted] = useState(false)
+
+  useEffect(() => {
+    setTimeout(() => {
+      setIsMounted(true)
+    }, 50)
+  }, [])
 
   return (
     <Alert
       variant={health ? 'default' : 'destructive'}
-      className="bg-background/90 absolute top-1/2 left-1/2 w-auto -translate-x-1/2 -translate-y-1/2 transform backdrop-blur-lg"
+      className={cn(
+        'bg-background/90 absolute top-2 left-1/2 flex w-auto -translate-x-1/2 transform items-center gap-4 shadow-md backdrop-blur-lg transition-all duration-500 ease-in-out',
+        isMounted ? 'translate-y-0 opacity-100' : '-translate-y-20 opacity-0'
+      )}
     >
-      {!health && <AlertCircle className="h-4 w-4" />}
-      <AlertTitle>{messageTitle}</AlertTitle>
-
-      <AlertDescription>{message}</AlertDescription>
-      <div className="h-2" />
-      <div className="flex">
+      {!health && (
+        <div>
+          <AlertCircle className="size-4" />
+        </div>
+      )}
+      <div>
+        <AlertTitle className="font-bold">{messageTitle}</AlertTitle>
+        <AlertDescription>{message}</AlertDescription>
+      </div>
+      {/* <div className="flex">
         <div className="flex-auto" />
         <Button
           size="sm"
@@ -28,9 +45,9 @@ const MessageAlert = () => {
           className="text-primary max-h-8 border !p-2 text-xs"
           onClick={() => useBackendState.getState().clear()}
         >
-          Continue
+          Close
         </Button>
-      </div>
+      </div> */}
     </Alert>
   )
 }
