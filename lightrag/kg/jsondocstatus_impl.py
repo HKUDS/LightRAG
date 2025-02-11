@@ -109,6 +109,22 @@ class JsonDocStatusStorage(DocStatusStorage):
             if v["status"] == DocStatus.PENDING
         }
 
+    async def get_processed_docs(self) -> dict[str, DocProcessingStatus]:
+        """Get all processed documents"""
+        return {
+            k: DocProcessingStatus(**v)
+            for k, v in self._data.items()
+            if v["status"] == DocStatus.PROCESSED
+        }
+    
+    async def get_processing_docs(self) -> dict[str, DocProcessingStatus]:
+        """Get all processing documents"""
+        return {
+            k: DocProcessingStatus(**v)
+            for k, v in self._data.items()
+            if v["status"] == DocStatus.PROCESSING
+        }
+
     async def index_done_callback(self):
         """Save data to file after indexing"""
         write_json(self._data, self._file_name)

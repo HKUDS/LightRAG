@@ -24,6 +24,10 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 print(f"EMBEDDING_MODEL: {EMBEDDING_MODEL}")
 EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192))
 print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
+BASE_URL = int(os.environ.get("BASE_URL", "https://api.openai.com/v1"))
+print(f"BASE_URL: {BASE_URL}")
+API_KEY = int(os.environ.get("API_KEY", "xxxxxxxx"))
+print(f"API_KEY: {API_KEY}")
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -36,10 +40,12 @@ async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
     return await openai_complete_if_cache(
-        LLM_MODEL,
-        prompt,
+        model=LLM_MODEL,
+        prompt=prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
+        base_url=BASE_URL,
+        api_key=API_KEY,
         **kwargs,
     )
 
@@ -49,8 +55,10 @@ async def llm_model_func(
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await openai_embed(
-        texts,
+        texts=texts,
         model=EMBEDDING_MODEL,
+        base_url=BASE_URL,
+        api_key=API_KEY,
     )
 
 
