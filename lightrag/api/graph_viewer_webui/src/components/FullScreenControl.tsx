@@ -12,11 +12,11 @@ const FullScreenControl = () => {
   return (
     <>
       {isFullScreen ? (
-        <Button variant={controlButtonVariant} onClick={toggle} tooltip="Windowed">
+        <Button variant={controlButtonVariant} onClick={toggle} tooltip="Windowed" size="icon">
           <MinimizeIcon />
         </Button>
       ) : (
-        <Button variant={controlButtonVariant} onClick={toggle} tooltip="Full Screen">
+        <Button variant={controlButtonVariant} onClick={toggle} tooltip="Full Screen" size="icon">
           <MaximizeIcon />
         </Button>
       )}
