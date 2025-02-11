@@ -99,4 +99,3 @@ print(
 print(
     rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
 )
-
