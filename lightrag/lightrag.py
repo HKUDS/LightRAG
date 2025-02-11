@@ -543,7 +543,7 @@ class LightRAG:
         new_docs = {doc_id: new_docs[doc_id] for doc_id in unique_new_doc_ids}
 
         if not new_docs:
-            logger.info("All documents have been processed or are duplicates")
+            logger.info("No new unique documents were found.")
             return
 
         # 4. Store status document
@@ -560,15 +560,16 @@ class LightRAG:
         each chunk for entity and relation extraction, and updating the
         document status.
 
-        1. Get all pending and failed documents
+        1. Get all pending, failed, and abnormally terminated processing documents.
         2. Split document content into chunks
         3. Process each chunk for entity and relation extraction
         4. Update the document status
         """
-        # 1. get all pending and failed documents
+        # 1. Get all pending, failed, and abnormally terminated processing documents.
         to_process_docs: dict[str, DocProcessingStatus] = {}
 
-        # Fetch failed documents
+        processing_docs = await self.doc_status.get_processing_docs()
+        to_process_docs.update(processing_docs)
         failed_docs = await self.doc_status.get_failed_docs()
         to_process_docs.update(failed_docs)
         pendings_docs = await self.doc_status.get_pending_docs()
@@ -599,6 +600,7 @@ class LightRAG:
                         doc_status_id: {
                             "status": DocStatus.PROCESSING,
                             "updated_at": datetime.now().isoformat(),
+                            "content": status_doc.content,
                             "content_summary": status_doc.content_summary,
                             "content_length": status_doc.content_length,
                             "created_at": status_doc.created_at,
@@ -635,6 +637,10 @@ class LightRAG:
                             doc_status_id: {
                                 "status": DocStatus.PROCESSED,
                                 "chunks_count": len(chunks),
+                                "content": status_doc.content,
+                                "content_summary": status_doc.content_summary,
+                                "content_length": status_doc.content_length,
+                                "created_at": status_doc.created_at,
                                 "updated_at": datetime.now().isoformat(),
                             }
                         }
@@ -648,6 +654,10 @@ class LightRAG:
                             doc_status_id: {
                                 "status": DocStatus.FAILED,
                                 "error": str(e),
+                                "content": status_doc.content,
+                                "content_summary": status_doc.content_summary,
+                                "content_length": status_doc.content_length,
+                                "created_at": status_doc.created_at,
                                 "updated_at": datetime.now().isoformat(),
                             }
                         }

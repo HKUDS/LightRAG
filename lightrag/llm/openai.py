@@ -103,17 +103,17 @@ async def openai_complete_if_cache(
 ) -> str:
     if history_messages is None:
         history_messages = []
-    if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
+    if not api_key:
+        api_key = os.environ["OPENAI_API_KEY"]
 
     default_headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
         "Content-Type": "application/json",
     }
     openai_async_client = (
-        AsyncOpenAI(default_headers=default_headers)
+        AsyncOpenAI(default_headers=default_headers, api_key=api_key)
         if base_url is None
-        else AsyncOpenAI(base_url=base_url, default_headers=default_headers)
+        else AsyncOpenAI(base_url=base_url, default_headers=default_headers, api_key=api_key)
     )
     kwargs.pop("hashing_kv", None)
     kwargs.pop("keyword_extraction", None)
@@ -294,17 +294,17 @@ async def openai_embed(
     base_url: str = None,
     api_key: str = None,
 ) -> np.ndarray:
-    if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
+    if not api_key:
+        api_key = os.environ["OPENAI_API_KEY"]
 
     default_headers = {
         "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
         "Content-Type": "application/json",
     }
     openai_async_client = (
-        AsyncOpenAI(default_headers=default_headers)
+        AsyncOpenAI(default_headers=default_headers, api_key=api_key)
         if base_url is None
-        else AsyncOpenAI(base_url=base_url, default_headers=default_headers)
+        else AsyncOpenAI(base_url=base_url, default_headers=default_headers, api_key=api_key)
     )
     response = await openai_async_client.embeddings.create(
         model=model, input=texts, encoding_format="float"
