@@ -554,8 +554,8 @@ class LightRAG:
                 self.vector_db_storage_cls.db = postgres_db
             if self.graph_storage == "PGGraphStorage":
                 self.graph_storage_cls.db = postgres_db
-            if self.doc_status_storage == "OracleGraphStorage":
-                self.doc_status_storage_cls = postgres_db
+            if self.doc_status_storage == "PGDocStatusStorage":
+                self.doc_status_storage_cls.db = postgres_db
 
         self.llm_response_cache = self.key_string_value_json_storage_cls(
             namespace=make_namespace(
