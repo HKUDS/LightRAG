@@ -355,16 +355,26 @@ In order to run this experiment on low RAM GPU you should select small model and
 ```python
 class QueryParam:
     mode: Literal["local", "global", "hybrid", "naive", "mix"] = "global"
+    """Specifies the retrieval mode:
+    - "local": Focuses on context-dependent information.
+    - "global": Utilizes global knowledge.
+    - "hybrid": Combines local and global retrieval methods.
+    - "naive": Performs a basic search without advanced techniques.
+    - "mix": Integrates knowledge graph and vector retrieval.
+    """
     only_need_context: bool = False
+    """If True, only returns the retrieved context without generating a response."""
     response_type: str = "Multiple Paragraphs"
-    # Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.
+    """Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'."""
     top_k: int = 60
-    # Number of tokens for the original chunks.
+    """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
     max_token_for_text_unit: int = 4000
-    # Number of tokens for the relationship descriptions
+    """Maximum number of tokens allowed for each retrieved text chunk."""
     max_token_for_global_context: int = 4000
-    # Number of tokens for the entity descriptions
+    """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
     max_token_for_local_context: int = 4000
+    """Maximum number of tokens allocated for entity descriptions in local retrieval."""
+    ...
 ```
 
 > default value of Top_k can be change by environment  variables  TOP_K.
