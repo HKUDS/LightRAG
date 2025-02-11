@@ -14,13 +14,23 @@ export default function ThemeToggle() {
 
   if (theme === 'dark') {
     return (
-      <Button onClick={setLight} variant={controlButtonVariant} tooltip="Switch to light theme">
+      <Button
+        onClick={setLight}
+        variant={controlButtonVariant}
+        tooltip="Switch to light theme"
+        size="icon"
+      >
         <MoonIcon />
       </Button>
     )
   }
   return (
-    <Button onClick={setDark} variant={controlButtonVariant} tooltip="Switch to dark theme">
+    <Button
+      onClick={setDark}
+      variant={controlButtonVariant}
+      tooltip="Switch to dark theme"
+      size="icon"
+    >
       <SunIcon />
     </Button>
   )

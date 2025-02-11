@@ -58,6 +58,7 @@ const WorkerLayoutControl = ({ layout, autoRunFor }: WorkerLayoutControlProps) =
 
   return (
     <Button
+      size="icon"
       onClick={() => (isRunning ? stop() : start())}
       tooltip={isRunning ? 'Stop the layout animation' : 'Start the layout animation'}
       variant={controlButtonVariant}
@@ -142,6 +143,7 @@ const LayoutsControl = () => {
         <Popover open={opened} onOpenChange={setOpened}>
           <PopoverTrigger asChild>
             <Button
+              size="icon"
               variant={controlButtonVariant}
               onClick={() => setOpened((e: boolean) => !e)}
               tooltip="Layout Graph"

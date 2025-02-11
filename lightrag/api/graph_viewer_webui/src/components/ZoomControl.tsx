@@ -4,7 +4,6 @@ import Button from '@/components/ui/Button'
 import { ZoomInIcon, ZoomOutIcon, FullscreenIcon } from 'lucide-react'
 import { controlButtonVariant } from '@/lib/constants'
 
-
 /**
  * Component that provides zoom controls for the graph viewer.
  */
@@ -17,13 +16,18 @@ const ZoomControl = () => {
 
   return (
     <>
-      <Button variant={controlButtonVariant} onClick={handleZoomIn} tooltip="Zoom In">
+      <Button variant={controlButtonVariant} onClick={handleZoomIn} tooltip="Zoom In" size="icon">
         <ZoomInIcon />
       </Button>
-      <Button variant={controlButtonVariant} onClick={handleZoomOut} tooltip="Zoom Out">
+      <Button variant={controlButtonVariant} onClick={handleZoomOut} tooltip="Zoom Out" size="icon">
         <ZoomOutIcon />
       </Button>
-      <Button variant={controlButtonVariant} onClick={handleResetZoom} tooltip="Reset Zoom">
+      <Button
+        variant={controlButtonVariant}
+        onClick={handleResetZoom}
+        tooltip="Reset Zoom"
+        size="icon"
+      >
         <FullscreenIcon />
       </Button>
     </>

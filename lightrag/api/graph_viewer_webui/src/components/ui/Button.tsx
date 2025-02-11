@@ -39,10 +39,7 @@ interface ButtonProps
 }
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  (
-    { className, variant, tooltip, size = 'icon', side = 'right', asChild = false, ...props },
-    ref
-  ) => {
+  ({ className, variant, tooltip, size, side = 'right', asChild = false, ...props }, ref) => {
     const Comp = asChild ? Slot : 'button'
     if (!tooltip) {
       return (

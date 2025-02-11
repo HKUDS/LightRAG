@@ -118,7 +118,7 @@ export default function Settings() {
   return (
     <Popover open={opened} onOpenChange={setOpened}>
       <PopoverTrigger asChild>
-        <Button variant={controlButtonVariant} tooltip="Settings">
+        <Button variant={controlButtonVariant} tooltip="Settings" size="icon">
           <SettingsIcon />
         </Button>
       </PopoverTrigger>
