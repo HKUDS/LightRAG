@@ -1,7 +1,7 @@
 import os
 
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.openai import gpt_4o_mini_complete
+from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 
 WORKING_DIR = "./dickens"
 
@@ -10,6 +10,7 @@ if not os.path.exists(WORKING_DIR):
 
 rag = LightRAG(
     working_dir=WORKING_DIR,
+    embedding_func=openai_embed,
     llm_model_func=gpt_4o_mini_complete,
     # llm_model_func=gpt_4o_complete
 )
