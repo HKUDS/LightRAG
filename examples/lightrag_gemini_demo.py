@@ -47,19 +47,18 @@ async def llm_model_func(
     response = client.models.generate_content(
         model="gemini-1.5-flash",
         contents=[combined_prompt],
-        config=types.GenerateContentConfig(
-            max_output_tokens=500,
-            temperature=0.1
-        )
+        config=types.GenerateContentConfig(max_output_tokens=500, temperature=0.1),
     )
 
     # 4. Return the response text
     return response.text
 
+
 async def embedding_func(texts: list[str]) -> np.ndarray:
-    model = SentenceTransformer('all-MiniLM-L6-v2')
+    model = SentenceTransformer("all-MiniLM-L6-v2")
     embeddings = model.encode(texts, convert_to_numpy=True)
     return embeddings
+
 
 rag = LightRAG(
     working_dir=WORKING_DIR,
@@ -72,11 +71,14 @@ rag = LightRAG(
 )
 
 file_path = "story.txt"
-with open(file_path, 'r') as file:
+with open(file_path, "r") as file:
     text = file.read()
 
 rag.insert(text)
 
-response = rag.query(query="What is the main theme of the story?", param=QueryParam(mode="hybrid", top_k=5, response_type="single line"))
+response = rag.query(
+    query="What is the main theme of the story?",
+    param=QueryParam(mode="hybrid", top_k=5, response_type="single line"),
+)
 
-print (response)
+print(response)
