@@ -471,7 +471,7 @@ class PGDocStatusStorage(DocStatusStorage):
         self, status: DocStatus
     ) -> Dict[str, DocProcessingStatus]:
         """Get all documents by status"""
-        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$1"
+        sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
         params = {"workspace": self.db.workspace, "status": status}
         result = await self.db.query(sql, params, True)
         return {
@@ -505,8 +505,8 @@ class PGDocStatusStorage(DocStatusStorage):
         Args:
             data: Dictionary of document IDs and their status data
         """
-        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content_summary,content_length,chunks_count,status)
-                 values($1,$2,$3,$4,$5,$6)
+        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content,content_summary,content_length,chunks_count,status)
+                 values($1,$2,$3,$4,$5,$6,$7)
                   on conflict(id,workspace) do update set
                   content = EXCLUDED.content,
                   content_summary = EXCLUDED.content_summary,
@@ -1103,6 +1103,7 @@ TABLES = {
         "ddl": """CREATE TABLE LIGHTRAG_DOC_STATUS (
 	               workspace varchar(255) NOT NULL,
 	               id varchar(255) NOT NULL,
+	               content TEXT NULL,
 	               content_summary varchar(255) NULL,
 	               content_length int4 NULL,
 	               chunks_count int4 NULL,
