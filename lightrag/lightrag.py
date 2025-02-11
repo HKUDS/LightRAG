@@ -317,21 +317,6 @@ class LightRAG:
                 f"Compatible implementations are: {', '.join(storage_info['implementations'])}"
             )
 
-        # Get storage class
-        storage_class = self._get_storage_class(storage_name)
-
-        # Check required methods
-        missing_methods = []
-        for method in storage_info["required_methods"]:
-            if not hasattr(storage_class, method):
-                missing_methods.append(method)
-
-        if missing_methods:
-            raise ValueError(
-                f"Storage implementation '{storage_name}' is missing required methods: "
-                f"{', '.join(missing_methods)}"
-            )
-
     def check_storage_env_vars(self, storage_name: str) -> None:
         """Check if all required environment variables for storage implementation exist
 
