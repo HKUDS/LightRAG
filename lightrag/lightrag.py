@@ -408,17 +408,8 @@ class LightRAG:
             self.graph_storage_cls, global_config=global_config
         )
 
-        self.json_doc_status_storage = self.key_string_value_json_storage_cls(
-            namespace=self.namespace_prefix + "json_doc_status_storage",
-            embedding_func=None,
-        )
-
-        self.llm_response_cache = self.key_string_value_json_storage_cls(
-            namespace=make_namespace(
-                self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-            ),
-            embedding_func=self.embedding_func,
-        )
+        # Initialize document status storage
+        self.doc_status_storage_cls = self._get_storage_class(self.doc_status_storage)
 
         # Check if Oracle storage implementation is used
         if (
@@ -528,7 +519,7 @@ class LightRAG:
             self.kv_storage == "PGKVStorage"
             or self.vector_storage == "PGVectorStorage"
             or self.graph_storage == "PGGraphStorage"
-            or self.json_doc_status_storage == "PGDocStatusStorage"
+            or self.doc_status_storage == "PGDocStatusStorage"
         ):
             # Read configuration file
             config_parser = configparser.ConfigParser()
@@ -578,12 +569,16 @@ class LightRAG:
                 self.vector_db_storage_cls.db = postgres_db
             if self.graph_storage == "PGGraphStorage":
                 self.graph_storage_cls.db = postgres_db
-            if self.json_doc_status_storage == "OracleGraphStorage":
-                self.json_doc_status_storage = postgres_db
+            if self.doc_status_storage == "OracleGraphStorage":
+                self.doc_status_storage_cls = postgres_db
 
-        ####
-        # Add embedding function by walter
-        ####
+        self.llm_response_cache = self.key_string_value_json_storage_cls(
+            namespace=make_namespace(
+                self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+            ),
+            embedding_func=self.embedding_func,
+        )
+
         self.full_docs: BaseKVStorage = self.key_string_value_json_storage_cls(
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_FULL_DOCS
@@ -602,9 +597,6 @@ class LightRAG:
             ),
             embedding_func=self.embedding_func,
         )
-        ####
-        # End of adding embedding function by walter
-        ####
 
         self.entities_vdb = self.vector_db_storage_cls(
             namespace=make_namespace(
@@ -627,6 +619,7 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
 
+        # What's for, Is this nessisary ?
         if self.llm_response_cache and hasattr(
             self.llm_response_cache, "global_config"
         ):
@@ -639,20 +632,23 @@ class LightRAG:
                 embedding_func=self.embedding_func,
             )
 
+        # self.json_doc_status_storage = self.key_string_value_json_storage_cls(
+        #     namespace=self.namespace_prefix + "json_doc_status_storage",
+        #     embedding_func=None,
+        # )
+
+        self.doc_status: DocStatusStorage = self.doc_status_storage_cls(
+            namespace=make_namespace(self.namespace_prefix, NameSpace.DOC_STATUS),
+            global_config=global_config,
+            embedding_func=None,
+        )
+
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(
                 self.llm_model_func,
                 hashing_kv=hashing_kv,
                 **self.llm_model_kwargs,
             )
-        )
-
-        # Initialize document status storage
-        self.doc_status_storage_cls = self._get_storage_class(self.doc_status_storage)
-        self.doc_status: DocStatusStorage = self.doc_status_storage_cls(
-            namespace=make_namespace(self.namespace_prefix, NameSpace.DOC_STATUS),
-            global_config=global_config,
-            embedding_func=None,
         )
 
     async def get_graph_labels(self):
