@@ -1,11 +1,15 @@
 import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
-import { checkHealth } from '@/api/lightrag'
+import { checkHealth, LightragStatus } from '@/api/lightrag'
 
 interface BackendState {
   health: boolean
   message: string | null
   messageTitle: string | null
+
+  status: LightragStatus | null
+
+  lastCheckTime: number
 
   check: () => Promise<boolean>
   clear: () => void
@@ -16,14 +20,28 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
   health: true,
   message: null,
   messageTitle: null,
+  lastCheckTime: Date.now(),
+  status: null,
 
   check: async () => {
     const health = await checkHealth()
     if (health.status === 'healthy') {
-      set({ health: true, message: null, messageTitle: null })
+      set({
+        health: true,
+        message: null,
+        messageTitle: null,
+        lastCheckTime: Date.now(),
+        status: health
+      })
       return true
     }
-    set({ health: false, message: health.message, messageTitle: 'Backend Health Check Error!' })
+    set({
+      health: false,
+      message: health.message,
+      messageTitle: 'Backend Health Check Error!',
+      lastCheckTime: Date.now(),
+      status: null
+    })
     return false
   },
 

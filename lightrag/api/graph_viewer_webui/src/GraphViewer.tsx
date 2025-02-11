@@ -99,12 +99,16 @@ const GraphEvents = () => {
   return null
 }
 
-export const GraphViewer = () => {
+const GraphViewer = () => {
   const [sigmaSettings, setSigmaSettings] = useState(defaultSigmaSettings)
 
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
+
+  const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
+  const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
+  const renderLabels = useSettingsStore.use.showNodeLabel()
 
   const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
@@ -114,9 +118,10 @@ export const GraphViewer = () => {
     setSigmaSettings({
       ...defaultSigmaSettings,
       enableEdgeEvents,
-      renderEdgeLabels
+      renderEdgeLabels,
+      renderLabels
     })
-  }, [enableEdgeEvents, renderEdgeLabels])
+  }, [renderLabels, enableEdgeEvents, renderEdgeLabels])
 
   const onSearchFocus = useCallback((value: GraphSearchOption | null) => {
     if (value === null) useGraphStore.getState().setFocusedNode(null)
@@ -147,11 +152,13 @@ export const GraphViewer = () => {
 
       <div className="absolute top-2 left-2 flex items-start gap-2">
         <GraphLabels />
-        <GraphSearch
-          value={searchInitSelectedNode}
-          onFocus={onSearchFocus}
-          onChange={onSearchSelect}
-        />
+        {showNodeSearchBar && (
+          <GraphSearch
+            value={searchInitSelectedNode}
+            onFocus={onSearchFocus}
+            onChange={onSearchSelect}
+          />
+        )}
       </div>
 
       <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
@@ -162,9 +169,11 @@ export const GraphViewer = () => {
         <ThemeToggle />
       </div>
 
-      <div className="absolute top-2 right-2">
-        <PropertiesView />
-      </div>
+      {showPropertyPanel && (
+        <div className="absolute top-2 right-2">
+          <PropertiesView />
+        </div>
+      )}
 
       {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
         <MiniMap width="100px" height="100px" />
@@ -172,3 +181,5 @@ export const GraphViewer = () => {
     </SigmaContainer>
   )
 }
+
+export default GraphViewer

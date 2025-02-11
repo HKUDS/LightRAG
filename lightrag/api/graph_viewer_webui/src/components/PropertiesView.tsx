@@ -59,7 +59,7 @@ const PropertiesView = () => {
     return <></>
   }
   return (
-    <div className="bg-background/80 max-w-sm rounded-xl border-2 p-2 backdrop-blur-lg">
+    <div className="bg-background/80 max-w-xs rounded-lg border-2 p-2 text-xs backdrop-blur-lg">
       {currentType == 'node' ? (
         <NodePropertiesView node={currentElement as any} />
       ) : (
@@ -132,7 +132,7 @@ const PropertyRow = ({
   tooltip?: string
 }) => {
   return (
-    <div className="flex items-center gap-2 text-sm">
+    <div className="flex items-center gap-2">
       <label className="text-primary/60 tracking-wide">{name}</label>:
       <Text
         className="hover:bg-primary/20 rounded p-1 text-ellipsis"
@@ -150,7 +150,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
   return (
     <div className="flex flex-col gap-2">
       <label className="text-md pl-1 font-bold tracking-wide text-sky-300">Node</label>
-      <div className="bg-primary/5 max-h-96 overflow-auto rounded-md p-1">
+      <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={'Id'} value={node.id} />
         <PropertyRow
           name={'Labels'}
@@ -162,7 +162,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
         <PropertyRow name={'Degree'} value={node.degree} />
       </div>
       <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">Properties</label>
-      <div className="bg-primary/5 max-h-96 overflow-auto rounded-md p-1">
+      <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(node.properties)
           .sort()
           .map((name) => {
