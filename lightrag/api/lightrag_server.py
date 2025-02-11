@@ -47,9 +47,9 @@ class RAGStorageConfig:
 
     # 默认存储实现
     DEFAULT_KV_STORAGE = "JsonKVStorage"
-    DEFAULT_DOC_STATUS_STORAGE = "JsonDocStatusStorage"
-    DEFAULT_GRAPH_STORAGE = "NetworkXStorage"
     DEFAULT_VECTOR_STORAGE = "NanoVectorDBStorage"
+    DEFAULT_GRAPH_STORAGE = "NetworkXStorage"
+    DEFAULT_DOC_STATUS_STORAGE = "JsonDocStatusStorage"
 
     def __init__(self):
         # 从环境变量读取配置,如果没有则使用默认值
@@ -219,6 +219,16 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.top_k}")
 
     # System Configuration
+    ASCIIColors.magenta("\n💾 Storage Configuration:")
+    ASCIIColors.white("    ├─ KV Storage: ", end="")
+    ASCIIColors.yellow(f"{rag_storage_config.KV_STORAGE}")
+    ASCIIColors.white("    ├─ Document Status Storage: ", end="")
+    ASCIIColors.yellow(f"{rag_storage_config.DOC_STATUS_STORAGE}")
+    ASCIIColors.white("    ├─ Graph Storage: ", end="")
+    ASCIIColors.yellow(f"{rag_storage_config.GRAPH_STORAGE}")
+    ASCIIColors.white("    └─ Vector Storage: ", end="")
+    ASCIIColors.yellow(f"{rag_storage_config.VECTOR_STORAGE}")
+
     ASCIIColors.magenta("\n🛠️ System Configuration:")
     ASCIIColors.white("    ├─ Ollama Emulating Model: ", end="")
     ASCIIColors.yellow(f"{ollama_server_infos.LIGHTRAG_MODEL}")
