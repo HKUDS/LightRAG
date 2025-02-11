@@ -116,7 +116,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             for k, v in self._data.items()
             if v["status"] == DocStatus.PROCESSED
         }
-    
+
     async def get_processing_docs(self) -> dict[str, DocProcessingStatus]:
         """Get all processing documents"""
         return {
