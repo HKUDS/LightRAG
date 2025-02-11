@@ -550,7 +550,9 @@ class PGDocStatusStorage(DocStatusStorage):
                 "workspace": self.db.workspace,
                 "id": k,
                 "status": v["status"].value,  # Convert Enum to string
-                "chunks_count": v.get("chunks_count", -1),  # Default to -1 if not provided
+                "chunks_count": v.get(
+                    "chunks_count", -1
+                ),  # Default to -1 if not provided
             }
             await self.db.execute(sql, _data)
 
