@@ -85,7 +85,7 @@ Use the below Python snippet (in a script) to initialize LightRAG and perform qu
 ```python
 import os
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete
+from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete, openai_embed
 
 #########
 # Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
@@ -95,12 +95,12 @@ from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete
 
 WORKING_DIR = "./dickens"
 
-
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
 rag = LightRAG(
     working_dir=WORKING_DIR,
+    embedding_func=openai_embed,
     llm_model_func=gpt_4o_mini_complete  # Use gpt_4o_mini_complete LLM model
     # llm_model_func=gpt_4o_complete  # Optionally, use a stronger model
 )
