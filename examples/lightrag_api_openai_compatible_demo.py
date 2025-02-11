@@ -24,9 +24,9 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 print(f"EMBEDDING_MODEL: {EMBEDDING_MODEL}")
 EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192))
 print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
-BASE_URL = int(os.environ.get("BASE_URL", "https://api.openai.com/v1"))
+BASE_URL = os.environ.get("BASE_URL", "https://api.openai.com/v1")
 print(f"BASE_URL: {BASE_URL}")
-API_KEY = int(os.environ.get("API_KEY", "xxxxxxxx"))
+API_KEY = os.environ.get("API_KEY", "xxxxxxxx")
 print(f"API_KEY: {API_KEY}")
 
 if not os.path.exists(WORKING_DIR):
