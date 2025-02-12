@@ -172,8 +172,8 @@ class OracleDB:
 
 @dataclass
 class OracleKVStorage(BaseKVStorage):
-    # should pass db object to self.db
-    db: OracleDB = None
+    # db instance must be injected before use
+    # db: OracleDB
     meta_fields = None
 
     def __post_init__(self):
@@ -318,8 +318,8 @@ class OracleKVStorage(BaseKVStorage):
 
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):
-    # should pass db object to self.db
-    db: OracleDB = None
+    # db instance must be injected before use
+    # db: OracleDB
     cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
 
     def __post_init__(self):
@@ -361,8 +361,8 @@ class OracleVectorDBStorage(BaseVectorStorage):
 
 @dataclass
 class OracleGraphStorage(BaseGraphStorage):
-    # should pass db object to self.db
-    db: OracleDB = None
+    # db instance must be injected before use
+    # db: OracleDB
 
     def __post_init__(self):
         """从graphml文件加载图"""

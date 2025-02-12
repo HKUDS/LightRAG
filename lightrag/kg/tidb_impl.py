@@ -101,8 +101,8 @@ class TiDB:
 
 @dataclass
 class TiDBKVStorage(BaseKVStorage):
-    # should pass db object to self.db
-    db: TiDB = None
+    # db instance must be injected before use
+    # db: TiDB
 
     def __post_init__(self):
         self._data = {}
@@ -210,8 +210,8 @@ class TiDBKVStorage(BaseKVStorage):
 
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
-    # should pass db object to self.db
-    db: TiDB = None
+    # db instance must be injected before use
+    # db: TiDB
     cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
 
     def __post_init__(self):
@@ -333,8 +333,8 @@ class TiDBVectorDBStorage(BaseVectorStorage):
 
 @dataclass
 class TiDBGraphStorage(BaseGraphStorage):
-    # should pass db object to self.db
-    db: TiDB = None
+    # db instance must be injected before use
+    # db: TiDB
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
