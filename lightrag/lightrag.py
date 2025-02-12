@@ -609,15 +609,15 @@ class LightRAG:
             )
 
 
-        # Collect all storage instances
+        # Collect all storage instances with their names
         storage_instances = [
-            self.full_docs,
-            self.text_chunks,
-            self.chunk_entity_relation_graph,
-            self.entities_vdb,
-            self.relationships_vdb,
-            self.chunks_vdb,
-            self.doc_status,
+            ("full_docs", self.full_docs),
+            ("text_chunks", self.text_chunks),
+            ("chunk_entity_relation_graph", self.chunk_entity_relation_graph),
+            ("entities_vdb", self.entities_vdb),
+            ("relationships_vdb", self.relationships_vdb),
+            ("chunks_vdb", self.chunks_vdb),
+            ("doc_status", self.doc_status),
         ]
 
         # Initialize database connections if needed
@@ -646,7 +646,7 @@ class LightRAG:
         storage_class = lazy_external_import(import_path, storage_name)
         return storage_class
 
-    async def _initialize_database_if_needed(self, storage_instances: list):
+    async def _initialize_database_if_needed(self, storage_instances: list[tuple[str, Any]]):
         """Intialize database connection and inject it to storage implementation if needed"""
         from .kg.postgres_impl import PostgreSQLDB
         from .kg.oracle_impl import OracleDB
@@ -670,53 +670,53 @@ class LightRAG:
         # Checking if PostgreSQL is needed
         if any(
             isinstance(
-                storage,
+                storage_instance,
                 (PGKVStorage, PGVectorStorage, PGGraphStorage, PGDocStatusStorage),
             )
-            for storage in storage_instances
+            for _, storage_instance in storage_instances
         ):
             postgres_db = PostgreSQLDB(self._get_postgres_config())
             await postgres_db.initdb()
             await postgres_db.check_tables()
-            for storage in storage_instances:
+            for storage_name, storage_instance in storage_instances:
                 if isinstance(
-                    storage,
+                    storage_instance,
                     (PGKVStorage, PGVectorStorage, PGGraphStorage, PGDocStatusStorage),
                 ):
-                    storage.db = postgres_db
-                    logger.info(f"Injected postgres_db to {storage.__class__.__name__}")
+                    storage_instance.db = postgres_db
+                    logger.info(f"Injected postgres_db to {storage_name}")
 
         # Checking if Oracle is needed
         if any(
             isinstance(
-                storage, (OracleKVStorage, OracleVectorDBStorage, OracleGraphStorage)
+                storage_instance, (OracleKVStorage, OracleVectorDBStorage, OracleGraphStorage)
             )
-            for storage in storage_instances
+            for _, storage_instance in storage_instances
         ):
             oracle_db = OracleDB(self._get_oracle_config())
             await oracle_db.check_tables()
-            for storage in storage_instances:
+            for storage_name, storage_instance in storage_instances:
                 if isinstance(
-                    storage,
+                    storage_instance,
                     (OracleKVStorage, OracleVectorDBStorage, OracleGraphStorage),
                 ):
-                    storage.db = oracle_db
-                    logger.info(f"Injected oracle_db to {storage.__class__.__name__}")
+                    storage_instance.db = oracle_db
+                    logger.info(f"Injected oracle_db to {storage_name}")
 
         # Checking if TiDB is needed
         if any(
-            isinstance(storage, (TiDBKVStorage, TiDBVectorDBStorage, TiDBGraphStorage))
-            for storage in storage_instances
+            isinstance(storage_instance, (TiDBKVStorage, TiDBVectorDBStorage, TiDBGraphStorage))
+            for _, storage_instance in storage_instances
         ):
             tidb_db = TiDB(self._get_tidb_config())
             await tidb_db.check_tables()
             # 注入db实例
-            for storage in storage_instances:
+            for storage_name, storage_instance in storage_instances:
                 if isinstance(
-                    storage, (TiDBKVStorage, TiDBVectorDBStorage, TiDBGraphStorage)
+                    storage_instance, (TiDBKVStorage, TiDBVectorDBStorage, TiDBGraphStorage)
                 ):
-                    storage.db = tidb_db
-                    logger.info(f"Injected tidb_db to {storage.__class__.__name__}")
+                    storage_instance.db = tidb_db
+                    logger.info(f"Injected tidb_db to {storage_name}")
 
     def set_storage_client(self, db_client):
         # Inject db to storage implementation (only tested on Oracle Database
