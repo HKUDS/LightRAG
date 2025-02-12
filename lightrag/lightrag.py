@@ -420,6 +420,15 @@ class LightRAG:
             # Check environment variables
             self.check_storage_env_vars(storage_name)
 
+        # Ensure vector_db_storage_cls_kwargs has required fields
+        default_vector_db_kwargs = {
+            "cosine_better_than_threshold": float(os.getenv("COSINE_THRESHOLD", "0.2"))
+        }
+        self.vector_db_storage_cls_kwargs = {
+            **default_vector_db_kwargs,
+            **self.vector_db_storage_cls_kwargs
+        }
+
         # show config
         global_config = asdict(self)
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])

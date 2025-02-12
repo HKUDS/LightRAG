@@ -19,6 +19,8 @@ config.read("config.ini", "utf-8")
 
 @dataclass
 class MilvusVectorDBStorge(BaseVectorStorage):
+    cosine_better_than_threshold: float = None
+
     @staticmethod
     def create_collection_if_not_exist(
         client: MilvusClient, collection_name: str, **kwargs
@@ -30,6 +32,12 @@ class MilvusVectorDBStorge(BaseVectorStorage):
         )
 
     def __post_init__(self):
+        config = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        cosine_threshold = config.get("cosine_better_than_threshold")
+        if cosine_threshold is None:
+            raise ValueError("cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs")
+        self.cosine_better_than_threshold = cosine_threshold
+
         self._client = MilvusClient(
             uri=os.environ.get(
                 "MILVUS_URI",
@@ -103,7 +111,7 @@ class MilvusVectorDBStorge(BaseVectorStorage):
             data=embedding,
             limit=top_k,
             output_fields=list(self.meta_fields),
-            search_params={"metric_type": "COSINE", "params": {"radius": 0.2}},
+            search_params={"metric_type": "COSINE", "params": {"radius": self.cosine_better_than_threshold}},
         )
         print(results)
         return [

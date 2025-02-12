@@ -13,15 +13,15 @@ from lightrag.utils import logger
 class ChromaVectorDBStorage(BaseVectorStorage):
     """ChromaDB vector storage implementation."""
 
-    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
+    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
         try:
-            # Use global config value if specified, otherwise use default
             config = self.global_config.get("vector_db_storage_cls_kwargs", {})
-            self.cosine_better_than_threshold = config.get(
-                "cosine_better_than_threshold", self.cosine_better_than_threshold
-            )
+            cosine_threshold = config.get("cosine_better_than_threshold")
+            if cosine_threshold is None:
+                raise ValueError("cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs")
+            self.cosine_better_than_threshold = cosine_threshold
 
             user_collection_settings = config.get("collection_settings", {})
             # Default HNSW index settings for ChromaDB

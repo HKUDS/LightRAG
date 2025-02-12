@@ -320,14 +320,14 @@ class OracleKVStorage(BaseKVStorage):
 class OracleVectorDBStorage(BaseVectorStorage):
     # db instance must be injected before use
     # db: OracleDB
-    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
+    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
-        # Use global config value if specified, otherwise use default
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        self.cosine_better_than_threshold = config.get(
-            "cosine_better_than_threshold", self.cosine_better_than_threshold
-        )
+        cosine_threshold = config.get("cosine_better_than_threshold")
+        if cosine_threshold is None:
+            raise ValueError("cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs")
+        self.cosine_better_than_threshold = cosine_threshold
 
     async def upsert(self, data: dict[str, dict]):
         """向向量数据库中插入数据"""
