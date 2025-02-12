@@ -103,7 +103,7 @@ After starting the lightrag-server, you can add an Ollama-type connection in the
 
 LightRAG can be configured using either command-line arguments or environment variables. When both are provided, command-line arguments take precedence over environment variables.
 
-For better performance, the API server's default values for TOP_K and COSINE_THRESHOLD are set to 50 and 0.4 respectively. If COSINE_THRESHOLD remains at its default value of 0.2 in LightRAG, many irrelevant entities and relations would be retrieved and sent to the LLM.
+Default `TOP_K` is set to `60`. Default `COSINE_THRESHOLD` are set to `0.2`.
 
 ### Environment Variables
 

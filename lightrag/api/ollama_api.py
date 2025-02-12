@@ -148,9 +148,10 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode]:
 
 
 class OllamaAPI:
-    def __init__(self, rag: LightRAG):
+    def __init__(self, rag: LightRAG, top_k: int = 60):
         self.rag = rag
         self.ollama_server_infos = ollama_server_infos
+        self.top_k = top_k
         self.router = APIRouter()
         self.setup_routes()
 
@@ -381,7 +382,7 @@ class OllamaAPI:
                     "stream": request.stream,
                     "only_need_context": False,
                     "conversation_history": conversation_history,
-                    "top_k": self.rag.args.top_k if hasattr(self.rag, "args") else 50,
+                    "top_k": self.top_k,
                 }
 
                 if (

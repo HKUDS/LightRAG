@@ -530,13 +530,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--top-k",
         type=int,
-        default=get_env_value("TOP_K", 50, int),
-        help="Number of most similar results to return (default: from env or 50)",
+        default=get_env_value("TOP_K", 60, int),
+        help="Number of most similar results to return (default: from env or 60)",
     )
     parser.add_argument(
         "--cosine-threshold",
         type=float,
-        default=get_env_value("COSINE_THRESHOLD", 0.4, float),
+        default=get_env_value("COSINE_THRESHOLD", 0.2, float),
         help="Cosine similarity threshold (default: from env or 0.4)",
     )
 
@@ -669,7 +669,13 @@ def get_api_key_dependency(api_key: Optional[str]):
     return api_key_auth
 
 
+# Global configuration
+global_top_k = 60  # default value
+
 def create_app(args):
+    global global_top_k
+    global_top_k = args.top_k  # save top_k from args
+    
     # Verify that bindings are correctly setup
     if args.llm_binding not in [
         "lollms",
@@ -1279,7 +1285,7 @@ def create_app(args):
                     mode=request.mode,
                     stream=request.stream,
                     only_need_context=request.only_need_context,
-                    top_k=args.top_k,
+                    top_k=global_top_k,
                 ),
             )
 
@@ -1321,7 +1327,7 @@ def create_app(args):
                     mode=request.mode,
                     stream=True,
                     only_need_context=request.only_need_context,
-                    top_k=args.top_k,
+                    top_k=global_top_k,
                 ),
             )
 
@@ -1611,7 +1617,7 @@ def create_app(args):
         return await rag.get_graps(nodel_label=label, max_depth=100)
 
     # Add Ollama API routes
-    ollama_api = OllamaAPI(rag)
+    ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")
 
     @app.get("/documents", dependencies=[Depends(optional_api_key)])
