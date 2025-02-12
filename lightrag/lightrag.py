@@ -107,10 +107,13 @@ STORAGE_ENV_REQUIREMENTS = {
         "AGE_POSTGRES_DB",
         "AGE_POSTGRES_USER",
         "AGE_POSTGRES_PASSWORD",
-        "AGE_GRAPH_NAME",
     ],
     "GremlinStorage": ["GREMLIN_HOST", "GREMLIN_PORT", "GREMLIN_GRAPH"],
-    "PGGraphStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
+    "PGGraphStorage": [
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "POSTGRES_DATABASE",
+    ],
     "OracleGraphStorage": [
         "ORACLE_DSN",
         "ORACLE_USER",
