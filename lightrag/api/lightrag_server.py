@@ -66,43 +66,11 @@ load_dotenv(override=True)
 config = configparser.ConfigParser()
 config.read("config.ini")
 
-
-class RAGStorageConfig:
-    """存储配置类,支持通过环境变量和命令行参数修改默认值"""
-
-    # 默认存储实现
-    DEFAULT_KV_STORAGE = "JsonKVStorage"
-    DEFAULT_VECTOR_STORAGE = "NanoVectorDBStorage"
-    DEFAULT_GRAPH_STORAGE = "NetworkXStorage"
-    DEFAULT_DOC_STATUS_STORAGE = "JsonDocStatusStorage"
-
-    def __init__(self):
-        # 从环境变量读取配置,如果没有则使用默认值
-        self.KV_STORAGE = os.getenv("LIGHTRAG_KV_STORAGE", self.DEFAULT_KV_STORAGE)
-        self.DOC_STATUS_STORAGE = os.getenv(
-            "LIGHTRAG_DOC_STATUS_STORAGE", self.DEFAULT_DOC_STATUS_STORAGE
-        )
-        self.GRAPH_STORAGE = os.getenv(
-            "LIGHTRAG_GRAPH_STORAGE", self.DEFAULT_GRAPH_STORAGE
-        )
-        self.VECTOR_STORAGE = os.getenv(
-            "LIGHTRAG_VECTOR_STORAGE", self.DEFAULT_VECTOR_STORAGE
-        )
-
-    def update_from_args(self, args):
-        """从命令行参数更新配置"""
-        if hasattr(args, "kv_storage"):
-            self.KV_STORAGE = args.kv_storage
-        if hasattr(args, "doc_status_storage"):
-            self.DOC_STATUS_STORAGE = args.doc_status_storage
-        if hasattr(args, "graph_storage"):
-            self.GRAPH_STORAGE = args.graph_storage
-        if hasattr(args, "vector_storage"):
-            self.VECTOR_STORAGE = args.vector_storage
-
-
-# 初始化存储配置
-rag_storage_config = RAGStorageConfig()
+class DefaultRAGStorageConfig:
+    KV_STORAGE = "JsonKVStorage"
+    VECTOR_STORAGE = "NanoVectorDBStorage"
+    GRAPH_STORAGE = "NetworkXStorage"
+    DOC_STATUS_STORAGE = "JsonDocStatusStorage"
 
 # Global progress tracker
 scan_progress: Dict = {
@@ -246,13 +214,13 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     # System Configuration
     ASCIIColors.magenta("\n💾 Storage Configuration:")
     ASCIIColors.white("    ├─ KV Storage: ", end="")
-    ASCIIColors.yellow(f"{rag_storage_config.KV_STORAGE}")
-    ASCIIColors.white("    ├─ Document Status Storage: ", end="")
-    ASCIIColors.yellow(f"{rag_storage_config.DOC_STATUS_STORAGE}")
+    ASCIIColors.yellow(f"{args.kv_storage}")
+    ASCIIColors.white("    ├─ Vector Storage: ", end="")
+    ASCIIColors.yellow(f"{args.vector_storage}")
     ASCIIColors.white("    ├─ Graph Storage: ", end="")
-    ASCIIColors.yellow(f"{rag_storage_config.GRAPH_STORAGE}")
-    ASCIIColors.white("    └─ Vector Storage: ", end="")
-    ASCIIColors.yellow(f"{rag_storage_config.VECTOR_STORAGE}")
+    ASCIIColors.yellow(f"{args.graph_storage}")
+    ASCIIColors.white("    └─ Document Status Storage: ", end="")
+    ASCIIColors.yellow(f"{args.doc_status_storage}")
 
     ASCIIColors.magenta("\n🛠️ System Configuration:")
     ASCIIColors.white("    ├─ Ollama Emulating Model: ", end="")
@@ -349,23 +317,23 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--kv-storage",
-        default=rag_storage_config.KV_STORAGE,
-        help=f"KV存储实现 (default: {rag_storage_config.KV_STORAGE})",
+        default=get_env_value("LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE),
+        help=f"KV存储实现 (default: {DefaultRAGStorageConfig.KV_STORAGE})",
     )
     parser.add_argument(
         "--doc-status-storage",
-        default=rag_storage_config.DOC_STATUS_STORAGE,
-        help=f"文档状态存储实现 (default: {rag_storage_config.DOC_STATUS_STORAGE})",
+        default=get_env_value("LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE),
+        help=f"文档状态存储实现 (default: {DefaultRAGStorageConfig.DOC_STATUS_STORAGE})",
     )
     parser.add_argument(
         "--graph-storage",
-        default=rag_storage_config.GRAPH_STORAGE,
-        help=f"图存储实现 (default: {rag_storage_config.GRAPH_STORAGE})",
+        default=get_env_value("LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE),
+        help=f"图存储实现 (default: {DefaultRAGStorageConfig.GRAPH_STORAGE})",
     )
     parser.add_argument(
         "--vector-storage",
-        default=rag_storage_config.VECTOR_STORAGE,
-        help=f"向量存储实现 (default: {rag_storage_config.VECTOR_STORAGE})",
+        default=get_env_value("LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE),
+        help=f"向量存储实现 (default: {DefaultRAGStorageConfig.VECTOR_STORAGE})",
     )
 
     # Bindings configuration
@@ -581,8 +549,6 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-
-    rag_storage_config.update_from_args(args)
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
@@ -1058,10 +1024,10 @@ def create_app(args):
             if args.llm_binding == "lollms" or args.llm_binding == "ollama"
             else {},
             embedding_func=embedding_func,
-            kv_storage=rag_storage_config.KV_STORAGE,
-            graph_storage=rag_storage_config.GRAPH_STORAGE,
-            vector_storage=rag_storage_config.VECTOR_STORAGE,
-            doc_status_storage=rag_storage_config.DOC_STATUS_STORAGE,
+            kv_storage=args.kv_storage,
+            graph_storage=args.graph_storage,
+            vector_storage=args.vector_storage,
+            doc_status_storage=args.doc_status_storage,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
@@ -1089,10 +1055,10 @@ def create_app(args):
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
             embedding_func=embedding_func,
-            kv_storage=rag_storage_config.KV_STORAGE,
-            graph_storage=rag_storage_config.GRAPH_STORAGE,
-            vector_storage=rag_storage_config.VECTOR_STORAGE,
-            doc_status_storage=rag_storage_config.DOC_STATUS_STORAGE,
+            kv_storage=args.kv_storage,
+            graph_storage=args.graph_storage,
+            vector_storage=args.vector_storage,
+            doc_status_storage=args.doc_status_storage,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
@@ -1658,10 +1624,10 @@ def create_app(args):
                 "embedding_binding_host": args.embedding_binding_host,
                 "embedding_model": args.embedding_model,
                 "max_tokens": args.max_tokens,
-                "kv_storage": rag_storage_config.KV_STORAGE,
-                "doc_status_storage": rag_storage_config.DOC_STATUS_STORAGE,
-                "graph_storage": rag_storage_config.GRAPH_STORAGE,
-                "vector_storage": rag_storage_config.VECTOR_STORAGE,
+                "kv_storage": args.kv_storage,
+                "doc_status_storage": args.doc_status_storage,
+                "graph_storage": args.graph_storage,
+                "vector_storage": args.vector_storage,
             },
         }
 
