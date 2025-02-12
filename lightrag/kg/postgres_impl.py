@@ -418,10 +418,8 @@ class PGVectorStorage(BaseVectorStorage):
 
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
-    """PostgreSQL implementation of document status storage"""
-
     # db instance must be injected before use
-    db: PostgreSQLDB
+    # db: PostgreSQLDB
 
     async def filter_keys(self, data: set[str]) -> set[str]:
         """Return keys that don't exist in storage"""
