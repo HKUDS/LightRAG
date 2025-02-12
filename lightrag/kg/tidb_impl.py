@@ -212,18 +212,18 @@ class TiDBKVStorage(BaseKVStorage):
 class TiDBVectorDBStorage(BaseVectorStorage):
     # db instance must be injected before use
     # db: TiDB
-    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
+    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
         self._client_file_name = os.path.join(
             self.global_config["working_dir"], f"vdb_{self.namespace}.json"
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
-        # Use global config value if specified, otherwise use default
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        self.cosine_better_than_threshold = config.get(
-            "cosine_better_than_threshold", self.cosine_better_than_threshold
-        )
+        cosine_threshold = config.get("cosine_better_than_threshold")
+        if cosine_threshold is None:
+            raise ValueError("cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs")
+        self.cosine_better_than_threshold = cosine_threshold
 
     async def query(self, query: str, top_k: int) -> list[dict]:
         """Search from tidb vector"""
