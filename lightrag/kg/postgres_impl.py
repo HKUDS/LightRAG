@@ -493,6 +493,10 @@ class PGDocStatusStorage(DocStatusStorage):
         """Get all pending documents"""
         return await self.get_docs_by_status(DocStatus.PENDING)
 
+    async def get_processing_docs(self) -> Dict[str, DocProcessingStatus]:
+        """Get all documents that are currently being processed"""
+        return await self.get_docs_by_status(DocStatus.PROCESSING)
+
     async def index_done_callback(self):
         """Save data after indexing, but for PostgreSQL, we already saved them during the upsert stage, so no action to take here"""
         logger.info("Doc status had been saved into postgresql db!")
