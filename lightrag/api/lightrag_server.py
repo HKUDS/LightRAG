@@ -1115,6 +1115,7 @@ def create_app(args):
         ("relationships_vdb", rag.relationships_vdb),
         ("chunks_vdb", rag.chunks_vdb),
         ("doc_status", rag.doc_status),
+        ("llm_response_cache", rag.llm_response_cache),
     ]
 
     async def index_file(file_path: Union[str, Path]) -> None:
