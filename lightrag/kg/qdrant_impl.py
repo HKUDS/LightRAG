@@ -64,7 +64,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = config.get("cosine_better_than_threshold")
         if cosine_threshold is None:
-            raise ValueError("cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs")
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+            )
         self.cosine_better_than_threshold = cosine_threshold
 
         self._client = QdrantClient(
@@ -140,5 +142,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         )
         logger.debug(f"query result: {results}")
         # 添加余弦相似度过滤
-        filtered_results = [dp for dp in results if dp.score >= self.cosine_better_than_threshold]
-        return [{**dp.payload, "id": dp.id, "distance": dp.score} for dp in filtered_results]
+        filtered_results = [
+            dp for dp in results if dp.score >= self.cosine_better_than_threshold
+        ]
+        return [
+            {**dp.payload, "id": dp.id, "distance": dp.score} for dp in filtered_results
+        ]

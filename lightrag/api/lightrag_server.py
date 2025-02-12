@@ -66,11 +66,13 @@ load_dotenv(override=True)
 config = configparser.ConfigParser()
 config.read("config.ini")
 
+
 class DefaultRAGStorageConfig:
     KV_STORAGE = "JsonKVStorage"
     VECTOR_STORAGE = "NanoVectorDBStorage"
     GRAPH_STORAGE = "NetworkXStorage"
     DOC_STATUS_STORAGE = "JsonDocStatusStorage"
+
 
 # Global progress tracker
 scan_progress: Dict = {
@@ -317,22 +319,30 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--kv-storage",
-        default=get_env_value("LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE),
+        default=get_env_value(
+            "LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE
+        ),
         help=f"KV存储实现 (default: {DefaultRAGStorageConfig.KV_STORAGE})",
     )
     parser.add_argument(
         "--doc-status-storage",
-        default=get_env_value("LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE),
+        default=get_env_value(
+            "LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE
+        ),
         help=f"文档状态存储实现 (default: {DefaultRAGStorageConfig.DOC_STATUS_STORAGE})",
     )
     parser.add_argument(
         "--graph-storage",
-        default=get_env_value("LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE),
+        default=get_env_value(
+            "LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE
+        ),
         help=f"图存储实现 (default: {DefaultRAGStorageConfig.GRAPH_STORAGE})",
     )
     parser.add_argument(
         "--vector-storage",
-        default=get_env_value("LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE),
+        default=get_env_value(
+            "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
+        ),
         help=f"向量存储实现 (default: {DefaultRAGStorageConfig.VECTOR_STORAGE})",
     )
 
@@ -725,7 +735,12 @@ def create_app(args):
                 for storage_name, storage_instance in storage_instances:
                     if isinstance(
                         storage_instance,
-                        (PGKVStorage, PGVectorStorage, PGGraphStorage, PGDocStatusStorage),
+                        (
+                            PGKVStorage,
+                            PGVectorStorage,
+                            PGGraphStorage,
+                            PGDocStatusStorage,
+                        ),
                     ):
                         storage_instance.db = postgres_db
                         logger.info(f"Injected postgres_db to {storage_name}")
@@ -790,11 +805,11 @@ def create_app(args):
             if postgres_db and hasattr(postgres_db, "pool"):
                 await postgres_db.pool.close()
                 logger.info("Closed PostgreSQL connection pool")
-            
+
             if oracle_db and hasattr(oracle_db, "pool"):
                 await oracle_db.pool.close()
                 logger.info("Closed Oracle connection pool")
-            
+
             if tidb_db and hasattr(tidb_db, "pool"):
                 await tidb_db.pool.close()
                 logger.info("Closed TiDB connection pool")

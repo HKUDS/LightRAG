@@ -222,7 +222,9 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = config.get("cosine_better_than_threshold")
         if cosine_threshold is None:
-            raise ValueError("cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs")
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+            )
         self.cosine_better_than_threshold = cosine_threshold
 
     async def query(self, query: str, top_k: int) -> list[dict]:
