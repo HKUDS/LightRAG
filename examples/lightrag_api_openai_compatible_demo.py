@@ -176,7 +176,7 @@ if __name__ == "__main__":
 # curl -X POST "http://127.0.0.1:8020/insert" -H "Content-Type: application/json" -d '{"text": "your text here"}'
 
 # 3. Insert file:
-# curl -X POST "http://127.0.0.1:8020/insert_file" -H "Content-Type: application/json" -d '{"file_path": "path/to/your/file.txt"}'
+# curl -X POST "http://127.0.0.1:8020/insert_file" -H "Content-Type: multipart/form-data" -F "file=@path/to/your/file.txt"
 
 # 4. Health check:
 # curl -X GET "http://127.0.0.1:8020/health"
