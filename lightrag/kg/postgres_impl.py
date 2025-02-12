@@ -425,9 +425,9 @@ class PGDocStatusStorage(DocStatusStorage):
         """Return keys that don't exist in storage"""
         keys = ",".join([f"'{_id}'" for _id in data])
         sql = (
-            f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id IN ({keys})"
+            f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace='{self.db.workspace}' AND id IN ({keys})"
         )
-        result = await self.db.query(sql, {"workspace": self.db.workspace}, True)
+        result = await self.db.query(sql, multirows=True)
         # The result is like [{'id': 'id1'}, {'id': 'id2'}, ...].
         if result is None:
             return set(data)
