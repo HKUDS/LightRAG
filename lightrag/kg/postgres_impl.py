@@ -306,7 +306,9 @@ class PGVectorStorage(BaseVectorStorage):
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = config.get("cosine_better_than_threshold")
         if cosine_threshold is None:
-            raise ValueError("cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs")
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+            )
         self.cosine_better_than_threshold = cosine_threshold
 
     def _upsert_chunks(self, item: dict):
@@ -424,9 +426,7 @@ class PGDocStatusStorage(DocStatusStorage):
     async def filter_keys(self, data: set[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         keys = ",".join([f"'{_id}'" for _id in data])
-        sql = (
-            f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace='{self.db.workspace}' AND id IN ({keys})"
-        )
+        sql = f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace='{self.db.workspace}' AND id IN ({keys})"
         result = await self.db.query(sql, multirows=True)
         # The result is like [{'id': 'id1'}, {'id': 'id2'}, ...].
         if result is None:

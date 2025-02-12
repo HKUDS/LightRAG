@@ -426,7 +426,7 @@ class LightRAG:
         }
         self.vector_db_storage_cls_kwargs = {
             **default_vector_db_kwargs,
-            **self.vector_db_storage_cls_kwargs
+            **self.vector_db_storage_cls_kwargs,
         }
 
         # show config
@@ -531,8 +531,6 @@ class LightRAG:
                 ),
                 embedding_func=self.embedding_func,
             )
-
-
 
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(

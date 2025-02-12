@@ -35,7 +35,9 @@ class MilvusVectorDBStorge(BaseVectorStorage):
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = config.get("cosine_better_than_threshold")
         if cosine_threshold is None:
-            raise ValueError("cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs")
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+            )
         self.cosine_better_than_threshold = cosine_threshold
 
         self._client = MilvusClient(
@@ -111,7 +113,10 @@ class MilvusVectorDBStorge(BaseVectorStorage):
             data=embedding,
             limit=top_k,
             output_fields=list(self.meta_fields),
-            search_params={"metric_type": "COSINE", "params": {"radius": self.cosine_better_than_threshold}},
+            search_params={
+                "metric_type": "COSINE",
+                "params": {"radius": self.cosine_better_than_threshold},
+            },
         )
         print(results)
         return [
