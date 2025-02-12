@@ -227,6 +227,14 @@ class DocStatusStorage(BaseKVStorage):
         """Get all pending documents"""
         raise NotImplementedError
 
+    async def get_processing_docs(self) -> dict[str, DocProcessingStatus]:
+        """Get all processing documents"""
+        raise NotImplementedError
+
+    async def get_processed_docs(self) -> dict[str, DocProcessingStatus]:
+        """Get all procesed documents"""
+        raise NotImplementedError
+
     async def update_doc_status(self, data: dict[str, Any]) -> None:
         """Updates the status of a document. By default, it calls upsert."""
         await self.upsert(data)
