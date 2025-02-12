@@ -130,7 +130,7 @@ if mongo_uri:
     os.environ["MONGO_URI"] = mongo_uri
     os.environ["MONGO_DATABASE"] = mongo_database
     rag_storage_config.KV_STORAGE = "MongoKVStorage"
-    rag_storage_config.DOC_STATUS_STORAGE = "MongoKVStorage"
+    rag_storage_config.DOC_STATUS_STORAGE = "MongoDocStatusStorage"
     if mongo_graph:
         rag_storage_config.GRAPH_STORAGE = "MongoGraphStorage"
 
