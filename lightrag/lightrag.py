@@ -417,14 +417,14 @@ class LightRAG:
 
     def insert(
         self,
-        string_or_strings: Union[str, list[str]],
+        input: Union[str, list[str], dict[str, list[str]]],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
     ):
         """Sync Insert documents with checkpoint support
 
         Args:
-            string_or_strings: Single document string or list of document strings
+            input: Single document string, list of document strings, or dictionary of document_id: list of document strings
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
             chunk_size, split the sub chunk by token size.
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
@@ -432,25 +432,25 @@ class LightRAG:
         """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
-            self.ainsert(string_or_strings, split_by_character, split_by_character_only)
+            self.ainsert(input, split_by_character, split_by_character_only)
         )
 
     async def ainsert(
         self,
-        string_or_strings: Union[str, list[str]],
+        input: Union[str, list[str], dict[str, list[str]]],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
     ):
         """Async Insert documents with checkpoint support
 
         Args:
-            string_or_strings: Single document string or list of document strings
+            input: Single document string, list of document strings, or dictionary of document_id: list of document strings
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
             chunk_size, split the sub chunk by token size.
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
         """
-        await self.apipeline_enqueue_documents(string_or_strings)
+        await self.apipeline_enqueue_documents(input)
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
@@ -507,33 +507,48 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
-    async def apipeline_enqueue_documents(self, string_or_strings: str | list[str]):
+    async def apipeline_enqueue_documents(
+        self, input: str | list[str] | dict[str, list[str]]
+    ):
         """
         Pipeline for Processing Documents
 
         1. Remove duplicate contents from the list
-        2. Generate document IDs and initial status
+        2. Generate document IDs (if not provided) and initial status
         3. Filter out already processed documents
         4. Enqueue document in status
         """
-        if isinstance(string_or_strings, str):
-            string_or_strings = [string_or_strings]
+        if isinstance(input, str):
+            input = [input]
 
-        # 1. Remove duplicate contents from the list
-        unique_contents = list(set(doc.strip() for doc in string_or_strings))
-
-        # 2. Generate document IDs and initial status
-        new_docs: dict[str, Any] = {
-            compute_mdhash_id(content, prefix="doc-"): {
-                "content": content,
-                "content_summary": self._get_content_summary(content),
-                "content_length": len(content),
-                "status": DocStatus.PENDING,
-                "created_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat(),
+        if isinstance(input, list):
+            # 1. Remove duplicate contents and 2. generate document IDs for list
+            unique_contents = list(set(doc.strip() for doc in input))
+            new_docs: dict[str, Any] = {
+                compute_mdhash_id(content, prefix="doc-"): {
+                    "content": content,
+                    "content_summary": self._get_content_summary(content),
+                    "content_length": len(content),
+                    "status": DocStatus.PENDING,
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat(),
+                }
+                for content in unique_contents
             }
-            for content in unique_contents
-        }
+        elif isinstance(input, dict):
+            # 1. Remove duplicate contents and 2. use provided document IDs
+            unique_contents = list(set(doc.strip() for doc in input.values()))
+            new_docs = {
+                doc_id: {
+                    "content": content,
+                    "content_summary": self._get_content_summary(content),
+                    "content_length": len(content),
+                    "status": DocStatus.PENDING,
+                    "created_at": datetime.now().isoformat(),
+                    "updated_at": datetime.now().isoformat(),
+                }
+                for doc_id, content in input.items()
+            }
 
         # 3. Filter out already processed documents
         # Get docs ids
@@ -854,15 +869,17 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
+                hashing_kv=(
+                    self.llm_response_cache
+                    if self.llm_response_cache
+                    and hasattr(self.llm_response_cache, "global_config")
+                    else self.key_string_value_json_storage_cls(
+                        namespace=make_namespace(
+                            self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                        ),
+                        global_config=asdict(self),
+                        embedding_func=self.embedding_func,
+                    )
                 ),
                 prompt=prompt,
             )
@@ -873,15 +890,17 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
+                hashing_kv=(
+                    self.llm_response_cache
+                    if self.llm_response_cache
+                    and hasattr(self.llm_response_cache, "global_config")
+                    else self.key_string_value_json_storage_cls(
+                        namespace=make_namespace(
+                            self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                        ),
+                        global_config=asdict(self),
+                        embedding_func=self.embedding_func,
+                    )
                 ),
             )
         elif param.mode == "mix":
@@ -894,15 +913,17 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
+                hashing_kv=(
+                    self.llm_response_cache
+                    if self.llm_response_cache
+                    and hasattr(self.llm_response_cache, "global_config")
+                    else self.key_string_value_json_storage_cls(
+                        namespace=make_namespace(
+                            self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                        ),
+                        global_config=asdict(self),
+                        embedding_func=self.embedding_func,
+                    )
                 ),
             )
         else:
@@ -968,15 +989,17 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_funcne,
+                hashing_kv=(
+                    self.llm_response_cache
+                    if self.llm_response_cache
+                    and hasattr(self.llm_response_cache, "global_config")
+                    else self.key_string_value_json_storage_cls(
+                        namespace=make_namespace(
+                            self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                        ),
+                        global_config=asdict(self),
+                        embedding_func=self.embedding_funcne,
+                    )
                 ),
             )
         elif param.mode == "naive":
@@ -986,15 +1009,17 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
+                hashing_kv=(
+                    self.llm_response_cache
+                    if self.llm_response_cache
+                    and hasattr(self.llm_response_cache, "global_config")
+                    else self.key_string_value_json_storage_cls(
+                        namespace=make_namespace(
+                            self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                        ),
+                        global_config=asdict(self),
+                        embedding_func=self.embedding_func,
+                    )
                 ),
             )
         elif param.mode == "mix":
@@ -1007,15 +1032,17 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
+                hashing_kv=(
+                    self.llm_response_cache
+                    if self.llm_response_cache
+                    and hasattr(self.llm_response_cache, "global_config")
+                    else self.key_string_value_json_storage_cls(
+                        namespace=make_namespace(
+                            self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+                        ),
+                        global_config=asdict(self),
+                        embedding_func=self.embedding_func,
+                    )
                 ),
             )
         else:
