@@ -530,6 +530,32 @@ class PGDocStatusStorage(DocStatusStorage):
             )
         return data
 
+    async def update_doc_status(self, data: dict[str, dict]) -> None:
+        """
+        Updates only the document status, chunk count, and updated timestamp.
+
+        This method ensures that only relevant fields are updated instead of overwriting
+        the entire document record. If `updated_at` is not provided, the database will
+        automatically use the current timestamp.
+        """
+        sql = """
+        UPDATE LIGHTRAG_DOC_STATUS
+        SET status = $3,
+            chunks_count = $4,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE workspace = $1 AND id = $2
+        """
+        for k, v in data.items():
+            _data = {
+                "workspace": self.db.workspace,
+                "id": k,
+                "status": v["status"].value,  # Convert Enum to string
+                "chunks_count": v.get(
+                    "chunks_count", -1
+                ),  # Default to -1 if not provided
+            }
+            await self.db.execute(sql, _data)
+
 
 class PGGraphQueryException(Exception):
     """Exception for the AGE queries."""

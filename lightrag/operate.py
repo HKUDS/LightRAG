@@ -1504,7 +1504,7 @@ async def naive_query(
     use_model_func = global_config["llm_model_func"]
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
-        hashing_kv, args_hash, query, "default", cache_type="query"
+        hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
     if cached_response is not None:
         return cached_response

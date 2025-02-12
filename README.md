@@ -85,7 +85,7 @@ Use the below Python snippet (in a script) to initialize LightRAG and perform qu
 ```python
 import os
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete
+from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete, openai_embed
 
 #########
 # Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
@@ -95,12 +95,12 @@ from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete
 
 WORKING_DIR = "./dickens"
 
-
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
 rag = LightRAG(
     working_dir=WORKING_DIR,
+    embedding_func=openai_embed,
     llm_model_func=gpt_4o_mini_complete  # Use gpt_4o_mini_complete LLM model
     # llm_model_func=gpt_4o_complete  # Optionally, use a stronger model
 )
@@ -355,16 +355,26 @@ In order to run this experiment on low RAM GPU you should select small model and
 ```python
 class QueryParam:
     mode: Literal["local", "global", "hybrid", "naive", "mix"] = "global"
+    """Specifies the retrieval mode:
+    - "local": Focuses on context-dependent information.
+    - "global": Utilizes global knowledge.
+    - "hybrid": Combines local and global retrieval methods.
+    - "naive": Performs a basic search without advanced techniques.
+    - "mix": Integrates knowledge graph and vector retrieval.
+    """
     only_need_context: bool = False
+    """If True, only returns the retrieved context without generating a response."""
     response_type: str = "Multiple Paragraphs"
-    # Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.
+    """Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'."""
     top_k: int = 60
-    # Number of tokens for the original chunks.
+    """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
     max_token_for_text_unit: int = 4000
-    # Number of tokens for the relationship descriptions
+    """Maximum number of tokens allowed for each retrieved text chunk."""
     max_token_for_global_context: int = 4000
-    # Number of tokens for the entity descriptions
+    """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
     max_token_for_local_context: int = 4000
+    """Maximum number of tokens allocated for entity descriptions in local retrieval."""
+    ...
 ```
 
 > default value of Top_k can be change by environment  variables  TOP_K.
