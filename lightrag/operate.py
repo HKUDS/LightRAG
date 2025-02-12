@@ -35,8 +35,6 @@ from .prompt import GRAPH_FIELD_SEP, PROMPTS
 import time
 
 
-COSINE_THRESHOLD = float(os.getenv("COSINE_THRESHOLD", "0.2"))
-
 
 def chunking_by_token_size(
     content: str,
@@ -1059,7 +1057,7 @@ async def _get_node_data(
     query_param: QueryParam,
 ):
     # get similar entities
-    logger.info(f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {COSINE_THRESHOLD}")
+    logger.info(f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {entities_vdb.cosine_better_than_threshold}")
     results = await entities_vdb.query(query, top_k=query_param.top_k)
     if not len(results):
         return "", "", ""
@@ -1275,7 +1273,7 @@ async def _get_edge_data(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
-    logger.info(f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {COSINE_THRESHOLD}")
+    logger.info(f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {relationships_vdb.cosine_better_than_threshold}")
     results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
 
     if not len(results):
