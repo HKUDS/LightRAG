@@ -587,7 +587,7 @@ class PGGraphStorage(BaseGraphStorage):
         print("no preloading of graph with AGE in production")
 
     def __post_init__(self):
-        self.graph_name = os.environ.get("AGE_GRAPH_NAME", "lightrag")
+        self.graph_name = self.namespace or os.environ.get("AGE_GRAPH_NAME", "lightrag")
         self._node_embed_algorithms = {
             "node2vec": self._node2vec_embed,
         }
