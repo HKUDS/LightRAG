@@ -61,6 +61,7 @@ STORAGES = {
     "PGDocStatusStorage": ".kg.postgres_impl",
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
+    "SingleStoreVectorDBStorage": ".kg.singlestore_impl",
 }
 
 
