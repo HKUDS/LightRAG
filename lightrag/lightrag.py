@@ -610,10 +610,10 @@ class LightRAG:
             for doc_id_processing_status in docs_batch:
                 doc_id, status_doc = doc_id_processing_status
                 # Update status in processing
-                doc_status_id = compute_mdhash_id(status_doc.content, prefix="doc-")
+                # doc_id = compute_mdhash_id(status_doc.content, prefix="doc-")
                 await self.doc_status.upsert(
                     {
-                        doc_status_id: {
+                        doc_id: {
                             "status": DocStatus.PROCESSING,
                             "updated_at": datetime.now().isoformat(),
                             "content": status_doc.content,
@@ -650,7 +650,7 @@ class LightRAG:
                     await asyncio.gather(*tasks)
                     await self.doc_status.update_doc_status(
                         {
-                            doc_status_id: {
+                            doc_id: {
                                 "status": DocStatus.PROCESSED,
                                 "chunks_count": len(chunks),
                                 "content": status_doc.content,
@@ -667,7 +667,7 @@ class LightRAG:
                     logger.error(f"Failed to process document {doc_id}: {str(e)}")
                     await self.doc_status.update_doc_status(
                         {
-                            doc_status_id: {
+                            doc_id: {
                                 "status": DocStatus.FAILED,
                                 "error": str(e),
                                 "content": status_doc.content,
