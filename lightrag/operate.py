@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 from tqdm.asyncio import tqdm as tqdm_async
 from typing import Any, Union
@@ -32,6 +33,9 @@ from .base import (
 )
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 import time
+
+
+COSINE_THRESHOLD = float(os.getenv("COSINE_THRESHOLD", "0.2"))
 
 
 def chunking_by_token_size(
@@ -1055,6 +1059,7 @@ async def _get_node_data(
     query_param: QueryParam,
 ):
     # get similar entities
+    logger.info(f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {COSINE_THRESHOLD}")
     results = await entities_vdb.query(query, top_k=query_param.top_k)
     if not len(results):
         return "", "", ""
@@ -1270,6 +1275,7 @@ async def _get_edge_data(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
+    logger.info(f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {COSINE_THRESHOLD}")
     results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
 
     if not len(results):
