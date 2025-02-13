@@ -111,7 +111,7 @@ if milvus_uri:
     os.environ["MILVUS_USER"] = milvus_user
     os.environ["MILVUS_PASSWORD"] = milvus_password
     os.environ["MILVUS_DB_NAME"] = milvus_db_name
-    rag_storage_config.VECTOR_STORAGE = "MilvusVectorDBStorge"
+    rag_storage_config.VECTOR_STORAGE = "MilvusVectorDBStorage"
 
 # Qdrant config
 qdrant_uri = config.get("qdrant", "uri", fallback=None)
@@ -272,6 +272,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
         ASCIIColors.white("    └─ Alternative Documentation (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
+        ASCIIColors.white("    ├─ WebUI (local): ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/webui")
+        ASCIIColors.white("    ├─ Graph Viewer (local): ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/graph-viewer")
 
         ASCIIColors.yellow("\n📝 Note:")
         ASCIIColors.white("""    Since the server is running on 0.0.0.0:
@@ -1424,8 +1428,8 @@ def create_app(args):
 
     # query all graph
     @app.get("/graphs")
-    async def get_graphs(label: str):
-        return await rag.get_graps(nodel_label=label, max_depth=100)
+    async def get_knowledge_graph(label: str):
+        return await rag.get_knowledge_graph(nodel_label=label, max_depth=100)
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag)
@@ -1463,19 +1467,18 @@ def create_app(args):
             },
         }
 
-    # webui mount /webui/index.html
-    # app.mount(
-    #     "/webui",
-    #     StaticFiles(
-    #         directory=Path(__file__).resolve().parent / "webui" / "static", html=True
-    #     ),
-    #     name="webui_static",
-    # )
+    # Webui mount webui/index.html
+    webui_dir = Path(__file__).parent / "webui"
+    app.mount(
+        "/graph-viewer",
+        StaticFiles(directory=webui_dir, html=True),
+        name="webui",
+    )
 
     # Serve the static files
     static_dir = Path(__file__).parent / "static"
     static_dir.mkdir(exist_ok=True)
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")
+    app.mount("/webui", StaticFiles(directory=static_dir, html=True), name="static")
 
     return app
 

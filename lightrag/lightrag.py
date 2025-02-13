@@ -34,17 +34,18 @@ from .utils import (
     logger,
     set_logger,
 )
+from .types import KnowledgeGraph
 
 STORAGES = {
     "NetworkXStorage": ".kg.networkx_impl",
     "JsonKVStorage": ".kg.json_kv_impl",
     "NanoVectorDBStorage": ".kg.nano_vector_db_impl",
-    "JsonDocStatusStorage": ".kg.jsondocstatus_impl",
+    "JsonDocStatusStorage": ".kg.json_doc_status_impl",
     "Neo4JStorage": ".kg.neo4j_impl",
     "OracleKVStorage": ".kg.oracle_impl",
     "OracleGraphStorage": ".kg.oracle_impl",
     "OracleVectorDBStorage": ".kg.oracle_impl",
-    "MilvusVectorDBStorge": ".kg.milvus_impl",
+    "MilvusVectorDBStorage": ".kg.milvus_impl",
     "MongoKVStorage": ".kg.mongo_impl",
     "MongoDocStatusStorage": ".kg.mongo_impl",
     "MongoGraphStorage": ".kg.mongo_impl",
@@ -385,7 +386,9 @@ class LightRAG:
         text = await self.chunk_entity_relation_graph.get_all_labels()
         return text
 
-    async def get_graps(self, nodel_label: str, max_depth: int):
+    async def get_knowledge_graph(
+        self, nodel_label: str, max_depth: int
+    ) -> KnowledgeGraph:
         return await self.chunk_entity_relation_graph.get_knowledge_graph(
             node_label=nodel_label, max_depth=max_depth
         )
