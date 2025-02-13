@@ -111,7 +111,7 @@ if milvus_uri:
     os.environ["MILVUS_USER"] = milvus_user
     os.environ["MILVUS_PASSWORD"] = milvus_password
     os.environ["MILVUS_DB_NAME"] = milvus_db_name
-    rag_storage_config.VECTOR_STORAGE = "MilvusVectorDBStorge"
+    rag_storage_config.VECTOR_STORAGE = "MilvusVectorDBStorage"
 
 # Qdrant config
 qdrant_uri = config.get("qdrant", "uri", fallback=None)

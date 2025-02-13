@@ -44,7 +44,7 @@ STORAGES = {
     "OracleKVStorage": ".kg.oracle_impl",
     "OracleGraphStorage": ".kg.oracle_impl",
     "OracleVectorDBStorage": ".kg.oracle_impl",
-    "MilvusVectorDBStorge": ".kg.milvus_impl",
+    "MilvusVectorDBStorage": ".kg.milvus_impl",
     "MongoKVStorage": ".kg.mongo_impl",
     "MongoDocStatusStorage": ".kg.mongo_impl",
     "MongoGraphStorage": ".kg.mongo_impl",
