@@ -806,9 +806,13 @@ def create_app(args):
                         task = asyncio.create_task(run_scanning_process())
                         app.state.background_tasks.add(task)
                         task.add_done_callback(app.state.background_tasks.discard)
-                        ASCIIColors.info(f"Started background scanning of documents from {args.input_dir}")
+                        ASCIIColors.info(
+                            f"Started background scanning of documents from {args.input_dir}"
+                        )
                     else:
-                        ASCIIColors.info("Skip document scanning cause anohter scanning is active")
+                        ASCIIColors.info(
+                            "Skip document scanning(anohter scanning is active)"
+                        )
 
             yield
 
