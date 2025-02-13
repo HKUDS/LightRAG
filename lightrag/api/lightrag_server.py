@@ -1155,8 +1155,9 @@ def create_app(args):
                         converter = DocumentConverter()
                         result = converter.convert(file_path)
                         return result.document.export_to_markdown()
+
                     return await asyncio.to_thread(sync_convert)
-                
+
                 content = await convert_doc()
 
             case _:
@@ -1449,13 +1450,15 @@ def create_app(args):
                         f.write(await file.read())
 
                     try:
+
                         async def convert_doc():
                             def sync_convert():
                                 converter = DocumentConverter()
                                 result = converter.convert(str(temp_path))
                                 return result.document.export_to_markdown()
+
                             return await asyncio.to_thread(sync_convert)
-                        
+
                         content = await convert_doc()
                     finally:
                         # Clean up the temporary file
