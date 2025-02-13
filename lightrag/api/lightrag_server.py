@@ -6,7 +6,7 @@ from fastapi import (
     Form,
     BackgroundTasks,
 )
-
+import asyncio
 import threading
 import os
 import json
@@ -730,6 +730,8 @@ def create_app(args):
         postgres_db = None
         oracle_db = None
         tidb_db = None
+        # Store background tasks
+        app.state.background_tasks = set()
 
         try:
             # Check if PostgreSQL is needed
@@ -794,20 +796,19 @@ def create_app(args):
 
             # Auto scan documents if enabled
             if args.auto_scan_at_startup:
-                try:
-                    new_files = doc_manager.scan_directory_for_new_files()
-                    for file_path in new_files:
-                        try:
-                            await index_file(file_path)
-                        except Exception as e:
-                            trace_exception(e)
-                            logging.error(f"Error indexing file {file_path}: {str(e)}")
-
-                    ASCIIColors.info(
-                        f"Indexed {len(new_files)} documents from {args.input_dir}"
-                    )
-                except Exception as e:
-                    logging.error(f"Error during startup indexing: {str(e)}")
+                # Start scanning in background
+                with progress_lock:
+                    if not scan_progress["is_scanning"]:
+                        scan_progress["is_scanning"] = True
+                        scan_progress["indexed_count"] = 0
+                        scan_progress["progress"] = 0
+                        # Create background task
+                        task = asyncio.create_task(run_scanning_process())
+                        app.state.background_tasks.add(task)
+                        task.add_done_callback(app.state.background_tasks.discard)
+                        ASCIIColors.info(f"Started background scanning of documents from {args.input_dir}")
+                    else:
+                        ASCIIColors.info("Skip document scanning cause anohter scanning is active")
 
             yield
 
