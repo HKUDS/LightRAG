@@ -34,6 +34,7 @@ from .utils import (
     logger,
     set_logger,
 )
+from .types import KnowledgeGraph
 
 STORAGES = {
     "NetworkXStorage": ".kg.networkx_impl",
@@ -385,7 +386,7 @@ class LightRAG:
         text = await self.chunk_entity_relation_graph.get_all_labels()
         return text
 
-    async def get_graphs(self, nodel_label: str, max_depth: int):
+    async def get_knowledge_graph(self, nodel_label: str, max_depth: int) -> KnowledgeGraph:
         return await self.chunk_entity_relation_graph.get_knowledge_graph(
             node_label=nodel_label, max_depth=max_depth
         )

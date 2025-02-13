@@ -1424,8 +1424,8 @@ def create_app(args):
 
     # query all graph
     @app.get("/graphs")
-    async def get_graphs(label: str):
-        return await rag.get_graphs(nodel_label=label, max_depth=100)
+    async def get_knowledge_graph(label: str):
+        return await rag.get_knowledge_graph(nodel_label=label, max_depth=100)
 
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag)
