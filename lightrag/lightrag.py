@@ -80,7 +80,12 @@ STORAGE_IMPLEMENTATIONS = {
         "required_methods": ["query", "upsert"],
     },
     "DOC_STATUS_STORAGE": {
-        "implementations": ["JsonDocStatusStorage", "PGDocStatusStorage"],
+        "implementations": [
+            "JsonDocStatusStorage",
+            "PGDocStatusStorage",
+            "PGDocStatusStorage",
+            "MongoDocStatusStorage",
+        ],
         "required_methods": ["get_pending_docs"],
     },
 }
