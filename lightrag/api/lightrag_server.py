@@ -1150,9 +1150,14 @@ def create_app(args):
                     pm.install("docling")
                 from docling.document_converter import DocumentConverter
 
-                converter = DocumentConverter()
-                result = converter.convert(file_path)
-                content = result.document.export_to_markdown()
+                async def convert_doc():
+                    def sync_convert():
+                        converter = DocumentConverter()
+                        result = converter.convert(file_path)
+                        return result.document.export_to_markdown()
+                    return await asyncio.to_thread(sync_convert)
+                
+                content = await convert_doc()
 
             case _:
                 raise ValueError(f"Unsupported file format: {ext}")
@@ -1444,9 +1449,14 @@ def create_app(args):
                         f.write(await file.read())
 
                     try:
-                        converter = DocumentConverter()
-                        result = converter.convert(str(temp_path))
-                        content = result.document.export_to_markdown()
+                        async def convert_doc():
+                            def sync_convert():
+                                converter = DocumentConverter()
+                                result = converter.convert(str(temp_path))
+                                return result.document.export_to_markdown()
+                            return await asyncio.to_thread(sync_convert)
+                        
+                        content = await convert_doc()
                     finally:
                         # Clean up the temporary file
                         temp_path.unlink()
