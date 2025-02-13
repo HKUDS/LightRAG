@@ -183,6 +183,7 @@ OracleVectorDBStorag        Oracle
 ```
 JsonDocStatusStorage        JsonFile(default)
 PGDocStatusStorage          Postgres
+MongoDocStatusStorage       MongoDB
 ```
 
 #### How Select Storage Type
