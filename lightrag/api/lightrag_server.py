@@ -101,6 +101,7 @@ def estimate_tokens(text: str) -> int:
 
     return int(tokens)
 
+
 def get_default_host(binding_type: str) -> str:
     default_hosts = {
         "ollama": os.getenv("LLM_BINDING_HOST", "http://localhost:11434"),
