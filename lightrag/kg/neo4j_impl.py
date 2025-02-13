@@ -48,13 +48,13 @@ class Neo4JStorage(BaseGraphStorage):
         self._driver = None
         self._driver_lock = asyncio.Lock()
 
-        URI = os.environ["NEO4J_URI", config.get("neo4j", "uri", fallback=None)]
-        USERNAME = os.environ[
+        URI = os.environ.get("NEO4J_URI", config.get("neo4j", "uri", fallback=None))
+        USERNAME = os.environ.get(
             "NEO4J_USERNAME", config.get("neo4j", "username", fallback=None)
-        ]
-        PASSWORD = os.environ[
+        )
+        PASSWORD = os.environ(
             "NEO4J_PASSWORD", config.get("neo4j", "password", fallback=None)
-        ]
+        )
         MAX_CONNECTION_POOL_SIZE = int(
             os.environ.get(
                 "NEO4J_MAX_CONNECTION_POOL_SIZE",
