@@ -416,7 +416,13 @@ async def get_best_cached_response(
 
     if best_similarity > similarity_threshold:
         # If LLM check is enabled and all required parameters are provided
-        if use_llm_check and llm_func and original_prompt and best_prompt and best_response is not None:
+        if (
+            use_llm_check
+            and llm_func
+            and original_prompt
+            and best_prompt
+            and best_response is not None
+        ):
             compare_prompt = PROMPTS["similarity_check"].format(
                 original_prompt=original_prompt, cached_prompt=best_prompt
             )
