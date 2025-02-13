@@ -228,7 +228,11 @@ class DocStatusStorage(BaseKVStorage):
         raise NotImplementedError
 
     async def get_processing_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all documents that are currently being processed"""
+        """Get all processing documents"""
+        raise NotImplementedError
+
+    async def get_processed_docs(self) -> dict[str, DocProcessingStatus]:
+        """Get all procesed documents"""
         raise NotImplementedError
 
     async def update_doc_status(self, data: dict[str, Any]) -> None:
