@@ -137,6 +137,7 @@ STORAGE_ENV_REQUIREMENTS = {
     # Document Status Storage Implementations
     "JsonDocStatusStorage": [],
     "PGDocStatusStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
+    "MongoDocStatusStorage": [],
 }
 
 # Storage implementation module mapping
@@ -151,6 +152,7 @@ STORAGES = {
     "OracleVectorDBStorage": ".kg.oracle_impl",
     "MilvusVectorDBStorge": ".kg.milvus_impl",
     "MongoKVStorage": ".kg.mongo_impl",
+    "MongoDocStatusStorage": ".kg.mongo_impl",
     "MongoGraphStorage": ".kg.mongo_impl",
     "RedisKVStorage": ".kg.redis_impl",
     "ChromaVectorDBStorage": ".kg.chroma_impl",
