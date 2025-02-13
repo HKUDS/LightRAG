@@ -44,7 +44,7 @@ class MongoKVStorage(BaseKVStorage):
         database = client.get_database(
             os.environ.get(
                 "MONGO_DATABASE",
-                mongo_database=config.get("mongodb", "database", fallback="LightRAG"),
+                config.get("mongodb", "database", fallback="LightRAG"),
             )
         )
         self._data = database.get_collection(self.namespace)
