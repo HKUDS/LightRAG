@@ -13,6 +13,7 @@ from typing import (
 import numpy as np
 
 from .utils import EmbeddingFunc
+from .types import KnowledgeGraph
 
 
 class TextChunkSchema(TypedDict):
@@ -175,7 +176,7 @@ class BaseGraphStorage(StorageNameSpace):
 
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
-    ) -> dict[str, list[dict]]:
+    ) -> KnowledgeGraph:
         raise NotImplementedError
 
 
