@@ -1,5 +1,5 @@
 {
-  "name": "lightrag-graph-vierer-webui",
+  "name": "lightrag-webui",
   "private": true,
   "version": "0.0.0",
   "type": "module",
