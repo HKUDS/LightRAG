@@ -272,6 +272,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
         ASCIIColors.white("    └─ Alternative Documentation (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
+        ASCIIColors.white("    ├─ WebUI (local): ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/webui")
+        ASCIIColors.white("    ├─ Graph Viewer (local): ", end="")
+        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/graph-viewer")
 
         ASCIIColors.yellow("\n📝 Note:")
         ASCIIColors.white("""    Since the server is running on 0.0.0.0:
