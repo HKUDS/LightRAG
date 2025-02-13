@@ -6,7 +6,6 @@ password = your-password
 [mongodb]
 uri = mongodb+srv://name:password@your-cluster-address
 database = lightrag
-graph = false
 
 [redis]
 uri=redis://localhost:6379/1
