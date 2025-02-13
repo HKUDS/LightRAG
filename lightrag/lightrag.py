@@ -40,7 +40,7 @@ STORAGES = {
     "NetworkXStorage": ".kg.networkx_impl",
     "JsonKVStorage": ".kg.json_kv_impl",
     "NanoVectorDBStorage": ".kg.nano_vector_db_impl",
-    "JsonDocStatusStorage": ".kg.jsondocstatus_impl",
+    "JsonDocStatusStorage": ".kg.json_doc_status_impl",
     "Neo4JStorage": ".kg.neo4j_impl",
     "OracleKVStorage": ".kg.oracle_impl",
     "OracleGraphStorage": ".kg.oracle_impl",
