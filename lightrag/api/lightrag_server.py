@@ -26,7 +26,6 @@ import shutil
 import aiofiles
 from ascii_colors import trace_exception, ASCIIColors
 import sys
-import configparser
 from fastapi import Depends, Security
 from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,24 +33,46 @@ from contextlib import asynccontextmanager
 from starlette.status import HTTP_403_FORBIDDEN
 import pipmaster as pm
 from dotenv import load_dotenv
+import configparser
+from lightrag.utils import logger
 from .ollama_api import (
     OllamaAPI,
 )
 from .ollama_api import ollama_server_infos
+from ..kg.postgres_impl import (
+    PostgreSQLDB,
+    PGKVStorage,
+    PGVectorStorage,
+    PGGraphStorage,
+    PGDocStatusStorage,
+)
+from ..kg.oracle_impl import (
+    OracleDB,
+    OracleKVStorage,
+    OracleVectorDBStorage,
+    OracleGraphStorage,
+)
+from ..kg.tidb_impl import (
+    TiDB,
+    TiDBKVStorage,
+    TiDBVectorDBStorage,
+    TiDBGraphStorage,
+)
 
 # Load environment variables
 load_dotenv(override=True)
 
+# Initialize config parser
+config = configparser.ConfigParser()
+config.read("config.ini")
 
-class RAGStorageConfig:
+
+class DefaultRAGStorageConfig:
     KV_STORAGE = "JsonKVStorage"
-    DOC_STATUS_STORAGE = "JsonDocStatusStorage"
-    GRAPH_STORAGE = "NetworkXStorage"
     VECTOR_STORAGE = "NanoVectorDBStorage"
+    GRAPH_STORAGE = "NetworkXStorage"
+    DOC_STATUS_STORAGE = "JsonDocStatusStorage"
 
-
-# Initialize rag storage config
-rag_storage_config = RAGStorageConfig()
 
 # Global progress tracker
 scan_progress: Dict = {
@@ -79,61 +100,6 @@ def estimate_tokens(text: str) -> int:
     tokens = chinese_chars * 1.5 + non_chinese_chars * 0.25
 
     return int(tokens)
-
-
-# read config.ini
-config = configparser.ConfigParser()
-config.read("config.ini", "utf-8")
-# Redis config
-redis_uri = config.get("redis", "uri", fallback=None)
-if redis_uri:
-    os.environ["REDIS_URI"] = redis_uri
-    rag_storage_config.KV_STORAGE = "RedisKVStorage"
-    rag_storage_config.DOC_STATUS_STORAGE = "RedisKVStorage"
-
-# Neo4j config
-neo4j_uri = config.get("neo4j", "uri", fallback=None)
-neo4j_username = config.get("neo4j", "username", fallback=None)
-neo4j_password = config.get("neo4j", "password", fallback=None)
-if neo4j_uri:
-    os.environ["NEO4J_URI"] = neo4j_uri
-    os.environ["NEO4J_USERNAME"] = neo4j_username
-    os.environ["NEO4J_PASSWORD"] = neo4j_password
-    rag_storage_config.GRAPH_STORAGE = "Neo4JStorage"
-
-# Milvus config
-milvus_uri = config.get("milvus", "uri", fallback=None)
-milvus_user = config.get("milvus", "user", fallback=None)
-milvus_password = config.get("milvus", "password", fallback=None)
-milvus_db_name = config.get("milvus", "db_name", fallback=None)
-if milvus_uri:
-    os.environ["MILVUS_URI"] = milvus_uri
-    os.environ["MILVUS_USER"] = milvus_user
-    os.environ["MILVUS_PASSWORD"] = milvus_password
-    os.environ["MILVUS_DB_NAME"] = milvus_db_name
-    rag_storage_config.VECTOR_STORAGE = "MilvusVectorDBStorage"
-
-# Qdrant config
-qdrant_uri = config.get("qdrant", "uri", fallback=None)
-qdrant_api_key = config.get("qdrant", "apikey", fallback=None)
-if qdrant_uri:
-    os.environ["QDRANT_URL"] = qdrant_uri
-    if qdrant_api_key:
-        os.environ["QDRANT_API_KEY"] = qdrant_api_key
-    rag_storage_config.VECTOR_STORAGE = "QdrantVectorDBStorage"
-
-# MongoDB config
-mongo_uri = config.get("mongodb", "uri", fallback=None)
-mongo_database = config.get("mongodb", "database", fallback="LightRAG")
-mongo_graph = config.getboolean("mongodb", "graph", fallback=False)
-if mongo_uri:
-    os.environ["MONGO_URI"] = mongo_uri
-    os.environ["MONGO_DATABASE"] = mongo_database
-    rag_storage_config.KV_STORAGE = "MongoKVStorage"
-    rag_storage_config.DOC_STATUS_STORAGE = "MongoDocStatusStorage"
-    if mongo_graph:
-        rag_storage_config.GRAPH_STORAGE = "MongoGraphStorage"
-
 
 def get_default_host(binding_type: str) -> str:
     default_hosts = {
@@ -247,6 +213,16 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.top_k}")
 
     # System Configuration
+    ASCIIColors.magenta("\n💾 Storage Configuration:")
+    ASCIIColors.white("    ├─ KV Storage: ", end="")
+    ASCIIColors.yellow(f"{args.kv_storage}")
+    ASCIIColors.white("    ├─ Vector Storage: ", end="")
+    ASCIIColors.yellow(f"{args.vector_storage}")
+    ASCIIColors.white("    ├─ Graph Storage: ", end="")
+    ASCIIColors.yellow(f"{args.graph_storage}")
+    ASCIIColors.white("    └─ Document Status Storage: ", end="")
+    ASCIIColors.yellow(f"{args.doc_status_storage}")
+
     ASCIIColors.magenta("\n🛠️ System Configuration:")
     ASCIIColors.white("    ├─ Ollama Emulating Model: ", end="")
     ASCIIColors.yellow(f"{ollama_server_infos.LIGHTRAG_MODEL}")
@@ -342,6 +318,35 @@ def parse_args() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(
         description="LightRAG FastAPI Server with separate working and input directories"
+    )
+
+    parser.add_argument(
+        "--kv-storage",
+        default=get_env_value(
+            "LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE
+        ),
+        help=f"KV存储实现 (default: {DefaultRAGStorageConfig.KV_STORAGE})",
+    )
+    parser.add_argument(
+        "--doc-status-storage",
+        default=get_env_value(
+            "LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE
+        ),
+        help=f"文档状态存储实现 (default: {DefaultRAGStorageConfig.DOC_STATUS_STORAGE})",
+    )
+    parser.add_argument(
+        "--graph-storage",
+        default=get_env_value(
+            "LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE
+        ),
+        help=f"图存储实现 (default: {DefaultRAGStorageConfig.GRAPH_STORAGE})",
+    )
+    parser.add_argument(
+        "--vector-storage",
+        default=get_env_value(
+            "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
+        ),
+        help=f"向量存储实现 (default: {DefaultRAGStorageConfig.VECTOR_STORAGE})",
     )
 
     # Bindings configuration
@@ -528,13 +533,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--top-k",
         type=int,
-        default=get_env_value("TOP_K", 50, int),
-        help="Number of most similar results to return (default: from env or 50)",
+        default=get_env_value("TOP_K", 60, int),
+        help="Number of most similar results to return (default: from env or 60)",
     )
     parser.add_argument(
         "--cosine-threshold",
         type=float,
-        default=get_env_value("COSINE_THRESHOLD", 0.4, float),
+        default=get_env_value("COSINE_THRESHOLD", 0.2, float),
         help="Cosine similarity threshold (default: from env or 0.4)",
     )
 
@@ -667,7 +672,14 @@ def get_api_key_dependency(api_key: Optional[str]):
     return api_key_auth
 
 
+# Global configuration
+global_top_k = 60  # default value
+
+
 def create_app(args):
+    global global_top_k
+    global_top_k = args.top_k  # save top_k from args
+
     # Verify that bindings are correctly setup
     if args.llm_binding not in [
         "lollms",
@@ -713,25 +725,104 @@ def create_app(args):
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Lifespan context manager for startup and shutdown events"""
-        # Startup logic
-        if args.auto_scan_at_startup:
-            try:
-                new_files = doc_manager.scan_directory_for_new_files()
-                for file_path in new_files:
-                    try:
-                        await index_file(file_path)
-                    except Exception as e:
-                        trace_exception(e)
-                        logging.error(f"Error indexing file {file_path}: {str(e)}")
+        # Initialize database connections
+        postgres_db = None
+        oracle_db = None
+        tidb_db = None
 
-                ASCIIColors.info(
-                    f"Indexed {len(new_files)} documents from {args.input_dir}"
+        try:
+            # Check if PostgreSQL is needed
+            if any(
+                isinstance(
+                    storage_instance,
+                    (PGKVStorage, PGVectorStorage, PGGraphStorage, PGDocStatusStorage),
                 )
-            except Exception as e:
-                logging.error(f"Error during startup indexing: {str(e)}")
-        yield
-        # Cleanup logic (if needed)
-        pass
+                for _, storage_instance in storage_instances
+            ):
+                postgres_db = PostgreSQLDB(_get_postgres_config())
+                await postgres_db.initdb()
+                await postgres_db.check_tables()
+                for storage_name, storage_instance in storage_instances:
+                    if isinstance(
+                        storage_instance,
+                        (
+                            PGKVStorage,
+                            PGVectorStorage,
+                            PGGraphStorage,
+                            PGDocStatusStorage,
+                        ),
+                    ):
+                        storage_instance.db = postgres_db
+                        logger.info(f"Injected postgres_db to {storage_name}")
+
+            # Check if Oracle is needed
+            if any(
+                isinstance(
+                    storage_instance,
+                    (OracleKVStorage, OracleVectorDBStorage, OracleGraphStorage),
+                )
+                for _, storage_instance in storage_instances
+            ):
+                oracle_db = OracleDB(_get_oracle_config())
+                await oracle_db.check_tables()
+                for storage_name, storage_instance in storage_instances:
+                    if isinstance(
+                        storage_instance,
+                        (OracleKVStorage, OracleVectorDBStorage, OracleGraphStorage),
+                    ):
+                        storage_instance.db = oracle_db
+                        logger.info(f"Injected oracle_db to {storage_name}")
+
+            # Check if TiDB is needed
+            if any(
+                isinstance(
+                    storage_instance,
+                    (TiDBKVStorage, TiDBVectorDBStorage, TiDBGraphStorage),
+                )
+                for _, storage_instance in storage_instances
+            ):
+                tidb_db = TiDB(_get_tidb_config())
+                await tidb_db.check_tables()
+                for storage_name, storage_instance in storage_instances:
+                    if isinstance(
+                        storage_instance,
+                        (TiDBKVStorage, TiDBVectorDBStorage, TiDBGraphStorage),
+                    ):
+                        storage_instance.db = tidb_db
+                        logger.info(f"Injected tidb_db to {storage_name}")
+
+            # Auto scan documents if enabled
+            if args.auto_scan_at_startup:
+                try:
+                    new_files = doc_manager.scan_directory_for_new_files()
+                    for file_path in new_files:
+                        try:
+                            await index_file(file_path)
+                        except Exception as e:
+                            trace_exception(e)
+                            logging.error(f"Error indexing file {file_path}: {str(e)}")
+
+                    ASCIIColors.info(
+                        f"Indexed {len(new_files)} documents from {args.input_dir}"
+                    )
+                except Exception as e:
+                    logging.error(f"Error during startup indexing: {str(e)}")
+
+            yield
+
+        finally:
+            # Cleanup database connections
+            if postgres_db and hasattr(postgres_db, "pool"):
+                await postgres_db.pool.close()
+                logger.info("Closed PostgreSQL connection pool")
+
+            if oracle_db and hasattr(oracle_db, "pool"):
+                await oracle_db.pool.close()
+                logger.info("Closed Oracle connection pool")
+
+            if tidb_db and hasattr(tidb_db, "pool"):
+                await tidb_db.pool.close()
+                logger.info("Closed TiDB connection pool")
 
     # Initialize FastAPI
     app = FastAPI(
@@ -753,6 +844,92 @@ def create_app(args):
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Database configuration functions
+    def _get_postgres_config():
+        return {
+            "host": os.environ.get(
+                "POSTGRES_HOST",
+                config.get("postgres", "host", fallback="localhost"),
+            ),
+            "port": os.environ.get(
+                "POSTGRES_PORT", config.get("postgres", "port", fallback=5432)
+            ),
+            "user": os.environ.get(
+                "POSTGRES_USER", config.get("postgres", "user", fallback=None)
+            ),
+            "password": os.environ.get(
+                "POSTGRES_PASSWORD",
+                config.get("postgres", "password", fallback=None),
+            ),
+            "database": os.environ.get(
+                "POSTGRES_DATABASE",
+                config.get("postgres", "database", fallback=None),
+            ),
+            "workspace": os.environ.get(
+                "POSTGRES_WORKSPACE",
+                config.get("postgres", "workspace", fallback="default"),
+            ),
+        }
+
+    def _get_oracle_config():
+        return {
+            "user": os.environ.get(
+                "ORACLE_USER",
+                config.get("oracle", "user", fallback=None),
+            ),
+            "password": os.environ.get(
+                "ORACLE_PASSWORD",
+                config.get("oracle", "password", fallback=None),
+            ),
+            "dsn": os.environ.get(
+                "ORACLE_DSN",
+                config.get("oracle", "dsn", fallback=None),
+            ),
+            "config_dir": os.environ.get(
+                "ORACLE_CONFIG_DIR",
+                config.get("oracle", "config_dir", fallback=None),
+            ),
+            "wallet_location": os.environ.get(
+                "ORACLE_WALLET_LOCATION",
+                config.get("oracle", "wallet_location", fallback=None),
+            ),
+            "wallet_password": os.environ.get(
+                "ORACLE_WALLET_PASSWORD",
+                config.get("oracle", "wallet_password", fallback=None),
+            ),
+            "workspace": os.environ.get(
+                "ORACLE_WORKSPACE",
+                config.get("oracle", "workspace", fallback="default"),
+            ),
+        }
+
+    def _get_tidb_config():
+        return {
+            "host": os.environ.get(
+                "TIDB_HOST",
+                config.get("tidb", "host", fallback="localhost"),
+            ),
+            "port": os.environ.get(
+                "TIDB_PORT", config.get("tidb", "port", fallback=4000)
+            ),
+            "user": os.environ.get(
+                "TIDB_USER",
+                config.get("tidb", "user", fallback=None),
+            ),
+            "password": os.environ.get(
+                "TIDB_PASSWORD",
+                config.get("tidb", "password", fallback=None),
+            ),
+            "database": os.environ.get(
+                "TIDB_DATABASE",
+                config.get("tidb", "database", fallback=None),
+            ),
+            "workspace": os.environ.get(
+                "TIDB_WORKSPACE",
+                config.get("tidb", "workspace", fallback="default"),
+            ),
+        }
 
     # Create the optional API key dependency
     optional_api_key = get_api_key_dependency(api_key)
@@ -872,10 +1049,10 @@ def create_app(args):
             if args.llm_binding == "lollms" or args.llm_binding == "ollama"
             else {},
             embedding_func=embedding_func,
-            kv_storage=rag_storage_config.KV_STORAGE,
-            graph_storage=rag_storage_config.GRAPH_STORAGE,
-            vector_storage=rag_storage_config.VECTOR_STORAGE,
-            doc_status_storage=rag_storage_config.DOC_STATUS_STORAGE,
+            kv_storage=args.kv_storage,
+            graph_storage=args.graph_storage,
+            vector_storage=args.vector_storage,
+            doc_status_storage=args.doc_status_storage,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
@@ -903,10 +1080,10 @@ def create_app(args):
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
             embedding_func=embedding_func,
-            kv_storage=rag_storage_config.KV_STORAGE,
-            graph_storage=rag_storage_config.GRAPH_STORAGE,
-            vector_storage=rag_storage_config.VECTOR_STORAGE,
-            doc_status_storage=rag_storage_config.DOC_STATUS_STORAGE,
+            kv_storage=args.kv_storage,
+            graph_storage=args.graph_storage,
+            vector_storage=args.vector_storage,
+            doc_status_storage=args.doc_status_storage,
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
@@ -919,6 +1096,18 @@ def create_app(args):
             log_level=args.log_level,
             namespace_prefix=args.namespace_prefix,
         )
+
+    # Collect all storage instances
+    storage_instances = [
+        ("full_docs", rag.full_docs),
+        ("text_chunks", rag.text_chunks),
+        ("chunk_entity_relation_graph", rag.chunk_entity_relation_graph),
+        ("entities_vdb", rag.entities_vdb),
+        ("relationships_vdb", rag.relationships_vdb),
+        ("chunks_vdb", rag.chunks_vdb),
+        ("doc_status", rag.doc_status),
+        ("llm_response_cache", rag.llm_response_cache),
+    ]
 
     async def index_file(file_path: Union[str, Path]) -> None:
         """Index all files inside the folder with support for multiple file formats
@@ -1100,7 +1289,7 @@ def create_app(args):
                     mode=request.mode,
                     stream=request.stream,
                     only_need_context=request.only_need_context,
-                    top_k=args.top_k,
+                    top_k=global_top_k,
                 ),
             )
 
@@ -1142,7 +1331,7 @@ def create_app(args):
                     mode=request.mode,
                     stream=True,
                     only_need_context=request.only_need_context,
-                    top_k=args.top_k,
+                    top_k=global_top_k,
                 ),
             )
 
@@ -1432,7 +1621,7 @@ def create_app(args):
         return await rag.get_knowledge_graph(nodel_label=label, max_depth=100)
 
     # Add Ollama API routes
-    ollama_api = OllamaAPI(rag)
+    ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")
 
     @app.get("/documents", dependencies=[Depends(optional_api_key)])
@@ -1460,10 +1649,10 @@ def create_app(args):
                 "embedding_binding_host": args.embedding_binding_host,
                 "embedding_model": args.embedding_model,
                 "max_tokens": args.max_tokens,
-                "kv_storage": rag_storage_config.KV_STORAGE,
-                "doc_status_storage": rag_storage_config.DOC_STATUS_STORAGE,
-                "graph_storage": rag_storage_config.GRAPH_STORAGE,
-                "vector_storage": rag_storage_config.VECTOR_STORAGE,
+                "kv_storage": args.kv_storage,
+                "doc_status_storage": args.doc_status_storage,
+                "graph_storage": args.graph_storage,
+                "vector_storage": args.vector_storage,
             },
         }
 

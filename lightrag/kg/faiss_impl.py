@@ -23,14 +23,17 @@ class FaissVectorDBStorage(BaseVectorStorage):
     Uses cosine similarity by storing normalized vectors in a Faiss index with inner product search.
     """
 
-    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
+    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
         # Grab config values if available
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        self.cosine_better_than_threshold = config.get(
-            "cosine_better_than_threshold", self.cosine_better_than_threshold
-        )
+        cosine_threshold = config.get("cosine_better_than_threshold")
+        if cosine_threshold is None:
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+            )
+        self.cosine_better_than_threshold = cosine_threshold
 
         # Where to save index file if you want persistent storage
         self._faiss_index_file = os.path.join(

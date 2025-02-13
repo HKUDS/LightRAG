@@ -1,8 +1,8 @@
 import os
 from dataclasses import dataclass
-
 import numpy as np
 import pipmaster as pm
+import configparser
 from tqdm.asyncio import tqdm as tqdm_async
 
 if not pm.is_installed("pymongo"):
@@ -12,7 +12,6 @@ if not pm.is_installed("motor"):
     pm.install("motor")
 
 from typing import Any, List, Tuple, Union
-
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import MongoClient
 
@@ -27,13 +26,27 @@ from ..namespace import NameSpace, is_namespace
 from ..utils import logger
 
 
+config = configparser.ConfigParser()
+config.read("config.ini", "utf-8")
+
+
 @dataclass
 class MongoKVStorage(BaseKVStorage):
     def __post_init__(self):
         client = MongoClient(
-            os.environ.get("MONGO_URI", "mongodb://root:root@localhost:27017/")
+            os.environ.get(
+                "MONGO_URI",
+                config.get(
+                    "mongodb", "uri", fallback="mongodb://root:root@localhost:27017/"
+                ),
+            )
         )
-        database = client.get_database(os.environ.get("MONGO_DATABASE", "LightRAG"))
+        database = client.get_database(
+            os.environ.get(
+                "MONGO_DATABASE",
+                mongo_database=config.get("mongodb", "database", fallback="LightRAG"),
+            )
+        )
         self._data = database.get_collection(self.namespace)
         logger.info(f"Use MongoDB as KV {self.namespace}")
 
@@ -173,10 +186,25 @@ class MongoGraphStorage(BaseGraphStorage):
             embedding_func=embedding_func,
         )
         self.client = AsyncIOMotorClient(
-            os.environ.get("MONGO_URI", "mongodb://root:root@localhost:27017/")
+            os.environ.get(
+                "MONGO_URI",
+                config.get(
+                    "mongodb", "uri", fallback="mongodb://root:root@localhost:27017/"
+                ),
+            )
         )
-        self.db = self.client[os.environ.get("MONGO_DATABASE", "LightRAG")]
-        self.collection = self.db[os.environ.get("MONGO_KG_COLLECTION", "MDB_KG")]
+        self.db = self.client[
+            os.environ.get(
+                "MONGO_DATABASE",
+                mongo_database=config.get("mongodb", "database", fallback="LightRAG"),
+            )
+        ]
+        self.collection = self.db[
+            os.environ.get(
+                "MONGO_KG_COLLECTION",
+                config.getboolean("mongodb", "kg_collection", fallback="MDB_KG"),
+            )
+        ]
 
     #
     # -------------------------------------------------------------------------

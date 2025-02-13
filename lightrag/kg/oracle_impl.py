@@ -1,6 +1,5 @@
 import array
 import asyncio
-import os
 
 # import html
 # import os
@@ -172,8 +171,8 @@ class OracleDB:
 
 @dataclass
 class OracleKVStorage(BaseKVStorage):
-    # should pass db object to self.db
-    db: OracleDB = None
+    # db instance must be injected before use
+    # db: OracleDB
     meta_fields = None
 
     def __post_init__(self):
@@ -318,16 +317,18 @@ class OracleKVStorage(BaseKVStorage):
 
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):
-    # should pass db object to self.db
-    db: OracleDB = None
-    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
+    # db instance must be injected before use
+    # db: OracleDB
+    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
-        # Use global config value if specified, otherwise use default
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        self.cosine_better_than_threshold = config.get(
-            "cosine_better_than_threshold", self.cosine_better_than_threshold
-        )
+        cosine_threshold = config.get("cosine_better_than_threshold")
+        if cosine_threshold is None:
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+            )
+        self.cosine_better_than_threshold = cosine_threshold
 
     async def upsert(self, data: dict[str, dict]):
         """向向量数据库中插入数据"""
@@ -361,7 +362,8 @@ class OracleVectorDBStorage(BaseVectorStorage):
 
 @dataclass
 class OracleGraphStorage(BaseGraphStorage):
-    """基于Oracle的图存储模块"""
+    # db instance must be injected before use
+    # db: OracleDB
 
     def __post_init__(self):
         """从graphml文件加载图"""
