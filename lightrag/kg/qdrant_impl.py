@@ -5,16 +5,19 @@ from dataclasses import dataclass
 import numpy as np
 import hashlib
 import uuid
-
 from ..utils import logger
 from ..base import BaseVectorStorage
-
 import pipmaster as pm
+import configparser
 
 if not pm.is_installed("qdrant_client"):
     pm.install("qdrant_client")
 
 from qdrant_client import QdrantClient, models
+
+
+config = configparser.ConfigParser()
+config.read("config.ini", "utf-8")
 
 
 def compute_mdhash_id_for_qdrant(
@@ -47,6 +50,8 @@ def compute_mdhash_id_for_qdrant(
 
 @dataclass
 class QdrantVectorDBStorage(BaseVectorStorage):
+    cosine_better_than_threshold: float = None
+
     @staticmethod
     def create_collection_if_not_exist(
         client: QdrantClient, collection_name: str, **kwargs
@@ -56,9 +61,21 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         client.create_collection(collection_name, **kwargs)
 
     def __post_init__(self):
+        config = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        cosine_threshold = config.get("cosine_better_than_threshold")
+        if cosine_threshold is None:
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+            )
+        self.cosine_better_than_threshold = cosine_threshold
+
         self._client = QdrantClient(
-            url=os.environ.get("QDRANT_URL"),
-            api_key=os.environ.get("QDRANT_API_KEY", None),
+            url=os.environ.get(
+                "QDRANT_URL", config.get("qdrant", "uri", fallback=None)
+            ),
+            api_key=os.environ.get(
+                "QDRANT_API_KEY", config.get("qdrant", "apikey", fallback=None)
+            ),
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
         QdrantVectorDBStorage.create_collection_if_not_exist(
@@ -122,4 +139,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             limit=top_k,
             with_payload=True,
         )
-        return [{**dp.payload, "id": dp.id, "distance": dp.score} for dp in results]
+        logger.debug(f"query result: {results}")
+        # 添加余弦相似度过滤
+        filtered_results = [
+            dp for dp in results if dp.score >= self.cosine_better_than_threshold
+        ]
+        return [
+            {**dp.payload, "id": dp.id, "distance": dp.score} for dp in filtered_results
+        ]

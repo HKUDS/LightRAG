@@ -3,6 +3,7 @@ from typing import Any, Union
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import pipmaster as pm
+import configparser
 
 if not pm.is_installed("redis"):
     pm.install("redis")
@@ -14,10 +15,16 @@ from lightrag.base import BaseKVStorage
 import json
 
 
+config = configparser.ConfigParser()
+config.read("config.ini", "utf-8")
+
+
 @dataclass
 class RedisKVStorage(BaseKVStorage):
     def __post_init__(self):
-        redis_url = os.environ.get("REDIS_URI", "redis://localhost:6379")
+        redis_url = os.environ.get(
+            "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
+        )
         self._redis = Redis.from_url(redis_url, decode_responses=True)
         logger.info(f"Use Redis as KV {self.namespace}")
 

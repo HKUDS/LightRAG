@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Union, Tuple, List, Dict
 import pipmaster as pm
+import configparser
 
 if not pm.is_installed("neo4j"):
     pm.install("neo4j")
@@ -28,6 +29,10 @@ from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 
 
+config = configparser.ConfigParser()
+config.read("config.ini", "utf-8")
+
+
 @dataclass
 class Neo4JStorage(BaseGraphStorage):
     @staticmethod
@@ -42,13 +47,22 @@ class Neo4JStorage(BaseGraphStorage):
         )
         self._driver = None
         self._driver_lock = asyncio.Lock()
-        URI = os.environ["NEO4J_URI"]
-        USERNAME = os.environ["NEO4J_USERNAME"]
-        PASSWORD = os.environ["NEO4J_PASSWORD"]
-        MAX_CONNECTION_POOL_SIZE = os.environ.get("NEO4J_MAX_CONNECTION_POOL_SIZE", 800)
+
+        URI = os.environ["NEO4J_URI", config.get("neo4j", "uri", fallback=None)]
+        USERNAME = os.environ[
+            "NEO4J_USERNAME", config.get("neo4j", "username", fallback=None)
+        ]
+        PASSWORD = os.environ[
+            "NEO4J_PASSWORD", config.get("neo4j", "password", fallback=None)
+        ]
+        MAX_CONNECTION_POOL_SIZE = os.environ.get(
+            "NEO4J_MAX_CONNECTION_POOL_SIZE",
+            config.get("neo4j", "connection_pool_size", fallback=800),
+        )
         DATABASE = os.environ.get(
             "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", namespace)
         )
+
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(
             URI, auth=(USERNAME, PASSWORD)
         )

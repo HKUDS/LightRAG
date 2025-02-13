@@ -103,66 +103,23 @@ After starting the lightrag-server, you can add an Ollama-type connection in the
 
 LightRAG can be configured using either command-line arguments or environment variables. When both are provided, command-line arguments take precedence over environment variables.
 
-For better performance, the API server's default values for TOP_K and COSINE_THRESHOLD are set to 50 and 0.4 respectively. If COSINE_THRESHOLD remains at its default value of 0.2 in LightRAG, many irrelevant entities and relations would be retrieved and sent to the LLM.
+Default `TOP_K` is set to `60`. Default `COSINE_THRESHOLD` are set to `0.2`.
 
 ### Environment Variables
 
-You can configure LightRAG using environment variables by creating a `.env` file in your project root directory. Here's a complete example of available environment variables:
+You can configure LightRAG using environment variables by creating a `.env` file in your project root directory. A sample file `.env.example` is provided for your convenience.
 
-```env
-# Server Configuration
-HOST=0.0.0.0
-PORT=9621
+### Config.ini
 
-# Directory Configuration
-WORKING_DIR=/app/data/rag_storage
-INPUT_DIR=/app/data/inputs
-
-# RAG Configuration
-MAX_ASYNC=4
-MAX_TOKENS=32768
-EMBEDDING_DIM=1024
-MAX_EMBED_TOKENS=8192
-#HISTORY_TURNS=3
-#CHUNK_SIZE=1200
-#CHUNK_OVERLAP_SIZE=100
-#COSINE_THRESHOLD=0.4
-#TOP_K=50
-
-# LLM Configuration
-LLM_BINDING=ollama
-LLM_BINDING_HOST=http://localhost:11434
-LLM_MODEL=mistral-nemo:latest
-
-# must be set if using OpenAI LLM (LLM_MODEL must be set or set by command line parms)
-OPENAI_API_KEY=you_api_key
-
-# Embedding Configuration
-EMBEDDING_BINDING=ollama
-EMBEDDING_BINDING_HOST=http://localhost:11434
-EMBEDDING_MODEL=bge-m3:latest
-
-# Security
-#LIGHTRAG_API_KEY=you-api-key-for-accessing-LightRAG
-
-# Logging
-LOG_LEVEL=INFO
-
-# Optional SSL Configuration
-#SSL=true
-#SSL_CERTFILE=/path/to/cert.pem
-#SSL_KEYFILE=/path/to/key.pem
-
-# Optional Timeout
-#TIMEOUT=30
-```
+Datastorage configuration can be also set by config.ini. A sample file `config.ini.example` is provided for your convenience.
 
 ### Configuration Priority
 
 The configuration values are loaded in the following order (highest priority first):
 1. Command-line arguments
 2. Environment variables
-3. Default values
+3. Config.ini
+4. Defaul values
 
 For example:
 ```bash
@@ -173,7 +130,69 @@ python lightrag.py --port 8080
 PORT=7000 python lightrag.py
 ```
 
-#### LightRag Server Options
+> Best practices: you can set your database setting in Config.ini while testing, and you use .env for production.
+
+### Storage Types Supported
+
+LightRAG uses 4 types of storage for difference purposes:
+
+* KV_STORAGE：llm response cache, text chunks, document information
+* VECTOR_STORAGE：entities vectors, relation vectors, chunks vectors
+* GRAPH_STORAGE：entity relation graph
+* DOC_STATUS_STORAGE：documents indexing status
+
+Each storage type have servals implementations:
+
+* KV_STORAGE supported implement-name
+
+```
+JsonKVStorage    JsonFile(default)
+MongoKVStorage   MogonDB
+RedisKVStorage   Redis
+TiDBKVStorage    TiDB
+PGKVStorage      Postgres
+OracleKVStorage  Oracle
+```
+
+* GRAPH_STORAGE supported implement-name
+
+```
+NetworkXStorage      NetworkX(defualt)
+Neo4JStorage         Neo4J
+MongoGraphStorage    MongoDB
+TiDBGraphStorage     TiDB
+AGEStorage           AGE
+GremlinStorage       Gremlin
+PGGraphStorage       Postgres
+OracleGraphStorage   Postgres
+```
+
+* VECTOR_STORAGE supported implement-name
+
+```
+NanoVectorDBStorage         NanoVector(default)
+MilvusVectorDBStorge        Milvus
+ChromaVectorDBStorage       Chroma
+TiDBVectorDBStorage         TiDB
+PGVectorStorage             Postgres
+FaissVectorDBStorage        Faiss
+QdrantVectorDBStorage       Qdrant
+OracleVectorDBStorag        Oracle
+```
+
+* DOC_STATUS_STORAGE：supported implement-name
+
+```
+JsonDocStatusStorage        JsonFile(default)
+PGDocStatusStorage          Postgres
+MongoDocStatusStorage       MongoDB
+```
+
+### How Select Storage Implementation
+
+You can select storage  implementation by enviroment variables or command line arguments. You can not change storage implementation selection after you add documents to LightRAG. Data migration from one storage implementation to anthor is not supported yet. For further information please read the sample env file or config.ini file.
+
+### LightRag API Server Comand Line Options
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -200,6 +219,10 @@ PORT=7000 python lightrag.py
 | --ssl-keyfile | None | Path to SSL private key file (required if --ssl is enabled) |
 | --top-k | 50 | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode. |
 | --cosine-threshold | 0.4 | The cossine threshold for nodes and relations retrieval, works with top-k to control the retrieval of nodes and relations. |
+| --kv-storage | JsonKVStorage | implement-name of  KV_STORAGE |
+| --graph-storage | NetworkXStorage | implement-name of  GRAPH_STORAGE |
+| --vector-storage | NanoVectorDBStorage | implement-name of  VECTOR_STORAGE |
+| --doc-status-storage | JsonDocStatusStorage | implement-name of  DOC_STATUS_STORAGE |
 
 ### Example Usage
 
@@ -343,6 +366,14 @@ curl -X POST "http://localhost:9621/documents/scan" --max-time 1800
 
 > Ajust max-time according to the estimated index time  for all new files.
 
+#### DELETE /documents
+
+Clear all documents from the RAG system.
+
+```bash
+curl -X DELETE "http://localhost:9621/documents"
+```
+
 ### Ollama Emulation Endpoints
 
 #### GET /api/version
@@ -371,14 +402,6 @@ curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/jso
 ```
 
 > For more information about Ollama API pls. visit :  [Ollama API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
-
-#### DELETE /documents
-
-Clear all documents from the RAG system.
-
-```bash
-curl -X DELETE "http://localhost:9621/documents"
-```
 
 ### Utility Endpoints
 

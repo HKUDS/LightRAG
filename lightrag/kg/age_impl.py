@@ -75,8 +75,8 @@ class AGEStorage(BaseGraphStorage):
             .replace("'", "\\'")
         )
         HOST = os.environ["AGE_POSTGRES_HOST"].replace("\\", "\\\\").replace("'", "\\'")
-        PORT = int(os.environ["AGE_POSTGRES_PORT"])
-        self.graph_name = os.environ["AGE_GRAPH_NAME"]
+        PORT = os.environ.get("AGE_POSTGRES_PORT", "8529")
+        self.graph_name = namespace or os.environ.get("AGE_GRAPH_NAME", "lightrag")
 
         connection_string = f"dbname='{DB}' user='{USER}' password='{PASSWORD}' host='{HOST}' port={PORT}"
 

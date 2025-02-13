@@ -177,7 +177,8 @@ class PostgreSQLDB:
 
 @dataclass
 class PGKVStorage(BaseKVStorage):
-    db: PostgreSQLDB = None
+    # db instance must be injected before use
+    # db: PostgreSQLDB
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
@@ -296,16 +297,19 @@ class PGKVStorage(BaseKVStorage):
 
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
-    cosine_better_than_threshold: float = float(os.getenv("COSINE_THRESHOLD", "0.2"))
-    db: PostgreSQLDB = None
+    # db instance must be injected before use
+    # db: PostgreSQLDB
+    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
-        # Use global config value if specified, otherwise use default
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        self.cosine_better_than_threshold = config.get(
-            "cosine_better_than_threshold", self.cosine_better_than_threshold
-        )
+        cosine_threshold = config.get("cosine_better_than_threshold")
+        if cosine_threshold is None:
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
+            )
+        self.cosine_better_than_threshold = cosine_threshold
 
     def _upsert_chunks(self, item: dict):
         try:
@@ -416,20 +420,14 @@ class PGVectorStorage(BaseVectorStorage):
 
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
-    """PostgreSQL implementation of document status storage"""
-
-    db: PostgreSQLDB = None
-
-    def __post_init__(self):
-        pass
+    # db instance must be injected before use
+    # db: PostgreSQLDB
 
     async def filter_keys(self, data: set[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         keys = ",".join([f"'{_id}'" for _id in data])
-        sql = (
-            f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id IN ({keys})"
-        )
-        result = await self.db.query(sql, {"workspace": self.db.workspace}, True)
+        sql = f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace='{self.db.workspace}' AND id IN ({keys})"
+        result = await self.db.query(sql, multirows=True)
         # The result is like [{'id': 'id1'}, {'id': 'id2'}, ...].
         if result is None:
             return set(data)
@@ -585,19 +583,15 @@ class PGGraphQueryException(Exception):
 
 @dataclass
 class PGGraphStorage(BaseGraphStorage):
-    db: PostgreSQLDB = None
+    # db instance must be injected before use
+    # db: PostgreSQLDB
 
     @staticmethod
     def load_nx_graph(file_name):
         print("no preloading of graph with AGE in production")
 
-    def __init__(self, namespace, global_config, embedding_func):
-        super().__init__(
-            namespace=namespace,
-            global_config=global_config,
-            embedding_func=embedding_func,
-        )
-        self.graph_name = os.environ["AGE_GRAPH_NAME"]
+    def __post_init__(self):
+        self.graph_name = self.namespace or os.environ.get("AGE_GRAPH_NAME", "lightrag")
         self._node_embed_algorithms = {
             "node2vec": self._node2vec_embed,
         }
@@ -1137,7 +1131,7 @@ TABLES = {
         "ddl": """CREATE TABLE LIGHTRAG_DOC_STATUS (
 	               workspace varchar(255) NOT NULL,
 	               id varchar(255) NOT NULL,
-                   content TEXT,
+	               content TEXT NULL,
 	               content_summary varchar(255) NULL,
 	               content_length int4 NULL,
 	               chunks_count int4 NULL,
