@@ -672,10 +672,11 @@ def get_api_key_dependency(api_key: Optional[str]):
 # Global configuration
 global_top_k = 60  # default value
 
+
 def create_app(args):
     global global_top_k
     global_top_k = args.top_k  # save top_k from args
-    
+
     # Verify that bindings are correctly setup
     if args.llm_binding not in [
         "lollms",
