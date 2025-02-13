@@ -52,7 +52,7 @@ class Neo4JStorage(BaseGraphStorage):
         USERNAME = os.environ.get(
             "NEO4J_USERNAME", config.get("neo4j", "username", fallback=None)
         )
-        PASSWORD = os.environ(
+        PASSWORD = os.environ.get(
             "NEO4J_PASSWORD", config.get("neo4j", "password", fallback=None)
         )
         MAX_CONNECTION_POOL_SIZE = int(
