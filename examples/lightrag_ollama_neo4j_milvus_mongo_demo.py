@@ -44,7 +44,7 @@ rag = LightRAG(
     ),
     kv_storage="MongoKVStorage",
     graph_storage="Neo4JStorage",
-    vector_storage="MilvusVectorDBStorge",
+    vector_storage="MilvusVectorDBStorage",
 )
 
 file = "./book.txt"
