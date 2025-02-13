@@ -557,8 +557,8 @@ class LightRAG:
         return storage_class
 
     def set_storage_client(self, db_client):
-        # Inject db to storage implementation (only tested on Oracle Database
-        # Deprecated, seting correct value to *_storage creating LightRAG insteaded
+        # Deprecated, seting correct value to *_storage of LightRAG insteaded
+        # Inject db to storage implementation (only tested on Oracle Database)
         for storage in [
             self.vector_db_storage_cls,
             self.graph_storage_cls,
