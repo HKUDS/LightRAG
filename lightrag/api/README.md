@@ -130,7 +130,9 @@ python lightrag.py --port 8080
 PORT=7000 python lightrag.py
 ```
 
-#### Storage Types Supported
+> Best practices: you can set your database setting in Config.ini while testing, and you use .env for production.
+
+### Storage Types Supported
 
 LightRAG uses 4 types of storage for difference purposes:
 
@@ -186,12 +188,11 @@ PGDocStatusStorage          Postgres
 MongoDocStatusStorage       MongoDB
 ```
 
-#### How Select Storage Type
+### How Select Storage Implementation
 
-* Bye enviroment variables
-* By command line arguments
+You can select storage  implementation by enviroment variables or command line arguments. You can not change storage implementation selection after you add documents to LightRAG. Data migration from one storage implementation to anthor is not supported yet. For further information please read the sample env file or config.ini file.
 
-#### LightRag Server Options
+### LightRag API Server Comand Line Options
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -365,6 +366,14 @@ curl -X POST "http://localhost:9621/documents/scan" --max-time 1800
 
 > Ajust max-time according to the estimated index time  for all new files.
 
+#### DELETE /documents
+
+Clear all documents from the RAG system.
+
+```bash
+curl -X DELETE "http://localhost:9621/documents"
+```
+
 ### Ollama Emulation Endpoints
 
 #### GET /api/version
@@ -393,14 +402,6 @@ curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/jso
 ```
 
 > For more information about Ollama API pls. visit :  [Ollama API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
-
-#### DELETE /documents
-
-Clear all documents from the RAG system.
-
-```bash
-curl -X DELETE "http://localhost:9621/documents"
-```
 
 ### Utility Endpoints
 
