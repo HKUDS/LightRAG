@@ -15,7 +15,6 @@ if not pm.is_installed("qdrant_client"):
 
 from qdrant_client import QdrantClient, models
 
-
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
@@ -138,12 +137,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             query_vector=embedding[0],
             limit=top_k,
             with_payload=True,
+            score_threshold=self.cosine_better_than_threshold,
         )
+
         logger.debug(f"query result: {results}")
-        # 添加余弦相似度过滤
-        filtered_results = [
-            dp for dp in results if dp.score >= self.cosine_better_than_threshold
-        ]
-        return [
-            {**dp.payload, "id": dp.id, "distance": dp.score} for dp in filtered_results
-        ]
+
+        return [{**dp.payload, "id": dp.id, "distance": dp.score} for dp in results]
