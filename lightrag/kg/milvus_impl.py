@@ -18,7 +18,7 @@ config.read("config.ini", "utf-8")
 
 
 @dataclass
-class MilvusVectorDBStorge(BaseVectorStorage):
+class MilvusVectorDBStorage(BaseVectorStorage):
     cosine_better_than_threshold: float = None
 
     @staticmethod
@@ -65,7 +65,7 @@ class MilvusVectorDBStorge(BaseVectorStorage):
             ),
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
-        MilvusVectorDBStorge.create_collection_if_not_exist(
+        MilvusVectorDBStorage.create_collection_if_not_exist(
             self._client,
             self.namespace,
             dimension=self.embedding_func.embedding_dim,

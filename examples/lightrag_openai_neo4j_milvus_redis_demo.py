@@ -58,7 +58,7 @@ rag = LightRAG(
     chunk_overlap_token_size=256,
     kv_storage="RedisKVStorage",
     graph_storage="Neo4JStorage",
-    vector_storage="MilvusVectorDBStorge",
+    vector_storage="MilvusVectorDBStorage",
     doc_status_storage="RedisKVStorage",
 )
 
