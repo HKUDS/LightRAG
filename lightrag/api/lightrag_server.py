@@ -1021,8 +1021,8 @@ def create_app(args):
         if args.embedding_binding == "azure_openai"
         else openai_embed(
             texts,
-            model=args.embedding_model,  
-            base_url=args.embedding_binding_host, # If you decide to use litellm as a proxy for azure openai, this is relevant
+            model=args.embedding_model,
+            base_url=args.embedding_binding_host,
             api_key=args.embedding_binding_api_key,
         ),
     )
