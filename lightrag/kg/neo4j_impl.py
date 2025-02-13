@@ -45,8 +45,7 @@ class Neo4JStorage(BaseGraphStorage):
         URI = os.environ["NEO4J_URI"]
         USERNAME = os.environ["NEO4J_USERNAME"]
         PASSWORD = os.environ["NEO4J_PASSWORD"]
-        MAX_CONNECTION_POOL_SIZE = os.environ.get(
-            "NEO4J_MAX_CONNECTION_POOL_SIZE", 800)
+        MAX_CONNECTION_POOL_SIZE = os.environ.get("NEO4J_MAX_CONNECTION_POOL_SIZE", 800)
         DATABASE = os.environ.get(
             "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", namespace)
         )
@@ -76,22 +75,19 @@ class Neo4JStorage(BaseGraphStorage):
                             )
                             raise e
                 except neo4jExceptions.AuthError as e:
-                    logger.error(
-                        f"Authentication failed for {database} at {URI}")
+                    logger.error(f"Authentication failed for {database} at {URI}")
                     raise e
                 except neo4jExceptions.ClientError as e:
                     if e.code == "Neo.ClientError.Database.DatabaseNotFound":
                         logger.info(
-                            f"{database} at {URI} not found. Try to create specified database.".capitalize(
-                            )
+                            f"{database} at {URI} not found. Try to create specified database.".capitalize()
                         )
                         try:
                             with _sync_driver.session() as session:
                                 session.run(
                                     f"CREATE DATABASE `{database}` IF NOT EXISTS"
                                 )
-                                logger.info(
-                                    f"{database} at {URI} created".capitalize())
+                                logger.info(f"{database} at {URI} created".capitalize())
                                 connected = True
                         except (
                             neo4jExceptions.ClientError,
@@ -108,8 +104,7 @@ class Neo4JStorage(BaseGraphStorage):
                                         "This Neo4j instance does not support creating databases. Try to use Neo4j Desktop/Enterprise version or DozerDB instead. Fallback to use the default database."
                                     )
                             if database is None:
-                                logger.error(
-                                    f"Failed to create {database} at {URI}")
+                                logger.error(f"Failed to create {database} at {URI}")
                                 raise e
 
                 if connected:
@@ -401,8 +396,7 @@ class Neo4JStorage(BaseGraphStorage):
                     validate_query = f"MATCH (n:`{label}`) RETURN n LIMIT 1"
                     validate_result = await session.run(validate_query)
                     if not await validate_result.single():
-                        logger.warning(
-                            f"Starting node {label} does not exist!")
+                        logger.warning(f"Starting node {label} does not exist!")
                         return result
 
                     # Optimized query (including direction handling and self-loops)
@@ -427,11 +421,13 @@ class Neo4JStorage(BaseGraphStorage):
                         # Use node ID + label combination as unique identifier
                         node_id = node.id
                         if node_id not in seen_nodes:
-                            result.nodes.append(KnowledgeGraphNode(
-                                id=f"{node_id}",
-                                labels=list(node.labels),
-                                properties=dict(node),
-                            ))
+                            result.nodes.append(
+                                KnowledgeGraphNode(
+                                    id=f"{node_id}",
+                                    labels=list(node.labels),
+                                    properties=dict(node),
+                                )
+                            )
                             seen_nodes.add(node_id)
 
                     # Handle relationships (including direction information)
@@ -440,13 +436,15 @@ class Neo4JStorage(BaseGraphStorage):
                         if edge_id not in seen_edges:
                             start = rel.start_node
                             end = rel.end_node
-                            result.edges.append(KnowledgeGraphEdge(
-                                id=f"{edge_id}",
-                                type=rel.type,
-                                source=f"{start.id}",
-                                target=f"{end.id}",
-                                properties=dict(rel),
-                            ))
+                            result.edges.append(
+                                KnowledgeGraphEdge(
+                                    id=f"{edge_id}",
+                                    type=rel.type,
+                                    source=f"{start.id}",
+                                    target=f"{end.id}",
+                                    properties=dict(rel),
+                                )
+                            )
                             seen_edges.add(edge_id)
 
                     logger.info(
