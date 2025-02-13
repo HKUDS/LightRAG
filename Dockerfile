@@ -33,7 +33,6 @@ WORKDIR /app
 COPY --from=builder /root/.local /root/.local
 COPY ./lightrag ./lightrag
 COPY setup.py .
-COPY .env .
 
 RUN pip install .
 # Make sure scripts in .local are usable
