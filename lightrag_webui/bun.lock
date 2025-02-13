@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "lightrag-graph-vierer-webui",
+      "name": "lightrag-webui",
       "dependencies": {
         "@faker-js/faker": "^9.4.0",
         "@radix-ui/react-checkbox": "^1.1.4",

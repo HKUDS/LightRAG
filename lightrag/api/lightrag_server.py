@@ -1463,12 +1463,12 @@ def create_app(args):
             },
         }
 
-    # Webui mount graph_viewer_webui/dist/index.html
-    webui_dir = Path(__file__).parent / "graph_viewer_webui" / "dist"
+    # Webui mount webui/index.html
+    webui_dir = Path(__file__).parent / "webui"
     app.mount(
         "/graph-viewer",
         StaticFiles(directory=webui_dir, html=True),
-        name="webui_static",
+        name="webui",
     )
 
     # Serve the static files
