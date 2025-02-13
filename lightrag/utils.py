@@ -416,7 +416,7 @@ async def get_best_cached_response(
 
     if best_similarity > similarity_threshold:
         # If LLM check is enabled and all required parameters are provided
-        if use_llm_check and llm_func and original_prompt and best_prompt:
+        if use_llm_check and llm_func and original_prompt and best_prompt and best_response is not None:
             compare_prompt = PROMPTS["similarity_check"].format(
                 original_prompt=original_prompt, cached_prompt=best_prompt
             )
@@ -430,7 +430,9 @@ async def get_best_cached_response(
                 best_similarity = llm_similarity
                 if best_similarity < similarity_threshold:
                     log_data = {
-                        "event": "llm_check_cache_rejected",
+                        "event": "cache_rejected_by_llm",
+                        "type": cache_type,
+                        "mode": mode,
                         "original_question": original_prompt[:100] + "..."
                         if len(original_prompt) > 100
                         else original_prompt,
@@ -440,7 +442,8 @@ async def get_best_cached_response(
                         "similarity_score": round(best_similarity, 4),
                         "threshold": similarity_threshold,
                     }
-                    logger.info(json.dumps(log_data, ensure_ascii=False))
+                    logger.debug(json.dumps(log_data, ensure_ascii=False))
+                    logger.info(f"Cache rejected by LLM(mode:{mode} tpye:{cache_type})")
                     return None
             except Exception as e:  # Catch all possible exceptions
                 logger.warning(f"LLM similarity check failed: {e}")
@@ -451,12 +454,13 @@ async def get_best_cached_response(
         )
         log_data = {
             "event": "cache_hit",
+            "type": cache_type,
             "mode": mode,
             "similarity": round(best_similarity, 4),
             "cache_id": best_cache_id,
             "original_prompt": prompt_display,
         }
-        logger.info(json.dumps(log_data, ensure_ascii=False))
+        logger.debug(json.dumps(log_data, ensure_ascii=False))
         return best_response
     return None
 
@@ -534,19 +538,24 @@ async def handle_cache(
                 cache_type=cache_type,
             )
             if best_cached_response is not None:
+                logger.info(f"Embedding cached hit(mode:{mode} type:{cache_type})")
                 return best_cached_response, None, None, None
             else:
+                # if caching keyword embedding is enabled, return the quantized embedding for saving it latter
+                logger.info(f"Embedding cached missed(mode:{mode} type:{cache_type})")
                 return None, quantized, min_val, max_val
 
-    # For default mode(extract_entities or naive query) or is_embedding_cache_enabled is False
-    # Use regular cache
+    # For default mode or is_embedding_cache_enabled is False, use regular cache
+    # default mode is for extract_entities or naive query
     if exists_func(hashing_kv, "get_by_mode_and_id"):
         mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
     else:
         mode_cache = await hashing_kv.get_by_id(mode) or {}
     if args_hash in mode_cache:
+        logger.info(f"Non-embedding cached hit(mode:{mode} type:{cache_type})")
         return mode_cache[args_hash]["return"], None, None, None
 
+    logger.info(f"Non-embedding cached missed(mode:{mode} type:{cache_type})")
     return None, None, None, None
 
 
