@@ -564,6 +564,10 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
+    # conver relative path to absolute path
+    args.working_dir = os.path.abspath(args.working_dir)
+    args.input_dir = os.path.abspath(args.input_dir)
+
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
     return args
@@ -595,6 +599,7 @@ class DocumentManager:
         """Scan input directory for new files"""
         new_files = []
         for ext in self.supported_extensions:
+            logger.info(f"Scanning for {ext} files in {self.input_dir}")
             for file_path in self.input_dir.rglob(f"*{ext}"):
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)
@@ -1198,6 +1203,7 @@ def create_app(args):
             new_files = doc_manager.scan_directory_for_new_files()
             scan_progress["total_files"] = len(new_files)
 
+            logger.info(f"Found {len(new_files)} new files to index.")
             for file_path in new_files:
                 try:
                     with progress_lock:
