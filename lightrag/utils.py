@@ -128,7 +128,12 @@ def compute_args_hash(*args, cache_type: str = None) -> str:
     return hashlib.md5(args_str.encode()).hexdigest()
 
 
-def compute_mdhash_id(content, prefix: str = ""):
+def compute_mdhash_id(content: str, prefix: str = "") -> str:
+    """
+    Compute a unique ID for a given content string.
+
+    The ID is a combination of the given prefix and the MD5 hash of the content string.
+    """
     return prefix + md5(content.encode()).hexdigest()
 
 

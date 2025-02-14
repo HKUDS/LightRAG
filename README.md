@@ -428,9 +428,9 @@ And using a routine to process news documents.
 
 ```python
 rag = LightRAG(..)
-await rag.apipeline_enqueue_documents(string_or_strings)
+await rag.apipeline_enqueue_documents(input)
 # Your routine in loop
-await rag.apipeline_process_enqueue_documents(string_or_strings)
+await rag.apipeline_process_enqueue_documents(input)
 ```
 
 ### Separate Keyword Extraction
