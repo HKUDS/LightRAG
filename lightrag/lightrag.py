@@ -6,7 +6,7 @@ import configparser
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, Callable, Optional, Union, cast
+from typing import Any, AsyncIterator, Callable, Iterator, Optional, Union, cast
 
 from .base import (
     BaseGraphStorage,
@@ -983,7 +983,7 @@ class LightRAG:
 
     def query(
         self, query: str, param: QueryParam = QueryParam(), prompt: str | None = None
-    ) -> str:
+    ) -> str | Iterator[str]:
         """
         Perform a sync query.
 
@@ -1003,7 +1003,7 @@ class LightRAG:
         query: str,
         param: QueryParam = QueryParam(),
         prompt: str | None = None,
-    ) -> str:
+    ) -> str | AsyncIterator[str]:
         """
         Perform a async query.
 
@@ -1081,7 +1081,10 @@ class LightRAG:
         return response
 
     def query_with_separate_keyword_extraction(
-        self, query: str, prompt: str, param: QueryParam = QueryParam()
+        self, 
+        query: str, 
+        prompt: str, 
+        param: QueryParam = QueryParam()
     ):
         """
         1. Extract keywords from the 'query' using new function in operate.py.
@@ -1093,7 +1096,10 @@ class LightRAG:
         )
 
     async def aquery_with_separate_keyword_extraction(
-        self, query: str, prompt: str, param: QueryParam = QueryParam()
+        self, 
+        query: str, 
+        prompt: str, 
+        param: QueryParam = QueryParam()
     ):
         """
         1. Calls extract_keywords_only to get HL/LL keywords from 'query'.
