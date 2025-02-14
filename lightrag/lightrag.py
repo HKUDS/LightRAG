@@ -524,7 +524,6 @@ class LightRAG:
             embedding_func=None,
         )
 
-        # What's for, Is this nessisary ?
         if self.llm_response_cache and hasattr(
             self.llm_response_cache, "global_config"
         ):
@@ -1252,7 +1251,7 @@ class LightRAG:
         """
         return await self.doc_status.get_status_counts()
 
-    async def adelete_by_doc_id(self, doc_id: str):
+    async def adelete_by_doc_id(self, doc_id: str) -> None:
         """Delete a document and all its related data
 
         Args:
@@ -1269,6 +1268,9 @@ class LightRAG:
 
             # 2. Get all related chunks
             chunks = await self.text_chunks.get_by_id(doc_id)
+            if not chunks:
+                return
+
             chunk_ids = list(chunks.keys())
             logger.debug(f"Found {len(chunk_ids)} chunks to delete")
 

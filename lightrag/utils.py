@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
-from typing import Any, Union, List, Optional
+from typing import Any, Callable, Union, List, Optional
 import xml.etree.ElementTree as ET
 import bs4
 
@@ -67,7 +67,7 @@ class EmbeddingFunc:
 
 @dataclass
 class ReasoningResponse:
-    reasoning_content: str
+    reasoning_content: str | None
     response_content: str
     tag: str
 
@@ -109,7 +109,7 @@ def convert_response_to_json(response: str) -> dict[str, Any]:
         raise e from None
 
 
-def compute_args_hash(*args, cache_type: str = None) -> str:
+def compute_args_hash(*args: Any, cache_type: str | None = None) -> str:
     """Compute a hash for the given arguments.
     Args:
         *args: Arguments to hash
@@ -220,11 +220,13 @@ def clean_str(input: Any) -> str:
     return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", result)
 
 
-def is_float_regex(value):
+def is_float_regex(value: str) -> bool:
     return bool(re.match(r"^[-+]?[0-9]*\.?[0-9]+$", value))
 
 
-def truncate_list_by_token_size(list_data: list, key: callable, max_token_size: int):
+def truncate_list_by_token_size(
+    list_data: list[Any], key: Callable[[Any], str], max_token_size: int
+) -> list[int]:
     """Truncate a list of data by token size"""
     if max_token_size <= 0:
         return []
@@ -334,7 +336,7 @@ def xml_to_json(xml_file):
         return None
 
 
-def process_combine_contexts(hl, ll):
+def process_combine_contexts(hl: str, ll: str):
     header = None
     list_hl = csv_string_to_list(hl.strip())
     list_ll = csv_string_to_list(ll.strip())
@@ -640,7 +642,9 @@ def exists_func(obj, func_name: str) -> bool:
         return False
 
 
-def get_conversation_turns(conversation_history: list[dict], num_turns: int) -> str:
+def get_conversation_turns(
+    conversation_history: list[dict[str, Any]], num_turns: int
+) -> str:
     """
     Process conversation history to get the specified number of complete turns.
 
@@ -652,8 +656,8 @@ def get_conversation_turns(conversation_history: list[dict], num_turns: int) -> 
         Formatted string of the conversation history
     """
     # Group messages into turns
-    turns = []
-    messages = []
+    turns: list[list[dict[str, Any]]] = []
+    messages: list[dict[str, Any]] = []
 
     # First, filter out keyword extraction messages
     for msg in conversation_history:
@@ -687,7 +691,7 @@ def get_conversation_turns(conversation_history: list[dict], num_turns: int) -> 
         turns = turns[-num_turns:]
 
     # Format the turns into a string
-    formatted_turns = []
+    formatted_turns: list[str] = []
     for turn in turns:
         formatted_turns.extend(
             [f"user: {turn[0]['content']}", f"assistant: {turn[1]['content']}"]
