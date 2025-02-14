@@ -982,10 +982,7 @@ class LightRAG:
                 await self._insert_done()
 
     def query(
-        self, 
-        query: str, 
-        param: QueryParam = QueryParam(), 
-        prompt: str | None = None
+        self, query: str, param: QueryParam = QueryParam(), prompt: str | None = None
     ) -> str | Iterator[str]:
         """
         Perform a sync query.
@@ -999,8 +996,8 @@ class LightRAG:
             str: The result of the query execution.
         """
         loop = always_get_an_event_loop()
-        
-        return loop.run_until_complete(self.aquery(query, param, prompt)) # type: ignore
+
+        return loop.run_until_complete(self.aquery(query, param, prompt))  # type: ignore
 
     async def aquery(
         self,
@@ -1085,10 +1082,7 @@ class LightRAG:
         return response
 
     def query_with_separate_keyword_extraction(
-        self, 
-        query: str, 
-        prompt: str, 
-        param: QueryParam = QueryParam()
+        self, query: str, prompt: str, param: QueryParam = QueryParam()
     ):
         """
         1. Extract keywords from the 'query' using new function in operate.py.
@@ -1100,10 +1094,7 @@ class LightRAG:
         )
 
     async def aquery_with_separate_keyword_extraction(
-        self, 
-        query: str, 
-        prompt: str, 
-        param: QueryParam = QueryParam()
+        self, query: str, prompt: str, param: QueryParam = QueryParam()
     ):
         """
         1. Calls extract_keywords_only to get HL/LL keywords from 'query'.
@@ -1127,8 +1118,8 @@ class LightRAG:
             ),
         )
 
-        param.hl_keywords = (hl_keywords,)
-        param.ll_keywords = (ll_keywords,)
+        param.hl_keywords = hl_keywords
+        param.ll_keywords = ll_keywords
 
         # ---------------------
         # STEP 2: Final Query Logic
@@ -1156,7 +1147,7 @@ class LightRAG:
                         self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
                     ),
                     global_config=asdict(self),
-                    embedding_func=self.embedding_funcne,
+                    embedding_func=self.embedding_func,
                 ),
             )
         elif param.mode == "naive":
