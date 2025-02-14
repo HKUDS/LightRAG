@@ -19,7 +19,7 @@ export type RawEdgeType = {
   id: string
   source: string
   target: string
-  type: string
+  type?: string
   properties: Record<string, any>
 
   dynamicId: string
