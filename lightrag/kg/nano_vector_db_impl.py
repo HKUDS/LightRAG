@@ -191,7 +191,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error deleting entity {entity_name}: {e}")
 
-    async def delete_entity_relation(self, entity_name: str):
+    async def delete_entity_relation(self, entity_name: str) -> None:
         try:
             relations = [
                 dp

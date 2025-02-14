@@ -106,10 +106,16 @@ class BaseVectorStorage(StorageNameSpace):
         """
         raise NotImplementedError
 
+    async def delete_entity(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        raise NotImplementedError
+
 
 @dataclass
 class BaseKVStorage(StorageNameSpace):
-    embedding_func: EmbeddingFunc
+    embedding_func: EmbeddingFunc | None = None
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         raise NotImplementedError
