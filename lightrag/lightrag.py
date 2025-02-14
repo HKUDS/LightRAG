@@ -536,7 +536,7 @@ class LightRAG:
                 ),
                 embedding_func=self.embedding_func,
             )
-            
+
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(
                 self.llm_model_func,  # type: ignore
@@ -955,37 +955,34 @@ class LightRAG:
 
             # Insert entities into vector storage if needed
             data_for_vdb = {
-                    compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                        "content": dp["entity_name"] + dp["description"],
-                        "entity_name": dp["entity_name"],
-                    }
-                    for dp in all_entities_data
+                compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
+                    "content": dp["entity_name"] + dp["description"],
+                    "entity_name": dp["entity_name"],
                 }
+                for dp in all_entities_data
+            }
             await self.entities_vdb.upsert(data_for_vdb)
 
             # Insert relationships into vector storage if needed
             data_for_vdb = {
-                    compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
-                        "src_id": dp["src_id"],
-                        "tgt_id": dp["tgt_id"],
-                        "content": dp["keywords"]
-                        + dp["src_id"]
-                        + dp["tgt_id"]
-                        + dp["description"],
-                    }
-                    for dp in all_relationships_data
+                compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
+                    "src_id": dp["src_id"],
+                    "tgt_id": dp["tgt_id"],
+                    "content": dp["keywords"]
+                    + dp["src_id"]
+                    + dp["tgt_id"]
+                    + dp["description"],
                 }
+                for dp in all_relationships_data
+            }
             await self.relationships_vdb.upsert(data_for_vdb)
-            
+
         finally:
             if update_storage:
                 await self._insert_done()
 
     def query(
-        self, 
-        query: str, 
-        param: QueryParam = QueryParam(), 
-        prompt: str | None = None
+        self, query: str, param: QueryParam = QueryParam(), prompt: str | None = None
     ) -> str:
         """
         Perform a sync query.
@@ -997,7 +994,7 @@ class LightRAG:
 
         Returns:
             str: The result of the query execution.
-        """        
+        """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.aquery(query, param, prompt))
 
