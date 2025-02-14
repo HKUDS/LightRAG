@@ -1608,7 +1608,7 @@ async def kg_query_with_keywords(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
-) -> str:
+) -> str | AsyncIterator[str]:
     """
     Refactored kg_query that does NOT extract keywords by itself.
     It expects hl_keywords and ll_keywords to be set in query_param, or defaults to empty.

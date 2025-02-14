@@ -66,7 +66,11 @@ class MultiModel:
         return self._models[self._current_model]
 
     async def llm_model_func(
-        self, prompt, system_prompt=None, history_messages=[], **kwargs
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        history_messages: list[dict[str, Any]] = [],
+        **kwargs: Any,
     ) -> str:
         kwargs.pop("model", None)  # stop from overwriting the custom model name
         kwargs.pop("keyword_extraction", None)
