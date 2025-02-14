@@ -96,7 +96,7 @@ class StorageNameSpace:
 class BaseVectorStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc
     meta_fields: set[str] = field(default_factory=set)
-    
+
     async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         raise NotImplementedError
 
@@ -132,62 +132,75 @@ class BaseKVStorage(StorageNameSpace):
 class BaseGraphStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc | None = None
     """Check if a node exists in the graph."""
+
     async def has_node(self, node_id: str) -> bool:
         raise NotImplementedError
 
     """Check if an edge exists in the graph."""
+
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         raise NotImplementedError
 
     """Get the degree of a node."""
+
     async def node_degree(self, node_id: str) -> int:
         raise NotImplementedError
 
     """Get the degree of an edge."""
+
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         raise NotImplementedError
 
     """Get a node by its id."""
+
     async def get_node(self, node_id: str) -> Union[dict[str, str], None]:
         raise NotImplementedError
 
     """Get an edge by its source and target node ids."""
+
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> Union[dict[str, str], None]:
         raise NotImplementedError
 
     """Get all edges connected to a node."""
+
     async def get_node_edges(
         self, source_node_id: str
     ) -> Union[list[tuple[str, str]], None]:
         raise NotImplementedError
 
     """Upsert a node into the graph."""
+
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         raise NotImplementedError
 
     """Upsert an edge into the graph."""
+
     async def upsert_edge(
-        self, source_node_id: str,
-        target_node_id: str, 
-        edge_data: dict[str, str]
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         raise NotImplementedError
 
     """Delete a node from the graph."""
+
     async def delete_node(self, node_id: str) -> None:
         raise NotImplementedError
 
     """Embed nodes using an algorithm."""
-    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray[Any, Any], list[str]]:
+
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         raise NotImplementedError("Node embedding is not used in lightrag.")
 
     """Get all labels in the graph."""
+
     async def get_all_labels(self) -> list[str]:
         raise NotImplementedError
 
     """Get a knowledge graph of a node."""
+
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
