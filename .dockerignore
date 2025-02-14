@@ -1,1 +1,63 @@
-.env
+# Python-related files and directories
+__pycache__
+.cache
+
+# Virtual environment directories
+*.venv
+
+# Env
+env/
+*.env*
+.env_example
+
+# Distribution / build files
+site
+dist/
+build/
+.eggs/
+*.egg-info/
+*.tgz
+*.tar.gz
+
+# Exclude siles and folders
+*.yml
+.dockerignore
+Dockerfile
+Makefile
+
+# Exclude other projects
+/tests
+/scripts
+
+# Python version manager file
+.python-version
+
+# Reports
+*.coverage/
+*.log
+log/
+*.logfire
+
+# Cache
+.cache/
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.gradio
+.logfire
+temp/
+
+# MacOS-related files
+.DS_Store
+
+# VS Code settings (local configuration files)
+.vscode
+
+# file
+TODO.md
+
+# Exclude Git-related files
+.git
+.github
+.gitignore
+.pre-commit-config.yaml
