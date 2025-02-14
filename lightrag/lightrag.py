@@ -76,6 +76,7 @@ STORAGE_IMPLEMENTATIONS = {
             "FaissVectorDBStorage",
             "QdrantVectorDBStorage",
             "OracleVectorDBStorage",
+            "MongoVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
     },
@@ -140,6 +141,7 @@ STORAGE_ENV_REQUIREMENTS = {
         "ORACLE_PASSWORD",
         "ORACLE_CONFIG_DIR",
     ],
+    "MongoVectorDBStorage": [],
     # Document Status Storage Implementations
     "JsonDocStatusStorage": [],
     "PGDocStatusStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
@@ -160,6 +162,7 @@ STORAGES = {
     "MongoKVStorage": ".kg.mongo_impl",
     "MongoDocStatusStorage": ".kg.mongo_impl",
     "MongoGraphStorage": ".kg.mongo_impl",
+    "MongoVectorDBStorage": ".kg.mongo_impl",
     "RedisKVStorage": ".kg.redis_impl",
     "ChromaVectorDBStorage": ".kg.chroma_impl",
     "TiDBKVStorage": ".kg.tidb_impl",
