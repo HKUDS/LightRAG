@@ -69,7 +69,7 @@ STORAGE_IMPLEMENTATIONS = {
     "VECTOR_STORAGE": {
         "implementations": [
             "NanoVectorDBStorage",
-            "MilvusVectorDBStorge",
+            "MilvusVectorDBStorage",
             "ChromaVectorDBStorage",
             "TiDBVectorDBStorage",
             "PGVectorStorage",
@@ -128,7 +128,7 @@ STORAGE_ENV_REQUIREMENTS = {
     ],
     # Vector Storage Implementations
     "NanoVectorDBStorage": [],
-    "MilvusVectorDBStorge": [],
+    "MilvusVectorDBStorage": [],
     "ChromaVectorDBStorage": [],
     "TiDBVectorDBStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "PGVectorStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
