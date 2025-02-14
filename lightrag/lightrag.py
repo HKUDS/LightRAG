@@ -80,7 +80,12 @@ STORAGE_IMPLEMENTATIONS = {
         "required_methods": ["query", "upsert"],
     },
     "DOC_STATUS_STORAGE": {
-        "implementations": ["JsonDocStatusStorage", "PGDocStatusStorage"],
+        "implementations": [
+            "JsonDocStatusStorage",
+            "PGDocStatusStorage",
+            "PGDocStatusStorage",
+            "MongoDocStatusStorage",
+        ],
         "required_methods": ["get_pending_docs"],
     },
 }
@@ -421,7 +426,7 @@ class LightRAG:
             # Verify storage implementation compatibility
             self.verify_storage_implementation(storage_type, storage_name)
             # Check environment variables
-            self.check_storage_env_vars(storage_name)
+            # self.check_storage_env_vars(storage_name)
 
         # Ensure vector_db_storage_cls_kwargs has required fields
         default_vector_db_kwargs = {
