@@ -1027,7 +1027,8 @@ def create_app(args):
         if args.embedding_binding == "azure_openai"
         else openai_embed(
             texts,
-            model=args.embedding_model,  # no host is used for openai,
+            model=args.embedding_model,
+            base_url=args.embedding_binding_host,
             api_key=args.embedding_binding_api_key,
         ),
     )
