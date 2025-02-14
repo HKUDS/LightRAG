@@ -83,11 +83,11 @@ class StorageNameSpace:
     namespace: str
     global_config: dict[str, Any]
 
-    async def index_done_callback(self):
+    async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing"""
         pass
 
-    async def query_done_callback(self):
+    async def query_done_callback(self) -> None:
         """Commit the storage operations after querying"""
         pass
 

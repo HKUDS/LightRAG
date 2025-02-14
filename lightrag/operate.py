@@ -295,8 +295,8 @@ async def extract_entities(
     knowledge_graph_inst: BaseGraphStorage,
     entity_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
-    global_config: dict,
-    llm_response_cache: BaseKVStorage = None,
+    global_config: dict[str, str],
+    llm_response_cache: BaseKVStorage | None = None,
 ) -> Union[BaseGraphStorage, None]:
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
@@ -563,15 +563,15 @@ async def extract_entities(
 
 
 async def kg_query(
-    query,
+    query: str,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
-    prompt: str = "",
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    prompt: str | None = None,
 ) -> str:
     # Handle cache
     use_model_func = global_config["llm_model_func"]
@@ -681,8 +681,8 @@ async def kg_query(
 async def extract_keywords_only(
     text: str,
     param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Extract high-level and low-level keywords from the given 'text' using the LLM.
@@ -778,8 +778,8 @@ async def mix_kg_vector_query(
     chunks_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
 ) -> str:
     """
     Hybrid retrieval implementation combining knowledge graph and vector search.
@@ -1499,12 +1499,12 @@ def combine_contexts(entities, relationships, sources):
 
 
 async def naive_query(
-    query,
+    query: str,
     chunks_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
 ):
     # Handle cache
     use_model_func = global_config["llm_model_func"]
@@ -1606,8 +1606,8 @@ async def kg_query_with_keywords(
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
 ) -> str:
     """
     Refactored kg_query that does NOT extract keywords by itself.
