@@ -96,7 +96,7 @@ class StorageNameSpace:
 class BaseVectorStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc
     meta_fields: set[str] = field(default_factory=set)
-
+    
     async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         raise NotImplementedError
 

@@ -2,7 +2,7 @@ import asyncio
 import json
 import re
 from tqdm.asyncio import tqdm as tqdm_async
-from typing import Any, Union
+from typing import Any, AsyncIterator, Union
 from collections import Counter, defaultdict
 from .utils import (
     logger,
@@ -780,7 +780,7 @@ async def mix_kg_vector_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
-) -> str:
+) -> str | AsyncIterator[str]:
     """
     Hybrid retrieval implementation combining knowledge graph and vector search.
 
@@ -1505,7 +1505,7 @@ async def naive_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
-):
+) -> str | AsyncIterator[str]:
     # Handle cache
     use_model_func = global_config["llm_model_func"]
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
