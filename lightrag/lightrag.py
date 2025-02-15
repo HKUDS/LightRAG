@@ -6,7 +6,7 @@ import configparser
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, AsyncIterator, Callable, Iterator, Optional, Union, cast
+from typing import Any, AsyncIterator, Callable, Iterator, cast
 
 from .base import (
     BaseGraphStorage,
@@ -314,7 +314,7 @@ class LightRAG:
     """Maximum number of concurrent embedding function calls."""
 
     # LLM Configuration
-    llm_model_func: Union[Callable[..., object], None] = None
+    llm_model_func: Callable[..., object] | None = None
     """Function for interacting with the large language model (LLM). Must be set before use."""
 
     llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
@@ -354,7 +354,7 @@ class LightRAG:
     chunking_func: Callable[
         [
             str,
-            Optional[str],
+            str | None,
             bool,
             int,
             int,

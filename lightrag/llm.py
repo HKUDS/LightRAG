@@ -1,4 +1,6 @@
-from typing import List, Dict, Callable, Any
+from __future__ import annotations
+
+from typing import Callable, Any
 from pydantic import BaseModel, Field
 
 
@@ -23,7 +25,7 @@ class Model(BaseModel):
         ...,
         description="A function that generates the response from the llm. The response must be a string",
     )
-    kwargs: Dict[str, Any] = Field(
+    kwargs: dict[str, Any] = Field(
         ...,
         description="The arguments to pass to the callable function. Eg. the api key, model name, etc",
     )
@@ -57,7 +59,7 @@ class MultiModel:
         ```
     """
 
-    def __init__(self, models: List[Model]):
+    def __init__(self, models: list[Model]):
         self._models = models
         self._current_model = 0
 

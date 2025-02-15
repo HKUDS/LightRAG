@@ -1,16 +1,19 @@
+
+from __future__ import annotations
+
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import Any
 
 
 class GPTKeywordExtractionFormat(BaseModel):
-    high_level_keywords: List[str]
-    low_level_keywords: List[str]
+    high_level_keywords: list[str]
+    low_level_keywords: list[str]
 
 
 class KnowledgeGraphNode(BaseModel):
     id: str
-    labels: List[str]
-    properties: Dict[str, Any]  # anything else goes here
+    labels: list[str]
+    properties: dict[str, Any]  # anything else goes here
 
 
 class KnowledgeGraphEdge(BaseModel):
@@ -18,9 +21,9 @@ class KnowledgeGraphEdge(BaseModel):
     type: str
     source: str  # id of source node
     target: str  # id of target node
-    properties: Dict[str, Any]  # anything else goes here
+    properties: dict[str, Any]  # anything else goes here
 
 
 class KnowledgeGraph(BaseModel):
-    nodes: List[KnowledgeGraphNode] = []
-    edges: List[KnowledgeGraphEdge] = []
+    nodes: list[KnowledgeGraphNode] = []
+    edges: list[KnowledgeGraphEdge] = []
