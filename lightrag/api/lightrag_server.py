@@ -847,10 +847,19 @@ def create_app(args):
         lifespan=lifespan,
     )
 
+    def get_cors_origins():
+        """Get allowed origins from environment variable
+        Returns a list of allowed origins, defaults to ["*"] if not set
+        """
+        origins_str = os.getenv("CORS_ORIGINS", "*")
+        if origins_str == "*":
+            return ["*"]
+        return [origin.strip() for origin in origins_str.split(",")]
+
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=get_cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -1377,10 +1386,7 @@ def create_app(args):
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "Content-Type": "application/x-ndjson",
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type",
-                    "X-Accel-Buffering": "no",  # Disable Nginx buffering
+                    "X-Accel-Buffering": "no",  # 确保在Nginx代理时正确处理流式响应
                 },
             )
         except Exception as e:
