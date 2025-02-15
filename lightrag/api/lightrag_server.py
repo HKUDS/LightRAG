@@ -159,8 +159,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.host}")
     ASCIIColors.white("    ├─ Port: ", end="")
     ASCIIColors.yellow(f"{args.port}")
-    ASCIIColors.white("    └─ SSL Enabled: ", end="")
+    ASCIIColors.white("    ├─ CORS Origins: ", end="")
+    ASCIIColors.yellow(f"{os.getenv('CORS_ORIGINS', '*')}")
+    ASCIIColors.white("    ├─ SSL Enabled: ", end="")
     ASCIIColors.yellow(f"{args.ssl}")
+    ASCIIColors.white("    └─ API Key: ", end="")
+    ASCIIColors.yellow("Set" if args.key else "Not Set")
     if args.ssl:
         ASCIIColors.white("    ├─ SSL Cert: ", end="")
         ASCIIColors.yellow(f"{args.ssl_certfile}")
@@ -229,10 +233,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{ollama_server_infos.LIGHTRAG_MODEL}")
     ASCIIColors.white("    ├─ Log Level: ", end="")
     ASCIIColors.yellow(f"{args.log_level}")
-    ASCIIColors.white("    ├─ Timeout: ", end="")
+    ASCIIColors.white("    └─ Timeout: ", end="")
     ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
-    ASCIIColors.white("    └─ API Key: ", end="")
-    ASCIIColors.yellow("Set" if args.key else "Not Set")
 
     # Server Status
     ASCIIColors.green("\n✨ Server starting up...\n")
