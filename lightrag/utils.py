@@ -330,40 +330,60 @@ def xml_to_json(xml_file):
 
 
 def process_combine_contexts(hl, ll):
-    header = None
-    list_hl = csv_string_to_list(hl.strip())
-    list_ll = csv_string_to_list(ll.strip())
+    """Merge two list-format data sets and handle duplicates.
 
-    if list_hl:
-        header = list_hl[0]
-        list_hl = list_hl[1:]
-    if list_ll:
-        header = list_ll[0]
-        list_ll = list_ll[1:]
-    if header is None:
-        return ""
+    Args:
+        hl: High-level list data, each element is a list with header as first element
+        ll: Low-level list data, each element is a list with header as first element
 
-    if list_hl:
-        list_hl = [",".join(item[1:]) for item in list_hl if item]
-    if list_ll:
-        list_ll = [",".join(item[1:]) for item in list_ll if item]
-
-    combined_sources = []
-    seen = set()
-
-    for item in list_hl + list_ll:
-        if item and item not in seen:
-            combined_sources.append(item)
-            seen.add(item)
-
-    combined_sources_result = [",\t".join(header)]
-
-    for i, item in enumerate(combined_sources, start=1):
-        combined_sources_result.append(f"{i},\t{item}")
-
-    combined_sources_result = "\n".join(combined_sources_result)
-
-    return combined_sources_result
+    Returns:
+        Merged list with header preserved, duplicates removed and re-numbered
+    """
+    if not hl and not ll:
+        return []
+        
+    # Get header from either high-level or low-level list
+    header = hl[0] if hl else ll[0]
+    
+    # Merge data rows (skip headers)
+    all_rows = []
+    if hl:
+        all_rows.extend(hl[1:])
+    if ll:
+        all_rows.extend(ll[1:])
+        
+    # If no data rows, return list with only header
+    if not all_rows:
+        return [header]
+        
+    # Check if contains similarity info (by checking if header has cosine_similarity)
+    has_similarity = "cosine_similarity" in header[-1].lower()
+    
+    # Create mapping from content to row
+    content_to_row = {}
+    for row in all_rows:
+        if has_similarity:
+            # Use content except id and similarity as key
+            content_key = ",".join(row[1:-1])
+            similarity = float(row[-1])
+            if content_key not in content_to_row:
+                content_to_row[content_key] = row
+            else:
+                # If exists, compare similarity and keep the one with higher score
+                existing_similarity = float(content_to_row[content_key][-1])
+                if similarity > existing_similarity:
+                    content_to_row[content_key] = row
+        else:
+            # No similarity info, use content except id as key
+            content_key = ",".join(row[1:])
+            if content_key not in content_to_row:
+                content_to_row[content_key] = row
+    
+    # Return header and deduplicated rows
+    result = [header]
+    result.extend(content_to_row.values())
+    
+    return result
 
 
 async def get_best_cached_response(

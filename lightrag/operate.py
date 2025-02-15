@@ -1028,21 +1028,78 @@ async def _build_query_context(
             [hl_text_units_context, ll_text_units_context],
         )
     # not necessary to use LLM to generate a response
-    if not entities_context.strip() and not relations_context.strip():
+    if not entities_context and not relations_context:
         return None
 
-    return f"""
+    # Sort text blocks by similarity score
+    header = text_units_context[0]
+    content_rows = text_units_context[1:]
+    sorted_rows = sorted(content_rows, key=lambda x: float(x[-1]), reverse=True)
+    
+    # Build base context (without text blocks)
+    entities_csv = list_of_list_to_csv(entities_context)
+    relations_csv = list_of_list_to_csv(relations_context)
+    base_context = f"""
 -----Entities-----
 ```csv
-{entities_context}
+{entities_csv}
 ```
 -----Relationships-----
 ```csv
-{relations_context}
+{relations_csv}
 ```
+"""
+    base_tokens = len(encode_string_by_tiktoken(base_context))
+    
+    # Calculate remaining available tokens
+    remaining_tokens = query_param.llm_model_max_token_size - base_tokens
+    
+    # Add text blocks one by one until token limit is reached
+    used_rows = []
+    current_tokens = 0
+    for row in sorted_rows:
+        # 构建临时文本块以计算token
+        temp_text_units = [header] + used_rows + [row]
+        temp_csv = list_of_list_to_csv(temp_text_units)
+        temp_section = f"""
 -----Sources-----
 ```csv
-{text_units_context}
+{temp_csv}
+```
+"""
+        tokens_needed = len(encode_string_by_tiktoken(temp_section))
+        
+        if current_tokens + tokens_needed <= remaining_tokens:
+            used_rows.append(row)
+            current_tokens = tokens_needed
+        else:
+            break
+    
+    # Check if any text blocks were successfully added
+    if not used_rows:
+        # Log error message
+        logger.error("Can not add any source chunk to LLM prompt, llm_model_max_token_size is too small")
+        # Return error message
+        return """
+-----Entities-----
+error: query result exceed max token of LLM
+
+-----Relationships-----
+error: query result exceed max token of LLM
+
+-----Sources-----
+error: query result exceed max token of LLM
+"""
+    
+    # Build final text blocks section
+    final_text_units = [header] + used_rows
+    text_units_csv = list_of_list_to_csv(final_text_units)
+    
+    # Return complete context
+    return f"""{base_context}
+-----Sources-----
+```csv
+{text_units_csv}
 ```
 """
 
@@ -1054,13 +1111,17 @@ async def _get_node_data(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
-    # get similar entities
+    # get similar entities with cosine similarity
     logger.info(
         f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {entities_vdb.cosine_better_than_threshold}"
     )
     results = await entities_vdb.query(query, top_k=query_param.top_k)
     if not len(results):
         return "", "", ""
+
+    # Extract cosine similarities from results
+    cosine_similarities = {r["id"]: r.get("score", 0.0) for r in results}
+    
     # get entity information
     node_datas, node_degrees = await asyncio.gather(
         asyncio.gather(
@@ -1092,7 +1153,7 @@ async def _get_node_data(
         f"Local query uses {len(node_datas)} entites, {len(use_relations)} relations, {len(use_text_units)} text units"
     )
 
-    # build prompt
+    # Build context lists for entities, relationships and text units
     entites_section_list = [["id", "entity", "type", "description", "rank"]]
     for i, n in enumerate(node_datas):
         entites_section_list.append(
@@ -1104,7 +1165,6 @@ async def _get_node_data(
                 n["rank"],
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
 
     relations_section_list = [
         [
@@ -1135,13 +1195,14 @@ async def _get_node_data(
                 created_at,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    text_units_section_list = [["id", "content", "cosine_similarity"]]   # "cosine_similarity" used in process_combine_contexts, do not change it
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
-    text_units_context = list_of_list_to_csv(text_units_section_list)
-    return entities_context, relations_context, text_units_context
+        # Get cosine similarity from the source chunk
+        similarity = cosine_similarities.get(t.get("id", ""), 0.0)
+        text_units_section_list.append([i, t["content"], similarity])
+
+    return entites_section_list, relations_section_list, text_units_section_list
 
 
 async def _find_most_related_text_unit_from_entities(
@@ -1281,6 +1342,9 @@ async def _get_edge_data(
     if not len(results):
         return "", "", ""
 
+    # Extract cosine similarities from results
+    cosine_similarities = {r["id"]: r.get("score", 0.0) for r in results}
+
     edge_datas, edge_degree = await asyncio.gather(
         asyncio.gather(
             *[knowledge_graph_inst.get_edge(r["src_id"], r["tgt_id"]) for r in results]
@@ -1357,7 +1421,6 @@ async def _get_edge_data(
                 created_at,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
 
     entites_section_list = [["id", "entity", "type", "description", "rank"]]
     for i, n in enumerate(use_entities):
@@ -1370,13 +1433,14 @@ async def _get_edge_data(
                 n["rank"],
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    text_units_section_list = [["id", "content", "cosine_similarity"]]  # "cosine_similarity" used in process_combine_contexts, do not change it
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
-    text_units_context = list_of_list_to_csv(text_units_section_list)
-    return entities_context, relations_context, text_units_context
+        # Get cosine similarity from the source chunk
+        similarity = cosine_similarities.get(t.get("id", ""), 0.0)
+        text_units_section_list.append([i, t["content"], similarity])
+
+    return entites_section_list, relations_section_list, text_units_section_list
 
 
 async def _find_most_related_entities_from_relationships(
@@ -1480,19 +1544,23 @@ async def _find_related_text_unit_from_relationships(
 
 
 def combine_contexts(entities, relationships, sources):
-    # Function to extract entities, relationships, and sources from context strings
+    """合并两个列表格式的上下文数据。
+    
+    Args:
+        entities: [hl_entities, ll_entities] 两个实体列表
+        relationships: [hl_relationships, ll_relationships] 两个关系列表
+        sources: [hl_sources, ll_sources] 两个源列表，包含相似度信息
+    
+    Returns:
+        合并后的三个列表，包含实体、关系和源
+    """
     hl_entities, ll_entities = entities[0], entities[1]
     hl_relationships, ll_relationships = relationships[0], relationships[1]
     hl_sources, ll_sources = sources[0], sources[1]
-    # Combine and deduplicate the entities
+
+    # 使用 process_combine_contexts 处理每种类型的数据
     combined_entities = process_combine_contexts(hl_entities, ll_entities)
-
-    # Combine and deduplicate the relationships
-    combined_relationships = process_combine_contexts(
-        hl_relationships, ll_relationships
-    )
-
-    # Combine and deduplicate the sources
+    combined_relationships = process_combine_contexts(hl_relationships, ll_relationships)
     combined_sources = process_combine_contexts(hl_sources, ll_sources)
 
     return combined_entities, combined_relationships, combined_sources
