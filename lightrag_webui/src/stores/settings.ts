@@ -4,6 +4,7 @@ import { createSelectors } from '@/lib/utils'
 import { defaultQueryLabel } from '@/lib/constants'
 
 type Theme = 'dark' | 'light' | 'system'
+type Tab = 'documents' | 'knowledge-graph' | 'retrieval'
 
 interface SettingsState {
   theme: Theme
@@ -27,6 +28,12 @@ interface SettingsState {
 
   apiKey: string | null
   setApiKey: (key: string | null) => void
+
+  currentTab: Tab
+  setCurrentTab: (tab: Tab) => void
+
+  retrievalHistory: any[]
+  setRetrievalHistory: (history: any[]) => void
 }
 
 const useSettingsStoreBase = create<SettingsState>()(
@@ -49,6 +56,10 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       apiKey: null,
 
+      currentTab: 'documents',
+
+      retrievalHistory: [],
+
       setTheme: (theme: Theme) => set({ theme }),
 
       setQueryLabel: (queryLabel: string) =>
@@ -58,12 +69,19 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setEnableHealthCheck: (enable: boolean) => set({ enableHealthCheck: enable }),
 
-      setApiKey: (apiKey: string | null) => set({ apiKey })
+      setApiKey: (apiKey: string | null) => set({ apiKey }),
+
+      setCurrentTab: (tab: Tab) => set({ currentTab: tab }),
+
+      setRetrievalHistory: (history: any[]) => set({ retrievalHistory: history })
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 4,
+      version: 5,
+      partialize(state) {
+        return { ...state, retrievalHistory: undefined }
+      },
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -77,6 +95,9 @@ const useSettingsStoreBase = create<SettingsState>()(
           state.showNodeLabel = true
           state.enableHealthCheck = true
           state.apiKey = null
+        }
+        if (version < 5) {
+          state.currentTab = 'documents'
         }
       }
     }

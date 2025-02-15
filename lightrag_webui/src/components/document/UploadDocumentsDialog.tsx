@@ -66,8 +66,8 @@ export default function UploadDocumentsDialog() {
       }}
     >
       <DialogTrigger asChild>
-        <Button variant="outline" tooltip="Upload documents" side="bottom" size="icon">
-          <UploadIcon />
+        <Button variant="default" side="bottom" tooltip='Upload documents' size="sm">
+          <UploadIcon /> Upload
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-xl" onCloseAutoFocus={(e) => e.preventDefault()}>

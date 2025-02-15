@@ -151,32 +151,64 @@ export const queryText = async (request: QueryRequest): Promise<QueryResponse> =
   return response.data
 }
 
-export const queryTextStream = async (request: QueryRequest, onChunk: (chunk: string) => void) => {
-  const response = await axiosInstance.post('/query/stream', request, {
-    responseType: 'stream'
-  })
+export const queryTextStream = async (
+  request: QueryRequest,
+  onChunk: (chunk: string) => void,
+  onError?: (error: string) => void
+) => {
+  try {
+    let buffer = ''
+    await axiosInstance.post('/query/stream', request, {
+      responseType: 'text',
+      headers: {
+        Accept: 'application/x-ndjson'
+      },
+      transformResponse: [
+        (data: string) => {
+          // Accumulate the data and process complete lines
+          buffer += data
+          const lines = buffer.split('\n')
+          // Keep the last potentially incomplete line in the buffer
+          buffer = lines.pop() || ''
 
-  const reader = response.data.getReader()
-  const decoder = new TextDecoder()
-
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    const chunk = decoder.decode(value)
-    const lines = chunk.split('\n')
-    for (const line of lines) {
-      if (line) {
-        try {
-          const data = JSON.parse(line)
-          if (data.response) {
-            onChunk(data.response)
+          for (const line of lines) {
+            if (line.trim()) {
+              try {
+                const parsed = JSON.parse(line)
+                if (parsed.response) {
+                  onChunk(parsed.response)
+                } else if (parsed.error && onError) {
+                  onError(parsed.error)
+                }
+              } catch (e) {
+                console.error('Error parsing stream chunk:', e)
+                if (onError) onError('Error parsing server response')
+              }
+            }
           }
-        } catch (e) {
-          console.error('Error parsing stream chunk:', e)
+          return data
         }
+      ]
+    })
+
+    // Process any remaining data in the buffer
+    if (buffer.trim()) {
+      try {
+        const parsed = JSON.parse(buffer)
+        if (parsed.response) {
+          onChunk(parsed.response)
+        } else if (parsed.error && onError) {
+          onError(parsed.error)
+        }
+      } catch (e) {
+        console.error('Error parsing final chunk:', e)
+        if (onError) onError('Error parsing server response')
       }
     }
+  } catch (error) {
+    const message = errorMessage(error)
+    console.error('Stream request failed:', message)
+    if (onError) onError(message)
   }
 }
 
@@ -199,6 +231,7 @@ export const uploadDocument = async (
     headers: {
       'Content-Type': 'multipart/form-data'
     },
+    // prettier-ignore
     onUploadProgress:
       onUploadProgress !== undefined
         ? (progressEvent) => {
