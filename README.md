@@ -237,7 +237,7 @@ rag = LightRAG(
 
 * If you want to use Hugging Face models, you only need to set LightRAG as follows:
 ```python
-from lightrag.llm import hf_model_complete, hf_embedding
+from lightrag.llm import hf_model_complete, hf_embed
 from transformers import AutoModel, AutoTokenizer
 from lightrag.utils import EmbeddingFunc
 
@@ -250,7 +250,7 @@ rag = LightRAG(
     embedding_func=EmbeddingFunc(
         embedding_dim=384,
         max_token_size=5000,
-        func=lambda texts: hf_embedding(
+        func=lambda texts: hf_embed(
             texts,
             tokenizer=AutoTokenizer.from_pretrained("sentence-transformers/all-MiniLM-L6-v2"),
             embed_model=AutoModel.from_pretrained("sentence-transformers/all-MiniLM-L6-v2")
