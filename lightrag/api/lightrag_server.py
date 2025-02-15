@@ -1206,13 +1206,18 @@ def create_app(args):
                     logging.error(f"Error deleting file {file_path}: {str(e)}")
 
     async def batch_index_files(file_paths: List[Path]):
-        """Index multiple files
+        """Index multiple files concurrently
 
         Args:
             file_paths: Paths to the files to index
         """
-        for file_path in file_paths:
-            await index_file(file_path)
+        if not file_paths:
+            return
+        if len(file_paths) == 1:
+            await index_file(file_paths[0])
+        else:
+            tasks = [index_file(path) for path in file_paths]
+            await asyncio.gather(*tasks)
 
     async def save_temp_file(file: UploadFile = File(...)) -> Path:
         """Save the uploaded file to a temporary location
