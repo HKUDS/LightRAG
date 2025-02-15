@@ -22,10 +22,11 @@ const MessageAlert = () => {
 
   return (
     <Alert
-      variant={health ? 'default' : 'destructive'}
+      // variant={health ? 'default' : 'destructive'}
       className={cn(
-        'bg-background/90 absolute top-2 left-1/2 flex w-auto -translate-x-1/2 transform items-center gap-4 shadow-md backdrop-blur-lg transition-all duration-500 ease-in-out',
-        isMounted ? 'translate-y-0 opacity-100' : '-translate-y-20 opacity-0'
+        'bg-background/90 absolute top-12 left-1/2 flex w-auto max-w-lg -translate-x-1/2 transform items-center gap-4 shadow-md backdrop-blur-lg transition-all duration-500 ease-in-out',
+        isMounted ? 'translate-y-0 opacity-100' : '-translate-y-20 opacity-0',
+        !health && 'bg-red-700 text-white'
       )}
     >
       {!health && (
@@ -42,7 +43,7 @@ const MessageAlert = () => {
         <Button
           size="sm"
           variant={controlButtonVariant}
-          className="text-primary max-h-8 border !p-2 text-xs"
+          className="border-primary max-h-8 border !p-2 text-xs"
           onClick={() => useBackendState.getState().clear()}
         >
           Close

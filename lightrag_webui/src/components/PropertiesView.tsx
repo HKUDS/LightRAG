@@ -200,7 +200,7 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
       <label className="text-md pl-1 font-bold tracking-wide text-teal-600">Relationship</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={'Id'} value={edge.id} />
-        <PropertyRow name={'Type'} value={edge.type} />
+        {edge.type && <PropertyRow name={'Type'} value={edge.type} />}
         <PropertyRow
           name={'Source'}
           value={edge.sourceNode ? edge.sourceNode.labels.join(', ') : edge.source}
