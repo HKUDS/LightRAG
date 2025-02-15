@@ -510,4 +510,3 @@ This intelligent caching mechanism:
 - Only new documents in the input directory will be processed
 - This optimization significantly reduces startup time for subsequent runs
 - The working directory (`--working-dir`) stores the vectorized documents database
-
