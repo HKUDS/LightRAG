@@ -10,7 +10,7 @@ import EdgeCurveProgram, { EdgeCurvedArrowProgram } from '@sigma/edge-curve'
 import FocusOnNode from '@/components/FocusOnNode'
 import LayoutsControl from '@/components/LayoutsControl'
 import GraphControl from '@/components/GraphControl'
-import ThemeToggle from '@/components/ThemeToggle'
+// import ThemeToggle from '@/components/ThemeToggle'
 import ZoomControl from '@/components/ZoomControl'
 import FullScreenControl from '@/components/FullScreenControl'
 import Settings from '@/components/Settings'
@@ -166,7 +166,7 @@ const GraphViewer = () => {
         <ZoomControl />
         <LayoutsControl />
         <FullScreenControl />
-        <ThemeToggle />
+        {/* <ThemeToggle /> */}
       </div>
 
       {showPropertyPanel && (
