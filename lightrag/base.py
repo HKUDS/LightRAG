@@ -163,17 +163,13 @@ class BaseGraphStorage(StorageNameSpace):
     """Get an edge by its source and target node ids."""
 
     async def get_edge(
-        self, 
-        source_node_id: str, 
-        target_node_id: str
-    ) -> dict[str, str] | None :
+        self, source_node_id: str, target_node_id: str
+    ) -> dict[str, str] | None:
         raise NotImplementedError
 
     """Get all edges connected to a node."""
 
-    async def get_node_edges(
-        self, source_node_id: str
-    ) -> list[tuple[str, str]] | None:
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         raise NotImplementedError
 
     """Upsert a node into the graph."""
