@@ -15,7 +15,7 @@ import { clearDocuments } from '@/api/lightrag'
 import { EraserIcon } from 'lucide-react'
 
 export default function ClearDocumentsDialog() {
-  const [open, setOpen] = useState(false) // 添加状态控制
+  const [open, setOpen] = useState(false)
 
   const handleClear = useCallback(async () => {
     try {
@@ -34,8 +34,8 @@ export default function ClearDocumentsDialog() {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" tooltip="Clear documents" side="bottom" size="icon">
-          <EraserIcon />
+        <Button variant="outline" side="bottom" tooltip='Clear documents' size="sm">
+          <EraserIcon/> Clear
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-xl" onCloseAutoFocus={(e) => e.preventDefault()}>

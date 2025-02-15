@@ -16,23 +16,23 @@ import ClearDocumentsDialog from '@/components/document/ClearDocumentsDialog'
 
 import {
   getDocuments,
-  getDocumentsScanProgress,
-  scanNewDocuments,
-  LightragDocumentsScanProgress
+  // getDocumentsScanProgress,
+  scanNewDocuments
+  // LightragDocumentsScanProgress
 } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
-import { useBackendState } from '@/stores/state'
+// import { useBackendState } from '@/stores/state'
 
 import { RefreshCwIcon, TrashIcon } from 'lucide-react'
 
 // type DocumentStatus = 'indexed' | 'pending' | 'indexing' | 'error'
 
 export default function DocumentManager() {
-  const health = useBackendState.use.health()
+  // const health = useBackendState.use.health()
   const [files, setFiles] = useState<string[]>([])
   const [indexedFiles, setIndexedFiles] = useState<string[]>([])
-  const [scanProgress, setScanProgress] = useState<LightragDocumentsScanProgress | null>(null)
+  // const [scanProgress, setScanProgress] = useState<LightragDocumentsScanProgress | null>(null)
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -45,7 +45,7 @@ export default function DocumentManager() {
 
   useEffect(() => {
     fetchDocuments()
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const scanDocuments = useCallback(async () => {
     try {
@@ -54,26 +54,26 @@ export default function DocumentManager() {
     } catch (err) {
       toast.error('Failed to load documents\n' + errorMessage(err))
     }
-  }, [setFiles])
+  }, [])
 
-  useEffect(() => {
-    const interval = setInterval(async () => {
-      try {
-        if (!health) return
-        const progress = await getDocumentsScanProgress()
-        setScanProgress((pre) => {
-          if (pre?.is_scanning === progress.is_scanning && progress.is_scanning === false) {
-            return pre
-          }
-          return progress
-        })
-        console.log(progress)
-      } catch (err) {
-        toast.error('Failed to get scan progress\n' + errorMessage(err))
-      }
-    }, 2000)
-    return () => clearInterval(interval)
-  }, [health])
+  // useEffect(() => {
+  //   const interval = setInterval(async () => {
+  //     try {
+  //       if (!health) return
+  //       const progress = await getDocumentsScanProgress()
+  //       setScanProgress((pre) => {
+  //         if (pre?.is_scanning === progress.is_scanning && progress.is_scanning === false) {
+  //           return pre
+  //         }
+  //         return progress
+  //       })
+  //       console.log(progress)
+  //     } catch (err) {
+  //       toast.error('Failed to get scan progress\n' + errorMessage(err))
+  //     }
+  //   }, 2000)
+  //   return () => clearInterval(interval)
+  // }, [health])
 
   const handleDelete = async (fileName: string) => {
     console.log(`deleting ${fileName}`)
@@ -88,19 +88,19 @@ export default function DocumentManager() {
         <div className="flex gap-2">
           <Button
             variant="outline"
-            size="icon"
-            tooltip="Scan Documents"
             onClick={scanDocuments}
             side="bottom"
+            tooltip="Scan documents"
+            size="sm"
           >
-            <RefreshCwIcon />
+            <RefreshCwIcon /> Scan
           </Button>
           <div className="flex-1" />
           <ClearDocumentsDialog />
           <UploadDocumentsDialog />
         </div>
 
-        {scanProgress?.is_scanning && (
+        {/* {scanProgress?.is_scanning && (
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
               <span>Indexing {scanProgress.current_file}</span>
@@ -108,7 +108,7 @@ export default function DocumentManager() {
             </div>
             <Progress value={scanProgress.progress} />
           </div>
-        )}
+        )} */}
 
         <Card>
           <CardHeader>

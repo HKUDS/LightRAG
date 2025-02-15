@@ -1,3 +1,4 @@
+import { useState, useCallback } from 'react'
 import ThemeProvider from '@/components/ThemeProvider'
 import MessageAlert from '@/components/MessageAlert'
 import StatusIndicator from '@/components/StatusIndicator'
@@ -10,14 +11,16 @@ import SiteHeader from '@/features/SiteHeader'
 
 import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
+import RetrievalTesting from '@/features/RetrievalTesting'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
 function App() {
   const message = useBackendState.use.message()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
+  const [currentTab] = useState(() => useSettingsStore.getState().currentTab)
 
-  // health check
+  // Health check
   useEffect(() => {
     if (!enableHealthCheck) return
 
@@ -30,25 +33,36 @@ function App() {
     return () => clearInterval(interval)
   }, [enableHealthCheck])
 
+  const handleTabChange = useCallback(
+    (tab: string) => useSettingsStore.getState().setCurrentTab(tab as any),
+    []
+  )
+
   return (
     <ThemeProvider>
-      <div className="flex h-screen w-screen">
-        <Tabs defaultValue="knowledge-graph" className="flex size-full flex-col">
+      <main className="flex h-screen w-screen overflow-x-hidden">
+        <Tabs
+          defaultValue={currentTab}
+          className="!m-0 flex grow flex-col !p-0"
+          onValueChange={handleTabChange}
+        >
           <SiteHeader />
-          <TabsContent value="documents" className="flex-1">
-            <DocumentManager />
-          </TabsContent>
-          <TabsContent value="knowledge-graph" className="flex-1">
-            <GraphViewer />
-          </TabsContent>
-          <TabsContent value="settings" className="size-full">
-            <h1> Settings </h1>
-          </TabsContent>
+          <div className="relative grow">
+            <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0">
+              <DocumentManager />
+            </TabsContent>
+            <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0">
+              <GraphViewer />
+            </TabsContent>
+            <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0">
+              <RetrievalTesting />
+            </TabsContent>
+          </div>
         </Tabs>
-      </div>
-      {enableHealthCheck && <StatusIndicator />}
-      {message !== null && <MessageAlert />}
-      <Toaster />
+        {enableHealthCheck && <StatusIndicator />}
+        {message !== null && <MessageAlert />}
+        <Toaster />
+      </main>
     </ThemeProvider>
   )
 }
