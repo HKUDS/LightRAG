@@ -488,7 +488,7 @@ def cosine_similarity(v1, v2):
     return dot_product / (norm1 * norm2)
 
 
-def quantize_embedding(embedding: np.ndarray | list[float], bits: int=8) -> tuple:
+def quantize_embedding(embedding: np.ndarray | list[float], bits: int = 8) -> tuple:
     """Quantize embedding to specified bits"""
     # Convert list to numpy array if needed
     if isinstance(embedding, list):
