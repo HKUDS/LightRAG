@@ -87,10 +87,6 @@ class StorageNameSpace:
         """Commit the storage operations after indexing"""
         pass
 
-    async def query_done_callback(self) -> None:
-        """Commit the storage operations after querying"""
-        pass
-
 
 @dataclass
 class BaseVectorStorage(StorageNameSpace):
