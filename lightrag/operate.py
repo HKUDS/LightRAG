@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import re
 from tqdm.asyncio import tqdm as tqdm_async
-from typing import Any, AsyncIterator, Union
+from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
 from .utils import (
     logger,
@@ -36,7 +38,7 @@ import time
 
 def chunking_by_token_size(
     content: str,
-    split_by_character: Union[str, None] = None,
+    split_by_character: str | None = None,
     split_by_character_only: bool = False,
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
@@ -297,7 +299,7 @@ async def extract_entities(
     relationships_vdb: BaseVectorStorage,
     global_config: dict[str, str],
     llm_response_cache: BaseKVStorage | None = None,
-) -> Union[BaseGraphStorage, None]:
+) -> BaseGraphStorage | None:
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     enable_llm_cache_for_entity_extract: bool = global_config[

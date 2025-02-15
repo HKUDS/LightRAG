@@ -1,13 +1,13 @@
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
     Any,
     Literal,
-    Optional,
     TypedDict,
     TypeVar,
-    Union,
 )
 
 import numpy as np
@@ -115,7 +115,7 @@ class BaseVectorStorage(StorageNameSpace):
 class BaseKVStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc | None = None
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         raise NotImplementedError
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -157,21 +157,23 @@ class BaseGraphStorage(StorageNameSpace):
 
     """Get a node by its id."""
 
-    async def get_node(self, node_id: str) -> Union[dict[str, str], None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         raise NotImplementedError
 
     """Get an edge by its source and target node ids."""
 
     async def get_edge(
-        self, source_node_id: str, target_node_id: str
-    ) -> Union[dict[str, str], None]:
+        self, 
+        source_node_id: str, 
+        target_node_id: str
+    ) -> dict[str, str] | None :
         raise NotImplementedError
 
     """Get all edges connected to a node."""
 
     async def get_node_edges(
         self, source_node_id: str
-    ) -> Union[list[tuple[str, str]], None]:
+    ) -> list[tuple[str, str]] | None:
         raise NotImplementedError
 
     """Upsert a node into the graph."""
@@ -236,9 +238,9 @@ class DocProcessingStatus:
     """ISO format timestamp when document was created"""
     updated_at: str
     """ISO format timestamp when document was last updated"""
-    chunks_count: Optional[int] = None
+    chunks_count: int | None = None
     """Number of chunks after splitting, used for processing"""
-    error: Optional[str] = None
+    error: str | None = None
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)
     """Additional metadata"""

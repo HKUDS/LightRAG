@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 GRAPH_FIELD_SEP = "<SEP>"
 
 PROMPTS = {}
