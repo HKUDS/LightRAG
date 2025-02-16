@@ -4,8 +4,7 @@ import {
   AlertDialogContent,
   AlertDialogDescription,
   AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger
+  AlertDialogTitle
 } from '@/components/ui/AlertDialog'
 import Button from '@/components/ui/Button'
 import Input from '@/components/ui/Input'
@@ -51,7 +50,6 @@ const ApiKeyAlert = () => {
 
   return (
     <AlertDialog open={opened} onOpenChange={setOpened}>
-      <AlertDialogTrigger>Open</AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogTitle>API Key is required</AlertDialogTitle>

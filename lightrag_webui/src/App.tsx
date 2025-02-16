@@ -46,8 +46,10 @@ function App() {
     if (message) {
       if (message.includes(InvalidApiKeyError) || message.includes(RequireApiKeError)) {
         setApiKeyInvalid(true)
+        return
       }
     }
+    setApiKeyInvalid(false)
   }, [message, setApiKeyInvalid])
 
   return (
