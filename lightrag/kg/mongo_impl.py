@@ -844,7 +844,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         except PyMongoError as _:
             logger.debug("vector index already exist")
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.debug(f"Inserting {len(data)} vectors to {self.namespace}")
         if not data:
             logger.warning("You are inserting an empty data set to vector DB")
@@ -887,7 +887,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
         return list_data
 
-    async def query(self, query, top_k=5):
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """Queries the vector database using Atlas Vector Search."""
         # Generate the embedding
         embedding = await self.embedding_func([query])
@@ -921,6 +921,16 @@ class MongoVectorDBStorage(BaseVectorStorage):
             for doc in results
         ]
 
+    async def index_done_callback(self) -> None:
+        pass
+    
+    async def delete_entity(self, entity_name: str) -> None:
+        """Delete a single entity by its name"""
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        """Delete relations for a given entity by scanning metadata"""
+        raise NotImplementedError
 
 def create_collection_if_not_exists(uri: str, database_name: str, collection_name: str):
     """Check if the collection exists. if not, create it."""

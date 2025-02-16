@@ -1,5 +1,6 @@
 import asyncio
 import os
+from typing import Any
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import numpy as np
@@ -85,7 +86,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             ),
         )
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
             return []
@@ -130,7 +131,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         )
         return results
 
-    async def query(self, query, top_k=5):
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         embedding = await self.embedding_func([query])
         results = self._client.search(
             collection_name=self.namespace,
@@ -143,3 +144,14 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         logger.debug(f"query result: {results}")
 
         return [{**dp.payload, "id": dp.id, "distance": dp.score} for dp in results]
+
+    async def index_done_callback(self) -> None:
+        pass
+    
+    async def delete_entity(self, entity_name: str) -> None:
+        """Delete a single entity by its name"""
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        """Delete relations for a given entity by scanning metadata"""
+        raise NotImplementedError
