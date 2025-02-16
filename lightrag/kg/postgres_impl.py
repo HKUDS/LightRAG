@@ -4,7 +4,7 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Set, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 import numpy as np
 import pipmaster as pm
@@ -185,7 +185,7 @@ class PGKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get doc_full data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
@@ -240,7 +240,7 @@ class PGKVStorage(BaseKVStorage):
         params = {"workspace": self.db.workspace, "status": status}
         return await self.db.query(SQL, params, multirows=True)
 
-    async def filter_keys(self, keys: List[str]) -> Set[str]:
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         """Filter out duplicated content"""
         sql = SQL_TEMPLATES["filter_keys"].format(
             table_name=namespace_to_table_name(self.namespace),
@@ -261,7 +261,7 @@ class PGKVStorage(BaseKVStorage):
             print(params)
 
     ################ INSERT METHODS ################
-    async def upsert(self, data: dict[str, Any]) -> None:
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             pass
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
@@ -294,6 +294,8 @@ class PGKVStorage(BaseKVStorage):
         ):
             logger.info("full doc and chunk data had been saved into postgresql db!")
 
+    async def drop(self) -> None:
+        raise NotImplementedError
 
 @dataclass
 class PGVectorStorage(BaseVectorStorage):

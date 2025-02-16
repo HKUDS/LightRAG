@@ -110,7 +110,7 @@ class TiDBKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Fetch doc_full data by id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"id": id}
@@ -125,7 +125,7 @@ class TiDBKVStorage(BaseKVStorage):
         )
         return await self.db.query(SQL, multirows=True)
 
-    async def filter_keys(self, keys: list[str]) -> set[str]:
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         """过滤掉重复内容"""
         SQL = SQL_TEMPLATES["filter_keys"].format(
             table_name=namespace_to_table_name(self.namespace),
@@ -147,7 +147,7 @@ class TiDBKVStorage(BaseKVStorage):
         return data
 
     ################ INSERT full_doc AND chunks ################
-    async def upsert(self, data: dict[str, Any]) -> None:
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         left_data = {k: v for k, v in data.items() if k not in self._data}
         self._data.update(left_data)
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
@@ -207,6 +207,8 @@ class TiDBKVStorage(BaseKVStorage):
         ):
             logger.info("full doc and chunk data had been saved into TiDB db!")
 
+    async def drop(self) -> None:
+        raise NotImplementedError
 
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
