@@ -177,7 +177,8 @@ TiDBVectorDBStorage         TiDB
 PGVectorStorage             Postgres
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
-OracleVectorDBStorag        Oracle
+OracleVectorDBStorage       Oracle
+MongoVectorDBStorage        MongoDB
 ```
 
 * DOC_STATUS_STORAGE：supported implement-name
