@@ -22,7 +22,7 @@ import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
     pm.install("neo4j")
-    
+
 try:
     from neo4j import (
         AsyncGraphDatabase,
