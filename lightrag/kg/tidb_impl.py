@@ -127,7 +127,6 @@ class TiDBKVStorage(BaseKVStorage):
         return await self.db.query(SQL, multirows=True)
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
-        """过滤掉重复内容"""
         SQL = SQL_TEMPLATES["filter_keys"].format(
             table_name=namespace_to_table_name(self.namespace),
             id_field=namespace_to_id(self.namespace),
@@ -210,6 +209,7 @@ class TiDBKVStorage(BaseKVStorage):
 
     async def drop(self) -> None:
         raise NotImplementedError
+
 
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
@@ -335,7 +335,6 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         params = {"workspace": self.db.workspace, "status": status}
         return await self.db.query(SQL, params, multirows=True)
 
-
     async def delete_entity(self, entity_name: str) -> None:
         """Delete a single entity by its name"""
         raise NotImplementedError
@@ -343,7 +342,8 @@ class TiDBVectorDBStorage(BaseVectorStorage):
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete relations for a given entity by scanning metadata"""
         raise NotImplementedError
-    
+
+
 @dataclass
 class TiDBGraphStorage(BaseGraphStorage):
     # db instance must be injected before use
@@ -420,7 +420,9 @@ class TiDBGraphStorage(BaseGraphStorage):
         }
         await self.db.execute(merge_sql, data)
 
-    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray[Any, Any], list[str]]:
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         if algorithm not in self._node_embed_algorithms:
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
@@ -481,12 +483,15 @@ class TiDBGraphStorage(BaseGraphStorage):
 
     async def delete_node(self, node_id: str) -> None:
         raise NotImplementedError
-    
+
     async def get_all_labels(self) -> list[str]:
-        raise NotImplementedError    
-    
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
         raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        raise NotImplementedError
+
 
 N_T = {
     NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",

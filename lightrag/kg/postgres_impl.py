@@ -299,6 +299,7 @@ class PGKVStorage(BaseKVStorage):
     async def drop(self) -> None:
         raise NotImplementedError
 
+
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
     # db instance must be injected before use
@@ -427,6 +428,7 @@ class PGVectorStorage(BaseVectorStorage):
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete relations for a given entity by scanning metadata"""
         raise NotImplementedError
+
 
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
@@ -1040,17 +1042,20 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def delete_node(self, node_id: str) -> None:
         raise NotImplementedError
-    
+
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError    
-    
-    async def get_all_labels(self) -> list[str]:    
         raise NotImplementedError
-    
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+
+    async def get_all_labels(self) -> list[str]:
         raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        raise NotImplementedError
+
 
 NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",

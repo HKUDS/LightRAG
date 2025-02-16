@@ -389,14 +389,16 @@ class GremlinStorage(BaseGraphStorage):
 
     async def delete_node(self, node_id: str) -> None:
         raise NotImplementedError
-    
+
     async def embed_nodes(
         self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:    
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         raise NotImplementedError
-    
-    async def get_all_labels(self) -> list[str]:    
+
+    async def get_all_labels(self) -> list[str]:
         raise NotImplementedError
-    
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
         raise NotImplementedError

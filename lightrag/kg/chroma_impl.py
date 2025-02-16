@@ -183,7 +183,6 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error during ChromaDB query: {str(e)}")
             raise
 
-
     async def index_done_callback(self) -> None:
         # ChromaDB handles persistence automatically
         pass

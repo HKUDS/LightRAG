@@ -186,7 +186,9 @@ class NetworkXStorage(BaseGraphStorage):
         else:
             logger.warning(f"Node {node_id} not found in the graph for deletion.")
 
-    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray[Any, Any], list[str]]:
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         if algorithm not in self._node_embed_algorithms:
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
@@ -225,6 +227,8 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         raise NotImplementedError
-    
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
         raise NotImplementedError
