@@ -298,6 +298,7 @@ class PGKVStorage(BaseKVStorage):
                     await self.db.execute(upsert_sql, _data)
 
     async def index_done_callback(self) -> None:
+        # PG handles persistence automatically
         pass
 
     async def drop(self) -> None:
@@ -404,9 +405,6 @@ class PGVectorStorage(BaseVectorStorage):
 
             await self.db.execute(upsert_sql, data)
 
-    async def index_done_callback(self) -> None:
-        pass
-
     #################### query method ###############
     async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         embeddings = await self.embedding_func([query])
@@ -422,12 +420,14 @@ class PGVectorStorage(BaseVectorStorage):
         results = await self.db.query(sql, params=params, multirows=True)
         return results
 
+    async def index_done_callback(self) -> None:
+        # PG handles persistence automatically
+        pass
+    
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete a single entity by its name"""
         raise NotImplementedError
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete relations for a given entity by scanning metadata"""
         raise NotImplementedError
 
 
@@ -500,6 +500,7 @@ class PGDocStatusStorage(DocStatusStorage):
         }
 
     async def index_done_callback(self) -> None:
+        # PG handles persistence automatically
         pass
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -569,6 +570,7 @@ class PGGraphStorage(BaseGraphStorage):
         }
 
     async def index_done_callback(self) -> None:
+        # PG handles persistence automatically
         pass
 
     @staticmethod

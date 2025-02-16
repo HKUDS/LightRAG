@@ -64,4 +64,5 @@ class RedisKVStorage(BaseKVStorage):
             await self._redis.delete(*keys)
 
     async def index_done_callback(self) -> None:
+        # Redis handles persistence automatically
         pass

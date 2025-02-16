@@ -223,10 +223,6 @@ class FaissVectorDBStorage(BaseVectorStorage):
         )
 
     async def delete_entity(self, entity_name: str) -> None:
-        """
-        Delete a single entity by computing its hashed ID
-        the same way your code does it with `compute_mdhash_id`.
-        """
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
         await self.delete([entity_id])
@@ -247,11 +243,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             logger.debug(f"Deleted {len(relations)} relations for {entity_name}")
 
     async def index_done_callback(self) -> None:
-        """
-        Called after indexing is done (save Faiss index + metadata).
-        """
         self._save_faiss_index()
-        logger.info("Faiss index saved successfully.")
 
     # --------------------------------------------------------------------------------
     # Internal helper methods

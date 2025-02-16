@@ -18,7 +18,11 @@ from tenacity import (
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+import pipmaster as pm
 
+if not pm.is_installed("neo4j"):
+    pm.install("neo4j")
+    
 try:
     from neo4j import (
         AsyncGraphDatabase,
@@ -145,6 +149,7 @@ class Neo4JStorage(BaseGraphStorage):
             await self._driver.close()
 
     async def index_done_callback(self) -> None:
+        # Noe4J handles persistence automatically
         pass
 
     async def _label_exists(self, label: str) -> bool:

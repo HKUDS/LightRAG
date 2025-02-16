@@ -198,9 +198,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
         pass
 
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete a single entity by its name"""
         raise NotImplementedError
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete relations for a given entity by scanning metadata"""
         raise NotImplementedError

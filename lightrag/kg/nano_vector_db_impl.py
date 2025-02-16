@@ -167,6 +167,5 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error deleting relations for {entity_name}: {e}")
 
     async def index_done_callback(self) -> None:
-        # Protect file write operation
         async with self._save_lock:
             self._client.save()

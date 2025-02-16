@@ -634,4 +634,5 @@ class AGEStorage(BaseGraphStorage):
         raise NotImplementedError
 
     async def index_done_callback(self) -> None:
+        # AGES handles persistence automatically
         pass

@@ -114,6 +114,7 @@ class MongoKVStorage(BaseKVStorage):
             return None
 
     async def index_done_callback(self) -> None:
+        # Mongo handles persistence automatically
         pass
 
     async def drop(self) -> None:
@@ -202,7 +203,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         }
 
     async def index_done_callback(self) -> None:
-        # Implement the method here
+        # Mongo handles persistence automatically
         pass
 
 
@@ -771,6 +772,7 @@ class MongoGraphStorage(BaseGraphStorage):
         return result
 
     async def index_done_callback(self) -> None:
+        # Mongo handles persistence automatically
         pass
 
 
@@ -919,14 +921,13 @@ class MongoVectorDBStorage(BaseVectorStorage):
         ]
 
     async def index_done_callback(self) -> None:
+        # Mongo handles persistence automatically
         pass
 
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete a single entity by its name"""
         raise NotImplementedError
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete relations for a given entity by scanning metadata"""
         raise NotImplementedError
 
 
