@@ -34,6 +34,11 @@ if sys.platform.startswith("win"):
 
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+import pipmaster as pm
+
+if not pm.is_installed("asyncpg"):
+    pm.install("asyncpg")
+
 try:
     import asyncpg
     from tqdm.asyncio import tqdm as tqdm_async

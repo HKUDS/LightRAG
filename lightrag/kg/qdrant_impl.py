@@ -14,6 +14,11 @@ import configparser
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
+import pipmaster as pm
+
+if not pm.is_installed("qdrant_client"):
+    pm.install("qdrant_client")
+
 try:
     from qdrant_client import QdrantClient, models
 

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional, Union, final
 import numpy as np
-
+import pipmaster as pm
 from lightrag.types import KnowledgeGraph
 
 from tenacity import (
@@ -26,6 +26,13 @@ if sys.platform.startswith("win"):
 
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
+
+if not pm.is_installed("psycopg-pool"):
+    pm.install("psycopg-pool")
+    pm.install("psycopg[binary,pool]")
+
+if not pm.is_installed("asyncpg"):
+    pm.install("asyncpg")
 
 try:
     import psycopg

@@ -6,16 +6,18 @@ from dataclasses import dataclass
 import numpy as np
 from lightrag.utils import logger
 from ..base import BaseVectorStorage
-
+import pipmaster as pm
 import configparser
+
+if not pm.is_installed("pymilvus"):
+    pm.install("pymilvus")
 
 try:
     from pymilvus import MilvusClient
-except ImportError:
+except ImportError as e:
     raise ImportError(
-        "pymilvus library is not installed. Please install it to proceed."
-    )
-
+        "`pymilvus` library is not installed. Please install it via pip: `pip install pymilvus`."
+    ) from e
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
