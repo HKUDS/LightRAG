@@ -16,6 +16,7 @@ from .types import KnowledgeGraph
 
 load_dotenv()
 
+
 class TextChunkSchema(TypedDict):
     tokens: int
     content: str
