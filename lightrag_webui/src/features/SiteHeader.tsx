@@ -7,9 +7,50 @@ import { cn } from '@/lib/utils'
 
 import { ZapIcon, GithubIcon } from 'lucide-react'
 
-export default function SiteHeader() {
+interface NavigationTabProps {
+  value: string
+  currentTab: string
+  children: React.ReactNode
+}
+
+function NavigationTab({ value, currentTab, children }: NavigationTabProps) {
+  return (
+    <TabsTrigger
+      value={value}
+      className={cn(
+        'cursor-pointer px-2 py-1 transition-all',
+        currentTab === value ? '!bg-emerald-400 !text-zinc-50' : 'hover:bg-background/60'
+      )}
+    >
+      {children}
+    </TabsTrigger>
+  )
+}
+
+function TabsNavigation() {
   const currentTab = useSettingsStore.use.currentTab()
 
+  return (
+    <div className="flex h-8 self-center">
+      <TabsList className="h-full gap-2">
+        <NavigationTab value="documents" currentTab={currentTab}>
+          Documents
+        </NavigationTab>
+        <NavigationTab value="knowledge-graph" currentTab={currentTab}>
+          Knowledge Graph
+        </NavigationTab>
+        <NavigationTab value="retrieval" currentTab={currentTab}>
+          Retrieval
+        </NavigationTab>
+        <NavigationTab value="api" currentTab={currentTab}>
+          API
+        </NavigationTab>
+      </TabsList>
+    </div>
+  )
+}
+
+export default function SiteHeader() {
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
       <a href="/" className="mr-6 flex items-center gap-2">
@@ -18,43 +59,7 @@ export default function SiteHeader() {
       </a>
 
       <div className="flex h-10 flex-1 justify-center">
-        <div className="flex h-8 self-center">
-          <TabsList className="h-full gap-2">
-            <TabsTrigger
-              value="documents"
-              className={cn(
-                'cursor-pointer px-2 py-1 transition-all',
-                currentTab === 'documents'
-                  ? '!bg-emerald-400 !text-zinc-50'
-                  : 'hover:bg-background/60'
-              )}
-            >
-              Documents
-            </TabsTrigger>
-            <TabsTrigger
-              value="knowledge-graph"
-              className={cn(
-                'cursor-pointer px-2 py-1 transition-all',
-                currentTab === 'knowledge-graph'
-                  ? '!bg-emerald-400 !text-zinc-50'
-                  : 'hover:bg-background/60'
-              )}
-            >
-              Knowledge Graph
-            </TabsTrigger>
-            <TabsTrigger
-              value="retrieval"
-              className={cn(
-                'cursor-pointer px-2 py-1 transition-all',
-                currentTab === 'retrieval'
-                  ? '!bg-emerald-400 !text-zinc-50'
-                  : 'hover:bg-background/60'
-              )}
-            >
-              Retrieval
-            </TabsTrigger>
-          </TabsList>
-        </div>
+        <TabsNavigation />
       </div>
 
       <nav className="flex items-center">
@@ -68,3 +73,4 @@ export default function SiteHeader() {
     </header>
   )
 }
+
