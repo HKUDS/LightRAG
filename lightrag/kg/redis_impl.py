@@ -1,5 +1,5 @@
 import os
-from typing import Any
+from typing import Any, final
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import pipmaster as pm
@@ -18,7 +18,7 @@ import json
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
-
+@final
 @dataclass
 class RedisKVStorage(BaseKVStorage):
     def __post_init__(self):

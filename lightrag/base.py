@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from enum import StrEnum
 import os
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import (
     Any,
     Literal,
@@ -203,7 +203,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """Retrieve a subgraph of the knowledge graph starting from a given node."""
 
 
-class DocStatus(str, Enum):
+class DocStatus(StrEnum):
     """Document processing status enum"""
 
     PENDING = "pending"
@@ -245,18 +245,7 @@ class DocStatusStorage(BaseKVStorage, ABC):
         """Get counts of documents in each status"""
 
     @abstractmethod
-    async def get_failed_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all failed documents"""
-
-    @abstractmethod
-    async def get_pending_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all pending documents"""
-        raise NotImplementedError
-
-    @abstractmethod
-    async def get_processing_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all processing documents"""
-
-    @abstractmethod
-    async def get_processed_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all procesed documents"""
+    async def get_docs_by_status(
+        self, status: DocStatus
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific status"""
