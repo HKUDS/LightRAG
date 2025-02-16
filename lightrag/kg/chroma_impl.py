@@ -67,7 +67,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
 
                 if "token_authn" in auth_provider:
                     headers = {
-                        config.get("auth_header_name", "X-Chroma-Token"): auth_credentials
+                        config.get(
+                            "auth_header_name", "X-Chroma-Token"
+                        ): auth_credentials
                     }
                 elif "basic_authn" in auth_provider:
                     auth_credentials = config.get("auth_credentials", "admin:admin")
@@ -154,7 +156,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             embedding = await self.embedding_func([query])
 
             results = self._collection.query(
-                query_embeddings=embedding.tolist() if not isinstance(embedding, list) else embedding,
+                query_embeddings=embedding.tolist()
+                if not isinstance(embedding, list)
+                else embedding,
                 n_results=top_k * 2,  # Request more results to allow for filtering
                 include=["metadatas", "distances", "documents"],
             )
