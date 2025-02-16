@@ -1108,6 +1108,17 @@ async def _get_node_data(
             node_datas, query_param, knowledge_graph_inst
         ),
     )
+
+    len_node_datas = len(node_datas)
+    node_datas = truncate_list_by_token_size(
+        node_datas,
+        key=lambda x: x["description"],
+        max_token_size=query_param.max_token_for_local_context,
+    )
+    logger.info(
+        f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
+    )
+
     logger.info(
         f"Local query uses {len(node_datas)} entites, {len(use_relations)} relations, {len(use_text_units)} chunks"
     )
