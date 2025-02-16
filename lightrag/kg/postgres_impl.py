@@ -40,7 +40,7 @@ try:
 
 except ImportError as e:
     raise ImportError(
-        "asyncpg, tqdm_async library is not installed. Please install it to proceed."
+        "`asyncpg` library is not installed. Please install it via pip: `pip install asyncpg`."
     ) from e
 
 

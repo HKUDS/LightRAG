@@ -26,7 +26,7 @@ try:
     from gremlin_python.driver.protocol import GremlinServerError
 except ImportError as e:
     raise ImportError(
-        "gremlin library is not installed. Please install it to proceed."
+        "`gremlin` library is not installed. Please install it via pip: `pip install gremlin`."
     ) from e
 
 

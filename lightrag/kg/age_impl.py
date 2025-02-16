@@ -31,10 +31,10 @@ try:
     import psycopg
     from psycopg.rows import namedtuple_row
     from psycopg_pool import AsyncConnectionPool, PoolTimeout
-except ImportError as e:
+except ImportError:
     raise ImportError(
-        "psycopg-pool, psycopg[binary,pool], asyncpg library is not installed. Please install it to proceed."
-    ) from e
+        "`psycopg-pool, psycopg[binary,pool], asyncpg` library is not installed. Please install it via pip: `pip install psycopg-pool psycopg[binary,pool] asyncpg`."
+    )
 
 
 class AGEQueryException(Exception):
