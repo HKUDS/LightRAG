@@ -1,7 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, final
 
 from lightrag.base import (
     BaseKVStorage,
@@ -13,6 +13,7 @@ from lightrag.utils import (
 )
 
 
+@final
 @dataclass
 class JsonKVStorage(BaseKVStorage):
     def __post_init__(self):
