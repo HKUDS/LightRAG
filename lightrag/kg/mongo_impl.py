@@ -175,7 +175,7 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def get_docs_by_status(
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
-        """Get all documents by status"""
+        """Get all documents with a specific status"""
         cursor = self._data.find({"status": status.value})
         result = await cursor.to_list()
         return {
@@ -190,22 +190,6 @@ class MongoDocStatusStorage(DocStatusStorage):
             )
             for doc in result
         }
-
-    async def get_failed_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all failed documents"""
-        return await self.get_docs_by_status(DocStatus.FAILED)
-
-    async def get_pending_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all pending documents"""
-        return await self.get_docs_by_status(DocStatus.PENDING)
-
-    async def get_processing_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all processing documents"""
-        return await self.get_docs_by_status(DocStatus.PROCESSING)
-
-    async def get_processed_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all procesed documents"""
-        return await self.get_docs_by_status(DocStatus.PROCESSED)
 
 
 @dataclass

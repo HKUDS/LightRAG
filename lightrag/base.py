@@ -249,20 +249,10 @@ class DocStatusStorage(BaseKVStorage):
         """Get counts of documents in each status"""
         raise NotImplementedError
 
-    async def get_failed_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all failed documents"""
-        raise NotImplementedError
-
-    async def get_pending_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all pending documents"""
-        raise NotImplementedError
-
-    async def get_processing_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all processing documents"""
-        raise NotImplementedError
-
-    async def get_processed_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all procesed documents"""
+    async def get_docs_by_status(
+        self, status: DocStatus
+    ) -> dict[str, DocProcessingStatus]:
+        """Get all documents with a specific status"""
         raise NotImplementedError
 
     async def update_doc_status(self, data: dict[str, Any]) -> None:
