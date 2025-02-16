@@ -18,6 +18,7 @@ import json
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
+
 @final
 @dataclass
 class RedisKVStorage(BaseKVStorage):

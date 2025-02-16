@@ -49,10 +49,10 @@ class JsonDocStatusStorage(DocStatusStorage):
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
         return {
-                    k: DocProcessingStatus(**v)
-                    for k, v in self._data.items()
-                    if v["status"] == status.value
-                }
+            k: DocProcessingStatus(**v)
+            for k, v in self._data.items()
+            if v["status"] == status.value
+        }
 
     async def index_done_callback(self) -> None:
         write_json(self._data, self._file_name)
