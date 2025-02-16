@@ -638,33 +638,35 @@ class QueryRequest(BaseModel):
     only_need_prompt: Optional[bool] = Field(default=None)
 
     """Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'."""
-    response_type: Optional[str] = Field(default=None)
+    response_type: Optional[str] = Field(min_length=1, default=None)
 
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
-    top_k: Optional[int] = Field(default=None)
+    top_k: Optional[int] = Field(gt=1, default=None)
 
     """Maximum number of tokens allowed for each retrieved text chunk."""
-    max_token_for_text_unit: Optional[int] = Field(default=None)
+    max_token_for_text_unit: Optional[int] = Field(gt=1, default=None)
 
     """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
-    max_token_for_global_context: Optional[int] = Field(default=None)
+    max_token_for_global_context: Optional[int] = Field(gt=1, default=None)
 
     """Maximum number of tokens allocated for entity descriptions in local retrieval."""
-    max_token_for_local_context: Optional[int] = Field(default=None)
+    max_token_for_local_context: Optional[int] = Field(gt=1, default=None)
 
     """List of high-level keywords to prioritize in retrieval."""
-    hl_keywords: Optional[List[str]] = Field(default=None)
+    hl_keywords: Optional[List[str]] = Field(min_length=1, default=None)
 
     """List of low-level keywords to refine retrieval focus."""
-    ll_keywords: Optional[List[str]] = Field(default=None)
+    ll_keywords: Optional[List[str]] = Field(min_length=1, default=None)
 
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
     """
-    conversation_history: Optional[List[dict[str, Any]]] = Field(default=None)
+    conversation_history: Optional[List[dict[str, Any]]] = Field(
+        min_length=1, default=None
+    )
 
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
-    history_turns: Optional[int] = Field(default=None)
+    history_turns: Optional[int] = Field(gt=1, default=None)
 
 
 class QueryResponse(BaseModel):
@@ -672,24 +674,21 @@ class QueryResponse(BaseModel):
 
 
 class InsertTextRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1)
 
-    @field_validator('text', mode='after')
+    @field_validator("text", mode="after")
     @classmethod
-    def check_not_empty(cls, text: str) -> str:
-        if not text:
-            raise ValueError("Text cannot be empty")
-        return text
+    def strip_after(cls, text: str) -> str:
+        return text.strip()
+
 
 class InsertTextsRequest(BaseModel):
-    texts: list[str] = Field(default_factory=list)
-    
-    @field_validator('texts', mode='after')
+    texts: list[str] = Field(min_length=1)
+
+    @field_validator("texts", mode="after")
     @classmethod
-    def check_not_empty(cls, texts: list[str]) -> list[str]:
-        if not texts:
-            raise ValueError("Texts cannot be empty")
-        return texts
+    def strip_after(cls, texts: list[str]) -> list[str]:
+        return [text.strip() for text in texts]
 
 
 class InsertResponse(BaseModel):
