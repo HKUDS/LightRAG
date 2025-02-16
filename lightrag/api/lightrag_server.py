@@ -162,8 +162,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.host}")
     ASCIIColors.white("    ├─ Port: ", end="")
     ASCIIColors.yellow(f"{args.port}")
-    ASCIIColors.white("    └─ SSL Enabled: ", end="")
+    ASCIIColors.white("    ├─ CORS Origins: ", end="")
+    ASCIIColors.yellow(f"{os.getenv('CORS_ORIGINS', '*')}")
+    ASCIIColors.white("    ├─ SSL Enabled: ", end="")
     ASCIIColors.yellow(f"{args.ssl}")
+    ASCIIColors.white("    └─ API Key: ", end="")
+    ASCIIColors.yellow("Set" if args.key else "Not Set")
     if args.ssl:
         ASCIIColors.white("    ├─ SSL Cert: ", end="")
         ASCIIColors.yellow(f"{args.ssl_certfile}")
@@ -232,10 +236,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{ollama_server_infos.LIGHTRAG_MODEL}")
     ASCIIColors.white("    ├─ Log Level: ", end="")
     ASCIIColors.yellow(f"{args.log_level}")
-    ASCIIColors.white("    ├─ Timeout: ", end="")
+    ASCIIColors.white("    └─ Timeout: ", end="")
     ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
-    ASCIIColors.white("    └─ API Key: ", end="")
-    ASCIIColors.yellow("Set" if args.key else "Not Set")
 
     # Server Status
     ASCIIColors.green("\n✨ Server starting up...\n")
@@ -567,6 +569,10 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
+    # conver relative path to absolute path
+    args.working_dir = os.path.abspath(args.working_dir)
+    args.input_dir = os.path.abspath(args.input_dir)
+
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
     return args
@@ -598,6 +604,7 @@ class DocumentManager:
         """Scan input directory for new files"""
         new_files = []
         for ext in self.supported_extensions:
+            logger.info(f"Scanning for {ext} files in {self.input_dir}")
             for file_path in self.input_dir.rglob(f"*{ext}"):
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)
@@ -911,10 +918,19 @@ def create_app(args):
         lifespan=lifespan,
     )
 
+    def get_cors_origins():
+        """Get allowed origins from environment variable
+        Returns a list of allowed origins, defaults to ["*"] if not set
+        """
+        origins_str = os.getenv("CORS_ORIGINS", "*")
+        if origins_str == "*":
+            return ["*"]
+        return [origin.strip() for origin in origins_str.split(",")]
+
     # Add CORS middleware
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=get_cors_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -1350,6 +1366,7 @@ def create_app(args):
             new_files = doc_manager.scan_directory_for_new_files()
             scan_progress["total_files"] = len(new_files)
 
+            logger.info(f"Found {len(new_files)} new files to index.")
             for file_path in new_files:
                 try:
                     with progress_lock:
@@ -1690,10 +1707,7 @@ def create_app(args):
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "Content-Type": "application/x-ndjson",
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type",
-                    "X-Accel-Buffering": "no",  # Disable Nginx buffering
+                    "X-Accel-Buffering": "no",  # 确保在Nginx代理时正确处理流式响应
                 },
             )
         except Exception as e:
