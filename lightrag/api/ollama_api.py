@@ -316,9 +316,7 @@ class OllamaAPI:
                             "Cache-Control": "no-cache",
                             "Connection": "keep-alive",
                             "Content-Type": "application/x-ndjson",
-                            "Access-Control-Allow-Origin": "*",
-                            "Access-Control-Allow-Methods": "POST, OPTIONS",
-                            "Access-Control-Allow-Headers": "Content-Type",
+                            "X-Accel-Buffering": "no",  # 确保在Nginx代理时正确处理流式响应
                         },
                     )
                 else:
@@ -534,9 +532,7 @@ class OllamaAPI:
                             "Cache-Control": "no-cache",
                             "Connection": "keep-alive",
                             "Content-Type": "application/x-ndjson",
-                            "Access-Control-Allow-Origin": "*",
-                            "Access-Control-Allow-Methods": "POST, OPTIONS",
-                            "Access-Control-Allow-Headers": "Content-Type",
+                            "X-Accel-Buffering": "no",  # 确保在Nginx代理时正确处理流式响应
                         },
                     )
                 else:
