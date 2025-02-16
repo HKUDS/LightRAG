@@ -40,7 +40,7 @@ __version__ = "1.0.0"
 __author__ = "lightrag Team"
 __status__ = "Production"
 
-
+from ..utils import verbose_debug
 import sys
 import os
 
@@ -129,8 +129,8 @@ async def openai_complete_if_cache(
     logger.debug("===== Query Input to LLM =====")
     logger.debug(f"Model: {model}   Base URL: {base_url}")
     logger.debug(f"Additional kwargs: {kwargs}")
-    logger.debug(f"Query: {prompt}")
-    logger.debug(f"System prompt: {system_prompt}")
+    verbose_debug(f"Query: {prompt}")
+    verbose_debug(f"System prompt: {system_prompt}")
     # logger.debug(f"Messages: {messages}")
 
     try:

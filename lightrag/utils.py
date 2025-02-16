@@ -20,6 +20,23 @@ import tiktoken
 
 from lightrag.prompt import PROMPTS
 
+VERBOSE_DEBUG = False
+
+
+def verbose_debug(msg: str, *args, **kwargs):
+    """Function for outputting detailed debug information.
+    When VERBOSE_DEBUG=True, outputs the complete message.
+    When VERBOSE_DEBUG=False, outputs only the first 30 characters.
+    """
+    if VERBOSE_DEBUG:
+        logger.debug(msg, *args, **kwargs)
+
+
+def set_verbose_debug(enabled: bool):
+    """Enable or disable verbose debug output"""
+    global VERBOSE_DEBUG
+    VERBOSE_DEBUG = enabled
+
 
 class UnlimitedSemaphore:
     """A context manager that allows unlimited access."""
