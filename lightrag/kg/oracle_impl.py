@@ -363,7 +363,7 @@ class OracleVectorDBStorage(BaseVectorStorage):
     async def index_done_callback(self) -> None:
         # Oracles handles persistence automatically
         pass
-    
+
     async def delete_entity(self, entity_name: str) -> None:
         raise NotImplementedError
 
