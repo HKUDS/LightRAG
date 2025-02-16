@@ -27,8 +27,6 @@ export type LightragStatus = {
   status: 'healthy'
   working_directory: string
   input_directory: string
-  indexed_files: string[]
-  indexed_files_count: number
   configuration: {
     llm_binding: string
     llm_binding_host: string
@@ -104,9 +102,27 @@ export type QueryResponse = {
   response: string
 }
 
-export type DocumentActionResponse = {
+export type DocActionResponse = {
   status: 'success' | 'partial_success' | 'failure'
   message: string
+}
+
+export type DocStatus = 'pending' | 'processing' | 'processed' | 'failed'
+
+export type DocStatusResponse = {
+  id: string
+  content_summary: string
+  content_length: number
+  status: DocStatus
+  created_at: string
+  updated_at: string
+  chunks_count?: number
+  error?: string
+  metadata?: Record<string, any>
+}
+
+export type DocsStatusesResponse = {
+  statuses: Record<DocStatus, DocStatusResponse[]>
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -169,7 +185,7 @@ export const checkHealth = async (): Promise<
   }
 }
 
-export const getDocuments = async (): Promise<string[]> => {
+export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   const response = await axiosInstance.get('/documents')
   return response.data
 }
@@ -253,7 +269,7 @@ export const queryTextStream = async (
 export const insertText = async (
   text: string,
   description?: string
-): Promise<DocumentActionResponse> => {
+): Promise<DocActionResponse> => {
   const response = await axiosInstance.post('/documents/text', { text, description })
   return response.data
 }
@@ -261,7 +277,7 @@ export const insertText = async (
 export const uploadDocument = async (
   file: File,
   onUploadProgress?: (percentCompleted: number) => void
-): Promise<DocumentActionResponse> => {
+): Promise<DocActionResponse> => {
   const formData = new FormData()
   formData.append('file', file)
 
@@ -284,7 +300,7 @@ export const uploadDocument = async (
 export const batchUploadDocuments = async (
   files: File[],
   onUploadProgress?: (fileName: string, percentCompleted: number) => void
-): Promise<DocumentActionResponse[]> => {
+): Promise<DocActionResponse[]> => {
   return await Promise.all(
     files.map(async (file) => {
       return await uploadDocument(file, (percentCompleted) => {
@@ -294,7 +310,7 @@ export const batchUploadDocuments = async (
   )
 }
 
-export const clearDocuments = async (): Promise<DocumentActionResponse> => {
+export const clearDocuments = async (): Promise<DocActionResponse> => {
   const response = await axiosInstance.delete('/documents')
   return response.data
 }
