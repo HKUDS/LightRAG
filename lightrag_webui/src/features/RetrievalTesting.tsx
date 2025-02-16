@@ -37,11 +37,10 @@ export default function RetrievalTesting() {
         role: 'assistant'
       }
 
+      const prevMessages = [...messages]
+
       // Add messages to chatbox
-      setMessages((prev) => {
-        const newMessages = [...prev, userMessage, assistantMessage]
-        return newMessages
-      })
+      setMessages([...prevMessages, userMessage, assistantMessage])
 
       // Clear input and set loading
       setInputValue('')
@@ -65,7 +64,7 @@ export default function RetrievalTesting() {
       const queryParams = {
         ...state.querySettings,
         query: userMessage.content,
-        conversation_history: messages
+        conversation_history: prevMessages
       }
 
       try {
@@ -84,11 +83,7 @@ export default function RetrievalTesting() {
         setIsLoading(false)
         useSettingsStore
           .getState()
-          .setRetrievalHistory([
-            ...useSettingsStore.getState().retrievalHistory,
-            userMessage,
-            assistantMessage
-          ])
+          .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
       }
     },
     [inputValue, isLoading, messages, setMessages]
