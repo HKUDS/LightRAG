@@ -429,9 +429,6 @@ class PGVectorStorage(BaseVectorStorage):
 @final
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
-    # db instance must be injected before use
-    # db: PostgreSQLDB
-
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         keys = ",".join([f"'{_id}'" for _id in keys])
@@ -516,7 +513,7 @@ class PGDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         pass
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Update or insert document status
 
         Args:
@@ -546,32 +543,6 @@ class PGDocStatusStorage(DocStatusStorage):
                 },
             )
         return data
-
-    async def update_doc_status(self, data: dict[str, dict]) -> None:
-        """
-        Updates only the document status, chunk count, and updated timestamp.
-
-        This method ensures that only relevant fields are updated instead of overwriting
-        the entire document record. If `updated_at` is not provided, the database will
-        automatically use the current timestamp.
-        """
-        sql = """
-        UPDATE LIGHTRAG_DOC_STATUS
-        SET status = $3,
-            chunks_count = $4,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE workspace = $1 AND id = $2
-        """
-        for k, v in data.items():
-            _data = {
-                "workspace": self.db.workspace,
-                "id": k,
-                "status": v["status"].value,  # Convert Enum to string
-                "chunks_count": v.get(
-                    "chunks_count", -1
-                ),  # Default to -1 if not provided
-            }
-            await self.db.execute(sql, _data)
 
     async def drop(self) -> None:
         raise NotImplementedError
