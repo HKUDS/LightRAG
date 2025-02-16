@@ -17,7 +17,9 @@ if not os.path.exists(WORKING_DIR):
 # ChromaDB Configuration
 CHROMADB_USE_LOCAL_PERSISTENT = False
 # Local PersistentClient Configuration
-CHROMADB_LOCAL_PATH = os.environ.get("CHROMADB_LOCAL_PATH", os.path.join(WORKING_DIR, "chroma_data"))
+CHROMADB_LOCAL_PATH = os.environ.get(
+    "CHROMADB_LOCAL_PATH", os.path.join(WORKING_DIR, "chroma_data")
+)
 # Remote HttpClient Configuration
 CHROMADB_HOST = os.environ.get("CHROMADB_HOST", "localhost")
 CHROMADB_PORT = int(os.environ.get("CHROMADB_PORT", 8000))

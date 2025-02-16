@@ -1,8 +1,10 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import re
 from tqdm.asyncio import tqdm as tqdm_async
-from typing import Any, Union
+from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
 from .utils import (
     logger,
@@ -36,7 +38,7 @@ import time
 
 def chunking_by_token_size(
     content: str,
-    split_by_character: Union[str, None] = None,
+    split_by_character: str | None = None,
     split_by_character_only: bool = False,
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
@@ -335,9 +337,9 @@ async def extract_entities(
     knowledge_graph_inst: BaseGraphStorage,
     entity_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
-    global_config: dict,
-    llm_response_cache: BaseKVStorage = None,
-) -> Union[BaseGraphStorage, None]:
+    global_config: dict[str, str],
+    llm_response_cache: BaseKVStorage | None = None,
+) -> BaseGraphStorage | None:
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     enable_llm_cache_for_entity_extract: bool = global_config[
@@ -603,15 +605,15 @@ async def extract_entities(
 
 
 async def kg_query(
-    query,
+    query: str,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
-    prompt: str = "",
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+    prompt: str | None = None,
 ) -> str:
     # Handle cache
     use_model_func = global_config["llm_model_func"]
@@ -721,8 +723,8 @@ async def kg_query(
 async def extract_keywords_only(
     text: str,
     param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
 ) -> tuple[list[str], list[str]]:
     """
     Extract high-level and low-level keywords from the given 'text' using the LLM.
@@ -818,9 +820,9 @@ async def mix_kg_vector_query(
     chunks_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
-) -> str:
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+) -> str | AsyncIterator[str]:
     """
     Hybrid retrieval implementation combining knowledge graph and vector search.
 
@@ -1539,13 +1541,13 @@ def combine_contexts(entities, relationships, sources):
 
 
 async def naive_query(
-    query,
+    query: str,
     chunks_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
-):
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+) -> str | AsyncIterator[str]:
     # Handle cache
     use_model_func = global_config["llm_model_func"]
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
@@ -1646,9 +1648,9 @@ async def kg_query_with_keywords(
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict,
-    hashing_kv: BaseKVStorage = None,
-) -> str:
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+) -> str | AsyncIterator[str]:
     """
     Refactored kg_query that does NOT extract keywords by itself.
     It expects hl_keywords and ll_keywords to be set in query_param, or defaults to empty.
