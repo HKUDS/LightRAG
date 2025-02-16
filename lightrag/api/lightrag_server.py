@@ -739,7 +739,9 @@ class QueryRequest(BaseModel):
         request_data = self.model_dump(exclude_none=True, exclude={"query"})
 
         # Ensure `mode` and `stream` are set explicitly
-        return QueryParam(**request_data, stream=is_stream)
+        param = QueryParam(**request_data)
+        param.stream = is_stream
+        return param
 
 
 class QueryResponse(BaseModel):
