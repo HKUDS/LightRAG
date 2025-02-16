@@ -1,8 +1,39 @@
-__pycache__
-*.egg-info
-dickens/
-book.txt
-lightrag-dev/
+# Python-related files
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.tgz
+*.tar.gz
+*.ini
+
+# Virtual Environment
+.venv/
+env/
+venv/
+*.env*
+.env_example
+
+# Build / Distribution
+dist/
+build/
+site/
+
+# Logs / Reports
+*.log
+*.logfire
+*.coverage/
+log/
+
+# Caches
+.cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.gradio/
+temp/
+
+# IDE / Editor Files
 .idea/
 dist/
 env/
