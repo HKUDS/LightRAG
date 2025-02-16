@@ -140,7 +140,6 @@ class BaseKVStorage(StorageNameSpace, ABC):
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
-    """Check if a node exists in the graph."""
 
     @abstractmethod
     async def has_node(self, node_id: str) -> bool:
@@ -204,7 +203,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
 
 class DocStatus(StrEnum):
-    """Document processing status enum"""
+    """Document processing status"""
 
     PENDING = "pending"
     PROCESSING = "processing"
