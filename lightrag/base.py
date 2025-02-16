@@ -1,4 +1,5 @@
 import os
+from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -9,12 +10,11 @@ from typing import (
     TypeVar,
     Union,
 )
-
 import numpy as np
-
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
 
+load_dotenv()
 
 class TextChunkSchema(TypedDict):
     tokens: int
