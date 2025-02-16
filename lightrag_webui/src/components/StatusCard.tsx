@@ -14,8 +14,6 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
           <span className="truncate">{status.working_directory}</span>
           <span>Input Directory:</span>
           <span className="truncate">{status.input_directory}</span>
-          <span>Indexed Files:</span>
-          <span>{status.indexed_files_count}</span>
         </div>
       </div>
 

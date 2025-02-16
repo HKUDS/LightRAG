@@ -9,39 +9,35 @@ import {
   TableRow
 } from '@/components/ui/Table'
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
-import Progress from '@/components/ui/Progress'
 import EmptyCard from '@/components/ui/EmptyCard'
+import Text from '@/components/ui/Text'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 
-import {
-  getDocuments,
-  // getDocumentsScanProgress,
-  scanNewDocuments
-  // LightragDocumentsScanProgress
-} from '@/api/lightrag'
+import { getDocuments, scanNewDocuments, DocsStatusesResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
-// import { useBackendState } from '@/stores/state'
+import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, TrashIcon } from 'lucide-react'
-
-// type DocumentStatus = 'indexed' | 'pending' | 'indexing' | 'error'
+import { RefreshCwIcon } from 'lucide-react'
 
 export default function DocumentManager() {
-  // const health = useBackendState.use.health()
-  const [files, setFiles] = useState<string[]>([])
-  const [indexedFiles, setIndexedFiles] = useState<string[]>([])
-  // const [scanProgress, setScanProgress] = useState<LightragDocumentsScanProgress | null>(null)
+  const health = useBackendState.use.health()
+  const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
 
   const fetchDocuments = useCallback(async () => {
     try {
       const docs = await getDocuments()
-      setFiles(docs)
+      if (docs && docs.statuses) {
+        setDocs(docs)
+        // console.log(docs)
+      } else {
+        setDocs(null)
+      }
     } catch (err) {
       toast.error('Failed to load documents\n' + errorMessage(err))
     }
-  }, [setFiles])
+  }, [setDocs])
 
   useEffect(() => {
     fetchDocuments()
@@ -56,28 +52,19 @@ export default function DocumentManager() {
     }
   }, [])
 
-  // useEffect(() => {
-  //   const interval = setInterval(async () => {
-  //     try {
-  //       if (!health) return
-  //       const progress = await getDocumentsScanProgress()
-  //       setScanProgress((pre) => {
-  //         if (pre?.is_scanning === progress.is_scanning && progress.is_scanning === false) {
-  //           return pre
-  //         }
-  //         return progress
-  //       })
-  //       console.log(progress)
-  //     } catch (err) {
-  //       toast.error('Failed to get scan progress\n' + errorMessage(err))
-  //     }
-  //   }, 2000)
-  //   return () => clearInterval(interval)
-  // }, [health])
-
-  const handleDelete = async (fileName: string) => {
-    console.log(`deleting ${fileName}`)
-  }
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (!health) {
+        return
+      }
+      try {
+        await fetchDocuments()
+      } catch (err) {
+        toast.error('Failed to get scan progress\n' + errorMessage(err))
+      }
+    }, 5000)
+    return () => clearInterval(interval)
+  }, [health, fetchDocuments])
 
   return (
     <Card className="!size-full !rounded-none !border-none">
@@ -100,16 +87,6 @@ export default function DocumentManager() {
           <UploadDocumentsDialog />
         </div>
 
-        {/* {scanProgress?.is_scanning && (
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm">
-              <span>Indexing {scanProgress.current_file}</span>
-              <span>{scanProgress.progress}%</span>
-            </div>
-            <Progress value={scanProgress.progress} />
-          </div>
-        )} */}
-
         <Card>
           <CardHeader>
             <CardTitle>Uploaded documents</CardTitle>
@@ -117,44 +94,67 @@ export default function DocumentManager() {
           </CardHeader>
 
           <CardContent>
-            {files.length == 0 && (
+            {!docs && (
               <EmptyCard
-                title="No documents uploades"
+                title="No documents uploaded"
                 description="upload documents to see them here"
               />
             )}
-            {files.length > 0 && (
+            {docs && (
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Filename</TableHead>
+                    <TableHead>ID</TableHead>
+                    <TableHead>Summary</TableHead>
                     <TableHead>Status</TableHead>
-                    <TableHead>Actions</TableHead>
+                    <TableHead>Length</TableHead>
+                    <TableHead>Chunks</TableHead>
+                    <TableHead>Created</TableHead>
+                    <TableHead>Updated</TableHead>
+                    <TableHead>Metadata</TableHead>
                   </TableRow>
                 </TableHeader>
-                <TableBody>
-                  {files.map((file) => (
-                    <TableRow key={file}>
-                      <TableCell>{file}</TableCell>
-                      <TableCell>
-                        {indexedFiles.includes(file) ? (
-                          <span className="text-green-600">Indexed</span>
-                        ) : (
-                          <span className="text-yellow-600">Pending</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDelete(file)}
-                          // disabled={isUploading}
-                        >
-                          <TrashIcon />
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                <TableBody className="text-sm">
+                  {Object.entries(docs.statuses).map(([status, documents]) =>
+                    documents.map((doc) => (
+                      <TableRow key={doc.id}>
+                        <TableCell className="truncate font-mono">{doc.id}</TableCell>
+                        <TableCell className="max-w-xs min-w-24 truncate">
+                          <Text
+                            text={doc.content_summary}
+                            tooltip={doc.content_summary}
+                            tooltipClassName="max-w-none overflow-visible block"
+                          />
+                        </TableCell>
+                        <TableCell>
+                          {status === 'processed' && (
+                            <span className="text-green-600">Completed</span>
+                          )}
+                          {status === 'processing' && (
+                            <span className="text-blue-600">Processing</span>
+                          )}
+                          {status === 'pending' && <span className="text-yellow-600">Pending</span>}
+                          {status === 'failed' && <span className="text-red-600">Failed</span>}
+                          {doc.error && (
+                            <span className="ml-2 text-red-500" title={doc.error}>
+                              ⚠️
+                            </span>
+                          )}
+                        </TableCell>
+                        <TableCell>{doc.content_length ?? '-'}</TableCell>
+                        <TableCell>{doc.chunks_count ?? '-'}</TableCell>
+                        <TableCell className="truncate">
+                          {new Date(doc.created_at).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="truncate">
+                          {new Date(doc.updated_at).toLocaleString()}
+                        </TableCell>
+                        <TableCell className="max-w-xs truncate">
+                          {doc.metadata ? JSON.stringify(doc.metadata) : '-'}
+                        </TableCell>
+                      </TableRow>
+                    ))
+                  )}
                 </TableBody>
               </Table>
             )}

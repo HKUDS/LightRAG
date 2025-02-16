@@ -49,10 +49,10 @@ export default function UploadDocumentsDialog() {
         toast.error('Upload Failed\n' + errorMessage(err))
       } finally {
         setIsUploading(false)
-        setOpen(false)
+        // setOpen(false)
       }
     },
-    [setIsUploading, setProgresses, setOpen]
+    [setIsUploading, setProgresses]
   )
 
   return (
@@ -66,7 +66,7 @@ export default function UploadDocumentsDialog() {
       }}
     >
       <DialogTrigger asChild>
-        <Button variant="default" side="bottom" tooltip='Upload documents' size="sm">
+        <Button variant="default" side="bottom" tooltip="Upload documents" size="sm">
           <UploadIcon /> Upload
         </Button>
       </DialogTrigger>
