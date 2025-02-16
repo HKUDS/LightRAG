@@ -5,6 +5,10 @@ import numpy as np
 
 from lightrag.base import BaseVectorStorage
 from lightrag.utils import logger
+import pipmaster as pm
+
+if not pm.is_installed("chromadb"):
+    pm.install("chromadb")
 
 try:
     from chromadb import HttpClient, PersistentClient

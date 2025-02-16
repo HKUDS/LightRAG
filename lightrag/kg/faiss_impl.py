@@ -5,8 +5,9 @@ from typing import Any, final
 
 import json
 import numpy as np
-from tqdm.asyncio import tqdm as tqdm_async
+
 from dataclasses import dataclass
+import pipmaster as pm
 
 from lightrag.utils import (
     logger,
@@ -16,8 +17,12 @@ from lightrag.base import (
     BaseVectorStorage,
 )
 
+if not pm.is_installed("faiss"):
+    pm.install("faiss")
+
 try:
     import faiss
+    from tqdm.asyncio import tqdm as tqdm_async
 except ImportError as e:
     raise ImportError(
         "`faiss` library is not installed. Please install it via pip: `pip install faiss`."

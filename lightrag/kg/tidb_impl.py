@@ -13,6 +13,13 @@ from ..base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
 
+import pipmaster as pm
+
+if not pm.is_installed("pymysql"):
+    pm.install("pymysql")
+if not pm.is_installed("sqlalchemy"):
+    pm.install("sqlalchemy")
+
 try:
     from sqlalchemy import create_engine, text
 

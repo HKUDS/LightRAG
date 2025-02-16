@@ -18,6 +18,11 @@ from ..base import (
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
 
+import pipmaster as pm
+
+if not pm.is_installed("oracledb"):
+    pm.install("oracledb")
+
 try:
     import oracledb
 

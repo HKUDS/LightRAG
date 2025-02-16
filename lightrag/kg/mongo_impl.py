@@ -18,6 +18,13 @@ from ..base import (
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+import pipmaster as pm
+
+if not pm.is_installed("pymongo"):
+    pm.install("pymongo")
+
+if not pm.is_installed("motor"):
+    pm.install("motor")
 
 try:
     from motor.motor_asyncio import AsyncIOMotorClient
@@ -213,9 +220,6 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         # Implement the method here
         pass
-
-    async def update_doc_status(self, data: dict[str, Any]) -> None:
-        raise NotImplementedError
 
 
 @final
