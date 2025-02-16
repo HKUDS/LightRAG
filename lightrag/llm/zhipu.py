@@ -43,6 +43,7 @@ __status__ = "Production"
 import sys
 import re
 import json
+from ..utils import verbose_debug
 
 if sys.version_info < (3, 9):
     pass
@@ -119,7 +120,7 @@ async def zhipu_complete_if_cache(
     # Add debug logging
     logger.debug("===== Query Input to LLM =====")
     logger.debug(f"Query: {prompt}")
-    logger.debug(f"System prompt: {system_prompt}")
+    verbose_debug(f"System prompt: {system_prompt}")
 
     # Remove unsupported kwargs
     kwargs = {

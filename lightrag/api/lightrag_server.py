@@ -130,8 +130,8 @@ def get_env_value(env_key: str, default: Any, value_type: type = str) -> Any:
     if value is None:
         return default
 
-    if isinstance(value_type, bool):
-        return value.lower() in ("true", "1", "yes")
+    if value_type is bool:
+        return value.lower() in ("true", "1", "yes", "t", "on")
     try:
         return value_type(value)
     except ValueError:
@@ -233,6 +233,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{ollama_server_infos.LIGHTRAG_MODEL}")
     ASCIIColors.white("    ├─ Log Level: ", end="")
     ASCIIColors.yellow(f"{args.log_level}")
+    ASCIIColors.white("    ├─ Verbose Debug: ", end="")
+    ASCIIColors.yellow(f"{args.verbose}")
     ASCIIColors.white("    └─ Timeout: ", end="")
     ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
 
@@ -564,6 +566,13 @@ def parse_args() -> argparse.Namespace:
         help="Prefix of the namespace",
     )
 
+    parser.add_argument(
+        "--verbose",
+        type=bool,
+        default=get_env_value("VERBOSE", False, bool),
+        help="Verbose debug output(default: from env or false)",
+    )
+
     args = parser.parse_args()
 
     # conver relative path to absolute path
@@ -685,6 +694,11 @@ global_top_k = 60  # default value
 
 
 def create_app(args):
+    # Initialize verbose debug setting
+    from lightrag.utils import set_verbose_debug
+
+    set_verbose_debug(args.verbose)
+
     global global_top_k
     global_top_k = args.top_k  # save top_k from args
 
