@@ -287,7 +287,7 @@ class PGKVStorage(BaseKVStorage):
 
                     await self.db.execute(upsert_sql, _data)
 
-    async def index_done_callback(self):
+    async def index_done_callback(self) -> None:
         if is_namespace(
             self.namespace,
             (NameSpace.KV_STORE_FULL_DOCS, NameSpace.KV_STORE_TEXT_CHUNKS),
@@ -352,7 +352,7 @@ class PGVectorStorage(BaseVectorStorage):
         }
         return upsert_sql, data
 
-    async def upsert(self, data: Dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
@@ -398,12 +398,11 @@ class PGVectorStorage(BaseVectorStorage):
 
             await self.db.execute(upsert_sql, data)
 
-    async def index_done_callback(self):
+    async def index_done_callback(self) -> None:
         logger.info("vector data had been saved into postgresql db!")
 
     #################### query method ###############
-    async def query(self, query: str, top_k=5) -> Union[dict, list[dict]]:
-        """从向量数据库中查询数据"""
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
         embedding_string = ",".join(map(str, embedding))
@@ -417,6 +416,13 @@ class PGVectorStorage(BaseVectorStorage):
         results = await self.db.query(sql, params=params, multirows=True)
         return results
 
+    async def delete_entity(self, entity_name: str) -> None:
+        """Delete a single entity by its name"""
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        """Delete relations for a given entity by scanning metadata"""
+        raise NotImplementedError
 
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):

@@ -50,6 +50,7 @@ Usage:
 
 import asyncio
 import os
+from typing import Any
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import numpy as np
@@ -95,7 +96,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self.embedding_func.embedding_dim, storage_file=self._client_file_name
         )
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
@@ -139,7 +140,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 f"embedding is not 1-1 with data, {len(embeddings)} != {len(list_data)}"
             )
 
-    async def query(self, query: str, top_k=5):
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         embedding = await self.embedding_func([query])
         embedding = embedding[0]
         results = self._client.query(
@@ -176,7 +177,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
 
-    async def delete_entity(self, entity_name: str):
+    async def delete_entity(self, entity_name: str) -> None:
         try:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             logger.debug(
@@ -211,7 +212,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error deleting relations for {entity_name}: {e}")
 
-    async def index_done_callback(self):
+    async def index_done_callback(self) -> None:
         # Protect file write operation
         async with self._save_lock:
             self._client.save()

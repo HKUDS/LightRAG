@@ -1,6 +1,7 @@
 import os
 import time
 import asyncio
+from typing import Any
 import faiss
 import json
 import numpy as np
@@ -57,7 +58,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Attempt to load an existing index + metadata from disk
         self._load_faiss_index()
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
         Insert or update vectors in the Faiss index.
 
@@ -147,7 +148,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         logger.info(f"Upserted {len(list_data)} vectors into Faiss index.")
         return [m["__id__"] for m in list_data]
 
-    async def query(self, query: str, top_k=5):
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """
         Search by a textual query; returns top_k results with their metadata + similarity distance.
         """
@@ -210,7 +211,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             f"Successfully deleted {len(to_remove)} vectors from {self.namespace}"
         )
 
-    async def delete_entity(self, entity_name: str):
+    async def delete_entity(self, entity_name: str) -> None:
         """
         Delete a single entity by computing its hashed ID
         the same way your code does it with `compute_mdhash_id`.
@@ -234,7 +235,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._remove_faiss_ids(relations)
             logger.debug(f"Deleted {len(relations)} relations for {entity_name}")
 
-    async def index_done_callback(self):
+    async def index_done_callback(self) -> None:
         """
         Called after indexing is done (save Faiss index + metadata).
         """
