@@ -52,13 +52,52 @@ export type LightragDocumentsScanProgress = {
   progress: number
 }
 
+/**
+ * Specifies the retrieval mode:
+ * - "naive": Performs a basic search without advanced techniques.
+ * - "local": Focuses on context-dependent information.
+ * - "global": Utilizes global knowledge.
+ * - "hybrid": Combines local and global retrieval methods.
+ * - "mix": Integrates knowledge graph and vector retrieval.
+ */
 export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix'
+
+export type Message = {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+}
 
 export type QueryRequest = {
   query: string
+  /** Specifies the retrieval mode. */
   mode: QueryMode
-  stream?: boolean
+  /** If True, only returns the retrieved context without generating a response. */
   only_need_context?: boolean
+  /** If True, only returns the generated prompt without producing a response. */
+  only_need_prompt?: boolean
+  /** Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'. */
+  response_type?: string
+  /** If True, enables streaming output for real-time responses. */
+  stream?: boolean
+  /** Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode. */
+  top_k?: number
+  /** Maximum number of tokens allowed for each retrieved text chunk. */
+  max_token_for_text_unit?: number
+  /** Maximum number of tokens allocated for relationship descriptions in global retrieval. */
+  max_token_for_global_context?: number
+  /** Maximum number of tokens allocated for entity descriptions in local retrieval. */
+  max_token_for_local_context?: number
+  /** List of high-level keywords to prioritize in retrieval. */
+  hl_keywords?: string[]
+  /** List of low-level keywords to refine retrieval focus. */
+  ll_keywords?: string[]
+  /**
+   * Stores past conversation history to maintain context.
+   * Format: [{"role": "user/assistant", "content": "message"}].
+   */
+  conversation_history?: Message[]
+  /** Number of complete conversation turns (user-assistant pairs) to consider in the response context. */
+  history_turns?: number
 }
 
 export type QueryResponse = {
@@ -68,7 +107,6 @@ export type QueryResponse = {
 export type DocumentActionResponse = {
   status: 'success' | 'partial_success' | 'failure'
   message: string
-  document_count: number
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'

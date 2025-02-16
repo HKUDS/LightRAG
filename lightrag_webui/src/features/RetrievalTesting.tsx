@@ -1,17 +1,13 @@
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { queryTextStream, QueryMode } from '@/api/lightrag'
+import { queryText, queryTextStream, Message } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
-import { EraserIcon, SendIcon, LoaderIcon } from 'lucide-react'
+import QuerySettings from '@/components/retrieval/QuerySettings'
 
-type Message = {
-  id: string
-  content: string
-  role: 'User' | 'LightRAG'
-}
+import { EraserIcon, SendIcon, LoaderIcon } from 'lucide-react'
 
 export default function RetrievalTesting() {
   const [messages, setMessages] = useState<Message[]>(
@@ -19,7 +15,6 @@ export default function RetrievalTesting() {
   )
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [mode, setMode] = useState<QueryMode>('mix')
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = useCallback(() => {
@@ -31,23 +26,24 @@ export default function RetrievalTesting() {
       e.preventDefault()
       if (!inputValue.trim() || isLoading) return
 
+      // Create messages
       const userMessage: Message = {
-        id: Date.now().toString(),
         content: inputValue,
-        role: 'User'
+        role: 'user'
       }
 
       const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
         content: '',
-        role: 'LightRAG'
+        role: 'assistant'
       }
 
+      // Add messages to chatbox
       setMessages((prev) => {
         const newMessages = [...prev, userMessage, assistantMessage]
         return newMessages
       })
 
+      // Clear input and set loading
       setInputValue('')
       setIsLoading(true)
 
@@ -57,25 +53,34 @@ export default function RetrievalTesting() {
         setMessages((prev) => {
           const newMessages = [...prev]
           const lastMessage = newMessages[newMessages.length - 1]
-          if (lastMessage.role === 'LightRAG') {
+          if (lastMessage.role === 'assistant') {
             lastMessage.content = assistantMessage.content
           }
           return newMessages
         })
       }
 
+      // Prepare query parameters
+      const state = useSettingsStore.getState()
+      const queryParams = {
+        ...state.querySettings,
+        query: userMessage.content,
+        conversation_history: messages
+      }
+
       try {
-        await queryTextStream(
-          {
-            query: userMessage.content,
-            mode: mode,
-            stream: true
-          },
-          updateAssistantMessage
-        )
+        // Run query
+        if (state.querySettings.stream) {
+          await queryTextStream(queryParams, updateAssistantMessage)
+        } else {
+          const response = await queryText(queryParams)
+          updateAssistantMessage(response.response)
+        }
       } catch (err) {
+        // Handle error
         updateAssistantMessage(`Error: Failed to get response\n${errorMessage(err)}`)
       } finally {
+        // Clear loading and add messages to state
         setIsLoading(false)
         useSettingsStore
           .getState()
@@ -86,7 +91,7 @@ export default function RetrievalTesting() {
           ])
       }
     },
-    [inputValue, isLoading, mode, setMessages]
+    [inputValue, isLoading, messages, setMessages]
   )
 
   const debouncedMessages = useDebounce(messages, 100)
@@ -98,73 +103,65 @@ export default function RetrievalTesting() {
   }, [setMessages])
 
   return (
-    <div className="flex size-full flex-col gap-4 px-32 py-6">
-      <div className="relative grow">
-        <div className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2">
-          <div className="flex min-h-0 flex-1 flex-col gap-2">
-            {messages.length === 0 ? (
-              <div className="text-muted-foreground flex h-full items-center justify-center text-lg">
-                Start a retrieval by typing your query below
-              </div>
-            ) : (
-              messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={`flex ${message.role === 'User' ? 'justify-end' : 'justify-start'}`}
-                >
-                  <div
-                    className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                      message.role === 'User' ? 'bg-primary text-primary-foreground' : 'bg-muted'
-                    }`}
-                  >
-                    <pre className="break-words whitespace-pre-wrap">{message.content}</pre>
-                    {message.content.length === 0 && (
-                      <LoaderIcon className="animate-spin duration-2000" />
-                    )}
-                  </div>
+    <div className="flex size-full gap-2 px-2 pb-12">
+      <div className="flex grow flex-col gap-4">
+        <div className="relative grow">
+          <div className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2">
+            <div className="flex min-h-0 flex-1 flex-col gap-2">
+              {messages.length === 0 ? (
+                <div className="text-muted-foreground flex h-full items-center justify-center text-lg">
+                  Start a retrieval by typing your query below
                 </div>
-              ))
-            )}
-            <div ref={messagesEndRef} className="pb-1" />
+              ) : (
+                messages.map((message, idx) => (
+                  <div
+                    key={idx}
+                    className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                  >
+                    <div
+                      className={`max-w-[80%] rounded-lg px-4 py-2 ${
+                        message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
+                      }`}
+                    >
+                      <pre className="break-words whitespace-pre-wrap">{message.content}</pre>
+                      {message.content.length === 0 && (
+                        <LoaderIcon className="animate-spin duration-2000" />
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+              <div ref={messagesEndRef} className="pb-1" />
+            </div>
           </div>
         </div>
-      </div>
 
-      <form onSubmit={handleSubmit} className="flex shrink-0 items-center gap-2 pb-2">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={clearMessages}
-          disabled={isLoading}
-          size="sm"
-        >
-          <EraserIcon />
-          Clear
-        </Button>
-        <select
-          className="border-input bg-background ring-offset-background h-9 rounded-md border px-3 py-1 text-sm"
-          value={mode}
-          onChange={(e) => setMode(e.target.value as QueryMode)}
-          disabled={isLoading}
-        >
-          <option value="naive">Naive</option>
-          <option value="local">Local</option>
-          <option value="global">Global</option>
-          <option value="hybrid">Hybrid</option>
-          <option value="mix">Mix</option>
-        </select>
-        <Input
-          className="flex-1"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Type your query..."
-          disabled={isLoading}
-        />
-        <Button type="submit" variant="default" disabled={isLoading} size="sm">
-          <SendIcon />
-          Send
-        </Button>
-      </form>
+        <form onSubmit={handleSubmit} className="flex shrink-0 items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={clearMessages}
+            disabled={isLoading}
+            size="sm"
+          >
+            <EraserIcon />
+            Clear
+          </Button>
+          <Input
+            className="flex-1"
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
+            placeholder="Type your query..."
+            disabled={isLoading}
+          />
+          <Button type="submit" variant="default" disabled={isLoading} size="sm">
+            <SendIcon />
+            Send
+          </Button>
+        </form>
+      </div>
+      <QuerySettings />
     </div>
   )
 }
+

@@ -11,8 +11,8 @@ import {
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
 import Progress from '@/components/ui/Progress'
 import EmptyCard from '@/components/ui/EmptyCard'
-import UploadDocumentsDialog from '@/components/document/UploadDocumentsDialog'
-import ClearDocumentsDialog from '@/components/document/ClearDocumentsDialog'
+import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
+import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 
 import {
   getDocuments,
