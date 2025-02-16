@@ -1494,6 +1494,37 @@ def create_app(args):
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post(
+        "/documents/texts",
+        response_model=InsertResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
+    async def insert_texts(
+        request: InsertTextsRequest, background_tasks: BackgroundTasks
+    ):
+        """
+        Insert texts into the Retrieval-Augmented Generation (RAG) system.
+
+        This endpoint allows you to insert text data into the RAG system for later retrieval and use in generating responses.
+
+        Args:
+            request (InsertTextsRequest): The request body containing the text to be inserted.
+            background_tasks: FastAPI BackgroundTasks for async processing
+
+        Returns:
+            InsertResponse: A response object containing the status of the operation, a message, and the number of documents inserted.
+        """
+        try:
+            background_tasks.add_task(pipeline_index_texts, request.texts)
+            return InsertResponse(
+                status="success",
+                message="Text successfully received. Processing will continue in background.",
+            )
+        except Exception as e:
+            logging.error(f"Error /documents/text: {str(e)}")
+            logging.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+        
+    @app.post(
         "/documents/file",
         response_model=InsertResponse,
         dependencies=[Depends(optional_api_key)],
@@ -1537,7 +1568,7 @@ def create_app(args):
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post(
-        "/documents/batch",
+        "/documents/file_batch",
         response_model=InsertResponse,
         dependencies=[Depends(optional_api_key)],
     )
@@ -1622,7 +1653,9 @@ def create_app(args):
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post(
-        "/query", response_model=QueryResponse, dependencies=[Depends(optional_api_key)]
+        "/query", 
+        response_model=QueryResponse, 
+        dependencies=[Depends(optional_api_key)]
     )
     async def query_text(request: QueryRequest):
         """
@@ -1648,13 +1681,7 @@ def create_app(args):
             if isinstance(response, str):
                 return QueryResponse(response=response)
 
-            # If it's an async generator, decide whether to stream based on stream parameter
-            if request.stream or hasattr(response, "__aiter__"):
-                result = ""
-                async for chunk in response:
-                    result += chunk
-                return QueryResponse(response=result)
-            elif isinstance(response, dict):
+            if isinstance(response, dict):
                 result = json.dumps(response, indent=2)
                 return QueryResponse(response=result)
             else:
@@ -1706,7 +1733,7 @@ def create_app(args):
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "Content-Type": "application/x-ndjson",
-                    "X-Accel-Buffering": "no",  # 确保在Nginx代理时正确处理流式响应
+                    "X-Accel-Buffering": "no",  # Ensure proper handling of streaming response when proxied by Nginx
                 },
             )
         except Exception as e:
