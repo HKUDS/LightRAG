@@ -4,10 +4,12 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Union
 
 import numpy as np
 import pipmaster as pm
+
+from lightrag.types import KnowledgeGraph
 
 if not pm.is_installed("asyncpg"):
     pm.install("asyncpg")
@@ -835,7 +837,7 @@ class PGGraphStorage(BaseGraphStorage):
         )
         return single_result["edge_exists"]
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         label = PGGraphStorage._encode_graph_label(node_id.strip('"'))
         query = """SELECT * FROM cypher('%s', $$
                      MATCH (n:Entity {node_id: "%s"})
@@ -890,17 +892,7 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
-        """
-        Find all edges between nodes of two given labels
-
-        Args:
-            source_node_id (str): Label of the source nodes
-            target_node_id (str): Label of the target nodes
-
-        Returns:
-            list: List of all relationships/edges found
-        """
+    ) -> dict[str, str] | None:
         src_label = PGGraphStorage._encode_graph_label(source_node_id.strip('"'))
         tgt_label = PGGraphStorage._encode_graph_label(target_node_id.strip('"'))
 
@@ -924,7 +916,7 @@ class PGGraphStorage(BaseGraphStorage):
             )
             return result
 
-    async def get_node_edges(self, source_node_id: str) -> List[Tuple[str, str]]:
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
         Retrieves all edges (relationships) for a particular node identified by its label.
         :return: List of dictionaries containing edge information
@@ -972,14 +964,7 @@ class PGGraphStorage(BaseGraphStorage):
         wait=wait_exponential(multiplier=1, min=4, max=10),
         retry=retry_if_exception_type((PGGraphQueryException,)),
     )
-    async def upsert_node(self, node_id: str, node_data: Dict[str, Any]):
-        """
-        Upsert a node in the AGE database.
-
-        Args:
-            node_id: The unique identifier for the node (used as label)
-            node_data: Dictionary of node properties
-        """
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         label = PGGraphStorage._encode_graph_label(node_id.strip('"'))
         properties = node_data
 
@@ -1010,8 +995,8 @@ class PGGraphStorage(BaseGraphStorage):
         retry=retry_if_exception_type((PGGraphQueryException,)),
     )
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: Dict[str, Any]
-    ):
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+    ) -> None:
         """
         Upsert an edge and its properties between two nodes identified by their labels.
 
@@ -1053,6 +1038,19 @@ class PGGraphStorage(BaseGraphStorage):
     async def _node2vec_embed(self):
         print("Implemented but never called.")
 
+    async def delete_node(self, node_id: str) -> None:
+        raise NotImplementedError
+    
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
+        raise NotImplementedError    
+    
+    async def get_all_labels(self) -> list[str]:    
+        raise NotImplementedError
+    
+    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+        raise NotImplementedError
 
 NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",

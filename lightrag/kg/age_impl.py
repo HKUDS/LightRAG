@@ -5,7 +5,8 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Union
+import numpy as np
 import pipmaster as pm
 
 if not pm.is_installed("psycopg-pool"):
@@ -15,6 +16,7 @@ if not pm.is_installed("asyncpg"):
     pm.install("asyncpg")
 
 
+from lightrag.types import KnowledgeGraph
 import psycopg
 from psycopg.rows import namedtuple_row
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
@@ -396,7 +398,7 @@ class AGEStorage(BaseGraphStorage):
         )
         return single_result["edge_exists"]
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         entity_name_label = node_id.strip('"')
         query = """
                 MATCH (n:`{label}`) RETURN n
@@ -454,17 +456,7 @@ class AGEStorage(BaseGraphStorage):
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
-        """
-        Find all edges between nodes of two given labels
-
-        Args:
-            source_node_label (str): Label of the source nodes
-            target_node_label (str): Label of the target nodes
-
-        Returns:
-            list: List of all relationships/edges found
-        """
+    ) -> dict[str, str] | None:
         entity_name_label_source = source_node_id.strip('"')
         entity_name_label_target = target_node_id.strip('"')
 
@@ -488,7 +480,7 @@ class AGEStorage(BaseGraphStorage):
             )
             return result
 
-    async def get_node_edges(self, source_node_id: str) -> List[Tuple[str, str]]:
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
         Retrieves all edges (relationships) for a particular node identified by its label.
         :return: List of dictionaries containing edge information
@@ -526,7 +518,7 @@ class AGEStorage(BaseGraphStorage):
         wait=wait_exponential(multiplier=1, min=4, max=10),
         retry=retry_if_exception_type((AGEQueryException,)),
     )
-    async def upsert_node(self, node_id: str, node_data: Dict[str, Any]):
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Upsert a node in the AGE database.
 
@@ -562,8 +554,8 @@ class AGEStorage(BaseGraphStorage):
         retry=retry_if_exception_type((AGEQueryException,)),
     )
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: Dict[str, Any]
-    ):
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+    ) -> None:
         """
         Upsert an edge and its properties between two nodes identified by their labels.
 
@@ -619,3 +611,15 @@ class AGEStorage(BaseGraphStorage):
                 yield connection
         finally:
             await self._driver.putconn(connection)
+
+    async def delete_node(self, node_id: str) -> None:
+        raise NotImplementedError
+    
+    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray[Any, Any], list[str]]:
+        raise NotImplementedError
+    
+    async def get_all_labels(self) -> list[str]:    
+        raise NotImplementedError
+    
+    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+        raise NotImplementedError
