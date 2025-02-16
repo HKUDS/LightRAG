@@ -75,7 +75,7 @@ export default function QuerySettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value="Multiple Paragraphs">Single Paragraph</SelectItem>
+                    <SelectItem value="Multiple Paragraphs">Multiple Paragraphs</SelectItem>
                     <SelectItem value="Single Paragraph">Single Paragraph</SelectItem>
                     <SelectItem value="Bullet Points">Bullet Points</SelectItem>
                   </SelectGroup>
