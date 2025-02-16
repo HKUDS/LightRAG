@@ -39,7 +39,7 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
-        counts = {status: 0 for status in DocStatus}
+        counts = {status.value: 0 for status in DocStatus}
         for doc in self._data.values():
             counts[doc["status"]] += 1
         return counts
