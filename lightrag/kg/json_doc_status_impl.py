@@ -75,7 +75,7 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         write_json(self._data, self._file_name)
 
-    async def upsert(self, data: dict[str, Any]) -> None:
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         self._data.update(data)
         await self.index_done_callback()
 
@@ -88,7 +88,4 @@ class JsonDocStatusStorage(DocStatusStorage):
         await self.index_done_callback()
 
     async def drop(self) -> None:
-        raise NotImplementedError
-
-    async def update_doc_status(self, data: dict[str, Any]) -> None:
         raise NotImplementedError
