@@ -317,11 +317,8 @@ class OracleKVStorage(BaseKVStorage):
                     await self.db.execute(upsert_sql, _data)
 
     async def index_done_callback(self) -> None:
-        if is_namespace(
-            self.namespace,
-            (NameSpace.KV_STORE_FULL_DOCS, NameSpace.KV_STORE_TEXT_CHUNKS),
-        ):
-            logger.info("full doc and chunk data had been saved into oracle db!")
+        # Oracle handles persistence automatically
+        pass
 
     async def drop(self) -> None:
         raise NotImplementedError
@@ -338,12 +335,6 @@ class OracleVectorDBStorage(BaseVectorStorage):
                 "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
             )
         self.cosine_better_than_threshold = cosine_threshold
-
-    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        pass
-
-    async def index_done_callback(self) -> None:
-        pass
 
     #################### query method ###############
     async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
@@ -366,12 +357,17 @@ class OracleVectorDBStorage(BaseVectorStorage):
         # print("vector search result:",results)
         return results
 
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        raise NotImplementedError
+
+    async def index_done_callback(self) -> None:
+        # Oracles handles persistence automatically
+        pass
+    
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete a single entity by its name"""
         raise NotImplementedError
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete relations for a given entity by scanning metadata"""
         raise NotImplementedError
 
 
@@ -476,6 +472,7 @@ class OracleGraphStorage(BaseGraphStorage):
         return embeddings, nodes_ids
 
     async def index_done_callback(self) -> None:
+        # Oracles handles persistence automatically
         pass
 
     #################### query method #################

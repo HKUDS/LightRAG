@@ -88,6 +88,7 @@ class GremlinStorage(BaseGraphStorage):
             self._driver.close()
 
     async def index_done_callback(self) -> None:
+        # Gremlin handles persistence automatically
         pass
 
     @staticmethod
