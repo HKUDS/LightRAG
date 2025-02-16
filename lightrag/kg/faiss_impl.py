@@ -27,8 +27,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
     def __post_init__(self):
         # Grab config values if available
-        config = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        cosine_threshold = config.get("cosine_better_than_threshold")
+        kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
             raise ValueError(
                 "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
@@ -219,7 +219,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
         await self.delete([entity_id])
 
-    async def delete_entity_relation(self, entity_name: str):
+    async def delete_entity_relation(self, entity_name: str) -> None:
         """
         Delete relations for a given entity by scanning metadata.
         """

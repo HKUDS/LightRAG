@@ -113,7 +113,24 @@ async def main():
         )
 
         # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool
-        rag.set_storage_client(db_client=oracle_db)
+
+        for storage in [
+            rag.vector_db_storage_cls,
+            rag.graph_storage_cls,
+            rag.doc_status,
+            rag.full_docs,
+            rag.text_chunks,
+            rag.llm_response_cache,
+            rag.key_string_value_json_storage_cls,
+            rag.chunks_vdb,
+            rag.relationships_vdb,
+            rag.entities_vdb,
+            rag.graph_storage_cls,
+            rag.chunk_entity_relation_graph,
+            rag.llm_response_cache,
+        ]:
+            # set client
+            storage.db = oracle_db
 
         # Extract and Insert into LightRAG storage
         with open(WORKING_DIR + "/docs.txt", "r", encoding="utf-8") as f:
