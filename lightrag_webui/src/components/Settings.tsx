@@ -1,5 +1,5 @@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
-import { Checkbox } from '@/components/ui/Checkbox'
+import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
 import Separator from '@/components/ui/Separator'
 import Input from '@/components/ui/Input'
