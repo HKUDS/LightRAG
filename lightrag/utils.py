@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import html
 import io
@@ -9,7 +11,7 @@ import re
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
-from typing import Any, Union, List, Optional
+from typing import Any, Callable
 import xml.etree.ElementTree as ET
 import bs4
 
@@ -67,12 +69,12 @@ class EmbeddingFunc:
 
 @dataclass
 class ReasoningResponse:
-    reasoning_content: str
+    reasoning_content: str | None
     response_content: str
     tag: str
 
 
-def locate_json_string_body_from_string(content: str) -> Union[str, None]:
+def locate_json_string_body_from_string(content: str) -> str | None:
     """Locate the JSON string body from a string"""
     try:
         maybe_json_str = re.search(r"{.*}", content, re.DOTALL)
@@ -109,7 +111,7 @@ def convert_response_to_json(response: str) -> dict[str, Any]:
         raise e from None
 
 
-def compute_args_hash(*args, cache_type: str = None) -> str:
+def compute_args_hash(*args: Any, cache_type: str | None = None) -> str:
     """Compute a hash for the given arguments.
     Args:
         *args: Arguments to hash
@@ -128,7 +130,12 @@ def compute_args_hash(*args, cache_type: str = None) -> str:
     return hashlib.md5(args_str.encode()).hexdigest()
 
 
-def compute_mdhash_id(content, prefix: str = ""):
+def compute_mdhash_id(content: str, prefix: str = "") -> str:
+    """
+    Compute a unique ID for a given content string.
+
+    The ID is a combination of the given prefix and the MD5 hash of the content string.
+    """
     return prefix + md5(content.encode()).hexdigest()
 
 
@@ -215,11 +222,13 @@ def clean_str(input: Any) -> str:
     return re.sub(r"[\x00-\x1f\x7f-\x9f]", "", result)
 
 
-def is_float_regex(value):
+def is_float_regex(value: str) -> bool:
     return bool(re.match(r"^[-+]?[0-9]*\.?[0-9]+$", value))
 
 
-def truncate_list_by_token_size(list_data: list, key: callable, max_token_size: int):
+def truncate_list_by_token_size(
+    list_data: list[Any], key: Callable[[Any], str], max_token_size: int
+) -> list[int]:
     """Truncate a list of data by token size"""
     if max_token_size <= 0:
         return []
@@ -231,7 +240,7 @@ def truncate_list_by_token_size(list_data: list, key: callable, max_token_size: 
     return list_data
 
 
-def list_of_list_to_csv(data: List[List[str]]) -> str:
+def list_of_list_to_csv(data: list[list[str]]) -> str:
     output = io.StringIO()
     writer = csv.writer(
         output,
@@ -244,7 +253,7 @@ def list_of_list_to_csv(data: List[List[str]]) -> str:
     return output.getvalue()
 
 
-def csv_string_to_list(csv_string: str) -> List[List[str]]:
+def csv_string_to_list(csv_string: str) -> list[list[str]]:
     # Clean the string by removing NUL characters
     cleaned_string = csv_string.replace("\0", "")
 
@@ -329,7 +338,7 @@ def xml_to_json(xml_file):
         return None
 
 
-def process_combine_contexts(hl, ll):
+def process_combine_contexts(hl: str, ll: str):
     header = None
     list_hl = csv_string_to_list(hl.strip())
     list_ll = csv_string_to_list(ll.strip())
@@ -375,7 +384,7 @@ async def get_best_cached_response(
     llm_func=None,
     original_prompt=None,
     cache_type=None,
-) -> Union[str, None]:
+) -> str | None:
     logger.debug(
         f"get_best_cached_response:  mode={mode} cache_type={cache_type} use_llm_check={use_llm_check}"
     )
@@ -479,7 +488,7 @@ def cosine_similarity(v1, v2):
     return dot_product / (norm1 * norm2)
 
 
-def quantize_embedding(embedding: Union[np.ndarray, list], bits=8) -> tuple:
+def quantize_embedding(embedding: np.ndarray | list[float], bits: int = 8) -> tuple:
     """Quantize embedding to specified bits"""
     # Convert list to numpy array if needed
     if isinstance(embedding, list):
@@ -570,9 +579,9 @@ class CacheData:
     args_hash: str
     content: str
     prompt: str
-    quantized: Optional[np.ndarray] = None
-    min_val: Optional[float] = None
-    max_val: Optional[float] = None
+    quantized: np.ndarray | None = None
+    min_val: float | None = None
+    max_val: float | None = None
     mode: str = "default"
     cache_type: str = "query"
 
@@ -635,7 +644,9 @@ def exists_func(obj, func_name: str) -> bool:
         return False
 
 
-def get_conversation_turns(conversation_history: list[dict], num_turns: int) -> str:
+def get_conversation_turns(
+    conversation_history: list[dict[str, Any]], num_turns: int
+) -> str:
     """
     Process conversation history to get the specified number of complete turns.
 
@@ -647,8 +658,8 @@ def get_conversation_turns(conversation_history: list[dict], num_turns: int) -> 
         Formatted string of the conversation history
     """
     # Group messages into turns
-    turns = []
-    messages = []
+    turns: list[list[dict[str, Any]]] = []
+    messages: list[dict[str, Any]] = []
 
     # First, filter out keyword extraction messages
     for msg in conversation_history:
@@ -682,7 +693,7 @@ def get_conversation_turns(conversation_history: list[dict], num_turns: int) -> 
         turns = turns[-num_turns:]
 
     # Format the turns into a string
-    formatted_turns = []
+    formatted_turns: list[str] = []
     for turn in turns:
         formatted_turns.extend(
             [f"user: {turn[0]['content']}", f"assistant: {turn[1]['content']}"]
