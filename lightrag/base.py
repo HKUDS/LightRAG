@@ -92,6 +92,7 @@ class StorageNameSpace(ABC):
 @dataclass
 class BaseVectorStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
+    cosine_better_than_threshold: float
     meta_fields: set[str] = field(default_factory=set)
 
     @abstractmethod

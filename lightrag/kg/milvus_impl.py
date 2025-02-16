@@ -1,27 +1,29 @@
 import asyncio
 import os
-from typing import Any
+from typing import Any, final
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import numpy as np
 from lightrag.utils import logger
 from ..base import BaseVectorStorage
-import pipmaster as pm
+
 import configparser
 
-if not pm.is_installed("pymilvus"):
-    pm.install("pymilvus")
-from pymilvus import MilvusClient
+try:
+    from pymilvus import MilvusClient
+except ImportError:
+    raise ImportError(
+        "pymilvus library is not installed. Please install it to proceed."
+    )
 
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 
+@final
 @dataclass
 class MilvusVectorDBStorage(BaseVectorStorage):
-    cosine_better_than_threshold: float = None
-
     @staticmethod
     def create_collection_if_not_exist(
         client: MilvusClient, collection_name: str, **kwargs

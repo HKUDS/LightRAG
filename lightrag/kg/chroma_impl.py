@@ -1,18 +1,24 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, final
 import numpy as np
-from chromadb import HttpClient, PersistentClient
-from chromadb.config import Settings
+
 from lightrag.base import BaseVectorStorage
 from lightrag.utils import logger
 
+try:
+    from chromadb import HttpClient, PersistentClient
+    from chromadb.config import Settings
+except ImportError as e:
+    raise ImportError(
+        "chromadb library is not installed. Please install it to proceed."
+    ) from e
 
+
+@final
 @dataclass
 class ChromaVectorDBStorage(BaseVectorStorage):
     """ChromaDB vector storage implementation."""
-
-    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
         try:

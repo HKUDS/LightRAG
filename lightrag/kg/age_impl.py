@@ -5,21 +5,11 @@ import os
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Dict, List, NamedTuple, Optional, Union
+from typing import Any, Dict, List, NamedTuple, Optional, Union, final
 import numpy as np
-import pipmaster as pm
-
-if not pm.is_installed("psycopg-pool"):
-    pm.install("psycopg-pool")
-    pm.install("psycopg[binary,pool]")
-if not pm.is_installed("asyncpg"):
-    pm.install("asyncpg")
-
 
 from lightrag.types import KnowledgeGraph
-import psycopg
-from psycopg.rows import namedtuple_row
-from psycopg_pool import AsyncConnectionPool, PoolTimeout
+
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -35,6 +25,16 @@ if sys.platform.startswith("win"):
     import asyncio.windows_events
 
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+try:
+    import psycopg
+    from psycopg.rows import namedtuple_row
+    from psycopg_pool import AsyncConnectionPool, PoolTimeout
+except ImportError as e:
+    raise ImportError(
+        "psycopg-pool, psycopg[binary,pool], asyncpg library is not installed. Please install it to proceed."
+    ) from e
 
 
 class AGEQueryException(Exception):
@@ -55,6 +55,7 @@ class AGEQueryException(Exception):
         return self.details
 
 
+@final
 @dataclass
 class AGEStorage(BaseGraphStorage):
     @staticmethod
@@ -99,9 +100,6 @@ class AGEStorage(BaseGraphStorage):
     async def __aexit__(self, exc_type, exc, tb):
         if self._driver:
             await self._driver.close()
-
-    async def index_done_callback(self):
-        print("KG successfully indexed.")
 
     @staticmethod
     def _record_to_dict(record: NamedTuple) -> Dict[str, Any]:
@@ -627,3 +625,6 @@ class AGEStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
         raise NotImplementedError
+
+    async def index_done_callback(self) -> None:
+        pass
