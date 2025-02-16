@@ -1746,9 +1746,9 @@ def create_app(args):
     async def documents() -> DocsStatusesResponse:
         """
         Get documents statuses
-
         Returns:
-            DocsStatusesResponse: A response object containing the status, message, and the number of indexed documents.
+            DocsStatusesResponse: A response object containing a dictionary where keys are DocStatus
+            and values are lists of DocStatusResponse objects representing documents in each status category.
         """
         try:
             statuses = (
