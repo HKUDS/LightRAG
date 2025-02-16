@@ -482,7 +482,7 @@ class PGDocStatusStorage(DocStatusStorage):
     async def get_docs_by_status(
         self, status: DocStatus
     ) -> Dict[str, DocProcessingStatus]:
-        """Get all documents by status"""
+        """all documents with a specific status"""
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
         params = {"workspace": self.db.workspace, "status": status}
         result = await self.db.query(sql, params, True)
