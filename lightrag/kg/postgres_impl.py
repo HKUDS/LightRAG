@@ -468,7 +468,7 @@ class PGDocStatusStorage(DocStatusStorage):
     async def get_docs_by_status(
         self, status: DocStatus
     ) -> Dict[str, DocProcessingStatus]:
-        """Get all documents by status"""
+        """all documents with a specific status"""
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
         params = {"workspace": self.db.workspace, "status": status}
         result = await self.db.query(sql, params, True)
@@ -484,22 +484,6 @@ class PGDocStatusStorage(DocStatusStorage):
             )
             for element in result
         }
-
-    async def get_failed_docs(self) -> Dict[str, DocProcessingStatus]:
-        """Get all failed documents"""
-        return await self.get_docs_by_status(DocStatus.FAILED)
-
-    async def get_pending_docs(self) -> Dict[str, DocProcessingStatus]:
-        """Get all pending documents"""
-        return await self.get_docs_by_status(DocStatus.PENDING)
-
-    async def get_processing_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all processing documents"""
-        return await self.get_docs_by_status(DocStatus.PROCESSING)
-
-    async def get_processed_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all procesed documents"""
-        return await self.get_docs_by_status(DocStatus.PROCESSED)
 
     async def index_done_callback(self):
         """Save data after indexing, but for PostgreSQL, we already saved them during the upsert stage, so no action to take here"""

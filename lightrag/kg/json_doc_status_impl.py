@@ -93,36 +93,14 @@ class JsonDocStatusStorage(DocStatusStorage):
             counts[doc["status"]] += 1
         return counts
 
-    async def get_failed_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all failed documents"""
+    async def get_docs_by_status(
+        self, status: DocStatus
+    ) -> dict[str, DocProcessingStatus]:
+        """all documents with a specific status"""
         return {
             k: DocProcessingStatus(**v)
             for k, v in self._data.items()
-            if v["status"] == DocStatus.FAILED
-        }
-
-    async def get_pending_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all pending documents"""
-        return {
-            k: DocProcessingStatus(**v)
-            for k, v in self._data.items()
-            if v["status"] == DocStatus.PENDING
-        }
-
-    async def get_processed_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all processed documents"""
-        return {
-            k: DocProcessingStatus(**v)
-            for k, v in self._data.items()
-            if v["status"] == DocStatus.PROCESSED
-        }
-
-    async def get_processing_docs(self) -> dict[str, DocProcessingStatus]:
-        """Get all processing documents"""
-        return {
-            k: DocProcessingStatus(**v)
-            for k, v in self._data.items()
-            if v["status"] == DocStatus.PROCESSING
+            if v["status"] == status
         }
 
     async def index_done_callback(self):
