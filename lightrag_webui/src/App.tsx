@@ -1,13 +1,15 @@
 import { useState, useCallback } from 'react'
-import ThemeProvider from '@/components/ThemeProvider'
+import ThemeProvider from '@/components/graph/ThemeProvider'
 import MessageAlert from '@/components/MessageAlert'
-import StatusIndicator from '@/components/StatusIndicator'
+import ApiKeyAlert from '@/components/ApiKeyAlert'
+import StatusIndicator from '@/components/graph/StatusIndicator'
 import { healthCheckInterval } from '@/lib/constants'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { useEffect } from 'react'
 import { Toaster } from 'sonner'
 import SiteHeader from '@/features/SiteHeader'
+import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 
 import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
@@ -20,6 +22,7 @@ function App() {
   const message = useBackendState.use.message()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const [currentTab] = useState(() => useSettingsStore.getState().currentTab)
+  const [apiKeyInvalid, setApiKeyInvalid] = useState(false)
 
   // Health check
   useEffect(() => {
@@ -38,6 +41,14 @@ function App() {
     (tab: string) => useSettingsStore.getState().setCurrentTab(tab as any),
     []
   )
+
+  useEffect(() => {
+    if (message) {
+      if (message.includes(InvalidApiKeyError) || message.includes(RequireApiKeError)) {
+        setApiKeyInvalid(true)
+      }
+    }
+  }, [message, setApiKeyInvalid])
 
   return (
     <ThemeProvider>
@@ -64,7 +75,8 @@ function App() {
           </div>
         </Tabs>
         {enableHealthCheck && <StatusIndicator />}
-        {message !== null && <MessageAlert />}
+        {message !== null && !apiKeyInvalid && <MessageAlert />}
+        {apiKeyInvalid && <ApiKeyAlert />}
         <Toaster />
       </main>
     </ThemeProvider>
