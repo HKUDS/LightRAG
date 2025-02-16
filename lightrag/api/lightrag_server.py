@@ -765,8 +765,8 @@ class InsertTextsRequest(BaseModel):
 
 
 class InsertResponse(BaseModel):
-    status: str
-    message: str
+    status: str = Field(description="Status of the operation")
+    message: str = Field(description="Message describing the operation result")
 
 
 def QueryRequestToQueryParams(request: QueryRequest, is_stream: bool):
