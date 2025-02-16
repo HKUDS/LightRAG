@@ -60,14 +60,14 @@ class MongoKVStorage(BaseKVStorage):
         # Ensure collection exists
         create_collection_if_not_exists(uri, database.name, self._collection_name)
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         return await self._data.find_one({"_id": id})
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
         return await cursor.to_list()
 
-    async def filter_keys(self, data: set[str]) -> set[str]:
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         cursor = self._data.find({"_id": {"$in": list(data)}}, {"_id": 1})
         existing_ids = {str(x["_id"]) async for x in cursor}
         return data - existing_ids
@@ -107,6 +107,9 @@ class MongoKVStorage(BaseKVStorage):
         else:
             return None
 
+    async def index_done_callback(self) -> None:
+        pass
+    
     async def drop(self) -> None:
         """Drop the collection"""
         await self._data.drop()

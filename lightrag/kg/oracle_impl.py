@@ -181,7 +181,7 @@ class OracleKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get doc_full data based on id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
@@ -232,7 +232,7 @@ class OracleKVStorage(BaseKVStorage):
             res = [{k: v} for k, v in dict_res.items()]
         return res
 
-    async def filter_keys(self, keys: list[str]) -> set[str]:
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         SQL = SQL_TEMPLATES["filter_keys"].format(
             table_name=namespace_to_table_name(self.namespace),
@@ -248,7 +248,7 @@ class OracleKVStorage(BaseKVStorage):
             return set(keys)
 
     ################ INSERT METHODS ################
-    async def upsert(self, data: dict[str, Any]) -> None:
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             list_data = [
                 {
@@ -314,6 +314,8 @@ class OracleKVStorage(BaseKVStorage):
         ):
             logger.info("full doc and chunk data had been saved into oracle db!")
 
+    async def drop(self) -> None:
+        raise NotImplementedError
 
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):

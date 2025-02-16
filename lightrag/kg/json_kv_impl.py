@@ -1,7 +1,7 @@
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any
 
 from lightrag.base import (
     BaseKVStorage,
@@ -25,7 +25,7 @@ class JsonKVStorage(BaseKVStorage):
     async def index_done_callback(self):
         write_json(self._data, self._file_name)
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         return self._data.get(id)
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -38,7 +38,7 @@ class JsonKVStorage(BaseKVStorage):
             for id in ids
         ]
 
-    async def filter_keys(self, data: set[str]) -> set[str]:
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         return set(data) - set(self._data.keys())
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
