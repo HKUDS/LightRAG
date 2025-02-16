@@ -147,7 +147,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
     async def index_done_callback(self) -> None:
         pass
-    
+
     async def delete_entity(self, entity_name: str) -> None:
         """Delete a single entity by its name"""
         raise NotImplementedError

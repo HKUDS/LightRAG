@@ -92,6 +92,7 @@ class StorageNameSpace:
 class BaseVectorStorage(StorageNameSpace):
     embedding_func: EmbeddingFunc
     meta_fields: set[str] = field(default_factory=set)
+
     async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """Query the vector storage and retrieve top_k results."""
         raise NotImplementedError
@@ -165,7 +166,6 @@ class BaseGraphStorage(StorageNameSpace):
         """Get all edges connected to a node."""
         raise NotImplementedError
 
-
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Upsert a node into the graph."""
         raise NotImplementedError
@@ -194,7 +194,9 @@ class BaseGraphStorage(StorageNameSpace):
         """Get a knowledge graph of a node."""
         raise NotImplementedError
 
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
         """Retrieve a subgraph of the knowledge graph starting from a given node."""
         raise NotImplementedError
 

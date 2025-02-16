@@ -41,12 +41,12 @@ class RedisKVStorage(BaseKVStorage):
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         pipe = self._redis.pipeline()
-        for key in data:
+        for key in keys:
             pipe.exists(f"{self.namespace}:{key}")
         results = await pipe.execute()
 
-        existing_ids = {data[i] for i, exists in enumerate(results) if exists}
-        return set(data) - existing_ids
+        existing_ids = {keys[i] for i, exists in enumerate(results) if exists}
+        return set(keys) - existing_ids
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         pipe = self._redis.pipeline()

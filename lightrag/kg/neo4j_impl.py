@@ -254,7 +254,6 @@ class Neo4JStorage(BaseGraphStorage):
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-
         try:
             entity_name_label_source = source_node_id.strip('"')
             entity_name_label_target = target_node_id.strip('"')
@@ -436,7 +435,9 @@ class Neo4JStorage(BaseGraphStorage):
     async def _node2vec_embed(self):
         print("Implemented but never called.")
 
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
         """
         Get complete connected subgraph for specified node (including the starting node itself)
 
@@ -620,8 +621,8 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def delete_node(self, node_id: str) -> None:
         raise NotImplementedError
-    
+
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError    
+        raise NotImplementedError

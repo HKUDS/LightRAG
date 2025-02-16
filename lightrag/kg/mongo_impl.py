@@ -68,9 +68,9 @@ class MongoKVStorage(BaseKVStorage):
         return await cursor.to_list()
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
-        cursor = self._data.find({"_id": {"$in": list(data)}}, {"_id": 1})
+        cursor = self._data.find({"_id": {"$in": list(keys)}}, {"_id": 1})
         existing_ids = {str(x["_id"]) async for x in cursor}
-        return data - existing_ids
+        return keys - existing_ids
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
@@ -109,7 +109,7 @@ class MongoKVStorage(BaseKVStorage):
 
     async def index_done_callback(self) -> None:
         pass
-    
+
     async def drop(self) -> None:
         """Drop the collection"""
         await self._data.drop()
@@ -570,7 +570,9 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray[Any, Any], list[str]]:
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         """
         Placeholder for demonstration, raises NotImplementedError.
         """
@@ -600,7 +602,9 @@ class MongoGraphStorage(BaseGraphStorage):
             labels.append(doc["_id"])
         return labels
 
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
         """
         Get complete connected subgraph for specified node (including the starting node itself)
 
@@ -918,7 +922,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
     async def index_done_callback(self) -> None:
         pass
-    
+
     async def delete_entity(self, entity_name: str) -> None:
         """Delete a single entity by its name"""
         raise NotImplementedError
@@ -926,6 +930,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete relations for a given entity by scanning metadata"""
         raise NotImplementedError
+
 
 def create_collection_if_not_exists(uri: str, database_name: str, collection_name: str):
     """Check if the collection exists. if not, create it."""

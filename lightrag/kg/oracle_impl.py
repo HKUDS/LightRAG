@@ -318,6 +318,7 @@ class OracleKVStorage(BaseKVStorage):
     async def drop(self) -> None:
         raise NotImplementedError
 
+
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):
     # db instance must be injected before use
@@ -367,6 +368,7 @@ class OracleVectorDBStorage(BaseVectorStorage):
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete relations for a given entity by scanning metadata"""
         raise NotImplementedError
+
 
 @dataclass
 class OracleGraphStorage(BaseGraphStorage):
@@ -452,7 +454,9 @@ class OracleGraphStorage(BaseGraphStorage):
         await self.db.execute(merge_sql, data)
         # self._graph.add_edge(source_node_id, target_node_id, **edge_data)
 
-    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray[Any, Any], list[str]]:
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         if algorithm not in self._node_embed_algorithms:
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
@@ -593,12 +597,15 @@ class OracleGraphStorage(BaseGraphStorage):
 
     async def delete_node(self, node_id: str) -> None:
         raise NotImplementedError
-    
+
     async def get_all_labels(self) -> list[str]:
         raise NotImplementedError
-    
-    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
         raise NotImplementedError
+
 
 N_T = {
     NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",
