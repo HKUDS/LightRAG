@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
+from lightrag.utils import encode_string_by_tiktoken
 from dotenv import load_dotenv
 
 
@@ -111,18 +112,9 @@ class OllamaTagResponse(BaseModel):
 
 
 def estimate_tokens(text: str) -> int:
-    """Estimate the number of tokens in text
-    Chinese characters: approximately 1.5 tokens per character
-    English characters: approximately 0.25 tokens per character
-    """
-    # Use regex to match Chinese and non-Chinese characters separately
-    chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
-    non_chinese_chars = len(re.findall(r"[^\u4e00-\u9fff]", text))
-
-    # Calculate estimated token count
-    tokens = chinese_chars * 1.5 + non_chinese_chars * 0.25
-
-    return int(tokens)
+    """Estimate the number of tokens in text using tiktoken"""
+    tokens = encode_string_by_tiktoken(text)
+    return len(tokens)
 
 
 def parse_query_mode(query: str) -> tuple[str, SearchMode]:
