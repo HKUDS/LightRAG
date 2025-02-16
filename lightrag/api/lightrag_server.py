@@ -769,32 +769,13 @@ class InsertResponse(BaseModel):
     message: str = Field(description="Message describing the operation result")
 
 
-def QueryRequestToQueryParams(request: QueryRequest, is_stream: bool):
-    param = QueryParam(mode=request.mode, stream=is_stream)
+def QueryRequestToQueryParams(request: QueryRequest, is_stream: bool) -> QueryParam:
+    """Converts a QueryRequest instance into a QueryParam instance."""
+    # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
+    request_data = request.model_dump(exclude_none=True, exclude={"query"})
 
-    if request.only_need_context is not None:
-        param.only_need_context = request.only_need_context
-    if request.only_need_prompt is not None:
-        param.only_need_prompt = request.only_need_prompt
-    if request.response_type is not None:
-        param.response_type = request.response_type
-    if request.top_k is not None:
-        param.top_k = request.top_k
-    if request.max_token_for_text_unit is not None:
-        param.max_token_for_text_unit = request.max_token_for_text_unit
-    if request.max_token_for_global_context is not None:
-        param.max_token_for_global_context = request.max_token_for_global_context
-    if request.max_token_for_local_context is not None:
-        param.max_token_for_local_context = request.max_token_for_local_context
-    if request.hl_keywords is not None:
-        param.hl_keywords = request.hl_keywords
-    if request.ll_keywords is not None:
-        param.ll_keywords = request.ll_keywords
-    if request.conversation_history is not None:
-        param.conversation_history = request.conversation_history
-    if request.history_turns is not None:
-        param.history_turns = request.history_turns
-    return param
+    # Ensure `mode` and `stream` are set explicitly
+    return QueryParam(**request_data, stream=is_stream)
 
 
 def get_api_key_dependency(api_key: Optional[str]):
