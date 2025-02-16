@@ -3,7 +3,8 @@ import inspect
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, Union, Tuple, List, Dict
+from typing import Any, List, Dict
+import numpy as np
 import pipmaster as pm
 import configparser
 
@@ -191,7 +192,7 @@ class Neo4JStorage(BaseGraphStorage):
             )
             return single_result["edgeExists"]
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get node by its label identifier.
 
         Args:
@@ -252,17 +253,8 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
-        """Find edge between two nodes identified by their labels.
+    ) -> dict[str, str] | None:
 
-        Args:
-            source_node_id (str): Label of the source node
-            target_node_id (str): Label of the target node
-
-        Returns:
-            dict: Edge properties if found, with at least {"weight": 0.0}
-            None: If error occurs
-        """
         try:
             entity_name_label_source = source_node_id.strip('"')
             entity_name_label_target = target_node_id.strip('"')
@@ -321,7 +313,7 @@ class Neo4JStorage(BaseGraphStorage):
             # Return default edge properties on error
             return {"weight": 0.0, "source_id": None, "target_id": None}
 
-    async def get_node_edges(self, source_node_id: str) -> List[Tuple[str, str]]:
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         node_label = source_node_id.strip('"')
 
         """
@@ -364,7 +356,7 @@ class Neo4JStorage(BaseGraphStorage):
             )
         ),
     )
-    async def upsert_node(self, node_id: str, node_data: Dict[str, Any]):
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Upsert a node in the Neo4j database.
 
@@ -405,8 +397,8 @@ class Neo4JStorage(BaseGraphStorage):
         ),
     )
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: Dict[str, Any]
-    ):
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+    ) -> None:
         """
         Upsert an edge and its properties between two nodes identified by their labels.
 
@@ -444,9 +436,7 @@ class Neo4JStorage(BaseGraphStorage):
     async def _node2vec_embed(self):
         print("Implemented but never called.")
 
-    async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 5
-    ) -> KnowledgeGraph:
+    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
         """
         Get complete connected subgraph for specified node (including the starting node itself)
 
@@ -603,7 +593,7 @@ class Neo4JStorage(BaseGraphStorage):
         await traverse(label, 0)
         return result
 
-    async def get_all_labels(self) -> List[str]:
+    async def get_all_labels(self) -> list[str]:
         """
         Get all existing node labels in the database
         Returns:
@@ -627,3 +617,11 @@ class Neo4JStorage(BaseGraphStorage):
             async for record in result:
                 labels.append(record["label"])
             return labels
+
+    async def delete_node(self, node_id: str) -> None:
+        raise NotImplementedError
+    
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
+        raise NotImplementedError    

@@ -13,6 +13,7 @@ if not pm.is_installed("oracledb"):
     pm.install("oracledb")
 
 
+from lightrag.types import KnowledgeGraph
 import oracledb
 
 from ..base import (
@@ -378,9 +379,7 @@ class OracleGraphStorage(BaseGraphStorage):
 
     #################### insert method ################
 
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]):
-        """插入或更新节点"""
-        # print("go into upsert node method")
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         entity_name = node_id
         entity_type = node_data["entity_type"]
         description = node_data["description"]
@@ -413,7 +412,7 @@ class OracleGraphStorage(BaseGraphStorage):
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
-    ):
+    ) -> None:
         """插入或更新边"""
         # print("go into upsert edge method")
         source_name = source_node_id
@@ -453,8 +452,7 @@ class OracleGraphStorage(BaseGraphStorage):
         await self.db.execute(merge_sql, data)
         # self._graph.add_edge(source_node_id, target_node_id, **edge_data)
 
-    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:
-        """为节点生成向量"""
+    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray[Any, Any], list[str]]:
         if algorithm not in self._node_embed_algorithms:
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
@@ -471,7 +469,7 @@ class OracleGraphStorage(BaseGraphStorage):
         nodes_ids = [self._graph.nodes[node_id]["id"] for node_id in nodes]
         return embeddings, nodes_ids
 
-    async def index_done_callback(self):
+    async def index_done_callback(self) -> None:
         """写入graphhml图文件"""
         logger.info(
             "Node and edge data had been saved into oracle db already, so nothing to do here!"
@@ -493,7 +491,6 @@ class OracleGraphStorage(BaseGraphStorage):
             return False
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        """根据源和目标节点id检查边是否存在"""
         SQL = SQL_TEMPLATES["has_edge"]
         params = {
             "workspace": self.db.workspace,
@@ -510,7 +507,6 @@ class OracleGraphStorage(BaseGraphStorage):
             return False
 
     async def node_degree(self, node_id: str) -> int:
-        """根据节点id获取节点的度"""
         SQL = SQL_TEMPLATES["node_degree"]
         params = {"workspace": self.db.workspace, "node_id": node_id}
         # print(SQL)
@@ -528,7 +524,7 @@ class OracleGraphStorage(BaseGraphStorage):
         # print("Edge degree",degree)
         return degree
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         """根据节点id获取节点数据"""
         SQL = SQL_TEMPLATES["get_node"]
         params = {"workspace": self.db.workspace, "node_id": node_id}
@@ -544,8 +540,7 @@ class OracleGraphStorage(BaseGraphStorage):
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
-        """根据源和目标节点id获取边"""
+    ) -> dict[str, str] | None:
         SQL = SQL_TEMPLATES["get_edge"]
         params = {
             "workspace": self.db.workspace,
@@ -560,8 +555,7 @@ class OracleGraphStorage(BaseGraphStorage):
             # print("Edge not exist!",self.db.workspace, source_node_id, target_node_id)
             return None
 
-    async def get_node_edges(self, source_node_id: str):
-        """根据节点id获取节点的所有边"""
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         if await self.has_node(source_node_id):
             SQL = SQL_TEMPLATES["get_node_edges"]
             params = {"workspace": self.db.workspace, "source_node_id": source_node_id}
@@ -597,6 +591,14 @@ class OracleGraphStorage(BaseGraphStorage):
         if res:
             return res
 
+    async def delete_node(self, node_id: str) -> None:
+        raise NotImplementedError
+    
+    async def get_all_labels(self) -> list[str]:
+        raise NotImplementedError
+    
+    async def get_knowledge_graph(self, node_label: str, max_depth: int = 5) -> KnowledgeGraph:
+        raise NotImplementedError
 
 N_T = {
     NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",
