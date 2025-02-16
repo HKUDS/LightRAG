@@ -74,30 +74,38 @@ LLM_MODEL=model_name_of_azure_ai
 LLM_BINDING_API_KEY=api_key_of_azure_ai
 ```
 
-### About Ollama API
+### 3. Install Lightrag as a Linux Service
 
-We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily.
+Create a your service file `lightrag.sevice` from the sample file : `lightrag.sevice.example`. Modified the WorkingDirectoryand EexecStart in the service file:
 
-#### Choose Query mode in chat
-
-A query prefix in the query string can determines which LightRAG query mode is used to generate the respond for the query. The supported prefixes include:
-
-```
-/local
-/global
-/hybrid
-/naive
-/mix
-/bypass
+```text
+Description=LightRAG Ollama Service
+WorkingDirectory=<lightrag installed directory>
+ExecStart=<lightrag installed directory>/lightrag/api/lightrag-api
 ```
 
-For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default。
+Modify your service startup script: `lightrag-api`. Change you python virtual environment activation command as needed:
 
-"/bypass" is not a LightRAG query mode, it will tell API Server to pass the query directly to the underlying LLM with chat history. So user can use LLM to answer question base on the LightRAG query results. (If you are using Open WebUI as front end, you can just switch the model to a normal LLM instead of using /bypass prefix)
+```shell
+#!/bin/bash
 
-#### Connect Open WebUI to LightRAG
+# your python virtual environment activation
+source /home/netman/lightrag-xyj/venv/bin/activate
+# start lightrag api server
+lightrag-server
+```
 
-After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named lightrag:latest will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface.
+Install LightRAG service. If your system is Ubuntu, the following commands will work:
+
+```shell
+sudo cp lightrag.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl start lightrag.service
+sudo systemctl status lightrag.service
+sudo systemctl enable lightrag.service
+```
+
+
 
 ## Configuration
 
@@ -177,7 +185,8 @@ TiDBVectorDBStorage         TiDB
 PGVectorStorage             Postgres
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
-OracleVectorDBStorag        Oracle
+OracleVectorDBStorage       Oracle
+MongoVectorDBStorage        MongoDB
 ```
 
 * DOC_STATUS_STORAGE：supported implement-name
@@ -378,7 +387,7 @@ curl -X DELETE "http://localhost:9621/documents"
 
 #### GET /api/version
 
-Get Ollama version information
+Get Ollama version information.
 
 ```bash
 curl http://localhost:9621/api/version
@@ -386,7 +395,7 @@ curl http://localhost:9621/api/version
 
 #### GET /api/tags
 
-Get Ollama available models
+Get Ollama available models.
 
 ```bash
 curl http://localhost:9621/api/tags
@@ -394,7 +403,7 @@ curl http://localhost:9621/api/tags
 
 #### POST /api/chat
 
-Handle chat completion requests
+Handle chat completion requests. Routes user queries through LightRAG by selecting query mode based on query prefix. Detects and forwards OpenWebUI session-related requests (for meta data generation task) directly to underlying LLM.
 
 ```shell
 curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/json" -d \
@@ -402,6 +411,10 @@ curl -N -X POST http://localhost:9621/api/chat -H "Content-Type: application/jso
 ```
 
 > For more information about Ollama API pls. visit :  [Ollama API documentation](https://github.com/ollama/ollama/blob/main/docs/api.md)
+
+#### POST /api/generate
+
+Handle generate completion requests. For compatibility purpose, the request is not processed by LightRAG, and will be handled by underlying LLM model.
 
 ### Utility Endpoints
 
@@ -412,7 +425,35 @@ Check server health and configuration.
 curl "http://localhost:9621/health"
 ```
 
+## Ollama Emulation
+
+We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily.
+
+### Connect Open WebUI to LightRAG
+
+After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named lightrag:latest will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You'd better install LightRAG as service for this use case.
+
+Open WebUI's use LLM to do the session title and session keyword generation task. So the Ollama chat chat completion API detects and forwards OpenWebUI session-related requests directly to underlying LLM.
+
+### Choose Query mode in chat
+
+A query prefix in the query string can determines which LightRAG query mode is used to generate the respond for the query. The supported prefixes include:
+
+```
+/local
+/global
+/hybrid
+/naive
+/mix
+/bypass
+```
+
+For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default。
+
+"/bypass" is not a LightRAG query mode, it will tell API Server to pass the query directly to the underlying LLM with chat history. So user can use LLM to answer question base on the chat history. If you are using Open WebUI as front end, you can just switch the model to a normal LLM instead of using /bypass prefix.
+
 ## Development
+
 Contribute to the project: [Guide](contributor-readme.MD)
 
 ### Running in Development Mode
@@ -470,34 +511,3 @@ This intelligent caching mechanism:
 - Only new documents in the input directory will be processed
 - This optimization significantly reduces startup time for subsequent runs
 - The working directory (`--working-dir`) stores the vectorized documents database
-
-## Install Lightrag as a Linux Service
-
-Create a your service file `lightrag.sevice` from the sample file : `lightrag.sevice.example`. Modified the WorkingDirectoryand EexecStart in the service file:
-
-```text
-Description=LightRAG Ollama Service
-WorkingDirectory=<lightrag installed directory>
-ExecStart=<lightrag installed directory>/lightrag/api/lightrag-api
-```
-
-Modify your service startup script: `lightrag-api`. Change you python virtual environment activation command as needed:
-
-```shell
-#!/bin/bash
-
-# your python virtual environment activation
-source /home/netman/lightrag-xyj/venv/bin/activate
-# start lightrag api server
-lightrag-server
-```
-
-Install LightRAG service. If your system is Ubuntu, the following commands will work:
-
-```shell
-sudo cp lightrag.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl start lightrag.service
-sudo systemctl status lightrag.service
-sudo systemctl enable lightrag.service
-```

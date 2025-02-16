@@ -24,7 +24,7 @@ const validateGraph = (graph: RawGraph) => {
   }
 
   for (const edge of graph.edges) {
-    if (!edge.id || !edge.source || !edge.target || !edge.type || !edge.properties) {
+    if (!edge.id || !edge.source || !edge.target) {
       return false
     }
   }
@@ -88,6 +88,14 @@ const fetchGraph = async (label: string) => {
       if (source !== undefined && source !== undefined) {
         const sourceNode = rawData.nodes[source]
         const targetNode = rawData.nodes[target]
+        if (!sourceNode) {
+          console.error(`Source node ${edge.source} is undefined`)
+          continue
+        }
+        if (!targetNode) {
+          console.error(`Target node ${edge.target} is undefined`)
+          continue
+        }
         sourceNode.degree += 1
         targetNode.degree += 1
       }
@@ -146,7 +154,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
 
   for (const rawEdge of rawGraph?.edges ?? []) {
     rawEdge.dynamicId = graph.addDirectedEdge(rawEdge.source, rawEdge.target, {
-      label: rawEdge.type
+      label: rawEdge.type || undefined
     })
   }
 
