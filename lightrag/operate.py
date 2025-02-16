@@ -642,7 +642,6 @@ async def kg_query(
         history=history_context,
     )
 
-
     if query_param.only_need_prompt:
         return sys_prompt
 
@@ -901,7 +900,7 @@ async def mix_kg_vector_query(
                 formatted_chunks.append(chunk_text)
 
             logger.info(
-                f"Truncate text chunks from {len(chunks)} to {len(formatted_chunks)}"
+                f"Truncate chunks from {len(chunks)} to {len(formatted_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
             )
             return "\n--New Chunk--\n".join(formatted_chunks)
         except Exception as e:
@@ -1244,7 +1243,7 @@ async def _find_most_related_text_unit_from_entities(
     )
 
     logger.info(
-        f"Truncate text chunks from {len(all_text_units_lookup)} to {len(all_text_units)}"
+        f"Truncate chunks from {len(all_text_units_lookup)} to {len(all_text_units)} (max tokens:{query_param.max_token_for_text_unit})"
     )
 
     all_text_units = [t["data"] for t in all_text_units]
@@ -1289,7 +1288,9 @@ async def _find_most_related_edges_from_entities(
         max_token_size=query_param.max_token_for_global_context,
     )
 
-    logger.info(f"Truncate relations from {len(all_edges)} to {len(all_edges_data)}")
+    logger.info(
+        f"Truncate relations from {len(all_edges)} to {len(all_edges_data)} (max tokens:{query_param.max_token_for_global_context})"
+    )
 
     return all_edges_data
 
@@ -1344,7 +1345,9 @@ async def _get_edge_data(
         key=lambda x: x["description"],
         max_token_size=query_param.max_token_for_global_context,
     )
-    logger.info(f"Truncate relations from {len_edge_datas} to {len(edge_datas)}")
+    logger.info(
+        f"Truncate relations from {len_edge_datas} to {len(edge_datas)} (max tokens:{query_param.max_token_for_global_context})"
+    )
 
     use_entities, use_text_units = await asyncio.gather(
         _find_most_related_entities_from_relationships(
@@ -1450,7 +1453,9 @@ async def _find_most_related_entities_from_relationships(
         key=lambda x: x["description"],
         max_token_size=query_param.max_token_for_local_context,
     )
-    logger.info(f"Truncate entities from {len_node_datas} to {len(node_datas)}")
+    logger.info(
+        f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
+    )
 
     return node_datas
 
@@ -1507,7 +1512,7 @@ async def _find_related_text_unit_from_relationships(
     )
 
     logger.info(
-        f"Truncate text chunks from {len(valid_text_units)} to {len(truncated_text_units)}"
+        f"Truncate chunks from {len(valid_text_units)} to {len(truncated_text_units)} (max tokens:{query_param.max_token_for_text_unit})"
     )
 
     all_text_units: list[TextChunkSchema] = [t["data"] for t in truncated_text_units]
@@ -1577,7 +1582,9 @@ async def naive_query(
         logger.warning("No chunks left after truncation")
         return PROMPTS["fail_response"]
 
-    logger.info(f"Truncate text chunks from {len(chunks)} to {len(maybe_trun_chunks)}")
+    logger.info(
+        f"Truncate chunks from {len(chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+    )
 
     section = "\n--New Chunk--\n".join([c["content"] for c in maybe_trun_chunks])
 
