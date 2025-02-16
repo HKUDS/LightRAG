@@ -73,4 +73,3 @@ export default function SiteHeader() {
     </header>
   )
 }
-
