@@ -185,7 +185,7 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def get_docs_by_status(
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
-        """Get all documents by status"""
+        """Get all documents with a specific status"""
         cursor = self._data.find({"status": status.value})
         result = await cursor.to_list()
         return {
