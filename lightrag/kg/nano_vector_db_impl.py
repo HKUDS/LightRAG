@@ -79,8 +79,8 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # Initialize lock only for file operations
         self._save_lock = asyncio.Lock()
         # Use global config value if specified, otherwise use default
-        config = self.global_config.get("vector_db_storage_cls_kwargs", {})
-        cosine_threshold = config.get("cosine_better_than_threshold")
+        kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
+        cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
             raise ValueError(
                 "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
@@ -191,7 +191,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error deleting entity {entity_name}: {e}")
 
-    async def delete_entity_relation(self, entity_name: str):
+    async def delete_entity_relation(self, entity_name: str) -> None:
         try:
             relations = [
                 dp
