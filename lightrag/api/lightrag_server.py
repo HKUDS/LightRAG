@@ -254,10 +254,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
         ASCIIColors.white("    ├─ Alternative Documentation (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
-        ASCIIColors.white("    ├─ WebUI (local): ", end="")
+        ASCIIColors.white("    └─ WebUI (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/webui")
-        ASCIIColors.white("    └─ Graph Viewer (local): ", end="")
-        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/graph-viewer")
 
         ASCIIColors.yellow("\n📝 Note:")
         ASCIIColors.white("""    Since the server is running on 0.0.0.0:
@@ -1814,17 +1812,9 @@ def create_app(args):
         }
 
     # Webui mount webui/index.html
-    webui_dir = Path(__file__).parent / "webui"
-    app.mount(
-        "/graph-viewer",
-        StaticFiles(directory=webui_dir, html=True),
-        name="webui",
-    )
-
-    # Serve the static files
-    static_dir = Path(__file__).parent / "static"
+    static_dir = Path(__file__).parent / "webui"
     static_dir.mkdir(exist_ok=True)
-    app.mount("/webui", StaticFiles(directory=static_dir, html=True), name="static")
+    app.mount("/webui", StaticFiles(directory=static_dir, html=True), name="webui")
 
     return app
 
