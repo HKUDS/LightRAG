@@ -40,7 +40,7 @@ const LabeledCheckBox = ({
  */
 export default function Settings() {
   const [opened, setOpened] = useState<boolean>(false)
-  const [tempApiKey, setTempApiKey] = useState<string>('') // 用于临时存储输入的API Key
+  const [tempApiKey, setTempApiKey] = useState<string>('')
 
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
