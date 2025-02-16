@@ -1,8 +1,8 @@
 import os
 import time
 import asyncio
-from typing import Any
-import faiss
+from typing import Any, final
+
 import json
 import numpy as np
 from tqdm.asyncio import tqdm as tqdm_async
@@ -16,15 +16,21 @@ from lightrag.base import (
     BaseVectorStorage,
 )
 
+try:
+    import faiss
+except ImportError as e:
+    raise ImportError(
+        "faiss library is not installed. Please install it to proceed."
+    ) from e
 
+
+@final
 @dataclass
 class FaissVectorDBStorage(BaseVectorStorage):
     """
     A Faiss-based Vector DB Storage for LightRAG.
     Uses cosine similarity by storing normalized vectors in a Faiss index with inner product search.
     """
-
-    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
         # Grab config values if available

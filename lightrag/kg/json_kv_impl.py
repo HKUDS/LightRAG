@@ -22,7 +22,7 @@ class JsonKVStorage(BaseKVStorage):
         self._lock = asyncio.Lock()
         logger.info(f"Load KV {self.namespace} with {len(self._data)} data")
 
-    async def index_done_callback(self):
+    async def index_done_callback(self) -> None:
         write_json(self._data, self._file_name)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:

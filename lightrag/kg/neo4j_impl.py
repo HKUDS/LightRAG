@@ -3,21 +3,11 @@ import inspect
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, List, Dict
+from typing import Any, List, Dict, final
 import numpy as np
-import pipmaster as pm
 import configparser
 
-if not pm.is_installed("neo4j"):
-    pm.install("neo4j")
 
-from neo4j import (
-    AsyncGraphDatabase,
-    exceptions as neo4jExceptions,
-    AsyncDriver,
-    AsyncManagedTransaction,
-    GraphDatabase,
-)
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -29,11 +19,25 @@ from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 
+try:
+    from neo4j import (
+        AsyncGraphDatabase,
+        exceptions as neo4jExceptions,
+        AsyncDriver,
+        AsyncManagedTransaction,
+        GraphDatabase,
+    )
+except ImportError as e:
+    raise ImportError(
+        "neo4j library is not installed. Please install it to proceed."
+    ) from e
+
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 
+@final
 @dataclass
 class Neo4JStorage(BaseGraphStorage):
     @staticmethod
@@ -141,8 +145,8 @@ class Neo4JStorage(BaseGraphStorage):
         if self._driver:
             await self._driver.close()
 
-    async def index_done_callback(self):
-        print("KG successfully indexed.")
+    async def index_done_callback(self) -> None:
+        pass
 
     async def _label_exists(self, label: str) -> bool:
         """Check if a label exists in the Neo4j database."""

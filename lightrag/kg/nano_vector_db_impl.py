@@ -1,65 +1,10 @@
-"""
-NanoVectorDB Storage Module
-=======================
-
-This module provides a storage interface for graphs using NetworkX, a popular Python library for creating, manipulating, and studying the structure, dynamics, and functions of complex networks.
-
-The `NetworkXStorage` class extends the `BaseGraphStorage` class from the LightRAG library, providing methods to load, save, manipulate, and query graphs using NetworkX.
-
-Author: lightrag team
-Created: 2024-01-25
-License: MIT
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-
-Version: 1.0.0
-
-Dependencies:
-    - NetworkX
-    - NumPy
-    - LightRAG
-    - graspologic
-
-Features:
-    - Load and save graphs in various formats (e.g., GEXF, GraphML, JSON)
-    - Query graph nodes and edges
-    - Calculate node and edge degrees
-    - Embed nodes using various algorithms (e.g., Node2Vec)
-    - Remove nodes and edges from the graph
-
-Usage:
-    from lightrag.storage.networkx_storage import NetworkXStorage
-
-"""
-
 import asyncio
 import os
-from typing import Any
+from typing import Any, final
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import numpy as np
-import pipmaster as pm
 
-if not pm.is_installed("nano-vectordb"):
-    pm.install("nano-vectordb")
-
-from nano_vectordb import NanoVectorDB
 import time
 
 from lightrag.utils import (
@@ -71,11 +16,17 @@ from lightrag.base import (
     BaseVectorStorage,
 )
 
+try:
+    from nano_vectordb import NanoVectorDB
+except ImportError as e:
+    raise ImportError(
+        "nano-vectordb library is not installed. Please install it to proceed."
+    ) from e
 
+
+@final
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
-    cosine_better_than_threshold: float = None
-
     def __post_init__(self):
         # Initialize lock only for file operations
         self._save_lock = asyncio.Lock()

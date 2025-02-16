@@ -3,13 +3,11 @@ import inspect
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Any, Dict, List, final
 
 import numpy as np
 
-from gremlin_python.driver import client, serializer
-from gremlin_python.driver.aiohttp.transport import AiohttpTransport
-from gremlin_python.driver.protocol import GremlinServerError
+
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -22,7 +20,17 @@ from lightrag.utils import logger
 
 from ..base import BaseGraphStorage
 
+try:
+    from gremlin_python.driver import client, serializer
+    from gremlin_python.driver.aiohttp.transport import AiohttpTransport
+    from gremlin_python.driver.protocol import GremlinServerError
+except ImportError as e:
+    raise ImportError(
+        "gremlin library is not installed. Please install it to proceed."
+    ) from e
 
+
+@final
 @dataclass
 class GremlinStorage(BaseGraphStorage):
     @staticmethod
@@ -79,8 +87,8 @@ class GremlinStorage(BaseGraphStorage):
         if self._driver:
             self._driver.close()
 
-    async def index_done_callback(self):
-        print("KG successfully indexed.")
+    async def index_done_callback(self) -> None:
+        pass
 
     @staticmethod
     def _to_value_map(value: Any) -> str:
