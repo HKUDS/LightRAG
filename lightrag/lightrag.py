@@ -89,7 +89,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
         ],
-        "required_methods": ["get_pending_docs"],
+        "required_methods": ["get_docs_by_status"],
     },
 }
 
@@ -230,7 +230,7 @@ class LightRAG:
     """LightRAG: Simple and Fast Retrieval-Augmented Generation."""
 
     working_dir: str = field(
-        default_factory=lambda: f'./lightrag_cache_{datetime.now().strftime("%Y-%m-%d-%H:%M:%S")}'
+        default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
     """Directory where cache and temporary files are stored."""
 
@@ -715,11 +715,11 @@ class LightRAG:
         # 1. Get all pending, failed, and abnormally terminated processing documents.
         to_process_docs: dict[str, DocProcessingStatus] = {}
 
-        processing_docs = await self.doc_status.get_processing_docs()
+        processing_docs = await self.doc_status.get_docs_by_status(DocStatus.PROCESSING)
         to_process_docs.update(processing_docs)
-        failed_docs = await self.doc_status.get_failed_docs()
+        failed_docs = await self.doc_status.get_docs_by_status(DocStatus.FAILED)
         to_process_docs.update(failed_docs)
-        pendings_docs = await self.doc_status.get_pending_docs()
+        pendings_docs = await self.doc_status.get_docs_by_status(DocStatus.PENDING)
         to_process_docs.update(pendings_docs)
 
         if not to_process_docs:
