@@ -219,7 +219,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
         await self.delete([entity_id])
 
-    async def delete_entity_relation(self, entity_name: str):
+    async def delete_entity_relation(self, entity_name: str) -> None:
         """
         Delete relations for a given entity by scanning metadata.
         """

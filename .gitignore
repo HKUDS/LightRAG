@@ -35,23 +35,27 @@ temp/
 
 # IDE / Editor Files
 .idea/
-dist/
-env/
+.vscode/
+.vscode/settings.json
+
+# Framework-specific files
 local_neo4jWorkDir/
 neo4jWorkDir/
-ignore_this.txt
-.venv/
-*.ignore.*
-.ruff_cache/
-gui/
-*.log
-.vscode
-inputs
-rag_storage
-.env
-venv/
+
+# Data & Storage
+inputs/
+rag_storage/
 examples/input/
 examples/output/
+
+# Miscellaneous
 .DS_Store
-#Remove config.ini from repo
-*.ini
+TODO.md
+ignore_this.txt
+*.ignore.*
+
+# Project-specific files
+dickens/
+book.txt
+lightrag-dev/
+gui/
