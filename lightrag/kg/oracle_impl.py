@@ -23,7 +23,7 @@ try:
 
 except ImportError as e:
     raise ImportError(
-        "oracledb library is not installed. Please install it to proceed."
+        "`oracledb` library is not installed. Please install it via pip: `pip install oracledb`."
     ) from e
 
 

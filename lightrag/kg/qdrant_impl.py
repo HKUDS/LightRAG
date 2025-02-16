@@ -17,10 +17,10 @@ config.read("config.ini", "utf-8")
 try:
     from qdrant_client import QdrantClient, models
 
-except ImportError as e:
+except ImportError:
     raise ImportError(
-        "qdrant_client library is not installed. Please install it to proceed."
-    ) from e
+        "`qdrant_client` library is not installed. Please install it via pip: `pip install qdrant-client`."
+    )
 
 
 def compute_mdhash_id_for_qdrant(

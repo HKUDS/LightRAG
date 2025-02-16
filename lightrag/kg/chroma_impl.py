@@ -11,7 +11,7 @@ try:
     from chromadb.config import Settings
 except ImportError as e:
     raise ImportError(
-        "chromadb library is not installed. Please install it to proceed."
+        "`chromadb` library is not installed. Please install it via pip: `pip install chromadb`."
     ) from e
 
 

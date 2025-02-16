@@ -20,7 +20,7 @@ try:
     from nano_vectordb import NanoVectorDB
 except ImportError as e:
     raise ImportError(
-        "nano-vectordb library is not installed. Please install it to proceed."
+        "`nano-vectordb` library is not installed. Please install it via pip: `pip install nano-vectordb`."
     ) from e
 
 

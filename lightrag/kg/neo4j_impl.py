@@ -29,9 +29,8 @@ try:
     )
 except ImportError as e:
     raise ImportError(
-        "neo4j library is not installed. Please install it to proceed."
+        "`neo4j` library is not installed. Please install it via pip: `pip install neo4j`."
     ) from e
-
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")

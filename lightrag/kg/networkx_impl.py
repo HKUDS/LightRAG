@@ -19,7 +19,7 @@ try:
     import networkx as nx
 except ImportError as e:
     raise ImportError(
-        "networkx library is not installed. Please install it to proceed."
+        "`networkx` library is not installed. Please install it via pip: `pip install networkx`."
     ) from e
 
 

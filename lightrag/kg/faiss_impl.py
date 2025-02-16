@@ -20,7 +20,7 @@ try:
     import faiss
 except ImportError as e:
     raise ImportError(
-        "faiss library is not installed. Please install it to proceed."
+        "`faiss` library is not installed. Please install it via pip: `pip install faiss`."
     ) from e
 
 

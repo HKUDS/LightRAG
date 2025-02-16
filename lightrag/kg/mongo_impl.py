@@ -26,9 +26,8 @@ try:
     from pymongo.errors import PyMongoError
 except ImportError as e:
     raise ImportError(
-        "motor, pymongo library is not installed. Please install it to proceed."
+        "`motor, pymongo` library is not installed. Please install it via pip: `pip install motor pymongo`."
     ) from e
-
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")

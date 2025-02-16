@@ -18,7 +18,7 @@ try:
 
 except ImportError as e:
     raise ImportError(
-        "pymysql, sqlalchemy library is not installed. Please install it to proceed."
+        "`pymysql, sqlalchemy` library is not installed. Please install it via pip: `pip install pymysql sqlalchemy`."
     ) from e
 
 
