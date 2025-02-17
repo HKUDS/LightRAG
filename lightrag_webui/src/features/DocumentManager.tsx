@@ -29,7 +29,16 @@ export default function DocumentManager() {
     try {
       const docs = await getDocuments()
       if (docs && docs.statuses) {
-        setDocs(docs)
+        // compose all documents count
+        const numDocuments = Object.values(docs.statuses).reduce(
+          (acc, status) => acc + status.length,
+          0
+        )
+        if (numDocuments > 0) {
+          setDocs(docs)
+        } else {
+          setDocs(null)
+        }
         // console.log(docs)
       } else {
         setDocs(null)

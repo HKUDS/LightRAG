@@ -212,38 +212,42 @@ export const queryTextStream = async (
 ) => {
   try {
     let buffer = ''
-    await axiosInstance.post('/query/stream', request, {
-      responseType: 'text',
-      headers: {
-        Accept: 'application/x-ndjson'
-      },
-      transformResponse: [
-        (data: string) => {
-          // Accumulate the data and process complete lines
-          buffer += data
-          const lines = buffer.split('\n')
-          // Keep the last potentially incomplete line in the buffer
-          buffer = lines.pop() || ''
+    await axiosInstance
+      .post('/query/stream', request, {
+        responseType: 'text',
+        headers: {
+          Accept: 'application/x-ndjson'
+        },
+        transformResponse: [
+          (data: string) => {
+            // Accumulate the data and process complete lines
+            buffer += data
+            const lines = buffer.split('\n')
+            // Keep the last potentially incomplete line in the buffer
+            buffer = lines.pop() || ''
 
-          for (const line of lines) {
-            if (line.trim()) {
-              try {
-                const parsed = JSON.parse(line)
-                if (parsed.response) {
-                  onChunk(parsed.response)
-                } else if (parsed.error && onError) {
-                  onError(parsed.error)
+            for (const line of lines) {
+              if (line.trim()) {
+                try {
+                  const parsed = JSON.parse(line)
+                  if (parsed.response) {
+                    onChunk(parsed.response)
+                  } else if (parsed.error && onError) {
+                    onError(parsed.error)
+                  }
+                } catch (e) {
+                  console.error('Error parsing stream chunk:', e)
+                  if (onError) onError('Error parsing server response')
                 }
-              } catch (e) {
-                console.error('Error parsing stream chunk:', e)
-                if (onError) onError('Error parsing server response')
               }
             }
+            return data
           }
-          return data
-        }
-      ]
-    })
+        ]
+      })
+      .catch((error) => {
+        if (onError) onError(errorMessage(error))
+      })
 
     // Process any remaining data in the buffer
     if (buffer.trim()) {
@@ -266,11 +270,13 @@ export const queryTextStream = async (
   }
 }
 
-export const insertText = async (
-  text: string,
-  description?: string
-): Promise<DocActionResponse> => {
-  const response = await axiosInstance.post('/documents/text', { text, description })
+export const insertText = async (text: string): Promise<DocActionResponse> => {
+  const response = await axiosInstance.post('/documents/text', { text })
+  return response.data
+}
+
+export const insertTexts = async (texts: string[]): Promise<DocActionResponse> => {
+  const response = await axiosInstance.post('/documents/texts', { texts })
   return response.data
 }
 
