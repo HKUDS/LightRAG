@@ -193,7 +193,7 @@ export function AsyncSearch<T>({
             </div>
           )}
         </div>
-        <CommandList className="max-h-auto" hidden={!open || debouncedSearchTerm.length === 0}>
+        <CommandList hidden={!open || debouncedSearchTerm.length === 0}>
           {error && <div className="text-destructive p-4 text-center">{error}</div>}
           {loading && options.length === 0 && (loadingSkeleton || <DefaultLoadingSkeleton />)}
           {!loading &&

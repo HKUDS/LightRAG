@@ -7,16 +7,16 @@ import { EdgeArrowProgram, NodePointProgram, NodeCircleProgram } from 'sigma/ren
 import { NodeBorderProgram } from '@sigma/node-border'
 import EdgeCurveProgram, { EdgeCurvedArrowProgram } from '@sigma/edge-curve'
 
-import FocusOnNode from '@/components/FocusOnNode'
-import LayoutsControl from '@/components/LayoutsControl'
-import GraphControl from '@/components/GraphControl'
-import ThemeToggle from '@/components/ThemeToggle'
-import ZoomControl from '@/components/ZoomControl'
-import FullScreenControl from '@/components/FullScreenControl'
-import Settings from '@/components/Settings'
-import GraphSearch from '@/components/GraphSearch'
-import GraphLabels from '@/components/GraphLabels'
-import PropertiesView from '@/components/PropertiesView'
+import FocusOnNode from '@/components/graph/FocusOnNode'
+import LayoutsControl from '@/components/graph/LayoutsControl'
+import GraphControl from '@/components/graph/GraphControl'
+// import ThemeToggle from '@/components/ThemeToggle'
+import ZoomControl from '@/components/graph/ZoomControl'
+import FullScreenControl from '@/components/graph/FullScreenControl'
+import Settings from '@/components/graph/Settings'
+import GraphSearch from '@/components/graph/GraphSearch'
+import GraphLabels from '@/components/graph/GraphLabels'
+import PropertiesView from '@/components/graph/PropertiesView'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -166,7 +166,7 @@ const GraphViewer = () => {
         <ZoomControl />
         <LayoutsControl />
         <FullScreenControl />
-        <ThemeToggle />
+        {/* <ThemeToggle /> */}
       </div>
 
       {showPropertyPanel && (

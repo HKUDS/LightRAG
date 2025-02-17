@@ -222,6 +222,7 @@ You can select storage  implementation by enviroment variables or command line a
 | --max-embed-tokens | 8192 | Maximum embedding token size |
 | --timeout | None | Timeout in seconds (useful when using slow AI). Use None for infinite timeout |
 | --log-level | INFO | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
+| --verbose | False | Verbose debug output (True, Flase) |
 | --key | None | API key for authentication. Protects lightrag server against unauthorized access |
 | --ssl | False | Enable HTTPS |
 | --ssl-certfile | None | Path to SSL certificate file (required if --ssl is enabled) |

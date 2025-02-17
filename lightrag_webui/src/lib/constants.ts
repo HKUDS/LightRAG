@@ -23,3 +23,18 @@ export const maxNodeSize = 20
 export const healthCheckInterval = 15 // seconds
 
 export const defaultQueryLabel = '*'
+
+// reference: https://developer.mozilla.org/en-US/docs/Web/HTTP/MIME_types/Common_types
+export const supportedFileTypes = {
+  'text/plain': ['.txt', '.md'],
+  'application/pdf': ['.pdf'],
+  'application/msword': ['.doc'],
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx']
+}
+
+export const SiteInfo = {
+  name: 'LightRAG',
+  home: '/',
+  github: 'https://github.com/HKUDS/LightRAG'
+}

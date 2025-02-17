@@ -268,10 +268,10 @@ class LightRAG:
     """Directory where logs are stored. Defaults to the current working directory."""
 
     # Text chunking
-    chunk_token_size: int = 1200
+    chunk_token_size: int = int(os.getenv("CHUNK_SIZE", "1200"))
     """Maximum number of tokens per text chunk when splitting documents."""
 
-    chunk_overlap_token_size: int = 100
+    chunk_overlap_token_size: int = int(os.getenv("CHUNK_OVERLAP_SIZE", "100"))
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
 
     tiktoken_model_name: str = "gpt-4o-mini"
@@ -281,7 +281,7 @@ class LightRAG:
     entity_extract_max_gleaning: int = 1
     """Maximum number of entity extraction attempts for ambiguous content."""
 
-    entity_summary_to_max_tokens: int = 500
+    entity_summary_to_max_tokens: int = int(os.getenv("MAX_TOKEN_SUMMARY", "500"))
     """Maximum number of tokens used for summarizing extracted entities."""
 
     # Node embedding
@@ -1253,6 +1253,16 @@ class LightRAG:
             Dict with counts for each status
         """
         return await self.doc_status.get_status_counts()
+
+    async def get_docs_by_status(
+        self, status: DocStatus
+    ) -> dict[str, DocProcessingStatus]:
+        """Get documents by status
+
+        Returns:
+            Dict with document id is keys and document status is values
+        """
+        return await self.doc_status.get_docs_by_status(status)
 
     async def adelete_by_doc_id(self, doc_id: str) -> None:
         """Delete a document and all its related data
