@@ -214,6 +214,7 @@ class TiDBKVStorage(BaseKVStorage):
         # Ti handles persistence automatically
         pass
 
+
 @final
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):

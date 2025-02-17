@@ -117,6 +117,7 @@ class MongoKVStorage(BaseKVStorage):
         # Mongo handles persistence automatically
         pass
 
+
 @final
 @dataclass
 class MongoDocStatusStorage(DocStatusStorage):
