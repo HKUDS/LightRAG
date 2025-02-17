@@ -1,5 +1,6 @@
 import asyncio
 import os
+from typing import Any, final
 from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import numpy as np
@@ -10,17 +11,21 @@ import configparser
 
 if not pm.is_installed("pymilvus"):
     pm.install("pymilvus")
-from pymilvus import MilvusClient
 
+try:
+    from pymilvus import MilvusClient
+except ImportError as e:
+    raise ImportError(
+        "`pymilvus` library is not installed. Please install it via pip: `pip install pymilvus`."
+    ) from e
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 
+@final
 @dataclass
 class MilvusVectorDBStorage(BaseVectorStorage):
-    cosine_better_than_threshold: float = None
-
     @staticmethod
     def create_collection_if_not_exist(
         client: MilvusClient, collection_name: str, **kwargs
@@ -71,7 +76,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             dimension=self.embedding_func.embedding_dim,
         )
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
@@ -106,7 +111,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         results = self._client.upsert(collection_name=self.namespace, data=list_data)
         return results
 
-    async def query(self, query, top_k=5):
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         embedding = await self.embedding_func([query])
         results = self._client.search(
             collection_name=self.namespace,
@@ -123,3 +128,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             {**dp["entity"], "id": dp["id"], "distance": dp["distance"]}
             for dp in results[0]
         ]
+
+    async def index_done_callback(self) -> None:
+        # Milvus handles persistence automatically
+        pass
+
+    async def delete_entity(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        raise NotImplementedError

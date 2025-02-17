@@ -4,24 +4,19 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Set, Tuple, Union
+from typing import Any, Dict, List, Union, final
 
 import numpy as np
-import pipmaster as pm
 
-if not pm.is_installed("asyncpg"):
-    pm.install("asyncpg")
+from lightrag.types import KnowledgeGraph
 
 import sys
-
-import asyncpg
 from tenacity import (
     retry,
     retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
 )
-from tqdm.asyncio import tqdm as tqdm_async
 
 from ..base import (
     BaseGraphStorage,
@@ -38,6 +33,20 @@ if sys.platform.startswith("win"):
     import asyncio.windows_events
 
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+import pipmaster as pm
+
+if not pm.is_installed("asyncpg"):
+    pm.install("asyncpg")
+
+try:
+    import asyncpg
+    from tqdm.asyncio import tqdm as tqdm_async
+
+except ImportError as e:
+    raise ImportError(
+        "`asyncpg` library is not installed. Please install it via pip: `pip install asyncpg`."
+    ) from e
 
 
 class PostgreSQLDB:
@@ -175,6 +184,7 @@ class PostgreSQLDB:
             pass
 
 
+@final
 @dataclass
 class PGKVStorage(BaseKVStorage):
     # db instance must be injected before use
@@ -185,7 +195,7 @@ class PGKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get doc_full data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
@@ -240,7 +250,7 @@ class PGKVStorage(BaseKVStorage):
         params = {"workspace": self.db.workspace, "status": status}
         return await self.db.query(SQL, params, multirows=True)
 
-    async def filter_keys(self, keys: List[str]) -> Set[str]:
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         """Filter out duplicated content"""
         sql = SQL_TEMPLATES["filter_keys"].format(
             table_name=namespace_to_table_name(self.namespace),
@@ -261,7 +271,7 @@ class PGKVStorage(BaseKVStorage):
             print(params)
 
     ################ INSERT METHODS ################
-    async def upsert(self, data: dict[str, Any]) -> None:
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             pass
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
@@ -287,20 +297,17 @@ class PGKVStorage(BaseKVStorage):
 
                     await self.db.execute(upsert_sql, _data)
 
-    async def index_done_callback(self):
-        if is_namespace(
-            self.namespace,
-            (NameSpace.KV_STORE_FULL_DOCS, NameSpace.KV_STORE_TEXT_CHUNKS),
-        ):
-            logger.info("full doc and chunk data had been saved into postgresql db!")
+    async def index_done_callback(self) -> None:
+        # PG handles persistence automatically
+        pass
+
+    async def drop(self) -> None:
+        raise NotImplementedError
 
 
+@final
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
-    # db instance must be injected before use
-    # db: PostgreSQLDB
-    cosine_better_than_threshold: float = None
-
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
@@ -352,7 +359,7 @@ class PGVectorStorage(BaseVectorStorage):
         }
         return upsert_sql, data
 
-    async def upsert(self, data: Dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
@@ -398,12 +405,8 @@ class PGVectorStorage(BaseVectorStorage):
 
             await self.db.execute(upsert_sql, data)
 
-    async def index_done_callback(self):
-        logger.info("vector data had been saved into postgresql db!")
-
     #################### query method ###############
-    async def query(self, query: str, top_k=5) -> Union[dict, list[dict]]:
-        """从向量数据库中查询数据"""
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
         embedding_string = ",".join(map(str, embedding))
@@ -417,23 +420,31 @@ class PGVectorStorage(BaseVectorStorage):
         results = await self.db.query(sql, params=params, multirows=True)
         return results
 
+    async def index_done_callback(self) -> None:
+        # PG handles persistence automatically
+        pass
 
+    async def delete_entity(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+
+@final
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
-    # db instance must be injected before use
-    # db: PostgreSQLDB
-
-    async def filter_keys(self, data: set[str]) -> set[str]:
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that don't exist in storage"""
-        keys = ",".join([f"'{_id}'" for _id in data])
+        keys = ",".join([f"'{_id}'" for _id in keys])
         sql = f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace='{self.db.workspace}' AND id IN ({keys})"
         result = await self.db.query(sql, multirows=True)
         # The result is like [{'id': 'id1'}, {'id': 'id2'}, ...].
         if result is None:
-            return set(data)
+            return set(keys)
         else:
             existed = set([element["id"] for element in result])
-            return set(data) - existed
+            return set(keys) - existed
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"
@@ -451,6 +462,9 @@ class PGDocStatusStorage(DocStatusStorage):
                 created_at=result[0]["created_at"],
                 updated_at=result[0]["updated_at"],
             )
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        raise NotImplementedError
 
     async def get_status_counts(self) -> Dict[str, int]:
         """Get counts of documents in each status"""
@@ -470,7 +484,7 @@ class PGDocStatusStorage(DocStatusStorage):
     ) -> Dict[str, DocProcessingStatus]:
         """all documents with a specific status"""
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
-        params = {"workspace": self.db.workspace, "status": status}
+        params = {"workspace": self.db.workspace, "status": status.value}
         result = await self.db.query(sql, params, True)
         return {
             element["id"]: DocProcessingStatus(
@@ -485,11 +499,11 @@ class PGDocStatusStorage(DocStatusStorage):
             for element in result
         }
 
-    async def index_done_callback(self):
-        """Save data after indexing, but for PostgreSQL, we already saved them during the upsert stage, so no action to take here"""
-        logger.info("Doc status had been saved into postgresql db!")
+    async def index_done_callback(self) -> None:
+        # PG handles persistence automatically
+        pass
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Update or insert document status
 
         Args:
@@ -520,31 +534,8 @@ class PGDocStatusStorage(DocStatusStorage):
             )
         return data
 
-    async def update_doc_status(self, data: dict[str, dict]) -> None:
-        """
-        Updates only the document status, chunk count, and updated timestamp.
-
-        This method ensures that only relevant fields are updated instead of overwriting
-        the entire document record. If `updated_at` is not provided, the database will
-        automatically use the current timestamp.
-        """
-        sql = """
-        UPDATE LIGHTRAG_DOC_STATUS
-        SET status = $3,
-            chunks_count = $4,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE workspace = $1 AND id = $2
-        """
-        for k, v in data.items():
-            _data = {
-                "workspace": self.db.workspace,
-                "id": k,
-                "status": v["status"].value,  # Convert Enum to string
-                "chunks_count": v.get(
-                    "chunks_count", -1
-                ),  # Default to -1 if not provided
-            }
-            await self.db.execute(sql, _data)
+    async def drop(self) -> None:
+        raise NotImplementedError
 
 
 class PGGraphQueryException(Exception):
@@ -565,11 +556,9 @@ class PGGraphQueryException(Exception):
         return self.details
 
 
+@final
 @dataclass
 class PGGraphStorage(BaseGraphStorage):
-    # db instance must be injected before use
-    # db: PostgreSQLDB
-
     @staticmethod
     def load_nx_graph(file_name):
         print("no preloading of graph with AGE in production")
@@ -580,8 +569,9 @@ class PGGraphStorage(BaseGraphStorage):
             "node2vec": self._node2vec_embed,
         }
 
-    async def index_done_callback(self):
-        print("KG successfully indexed.")
+    async def index_done_callback(self) -> None:
+        # PG handles persistence automatically
+        pass
 
     @staticmethod
     def _record_to_dict(record: asyncpg.Record) -> Dict[str, Any]:
@@ -811,7 +801,7 @@ class PGGraphStorage(BaseGraphStorage):
         )
         return single_result["edge_exists"]
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         label = PGGraphStorage._encode_graph_label(node_id.strip('"'))
         query = """SELECT * FROM cypher('%s', $$
                      MATCH (n:Entity {node_id: "%s"})
@@ -866,17 +856,7 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
-        """
-        Find all edges between nodes of two given labels
-
-        Args:
-            source_node_id (str): Label of the source nodes
-            target_node_id (str): Label of the target nodes
-
-        Returns:
-            list: List of all relationships/edges found
-        """
+    ) -> dict[str, str] | None:
         src_label = PGGraphStorage._encode_graph_label(source_node_id.strip('"'))
         tgt_label = PGGraphStorage._encode_graph_label(target_node_id.strip('"'))
 
@@ -900,7 +880,7 @@ class PGGraphStorage(BaseGraphStorage):
             )
             return result
 
-    async def get_node_edges(self, source_node_id: str) -> List[Tuple[str, str]]:
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
         Retrieves all edges (relationships) for a particular node identified by its label.
         :return: List of dictionaries containing edge information
@@ -948,14 +928,7 @@ class PGGraphStorage(BaseGraphStorage):
         wait=wait_exponential(multiplier=1, min=4, max=10),
         retry=retry_if_exception_type((PGGraphQueryException,)),
     )
-    async def upsert_node(self, node_id: str, node_data: Dict[str, Any]):
-        """
-        Upsert a node in the AGE database.
-
-        Args:
-            node_id: The unique identifier for the node (used as label)
-            node_data: Dictionary of node properties
-        """
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         label = PGGraphStorage._encode_graph_label(node_id.strip('"'))
         properties = node_data
 
@@ -986,8 +959,8 @@ class PGGraphStorage(BaseGraphStorage):
         retry=retry_if_exception_type((PGGraphQueryException,)),
     )
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: Dict[str, Any]
-    ):
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+    ) -> None:
         """
         Upsert an edge and its properties between two nodes identified by their labels.
 
@@ -1028,6 +1001,22 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def _node2vec_embed(self):
         print("Implemented but never called.")
+
+    async def delete_node(self, node_id: str) -> None:
+        raise NotImplementedError
+
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
+        raise NotImplementedError
+
+    async def get_all_labels(self) -> list[str]:
+        raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        raise NotImplementedError
 
 
 NAMESPACE_TABLE_MAP = {

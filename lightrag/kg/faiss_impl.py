@@ -1,11 +1,13 @@
 import os
 import time
 import asyncio
-import faiss
+from typing import Any, final
+
 import json
 import numpy as np
-from tqdm.asyncio import tqdm as tqdm_async
+
 from dataclasses import dataclass
+import pipmaster as pm
 
 from lightrag.utils import (
     logger,
@@ -15,15 +17,25 @@ from lightrag.base import (
     BaseVectorStorage,
 )
 
+if not pm.is_installed("faiss"):
+    pm.install("faiss")
 
+try:
+    import faiss
+    from tqdm.asyncio import tqdm as tqdm_async
+except ImportError as e:
+    raise ImportError(
+        "`faiss` library is not installed. Please install it via pip: `pip install faiss`."
+    ) from e
+
+
+@final
 @dataclass
 class FaissVectorDBStorage(BaseVectorStorage):
     """
     A Faiss-based Vector DB Storage for LightRAG.
     Uses cosine similarity by storing normalized vectors in a Faiss index with inner product search.
     """
-
-    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
         # Grab config values if available
@@ -57,7 +69,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Attempt to load an existing index + metadata from disk
         self._load_faiss_index()
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
         Insert or update vectors in the Faiss index.
 
@@ -147,7 +159,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         logger.info(f"Upserted {len(list_data)} vectors into Faiss index.")
         return [m["__id__"] for m in list_data]
 
-    async def query(self, query: str, top_k=5):
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """
         Search by a textual query; returns top_k results with their metadata + similarity distance.
         """
@@ -210,11 +222,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             f"Successfully deleted {len(to_remove)} vectors from {self.namespace}"
         )
 
-    async def delete_entity(self, entity_name: str):
-        """
-        Delete a single entity by computing its hashed ID
-        the same way your code does it with `compute_mdhash_id`.
-        """
+    async def delete_entity(self, entity_name: str) -> None:
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
         await self.delete([entity_id])
@@ -234,12 +242,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._remove_faiss_ids(relations)
             logger.debug(f"Deleted {len(relations)} relations for {entity_name}")
 
-    async def index_done_callback(self):
-        """
-        Called after indexing is done (save Faiss index + metadata).
-        """
+    async def index_done_callback(self) -> None:
         self._save_faiss_index()
-        logger.info("Faiss index saved successfully.")
 
     # --------------------------------------------------------------------------------
     # Internal helper methods

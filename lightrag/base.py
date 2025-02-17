@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
+from enum import StrEnum
 import os
 from dotenv import load_dotenv
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import (
     Any,
     Literal,
@@ -82,138 +83,130 @@ class QueryParam:
 
 
 @dataclass
-class StorageNameSpace:
+class StorageNameSpace(ABC):
     namespace: str
     global_config: dict[str, Any]
 
+    @abstractmethod
     async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing"""
-        pass
 
 
 @dataclass
-class BaseVectorStorage(StorageNameSpace):
+class BaseVectorStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
+    cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
 
+    @abstractmethod
     async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
-        raise NotImplementedError
+        """Query the vector storage and retrieve top_k results."""
 
+    @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Use 'content' field from value for embedding, use key as id.
-        If embedding_func is None, use 'embedding' field from value
-        """
-        raise NotImplementedError
+        """Insert or update vectors in the storage."""
 
+    @abstractmethod
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete a single entity by its name"""
-        raise NotImplementedError
+        """Delete a single entity by its name."""
 
+    @abstractmethod
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete relations for a given entity by scanning metadata"""
-        raise NotImplementedError
+        """Delete relations for a given entity."""
 
 
 @dataclass
-class BaseKVStorage(StorageNameSpace):
-    embedding_func: EmbeddingFunc | None = None
+class BaseKVStorage(StorageNameSpace, ABC):
+    embedding_func: EmbeddingFunc
 
+    @abstractmethod
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        raise NotImplementedError
+        """Get value by id"""
 
+    @abstractmethod
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        raise NotImplementedError
+        """Get values by ids"""
 
-    async def filter_keys(self, data: set[str]) -> set[str]:
+    @abstractmethod
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return un-exist keys"""
-        raise NotImplementedError
 
-    async def upsert(self, data: dict[str, Any]) -> None:
-        raise NotImplementedError
+    @abstractmethod
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        """Upsert data"""
 
+    @abstractmethod
     async def drop(self) -> None:
-        raise NotImplementedError
+        """Drop the storage"""
 
 
 @dataclass
-class BaseGraphStorage(StorageNameSpace):
-    embedding_func: EmbeddingFunc | None = None
-    """Check if a node exists in the graph."""
+class BaseGraphStorage(StorageNameSpace, ABC):
+    embedding_func: EmbeddingFunc
 
+    @abstractmethod
     async def has_node(self, node_id: str) -> bool:
-        raise NotImplementedError
+        """Check if an edge exists in the graph."""
 
-    """Check if an edge exists in the graph."""
-
+    @abstractmethod
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        raise NotImplementedError
+        """Get the degree of a node."""
 
-    """Get the degree of a node."""
-
+    @abstractmethod
     async def node_degree(self, node_id: str) -> int:
-        raise NotImplementedError
+        """Get the degree of an edge."""
 
-    """Get the degree of an edge."""
-
+    @abstractmethod
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        raise NotImplementedError
+        """Get a node by its id."""
 
-    """Get a node by its id."""
-
+    @abstractmethod
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        raise NotImplementedError
+        """Get an edge by its source and target node ids."""
 
-    """Get an edge by its source and target node ids."""
-
+    @abstractmethod
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        raise NotImplementedError
+        """Get all edges connected to a node."""
 
-    """Get all edges connected to a node."""
-
+    @abstractmethod
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
-        raise NotImplementedError
+        """Upsert a node into the graph."""
 
-    """Upsert a node into the graph."""
-
+    @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
-        raise NotImplementedError
+        """Upsert an edge into the graph."""
 
-    """Upsert an edge into the graph."""
-
+    @abstractmethod
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        raise NotImplementedError
+        """Delete a node from the graph."""
 
-    """Delete a node from the graph."""
-
+    @abstractmethod
     async def delete_node(self, node_id: str) -> None:
-        raise NotImplementedError
+        """Embed nodes using an algorithm."""
 
-    """Embed nodes using an algorithm."""
-
+    @abstractmethod
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError("Node embedding is not used in lightrag.")
+        """Get all labels in the graph."""
 
-    """Get all labels in the graph."""
-
+    @abstractmethod
     async def get_all_labels(self) -> list[str]:
-        raise NotImplementedError
+        """Get a knowledge graph of a node."""
 
-    """Get a knowledge graph of a node."""
-
+    @abstractmethod
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
-        raise NotImplementedError
+        """Retrieve a subgraph of the knowledge graph starting from a given node."""
 
 
-class DocStatus(str, Enum):
-    """Document processing status enum"""
+class DocStatus(StrEnum):
+    """Document processing status"""
 
     PENDING = "pending"
     PROCESSING = "processing"
@@ -245,19 +238,16 @@ class DocProcessingStatus:
     """Additional metadata"""
 
 
-class DocStatusStorage(BaseKVStorage):
+@dataclass
+class DocStatusStorage(BaseKVStorage, ABC):
     """Base class for document status storage"""
 
+    @abstractmethod
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
-        raise NotImplementedError
 
+    @abstractmethod
     async def get_docs_by_status(
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
-        raise NotImplementedError
-
-    async def update_doc_status(self, data: dict[str, Any]) -> None:
-        """Updates the status of a document. By default, it calls upsert."""
-        await self.upsert(data)

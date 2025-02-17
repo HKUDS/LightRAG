@@ -1,22 +1,11 @@
 import os
 from dataclasses import dataclass
 import numpy as np
-import pipmaster as pm
 import configparser
 from tqdm.asyncio import tqdm as tqdm_async
 import asyncio
 
-if not pm.is_installed("pymongo"):
-    pm.install("pymongo")
-
-if not pm.is_installed("motor"):
-    pm.install("motor")
-
-from typing import Any, List, Tuple, Union
-from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import MongoClient
-from pymongo.operations import SearchIndexModel
-from pymongo.errors import PyMongoError
+from typing import Any, List, Union, final
 
 from ..base import (
     BaseGraphStorage,
@@ -29,12 +18,29 @@ from ..base import (
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+import pipmaster as pm
 
+if not pm.is_installed("pymongo"):
+    pm.install("pymongo")
+
+if not pm.is_installed("motor"):
+    pm.install("motor")
+
+try:
+    from motor.motor_asyncio import AsyncIOMotorClient
+    from pymongo import MongoClient
+    from pymongo.operations import SearchIndexModel
+    from pymongo.errors import PyMongoError
+except ImportError as e:
+    raise ImportError(
+        "`motor, pymongo` library is not installed. Please install it via pip: `pip install motor pymongo`."
+    ) from e
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
 
+@final
 @dataclass
 class MongoKVStorage(BaseKVStorage):
     def __post_init__(self):
@@ -60,17 +66,17 @@ class MongoKVStorage(BaseKVStorage):
         # Ensure collection exists
         create_collection_if_not_exists(uri, database.name, self._collection_name)
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         return await self._data.find_one({"_id": id})
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
         return await cursor.to_list()
 
-    async def filter_keys(self, data: set[str]) -> set[str]:
-        cursor = self._data.find({"_id": {"$in": list(data)}}, {"_id": 1})
+    async def filter_keys(self, keys: set[str]) -> set[str]:
+        cursor = self._data.find({"_id": {"$in": list(keys)}}, {"_id": 1})
         existing_ids = {str(x["_id"]) async for x in cursor}
-        return data - existing_ids
+        return keys - existing_ids
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
@@ -107,11 +113,16 @@ class MongoKVStorage(BaseKVStorage):
         else:
             return None
 
+    async def index_done_callback(self) -> None:
+        # Mongo handles persistence automatically
+        pass
+
     async def drop(self) -> None:
         """Drop the collection"""
         await self._data.drop()
 
 
+@final
 @dataclass
 class MongoDocStatusStorage(DocStatusStorage):
     def __post_init__(self):
@@ -191,7 +202,12 @@ class MongoDocStatusStorage(DocStatusStorage):
             for doc in result
         }
 
+    async def index_done_callback(self) -> None:
+        # Mongo handles persistence automatically
+        pass
 
+
+@final
 @dataclass
 class MongoGraphStorage(BaseGraphStorage):
     """
@@ -429,7 +445,7 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         """
         Return the full node document (including "edges"), or None if missing.
         """
@@ -437,11 +453,7 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
-        """
-        Return the first edge dict from source_node_id to target_node_id if it exists.
-        Uses a single-hop $graphLookup as demonstration, though a direct find is simpler.
-        """
+    ) -> dict[str, str] | None:
         pipeline = [
             {"$match": {"_id": source_node_id}},
             {
@@ -467,9 +479,7 @@ class MongoGraphStorage(BaseGraphStorage):
                 return e
         return None
 
-    async def get_node_edges(
-        self, source_node_id: str
-    ) -> Union[List[Tuple[str, str]], None]:
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
         Return a list of (source_id, target_id) for direct edges from source_node_id.
         Demonstrates $graphLookup at maxDepth=0, though direct doc retrieval is simpler.
@@ -503,7 +513,7 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def upsert_node(self, node_id: str, node_data: dict):
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Insert or update a node document. If new, create an empty edges array.
         """
@@ -513,8 +523,8 @@ class MongoGraphStorage(BaseGraphStorage):
         await self.collection.update_one({"_id": node_id}, update_doc, upsert=True)
 
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: dict
-    ):
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+    ) -> None:
         """
         Upsert an edge from source_node_id -> target_node_id with optional 'relation'.
         If an edge with the same target exists, we remove it and re-insert with updated data.
@@ -540,7 +550,7 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def delete_node(self, node_id: str):
+    async def delete_node(self, node_id: str) -> None:
         """
         1) Remove node's doc entirely.
         2) Remove inbound edges from any doc that references node_id.
@@ -557,7 +567,9 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def embed_nodes(self, algorithm: str) -> Tuple[np.ndarray, List[str]]:
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         """
         Placeholder for demonstration, raises NotImplementedError.
         """
@@ -759,11 +771,14 @@ class MongoGraphStorage(BaseGraphStorage):
 
         return result
 
+    async def index_done_callback(self) -> None:
+        # Mongo handles persistence automatically
+        pass
 
+
+@final
 @dataclass
 class MongoVectorDBStorage(BaseVectorStorage):
-    cosine_better_than_threshold: float = None
-
     def __post_init__(self):
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
@@ -828,7 +843,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         except PyMongoError as _:
             logger.debug("vector index already exist")
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.debug(f"Inserting {len(data)} vectors to {self.namespace}")
         if not data:
             logger.warning("You are inserting an empty data set to vector DB")
@@ -871,7 +886,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
         return list_data
 
-    async def query(self, query, top_k=5):
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """Queries the vector database using Atlas Vector Search."""
         # Generate the embedding
         embedding = await self.embedding_func([query])
@@ -904,6 +919,16 @@ class MongoVectorDBStorage(BaseVectorStorage):
             {**doc, "id": doc["_id"], "distance": doc.get("score", None)}
             for doc in results
         ]
+
+    async def index_done_callback(self) -> None:
+        # Mongo handles persistence automatically
+        pass
+
+    async def delete_entity(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        raise NotImplementedError
 
 
 def create_collection_if_not_exists(uri: str, database_name: str, collection_name: str):

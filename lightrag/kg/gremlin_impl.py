@@ -3,11 +3,11 @@ import inspect
 import json
 import os
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, final
 
-from gremlin_python.driver import client, serializer
-from gremlin_python.driver.aiohttp.transport import AiohttpTransport
-from gremlin_python.driver.protocol import GremlinServerError
+import numpy as np
+
+
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -15,11 +15,22 @@ from tenacity import (
     wait_exponential,
 )
 
+from lightrag.types import KnowledgeGraph
 from lightrag.utils import logger
 
 from ..base import BaseGraphStorage
 
+try:
+    from gremlin_python.driver import client, serializer
+    from gremlin_python.driver.aiohttp.transport import AiohttpTransport
+    from gremlin_python.driver.protocol import GremlinServerError
+except ImportError as e:
+    raise ImportError(
+        "`gremlin` library is not installed. Please install it via pip: `pip install gremlin`."
+    ) from e
 
+
+@final
 @dataclass
 class GremlinStorage(BaseGraphStorage):
     @staticmethod
@@ -76,8 +87,9 @@ class GremlinStorage(BaseGraphStorage):
         if self._driver:
             self._driver.close()
 
-    async def index_done_callback(self):
-        print("KG successfully indexed.")
+    async def index_done_callback(self) -> None:
+        # Gremlin handles persistence automatically
+        pass
 
     @staticmethod
     def _to_value_map(value: Any) -> str:
@@ -190,7 +202,7 @@ class GremlinStorage(BaseGraphStorage):
 
         return result[0]["has_edge"]
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         entity_name = GremlinStorage._fix_name(node_id)
         query = f"""g
                  .V().has('graph', {self.graph_name})
@@ -252,17 +264,7 @@ class GremlinStorage(BaseGraphStorage):
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
-        """
-        Find all edges between nodes of two given names
-
-        Args:
-            source_node_id (str): Name of the source nodes
-            target_node_id (str): Name of the target nodes
-
-        Returns:
-            dict|None: Dict of found edge properties, or None if not found
-        """
+    ) -> dict[str, str] | None:
         entity_name_source = GremlinStorage._fix_name(source_node_id)
         entity_name_target = GremlinStorage._fix_name(target_node_id)
         query = f"""g
@@ -286,11 +288,7 @@ class GremlinStorage(BaseGraphStorage):
             )
             return edge_properties
 
-    async def get_node_edges(self, source_node_id: str) -> List[Tuple[str, str]]:
-        """
-        Retrieves all edges (relationships) for a particular node identified by its name.
-        :return: List of tuples containing edge sources and targets
-        """
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         node_name = GremlinStorage._fix_name(source_node_id)
         query = f"""g
                  .E()
@@ -316,7 +314,7 @@ class GremlinStorage(BaseGraphStorage):
         wait=wait_exponential(multiplier=1, min=4, max=10),
         retry=retry_if_exception_type((GremlinServerError,)),
     )
-    async def upsert_node(self, node_id: str, node_data: Dict[str, Any]):
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
         Upsert a node in the Gremlin graph.
 
@@ -357,8 +355,8 @@ class GremlinStorage(BaseGraphStorage):
         retry=retry_if_exception_type((GremlinServerError,)),
     )
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: Dict[str, Any]
-    ):
+        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+    ) -> None:
         """
         Upsert an edge and its properties between two nodes identified by their names.
 
@@ -397,3 +395,19 @@ class GremlinStorage(BaseGraphStorage):
 
     async def _node2vec_embed(self):
         print("Implemented but never called.")
+
+    async def delete_node(self, node_id: str) -> None:
+        raise NotImplementedError
+
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
+        raise NotImplementedError
+
+    async def get_all_labels(self) -> list[str]:
+        raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        raise NotImplementedError
