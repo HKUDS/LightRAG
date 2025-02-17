@@ -10,6 +10,7 @@ from typing import (
     Literal,
     TypedDict,
     TypeVar,
+    Callable,
 )
 import numpy as np
 from .utils import EmbeddingFunc
@@ -80,6 +81,9 @@ class QueryParam:
 
     history_turns: int = 3
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
+
+    llm_model_func: Callable[..., Any] | None = None
+    """Optional custom LLM function to use for this specific query."""
 
 
 @dataclass

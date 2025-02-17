@@ -616,7 +616,7 @@ async def kg_query(
     system_prompt: str | None = None,
 ) -> str:
     # Handle cache
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = query_param.llm_model_func or global_config["llm_model_func"]
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -839,7 +839,7 @@ async def mix_kg_vector_query(
     3. Combining both results for comprehensive answer generation
     """
     # 1. Cache handling
-    use_model_func = global_config["llm_model_func"]
+    use_model_func = query_param.llm_model_func or global_config["llm_model_func"]
     args_hash = compute_args_hash("mix", query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, "mix", cache_type="query"
@@ -1607,7 +1607,7 @@ async def naive_query(
     system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
-    use_model_func = global_config["llm_model_func"]
+    uuse_model_func = query_param.llm_model_func or global_config["llm_model_func"]
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
