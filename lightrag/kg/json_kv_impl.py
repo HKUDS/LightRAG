@@ -46,9 +46,6 @@ class JsonKVStorage(BaseKVStorage):
         left_data = {k: v for k, v in data.items() if k not in self._data}
         self._data.update(left_data)
 
-    async def drop(self) -> None:
-        self._data = {}
-
     async def delete(self, ids: list[str]) -> None:
         for doc_id in ids:
             self._data.pop(doc_id, None)

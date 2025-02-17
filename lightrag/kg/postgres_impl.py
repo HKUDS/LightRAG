@@ -301,9 +301,6 @@ class PGKVStorage(BaseKVStorage):
         # PG handles persistence automatically
         pass
 
-    async def drop(self) -> None:
-        raise NotImplementedError
-
 
 @final
 @dataclass
@@ -533,9 +530,6 @@ class PGDocStatusStorage(DocStatusStorage):
                 },
             )
         return data
-
-    async def drop(self) -> None:
-        raise NotImplementedError
 
 
 class PGGraphQueryException(Exception):

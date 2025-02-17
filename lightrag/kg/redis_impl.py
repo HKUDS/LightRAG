@@ -58,11 +58,6 @@ class RedisKVStorage(BaseKVStorage):
         for k in data:
             data[k]["_id"] = k
 
-    async def drop(self) -> None:
-        keys = await self._redis.keys(f"{self.namespace}:*")
-        if keys:
-            await self._redis.delete(*keys)
-
     async def index_done_callback(self) -> None:
         # Redis handles persistence automatically
         pass

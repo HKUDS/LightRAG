@@ -320,9 +320,6 @@ class OracleKVStorage(BaseKVStorage):
         # Oracle handles persistence automatically
         pass
 
-    async def drop(self) -> None:
-        raise NotImplementedError
-
 
 @final
 @dataclass

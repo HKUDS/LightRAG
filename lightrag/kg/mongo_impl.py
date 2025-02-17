@@ -117,10 +117,6 @@ class MongoKVStorage(BaseKVStorage):
         # Mongo handles persistence automatically
         pass
 
-    async def drop(self) -> None:
-        """Drop the collection"""
-        await self._data.drop()
-
 
 @final
 @dataclass
@@ -168,10 +164,6 @@ class MongoDocStatusStorage(DocStatusStorage):
                 self._data.update_one({"_id": k}, {"$set": v}, upsert=True)
             )
         await asyncio.gather(*update_tasks)
-
-    async def drop(self) -> None:
-        """Drop the collection"""
-        await self._data.drop()
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
