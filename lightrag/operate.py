@@ -242,16 +242,10 @@ async def _merge_edges_then_upsert(
         # Handle the case where get_edge returns None or missing fields
         if already_edge:
             # Get weight with default 0.0 if missing
-            if "weight" in already_edge:
-                already_weights.append(already_edge["weight"])
-            else:
-                logger.warning(
-                    f"Edge between {src_id} and {tgt_id} missing weight field"
-                )
-                already_weights.append(0.0)
+            already_weights.append(already_edge.get("weight", 0.0))
 
             # Get source_id with empty string default if missing or None
-            if "source_id" in already_edge and already_edge["source_id"] is not None:
+            if already_edge.get("source_id") is not None:
                 already_source_ids.extend(
                     split_string_by_multi_markers(
                         already_edge["source_id"], [GRAPH_FIELD_SEP]
@@ -259,14 +253,11 @@ async def _merge_edges_then_upsert(
                 )
 
             # Get description with empty string default if missing or None
-            if (
-                "description" in already_edge
-                and already_edge["description"] is not None
-            ):
+            if already_edge.get("description") is not None:
                 already_description.append(already_edge["description"])
 
             # Get keywords with empty string default if missing or None
-            if "keywords" in already_edge and already_edge["keywords"] is not None:
+            if already_edge.get("keywords") is not None:
                 already_keywords.extend(
                     split_string_by_multi_markers(
                         already_edge["keywords"], [GRAPH_FIELD_SEP]
