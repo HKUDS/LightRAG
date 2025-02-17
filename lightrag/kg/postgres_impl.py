@@ -300,7 +300,8 @@ class PGKVStorage(BaseKVStorage):
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
         pass
-    
+
+
 @final
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
