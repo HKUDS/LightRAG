@@ -613,7 +613,7 @@ async def kg_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
-    prompt: str | None = None,
+    system_prompt: str | None = None,
 ) -> str:
     # Handle cache
     use_model_func = global_config["llm_model_func"]
@@ -677,7 +677,7 @@ async def kg_query(
             query_param.conversation_history, query_param.history_turns
         )
 
-    sys_prompt_temp = prompt if prompt else PROMPTS["rag_response"]
+    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
         context_data=context,
         response_type=query_param.response_type,
@@ -828,6 +828,7 @@ async def mix_kg_vector_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     """
     Hybrid retrieval implementation combining knowledge graph and vector search.
@@ -962,15 +963,19 @@ async def mix_kg_vector_query(
         return {"kg_context": kg_context, "vector_context": vector_context}
 
     # 5. Construct hybrid prompt
-    sys_prompt = PROMPTS["mix_rag_response"].format(
-        kg_context=kg_context
-        if kg_context
-        else "No relevant knowledge graph information found",
-        vector_context=vector_context
-        if vector_context
-        else "No relevant text information found",
-        response_type=query_param.response_type,
-        history=history_context,
+    sys_prompt = (
+        system_prompt
+        if system_prompt
+        else PROMPTS["mix_rag_response"].format(
+            kg_context=kg_context
+            if kg_context
+            else "No relevant knowledge graph information found",
+            vector_context=vector_context
+            if vector_context
+            else "No relevant text information found",
+            response_type=query_param.response_type,
+            history=history_context,
+        )
     )
 
     if query_param.only_need_prompt:
@@ -1599,6 +1604,7 @@ async def naive_query(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
     use_model_func = global_config["llm_model_func"]
@@ -1651,7 +1657,7 @@ async def naive_query(
             query_param.conversation_history, query_param.history_turns
         )
 
-    sys_prompt_temp = PROMPTS["naive_rag_response"]
+    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
         content_data=section,
         response_type=query_param.response_type,
