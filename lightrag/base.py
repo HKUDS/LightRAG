@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from enum import StrEnum
+from enum import Enum
 import os
 from dotenv import load_dotenv
 from dataclasses import dataclass, field
@@ -205,7 +205,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """Retrieve a subgraph of the knowledge graph starting from a given node."""
 
 
-class DocStatus(StrEnum):
+class DocStatus(str, Enum):
     """Document processing status"""
 
     PENDING = "pending"
