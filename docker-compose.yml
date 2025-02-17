@@ -1,30 +1,10 @@
 version: '3.8'
-name: ${NAMESPACE_PREFIX}
 
 services:
-  neo4j:
-    image: neo4j
-    environment:
-      NEO4J_AUTH: ${NEO4J_USERNAME}/${NEO4J_PASSWORD}
-      NEO4J_apoc_export_file_enabled: true
-      NEO4J_apoc_import_file_enabled: true
-      NEO4J_apoc_import_file_use__neo4j__config: true
-      NEO4J_PLUGINS: '["apoc"]'
-    volumes:
-      - ./data/neo4j/data:/data
-      - ./data/neo4j/plugins:/plugins
-      - ./data/neo4j/logs:/logs
-    ports:
-      - "127.0.0.1:7474:7474"  # HTTP
-      - "127.0.0.1:7687:7687"  # Bolt
-    networks:
-      - lightrag_net
-    restart: always
-
   lightrag:
     build: .
     ports:
-      - "127.0.0.1:9621:9621"
+      - "${PORT:-9621}:9621"
     volumes:
       - ./data/rag_storage:/app/data/rag_storage
       - ./data/inputs:/app/data/inputs
@@ -36,15 +16,8 @@ services:
     restart: unless-stopped
     networks:
       - lightrag_net
-      - lightrag_db_network
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    depends_on:
-      - neo4j
-
 networks:
   lightrag_net:
     driver: bridge
-  lightrag_db_network:
-    name: lightrag_db_network
-    external: true
