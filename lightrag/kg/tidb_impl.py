@@ -1,9 +1,18 @@
 import asyncio
 import os
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Union, final
 
 import numpy as np
+
+from lightrag.types import KnowledgeGraph
+
+from tqdm import tqdm
+
+from ..base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage
+from ..namespace import NameSpace, is_namespace
+from ..utils import logger
+
 import pipmaster as pm
 
 if not pm.is_installed("pymysql"):
@@ -11,12 +20,13 @@ if not pm.is_installed("pymysql"):
 if not pm.is_installed("sqlalchemy"):
     pm.install("sqlalchemy")
 
-from sqlalchemy import create_engine, text
-from tqdm import tqdm
+try:
+    from sqlalchemy import create_engine, text
 
-from ..base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage
-from ..namespace import NameSpace, is_namespace
-from ..utils import logger
+except ImportError as e:
+    raise ImportError(
+        "`pymysql, sqlalchemy` library is not installed. Please install it via pip: `pip install pymysql sqlalchemy`."
+    ) from e
 
 
 class TiDB:
@@ -99,6 +109,7 @@ class TiDB:
             raise
 
 
+@final
 @dataclass
 class TiDBKVStorage(BaseKVStorage):
     # db instance must be injected before use
@@ -110,7 +121,7 @@ class TiDBKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Fetch doc_full data by id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"id": id}
@@ -125,8 +136,7 @@ class TiDBKVStorage(BaseKVStorage):
         )
         return await self.db.query(SQL, multirows=True)
 
-    async def filter_keys(self, keys: list[str]) -> set[str]:
-        """过滤掉重复内容"""
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         SQL = SQL_TEMPLATES["filter_keys"].format(
             table_name=namespace_to_table_name(self.namespace),
             id_field=namespace_to_id(self.namespace),
@@ -147,7 +157,7 @@ class TiDBKVStorage(BaseKVStorage):
         return data
 
     ################ INSERT full_doc AND chunks ################
-    async def upsert(self, data: dict[str, Any]) -> None:
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         left_data = {k: v for k, v in data.items() if k not in self._data}
         self._data.update(left_data)
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
@@ -200,20 +210,17 @@ class TiDBKVStorage(BaseKVStorage):
             await self.db.execute(merge_sql, data)
         return left_data
 
-    async def index_done_callback(self):
-        if is_namespace(
-            self.namespace,
-            (NameSpace.KV_STORE_FULL_DOCS, NameSpace.KV_STORE_TEXT_CHUNKS),
-        ):
-            logger.info("full doc and chunk data had been saved into TiDB db!")
+    async def index_done_callback(self) -> None:
+        # Ti handles persistence automatically
+        pass
+
+    async def drop(self) -> None:
+        raise NotImplementedError
 
 
+@final
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
-    # db instance must be injected before use
-    # db: TiDB
-    cosine_better_than_threshold: float = None
-
     def __post_init__(self):
         self._client_file_name = os.path.join(
             self.global_config["working_dir"], f"vdb_{self.namespace}.json"
@@ -227,7 +234,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             )
         self.cosine_better_than_threshold = cosine_threshold
 
-    async def query(self, query: str, top_k: int) -> list[dict]:
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """Search from tidb vector"""
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
@@ -249,7 +256,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         return results
 
     ###### INSERT entities And relationships ######
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         # ignore, upsert in TiDBKVStorage already
         if not len(data):
             logger.warning("You insert an empty data to vector DB")
@@ -332,7 +339,18 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         params = {"workspace": self.db.workspace, "status": status}
         return await self.db.query(SQL, params, multirows=True)
 
+    async def delete_entity(self, entity_name: str) -> None:
+        raise NotImplementedError
 
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+    async def index_done_callback(self) -> None:
+        # Ti handles persistence automatically
+        pass
+
+
+@final
 @dataclass
 class TiDBGraphStorage(BaseGraphStorage):
     # db instance must be injected before use
@@ -342,7 +360,7 @@ class TiDBGraphStorage(BaseGraphStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
     #################### upsert method ################
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]):
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         entity_name = node_id
         entity_type = node_data["entity_type"]
         description = node_data["description"]
@@ -373,7 +391,7 @@ class TiDBGraphStorage(BaseGraphStorage):
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
-    ):
+    ) -> None:
         source_name = source_node_id
         target_name = target_node_id
         weight = edge_data["weight"]
@@ -409,7 +427,9 @@ class TiDBGraphStorage(BaseGraphStorage):
         }
         await self.db.execute(merge_sql, data)
 
-    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         if algorithm not in self._node_embed_algorithms:
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
@@ -442,14 +462,14 @@ class TiDBGraphStorage(BaseGraphStorage):
         degree = await self.node_degree(src_id) + await self.node_degree(tgt_id)
         return degree
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         sql = SQL_TEMPLATES["get_node"]
         param = {"name": node_id, "workspace": self.db.workspace}
         return await self.db.query(sql, param)
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
+    ) -> dict[str, str] | None:
         sql = SQL_TEMPLATES["get_edge"]
         param = {
             "source_name": source_node_id,
@@ -458,9 +478,7 @@ class TiDBGraphStorage(BaseGraphStorage):
         }
         return await self.db.query(sql, param)
 
-    async def get_node_edges(
-        self, source_node_id: str
-    ) -> Union[list[tuple[str, str]], None]:
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         sql = SQL_TEMPLATES["get_node_edges"]
         param = {"source_name": source_node_id, "workspace": self.db.workspace}
         res = await self.db.query(sql, param, multirows=True)
@@ -469,6 +487,21 @@ class TiDBGraphStorage(BaseGraphStorage):
             return data
         else:
             return []
+
+    async def index_done_callback(self) -> None:
+        # Ti handles persistence automatically
+        pass
+
+    async def delete_node(self, node_id: str) -> None:
+        raise NotImplementedError
+
+    async def get_all_labels(self) -> list[str]:
+        raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        raise NotImplementedError
 
 
 N_T = {

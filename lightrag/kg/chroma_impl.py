@@ -1,18 +1,28 @@
 import asyncio
 from dataclasses import dataclass
-from typing import Union
+from typing import Any, final
 import numpy as np
-from chromadb import HttpClient, PersistentClient
-from chromadb.config import Settings
+
 from lightrag.base import BaseVectorStorage
 from lightrag.utils import logger
+import pipmaster as pm
+
+if not pm.is_installed("chromadb"):
+    pm.install("chromadb")
+
+try:
+    from chromadb import HttpClient, PersistentClient
+    from chromadb.config import Settings
+except ImportError as e:
+    raise ImportError(
+        "`chromadb` library is not installed. Please install it via pip: `pip install chromadb`."
+    ) from e
 
 
+@final
 @dataclass
 class ChromaVectorDBStorage(BaseVectorStorage):
     """ChromaDB vector storage implementation."""
-
-    cosine_better_than_threshold: float = None
 
     def __post_init__(self):
         try:
@@ -102,7 +112,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"ChromaDB initialization failed: {str(e)}")
             raise
 
-    async def upsert(self, data: dict[str, dict]):
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not data:
             logger.warning("Empty data provided to vector DB")
             return []
@@ -151,7 +161,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error during ChromaDB upsert: {str(e)}")
             raise
 
-    async def query(self, query: str, top_k=5) -> Union[dict, list[dict]]:
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         try:
             embedding = await self.embedding_func([query])
 
@@ -183,6 +193,12 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error during ChromaDB query: {str(e)}")
             raise
 
-    async def index_done_callback(self):
+    async def index_done_callback(self) -> None:
         # ChromaDB handles persistence automatically
         pass
+
+    async def delete_entity(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        raise NotImplementedError

@@ -4,16 +4,11 @@ import asyncio
 # import html
 # import os
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Union, final
 
 import numpy as np
-import pipmaster as pm
 
-if not pm.is_installed("oracledb"):
-    pm.install("oracledb")
-
-
-import oracledb
+from lightrag.types import KnowledgeGraph
 
 from ..base import (
     BaseGraphStorage,
@@ -22,6 +17,19 @@ from ..base import (
 )
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
+
+import pipmaster as pm
+
+if not pm.is_installed("oracledb"):
+    pm.install("oracledb")
+
+try:
+    import oracledb
+
+except ImportError as e:
+    raise ImportError(
+        "`oracledb` library is not installed. Please install it via pip: `pip install oracledb`."
+    ) from e
 
 
 class OracleDB:
@@ -169,6 +177,7 @@ class OracleDB:
             raise
 
 
+@final
 @dataclass
 class OracleKVStorage(BaseKVStorage):
     # db instance must be injected before use
@@ -181,7 +190,7 @@ class OracleKVStorage(BaseKVStorage):
 
     ################ QUERY METHODS ################
 
-    async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get doc_full data based on id."""
         SQL = SQL_TEMPLATES["get_by_id_" + self.namespace]
         params = {"workspace": self.db.workspace, "id": id}
@@ -232,7 +241,7 @@ class OracleKVStorage(BaseKVStorage):
             res = [{k: v} for k, v in dict_res.items()]
         return res
 
-    async def filter_keys(self, keys: list[str]) -> set[str]:
+    async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that don't exist in storage"""
         SQL = SQL_TEMPLATES["filter_keys"].format(
             table_name=namespace_to_table_name(self.namespace),
@@ -248,7 +257,7 @@ class OracleKVStorage(BaseKVStorage):
             return set(keys)
 
     ################ INSERT METHODS ################
-    async def upsert(self, data: dict[str, Any]) -> None:
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             list_data = [
                 {
@@ -307,20 +316,17 @@ class OracleKVStorage(BaseKVStorage):
 
                     await self.db.execute(upsert_sql, _data)
 
-    async def index_done_callback(self):
-        if is_namespace(
-            self.namespace,
-            (NameSpace.KV_STORE_FULL_DOCS, NameSpace.KV_STORE_TEXT_CHUNKS),
-        ):
-            logger.info("full doc and chunk data had been saved into oracle db!")
+    async def index_done_callback(self) -> None:
+        # Oracle handles persistence automatically
+        pass
+
+    async def drop(self) -> None:
+        raise NotImplementedError
 
 
+@final
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):
-    # db instance must be injected before use
-    # db: OracleDB
-    cosine_better_than_threshold: float = None
-
     def __post_init__(self):
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = config.get("cosine_better_than_threshold")
@@ -330,16 +336,8 @@ class OracleVectorDBStorage(BaseVectorStorage):
             )
         self.cosine_better_than_threshold = cosine_threshold
 
-    async def upsert(self, data: dict[str, dict]):
-        """向向量数据库中插入数据"""
-        pass
-
-    async def index_done_callback(self):
-        pass
-
     #################### query method ###############
-    async def query(self, query: str, top_k=5) -> Union[dict, list[dict]]:
-        """从向量数据库中查询数据"""
+    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
         # 转换精度
@@ -359,21 +357,29 @@ class OracleVectorDBStorage(BaseVectorStorage):
         # print("vector search result:",results)
         return results
 
+    async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        raise NotImplementedError
 
+    async def index_done_callback(self) -> None:
+        # Oracles handles persistence automatically
+        pass
+
+    async def delete_entity(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+    async def delete_entity_relation(self, entity_name: str) -> None:
+        raise NotImplementedError
+
+
+@final
 @dataclass
 class OracleGraphStorage(BaseGraphStorage):
-    # db instance must be injected before use
-    # db: OracleDB
-
     def __post_init__(self):
-        """从graphml文件加载图"""
         self._max_batch_size = self.global_config.get("embedding_batch_num", 10)
 
     #################### insert method ################
 
-    async def upsert_node(self, node_id: str, node_data: dict[str, str]):
-        """插入或更新节点"""
-        # print("go into upsert node method")
+    async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         entity_name = node_id
         entity_type = node_data["entity_type"]
         description = node_data["description"]
@@ -406,7 +412,7 @@ class OracleGraphStorage(BaseGraphStorage):
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
-    ):
+    ) -> None:
         """插入或更新边"""
         # print("go into upsert edge method")
         source_name = source_node_id
@@ -446,8 +452,9 @@ class OracleGraphStorage(BaseGraphStorage):
         await self.db.execute(merge_sql, data)
         # self._graph.add_edge(source_node_id, target_node_id, **edge_data)
 
-    async def embed_nodes(self, algorithm: str) -> tuple[np.ndarray, list[str]]:
-        """为节点生成向量"""
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
         if algorithm not in self._node_embed_algorithms:
             raise ValueError(f"Node embedding algorithm {algorithm} not supported")
         return await self._node_embed_algorithms[algorithm]()
@@ -464,11 +471,9 @@ class OracleGraphStorage(BaseGraphStorage):
         nodes_ids = [self._graph.nodes[node_id]["id"] for node_id in nodes]
         return embeddings, nodes_ids
 
-    async def index_done_callback(self):
-        """写入graphhml图文件"""
-        logger.info(
-            "Node and edge data had been saved into oracle db already, so nothing to do here!"
-        )
+    async def index_done_callback(self) -> None:
+        # Oracles handles persistence automatically
+        pass
 
     #################### query method #################
     async def has_node(self, node_id: str) -> bool:
@@ -486,7 +491,6 @@ class OracleGraphStorage(BaseGraphStorage):
             return False
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        """根据源和目标节点id检查边是否存在"""
         SQL = SQL_TEMPLATES["has_edge"]
         params = {
             "workspace": self.db.workspace,
@@ -503,7 +507,6 @@ class OracleGraphStorage(BaseGraphStorage):
             return False
 
     async def node_degree(self, node_id: str) -> int:
-        """根据节点id获取节点的度"""
         SQL = SQL_TEMPLATES["node_degree"]
         params = {"workspace": self.db.workspace, "node_id": node_id}
         # print(SQL)
@@ -521,7 +524,7 @@ class OracleGraphStorage(BaseGraphStorage):
         # print("Edge degree",degree)
         return degree
 
-    async def get_node(self, node_id: str) -> Union[dict, None]:
+    async def get_node(self, node_id: str) -> dict[str, str] | None:
         """根据节点id获取节点数据"""
         SQL = SQL_TEMPLATES["get_node"]
         params = {"workspace": self.db.workspace, "node_id": node_id}
@@ -537,8 +540,7 @@ class OracleGraphStorage(BaseGraphStorage):
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
-        """根据源和目标节点id获取边"""
+    ) -> dict[str, str] | None:
         SQL = SQL_TEMPLATES["get_edge"]
         params = {
             "workspace": self.db.workspace,
@@ -553,8 +555,7 @@ class OracleGraphStorage(BaseGraphStorage):
             # print("Edge not exist!",self.db.workspace, source_node_id, target_node_id)
             return None
 
-    async def get_node_edges(self, source_node_id: str):
-        """根据节点id获取节点的所有边"""
+    async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         if await self.has_node(source_node_id):
             SQL = SQL_TEMPLATES["get_node_edges"]
             params = {"workspace": self.db.workspace, "source_node_id": source_node_id}
@@ -589,6 +590,17 @@ class OracleGraphStorage(BaseGraphStorage):
         res = await self.db.query(sql=SQL, params=params, multirows=True)
         if res:
             return res
+
+    async def delete_node(self, node_id: str) -> None:
+        raise NotImplementedError
+
+    async def get_all_labels(self) -> list[str]:
+        raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        raise NotImplementedError
 
 
 N_T = {

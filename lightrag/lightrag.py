@@ -674,7 +674,7 @@ class LightRAG:
                 "content": content,
                 "content_summary": self._get_content_summary(content),
                 "content_length": len(content),
-                "status": DocStatus.PENDING,
+                "status": DocStatus.PENDING.value,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
             }
@@ -745,7 +745,7 @@ class LightRAG:
                 await self.doc_status.upsert(
                     {
                         doc_status_id: {
-                            "status": DocStatus.PROCESSING,
+                            "status": DocStatus.PROCESSING.value,
                             "updated_at": datetime.now().isoformat(),
                             "content": status_doc.content,
                             "content_summary": status_doc.content_summary,
@@ -779,10 +779,10 @@ class LightRAG:
                 ]
                 try:
                     await asyncio.gather(*tasks)
-                    await self.doc_status.update_doc_status(
+                    await self.doc_status.upsert(
                         {
                             doc_status_id: {
-                                "status": DocStatus.PROCESSED,
+                                "status": DocStatus.PROCESSED.value,
                                 "chunks_count": len(chunks),
                                 "content": status_doc.content,
                                 "content_summary": status_doc.content_summary,
@@ -796,10 +796,10 @@ class LightRAG:
 
                 except Exception as e:
                     logger.error(f"Failed to process document {doc_id}: {str(e)}")
-                    await self.doc_status.update_doc_status(
+                    await self.doc_status.upsert(
                         {
                             doc_status_id: {
-                                "status": DocStatus.FAILED,
+                                "status": DocStatus.FAILED.value,
                                 "error": str(e),
                                 "content": status_doc.content,
                                 "content_summary": status_doc.content_summary,
