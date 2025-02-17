@@ -115,7 +115,7 @@ async def openai_complete_if_cache(
     # Set openai logger level to INFO when VERBOSE_DEBUG is off
     if not VERBOSE_DEBUG and logger.level == logging.DEBUG:
         logging.getLogger("openai").setLevel(logging.INFO)
-    
+
     openai_async_client = (
         AsyncOpenAI(default_headers=default_headers, api_key=api_key)
         if base_url is None
@@ -136,9 +136,8 @@ async def openai_complete_if_cache(
     logger.debug(f"Additional kwargs: {kwargs}")
     verbose_debug(f"Query: {prompt}")
     verbose_debug(f"System prompt: {system_prompt}")
-    # logger.debug(f"Messages: {messages}")
 
-    try:    
+    try:
         if "response_format" in kwargs:
             response = await openai_async_client.beta.chat.completions.parse(
                 model=model, messages=messages, **kwargs
