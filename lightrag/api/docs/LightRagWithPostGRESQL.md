@@ -1,3 +1,5 @@
+Certainly! Below is an updated version of the guide with instructions that ensure the `pgvector` extension is activated specifically within the database intended for use with LightRAG.
+
 # Installing and Using PostgreSQL with LightRAG
 
 This guide provides step-by-step instructions on setting up PostgreSQL for use with LightRAG, a tool designed to enhance large language model (LLM) performance using retrieval-augmented generation techniques. 
@@ -70,19 +72,7 @@ make
 sudo make install
 ```
 
-Enable the `pgvector` extension in your PostgreSQL database:
-
-```sql
-CREATE EXTENSION vector;
-```
-
-Verify installation by checking the extension version:
-
-```sql
-SELECT extversion FROM pg_extension WHERE extname = 'vector';
-```
-
-### 4. Create a Database
+### 4. Create a Database for LightRAG
 
 Create an empty database to store your data:
 
@@ -90,7 +80,28 @@ Create an empty database to store your data:
 sudo -u postgres createdb your_database
 ```
 
-### 5. Install LightRAG with API Access
+### 5. Activate PGVector Extension in the Database
+
+Switch to the newly created database and enable the `pgvector` extension:
+
+```bash
+sudo -u postgres psql -d your_database
+```
+
+Inside the PostgreSQL shell, run:
+
+```sql
+CREATE EXTENSION vector;
+```
+
+Verify installation by checking the extension version within this specific database:
+
+```sql
+SELECT extversion FROM pg_extension WHERE extname = 'vector';
+\q
+```
+
+### 6. Install LightRAG with API Access
 
 Install LightRAG using pip, targeting the API package for server-side use:
 
@@ -98,7 +109,7 @@ Install LightRAG using pip, targeting the API package for server-side use:
 pip install https://github.com/ParisNeo/LightRAG.git[api]
 ```
 
-### 6. Configure `config.ini`
+### 7. Configure `config.ini`
 
 Create a configuration file to specify PostgreSQL connection details and other settings:
 
@@ -116,7 +127,7 @@ workspace = default
 
 Replace placeholders like `your_role_name`, `your_password`, and `your_database` with actual values.
 
-### 7. Run LightRAG Server
+### 8. Run LightRAG Server
 
 Start the LightRAG server using specified options:
 
