@@ -16,6 +16,7 @@ import argparse
 from typing import List, Any, Literal, Optional, Dict
 from pydantic import BaseModel, Field, field_validator
 from lightrag import LightRAG, QueryParam
+from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
@@ -702,7 +703,7 @@ class QueryRequest(BaseModel):
     )
 
     history_turns: Optional[int] = Field(
-        ge=0
+        ge=0,
         default=None,
         description="Number of complete conversation turns (user-assistant pairs) to consider in the response context.",
     )
@@ -800,7 +801,6 @@ class DocStatusResponse(BaseModel):
 
 class DocsStatusesResponse(BaseModel):
     statuses: Dict[DocStatus, List[DocStatusResponse]] = {}
-
 
 
 def get_api_key_dependency(api_key: Optional[str]):
