@@ -674,7 +674,7 @@ class LightRAG:
                 "content": content,
                 "content_summary": self._get_content_summary(content),
                 "content_length": len(content),
-                "status": DocStatus.PENDING.value,
+                "status": DocStatus.PENDING,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
             }
@@ -745,7 +745,7 @@ class LightRAG:
                 await self.doc_status.upsert(
                     {
                         doc_status_id: {
-                            "status": DocStatus.PROCESSING.value,
+                            "status": DocStatus.PROCESSING,
                             "updated_at": datetime.now().isoformat(),
                             "content": status_doc.content,
                             "content_summary": status_doc.content_summary,
@@ -782,7 +782,7 @@ class LightRAG:
                     await self.doc_status.upsert(
                         {
                             doc_status_id: {
-                                "status": DocStatus.PROCESSED.value,
+                                "status": DocStatus.PROCESSED,
                                 "chunks_count": len(chunks),
                                 "content": status_doc.content,
                                 "content_summary": status_doc.content_summary,
@@ -799,7 +799,7 @@ class LightRAG:
                     await self.doc_status.upsert(
                         {
                             doc_status_id: {
-                                "status": DocStatus.FAILED.value,
+                                "status": DocStatus.FAILED,
                                 "error": str(e),
                                 "content": status_doc.content,
                                 "content_summary": status_doc.content_summary,
