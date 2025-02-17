@@ -20,7 +20,7 @@ import tiktoken
 
 from lightrag.prompt import PROMPTS
 
-VERBOSE_DEBUG = False
+VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
 
 
 def verbose_debug(msg: str, *args, **kwargs):
