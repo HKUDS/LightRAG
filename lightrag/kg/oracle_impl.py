@@ -320,6 +320,7 @@ class OracleKVStorage(BaseKVStorage):
         # Oracle handles persistence automatically
         pass
 
+
 @final
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):
