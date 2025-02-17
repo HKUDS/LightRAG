@@ -228,21 +228,21 @@ async def _merge_nodes_then_upsert(
 async def _merge_edges_then_upsert(
     src_id: str,
     tgt_id: str,
-    edges_data: list[dict[str, Any]],
+    edges_data: list[dict],
     knowledge_graph_inst: BaseGraphStorage,
-    global_config: dict[str, str],
+    global_config: dict,
 ):
-    already_weights: list[float] = []
-    already_source_ids: list[str] = []
-    already_description: list[str] = []
-    already_keywords: list[str] = []
+    already_weights = []
+    already_source_ids = []
+    already_description = []
+    already_keywords = []
 
     if await knowledge_graph_inst.has_edge(src_id, tgt_id):
         already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
         # Handle the case where get_edge returns None or missing fields
         if not already_edge:
             return
-
+        
         # Get weight with default 0.0 if missing
         already_weights.append(already_edge.get("weight", 0.0))
 
@@ -254,11 +254,11 @@ async def _merge_edges_then_upsert(
                 )
             )
 
-            # Get description with empty string default if missing or None
+        # Get description with empty string default if missing or None
         if "description" in already_edge and already_edge["description"] is not None:
             already_description.append(already_edge["description"])
 
-            # Get keywords with empty string default if missing or None
+        # Get keywords with empty string default if missing or None
         if "keywords" in already_edge and already_edge["keywords"] is not None:
             already_keywords.extend(
                 split_string_by_multi_markers(
