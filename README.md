@@ -171,7 +171,7 @@ rag = LightRAG(working_dir=WORKING_DIR)
 
 # Create query parameters
 query_param = QueryParam(
-    mode="hybrid",  # or other mode: "local", "global", "hybrid"
+    mode="hybrid",  # or other mode: "local", "global", "hybrid", "mix" and "naive"
 )
 
 # Example 1: Using the default system prompt
@@ -184,11 +184,20 @@ print(response_default)
 # Example 2: Using a custom prompt
 custom_prompt = """
 You are an expert assistant in environmental science. Provide detailed and structured answers with examples.
+---Conversation History---
+{history}
+
+---Knowledge Base---
+{context_data}
+
+---Response Rules---
+
+- Target format and length: {response_type}
 """
 response_custom = rag.query(
     "What are the primary benefits of renewable energy?",
     param=query_param,
-    prompt=custom_prompt  # Pass the custom prompt
+    system_prompt=custom_prompt  # Pass the custom prompt
 )
 print(response_custom)
 ```
