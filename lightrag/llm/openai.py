@@ -40,9 +40,10 @@ __version__ = "1.0.0"
 __author__ = "lightrag Team"
 __status__ = "Production"
 
-from ..utils import verbose_debug
+from ..utils import verbose_debug, VERBOSE_DEBUG
 import sys
 import os
+import logging
 
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
@@ -110,6 +111,11 @@ async def openai_complete_if_cache(
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_8) LightRAG/{__api_version__}",
         "Content-Type": "application/json",
     }
+
+    # Set openai logger level to INFO when VERBOSE_DEBUG is off
+    if not VERBOSE_DEBUG and logger.level == logging.DEBUG:
+        logging.getLogger("openai").setLevel(logging.INFO)
+    
     openai_async_client = (
         AsyncOpenAI(default_headers=default_headers, api_key=api_key)
         if base_url is None
@@ -125,15 +131,14 @@ async def openai_complete_if_cache(
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
-    # 添加日志输出
-    logger.debug("===== Query Input to LLM =====")
+    logger.debug("===== Sending Query to LLM =====")
     logger.debug(f"Model: {model}   Base URL: {base_url}")
     logger.debug(f"Additional kwargs: {kwargs}")
     verbose_debug(f"Query: {prompt}")
     verbose_debug(f"System prompt: {system_prompt}")
     # logger.debug(f"Messages: {messages}")
 
-    try:
+    try:    
         if "response_format" in kwargs:
             response = await openai_async_client.beta.chat.completions.parse(
                 model=model, messages=messages, **kwargs
