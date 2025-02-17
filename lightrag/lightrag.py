@@ -268,10 +268,10 @@ class LightRAG:
     """Directory where logs are stored. Defaults to the current working directory."""
 
     # Text chunking
-    chunk_token_size: int = 1200
+    chunk_token_size: int = int(os.getenv("CHUNK_SIZE", "1200"))
     """Maximum number of tokens per text chunk when splitting documents."""
 
-    chunk_overlap_token_size: int = 100
+    chunk_overlap_token_size: int = int(os.getenv("CHUNK_OVERLAP_SIZE", "100"))
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
 
     tiktoken_model_name: str = "gpt-4o-mini"
@@ -281,7 +281,7 @@ class LightRAG:
     entity_extract_max_gleaning: int = 1
     """Maximum number of entity extraction attempts for ambiguous content."""
 
-    entity_summary_to_max_tokens: int = 500
+    entity_summary_to_max_tokens: int = int(os.getenv("MAX_TOKEN_SUMMARY", "500"))
     """Maximum number of tokens used for summarizing extracted entities."""
 
     # Node embedding
