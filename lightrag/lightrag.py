@@ -867,7 +867,7 @@ class LightRAG:
                 chunk_entry = {
                     "content": chunk_content.strip(),
                     "source_id": source_id,
-                    "tokens": len(encode_string_by_tiktoken(chunk_entry["content"])),
+                    "tokens": len(encode_string_by_tiktoken(chunk_content.strip())),
                     "chunk_order_id": 0,
                     "full_doc_id": source_id,
                     "status": DocStatus.PROCESSED
