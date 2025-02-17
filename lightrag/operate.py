@@ -687,6 +687,9 @@ async def kg_query(
     if query_param.only_need_prompt:
         return sys_prompt
 
+    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
+
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
@@ -771,6 +774,9 @@ async def extract_keywords_only(
     kw_prompt = PROMPTS["keywords_extraction"].format(
         query=text, examples=examples, language=language, history=history_context
     )
+
+    len_of_prompts = len(encode_string_by_tiktoken(kw_prompt))
+    logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
     # 5. Call the LLM for keyword extraction
     use_model_func = global_config["llm_model_func"]
@@ -935,7 +941,9 @@ async def mix_kg_vector_query(
                     chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
                 formatted_chunks.append(chunk_text)
 
-            logger.info(f"Truncate {len(chunks)} to {len(formatted_chunks)} chunks")
+            logger.debug(
+                f"Truncate chunks from {len(chunks)} to {len(formatted_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+            )
             return "\n--New Chunk--\n".join(formatted_chunks)
         except Exception as e:
             logger.error(f"Error in get_vector_context: {e}")
@@ -967,6 +975,9 @@ async def mix_kg_vector_query(
 
     if query_param.only_need_prompt:
         return sys_prompt
+
+    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    logger.debug(f"[mix_kg_vector_query]Prompt Tokens: {len_of_prompts}")
 
     # 6. Generate response
     response = await use_model_func(
@@ -1073,7 +1084,7 @@ async def _build_query_context(
     if not entities_context.strip() and not relations_context.strip():
         return None
 
-    return f"""
+    result = f"""
 -----Entities-----
 ```csv
 {entities_context}
@@ -1087,6 +1098,15 @@ async def _build_query_context(
 {text_units_context}
 ```
 """
+    contex_tokens = len(encode_string_by_tiktoken(result))
+    entities_tokens = len(encode_string_by_tiktoken(entities_context))
+    relations_tokens = len(encode_string_by_tiktoken(relations_context))
+    text_units_tokens = len(encode_string_by_tiktoken(text_units_context))
+    logger.debug(
+        f"Context Tokens - Total: {contex_tokens}, Entities: {entities_tokens}, Relations: {relations_tokens}, Chunks: {text_units_tokens}"
+    )
+
+    return result
 
 
 async def _get_node_data(
@@ -1130,8 +1150,19 @@ async def _get_node_data(
             node_datas, query_param, knowledge_graph_inst
         ),
     )
+
+    len_node_datas = len(node_datas)
+    node_datas = truncate_list_by_token_size(
+        node_datas,
+        key=lambda x: x["description"],
+        max_token_size=query_param.max_token_for_local_context,
+    )
+    logger.debug(
+        f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
+    )
+
     logger.info(
-        f"Local query uses {len(node_datas)} entites, {len(use_relations)} relations, {len(use_text_units)} text units"
+        f"Local query uses {len(node_datas)} entites, {len(use_relations)} relations, {len(use_text_units)} chunks"
     )
 
     # build prompt
@@ -1264,6 +1295,10 @@ async def _find_most_related_text_unit_from_entities(
         max_token_size=query_param.max_token_for_text_unit,
     )
 
+    logger.debug(
+        f"Truncate chunks from {len(all_text_units_lookup)} to {len(all_text_units)} (max tokens:{query_param.max_token_for_text_unit})"
+    )
+
     all_text_units = [t["data"] for t in all_text_units]
     return all_text_units
 
@@ -1305,6 +1340,11 @@ async def _find_most_related_edges_from_entities(
         key=lambda x: x["description"],
         max_token_size=query_param.max_token_for_global_context,
     )
+
+    logger.debug(
+        f"Truncate relations from {len(all_edges)} to {len(all_edges_data)} (max tokens:{query_param.max_token_for_global_context})"
+    )
+
     return all_edges_data
 
 
@@ -1352,10 +1392,14 @@ async def _get_edge_data(
     edge_datas = sorted(
         edge_datas, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
+    len_edge_datas = len(edge_datas)
     edge_datas = truncate_list_by_token_size(
         edge_datas,
         key=lambda x: x["description"],
         max_token_size=query_param.max_token_for_global_context,
+    )
+    logger.debug(
+        f"Truncate relations from {len_edge_datas} to {len(edge_datas)} (max tokens:{query_param.max_token_for_global_context})"
     )
 
     use_entities, use_text_units = await asyncio.gather(
@@ -1367,7 +1411,7 @@ async def _get_edge_data(
         ),
     )
     logger.info(
-        f"Global query uses {len(use_entities)} entites, {len(edge_datas)} relations, {len(use_text_units)} text units"
+        f"Global query uses {len(use_entities)} entites, {len(edge_datas)} relations, {len(use_text_units)} chunks"
     )
 
     relations_section_list = [
@@ -1456,10 +1500,14 @@ async def _find_most_related_entities_from_relationships(
         for k, n, d in zip(entity_names, node_datas, node_degrees)
     ]
 
+    len_node_datas = len(node_datas)
     node_datas = truncate_list_by_token_size(
         node_datas,
         key=lambda x: x["description"],
         max_token_size=query_param.max_token_for_local_context,
+    )
+    logger.debug(
+        f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
     )
 
     return node_datas
@@ -1514,6 +1562,10 @@ async def _find_related_text_unit_from_relationships(
         valid_text_units,
         key=lambda x: x["data"]["content"],
         max_token_size=query_param.max_token_for_text_unit,
+    )
+
+    logger.debug(
+        f"Truncate chunks from {len(valid_text_units)} to {len(truncated_text_units)} (max tokens:{query_param.max_token_for_text_unit})"
     )
 
     all_text_units: list[TextChunkSchema] = [t["data"] for t in truncated_text_units]
@@ -1583,7 +1635,10 @@ async def naive_query(
         logger.warning("No chunks left after truncation")
         return PROMPTS["fail_response"]
 
-    logger.info(f"Truncate {len(chunks)} to {len(maybe_trun_chunks)} chunks")
+    logger.debug(
+        f"Truncate chunks from {len(chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+    )
+
     section = "\n--New Chunk--\n".join([c["content"] for c in maybe_trun_chunks])
 
     if query_param.only_need_context:
@@ -1605,6 +1660,9 @@ async def naive_query(
 
     if query_param.only_need_prompt:
         return sys_prompt
+
+    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    logger.info(f"[naive_query]Prompt Tokens: {len_of_prompts}")
 
     response = await use_model_func(
         query,
@@ -1747,6 +1805,9 @@ async def kg_query_with_keywords(
 
     if query_param.only_need_prompt:
         return sys_prompt
+
+    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    logger.debug(f"[kg_query_with_keywords]Prompt Tokens: {len_of_prompts}")
 
     response = await use_model_func(
         query,

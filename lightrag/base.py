@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dotenv import load_dotenv
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import (
@@ -9,11 +10,11 @@ from typing import (
     TypedDict,
     TypeVar,
 )
-
 import numpy as np
-
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
+
+load_dotenv()
 
 
 class TextChunkSchema(TypedDict):
@@ -54,13 +55,15 @@ class QueryParam:
     top_k: int = int(os.getenv("TOP_K", "60"))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    max_token_for_text_unit: int = 4000
+    max_token_for_text_unit: int = int(os.getenv("MAX_TOKEN_TEXT_CHUNK", "4000"))
     """Maximum number of tokens allowed for each retrieved text chunk."""
 
-    max_token_for_global_context: int = 4000
+    max_token_for_global_context: int = int(
+        os.getenv("MAX_TOKEN_RELATION_DESC", "4000")
+    )
     """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
 
-    max_token_for_local_context: int = 4000
+    max_token_for_local_context: int = int(os.getenv("MAX_TOKEN_ENTITY_DESC", "4000"))
     """Maximum number of tokens allocated for entity descriptions in local retrieval."""
 
     hl_keywords: list[str] = field(default_factory=list)
