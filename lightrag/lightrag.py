@@ -36,6 +36,7 @@ from .utils import (
     limit_async_func_call,
     logger,
     set_logger,
+    encode_string_by_tiktoken,
 )
 from .types import KnowledgeGraph
 
@@ -863,7 +864,14 @@ class LightRAG:
                 source_id = chunk_data["source_id"]
                 chunk_id = compute_mdhash_id(chunk_content.strip(), prefix="chunk-")
 
-                chunk_entry = {"content": chunk_content.strip(), "source_id": source_id}
+                chunk_entry = {
+                    "content": chunk_content.strip(),
+                    "source_id": source_id,
+                    "tokens": len(encode_string_by_tiktoken(chunk_entry["content"])),
+                    "chunk_order_id": 0,
+                    "full_doc_id": source_id,
+                    "status": DocStatus.PROCESSED
+                }
                 all_chunks_data[chunk_id] = chunk_entry
                 chunk_to_source_map[source_id] = chunk_id
                 update_storage = True
