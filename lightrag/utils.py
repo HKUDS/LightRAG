@@ -657,6 +657,10 @@ def get_conversation_turns(
     Returns:
         Formatted string of the conversation history
     """
+    # Check if num_turns is valid
+    if num_turns <= 0:
+        return ""
+
     # Group messages into turns
     turns: list[list[dict[str, Any]]] = []
     messages: list[dict[str, Any]] = []
