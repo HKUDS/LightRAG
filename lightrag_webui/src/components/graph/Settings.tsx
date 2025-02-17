@@ -1,5 +1,5 @@
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
-import { Checkbox } from '@/components/ui/Checkbox'
+import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
 import Separator from '@/components/ui/Separator'
 import Input from '@/components/ui/Input'
@@ -40,7 +40,7 @@ const LabeledCheckBox = ({
  */
 export default function Settings() {
   const [opened, setOpened] = useState<boolean>(false)
-  const [tempApiKey, setTempApiKey] = useState<string>('') // 用于临时存储输入的API Key
+  const [tempApiKey, setTempApiKey] = useState<string>('')
 
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()

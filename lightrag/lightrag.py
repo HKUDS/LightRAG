@@ -1254,6 +1254,16 @@ class LightRAG:
         """
         return await self.doc_status.get_status_counts()
 
+    async def get_docs_by_status(
+        self, status: DocStatus
+    ) -> dict[str, DocProcessingStatus]:
+        """Get documents by status
+
+        Returns:
+            Dict with document id is keys and document status is values
+        """
+        return await self.doc_status.get_docs_by_status(status)
+
     async def adelete_by_doc_id(self, doc_id: str) -> None:
         """Delete a document and all its related data
 

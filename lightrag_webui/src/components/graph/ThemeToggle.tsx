@@ -19,6 +19,7 @@ export default function ThemeToggle() {
         variant={controlButtonVariant}
         tooltip="Switch to light theme"
         size="icon"
+        side="bottom"
       >
         <MoonIcon />
       </Button>
@@ -30,6 +31,7 @@ export default function ThemeToggle() {
       variant={controlButtonVariant}
       tooltip="Switch to dark theme"
       size="icon"
+      side="bottom"
     >
       <SunIcon />
     </Button>

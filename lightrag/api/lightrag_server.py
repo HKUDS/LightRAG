@@ -19,6 +19,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
+from lightrag.base import DocStatus, DocProcessingStatus
 from enum import Enum
 from pathlib import Path
 import shutil
@@ -253,10 +254,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/docs")
         ASCIIColors.white("    ├─ Alternative Documentation (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/redoc")
-        ASCIIColors.white("    ├─ WebUI (local): ", end="")
+        ASCIIColors.white("    └─ WebUI (local): ", end="")
         ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/webui")
-        ASCIIColors.white("    └─ Graph Viewer (local): ", end="")
-        ASCIIColors.yellow(f"{protocol}://localhost:{args.port}/graph-viewer")
 
         ASCIIColors.yellow("\n📝 Note:")
         ASCIIColors.white("""    Since the server is running on 0.0.0.0:
@@ -691,6 +690,22 @@ class InsertTextRequest(BaseModel):
 class InsertResponse(BaseModel):
     status: str
     message: str
+
+
+class DocStatusResponse(BaseModel):
+    id: str
+    content_summary: str
+    content_length: int
+    status: DocStatus
+    created_at: str
+    updated_at: str
+    chunks_count: Optional[int] = None
+    error: Optional[str] = None
+    metadata: Optional[dict[str, Any]] = None
+
+
+class DocsStatusesResponse(BaseModel):
+    statuses: Dict[DocStatus, List[DocStatusResponse]] = {}
 
 
 def QueryRequestToQueryParams(request: QueryRequest):
@@ -1728,20 +1743,57 @@ def create_app(args):
     app.include_router(ollama_api.router, prefix="/api")
 
     @app.get("/documents", dependencies=[Depends(optional_api_key)])
-    async def documents():
-        """Get current system status"""
-        return doc_manager.indexed_files
+    async def documents() -> DocsStatusesResponse:
+        """
+        Get documents statuses
+        Returns:
+            DocsStatusesResponse: A response object containing a dictionary where keys are DocStatus
+            and values are lists of DocStatusResponse objects representing documents in each status category.
+        """
+        try:
+            statuses = (
+                DocStatus.PENDING,
+                DocStatus.PROCESSING,
+                DocStatus.PROCESSED,
+                DocStatus.FAILED,
+            )
+
+            tasks = [rag.get_docs_by_status(status) for status in statuses]
+            results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
+
+            response = DocsStatusesResponse()
+
+            for idx, result in enumerate(results):
+                status = statuses[idx]
+                for doc_id, doc_status in result.items():
+                    if status not in response.statuses:
+                        response.statuses[status] = []
+                    response.statuses[status].append(
+                        DocStatusResponse(
+                            id=doc_id,
+                            content_summary=doc_status.content_summary,
+                            content_length=doc_status.content_length,
+                            status=doc_status.status,
+                            created_at=doc_status.created_at,
+                            updated_at=doc_status.updated_at,
+                            chunks_count=doc_status.chunks_count,
+                            error=doc_status.error,
+                            metadata=doc_status.metadata,
+                        )
+                    )
+            return response
+        except Exception as e:
+            logging.error(f"Error GET /documents: {str(e)}")
+            logging.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
 
     @app.get("/health", dependencies=[Depends(optional_api_key)])
     async def get_status():
         """Get current system status"""
-        files = doc_manager.scan_directory()
         return {
             "status": "healthy",
             "working_directory": str(args.working_dir),
             "input_directory": str(args.input_dir),
-            "indexed_files": [str(f) for f in files],
-            "indexed_files_count": len(files),
             "configuration": {
                 # LLM configuration binding/host address (if applicable)/model (if applicable)
                 "llm_binding": args.llm_binding,
@@ -1760,17 +1812,9 @@ def create_app(args):
         }
 
     # Webui mount webui/index.html
-    webui_dir = Path(__file__).parent / "webui"
-    app.mount(
-        "/graph-viewer",
-        StaticFiles(directory=webui_dir, html=True),
-        name="webui",
-    )
-
-    # Serve the static files
-    static_dir = Path(__file__).parent / "static"
+    static_dir = Path(__file__).parent / "webui"
     static_dir.mkdir(exist_ok=True)
-    app.mount("/webui", StaticFiles(directory=static_dir, html=True), name="static")
+    app.mount("/webui", StaticFiles(directory=static_dir, html=True), name="webui")
 
     return app
 
