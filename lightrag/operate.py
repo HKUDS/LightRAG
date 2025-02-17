@@ -240,31 +240,29 @@ async def _merge_edges_then_upsert(
     if await knowledge_graph_inst.has_edge(src_id, tgt_id):
         already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
         # Handle the case where get_edge returns None or missing fields
-        if not already_edge:
-            return
-        
-        # Get weight with default 0.0 if missing
-        already_weights.append(already_edge.get("weight", 0.0))
+        if already_edge:
+            # Get weight with default 0.0 if missing
+            already_weights.append(already_edge.get("weight", 0.0))
 
-        # Get source_id with empty string default if missing or None
-        if "source_id" in already_edge and already_edge["source_id"] is not None:
-            already_source_ids.extend(
-                split_string_by_multi_markers(
-                    already_edge["source_id"], [GRAPH_FIELD_SEP]
+            # Get source_id with empty string default if missing or None
+            if already_edge.get("source_id") is not None:
+                already_source_ids.extend(
+                    split_string_by_multi_markers(
+                        already_edge["source_id"], [GRAPH_FIELD_SEP]
+                    )
                 )
-            )
 
-        # Get description with empty string default if missing or None
-        if "description" in already_edge and already_edge["description"] is not None:
-            already_description.append(already_edge["description"])
+            # Get description with empty string default if missing or None
+            if already_edge.get("description") is not None:
+                already_description.append(already_edge["description"])
 
-        # Get keywords with empty string default if missing or None
-        if "keywords" in already_edge and already_edge["keywords"] is not None:
-            already_keywords.extend(
-                split_string_by_multi_markers(
-                    already_edge["keywords"], [GRAPH_FIELD_SEP]
+            # Get keywords with empty string default if missing or None
+            if already_edge.get("keywords") is not None:
+                already_keywords.extend(
+                    split_string_by_multi_markers(
+                        already_edge["keywords"], [GRAPH_FIELD_SEP]
+                    )
                 )
-            )
 
     # Process edges_data with None checks
     weight = sum([dp["weight"] for dp in edges_data] + already_weights)
