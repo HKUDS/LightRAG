@@ -70,12 +70,16 @@ class Neo4JStorage(BaseGraphStorage):
             )
         )
         CONNECTION_TIMEOUT = float(
-            os.environ.get("NEO4J_CONNECTION_TIMEOUT"),
-            config.get("neo4j", "connection_timeout", fallback=60.0),
+            os.environ.get(
+                "NEO4J_CONNECTION_TIMEOUT",
+                config.get("neo4j", "connection_timeout", fallback=60.0),
+            ),
         )
         CONNECTION_ACQUISITION_TIMEOUT = float(
-            os.environ.get("NEO4J_CONNECTION_ACQUISITION_TIMEOUT"),
-            config.get("neo4j", "connection_acquisition_timeout", fallback=60.0),
+            os.environ.get(
+                "NEO4J_CONNECTION_ACQUISITION_TIMEOUT",
+                config.get("neo4j", "connection_acquisition_timeout", fallback=60.0),
+            ),
         )
         DATABASE = os.environ.get(
             "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", namespace)
