@@ -2,7 +2,7 @@ import { cn } from '@/lib/utils'
 import { useBackendState } from '@/stores/state'
 import { useEffect, useState } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
-import StatusCard from '@/components/StatusCard'
+import StatusCard from '@/components/graph/StatusCard'
 
 const StatusIndicator = () => {
   const health = useBackendState.use.health()

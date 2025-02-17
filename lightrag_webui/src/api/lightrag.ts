@@ -1,3 +1,4 @@
+import axios, { AxiosError } from 'axios'
 import { backendBaseUrl } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
@@ -26,8 +27,6 @@ export type LightragStatus = {
   status: 'healthy'
   working_directory: string
   input_directory: string
-  indexed_files: string[]
-  indexed_files_count: number
   configuration: {
     llm_binding: string
     llm_binding_host: string
@@ -51,94 +50,133 @@ export type LightragDocumentsScanProgress = {
   progress: number
 }
 
+/**
+ * Specifies the retrieval mode:
+ * - "naive": Performs a basic search without advanced techniques.
+ * - "local": Focuses on context-dependent information.
+ * - "global": Utilizes global knowledge.
+ * - "hybrid": Combines local and global retrieval methods.
+ * - "mix": Integrates knowledge graph and vector retrieval.
+ */
 export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix'
+
+export type Message = {
+  role: 'user' | 'assistant' | 'system'
+  content: string
+}
 
 export type QueryRequest = {
   query: string
+  /** Specifies the retrieval mode. */
   mode: QueryMode
-  stream?: boolean
+  /** If True, only returns the retrieved context without generating a response. */
   only_need_context?: boolean
+  /** If True, only returns the generated prompt without producing a response. */
+  only_need_prompt?: boolean
+  /** Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'. */
+  response_type?: string
+  /** If True, enables streaming output for real-time responses. */
+  stream?: boolean
+  /** Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode. */
+  top_k?: number
+  /** Maximum number of tokens allowed for each retrieved text chunk. */
+  max_token_for_text_unit?: number
+  /** Maximum number of tokens allocated for relationship descriptions in global retrieval. */
+  max_token_for_global_context?: number
+  /** Maximum number of tokens allocated for entity descriptions in local retrieval. */
+  max_token_for_local_context?: number
+  /** List of high-level keywords to prioritize in retrieval. */
+  hl_keywords?: string[]
+  /** List of low-level keywords to refine retrieval focus. */
+  ll_keywords?: string[]
+  /**
+   * Stores past conversation history to maintain context.
+   * Format: [{"role": "user/assistant", "content": "message"}].
+   */
+  conversation_history?: Message[]
+  /** Number of complete conversation turns (user-assistant pairs) to consider in the response context. */
+  history_turns?: number
 }
 
 export type QueryResponse = {
   response: string
 }
 
+export type DocActionResponse = {
+  status: 'success' | 'partial_success' | 'failure'
+  message: string
+}
+
+export type DocStatus = 'pending' | 'processing' | 'processed' | 'failed'
+
+export type DocStatusResponse = {
+  id: string
+  content_summary: string
+  content_length: number
+  status: DocStatus
+  created_at: string
+  updated_at: string
+  chunks_count?: number
+  error?: string
+  metadata?: Record<string, any>
+}
+
+export type DocsStatusesResponse = {
+  statuses: Record<DocStatus, DocStatusResponse[]>
+}
+
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
-// Helper functions
-const getResponseContent = async (response: Response) => {
-  const contentType = response.headers.get('content-type')
-  if (contentType) {
-    if (contentType.includes('application/json')) {
-      const data = await response.json()
-      return JSON.stringify(data, undefined, 2)
-    } else if (contentType.startsWith('text/')) {
-      return await response.text()
-    } else if (contentType.includes('application/xml') || contentType.includes('text/xml')) {
-      return await response.text()
-    } else if (contentType.includes('application/octet-stream')) {
-      const buffer = await response.arrayBuffer()
-      const decoder = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true })
-      return decoder.decode(buffer)
-    } else {
-      try {
-        return await response.text()
-      } catch (error) {
-        console.warn('Failed to decode as text, may be binary:', error)
-        return `[Could not decode response body. Content-Type: ${contentType}]`
-      }
-    }
-  } else {
-    try {
-      return await response.text()
-    } catch (error) {
-      console.warn('Failed to decode as text, may be binary:', error)
-      return '[Could not decode response body. No Content-Type header.]'
-    }
+// Axios instance
+const axiosInstance = axios.create({
+  baseURL: backendBaseUrl,
+  headers: {
+    'Content-Type': 'application/json'
   }
-  return ''
-}
+})
 
-const fetchWithAuth = async (url: string, options: RequestInit = {}): Promise<Response> => {
+// Interceptor：add api key
+axiosInstance.interceptors.request.use((config) => {
   const apiKey = useSettingsStore.getState().apiKey
-  const headers = {
-    ...(options.headers || {}),
-    ...(apiKey ? { 'X-API-Key': apiKey } : {})
+  if (apiKey) {
+    config.headers['X-API-Key'] = apiKey
   }
+  return config
+})
 
-  const response = await fetch(backendBaseUrl + url, {
-    ...options,
-    headers
-  })
-
-  if (!response.ok) {
-    throw new Error(
-      `${response.status} ${response.statusText}\n${await getResponseContent(response)}\n${response.url}`
-    )
+// Interceptor：hanle error
+axiosInstance.interceptors.response.use(
+  (response) => response,
+  (error: AxiosError) => {
+    if (error.response) {
+      throw new Error(
+        `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
+          error.response.data
+        )}\n${error.config?.url}`
+      )
+    }
+    throw error
   }
-
-  return response
-}
+)
 
 // API methods
 export const queryGraphs = async (label: string): Promise<LightragGraphType> => {
-  const response = await fetchWithAuth(`/graphs?label=${label}`)
-  return await response.json()
+  const response = await axiosInstance.get(`/graphs?label=${label}`)
+  return response.data
 }
 
 export const getGraphLabels = async (): Promise<string[]> => {
-  const response = await fetchWithAuth('/graph/label/list')
-  return await response.json()
+  const response = await axiosInstance.get('/graph/label/list')
+  return response.data
 }
 
 export const checkHealth = async (): Promise<
   LightragStatus | { status: 'error'; message: string }
 > => {
   try {
-    const response = await fetchWithAuth('/health')
-    return await response.json()
+    const response = await axiosInstance.get('/health')
+    return response.data
   } catch (e) {
     return {
       status: 'error',
@@ -147,132 +185,132 @@ export const checkHealth = async (): Promise<
   }
 }
 
-export const getDocuments = async (): Promise<string[]> => {
-  const response = await fetchWithAuth('/documents')
-  return await response.json()
+export const getDocuments = async (): Promise<DocsStatusesResponse> => {
+  const response = await axiosInstance.get('/documents')
+  return response.data
+}
+
+export const scanNewDocuments = async (): Promise<{ status: string }> => {
+  const response = await axiosInstance.post('/documents/scan')
+  return response.data
 }
 
 export const getDocumentsScanProgress = async (): Promise<LightragDocumentsScanProgress> => {
-  const response = await fetchWithAuth('/documents/scan-progress')
-  return await response.json()
-}
-
-export const uploadDocument = async (
-  file: File
-): Promise<{
-  status: string
-  message: string
-  total_documents: number
-}> => {
-  const formData = new FormData()
-  formData.append('file', file)
-
-  const response = await fetchWithAuth('/documents/upload', {
-    method: 'POST',
-    body: formData
-  })
-  return await response.json()
-}
-
-export const startDocumentScan = async (): Promise<{ status: string }> => {
-  const response = await fetchWithAuth('/documents/scan', {
-    method: 'POST'
-  })
-  return await response.json()
+  const response = await axiosInstance.get('/documents/scan-progress')
+  return response.data
 }
 
 export const queryText = async (request: QueryRequest): Promise<QueryResponse> => {
-  const response = await fetchWithAuth('/query', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(request)
-  })
-  return await response.json()
+  const response = await axiosInstance.post('/query', request)
+  return response.data
 }
 
-export const queryTextStream = async (request: QueryRequest, onChunk: (chunk: string) => void) => {
-  const response = await fetchWithAuth('/query/stream', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(request)
-  })
+export const queryTextStream = async (
+  request: QueryRequest,
+  onChunk: (chunk: string) => void,
+  onError?: (error: string) => void
+) => {
+  try {
+    let buffer = ''
+    await axiosInstance.post('/query/stream', request, {
+      responseType: 'text',
+      headers: {
+        Accept: 'application/x-ndjson'
+      },
+      transformResponse: [
+        (data: string) => {
+          // Accumulate the data and process complete lines
+          buffer += data
+          const lines = buffer.split('\n')
+          // Keep the last potentially incomplete line in the buffer
+          buffer = lines.pop() || ''
 
-  const reader = response.body?.getReader()
-  if (!reader) throw new Error('No response body')
-
-  const decoder = new TextDecoder()
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-
-    const chunk = decoder.decode(value)
-    const lines = chunk.split('\n')
-    for (const line of lines) {
-      if (line) {
-        try {
-          const data = JSON.parse(line)
-          if (data.response) {
-            onChunk(data.response)
+          for (const line of lines) {
+            if (line.trim()) {
+              try {
+                const parsed = JSON.parse(line)
+                if (parsed.response) {
+                  onChunk(parsed.response)
+                } else if (parsed.error && onError) {
+                  onError(parsed.error)
+                }
+              } catch (e) {
+                console.error('Error parsing stream chunk:', e)
+                if (onError) onError('Error parsing server response')
+              }
+            }
           }
-        } catch (e) {
-          console.error('Error parsing stream chunk:', e)
+          return data
         }
+      ]
+    })
+
+    // Process any remaining data in the buffer
+    if (buffer.trim()) {
+      try {
+        const parsed = JSON.parse(buffer)
+        if (parsed.response) {
+          onChunk(parsed.response)
+        } else if (parsed.error && onError) {
+          onError(parsed.error)
+        }
+      } catch (e) {
+        console.error('Error parsing final chunk:', e)
+        if (onError) onError('Error parsing server response')
       }
     }
+  } catch (error) {
+    const message = errorMessage(error)
+    console.error('Stream request failed:', message)
+    if (onError) onError(message)
   }
 }
 
-// Text insertion API
 export const insertText = async (
   text: string,
   description?: string
-): Promise<{
-  status: string
-  message: string
-  document_count: number
-}> => {
-  const response = await fetchWithAuth('/documents/text', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ text, description })
-  })
-  return await response.json()
+): Promise<DocActionResponse> => {
+  const response = await axiosInstance.post('/documents/text', { text, description })
+  return response.data
 }
 
-// Batch file upload API
-export const uploadBatchDocuments = async (
-  files: File[]
-): Promise<{
-  status: string
-  message: string
-  document_count: number
-}> => {
+export const uploadDocument = async (
+  file: File,
+  onUploadProgress?: (percentCompleted: number) => void
+): Promise<DocActionResponse> => {
   const formData = new FormData()
-  files.forEach((file) => {
-    formData.append('files', file)
-  })
+  formData.append('file', file)
 
-  const response = await fetchWithAuth('/documents/batch', {
-    method: 'POST',
-    body: formData
+  const response = await axiosInstance.post('/documents/upload', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    },
+    // prettier-ignore
+    onUploadProgress:
+      onUploadProgress !== undefined
+        ? (progressEvent) => {
+          const percentCompleted = Math.round((progressEvent.loaded * 100) / progressEvent.total!)
+          onUploadProgress(percentCompleted)
+        }
+        : undefined
   })
-  return await response.json()
+  return response.data
 }
 
-// Clear all documents API
-export const clearDocuments = async (): Promise<{
-  status: string
-  message: string
-  document_count: number
-}> => {
-  const response = await fetchWithAuth('/documents', {
-    method: 'DELETE'
-  })
-  return await response.json()
+export const batchUploadDocuments = async (
+  files: File[],
+  onUploadProgress?: (fileName: string, percentCompleted: number) => void
+): Promise<DocActionResponse[]> => {
+  return await Promise.all(
+    files.map(async (file) => {
+      return await uploadDocument(file, (percentCompleted) => {
+        onUploadProgress?.(file.name, percentCompleted)
+      })
+    })
+  )
+}
+
+export const clearDocuments = async (): Promise<DocActionResponse> => {
+  const response = await axiosInstance.delete('/documents')
+  return response.data
 }
