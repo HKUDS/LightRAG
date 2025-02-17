@@ -653,7 +653,7 @@ class QueryRequest(BaseModel):
     )
 
     top_k: Optional[int] = Field(
-        gt=1,
+        ge=1,
         default=None,
         description="Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode.",
     )
@@ -677,25 +677,22 @@ class QueryRequest(BaseModel):
     )
 
     hl_keywords: Optional[List[str]] = Field(
-        min_length=1,
         default=None,
         description="List of high-level keywords to prioritize in retrieval.",
     )
 
     ll_keywords: Optional[List[str]] = Field(
-        min_length=1,
         default=None,
         description="List of low-level keywords to refine retrieval focus.",
     )
 
     conversation_history: Optional[List[dict[str, Any]]] = Field(
-        min_length=1,
         default=None,
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
     )
 
     history_turns: Optional[int] = Field(
-        gt=1,
+        ge=0
         default=None,
         description="Number of complete conversation turns (user-assistant pairs) to consider in the response context.",
     )
