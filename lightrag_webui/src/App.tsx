@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react'
-import ThemeProvider from '@/components/graph/ThemeProvider'
+import ThemeProvider from '@/components/ThemeProvider'
 import MessageAlert from '@/components/MessageAlert'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/graph/StatusIndicator'
