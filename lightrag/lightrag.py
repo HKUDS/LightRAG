@@ -674,7 +674,7 @@ class LightRAG:
                 "content": content,
                 "content_summary": self._get_content_summary(content),
                 "content_length": len(content),
-                "status": DocStatus.PENDING.value,
+                "status": DocStatus.PENDING,
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
             }
@@ -745,7 +745,7 @@ class LightRAG:
                 await self.doc_status.upsert(
                     {
                         doc_status_id: {
-                            "status": DocStatus.PROCESSING.value,
+                            "status": DocStatus.PROCESSING,
                             "updated_at": datetime.now().isoformat(),
                             "content": status_doc.content,
                             "content_summary": status_doc.content_summary,
@@ -782,7 +782,7 @@ class LightRAG:
                     await self.doc_status.upsert(
                         {
                             doc_status_id: {
-                                "status": DocStatus.PROCESSED.value,
+                                "status": DocStatus.PROCESSED,
                                 "chunks_count": len(chunks),
                                 "content": status_doc.content,
                                 "content_summary": status_doc.content_summary,
@@ -799,7 +799,7 @@ class LightRAG:
                     await self.doc_status.upsert(
                         {
                             doc_status_id: {
-                                "status": DocStatus.FAILED.value,
+                                "status": DocStatus.FAILED,
                                 "error": str(e),
                                 "content": status_doc.content,
                                 "content_summary": status_doc.content_summary,
@@ -984,7 +984,10 @@ class LightRAG:
                 await self._insert_done()
 
     def query(
-        self, query: str, param: QueryParam = QueryParam(), prompt: str | None = None
+        self,
+        query: str,
+        param: QueryParam = QueryParam(),
+        system_prompt: str | None = None,
     ) -> str | Iterator[str]:
         """
         Perform a sync query.
@@ -999,13 +1002,13 @@ class LightRAG:
         """
         loop = always_get_an_event_loop()
 
-        return loop.run_until_complete(self.aquery(query, param, prompt))  # type: ignore
+        return loop.run_until_complete(self.aquery(query, param, system_prompt))  # type: ignore
 
     async def aquery(
         self,
         query: str,
         param: QueryParam = QueryParam(),
-        prompt: str | None = None,
+        system_prompt: str | None = None,
     ) -> str | AsyncIterator[str]:
         """
         Perform a async query.
@@ -1037,7 +1040,7 @@ class LightRAG:
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
-                prompt=prompt,
+                system_prompt=system_prompt,
             )
         elif param.mode == "naive":
             response = await naive_query(
@@ -1056,6 +1059,7 @@ class LightRAG:
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
+                system_prompt=system_prompt,
             )
         elif param.mode == "mix":
             response = await mix_kg_vector_query(
@@ -1077,6 +1081,7 @@ class LightRAG:
                     global_config=asdict(self),
                     embedding_func=self.embedding_func,
                 ),
+                system_prompt=system_prompt,
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
