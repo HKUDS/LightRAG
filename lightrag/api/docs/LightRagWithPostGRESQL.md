@@ -1,6 +1,6 @@
 # Installing and Using PostgreSQL with LightRAG
 
-This guide provides step-by-step instructions on setting up PostgreSQL for use with LightRAG, a tool designed to enhance large language model (LLM) performance using retrieval-augmented generation techniques. 
+This guide provides step-by-step instructions on setting up PostgreSQL for use with LightRAG, a tool designed to enhance large language model (LLM) performance using retrieval-augmented generation techniques.
 
 ## Prerequisites
 
