@@ -860,17 +860,17 @@ class LightRAG:
             all_chunks_data: dict[str, dict[str, str]] = {}
             chunk_to_source_map: dict[str, str] = {}
             for chunk_data in custom_kg.get("chunks", {}):
-                chunk_content = chunk_data["content"]
+                chunk_content = chunk_data["content"].strip()
                 source_id = chunk_data["source_id"]
-                chunk_id = compute_mdhash_id(chunk_content.strip(), prefix="chunk-")
+                chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
 
                 chunk_entry = {
-                    "content": chunk_content.strip(),
+                    "content": chunk_content,
                     "source_id": source_id,
-                    "tokens": len(encode_string_by_tiktoken(chunk_content.strip())),
+                    "tokens": len(encode_string_by_tiktoken(chunk_content)),
                     "chunk_order_id": 0,
                     "full_doc_id": source_id,
-                    "status": DocStatus.PROCESSED
+                    "status": DocStatus.PROCESSED,
                 }
                 all_chunks_data[chunk_id] = chunk_entry
                 chunk_to_source_map[source_id] = chunk_id
