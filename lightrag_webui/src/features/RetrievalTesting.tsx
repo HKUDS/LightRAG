@@ -1,13 +1,17 @@
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { queryText, queryTextStream, Message } from '@/api/lightrag'
+import { queryText, queryTextStream, Message as ChatMessage } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 
 import { EraserIcon, SendIcon, LoaderIcon } from 'lucide-react'
+
+type Message = ChatMessage & {
+  isError?: boolean
+}
 
 export default function RetrievalTesting() {
   const [messages, setMessages] = useState<Message[]>(
@@ -47,13 +51,14 @@ export default function RetrievalTesting() {
       setIsLoading(true)
 
       // Create a function to update the assistant's message
-      const updateAssistantMessage = (chunk: string) => {
+      const updateAssistantMessage = (chunk: string, isError?: boolean) => {
         assistantMessage.content += chunk
         setMessages((prev) => {
           const newMessages = [...prev]
           const lastMessage = newMessages[newMessages.length - 1]
           if (lastMessage.role === 'assistant') {
             lastMessage.content = assistantMessage.content
+            lastMessage.isError = isError
           }
           return newMessages
         })
@@ -65,19 +70,30 @@ export default function RetrievalTesting() {
         ...state.querySettings,
         query: userMessage.content,
         conversation_history: prevMessages
+          .filter((m) => m.isError !== true)
+          .map((m) => ({ role: m.role, content: m.content }))
       }
 
       try {
         // Run query
         if (state.querySettings.stream) {
-          await queryTextStream(queryParams, updateAssistantMessage)
+          let errorMessage = ''
+          await queryTextStream(queryParams, updateAssistantMessage, (error) => {
+            errorMessage += error
+          })
+          if (errorMessage) {
+            if (assistantMessage.content) {
+              errorMessage = assistantMessage.content + '\n' + errorMessage
+            }
+            updateAssistantMessage(errorMessage, true)
+          }
         } else {
           const response = await queryText(queryParams)
           updateAssistantMessage(response.response)
         }
       } catch (err) {
         // Handle error
-        updateAssistantMessage(`Error: Failed to get response\n${errorMessage(err)}`)
+        updateAssistantMessage(`Error: Failed to get response\n${errorMessage(err)}`, true)
       } finally {
         // Clear loading and add messages to state
         setIsLoading(false)
@@ -115,7 +131,11 @@ export default function RetrievalTesting() {
                   >
                     <div
                       className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                        message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
+                        message.role === 'user'
+                          ? 'bg-primary text-primary-foreground'
+                          : message.isError
+                            ? 'bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
+                            : 'bg-muted'
                       }`}
                     >
                       <pre className="break-words whitespace-pre-wrap">{message.content}</pre>
