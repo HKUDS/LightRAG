@@ -214,10 +214,6 @@ class TiDBKVStorage(BaseKVStorage):
         # Ti handles persistence automatically
         pass
 
-    async def drop(self) -> None:
-        raise NotImplementedError
-
-
 @final
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
