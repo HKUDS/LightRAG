@@ -7,10 +7,28 @@ import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import rehypeReact from 'rehype-react'
+import remarkMath from 'remark-math'
+
 import { EraserIcon, SendIcon, LoaderIcon } from 'lucide-react'
 
 type Message = ChatMessage & {
   isError?: boolean
+}
+
+const ChatMessageComponent = ({ message }: { message: Message }) => {
+  return (
+    <ReactMarkdown
+      className="prose lg:prose-xs dark:prose-invert max-w-none text-base"
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeReact]}
+      skipHtml={false}
+    >
+      {message.content}
+    </ReactMarkdown>
+  )
 }
 
 export default function RetrievalTesting() {
@@ -138,7 +156,9 @@ export default function RetrievalTesting() {
                             : 'bg-muted'
                       }`}
                     >
-                      <pre className="break-words whitespace-pre-wrap">{message.content}</pre>
+                      <pre className="break-words whitespace-pre-wrap">
+                        {<ChatMessageComponent message={message} />}
+                      </pre>
                       {message.content.length === 0 && (
                         <LoaderIcon className="animate-spin duration-2000" />
                       )}
