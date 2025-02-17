@@ -1,6 +1,6 @@
 import Button from '@/components/ui/Button'
 import { SiteInfo } from '@/lib/constants'
-import ThemeToggle from '@/components/graph/ThemeToggle'
+import ThemeToggle from '@/components/ThemeToggle'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
 import { cn } from '@/lib/utils'

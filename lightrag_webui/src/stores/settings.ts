@@ -5,7 +5,7 @@ import { defaultQueryLabel } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
-type Tab = 'documents' | 'knowledge-graph' | 'retrieval'
+type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
 
 interface SettingsState {
   theme: Theme
