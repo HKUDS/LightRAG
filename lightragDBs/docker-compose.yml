@@ -1,0 +1,44 @@
+version: '3.8'
+name: lightrag_db
+
+services:
+  mongodb:
+    image: mongo
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+    volumes:
+      - ./volumes/mongodb:/data/db
+    # ports:
+    #   - "27017:27017"
+    networks:
+      - lightrag_db_network
+    restart: always
+
+  qdrant:
+    image: qdrant/qdrant
+    volumes:
+      - ./volumes/qdrant:/qdrant/storage
+      - ./volumes/qdrant/snapshots:/qdrant/snapshots
+    environment:
+      QDRANT__SERVICE__API_KEY: ${VECTOR_STORE_DB_API_KEY}
+    # ports:
+    #   - "6333:6333"  # REST API
+    #   - "6334:6334"  # GRPC
+    networks:
+      - lightrag_db_network
+    restart: always
+
+  redis:
+    image: redis:alpine
+    volumes:
+      - ./volumes/redis:/data
+    # ports:
+    #   - "127.0.0.1:6379:6379"
+    networks:
+      - lightrag_db_network
+    restart: always
+
+networks:
+  lightrag_db_network:
+    name: lightrag_db_network
