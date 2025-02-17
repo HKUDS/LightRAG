@@ -1662,7 +1662,7 @@ async def naive_query(
         return sys_prompt
 
     len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
-    logger.info(f"[naive_query]Prompt Tokens: {len_of_prompts}")
+    logger.debug(f"[naive_query]Prompt Tokens: {len_of_prompts}")
 
     response = await use_model_func(
         query,

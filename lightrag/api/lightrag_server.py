@@ -63,7 +63,10 @@ from ..kg.tidb_impl import (
 )
 
 # Load environment variables
-load_dotenv(override=True)
+try:
+    load_dotenv(override=True)
+except Exception as e:
+    logger.warning(f"Failed to load .env file: {e}")
 
 # Initialize config parser
 config = configparser.ConfigParser()
