@@ -69,12 +69,24 @@ class Neo4JStorage(BaseGraphStorage):
                 config.get("neo4j", "connection_pool_size", fallback=800),
             )
         )
+        CONNECTION_TIMEOUT = float(
+            os.environ.get("NEO4J_CONNECTION_TIMEOUT"),
+            config.get("neo4j", "connection_timeout", fallback=60.0),
+        )
+        CONNECTION_ACQUISITION_TIMEOUT = float(
+            os.environ.get("NEO4J_CONNECTION_ACQUISITION_TIMEOUT"),
+            config.get("neo4j", "connection_acquisition_timeout", fallback=60.0),
+        )
         DATABASE = os.environ.get(
             "NEO4J_DATABASE", re.sub(r"[^a-zA-Z0-9-]", "-", namespace)
         )
 
         self._driver: AsyncDriver = AsyncGraphDatabase.driver(
-            URI, auth=(USERNAME, PASSWORD)
+            URI,
+            auth=(USERNAME, PASSWORD),
+            max_connection_pool_size=MAX_CONNECTION_POOL_SIZE,
+            connection_timeout=CONNECTION_TIMEOUT,
+            connection_acquisition_timeout=CONNECTION_ACQUISITION_TIMEOUT,
         )
 
         # Try to connect to the database
@@ -82,6 +94,8 @@ class Neo4JStorage(BaseGraphStorage):
             URI,
             auth=(USERNAME, PASSWORD),
             max_connection_pool_size=MAX_CONNECTION_POOL_SIZE,
+            connection_timeout=CONNECTION_TIMEOUT,
+            connection_acquisition_timeout=CONNECTION_ACQUISITION_TIMEOUT,
         ) as _sync_driver:
             for database in (DATABASE, None):
                 self._DATABASE = database
