@@ -24,7 +24,6 @@ from .utils import (
     CacheData,
     statistic_data,
     get_conversation_turns,
-    verbose_debug,
 )
 from .base import (
     BaseGraphStorage,
@@ -689,7 +688,7 @@ async def kg_query(
         return sys_prompt
 
     len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
-    verbose_debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
+    logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
     response = await use_model_func(
         query,
@@ -978,7 +977,7 @@ async def mix_kg_vector_query(
         return sys_prompt
 
     len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
-    verbose_debug(f"[mix_kg_vector_query]Prompt Tokens: {len_of_prompts}")
+    logger.debug(f"[mix_kg_vector_query]Prompt Tokens: {len_of_prompts}")
 
     # 6. Generate response
     response = await use_model_func(
@@ -1808,7 +1807,7 @@ async def kg_query_with_keywords(
         return sys_prompt
 
     len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
-    verbose_debug(f"[kg_query_with_keywords]Prompt Tokens: {len_of_prompts}")
+    logger.debug(f"[kg_query_with_keywords]Prompt Tokens: {len_of_prompts}")
 
     response = await use_model_func(
         query,
