@@ -1,5 +1,3 @@
-Certainly! Below is an updated version of the guide with instructions that ensure the `pgvector` extension is activated specifically within the database intended for use with LightRAG.
-
 # Installing and Using PostgreSQL with LightRAG
 
 This guide provides step-by-step instructions on setting up PostgreSQL for use with LightRAG, a tool designed to enhance large language model (LLM) performance using retrieval-augmented generation techniques. 
