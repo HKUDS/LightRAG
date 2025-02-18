@@ -1095,7 +1095,7 @@ def create_app(args):
             },
             log_level=args.log_level,
             namespace_prefix=args.namespace_prefix,
-            is_managed_by_server=True,
+            auto_manage_storages_states=False,
         )
     else:
         rag = LightRAG(
@@ -1127,7 +1127,7 @@ def create_app(args):
             },
             log_level=args.log_level,
             namespace_prefix=args.namespace_prefix,
-            is_managed_by_server=True,
+            auto_manage_storages_states=False,
         )
 
     async def pipeline_enqueue_file(file_path: Path) -> bool:
