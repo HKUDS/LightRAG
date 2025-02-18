@@ -263,8 +263,10 @@ class PGKVStorage(BaseKVStorage):
                 exist_keys = [key["id"] for key in res]
             else:
                 exist_keys = []
-            data = set([s for s in keys if s not in exist_keys])
-            return data
+            new_keys = set([s for s in keys if s not in exist_keys])
+            print(f"keys: {keys}")
+            print(f"new_keys: {new_keys}")
+            return new_keys
         except Exception as e:
             logger.error(f"PostgreSQL database error: {e}")
             print(sql)
