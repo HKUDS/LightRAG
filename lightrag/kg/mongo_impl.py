@@ -117,6 +117,7 @@ class MongoKVStorage(BaseKVStorage):
         # Mongo handles persistence automatically
         pass
 
+
 @final
 @dataclass
 class MongoDocStatusStorage(DocStatusStorage):
@@ -196,6 +197,7 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
         pass
+
 
 @final
 @dataclass
