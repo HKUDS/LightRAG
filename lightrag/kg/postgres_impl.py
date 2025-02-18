@@ -507,8 +507,8 @@ class PGDocStatusStorage(DocStatusStorage):
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
-                created_at=element["created_at"],
-                updated_at=element["updated_at"],
+                created_at=str(element["created_at"]),
+                updated_at=str(element["updated_at"]),
                 chunks_count=element["chunks_count"],
             )
             for element in result
