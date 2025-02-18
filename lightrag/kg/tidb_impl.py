@@ -76,9 +76,7 @@ class TiDB:
             try:
                 result = conn.execute(text(sql), params)
             except Exception as e:
-                logger.error(f"Tidb database error: {e}")
-                print(sql)
-                print(params)
+                logger.error(f"Tidb database,\nsql:{sql},\nparams:{params},\nerror:{e}")
                 raise
             if multirows:
                 rows = result.all()
@@ -103,9 +101,7 @@ class TiDB:
                 else:
                     conn.execute(text(sql), parameters=data)
         except Exception as e:
-            logger.error(f"TiDB database error: {e}")
-            print(sql)
-            print(data)
+            logger.error(f"Tidb database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise
 
 
@@ -145,8 +141,7 @@ class TiDBKVStorage(BaseKVStorage):
         try:
             await self.db.query(SQL)
         except Exception as e:
-            logger.error(f"Tidb database error: {e}")
-            print(SQL)
+            logger.error(f"Tidb database,\nsql:{SQL},\nkeys:{keys},\nerror:{e}")
         res = await self.db.query(SQL, multirows=True)
         if res:
             exist_keys = [key["id"] for key in res]

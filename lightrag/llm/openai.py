@@ -77,7 +77,7 @@ from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 
 import numpy as np
-from typing import Union
+from typing import Any, Union
 
 
 class InvalidResponseError(Exception):
@@ -94,13 +94,13 @@ class InvalidResponseError(Exception):
     ),
 )
 async def openai_complete_if_cache(
-    model,
-    prompt,
-    system_prompt=None,
-    history_messages=None,
-    base_url=None,
-    api_key=None,
-    **kwargs,
+    model: str,
+    prompt: str,
+    system_prompt: str | None = None,
+    history_messages: list[dict[str, Any]] | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    **kwargs: Any,
 ) -> str:
     if history_messages is None:
         history_messages = []
@@ -125,7 +125,7 @@ async def openai_complete_if_cache(
     )
     kwargs.pop("hashing_kv", None)
     kwargs.pop("keyword_extraction", None)
-    messages = []
+    messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history_messages)
@@ -147,18 +147,18 @@ async def openai_complete_if_cache(
                 model=model, messages=messages, **kwargs
             )
     except APIConnectionError as e:
-        logger.error(f"OpenAI API Connection Error: {str(e)}")
+        logger.error(f"OpenAI API Connection Error: {e}")
         raise
     except RateLimitError as e:
-        logger.error(f"OpenAI API Rate Limit Error: {str(e)}")
+        logger.error(f"OpenAI API Rate Limit Error: {e}")
         raise
     except APITimeoutError as e:
-        logger.error(f"OpenAI API Timeout Error: {str(e)}")
+        logger.error(f"OpenAI API Timeout Error: {e}")
         raise
     except Exception as e:
-        logger.error(f"OpenAI API Call Failed: {str(e)}")
-        logger.error(f"Model: {model}")
-        logger.error(f"Request parameters: {kwargs}")
+        logger.error(
+            f"OpenAI API Call Failed,\nModel: {model},\nParams: {kwargs}, Got: {e}"
+        )
         raise
 
     if hasattr(response, "__aiter__"):
