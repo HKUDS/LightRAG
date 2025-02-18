@@ -640,15 +640,13 @@ async def kg_query(
         )
         query_param.mode = "local"
 
-    ll_keywords = ", ".join(ll_keywords) if ll_keywords else ""
-    hl_keywords = ", ".join(hl_keywords) if hl_keywords else ""
-
-    logger.info("Using %s mode for query processing", query_param.mode)
+    ll_keywords_str = ", ".join(ll_keywords) if ll_keywords else ""
+    hl_keywords_str = ", ".join(hl_keywords) if hl_keywords else ""
 
     # Build context
     context = await _build_query_context(
-        ll_keywords,
-        hl_keywords,
+        ll_keywords_str,
+        hl_keywords_str,
         knowledge_graph_inst,
         entities_vdb,
         relationships_vdb,
