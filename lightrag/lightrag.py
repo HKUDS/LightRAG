@@ -17,6 +17,7 @@ from .base import (
     DocStatusStorage,
     QueryParam,
     StorageNameSpace,
+    StoragesStatus,
 )
 from .namespace import NameSpace, make_namespace
 from .operate import (
@@ -348,6 +349,10 @@ class LightRAG:
     # Extensions
     addon_params: dict[str, Any] = field(default_factory=dict)
 
+    # Storages Management
+    auto_manage_storages_states: bool = True
+    """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
+
     """Dictionary for additional parameters and extensions."""
     convert_response_to_json_func: Callable[[str], dict[str, Any]] = (
         convert_response_to_json
@@ -440,7 +445,10 @@ class LightRAG:
             **self.vector_db_storage_cls_kwargs,
         }
 
-        # show config
+        # Life cycle
+        self.storages_status = StoragesStatus.NOT_CREATED
+
+        # Show config
         global_config = asdict(self)
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
@@ -546,6 +554,65 @@ class LightRAG:
                 **self.llm_model_kwargs,
             )
         )
+
+        self.storages_status = StoragesStatus.CREATED
+
+        # Initialize storages
+        if self.auto_manage_storages_states:
+            loop = always_get_an_event_loop()
+            loop.run_until_complete(self.initialize_storages())
+
+    def __del__(self):
+        # Finalize storages
+        if self.auto_manage_storages_states:
+            loop = always_get_an_event_loop()
+            loop.run_until_complete(self.finalize_storages())
+
+    async def initialize_storages(self):
+        """Asynchronously initialize the storages"""
+        if self.storages_status == StoragesStatus.CREATED:
+            tasks = []
+
+            for storage in (
+                self.full_docs,
+                self.text_chunks,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.chunks_vdb,
+                self.chunk_entity_relation_graph,
+                self.llm_response_cache,
+                self.doc_status,
+            ):
+                if storage:
+                    tasks.append(storage.initialize())
+
+            await asyncio.gather(*tasks)
+
+            self.storages_status = StoragesStatus.INITIALIZED
+            logger.debug("Initialized Storages")
+
+    async def finalize_storages(self):
+        """Asynchronously finalize the storages"""
+        if self.storages_status == StoragesStatus.INITIALIZED:
+            tasks = []
+
+            for storage in (
+                self.full_docs,
+                self.text_chunks,
+                self.entities_vdb,
+                self.relationships_vdb,
+                self.chunks_vdb,
+                self.chunk_entity_relation_graph,
+                self.llm_response_cache,
+                self.doc_status,
+            ):
+                if storage:
+                    tasks.append(storage.finalize())
+
+            await asyncio.gather(*tasks)
+
+            self.storages_status = StoragesStatus.FINALIZED
+            logger.debug("Finalized Storages")
 
     async def get_graph_labels(self):
         text = await self.chunk_entity_relation_graph.get_all_labels()

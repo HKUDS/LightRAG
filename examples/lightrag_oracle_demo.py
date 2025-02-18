@@ -6,7 +6,6 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
-from lightrag.kg.oracle_impl import OracleDB
 
 print(os.getcwd())
 script_directory = Path(__file__).resolve().parent.parent
@@ -25,6 +24,14 @@ MAX_TOKENS = 4000
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
+
+os.environ["ORACLE_USER"] = "username"
+os.environ["ORACLE_PASSWORD"] = "xxxxxxxxx"
+os.environ["ORACLE_DSN"] = "xxxxxxx_medium"
+os.environ["ORACLE_CONFIG_DIR"] = "path_to_config_dir"
+os.environ["ORACLE_WALLET_LOCATION"] = "path_to_wallet_location"
+os.environ["ORACLE_WALLET_PASSWORD"] = "wallet_password"
+os.environ["ORACLE_WORKSPACE"] = "company"
 
 
 async def llm_model_func(
@@ -63,26 +70,6 @@ async def main():
         embedding_dimension = await get_embedding_dim()
         print(f"Detected embedding dimension: {embedding_dimension}")
 
-        # Create Oracle DB connection
-        # The `config` parameter is the connection configuration of Oracle DB
-        # More docs here https://python-oracledb.readthedocs.io/en/latest/user_guide/connection_handling.html
-        # We storage data in unified tables, so we need to set a `workspace` parameter to specify which docs we want to store and query
-        # Below is an example of how to connect to Oracle Autonomous Database on Oracle Cloud
-        oracle_db = OracleDB(
-            config={
-                "user": "username",
-                "password": "xxxxxxxxx",
-                "dsn": "xxxxxxx_medium",
-                "config_dir": "dir/path/to/oracle/config",
-                "wallet_location": "dir/path/to/oracle/wallet",
-                "wallet_password": "xxxxxxxxx",
-                "workspace": "company",  # specify which docs you want to store and query
-            }
-        )
-
-        # Check if Oracle DB tables exist, if not, tables will be created
-        await oracle_db.check_tables()
-
         # Initialize LightRAG
         # We use Oracle DB as the KV/vector/graph storage
         # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
@@ -111,26 +98,6 @@ async def main():
                 "insert_batch_size": 2,
             },
         )
-
-        # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool
-
-        for storage in [
-            rag.vector_db_storage_cls,
-            rag.graph_storage_cls,
-            rag.doc_status,
-            rag.full_docs,
-            rag.text_chunks,
-            rag.llm_response_cache,
-            rag.key_string_value_json_storage_cls,
-            rag.chunks_vdb,
-            rag.relationships_vdb,
-            rag.entities_vdb,
-            rag.graph_storage_cls,
-            rag.chunk_entity_relation_graph,
-            rag.llm_response_cache,
-        ]:
-            # set client
-            storage.db = oracle_db
 
         # Extract and Insert into LightRAG storage
         with open(WORKING_DIR + "/docs.txt", "r", encoding="utf-8") as f:
