@@ -117,11 +117,6 @@ class MongoKVStorage(BaseKVStorage):
         # Mongo handles persistence automatically
         pass
 
-    async def drop(self) -> None:
-        """Drop the collection"""
-        await self._data.drop()
-
-
 @final
 @dataclass
 class MongoDocStatusStorage(DocStatusStorage):
@@ -201,11 +196,6 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
         pass
-
-    async def drop(self) -> None:
-        """Drop the collection"""
-        await self._data.drop()
-
 
 @final
 @dataclass
