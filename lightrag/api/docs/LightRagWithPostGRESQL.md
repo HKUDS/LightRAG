@@ -104,7 +104,7 @@ SELECT extversion FROM pg_extension WHERE extname = 'vector';
 Install LightRAG using pip, targeting the API package for server-side use:
 
 ```bash
-pip install https://github.com/ParisNeo/LightRAG.git[api]
+pip install "lightrag-hku[api]"
 ```
 
 ### 7. Configure `config.ini`
