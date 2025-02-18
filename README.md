@@ -246,6 +246,9 @@ rag = LightRAG(
 <summary> Using Hugging Face Models </summary>
 
 * If you want to use Hugging Face models, you only need to set LightRAG as follows:
+
+See lightrag_hf_demo.py
+
 ```python
 from lightrag.llm import hf_model_complete, hf_embed
 from transformers import AutoModel, AutoTokenizer

@@ -1,47 +1,7 @@
-"""
-Hugging face LLM Interface Module
-==========================
-
-This module provides interfaces for interacting with Hugging face's language models,
-including text generation and embedding capabilities.
-
-Author: Lightrag team
-Created: 2024-01-24
-License: MIT License
-
-Copyright (c) 2024 Lightrag
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-Version: 1.0.0
-
-Change Log:
-- 1.0.0 (2024-01-24): Initial release
-    * Added async chat completion support
-    * Added embedding generation
-    * Added stream response capability
-
-Dependencies:
-    - transformers
-    - numpy
-    - pipmaster
-    - Python >= 3.10
-
-Usage:
-    from llm_interfaces.hf import hf_model_complete, hf_embed
-"""
-
-__version__ = "1.0.0"
-__author__ = "lightrag Team"
-__status__ = "Production"
-
 import copy
 import os
+from functools import lru_cache
+
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
@@ -51,9 +11,12 @@ if not pm.is_installed("torch"):
     pm.install("torch")
 if not pm.is_installed("tenacity"):
     pm.install("tenacity")
+if not pm.is_installed("numpy"):
+    pm.install("numpy")
+if not pm.is_installed("tenacity"):
+    pm.install("tenacity")
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
-from functools import lru_cache
 from tenacity import (
     retry,
     stop_after_attempt,
