@@ -1,6 +1,5 @@
 import os
 from typing import Any, final
-from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import pipmaster as pm
 import configparser
@@ -51,7 +50,8 @@ class RedisKVStorage(BaseKVStorage):
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         pipe = self._redis.pipeline()
-        for k, v in tqdm_async(data.items(), desc="Upserting"):
+
+        for k, v in data.items():
             pipe.set(f"{self.namespace}:{k}", json.dumps(v))
         await pipe.execute()
 
