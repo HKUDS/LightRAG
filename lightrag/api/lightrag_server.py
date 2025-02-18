@@ -1343,8 +1343,7 @@ def create_app(args):
                     from docx import Document
                     from io import BytesIO
 
-                    docx_content = await file.read()
-                    docx_file = BytesIO(docx_content)
+                    docx_file = BytesIO(file)
                     doc = Document(docx_file)
                     content = "\n".join(
                         [paragraph.text for paragraph in doc.paragraphs]
@@ -1355,8 +1354,7 @@ def create_app(args):
                     from pptx import Presentation  # type: ignore
                     from io import BytesIO
 
-                    pptx_content = await file.read()
-                    pptx_file = BytesIO(pptx_content)
+                    pptx_file = BytesIO(file)
                     prs = Presentation(pptx_file)
                     for slide in prs.slides:
                         for shape in slide.shapes:
