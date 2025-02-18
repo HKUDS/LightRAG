@@ -136,9 +136,9 @@ class PostgreSQLDB:
                         data = None
                 return data
             except Exception as e:
-                logger.error(f"PostgreSQL database error: {e}")
-                print(sql)
-                print(params)
+                logger.error(
+                    f"PostgreSQL database,\nsql:{sql},\nparams:{params},\nerror:{e}"
+                )
                 raise
 
     async def execute(
@@ -167,9 +167,7 @@ class PostgreSQLDB:
             else:
                 logger.error(f"Upsert error: {e}")
         except Exception as e:
-            logger.error(f"PostgreSQL database error: {e.__class__} - {e}")
-            print(sql)
-            print(data)
+            logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise
 
     @staticmethod
@@ -266,9 +264,10 @@ class PGKVStorage(BaseKVStorage):
             new_keys = set([s for s in keys if s not in exist_keys])
             return new_keys
         except Exception as e:
-            logger.error(f"PostgreSQL database error: {e}")
-            print(sql)
-            print(params)
+            logger.error(
+                f"PostgreSQL database,\nsql:{sql},\nparams:{params},\nerror:{e}"
+            )
+            raise
 
     ################ INSERT METHODS ################
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -333,9 +332,9 @@ class PGVectorStorage(BaseVectorStorage):
                 "content_vector": json.dumps(item["__vector__"].tolist()),
             }
         except Exception as e:
-            logger.error(f"Error to prepare upsert sql: {e}")
-            print(item)
-            raise e
+            logger.error(f"Error to prepare upsert,\nsql: {e}\nitem: {item}")
+            raise
+
         return upsert_sql, data
 
     def _upsert_entities(self, item: dict):
@@ -454,9 +453,10 @@ class PGDocStatusStorage(DocStatusStorage):
             print(f"new_keys: {new_keys}")
             return new_keys
         except Exception as e:
-            logger.error(f"PostgreSQL database error: {e}")
-            print(sql)
-            print(params)
+            logger.error(
+                f"PostgreSQL database,\nsql:{sql},\nparams:{params},\nerror:{e}"
+            )
+            raise
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"

@@ -140,8 +140,6 @@ class OracleDB:
                     await cursor.execute(sql, params)
                 except Exception as e:
                     logger.error(f"Oracle database error: {e}")
-                    print(sql)
-                    print(params)
                     raise
                 columns = [column[0].lower() for column in cursor.description]
                 if multirows:
@@ -172,8 +170,6 @@ class OracleDB:
                     await connection.commit()
         except Exception as e:
             logger.error(f"Oracle database error: {e}")
-            print(sql)
-            print(data)
             raise
 
 
@@ -349,9 +345,7 @@ class OracleVectorDBStorage(BaseVectorStorage):
             "top_k": top_k,
             "better_than_threshold": self.cosine_better_than_threshold,
         }
-        # print(SQL)
         results = await self.db.query(SQL, params=params, multirows=True)
-        # print("vector search result:",results)
         return results
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -477,8 +471,6 @@ class OracleGraphStorage(BaseGraphStorage):
         """根据节点id检查节点是否存在"""
         SQL = SQL_TEMPLATES["has_node"]
         params = {"workspace": self.db.workspace, "node_id": node_id}
-        # print(SQL)
-        # print(self.db.workspace, node_id)
         res = await self.db.query(SQL, params)
         if res:
             # print("Node exist!",res)
@@ -494,7 +486,6 @@ class OracleGraphStorage(BaseGraphStorage):
             "source_node_id": source_node_id,
             "target_node_id": target_node_id,
         }
-        # print(SQL)
         res = await self.db.query(SQL, params)
         if res:
             # print("Edge exist!",res)
@@ -506,33 +497,25 @@ class OracleGraphStorage(BaseGraphStorage):
     async def node_degree(self, node_id: str) -> int:
         SQL = SQL_TEMPLATES["node_degree"]
         params = {"workspace": self.db.workspace, "node_id": node_id}
-        # print(SQL)
         res = await self.db.query(SQL, params)
         if res:
-            # print("Node degree",res["degree"])
             return res["degree"]
         else:
-            # print("Edge not exist!")
             return 0
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """根据源和目标节点id获取边的度"""
         degree = await self.node_degree(src_id) + await self.node_degree(tgt_id)
-        # print("Edge degree",degree)
         return degree
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """根据节点id获取节点数据"""
         SQL = SQL_TEMPLATES["get_node"]
         params = {"workspace": self.db.workspace, "node_id": node_id}
-        # print(self.db.workspace, node_id)
-        # print(SQL)
         res = await self.db.query(SQL, params)
         if res:
-            # print("Get node!",self.db.workspace, node_id,res)
             return res
         else:
-            # print("Can't get node!",self.db.workspace, node_id)
             return None
 
     async def get_edge(
