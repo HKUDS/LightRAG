@@ -1381,15 +1381,15 @@ def create_app(args):
 
             # Insert into the RAG queue
             if content:
-                await rag.apipeline_enqueue_documents(content)
-                logging.info(
-                    f"Successfully processed and enqueued file: {file_path.name}"
-                )
+                has_new_docs = await rag.apipeline_enqueue_documents(content)
+                if has_new_docs:
+                    logging.info(f"Successfully processed and enqueued file: {file_path.name}")
+                else:
+                    logging.info(f"File content already exists, skipping: {file_path.name}")
                 return True
             else:
-                logging.error(
-                    f"No content could be extracted from file: {file_path.name}"
-                )
+                logging.error(f"No content could be extracted from file: {file_path.name}")
+                return False
 
         except Exception as e:
             logging.error(
