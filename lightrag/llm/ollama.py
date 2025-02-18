@@ -13,7 +13,9 @@ if not pm.is_installed("ollama"):
 if not pm.is_installed("tenacity"):
     pm.install("tenacity")
 
+
 import ollama
+
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -26,7 +28,7 @@ from lightrag.exceptions import (
     APITimeoutError,
 )
 from lightrag.api import __api_version__
-from lightrag.utils import extract_reasoning
+
 import numpy as np
 from typing import Union
 
@@ -38,7 +40,7 @@ from typing import Union
         (RateLimitError, APIConnectionError, APITimeoutError)
     ),
 )
-async def ollama_model_if_cache(
+async def _ollama_model_if_cache(
     model,
     prompt,
     system_prompt=None,
@@ -46,7 +48,7 @@ async def ollama_model_if_cache(
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     stream = True if kwargs.get("stream") else False
-    reasoning_tag = kwargs.pop("reasoning_tag", None)
+    
     kwargs.pop("max_tokens", None)
     # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)
@@ -84,11 +86,7 @@ async def ollama_model_if_cache(
         response and can simply be trimmed.
         """
 
-        return (
-            model_response
-            if reasoning_tag is None
-            else extract_reasoning(model_response, reasoning_tag).response_content
-        )
+        return model_response
 
 
 async def ollama_model_complete(
@@ -98,7 +96,7 @@ async def ollama_model_complete(
     if keyword_extraction:
         kwargs["format"] = "json"
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
-    return await ollama_model_if_cache(
+    return await _ollama_model_if_cache(
         model_name,
         prompt,
         system_prompt=system_prompt,
