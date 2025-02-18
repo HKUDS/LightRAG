@@ -17,7 +17,6 @@ from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
 
-from lightrag.kg.oracle_impl import OracleDB
 
 print(os.getcwd())
 script_directory = Path(__file__).resolve().parent.parent

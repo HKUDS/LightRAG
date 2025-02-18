@@ -609,9 +609,9 @@ class LightRAG:
                     tasks.append(storage.finalize())
 
             await asyncio.gather(*tasks)
-            logger.debug("Finalized Storages")
 
             self.storages_status = StoragesStatus.FINALIZED
+            logger.debug("Finalized Storages")
 
     async def get_graph_labels(self):
         text = await self.chunk_entity_relation_graph.get_all_labels()
