@@ -1360,6 +1360,19 @@ def create_app(args):
                         for shape in slide.shapes:
                             if hasattr(shape, "text"):
                                 content += shape.text + "\n"
+                case ".xlsx":
+                    if not pm.is_installed("openpyxl"):
+                        pm.install("openpyxl")
+                    from openpyxl import load_workbook
+                    from io import BytesIO
+
+                    xlsx_file = BytesIO(file)
+                    wb = load_workbook(xlsx_file)
+                    for sheet in wb:
+                        content += f"Sheet: {sheet.title}\n"
+                        for row in sheet.iter_rows(values_only=True):
+                            content += "\t".join(str(cell) if cell is not None else "" for cell in row) + "\n"
+                        content += "\n"
                 case _:
                     logging.error(
                         f"Unsupported file type: {file_path.name} (extension {ext})"
