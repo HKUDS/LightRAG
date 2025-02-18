@@ -303,7 +303,7 @@ class PGKVStorage(BaseKVStorage):
 
     async def drop(self) -> None:
         """Drop the storage"""
-        drop_sql = SQL_TEMPLATES["DROP_ALL"]
+        drop_sql = SQL_TEMPLATES["drop_all"]
         await self.db.execute(drop_sql)
 	    
 @final
@@ -534,7 +534,10 @@ class PGDocStatusStorage(DocStatusStorage):
                 },
             )
         return data
-
+    async def drop(self) -> None:
+        """Drop the storage"""
+        drop_sql = SQL_TEMPLATES["drop_doc_full"]
+        await self.db.execute(drop_sql)
 
 class PGGraphQueryException(Exception):
     """Exception for the AGE queries."""
@@ -1198,12 +1201,28 @@ SQL_TEMPLATES = {
         FROM LIGHTRAG_DOC_CHUNKS where workspace=$1)
         WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
        """,
-     #DROP everything
-    "drop": """
+    # DROP tables
+    "drop_all": """
 	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
 	    DROP TABLE IF EXISTS LIGHTRAG_DOC_CHUNKS CASCADE;
 	    DROP TABLE IF EXISTS LIGHTRAG_LLM_CACHE CASCADE;
 	    DROP TABLE IF EXISTS LIGHTRAG_VDB_ENTITY CASCADE;
 	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
        """,
+    "drop_doc_full": """
+	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
+       """,
+    "drop_doc_chunks": """
+	    DROP TABLE IF EXISTS LIGHTRAG_DOC_CHUNKS CASCADE;
+       """,
+    "drop_llm_cache": """
+	    DROP TABLE IF EXISTS LIGHTRAG_LLM_CACHE CASCADE;
+       """,
+    "drop_vdb_entity": """
+	    DROP TABLE IF EXISTS LIGHTRAG_VDB_ENTITY CASCADE;
+       """,
+    "drop_vdb_relation": """
+	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
+       """,
+
 }
