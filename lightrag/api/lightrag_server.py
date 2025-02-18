@@ -31,17 +31,13 @@ import configparser
 import traceback
 from datetime import datetime
 
-root_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-print(root_path)
-sys.path.append(root_path)
-
 from lightrag import LightRAG, QueryParam
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
 from lightrag.utils import logger
-from ollama_api import OllamaAPI, ollama_server_infos
+from .ollama_api import OllamaAPI, ollama_server_infos
 
 
 # Load environment variables
