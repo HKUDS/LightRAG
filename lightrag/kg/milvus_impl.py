@@ -6,12 +6,16 @@ import numpy as np
 from lightrag.utils import logger
 from ..base import BaseVectorStorage
 import pipmaster as pm
-import configparser
+
+
+if not pm.is_installed("configparser"):
+    pm.install("configparser")
 
 if not pm.is_installed("pymilvus"):
     pm.install("pymilvus")
 
 try:
+    import configparser
     from pymilvus import MilvusClient
 except ImportError as e:
     raise ImportError(

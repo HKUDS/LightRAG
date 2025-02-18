@@ -1,7 +1,6 @@
-import html
 import os
 from dataclasses import dataclass
-from typing import Any, cast, final
+from typing import Any, final
 
 import numpy as np
 
@@ -14,8 +13,16 @@ from lightrag.utils import (
 from lightrag.base import (
     BaseGraphStorage,
 )
+import pipmaster as pm
+
+if not pm.is_installed("graspologic"):
+    pm.install("graspologic")
+
+if not pm.is_installed("networkx"):
+    pm.install("networkx")
 
 try:
+    from graspologic import embed
     import networkx as nx
 except ImportError as e:
     raise ImportError(
@@ -38,21 +45,6 @@ class NetworkXStorage(BaseGraphStorage):
             f"Writing graph with {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges"
         )
         nx.write_graphml(graph, file_name)
-
-    @staticmethod
-    def stable_largest_connected_component(graph: nx.Graph) -> nx.Graph:
-        """Refer to https://github.com/microsoft/graphrag/index/graph/utils/stable_lcc.py
-        Return the largest connected component of the graph, with nodes and edges sorted in a stable way.
-        """
-        from graspologic.utils import largest_connected_component
-
-        graph = graph.copy()
-        graph = cast(nx.Graph, largest_connected_component(graph))
-        node_mapping = {
-            node: html.unescape(node.upper().strip()) for node in graph.nodes()
-        }  # type: ignore
-        graph = nx.relabel_nodes(graph, node_mapping)
-        return NetworkXStorage._stabilize_graph(graph)
 
     @staticmethod
     def _stabilize_graph(graph: nx.Graph) -> nx.Graph:
@@ -153,8 +145,6 @@ class NetworkXStorage(BaseGraphStorage):
 
     # @TODO: NOT USED
     async def _node2vec_embed(self):
-        from graspologic import embed
-
         embeddings, nodes = embed.node2vec_embed(
             self._graph,
             **self.global_config["node2vec_params"],
