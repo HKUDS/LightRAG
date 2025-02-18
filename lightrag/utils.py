@@ -18,13 +18,7 @@ import tiktoken
 
 from lightrag.prompt import PROMPTS
 
-import pipmaster as pm  # Pipmaster for dynamic library install
 
-# install specific modules
-if not pm.is_installed("bs4"):
-    pm.install("bs4")
-    
-import bs4
 
 VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
 
@@ -89,12 +83,6 @@ class EmbeddingFunc:
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         return await self.func(*args, **kwargs)
 
-
-@dataclass
-class ReasoningResponse:
-    reasoning_content: str | None
-    response_content: str
-    tag: str
 
 
 def locate_json_string_body_from_string(content: str) -> str | None:
@@ -728,27 +716,3 @@ def get_conversation_turns(
 
     return "\n".join(formatted_turns)
 
-
-def extract_reasoning(response: str, tag: str) -> ReasoningResponse:
-    """Extract the reasoning section and the following section from the LLM response.
-
-    Args:
-        response: LLM response
-        tag: Tag to extract
-    Returns:
-        ReasoningResponse: Reasoning section and following section
-
-    """
-    soup = bs4.BeautifulSoup(response, "html.parser")
-
-    reasoning_section = soup.find(tag)
-    if reasoning_section is None:
-        return ReasoningResponse(None, response, tag)
-    reasoning_content = reasoning_section.get_text().strip()
-
-    after_reasoning_section = reasoning_section.next_sibling
-    if after_reasoning_section is None:
-        return ReasoningResponse(reasoning_content, "", tag)
-    after_reasoning_content = after_reasoning_section.get_text().strip()
-
-    return ReasoningResponse(reasoning_content, after_reasoning_content, tag)
