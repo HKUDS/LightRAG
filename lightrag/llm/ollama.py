@@ -4,7 +4,7 @@ if sys.version_info < (3, 9):
     from typing import AsyncIterator
 else:
     from collections.abc import AsyncIterator
-    
+
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
@@ -48,7 +48,7 @@ async def _ollama_model_if_cache(
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     stream = True if kwargs.get("stream") else False
-    
+
     kwargs.pop("max_tokens", None)
     # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)

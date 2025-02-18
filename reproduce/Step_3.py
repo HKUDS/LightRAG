@@ -2,7 +2,6 @@ import re
 import json
 import asyncio
 from lightrag import LightRAG, QueryParam
-from tqdm import tqdm
 
 
 def extract_queries(file_path):
@@ -44,7 +43,7 @@ def run_queries_and_save_to_json(
         result_file.write("[\n")
         first_entry = True
 
-        for query_text in tqdm(queries, desc="Processing queries", unit="query"):
+        for query_text in queries:
             result, error = loop.run_until_complete(
                 process_query(query_text, rag_instance, query_param)
             )

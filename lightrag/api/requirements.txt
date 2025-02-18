@@ -7,5 +7,4 @@ python-multipart
 tenacity
 tiktoken
 torch
-tqdm
 uvicorn
