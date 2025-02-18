@@ -6,5 +6,4 @@ python-dotenv
 python-multipart
 tenacity
 tiktoken
-torch
 uvicorn
