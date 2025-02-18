@@ -1,11 +1,5 @@
-accelerate
-aiofiles
 aiohttp
 configparser
-
-# File manipulation libraries
-docling
-graspologic
 
 # database packages
 networkx

@@ -1,9 +1,9 @@
+aiofiles
 ascii_colors
 fastapi
 numpy
 pipmaster
 python-dotenv
-python-multipart
 tenacity
 tiktoken
 uvicorn

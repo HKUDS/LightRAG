@@ -20,10 +20,14 @@ from ..utils import logger
 
 import pipmaster as pm
 
+if not pm.is_installed("graspologic"):
+    pm.install("graspologic")
+
 if not pm.is_installed("oracledb"):
     pm.install("oracledb")
 
 try:
+    from graspologic import embed
     import oracledb
 
 except ImportError as e:
@@ -452,8 +456,6 @@ class OracleGraphStorage(BaseGraphStorage):
 
     async def _node2vec_embed(self):
         """为节点生成向量"""
-        from graspologic import embed
-
         embeddings, nodes = embed.node2vec_embed(
             self._graph,
             **self.config["node2vec_params"],
