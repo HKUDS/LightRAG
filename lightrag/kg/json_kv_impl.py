@@ -50,6 +50,3 @@ class JsonKVStorage(BaseKVStorage):
         for doc_id in ids:
             self._data.pop(doc_id, None)
         await self.index_done_callback()
-
-    async def drop(self) -> None:
-        self._data = {}
