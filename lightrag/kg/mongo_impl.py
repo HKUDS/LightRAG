@@ -799,7 +799,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
             self._data = await get_or_create_collection(self.db, self._collection_name)
 
             # Ensure vector index exists
-            await self.create_vector_index()
+            await self.create_vector_index_if_not_exists()
 
             logger.debug(f"Use MongoDB as VDB {self._collection_name}")
 
@@ -808,9 +808,17 @@ class MongoVectorDBStorage(BaseVectorStorage):
             await ClientManager.release_client(self.db)
             self.db = None
 
-    async def create_vector_index(self):
+    async def create_vector_index_if_not_exists(self):
         """Creates an Atlas Vector Search index."""
         try:
+            index_name = "vector_knn_index"
+
+            indexes = await self._data.list_search_indexes().to_list(length=None)
+            for index in indexes:
+                if index["name"] == index_name:
+                    logger.debug("vector index already exist")
+                    return
+
             search_index_model = SearchIndexModel(
                 definition={
                     "fields": [
@@ -822,7 +830,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
                         }
                     ]
                 },
-                name="vector_knn_index",
+                name=index_name,
                 type="vectorSearch",
             )
 
