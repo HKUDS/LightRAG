@@ -1018,7 +1018,13 @@ class PGGraphStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
         raise NotImplementedError
-
+	    
+    async def drop(self) -> None:
+        """Drop the storage"""
+        drop_sql = SQL_TEMPLATES["drop_vdb_entity"]
+        await self.db.execute(drop_sql)
+        drop_sql = SQL_TEMPLATES["drop_vdb_relation"]
+        await self.db.execute(drop_sql)
 
 NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",
