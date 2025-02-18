@@ -41,6 +41,8 @@ from .ollama_api import (
     OllamaAPI,
 )
 from .ollama_api import ollama_server_infos
+
+
 def get_db_type_from_storage_class(class_name: str) -> str | None:
     """Determine database type based on storage class name"""
     if class_name.startswith("PG"):
@@ -51,18 +53,23 @@ def get_db_type_from_storage_class(class_name: str) -> str | None:
         return "tidb"
     return None
 
+
 def import_db_module(db_type: str):
     """Dynamically import database module"""
     if db_type == "postgres":
         from ..kg.postgres_impl import PostgreSQLDB
+
         return PostgreSQLDB
     elif db_type == "oracle":
         from ..kg.oracle_impl import OracleDB
+
         return OracleDB
     elif db_type == "tidb":
         from ..kg.tidb_impl import TiDB
+
         return TiDB
     return None
+
 
 # Load environment variables
 try:
@@ -901,7 +908,9 @@ def create_app(args):
             # Check which database types are used
             db_types = set()
             for storage_name, storage_instance in storage_instances:
-                db_type = get_db_type_from_storage_class(storage_instance.__class__.__name__)
+                db_type = get_db_type_from_storage_class(
+                    storage_instance.__class__.__name__
+                )
                 if db_type:
                     db_types.add(db_type)
 
@@ -926,7 +935,9 @@ def create_app(args):
 
             # Inject database instances into storage classes
             for storage_name, storage_instance in storage_instances:
-                db_type = get_db_type_from_storage_class(storage_instance.__class__.__name__)
+                db_type = get_db_type_from_storage_class(
+                    storage_instance.__class__.__name__
+                )
                 if db_type:
                     if db_type not in db_instances:
                         error_msg = f"Database type '{db_type}' is required by {storage_name} but not initialized"
@@ -966,7 +977,7 @@ def create_app(args):
                     db_names = {
                         "postgres": "PostgreSQL",
                         "oracle": "Oracle",
-                        "tidb": "TiDB"
+                        "tidb": "TiDB",
                     }
                     db_name = db_names.get(db_type, db_type)
                     logger.info(f"Closed {db_name} database connection pool")
@@ -1289,7 +1300,7 @@ def create_app(args):
                 case ".pdf":
                     if not pm.is_installed("pypdf2"):
                         pm.install("pypdf2")
-                    from PyPDF2 import PdfReader # type: ignore
+                    from PyPDF2 import PdfReader  # type: ignore
                     from io import BytesIO
 
                     pdf_file = BytesIO(file)
