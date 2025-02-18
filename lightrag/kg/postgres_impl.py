@@ -499,7 +499,8 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
         params = {"workspace": self.db.workspace, "status": status.value}
         result = await self.db.query(sql, params, True)
-        return {
+        print("")
+        docs_by_status = {
             element["id"]: DocProcessingStatus(
                 content=result[0]["content"],
                 content_summary=element["content_summary"],
@@ -511,6 +512,8 @@ class PGDocStatusStorage(DocStatusStorage):
             )
             for element in result
         }
+        print(f"Docs by status: {docs_by_status}")
+        return docs_by_status
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
