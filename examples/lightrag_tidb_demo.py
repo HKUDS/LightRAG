@@ -4,7 +4,6 @@ import os
 import numpy as np
 
 from lightrag import LightRAG, QueryParam
-from lightrag.kg.tidb_impl import TiDB
 from lightrag.llm import siliconcloud_embedding, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 
