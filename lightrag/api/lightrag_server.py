@@ -1363,7 +1363,7 @@ def create_app(args):
                 case ".xlsx":
                     if not pm.is_installed("openpyxl"):
                         pm.install("openpyxl")
-                    from openpyxl import load_workbook
+                    from openpyxl import load_workbook  # type: ignore
                     from io import BytesIO
 
                     xlsx_file = BytesIO(file)
@@ -1371,7 +1371,13 @@ def create_app(args):
                     for sheet in wb:
                         content += f"Sheet: {sheet.title}\n"
                         for row in sheet.iter_rows(values_only=True):
-                            content += "\t".join(str(cell) if cell is not None else "" for cell in row) + "\n"
+                            content += (
+                                "\t".join(
+                                    str(cell) if cell is not None else ""
+                                    for cell in row
+                                )
+                                + "\n"
+                            )
                         content += "\n"
                 case _:
                     logging.error(
@@ -1383,12 +1389,18 @@ def create_app(args):
             if content:
                 has_new_docs = await rag.apipeline_enqueue_documents(content)
                 if has_new_docs:
-                    logging.info(f"Successfully processed and enqueued file: {file_path.name}")
+                    logging.info(
+                        f"Successfully processed and enqueued file: {file_path.name}"
+                    )
                 else:
-                    logging.info(f"File content already exists, skipping: {file_path.name}")
+                    logging.info(
+                        f"File content already exists, skipping: {file_path.name}"
+                    )
                 return True
             else:
-                logging.error(f"No content could be extracted from file: {file_path.name}")
+                logging.error(
+                    f"No content could be extracted from file: {file_path.name}"
+                )
                 return False
 
         except Exception as e:
