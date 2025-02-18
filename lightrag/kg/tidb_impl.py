@@ -1,6 +1,6 @@
 import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Union, final
 
 import numpy as np
@@ -166,19 +166,18 @@ class ClientManager:
 @final
 @dataclass
 class TiDBKVStorage(BaseKVStorage):
-    # db instance must be injected before use
-    # db: TiDB
+    db: TiDB = field(init=False)
 
     def __post_init__(self):
         self._data = {}
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
     async def initialize(self):
-        if not hasattr(self, "db") or self.db is None:
+        if self.db is None:
             self.db = await ClientManager.get_client()
 
     async def finalize(self):
-        if hasattr(self, "db") and self.db is not None:
+        if self.db is not None:
             await ClientManager.release_client(self.db)
             self.db = None
 
@@ -280,6 +279,8 @@ class TiDBKVStorage(BaseKVStorage):
 @final
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
+    db: TiDB = field(init=False)
+
     def __post_init__(self):
         self._client_file_name = os.path.join(
             self.global_config["working_dir"], f"vdb_{self.namespace}.json"
@@ -294,11 +295,11 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
 
     async def initialize(self):
-        if not hasattr(self, "db") or self.db is None:
+        if self.db is None:
             self.db = await ClientManager.get_client()
 
     async def finalize(self):
-        if hasattr(self, "db") and self.db is not None:
+        if self.db is not None:
             await ClientManager.release_client(self.db)
             self.db = None
 
@@ -421,18 +422,17 @@ class TiDBVectorDBStorage(BaseVectorStorage):
 @final
 @dataclass
 class TiDBGraphStorage(BaseGraphStorage):
-    # db instance must be injected before use
-    # db: TiDB
+    db: TiDB = field(init=False)
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
     async def initialize(self):
-        if not hasattr(self, "db") or self.db is None:
+        if self.db is None:
             self.db = await ClientManager.get_client()
 
     async def finalize(self):
-        if hasattr(self, "db") and self.db is not None:
+        if self.db is not None:
             await ClientManager.release_client(self.db)
             self.db = None
 
