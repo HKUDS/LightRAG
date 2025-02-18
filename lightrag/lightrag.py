@@ -349,8 +349,9 @@ class LightRAG:
     # Extensions
     addon_params: dict[str, Any] = field(default_factory=dict)
 
-    # Ownership
-    is_managed_by_server: bool = False
+    # Storages Management
+    auto_manage_storages_states: bool = True
+    """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
 
     """Dictionary for additional parameters and extensions."""
     convert_response_to_json_func: Callable[[str], dict[str, Any]] = (
@@ -557,13 +558,13 @@ class LightRAG:
         self.storages_status = StoragesStatus.CREATED
 
         # Initialize storages
-        if not self.is_managed_by_server:
+        if self.auto_manage_storages_states:
             loop = always_get_an_event_loop()
             loop.run_until_complete(self.initialize_storages())
 
     def __del__(self):
         # Finalize storages
-        if not self.is_managed_by_server:
+        if self.auto_manage_storages_states:
             loop = always_get_an_event_loop()
             loop.run_until_complete(self.finalize_storages())
 
