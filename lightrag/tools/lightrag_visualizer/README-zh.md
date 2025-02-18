@@ -90,6 +90,6 @@
 
 ## 系统要求
 
-- Python 3.10+
+- Python 3.11+
 - OpenGL 3.3+ 兼容的显卡
 - 支持的操作系统：Windows/Linux/MacOS
