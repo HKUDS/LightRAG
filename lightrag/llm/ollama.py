@@ -1,51 +1,10 @@
-"""
-Ollama LLM Interface Module
-==========================
-
-This module provides interfaces for interacting with Ollama's language models,
-including text generation and embedding capabilities.
-
-Author: Lightrag team
-Created: 2024-01-24
-License: MIT License
-
-Copyright (c) 2024 Lightrag
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-Version: 1.0.0
-
-Change Log:
-- 1.0.0 (2024-01-24): Initial release
-    * Added async chat completion support
-    * Added embedding generation
-    * Added stream response capability
-
-Dependencies:
-    - ollama
-    - numpy
-    - pipmaster
-    - Python >= 3.10
-
-Usage:
-    from llm_interfaces.ollama_interface import ollama_model_complete, ollama_embed
-"""
-
-__version__ = "1.0.0"
-__author__ = "lightrag Team"
-__status__ = "Production"
-
 import sys
 
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
 else:
     from collections.abc import AsyncIterator
+    
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
