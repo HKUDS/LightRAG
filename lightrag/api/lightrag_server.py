@@ -798,6 +798,36 @@ class InsertResponse(BaseModel):
 
 
 class DocStatusResponse(BaseModel):
+    @staticmethod
+    def format_datetime(dt: Any) -> Optional[str]:
+        """Format datetime to ISO string
+
+        Args:
+            dt: Datetime object or string
+
+        Returns:
+            Formatted datetime string or None
+        """
+        if dt is None:
+            return None
+        if isinstance(dt, str):
+            return dt
+        return dt.isoformat()
+
+    """Response model for document status
+
+    Attributes:
+        id: Document identifier
+        content_summary: Summary of document content
+        content_length: Length of document content
+        status: Current processing status
+        created_at: Creation timestamp (ISO format string)
+        updated_at: Last update timestamp (ISO format string)
+        chunks_count: Number of chunks (optional)
+        error: Error message if any (optional)
+        metadata: Additional metadata (optional)
+    """
+
     id: str
     content_summary: str
     content_length: int
@@ -1858,8 +1888,12 @@ def create_app(args):
                             content_summary=doc_status.content_summary,
                             content_length=doc_status.content_length,
                             status=doc_status.status,
-                            created_at=doc_status.created_at,
-                            updated_at=doc_status.updated_at,
+                            created_at=DocStatusResponse.format_datetime(
+                                doc_status.created_at
+                            ),
+                            updated_at=DocStatusResponse.format_datetime(
+                                doc_status.updated_at
+                            ),
                             chunks_count=doc_status.chunks_count,
                             error=doc_status.error,
                             metadata=doc_status.metadata,
