@@ -13,9 +13,7 @@ python-dotenv
 setuptools
 tenacity
 
-
 # LLM packages
 tiktoken
-xxhash
 
 # Extra libraries are installed when needed using pipmaster

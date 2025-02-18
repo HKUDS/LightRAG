@@ -1,10 +1,3 @@
-"""
-3D GraphML Viewer using Dear ImGui and ModernGL
-Author: ParisNeo, ArnoChen
-Description: An interactive 3D GraphML viewer using imgui_bundle and ModernGL
-Version: 2.0
-"""
-
 from typing import Optional, Tuple, Dict, List
 import numpy as np
 import networkx as nx
