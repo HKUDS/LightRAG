@@ -2,11 +2,11 @@ import array
 import asyncio
 
 # import html
-# import os
+import os
 from dataclasses import dataclass
 from typing import Any, Union, final
-
 import numpy as np
+import configparser
 
 from lightrag.types import KnowledgeGraph
 
@@ -173,6 +173,72 @@ class OracleDB:
             raise
 
 
+class ClientManager:
+    _instances = {"db": None, "ref_count": 0}
+    _lock = asyncio.Lock()
+
+    @staticmethod
+    def get_config():
+        config = configparser.ConfigParser()
+        config.read("config.ini", "utf-8")
+
+        return {
+            "user": os.environ.get(
+                "ORACLE_USER",
+                config.get("oracle", "user", fallback=None),
+            ),
+            "password": os.environ.get(
+                "ORACLE_PASSWORD",
+                config.get("oracle", "password", fallback=None),
+            ),
+            "dsn": os.environ.get(
+                "ORACLE_DSN",
+                config.get("oracle", "dsn", fallback=None),
+            ),
+            "config_dir": os.environ.get(
+                "ORACLE_CONFIG_DIR",
+                config.get("oracle", "config_dir", fallback=None),
+            ),
+            "wallet_location": os.environ.get(
+                "ORACLE_WALLET_LOCATION",
+                config.get("oracle", "wallet_location", fallback=None),
+            ),
+            "wallet_password": os.environ.get(
+                "ORACLE_WALLET_PASSWORD",
+                config.get("oracle", "wallet_password", fallback=None),
+            ),
+            "workspace": os.environ.get(
+                "ORACLE_WORKSPACE",
+                config.get("oracle", "workspace", fallback="default"),
+            ),
+        }
+
+    @classmethod
+    async def get_client(cls) -> OracleDB:
+        async with cls._lock:
+            if cls._instances["db"] is None:
+                config = ClientManager.get_config()
+                db = OracleDB(config)
+                await db.check_tables()
+                cls._instances["db"] = db
+                cls._instances["ref_count"] = 0
+            cls._instances["ref_count"] += 1
+            return cls._instances["db"]
+
+    @classmethod
+    async def release_client(cls, db: OracleDB):
+        async with cls._lock:
+            if db is not None:
+                if db is cls._instances["db"]:
+                    cls._instances["ref_count"] -= 1
+                    if cls._instances["ref_count"] == 0:
+                        await db.pool.close()
+                        logger.info("Closed OracleDB database connection pool")
+                        cls._instances["db"] = None
+                else:
+                    await db.pool.close()
+
+
 @final
 @dataclass
 class OracleKVStorage(BaseKVStorage):
@@ -183,6 +249,15 @@ class OracleKVStorage(BaseKVStorage):
     def __post_init__(self):
         self._data = {}
         self._max_batch_size = self.global_config.get("embedding_batch_num", 10)
+
+    async def initialize(self):
+        if not hasattr(self, "db") or self.db is None:
+            self.db = await ClientManager.get_client()
+
+    async def finalize(self):
+        if hasattr(self, "db") and self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
 
     ################ QUERY METHODS ################
 
@@ -329,6 +404,15 @@ class OracleVectorDBStorage(BaseVectorStorage):
             )
         self.cosine_better_than_threshold = cosine_threshold
 
+    async def initialize(self):
+        if not hasattr(self, "db") or self.db is None:
+            self.db = await ClientManager.get_client()
+
+    async def finalize(self):
+        if hasattr(self, "db") and self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
+
     #################### query method ###############
     async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         embeddings = await self.embedding_func([query])
@@ -367,6 +451,15 @@ class OracleVectorDBStorage(BaseVectorStorage):
 class OracleGraphStorage(BaseGraphStorage):
     def __post_init__(self):
         self._max_batch_size = self.global_config.get("embedding_batch_num", 10)
+
+    async def initialize(self):
+        if not hasattr(self, "db") or self.db is None:
+            self.db = await ClientManager.get_client()
+
+    async def finalize(self):
+        if hasattr(self, "db") and self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
 
     #################### insert method ################
 

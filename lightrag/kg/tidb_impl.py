@@ -14,6 +14,7 @@ from ..namespace import NameSpace, is_namespace
 from ..utils import logger
 
 import pipmaster as pm
+import configparser
 
 if not pm.is_installed("pymysql"):
     pm.install("pymysql")
@@ -105,6 +106,63 @@ class TiDB:
             raise
 
 
+class ClientManager:
+    _instances = {"db": None, "ref_count": 0}
+    _lock = asyncio.Lock()
+
+    @staticmethod
+    def get_config():
+        config = configparser.ConfigParser()
+        config.read("config.ini", "utf-8")
+
+        return {
+            "host": os.environ.get(
+                "TIDB_HOST",
+                config.get("tidb", "host", fallback="localhost"),
+            ),
+            "port": os.environ.get(
+                "TIDB_PORT", config.get("tidb", "port", fallback=4000)
+            ),
+            "user": os.environ.get(
+                "TIDB_USER",
+                config.get("tidb", "user", fallback=None),
+            ),
+            "password": os.environ.get(
+                "TIDB_PASSWORD",
+                config.get("tidb", "password", fallback=None),
+            ),
+            "database": os.environ.get(
+                "TIDB_DATABASE",
+                config.get("tidb", "database", fallback=None),
+            ),
+            "workspace": os.environ.get(
+                "TIDB_WORKSPACE",
+                config.get("tidb", "workspace", fallback="default"),
+            ),
+        }
+
+    @classmethod
+    async def get_client(cls) -> TiDB:
+        async with cls._lock:
+            if cls._instances["db"] is None:
+                config = ClientManager.get_config()
+                db = TiDB(config)
+                await db.check_tables()
+                cls._instances["db"] = db
+                cls._instances["ref_count"] = 0
+            cls._instances["ref_count"] += 1
+            return cls._instances["db"]
+
+    @classmethod
+    async def release_client(cls, db: TiDB):
+        async with cls._lock:
+            if db is not None:
+                if db is cls._instances["db"]:
+                    cls._instances["ref_count"] -= 1
+                    if cls._instances["ref_count"] == 0:
+                        cls._instances["db"] = None
+
+
 @final
 @dataclass
 class TiDBKVStorage(BaseKVStorage):
@@ -114,6 +172,15 @@ class TiDBKVStorage(BaseKVStorage):
     def __post_init__(self):
         self._data = {}
         self._max_batch_size = self.global_config["embedding_batch_num"]
+
+    async def initialize(self):
+        if not hasattr(self, "db") or self.db is None:
+            self.db = await ClientManager.get_client()
+
+    async def finalize(self):
+        if hasattr(self, "db") and self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
 
     ################ QUERY METHODS ################
 
@@ -185,7 +252,7 @@ class TiDBKVStorage(BaseKVStorage):
                         "tokens": item["tokens"],
                         "chunk_order_index": item["chunk_order_index"],
                         "full_doc_id": item["full_doc_id"],
-                        "content_vector": f'{item["__vector__"].tolist()}',
+                        "content_vector": f"{item['__vector__'].tolist()}",
                         "workspace": self.db.workspace,
                     }
                 )
@@ -225,6 +292,15 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 "cosine_better_than_threshold must be specified in vector_db_storage_cls_kwargs"
             )
         self.cosine_better_than_threshold = cosine_threshold
+
+    async def initialize(self):
+        if not hasattr(self, "db") or self.db is None:
+            self.db = await ClientManager.get_client()
+
+    async def finalize(self):
+        if hasattr(self, "db") and self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
 
     async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
         """Search from tidb vector"""
@@ -290,7 +366,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                     "id": item["id"],
                     "name": item["entity_name"],
                     "content": item["content"],
-                    "content_vector": f'{item["content_vector"].tolist()}',
+                    "content_vector": f"{item['content_vector'].tolist()}",
                     "workspace": self.db.workspace,
                 }
                 # update entity_id if node inserted by graph_storage_instance before
@@ -312,7 +388,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                     "source_name": item["src_id"],
                     "target_name": item["tgt_id"],
                     "content": item["content"],
-                    "content_vector": f'{item["content_vector"].tolist()}',
+                    "content_vector": f"{item['content_vector'].tolist()}",
                     "workspace": self.db.workspace,
                 }
                 # update relation_id if node inserted by graph_storage_instance before
@@ -350,6 +426,15 @@ class TiDBGraphStorage(BaseGraphStorage):
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
+
+    async def initialize(self):
+        if not hasattr(self, "db") or self.db is None:
+            self.db = await ClientManager.get_client()
+
+    async def finalize(self):
+        if hasattr(self, "db") and self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
 
     #################### upsert method ################
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
