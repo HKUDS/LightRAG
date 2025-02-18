@@ -246,7 +246,7 @@ class ClientManager:
 @final
 @dataclass
 class PGKVStorage(BaseKVStorage):
-    db: PostgreSQLDB = field(init=False)
+    db: PostgreSQLDB = field(default=None)
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
@@ -378,7 +378,7 @@ class PGKVStorage(BaseKVStorage):
 @final
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
-    db: PostgreSQLDB = field(init=False)
+    db: PostgreSQLDB = field(default=None)
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]
@@ -515,7 +515,7 @@ class PGVectorStorage(BaseVectorStorage):
 @final
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
-    db: PostgreSQLDB = field(init=False)
+    db: PostgreSQLDB = field(default=None)
 
     async def initialize(self):
         if self.db is None:
@@ -665,7 +665,7 @@ class PGGraphQueryException(Exception):
 @final
 @dataclass
 class PGGraphStorage(BaseGraphStorage):
-    db: PostgreSQLDB = field(init=False)
+    db: PostgreSQLDB = field(default=None)
 
     @staticmethod
     def load_nx_graph(file_name):

@@ -166,7 +166,7 @@ class ClientManager:
 @final
 @dataclass
 class TiDBKVStorage(BaseKVStorage):
-    db: TiDB = field(init=False)
+    db: TiDB = field(default=None)
 
     def __post_init__(self):
         self._data = {}
@@ -279,7 +279,7 @@ class TiDBKVStorage(BaseKVStorage):
 @final
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
-    db: TiDB = field(init=False)
+    db: TiDB = field(default=None)
 
     def __post_init__(self):
         self._client_file_name = os.path.join(
@@ -422,7 +422,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
 @final
 @dataclass
 class TiDBGraphStorage(BaseGraphStorage):
-    db: TiDB = field(init=False)
+    db: TiDB = field(default=None)
 
     def __post_init__(self):
         self._max_batch_size = self.global_config["embedding_batch_num"]

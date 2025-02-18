@@ -83,8 +83,8 @@ class ClientManager:
 @final
 @dataclass
 class MongoKVStorage(BaseKVStorage):
-    db: AsyncIOMotorDatabase = field(init=False)
-    _data: AsyncIOMotorCollection = field(init=False)
+    db: AsyncIOMotorDatabase = field(default=None)
+    _data: AsyncIOMotorCollection = field(default=None)
 
     def __post_init__(self):
         self._collection_name = self.namespace
@@ -156,8 +156,8 @@ class MongoKVStorage(BaseKVStorage):
 @final
 @dataclass
 class MongoDocStatusStorage(DocStatusStorage):
-    db: AsyncIOMotorDatabase = field(init=False)
-    _data: AsyncIOMotorCollection = field(init=False)
+    db: AsyncIOMotorDatabase = field(default=None)
+    _data: AsyncIOMotorCollection = field(default=None)
 
     def __post_init__(self):
         self._collection_name = self.namespace
@@ -236,8 +236,8 @@ class MongoGraphStorage(BaseGraphStorage):
     A concrete implementation using MongoDB's $graphLookup to demonstrate multi-hop queries.
     """
 
-    db: AsyncIOMotorDatabase = field(init=False)
-    collection: AsyncIOMotorCollection = field(init=False)
+    db: AsyncIOMotorDatabase = field(default=None)
+    collection: AsyncIOMotorCollection = field(default=None)
 
     def __init__(self, namespace, global_config, embedding_func):
         super().__init__(
@@ -798,8 +798,8 @@ class MongoGraphStorage(BaseGraphStorage):
 @final
 @dataclass
 class MongoVectorDBStorage(BaseVectorStorage):
-    db: AsyncIOMotorDatabase = field(init=False)
-    _data: AsyncIOMotorCollection = field(init=False)
+    db: AsyncIOMotorDatabase = field(default=None)
+    _data: AsyncIOMotorCollection = field(default=None)
 
     def __post_init__(self):
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
