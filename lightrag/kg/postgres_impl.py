@@ -264,8 +264,6 @@ class PGKVStorage(BaseKVStorage):
             else:
                 exist_keys = []
             new_keys = set([s for s in keys if s not in exist_keys])
-            print(f"keys: {keys}")
-            print(f"new_keys: {new_keys}")
             return new_keys
         except Exception as e:
             logger.error(f"PostgreSQL database error: {e}")
@@ -500,7 +498,6 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
         params = {"workspace": self.db.workspace, "status": status.value}
         result = await self.db.query(sql, params, True)
-        print("")
         docs_by_status = {
             element["id"]: DocProcessingStatus(
                 content=result[0]["content"],
@@ -513,7 +510,6 @@ class PGDocStatusStorage(DocStatusStorage):
             )
             for element in result
         }
-        print(f"Docs by status: {docs_by_status}")
         return docs_by_status
 
     async def index_done_callback(self) -> None:
