@@ -568,7 +568,7 @@ class LightRAG:
         input: str | list[str],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
-    ):
+    ) -> None:
         """Sync Insert documents with checkpoint support
 
         Args:
@@ -578,7 +578,7 @@ class LightRAG:
             split_by_character is None, this parameter is ignored.
         """
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(
+        loop.run_until_complete(
             self.ainsert(input, split_by_character, split_by_character_only)
         )
 
@@ -587,7 +587,7 @@ class LightRAG:
         input: str | list[str],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
-    ):
+    ) -> None:
         """Async Insert documents with checkpoint support
 
         Args:
@@ -601,13 +601,13 @@ class LightRAG:
             split_by_character, split_by_character_only
         )
 
-    def insert_custom_chunks(self, full_text: str, text_chunks: list[str]):
+    def insert_custom_chunks(self, full_text: str, text_chunks: list[str]) -> None:
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(
-            self.ainsert_custom_chunks(full_text, text_chunks)
-        )
+        loop.run_until_complete(self.ainsert_custom_chunks(full_text, text_chunks))
 
-    async def ainsert_custom_chunks(self, full_text: str, text_chunks: list[str]):
+    async def ainsert_custom_chunks(
+        self, full_text: str, text_chunks: list[str]
+    ) -> None:
         update_storage = False
         try:
             doc_key = compute_mdhash_id(full_text.strip(), prefix="doc-")
@@ -653,7 +653,7 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
-    async def apipeline_enqueue_documents(self, input: str | list[str]):
+    async def apipeline_enqueue_documents(self, input: str | list[str]) -> None:
         """
         Pipeline for Processing Documents
 
@@ -832,7 +832,7 @@ class LightRAG:
             logger.error("Failed to extract entities and relationships")
             raise e
 
-    async def _insert_done(self):
+    async def _insert_done(self) -> None:
         tasks = [
             cast(StorageNameSpace, storage_inst).index_done_callback()
             for storage_inst in [  # type: ignore
@@ -848,11 +848,11 @@ class LightRAG:
         ]
         await asyncio.gather(*tasks)
 
-    def insert_custom_kg(self, custom_kg: dict[str, Any]):
+    def insert_custom_kg(self, custom_kg: dict[str, Any]) -> None:
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.ainsert_custom_kg(custom_kg))
+        loop.run_until_complete(self.ainsert_custom_kg(custom_kg))
 
-    async def ainsert_custom_kg(self, custom_kg: dict[str, Any]):
+    async def ainsert_custom_kg(self, custom_kg: dict[str, Any]) -> None:
         update_storage = False
         try:
             # Insert chunks into vector storage
@@ -1205,11 +1205,11 @@ class LightRAG:
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
 
-    def delete_by_entity(self, entity_name: str):
+    def delete_by_entity(self, entity_name: str) -> None:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.adelete_by_entity(entity_name))
 
-    async def adelete_by_entity(self, entity_name: str):
+    async def adelete_by_entity(self, entity_name: str) -> None:
         entity_name = f'"{entity_name.upper()}"'
 
         try:
@@ -1224,7 +1224,7 @@ class LightRAG:
         except Exception as e:
             logger.error(f"Error while deleting entity '{entity_name}': {e}")
 
-    async def _delete_by_entity_done(self):
+    async def _delete_by_entity_done(self) -> None:
         await asyncio.gather(
             *[
                 cast(StorageNameSpace, storage_inst).index_done_callback()
@@ -1497,7 +1497,7 @@ class LightRAG:
 
     async def get_relation_info(
         self, src_entity: str, tgt_entity: str, include_vector_data: bool = False
-    ):
+    ) -> dict[str, str | None | dict[str, str]]:
         """Get detailed information of a relationship
 
         Args:
