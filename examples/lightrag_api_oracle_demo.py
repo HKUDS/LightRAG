@@ -48,6 +48,14 @@ print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
+os.environ["ORACLE_USER"] = ""
+os.environ["ORACLE_PASSWORD"] = ""
+os.environ["ORACLE_DSN"] = ""
+os.environ["ORACLE_CONFIG_DIR"] = "path_to_config_dir"
+os.environ["ORACLE_WALLET_LOCATION"] = "path_to_wallet_location"
+os.environ["ORACLE_WALLET_PASSWORD"] = "wallet_password"
+os.environ["ORACLE_WORKSPACE"] = "company"
+
 
 async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
@@ -89,20 +97,6 @@ async def init():
     # We storage data in unified tables, so we need to set a `workspace` parameter to specify which docs we want to store and query
     # Below is an example of how to connect to Oracle Autonomous Database on Oracle Cloud
 
-    oracle_db = OracleDB(
-        config={
-            "user": "",
-            "password": "",
-            "dsn": "",
-            "config_dir": "path_to_config_dir",
-            "wallet_location": "path_to_wallet_location",
-            "wallet_password": "wallet_password",
-            "workspace": "company",
-        }  # specify which docs you want to store and query
-    )
-
-    # Check if Oracle DB tables exist, if not, tables will be created
-    await oracle_db.check_tables()
     # Initialize LightRAG
     # We use Oracle DB as the KV/vector/graph storage
     # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
@@ -120,11 +114,6 @@ async def init():
         kv_storage="OracleKVStorage",
         vector_storage="OracleVectorDBStorage",
     )
-
-    # Setthe KV/vector/graph storage's `db` property, so all operation will use same connection pool
-    rag.graph_storage_cls.db = oracle_db
-    rag.key_string_value_json_storage_cls.db = oracle_db
-    rag.vector_db_storage_cls.db = oracle_db
 
     return rag
 

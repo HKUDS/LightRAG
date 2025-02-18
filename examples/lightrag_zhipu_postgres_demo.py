@@ -22,22 +22,14 @@ if not os.path.exists(WORKING_DIR):
 # AGE
 os.environ["AGE_GRAPH_NAME"] = "dickens"
 
-postgres_db = PostgreSQLDB(
-    config={
-        "host": "localhost",
-        "port": 15432,
-        "user": "rag",
-        "password": "rag",
-        "database": "rag",
-    }
-)
+os.environ["POSTGRES_HOST"] = "localhost"
+os.environ["POSTGRES_PORT"] = "15432"
+os.environ["POSTGRES_USER"] = "rag"
+os.environ["POSTGRES_PASSWORD"] = "rag"
+os.environ["POSTGRES_DATABASE"] = "rag"
 
 
 async def main():
-    await postgres_db.initdb()
-    # Check if PostgreSQL DB tables exist, if not, tables will be created
-    await postgres_db.check_tables()
-
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=zhipu_complete,
@@ -57,17 +49,7 @@ async def main():
         graph_storage="PGGraphStorage",
         vector_storage="PGVectorStorage",
     )
-    # Set the KV/vector/graph storage's `db` property, so all operation will use same connection pool
-    rag.doc_status.db = postgres_db
-    rag.full_docs.db = postgres_db
-    rag.text_chunks.db = postgres_db
-    rag.llm_response_cache.db = postgres_db
-    rag.key_string_value_json_storage_cls.db = postgres_db
-    rag.chunks_vdb.db = postgres_db
-    rag.relationships_vdb.db = postgres_db
-    rag.entities_vdb.db = postgres_db
-    rag.graph_storage_cls.db = postgres_db
-    rag.chunk_entity_relation_graph.db = postgres_db
+
     # add embedding_func for graph database, it's deleted in commit 5661d76860436f7bf5aef2e50d9ee4a59660146c
     rag.chunk_entity_relation_graph.embedding_func = rag.embedding_func
 
