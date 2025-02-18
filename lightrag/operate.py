@@ -646,9 +646,9 @@ async def kg_query(
     logger.info("Using %s mode for query processing", query_param.mode)
 
     # Build context
-    keywords = [ll_keywords, hl_keywords]
     context = await _build_query_context(
-        keywords,
+        ll_keywords,
+        hl_keywords,
         knowledge_graph_inst,
         entities_vdb,
         relationships_vdb,
@@ -873,7 +873,8 @@ async def mix_kg_vector_query(
 
             # Build knowledge graph context
             context = await _build_query_context(
-                [ll_keywords_str, hl_keywords_str],
+                ll_keywords_str,
+                hl_keywords_str,
                 knowledge_graph_inst,
                 entities_vdb,
                 relationships_vdb,
@@ -1013,18 +1014,14 @@ async def mix_kg_vector_query(
 
 
 async def _build_query_context(
-    query: list,
+    ll_keywords: str,
+    hl_keywords: str,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
-    # ll_entities_context, ll_relations_context, ll_text_units_context = "", "", ""
-    # hl_entities_context, hl_relations_context, hl_text_units_context = "", "", ""
-
-    ll_keywords, hl_keywords = query[0], query[1]
-
     if query_param.mode == "local":
         entities_context, relations_context, text_units_context = await _get_node_data(
             ll_keywords,
@@ -1081,32 +1078,24 @@ async def _build_query_context(
         return None
 
     result = f"""
------Entities-----
-```csv
-{entities_context}
-```
------Relationships-----
-```csv
-{relations_context}
-```
------Sources-----
-```csv
-{text_units_context}
-```
-"""
-    contex_tokens = len(encode_string_by_tiktoken(result))
-    entities_tokens = len(encode_string_by_tiktoken(entities_context))
-    relations_tokens = len(encode_string_by_tiktoken(relations_context))
-    text_units_tokens = len(encode_string_by_tiktoken(text_units_context))
-    logger.debug(
-        f"Context Tokens - Total: {contex_tokens}, Entities: {entities_tokens}, Relations: {relations_tokens}, Chunks: {text_units_tokens}"
-    )
-
+    -----Entities-----
+    ```csv
+    {entities_context}
+    ```
+    -----Relationships-----
+    ```csv
+    {relations_context}
+    ```
+    -----Sources-----
+    ```csv
+    {text_units_context}
+    ```
+    """.strip()
     return result
 
 
 async def _get_node_data(
-    query,
+    query: str,
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
@@ -1760,15 +1749,12 @@ async def kg_query_with_keywords(
     ll_keywords_str = ", ".join(ll_keywords_flat) if ll_keywords_flat else ""
     hl_keywords_str = ", ".join(hl_keywords_flat) if hl_keywords_flat else ""
 
-    keywords = [ll_keywords_str, hl_keywords_str]
-
-    logger.info("Using %s mode for query processing", query_param.mode)
-
     # ---------------------------
     # 3) BUILD CONTEXT
     # ---------------------------
     context = await _build_query_context(
-        keywords,
+        ll_keywords_str,
+        hl_keywords_str,
         knowledge_graph_inst,
         entities_vdb,
         relationships_vdb,
