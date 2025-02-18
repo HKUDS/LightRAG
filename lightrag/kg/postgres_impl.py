@@ -303,7 +303,7 @@ class PGKVStorage(BaseKVStorage):
 
     async def drop(self) -> None:
         """Drop the storage"""
-	drop_sql = SQL_TEMPLATES["DROP_ALL"]
+        drop_sql = SQL_TEMPLATES["DROP_ALL"]
         await self.db.execute(drop_sql)
 	    
 @final
