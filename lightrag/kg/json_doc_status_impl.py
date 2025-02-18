@@ -68,3 +68,8 @@ class JsonDocStatusStorage(DocStatusStorage):
         for doc_id in doc_ids:
             self._data.pop(doc_id, None)
         await self.index_done_callback()
+        
+    async def drop(self) -> None:
+        """Drop the storage"""
+        self._data.clear()
+        
