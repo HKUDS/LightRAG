@@ -263,8 +263,8 @@ class PGKVStorage(BaseKVStorage):
                 exist_keys = [key["id"] for key in res]
             else:
                 exist_keys = []
-            data = set([s for s in keys if s not in exist_keys])
-            return data
+            new_keys = set([s for s in keys if s not in exist_keys])
+            return new_keys
         except Exception as e:
             logger.error(f"PostgreSQL database error: {e}")
             print(sql)
@@ -300,6 +300,11 @@ class PGKVStorage(BaseKVStorage):
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
         pass
+
+    async def drop(self) -> None:
+        """Drop the storage"""
+        drop_sql = SQL_TEMPLATES["drop_all"]
+        await self.db.execute(drop_sql)
 
 
 @final
@@ -432,16 +437,26 @@ class PGVectorStorage(BaseVectorStorage):
 @dataclass
 class PGDocStatusStorage(DocStatusStorage):
     async def filter_keys(self, keys: set[str]) -> set[str]:
-        """Return keys that don't exist in storage"""
-        keys = ",".join([f"'{_id}'" for _id in keys])
-        sql = f"SELECT id FROM LIGHTRAG_DOC_STATUS WHERE workspace='{self.db.workspace}' AND id IN ({keys})"
-        result = await self.db.query(sql, multirows=True)
-        # The result is like [{'id': 'id1'}, {'id': 'id2'}, ...].
-        if result is None:
-            return set(keys)
-        else:
-            existed = set([element["id"] for element in result])
-            return set(keys) - existed
+        """Filter out duplicated content"""
+        sql = SQL_TEMPLATES["filter_keys"].format(
+            table_name=namespace_to_table_name(self.namespace),
+            ids=",".join([f"'{id}'" for id in keys]),
+        )
+        params = {"workspace": self.db.workspace}
+        try:
+            res = await self.db.query(sql, params, multirows=True)
+            if res:
+                exist_keys = [key["id"] for key in res]
+            else:
+                exist_keys = []
+            new_keys = set([s for s in keys if s not in exist_keys])
+            print(f"keys: {keys}")
+            print(f"new_keys: {new_keys}")
+            return new_keys
+        except Exception as e:
+            logger.error(f"PostgreSQL database error: {e}")
+            print(sql)
+            print(params)
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and id=$2"
@@ -483,7 +498,7 @@ class PGDocStatusStorage(DocStatusStorage):
         sql = "select * from LIGHTRAG_DOC_STATUS where workspace=$1 and status=$2"
         params = {"workspace": self.db.workspace, "status": status.value}
         result = await self.db.query(sql, params, True)
-        return {
+        docs_by_status = {
             element["id"]: DocProcessingStatus(
                 content=result[0]["content"],
                 content_summary=element["content_summary"],
@@ -495,6 +510,7 @@ class PGDocStatusStorage(DocStatusStorage):
             )
             for element in result
         }
+        return docs_by_status
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -530,6 +546,11 @@ class PGDocStatusStorage(DocStatusStorage):
                 },
             )
         return data
+
+    async def drop(self) -> None:
+        """Drop the storage"""
+        drop_sql = SQL_TEMPLATES["drop_doc_full"]
+        await self.db.execute(drop_sql)
 
 
 class PGGraphQueryException(Exception):
@@ -1012,6 +1033,13 @@ class PGGraphStorage(BaseGraphStorage):
     ) -> KnowledgeGraph:
         raise NotImplementedError
 
+    async def drop(self) -> None:
+        """Drop the storage"""
+        drop_sql = SQL_TEMPLATES["drop_vdb_entity"]
+        await self.db.execute(drop_sql)
+        drop_sql = SQL_TEMPLATES["drop_vdb_relation"]
+        await self.db.execute(drop_sql)
+
 
 NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",
@@ -1193,5 +1221,28 @@ SQL_TEMPLATES = {
         (SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
         FROM LIGHTRAG_DOC_CHUNKS where workspace=$1)
         WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
+       """,
+    # DROP tables
+    "drop_all": """
+	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
+	    DROP TABLE IF EXISTS LIGHTRAG_DOC_CHUNKS CASCADE;
+	    DROP TABLE IF EXISTS LIGHTRAG_LLM_CACHE CASCADE;
+	    DROP TABLE IF EXISTS LIGHTRAG_VDB_ENTITY CASCADE;
+	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
+       """,
+    "drop_doc_full": """
+	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
+       """,
+    "drop_doc_chunks": """
+	    DROP TABLE IF EXISTS LIGHTRAG_DOC_CHUNKS CASCADE;
+       """,
+    "drop_llm_cache": """
+	    DROP TABLE IF EXISTS LIGHTRAG_LLM_CACHE CASCADE;
+       """,
+    "drop_vdb_entity": """
+	    DROP TABLE IF EXISTS LIGHTRAG_VDB_ENTITY CASCADE;
+       """,
+    "drop_vdb_relation": """
+	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
        """,
 }
