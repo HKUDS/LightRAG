@@ -242,7 +242,7 @@ class ClientManager:
 @final
 @dataclass
 class OracleKVStorage(BaseKVStorage):
-    db: OracleDB = field(init=False)
+    db: OracleDB = field(default=None)
     meta_fields = None
 
     def __post_init__(self):
@@ -394,7 +394,7 @@ class OracleKVStorage(BaseKVStorage):
 @final
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):
-    db: OracleDB = field(init=False)
+    db: OracleDB = field(default=None)
 
     def __post_init__(self):
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
@@ -450,7 +450,7 @@ class OracleVectorDBStorage(BaseVectorStorage):
 @final
 @dataclass
 class OracleGraphStorage(BaseGraphStorage):
-    db: OracleDB = field(init=False)
+    db: OracleDB = field(default=None)
 
     def __post_init__(self):
         self._max_batch_size = self.global_config.get("embedding_batch_num", 10)
