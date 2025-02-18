@@ -84,7 +84,7 @@ Use the below Python snippet (in a script) to initialize LightRAG and perform qu
 
 ```python
 import os
-from lightrag import LightRAG, QueryParam
+from lightrag.lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete, openai_embed
 
 #########
@@ -134,7 +134,7 @@ print(rag.query("What are the top themes in this story?", param=QueryParam(
 LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
 
 ```python
-from lightrag import LightRAG, QueryParam
+from lightrag.lightrag import LightRAG, QueryParam
 
 # Initialize LightRAG
 rag = LightRAG(working_dir=WORKING_DIR)
@@ -164,7 +164,7 @@ response = rag.query(
 LightRAG now supports custom prompts for fine-tuned control over the system's behavior. Here's how to use it:
 
 ```python
-from lightrag import LightRAG, QueryParam
+from lightrag.lightrag import LightRAG, QueryParam
 
 # Initialize LightRAG
 rag = LightRAG(working_dir=WORKING_DIR)
