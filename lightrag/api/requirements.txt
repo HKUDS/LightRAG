@@ -1,6 +1,5 @@
 ascii_colors
 fastapi
-nest_asyncio
 numpy
 pipmaster
 python-dotenv
