@@ -22,7 +22,6 @@ tenacity
 
 # LLM packages
 tiktoken
-tqdm
 xxhash
 
 # Extra libraries are installed when needed using pipmaster

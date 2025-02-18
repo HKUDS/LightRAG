@@ -7,7 +7,6 @@ import numpy as np
 
 from lightrag.types import KnowledgeGraph
 
-from tqdm import tqdm
 
 from ..base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage
 from ..namespace import NameSpace, is_namespace
@@ -270,15 +269,8 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
         embedding_tasks = [self.embedding_func(batch) for batch in batches]
-        embeddings_list = []
-        for f in tqdm(
-            asyncio.as_completed(embedding_tasks),
-            total=len(embedding_tasks),
-            desc="Generating embeddings",
-            unit="batch",
-        ):
-            embeddings = await f
-            embeddings_list.append(embeddings)
+        embeddings_list = await asyncio.gather(*embedding_tasks)
+
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
             d["content_vector"] = embeddings[i]

@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from tqdm.asyncio import tqdm as tqdm_async
 from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
 from .utils import (
@@ -500,16 +499,8 @@ async def extract_entities(
         )
         return dict(maybe_nodes), dict(maybe_edges)
 
-    results = []
-    for result in tqdm_async(
-        asyncio.as_completed([_process_single_content(c) for c in ordered_chunks]),
-        total=len(ordered_chunks),
-        desc="Level 2 - Extracting entities and relationships",
-        unit="chunk",
-        position=1,
-        leave=False,
-    ):
-        results.append(await result)
+    tasks = [_process_single_content(c) for c in ordered_chunks]
+    results = await asyncio.gather(*tasks)
 
     maybe_nodes = defaultdict(list)
     maybe_edges = defaultdict(list)
@@ -518,41 +509,20 @@ async def extract_entities(
             maybe_nodes[k].extend(v)
         for k, v in m_edges.items():
             maybe_edges[tuple(sorted(k))].extend(v)
-    logger.debug("Inserting entities into storage...")
-    all_entities_data = []
-    for result in tqdm_async(
-        asyncio.as_completed(
-            [
-                _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-                for k, v in maybe_nodes.items()
-            ]
-        ),
-        total=len(maybe_nodes),
-        desc="Level 3 - Inserting entities",
-        unit="entity",
-        position=2,
-        leave=False,
-    ):
-        all_entities_data.append(await result)
 
-    logger.debug("Inserting relationships into storage...")
-    all_relationships_data = []
-    for result in tqdm_async(
-        asyncio.as_completed(
-            [
-                _merge_edges_then_upsert(
-                    k[0], k[1], v, knowledge_graph_inst, global_config
-                )
-                for k, v in maybe_edges.items()
-            ]
-        ),
-        total=len(maybe_edges),
-        desc="Level 3 - Inserting relationships",
-        unit="relationship",
-        position=3,
-        leave=False,
-    ):
-        all_relationships_data.append(await result)
+    all_entities_data = await asyncio.gather(
+        *[
+            _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
+            for k, v in maybe_nodes.items()
+        ]
+    )
+
+    all_relationships_data = await asyncio.gather(
+        *[
+            _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
+            for k, v in maybe_edges.items()
+        ]
+    )
 
     if not len(all_entities_data) and not len(all_relationships_data):
         logger.warning(

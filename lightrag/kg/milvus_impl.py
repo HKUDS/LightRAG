@@ -1,7 +1,6 @@
 import asyncio
 import os
 from typing import Any, final
-from tqdm.asyncio import tqdm as tqdm_async
 from dataclasses import dataclass
 import numpy as np
 from lightrag.utils import logger
@@ -94,15 +93,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
-        async def wrapped_task(batch):
-            result = await self.embedding_func(batch)
-            pbar.update(1)
-            return result
-
-        embedding_tasks = [wrapped_task(batch) for batch in batches]
-        pbar = tqdm_async(
-            total=len(embedding_tasks), desc="Generating embeddings", unit="batch"
-        )
+        embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         embeddings = np.concatenate(embeddings_list)

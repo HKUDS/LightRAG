@@ -22,7 +22,6 @@ if not pm.is_installed("faiss"):
 
 try:
     import faiss
-    from tqdm.asyncio import tqdm as tqdm_async
 except ImportError as e:
     raise ImportError(
         "`faiss` library is not installed. Please install it via pip: `pip install faiss`."
@@ -109,16 +108,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
-        pbar = tqdm_async(
-            total=len(batches), desc="Generating embeddings", unit="batch"
-        )
-
-        async def wrapped_task(batch):
-            result = await self.embedding_func(batch)
-            pbar.update(1)
-            return result
-
-        embedding_tasks = [wrapped_task(batch) for batch in batches]
+        embedding_tasks = [self.embedding_func(batch) for batch in batches]
         embeddings_list = await asyncio.gather(*embedding_tasks)
 
         # Flatten the list of arrays

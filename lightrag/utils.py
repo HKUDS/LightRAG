@@ -19,7 +19,6 @@ import tiktoken
 from lightrag.prompt import PROMPTS
 
 
-
 VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
 
 
@@ -82,7 +81,6 @@ class EmbeddingFunc:
 
     async def __call__(self, *args, **kwargs) -> np.ndarray:
         return await self.func(*args, **kwargs)
-
 
 
 def locate_json_string_body_from_string(content: str) -> str | None:
@@ -715,4 +713,3 @@ def get_conversation_turns(
         )
 
     return "\n".join(formatted_turns)
-
