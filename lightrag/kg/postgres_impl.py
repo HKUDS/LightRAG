@@ -301,7 +301,11 @@ class PGKVStorage(BaseKVStorage):
         # PG handles persistence automatically
         pass
 
-
+    async def drop(self) -> None:
+        """Drop the storage"""
+	drop_sql = SQL_TEMPLATES["DROP_ALL"]
+        await self.db.execute(drop_sql)
+	    
 @final
 @dataclass
 class PGVectorStorage(BaseVectorStorage):
@@ -1193,5 +1197,13 @@ SQL_TEMPLATES = {
         (SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
         FROM LIGHTRAG_DOC_CHUNKS where workspace=$1)
         WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
+       """,
+     #DROP everything
+    "drop": """
+	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
+	    DROP TABLE IF EXISTS LIGHTRAG_DOC_CHUNKS CASCADE;
+	    DROP TABLE IF EXISTS LIGHTRAG_LLM_CACHE CASCADE;
+	    DROP TABLE IF EXISTS LIGHTRAG_VDB_ENTITY CASCADE;
+	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
        """,
 }
