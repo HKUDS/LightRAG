@@ -13,12 +13,18 @@ from functools import wraps
 from hashlib import md5
 from typing import Any, Callable
 import xml.etree.ElementTree as ET
-import bs4
-
 import numpy as np
 import tiktoken
 
 from lightrag.prompt import PROMPTS
+
+import pipmaster as pm  # Pipmaster for dynamic library install
+
+# install specific modules
+if not pm.is_installed("bs4"):
+    pm.install("bs4")
+    
+import bs4
 
 VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
 
