@@ -1,11 +1,5 @@
-accelerate
-aiofiles
 aiohttp
 configparser
-
-# File manipulation libraries
-docling
-graspologic
 
 # database packages
 networkx
@@ -19,10 +13,7 @@ python-dotenv
 setuptools
 tenacity
 
-
 # LLM packages
 tiktoken
-tqdm
-xxhash
 
 # Extra libraries are installed when needed using pipmaster

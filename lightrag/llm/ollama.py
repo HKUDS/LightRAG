@@ -1,51 +1,10 @@
-"""
-Ollama LLM Interface Module
-==========================
-
-This module provides interfaces for interacting with Ollama's language models,
-including text generation and embedding capabilities.
-
-Author: Lightrag team
-Created: 2024-01-24
-License: MIT License
-
-Copyright (c) 2024 Lightrag
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-Version: 1.0.0
-
-Change Log:
-- 1.0.0 (2024-01-24): Initial release
-    * Added async chat completion support
-    * Added embedding generation
-    * Added stream response capability
-
-Dependencies:
-    - ollama
-    - numpy
-    - pipmaster
-    - Python >= 3.10
-
-Usage:
-    from llm_interfaces.ollama_interface import ollama_model_complete, ollama_embed
-"""
-
-__version__ = "1.0.0"
-__author__ = "lightrag Team"
-__status__ = "Production"
-
 import sys
 
 if sys.version_info < (3, 9):
     from typing import AsyncIterator
 else:
     from collections.abc import AsyncIterator
+
 import pipmaster as pm  # Pipmaster for dynamic library install
 
 # install specific modules
@@ -54,7 +13,9 @@ if not pm.is_installed("ollama"):
 if not pm.is_installed("tenacity"):
     pm.install("tenacity")
 
+
 import ollama
+
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -67,7 +28,7 @@ from lightrag.exceptions import (
     APITimeoutError,
 )
 from lightrag.api import __api_version__
-from lightrag.utils import extract_reasoning
+
 import numpy as np
 from typing import Union
 
@@ -79,7 +40,7 @@ from typing import Union
         (RateLimitError, APIConnectionError, APITimeoutError)
     ),
 )
-async def ollama_model_if_cache(
+async def _ollama_model_if_cache(
     model,
     prompt,
     system_prompt=None,
@@ -87,7 +48,7 @@ async def ollama_model_if_cache(
     **kwargs,
 ) -> Union[str, AsyncIterator[str]]:
     stream = True if kwargs.get("stream") else False
-    reasoning_tag = kwargs.pop("reasoning_tag", None)
+
     kwargs.pop("max_tokens", None)
     # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)
@@ -125,11 +86,7 @@ async def ollama_model_if_cache(
         response and can simply be trimmed.
         """
 
-        return (
-            model_response
-            if reasoning_tag is None
-            else extract_reasoning(model_response, reasoning_tag).response_content
-        )
+        return model_response
 
 
 async def ollama_model_complete(
@@ -139,7 +96,7 @@ async def ollama_model_complete(
     if keyword_extraction:
         kwargs["format"] = "json"
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
-    return await ollama_model_if_cache(
+    return await _ollama_model_if_cache(
         model_name,
         prompt,
         system_prompt=system_prompt,
