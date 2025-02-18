@@ -1363,7 +1363,7 @@ def create_app(args):
                 case ".xlsx":
                     if not pm.is_installed("openpyxl"):
                         pm.install("openpyxl")
-                    from openpyxl import load_workbook
+                    from openpyxl import load_workbook  # type: ignore
                     from io import BytesIO
 
                     xlsx_file = BytesIO(file)
