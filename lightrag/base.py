@@ -87,6 +87,14 @@ class StorageNameSpace(ABC):
     namespace: str
     global_config: dict[str, Any]
 
+    async def initialize(self):
+        """Initialize the storage"""
+        pass
+
+    async def finalize(self):
+        """Finalize the storage"""
+        pass
+
     @abstractmethod
     async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing"""
@@ -247,3 +255,12 @@ class DocStatusStorage(BaseKVStorage, ABC):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
+
+
+class StoragesStatus(str, Enum):
+    """Storages status"""
+
+    NOT_CREATED = "not_created"
+    CREATED = "created"
+    INITIALIZED = "initialized"
+    FINALIZED = "finalized"

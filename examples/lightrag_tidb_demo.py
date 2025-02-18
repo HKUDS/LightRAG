@@ -4,7 +4,6 @@ import os
 import numpy as np
 
 from lightrag import LightRAG, QueryParam
-from lightrag.kg.tidb_impl import TiDB
 from lightrag.llm import siliconcloud_embedding, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
 
@@ -17,11 +16,11 @@ APIKEY = ""
 CHATMODEL = ""
 EMBEDMODEL = ""
 
-TIDB_HOST = ""
-TIDB_PORT = ""
-TIDB_USER = ""
-TIDB_PASSWORD = ""
-TIDB_DATABASE = "lightrag"
+os.environ["TIDB_HOST"] = ""
+os.environ["TIDB_PORT"] = ""
+os.environ["TIDB_USER"] = ""
+os.environ["TIDB_PASSWORD"] = ""
+os.environ["TIDB_DATABASE"] = "lightrag"
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -62,21 +61,6 @@ async def main():
         embedding_dimension = await get_embedding_dim()
         print(f"Detected embedding dimension: {embedding_dimension}")
 
-        # Create TiDB DB connection
-        tidb = TiDB(
-            config={
-                "host": TIDB_HOST,
-                "port": TIDB_PORT,
-                "user": TIDB_USER,
-                "password": TIDB_PASSWORD,
-                "database": TIDB_DATABASE,
-                "workspace": "company",  # specify which docs you want to store and query
-            }
-        )
-
-        # Check if TiDB DB tables exist, if not, tables will be created
-        await tidb.check_tables()
-
         # Initialize LightRAG
         # We use TiDB DB as the KV/vector
         # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
@@ -94,15 +78,6 @@ async def main():
             vector_storage="TiDBVectorDBStorage",
             graph_storage="TiDBGraphStorage",
         )
-
-        if rag.llm_response_cache:
-            rag.llm_response_cache.db = tidb
-        rag.full_docs.db = tidb
-        rag.text_chunks.db = tidb
-        rag.entities_vdb.db = tidb
-        rag.relationships_vdb.db = tidb
-        rag.chunks_vdb.db = tidb
-        rag.chunk_entity_relation_graph.db = tidb
 
         # Extract and Insert into LightRAG storage
         with open("./dickens/demo.txt", "r", encoding="utf-8") as f:
