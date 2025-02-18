@@ -135,10 +135,6 @@ class BaseKVStorage(StorageNameSpace, ABC):
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Upsert data"""
 
-    @abstractmethod
-    async def drop(self) -> None:
-        """Drop the storage"""
-
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
