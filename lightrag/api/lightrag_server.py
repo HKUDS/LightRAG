@@ -4,7 +4,6 @@ LightRAG FastAPI Server
 
 from fastapi import (
     FastAPI,
-    HTTPException,
     Depends,
 )
 from fastapi.responses import FileResponse
@@ -14,7 +13,7 @@ import os
 from fastapi.staticfiles import StaticFiles
 import logging
 import argparse
-from typing import Optional, Dict
+from typing import Dict
 from pathlib import Path
 import configparser
 from ascii_colors import ASCIIColors
@@ -72,6 +71,7 @@ scan_progress: Dict = {
 
 # Lock for thread-safe operations
 progress_lock = threading.Lock()
+
 
 def get_default_host(binding_type: str) -> str:
     default_hosts = {
@@ -624,7 +624,9 @@ def create_app(args):
                         scan_progress["indexed_count"] = 0
                         scan_progress["progress"] = 0
                         # Create background task
-                        task = asyncio.create_task(run_scanning_process(rag, doc_manager))
+                        task = asyncio.create_task(
+                            run_scanning_process(rag, doc_manager)
+                        )
                         app.state.background_tasks.add(task)
                         task.add_done_callback(app.state.background_tasks.discard)
                         ASCIIColors.info(
@@ -876,8 +878,12 @@ def create_app(args):
     # Webui mount webui/index.html
     static_dir = Path(__file__).parent / "webui"
     static_dir.mkdir(exist_ok=True)
-    app.mount("/webui", StaticFiles(directory=static_dir, html=True, check_dir=True), name="webui")
-    
+    app.mount(
+        "/webui",
+        StaticFiles(directory=static_dir, html=True, check_dir=True),
+        name="webui",
+    )
+
     @app.get("/webui/")
     async def webui_root():
         return FileResponse(static_dir / "index.html")
