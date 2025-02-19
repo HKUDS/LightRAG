@@ -173,6 +173,11 @@ class PostgreSQLDB:
     ):
         try:
             async with self.pool.acquire() as connection:  # type: ignore
+                if with_age and graph_name:
+                    await self.configure_age(connection, graph_name)  # type: ignore
+                elif with_age and not graph_name:
+                    raise ValueError("Graph name is required when with_age is True")
+
                 if data is None:
                     await connection.execute(sql)  # type: ignore
                 else:
