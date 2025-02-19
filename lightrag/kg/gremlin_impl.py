@@ -403,9 +403,6 @@ class GremlinStorage(BaseGraphStorage):
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
         raise NotImplementedError
 
-    async def get_all_labels(self) -> list[str]:
-        raise NotImplementedError
-
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:

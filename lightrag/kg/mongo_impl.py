@@ -601,24 +601,6 @@ class MongoGraphStorage(BaseGraphStorage):
     # -------------------------------------------------------------------------
     #
 
-    async def get_all_labels(self) -> list[str]:
-        """
-        Get all existing node _id in the database
-        Returns:
-            [id1, id2, ...]  # Alphabetically sorted id list
-        """
-        # Use MongoDB's distinct and aggregation to get all unique labels
-        pipeline = [
-            {"$group": {"_id": "$_id"}},  # Group by _id
-            {"$sort": {"_id": 1}},  # Sort alphabetically
-        ]
-
-        cursor = self.collection.aggregate(pipeline)
-        labels = []
-        async for doc in cursor:
-            labels.append(doc["_id"])
-        return labels
-
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
