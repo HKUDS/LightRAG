@@ -797,8 +797,8 @@ class MongoGraphStorage(BaseGraphStorage):
 @final
 @dataclass
 class MongoVectorDBStorage(BaseVectorStorage):
-    db: AsyncIOMotorDatabase = field(default=None)
-    _data: AsyncIOMotorCollection = field(default=None)
+    db: AsyncIOMotorDatabase | None = field(default=None)
+    _data: AsyncIOMotorCollection | None = field(default=None)
 
     def __post_init__(self):
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})

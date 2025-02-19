@@ -1,9 +1,11 @@
-import networkx as nx
 import pipmaster as pm
 
 if not pm.is_installed("pyvis"):
     pm.install("pyvis")
+if not pm.is_installed("networkx"):
+    pm.install("networkx")
 
+import networkx as nx
 from pyvis.network import Network
 import random
 
