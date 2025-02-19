@@ -58,7 +58,6 @@ class TiDB:
                 logger.error(f"Failed to check table {k} in TiDB database")
                 logger.error(f"TiDB database error: {e}")
                 try:
-                    # print(v["ddl"])
                     await self.execute(v["ddl"])
                     logger.info(f"Created table {k} in TiDB database")
                 except Exception as e:
@@ -106,11 +105,11 @@ class TiDB:
 
 
 class ClientManager:
-    _instances = {"db": None, "ref_count": 0}
+    _instances: dict[str, Any] = {"db": None, "ref_count": 0}
     _lock = asyncio.Lock()
 
     @staticmethod
-    def get_config():
+    def get_config() -> dict[str, Any]:
         config = configparser.ConfigParser()
         config.read("config.ini", "utf-8")
 
@@ -278,7 +277,7 @@ class TiDBKVStorage(BaseKVStorage):
 @final
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
-    db: TiDB = field(default=None)
+    db: TiDB | None = field(default=None)
 
     def __post_init__(self):
         self._client_file_name = os.path.join(
