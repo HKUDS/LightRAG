@@ -20,13 +20,8 @@ if not pm.is_installed("networkx"):
 if not pm.is_installed("graspologic"):
     pm.install("graspologic")
 
-try:
-    from graspologic import embed
-    import networkx as nx
-except ImportError as e:
-    raise ImportError(
-        "`networkx` library is not installed. Please install it via pip: `pip install networkx`."
-    ) from e
+from graspologic import embed
+import networkx as nx
 
 
 @final
