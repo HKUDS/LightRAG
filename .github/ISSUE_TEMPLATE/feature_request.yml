@@ -11,7 +11,6 @@ body:
       description: Please help us manage our time by avoiding duplicates and common questions with the steps below.
       options:
         - label: I have searched the existing issues and this feature is not already filed.
-        - label: My model is hosted on OpenAI or Azure. If not, please look at the "model providers" issue and don't file a new one here.
         - label: I believe this is a legitimate feature request, not just a question. If this is a question, please use the Discussions area.
   - type: textarea
     id: problem_description
