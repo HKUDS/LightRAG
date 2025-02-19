@@ -93,9 +93,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        if not len(data):
-            logger.warning("You insert an empty data to vector DB")
-            return []
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
         list_data = [
             {
                 "id": k,

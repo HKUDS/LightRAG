@@ -113,9 +113,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
-            logger.warning("Empty data provided to vector DB")
-            return []
+            return
 
         try:
             ids = list(data.keys())

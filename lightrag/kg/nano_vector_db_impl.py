@@ -50,10 +50,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
-        if not len(data):
-            logger.warning("You insert an empty data to vector DB")
-            return []
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
 
         current_time = time.time()
         list_data = [
