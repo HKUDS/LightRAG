@@ -10,13 +10,8 @@ import pipmaster as pm
 if not pm.is_installed("chromadb"):
     pm.install("chromadb")
 
-try:
-    from chromadb import HttpClient, PersistentClient
-    from chromadb.config import Settings
-except ImportError as e:
-    raise ImportError(
-        "`chromadb` library is not installed. Please install it via pip: `pip install chromadb`."
-    ) from e
+from chromadb import HttpClient, PersistentClient
+from chromadb.config import Settings
 
 
 @final

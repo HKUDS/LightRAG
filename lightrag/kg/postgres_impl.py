@@ -38,14 +38,8 @@ import pipmaster as pm
 if not pm.is_installed("asyncpg"):
     pm.install("asyncpg")
 
-try:
-    import asyncpg
-    from asyncpg import Pool
-
-except ImportError as e:
-    raise ImportError(
-        "`asyncpg` library is not installed. Please install it via pip: `pip install asyncpg`."
-    ) from e
+import asyncpg
+from asyncpg import Pool
 
 
 class PostgreSQLDB:
