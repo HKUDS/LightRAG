@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional, Union, final
 import numpy as np
 import pipmaster as pm
-from lightrag.types import KnowledgeGraph
 
 from tenacity import (
     retry,
@@ -614,11 +613,6 @@ class AGEStorage(BaseGraphStorage):
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError
-
-    async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 5
-    ) -> KnowledgeGraph:
         raise NotImplementedError
 
     async def index_done_callback(self) -> None:

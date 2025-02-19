@@ -5,8 +5,6 @@ from typing import Any, Union, final
 
 import numpy as np
 
-from lightrag.types import KnowledgeGraph
-
 
 from ..base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage
 from ..namespace import NameSpace, is_namespace
@@ -558,11 +556,6 @@ class TiDBGraphStorage(BaseGraphStorage):
         pass
 
     async def delete_node(self, node_id: str) -> None:
-        raise NotImplementedError
-
-    async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 5
-    ) -> KnowledgeGraph:
         raise NotImplementedError
 
 
