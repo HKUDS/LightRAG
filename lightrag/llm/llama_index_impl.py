@@ -1,38 +1,3 @@
-"""
-LlamaIndex LLM Interface Module
-==========================
-
-This module provides interfaces for interacting with LlamaIndex's language models,
-including text generation and embedding capabilities.
-
-Author: Lightrag team
-Created: 2024-03-19
-License: MIT License
-
-Version: 1.0.0
-
-Change Log:
-- 1.0.0 (2024-03-19): Initial release
-    * Added async chat completion support
-    * Added embedding generation
-    * Added stream response capability
-    * Added support for external settings configuration
-    * Added OpenAI-style message handling
-
-Dependencies:
-    - llama_index
-    - numpy
-    - pipmaster
-    - Python >= 3.10
-
-Usage:
-    from lightrag.llm.llama_index_impl import llama_index_complete, llama_index_embed
-"""
-
-__version__ = "1.0.0"
-__author__ = "lightrag Team"
-__status__ = "Production"
-
 import pipmaster as pm
 from core.logging_config import setup_logger
 from llama_index.core.llms import (
