@@ -84,10 +84,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
            ...
         }
         """
-        logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
-            logger.warning("You are inserting empty data to the vector DB")
-            return []
+            return
 
         current_time = time.time()
 
