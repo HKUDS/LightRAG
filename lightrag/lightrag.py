@@ -791,6 +791,7 @@ class LightRAG:
 
         logger.info(f"Number of batches to process: {len(docs_batches)}.")
 
+        tasks: list[tuple[str, DocProcessingStatus, dict[str, Any], Any]] = []
         # 3. iterate over batches
         for batch_idx, docs_batch in enumerate(docs_batches):
             # 4. iterate over batch
@@ -826,47 +827,91 @@ class LightRAG:
                     )
                 }
 
-                # Process document (text chunks and full docs) in parallel
-                tasks = [
-                    self.chunks_vdb.upsert(chunks),
-                    self._process_entity_relation_graph(chunks),
-                    self.full_docs.upsert({doc_id: {"content": status_doc.content}}),
-                    self.text_chunks.upsert(chunks),
-                ]
-                try:
-                    await asyncio.gather(*tasks)
-                    await self.doc_status.upsert(
-                        {
-                            doc_status_id: {
-                                "status": DocStatus.PROCESSED,
-                                "chunks_count": len(chunks),
-                                "content": status_doc.content,
-                                "content_summary": status_doc.content_summary,
-                                "content_length": status_doc.content_length,
-                                "created_at": status_doc.created_at,
-                                "updated_at": datetime.now().isoformat(),
-                            }
-                        }
-                    )
-                    await self._insert_done()
+                # Prepare async tasks with full context
+                tasks.extend(
+                    [
+                        (
+                            doc_status_id,
+                            status_doc,
+                            chunks,
+                            self.chunks_vdb.upsert(chunks),
+                        ),
+                        (
+                            doc_status_id,
+                            status_doc,
+                            chunks,
+                            self._process_entity_relation_graph(chunks),
+                        ),
+                        (
+                            doc_status_id,
+                            status_doc,
+                            chunks,
+                            self.full_docs.upsert(
+                                {doc_id: {"content": status_doc.content}}
+                            ),
+                        ),
+                        (
+                            doc_status_id,
+                            status_doc,
+                            chunks,
+                            self.text_chunks.upsert(chunks),
+                        ),
+                    ]
+                )
 
-                except Exception as e:
-                    logger.error(f"Failed to process document {doc_id}: {str(e)}")
-                    await self.doc_status.upsert(
-                        {
-                            doc_status_id: {
-                                "status": DocStatus.FAILED,
-                                "error": str(e),
-                                "content": status_doc.content,
-                                "content_summary": status_doc.content_summary,
-                                "content_length": status_doc.content_length,
-                                "created_at": status_doc.created_at,
-                                "updated_at": datetime.now().isoformat(),
-                            }
+        # Execute tasks as they complete
+        for future in asyncio.as_completed([task for _, _, _, task in tasks]):
+            try:
+                # Wait for the completed task
+                await future
+
+                # Retrieve the full context of the completed task
+                completed_doc_status_id, status_doc, chunks, _ = next(
+                    (doc_id, s_doc, ch, task)
+                    for doc_id, s_doc, ch, task in tasks
+                    if task == future
+                )
+
+                # Update status to processed
+                await self.doc_status.upsert(
+                    {
+                        completed_doc_status_id: {
+                            "status": DocStatus.PROCESSED,
+                            "chunks_count": len(chunks),
+                            "content": status_doc.content,
+                            "content_summary": status_doc.content_summary,
+                            "content_length": status_doc.content_length,
+                            "created_at": status_doc.created_at,
+                            "updated_at": datetime.now().isoformat(),
                         }
-                    )
-                    continue
-            logger.info(f"Completed batch {batch_idx + 1} of {len(docs_batches)}.")
+                    }
+                )
+                logger.info(f"Completed doc_id: {completed_doc_status_id}")
+            except Exception as e:
+                # Retrieve the context of the failed task
+                failed_doc_status_id, status_doc, chunks, _ = next(
+                    (doc_id, s_doc, ch, task)
+                    for doc_id, s_doc, ch, task in tasks
+                    if task == future
+                )
+                logger.error(
+                    f"Failed to process document {failed_doc_status_id}: {str(e)}"
+                )
+
+                await self.doc_status.upsert(
+                    {
+                        failed_doc_status_id: {
+                            "status": DocStatus.FAILED,
+                            "error": str(e),
+                            "content": status_doc.content,
+                            "content_summary": status_doc.content_summary,
+                            "content_length": status_doc.content_length,
+                            "created_at": status_doc.created_at,
+                            "updated_at": datetime.now().isoformat(),
+                        }
+                    }
+                )
+        await self._insert_done()
 
     async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
         try:

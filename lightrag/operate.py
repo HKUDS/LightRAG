@@ -1326,15 +1326,12 @@ async def _get_edge_data(
         ),
     )
 
-    if not all([n is not None for n in edge_datas]):
-        logger.warning("Some edges are missing, maybe the storage is damaged")
-
     edge_datas = [
         {
             "src_id": k["src_id"],
             "tgt_id": k["tgt_id"],
             "rank": d,
-            "created_at": k.get("__created_at__", None),  # 从 KV 存储中获取时间元数据
+            "created_at": k.get("__created_at__", None),
             **v,
         }
         for k, v, d in zip(results, edge_datas, edge_degree)
@@ -1343,16 +1340,11 @@ async def _get_edge_data(
     edge_datas = sorted(
         edge_datas, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
-    len_edge_datas = len(edge_datas)
     edge_datas = truncate_list_by_token_size(
         edge_datas,
         key=lambda x: x["description"],
         max_token_size=query_param.max_token_for_global_context,
     )
-    logger.debug(
-        f"Truncate relations from {len_edge_datas} to {len(edge_datas)} (max tokens:{query_param.max_token_for_global_context})"
-    )
-
     use_entities, use_text_units = await asyncio.gather(
         _find_most_related_entities_from_relationships(
             edge_datas, query_param, knowledge_graph_inst
