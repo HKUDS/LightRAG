@@ -1,6 +1,6 @@
-future
 aiohttp
 configparser
+future
 
 # Basic modules
 numpy

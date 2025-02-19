@@ -4,7 +4,6 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 import logging
-import traceback
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -15,6 +14,7 @@ from pydantic import BaseModel, Field, field_validator
 from ascii_colors import trace_exception
 
 router = APIRouter(tags=["query"])
+
 
 class QueryRequest(BaseModel):
     query: str = Field(
@@ -131,15 +131,19 @@ class QueryRequest(BaseModel):
         param.stream = is_stream
         return param
 
+
 class QueryResponse(BaseModel):
     response: str = Field(
         description="The generated response",
     )
 
+
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     optional_api_key = get_api_key_dependency(api_key)
 
-    @router.post("/query", response_model=QueryResponse, dependencies=[Depends(optional_api_key)])
+    @router.post(
+        "/query", response_model=QueryResponse, dependencies=[Depends(optional_api_key)]
+    )
     async def query_text(request: QueryRequest):
         """
         Handle a POST request at the /query endpoint to process user queries using RAG capabilities.

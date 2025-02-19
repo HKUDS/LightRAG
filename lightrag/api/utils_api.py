@@ -7,6 +7,7 @@ from fastapi import HTTPException, Security
 from fastapi.security import APIKeyHeader
 from starlette.status import HTTP_403_FORBIDDEN
 
+
 def get_api_key_dependency(api_key: Optional[str]):
     """
     Create an API key dependency for route protection.
