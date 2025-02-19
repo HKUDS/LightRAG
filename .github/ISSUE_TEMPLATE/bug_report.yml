@@ -8,10 +8,10 @@ body:
     id: existingcheck
     attributes:
       label: Do you need to file an issue?
-      description: Please help us manage our time by avoiding duplicates and common questions with the steps below.
+      description: Please help us manage our time by avoiding duplicates and common bugs with the steps below.
       options:
         - label: I have searched the existing issues and this bug is not already filed.
-        - label: I believe this is a legitimate bug, not just a question. If this is a question, please use the Discussions area.
+        - label: I believe this is a legitimate bug, not just a question or feature request.
   - type: textarea
     id: description
     attributes:
@@ -35,7 +35,7 @@ body:
     attributes:
       label: LightRAG Config Used
       description: The LightRAG configuration used for the run.
-      placeholder: The settings.yaml content or LightRAG configuration
+      placeholder: The settings content or LightRAG configuration
       value: |
         # Paste your config here
   - type: textarea
