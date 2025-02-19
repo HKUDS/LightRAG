@@ -20,6 +20,7 @@ if not pm.is_installed("nano-vectordb"):
 
 from nano_vectordb import NanoVectorDB
 
+
 @final
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):

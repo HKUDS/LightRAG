@@ -23,6 +23,7 @@ from ..base import BaseGraphStorage
 
 if sys.platform.startswith("win"):
     import asyncio.windows_events
+
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
@@ -36,6 +37,7 @@ if not pm.is_installed("asyncpg"):
 import psycopg
 from psycopg.rows import namedtuple_row
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
+
 
 class AGEQueryException(Exception):
     """Exception for the AGE queries."""
