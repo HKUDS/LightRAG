@@ -15,16 +15,10 @@ config.read("config.ini", "utf-8")
 
 import pipmaster as pm
 
-if not pm.is_installed("qdrant_client"):
-    pm.install("qdrant_client")
+if not pm.is_installed("qdrant-client"):
+    pm.install("qdrant-client")
 
-try:
-    from qdrant_client import QdrantClient, models
-
-except ImportError:
-    raise ImportError(
-        "`qdrant_client` library is not installed. Please install it via pip: `pip install qdrant-client`."
-    )
+from qdrant_client import QdrantClient, models
 
 
 def compute_mdhash_id_for_qdrant(
