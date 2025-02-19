@@ -614,10 +614,6 @@ class LightRAG:
             self.storages_status = StoragesStatus.FINALIZED
             logger.debug("Finalized Storages")
 
-    async def get_graph_labels(self):
-        text = await self.chunk_entity_relation_graph.get_all_labels()
-        return text
-
     async def get_knowledge_graph(
         self, nodel_label: str, max_depth: int
     ) -> KnowledgeGraph:
