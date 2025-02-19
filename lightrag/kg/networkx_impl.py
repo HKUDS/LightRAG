@@ -15,11 +15,10 @@ from lightrag.base import (
 )
 import pipmaster as pm
 
-if not pm.is_installed("graspologic"):
-    pm.install("graspologic")
-
 if not pm.is_installed("networkx"):
     pm.install("networkx")
+if not pm.is_installed("graspologic"):
+    pm.install("graspologic")
 
 try:
     from graspologic import embed
