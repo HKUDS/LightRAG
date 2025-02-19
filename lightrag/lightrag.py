@@ -809,18 +809,6 @@ class LightRAG:
                     doc_id, status_doc = doc_id_processing_status
                     # Update status in processing
                     doc_status_id = compute_mdhash_id(status_doc.content, prefix="doc-")
-                    await self.doc_status.upsert(
-                        {
-                            doc_status_id: {
-                                "status": DocStatus.PROCESSING,
-                                "updated_at": datetime.now().isoformat(),
-                                "content": status_doc.content,
-                                "content_summary": status_doc.content_summary,
-                                "content_length": status_doc.content_length,
-                                "created_at": status_doc.created_at,
-                            }
-                        }
-                    )
                     # Generate chunks from document
                     chunks: dict[str, Any] = {
                         compute_mdhash_id(dp["content"], prefix="chunk-"): {
@@ -839,13 +827,28 @@ class LightRAG:
 
                     # Process document (text chunks and full docs) in parallel
                     tasks = [
+                        self.doc_status.upsert(
+                            {
+                                doc_status_id: {
+                                    "status": DocStatus.PROCESSING,
+                                    "updated_at": datetime.now().isoformat(),
+                                    "content": status_doc.content,
+                                    "content_summary": status_doc.content_summary,
+                                    "content_length": status_doc.content_length,
+                                    "created_at": status_doc.created_at,
+                                }
+                            }
+                        ),
                         self.chunks_vdb.upsert(chunks),
                         self._process_entity_relation_graph(chunks),
                         self.full_docs.upsert(
                             {doc_id: {"content": status_doc.content}}
                         ),
                         self.text_chunks.upsert(chunks),
-                        self.doc_status.upsert(
+                    ]
+                    try:
+                        await asyncio.gather(*tasks)
+                        await self.doc_status.upsert(
                             {
                                 doc_status_id: {
                                     "status": DocStatus.PROCESSED,
@@ -857,11 +860,7 @@ class LightRAG:
                                     "updated_at": datetime.now().isoformat(),
                                 }
                             }
-                        ),
-                    ]
-                    try:
-                        await asyncio.gather(*tasks)
-
+                        )
                     except Exception as e:
                         logger.error(f"Failed to process document {doc_id}: {str(e)}")
                         await self.doc_status.upsert(
