@@ -25,18 +25,13 @@ if not pm.is_installed("pymongo"):
 if not pm.is_installed("motor"):
     pm.install("motor")
 
-try:
-    from motor.motor_asyncio import (
-        AsyncIOMotorClient,
-        AsyncIOMotorDatabase,
-        AsyncIOMotorCollection,
-    )
-    from pymongo.operations import SearchIndexModel
-    from pymongo.errors import PyMongoError
-except ImportError as e:
-    raise ImportError(
-        "`motor, pymongo` library is not installed. Please install it via pip: `pip install motor pymongo`."
-    ) from e
+from motor.motor_asyncio import (
+    AsyncIOMotorClient,
+    AsyncIOMotorDatabase,
+    AsyncIOMotorCollection,
+)
+from pymongo.operations import SearchIndexModel
+from pymongo.errors import PyMongoError
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")

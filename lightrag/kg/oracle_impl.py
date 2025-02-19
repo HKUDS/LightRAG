@@ -26,14 +26,8 @@ if not pm.is_installed("graspologic"):
 if not pm.is_installed("oracledb"):
     pm.install("oracledb")
 
-try:
-    from graspologic import embed
-    import oracledb
-
-except ImportError as e:
-    raise ImportError(
-        "`oracledb` library is not installed. Please install it via pip: `pip install oracledb`."
-    ) from e
+from graspologic import embed
+import oracledb
 
 
 class OracleDB:
