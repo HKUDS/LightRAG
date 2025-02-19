@@ -20,13 +20,8 @@ if not pm.is_installed("pymysql"):
 if not pm.is_installed("sqlalchemy"):
     pm.install("sqlalchemy")
 
-try:
-    from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text
 
-except ImportError as e:
-    raise ImportError(
-        "`pymysql, sqlalchemy` library is not installed. Please install it via pip: `pip install pymysql sqlalchemy`."
-    ) from e
 
 
 class TiDB:
