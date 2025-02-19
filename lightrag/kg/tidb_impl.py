@@ -23,7 +23,6 @@ if not pm.is_installed("sqlalchemy"):
 from sqlalchemy import create_engine, text
 
 
-
 class TiDB:
     def __init__(self, config, **kwargs):
         self.host = config.get("host", None)

@@ -28,6 +28,7 @@ from gremlin_python.driver import client, serializer
 from gremlin_python.driver.aiohttp.transport import AiohttpTransport
 from gremlin_python.driver.protocol import GremlinServerError
 
+
 @final
 @dataclass
 class GremlinStorage(BaseGraphStorage):

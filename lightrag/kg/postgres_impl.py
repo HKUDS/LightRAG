@@ -41,6 +41,7 @@ if not pm.is_installed("asyncpg"):
 import asyncpg
 from asyncpg import Pool
 
+
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
         self.host = config.get("host", "localhost")
