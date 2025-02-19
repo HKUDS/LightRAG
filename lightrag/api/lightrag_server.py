@@ -1166,8 +1166,7 @@ def create_app(args):
                     from docx import Document
                     from io import BytesIO
 
-                    docx_content = await file.read()
-                    docx_file = BytesIO(docx_content)
+                    docx_file = BytesIO(file)
                     doc = Document(docx_file)
                     content = "\n".join(
                         [paragraph.text for paragraph in doc.paragraphs]
@@ -1178,13 +1177,31 @@ def create_app(args):
                     from pptx import Presentation  # type: ignore
                     from io import BytesIO
 
-                    pptx_content = await file.read()
-                    pptx_file = BytesIO(pptx_content)
+                    pptx_file = BytesIO(file)
                     prs = Presentation(pptx_file)
                     for slide in prs.slides:
                         for shape in slide.shapes:
                             if hasattr(shape, "text"):
                                 content += shape.text + "\n"
+                case ".xlsx":
+                    if not pm.is_installed("openpyxl"):
+                        pm.install("openpyxl")
+                    from openpyxl import load_workbook  # type: ignore
+                    from io import BytesIO
+
+                    xlsx_file = BytesIO(file)
+                    wb = load_workbook(xlsx_file)
+                    for sheet in wb:
+                        content += f"Sheet: {sheet.title}\n"
+                        for row in sheet.iter_rows(values_only=True):
+                            content += (
+                                "\t".join(
+                                    str(cell) if cell is not None else ""
+                                    for cell in row
+                                )
+                                + "\n"
+                            )
+                        content += "\n"
                 case _:
                     logging.error(
                         f"Unsupported file type: {file_path.name} (extension {ext})"
@@ -1195,7 +1212,7 @@ def create_app(args):
             if content:
                 await rag.apipeline_enqueue_documents(content)
                 logging.info(
-                    f"Successfully processed and enqueued file: {file_path.name}"
+                    f"Successfully fetched and enqueued file: {file_path.name}"
                 )
                 return True
             else:
