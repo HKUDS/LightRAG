@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
 from typing import Any, AsyncIterator, Callable, Iterator, cast
-
+from asyncio import Lock
 from .base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -356,6 +356,9 @@ class LightRAG:
     convert_response_to_json_func: Callable[[str], dict[str, Any]] = (
         convert_response_to_json
     )
+
+    # Lock for entity extraction
+    _entity_lock = Lock()
 
     # Custom Chunking Function
     chunking_func: Callable[
@@ -823,7 +826,6 @@ class LightRAG:
                             self.tiktoken_model_name,
                         )
                     }
-
                     # Process document (text chunks and full docs) in parallel
                     tasks = [
                         self.doc_status.upsert(
@@ -896,8 +898,9 @@ class LightRAG:
             if new_kg is None:
                 logger.info("No new entities or relationships extracted.")
             else:
-                logger.info("New entities or relationships extracted.")
-                self.chunk_entity_relation_graph = new_kg
+                async with self._entity_lock:
+                    logger.info("New entities or relationships extracted.")
+                    self.chunk_entity_relation_graph = new_kg
 
         except Exception as e:
             logger.error("Failed to extract entities and relationships")
