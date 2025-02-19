@@ -49,6 +49,9 @@ class RedisKVStorage(BaseKVStorage):
         return set(keys) - existing_ids
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
         pipe = self._redis.pipeline()
 
         for k, v in data.items():
