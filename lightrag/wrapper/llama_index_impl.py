@@ -5,6 +5,7 @@ from llama_index.core.llms import (
     ChatResponse,
 )
 from typing import List, Optional
+from lightrag.utils import logger
 
 # Install required dependencies
 if not pm.is_installed("llama-index"):
