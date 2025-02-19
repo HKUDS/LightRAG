@@ -1,8 +1,6 @@
+future
 aiohttp
 configparser
-
-# database packages
-networkx
 
 # Basic modules
 numpy
