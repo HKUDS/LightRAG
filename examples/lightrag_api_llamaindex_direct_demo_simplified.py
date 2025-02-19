@@ -1,6 +1,9 @@
 import os
 from lightrag import LightRAG, QueryParam
-from lightrag.wrapper.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
+from lightrag.wrapper.llama_index_impl import (
+    llama_index_complete_if_cache,
+    llama_index_embed,
+)
 from lightrag.utils import EmbeddingFunc
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
@@ -25,20 +28,21 @@ OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "your-api-key-here")
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
+
 # Initialize LLM function
 async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
     try:
         # Initialize OpenAI if not in kwargs
-        if 'llm_instance' not in kwargs:
+        if "llm_instance" not in kwargs:
             llm_instance = OpenAI(
                 model=LLM_MODEL,
                 api_key=OPENAI_API_KEY,
                 temperature=0.7,
             )
-            kwargs['llm_instance'] = llm_instance
+            kwargs["llm_instance"] = llm_instance
 
         response = await llama_index_complete_if_cache(
-            kwargs['llm_instance'],
+            kwargs["llm_instance"],
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
@@ -48,6 +52,7 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
     except Exception as e:
         print(f"LLM request failed: {str(e)}")
         raise
+
 
 # Initialize embedding function
 async def embedding_func(texts):
@@ -61,6 +66,7 @@ async def embedding_func(texts):
         print(f"Embedding failed: {str(e)}")
         raise
 
+
 # Get embedding dimension
 async def get_embedding_dim():
     test_text = ["This is a test sentence."]
@@ -68,6 +74,7 @@ async def get_embedding_dim():
     embedding_dim = embedding.shape[1]
     print(f"embedding_dim={embedding_dim}")
     return embedding_dim
+
 
 # Initialize RAG instance
 rag = LightRAG(
@@ -86,13 +93,21 @@ with open("./book.txt", "r", encoding="utf-8") as f:
 
 # Test different query modes
 print("\nNaive Search:")
-print(rag.query("What are the top themes in this story?", param=QueryParam(mode="naive")))
+print(
+    rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+)
 
 print("\nLocal Search:")
-print(rag.query("What are the top themes in this story?", param=QueryParam(mode="local")))
+print(
+    rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+)
 
 print("\nGlobal Search:")
-print(rag.query("What are the top themes in this story?", param=QueryParam(mode="global")))
+print(
+    rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+)
 
 print("\nHybrid Search:")
-print(rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))) 
+print(
+    rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+)
