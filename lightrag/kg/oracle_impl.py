@@ -178,11 +178,11 @@ class OracleDB:
 
 
 class ClientManager:
-    _instances = {"db": None, "ref_count": 0}
+    _instances: dict[str, Any] = {"db": None, "ref_count": 0}
     _lock = asyncio.Lock()
 
     @staticmethod
-    def get_config():
+    def get_config() -> dict[str, Any]:
         config = configparser.ConfigParser()
         config.read("config.ini", "utf-8")
 

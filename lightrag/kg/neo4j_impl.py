@@ -43,10 +43,6 @@ config.read("config.ini", "utf-8")
 @final
 @dataclass
 class Neo4JStorage(BaseGraphStorage):
-    @staticmethod
-    def load_nx_graph(file_name):
-        print("no preloading of graph with neo4j in production")
-
     def __init__(self, namespace, global_config, embedding_func):
         super().__init__(
             namespace=namespace,
