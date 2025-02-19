@@ -1,0 +1,32 @@
+name: Feature Request
+description: File a feature request
+labels: ["enhancement"]
+title: "[Feature Request]: <title>"
+
+body:
+  - type: checkboxes
+    id: existingcheck
+    attributes:
+      label: Do you need to file an issue?
+      description: Please help us manage our time by avoiding duplicates and common questions with the steps below.
+      options:
+        - label: I have searched the existing issues and this feature is not already filed.
+        - label: I believe this is a legitimate feature request, not just a question. If this is a question, please use the Discussions area.
+  - type: textarea
+    id: problem_description
+    attributes:
+      label: Problem Description
+      description: A clear and concise description of the problem you're trying to solve.
+      placeholder: What problem are you trying to solve?
+  - type: textarea
+    id: solution_description
+    attributes:
+      label: Proposed Solution
+      description: A clear and concise description of what you want to happen.
+      placeholder: How do you envision the solution?
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Add any other context or screenshots about the feature request here.
+      placeholder: Any additional information
