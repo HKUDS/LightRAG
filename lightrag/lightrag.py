@@ -862,8 +862,16 @@ class LightRAG:
             for chunk_data in custom_kg.get("chunks", {}):
                 chunk_content = chunk_data["content"].strip()
                 source_id = chunk_data["source_id"]
-                tokens = len(encode_string_by_tiktoken(chunk_content, model_name=self.tiktoken_model_name))
-                chunk_order_index = 0 if "chunk_order_index" not in chunk_data.keys() else chunk_data["chunk_order_index"]
+                tokens = len(
+                    encode_string_by_tiktoken(
+                        chunk_content, model_name=self.tiktoken_model_name
+                    )
+                )
+                chunk_order_index = (
+                    0
+                    if "chunk_order_index" not in chunk_data.keys()
+                    else chunk_data["chunk_order_index"]
+                )
                 chunk_id = compute_mdhash_id(chunk_content, prefix="chunk-")
 
                 chunk_entry = {
