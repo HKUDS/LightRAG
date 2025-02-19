@@ -312,7 +312,45 @@ rag = LightRAG(
 In order to run this experiment on low RAM GPU you should select small model and tune context window (increasing context increase memory consumption). For example, running this ollama example on repurposed mining GPU with 6Gb of RAM required to set context size to 26k while using `gemma2:2b`. It was able to find 197 entities and 19 relations on `book.txt`.
 
 </details>
+<details>
+<summary> <b>Wrappers</b> </summary>
 
+LightRAG supports integration with various frameworks and model providers through wrappers. These wrappers provide a consistent interface while abstracting away the specifics of each framework.
+
+### Current Wrappers
+
+1. **LlamaIndex** (`wrapper/llama_index_impl.py`):
+   - Integrates with OpenAI and other providers through LlamaIndex
+   - Supports both direct API access and proxy services like LiteLLM
+   - Provides consistent interfaces for embeddings and completions
+   - See [LlamaIndex Wrapper Documentation](lightrag/wrapper/Readme.md) for detailed setup and examples
+
+### Example Usage
+
+```python
+# Using LlamaIndex with direct OpenAI access
+from lightrag import LightRAG
+from lightrag.wrapper.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.llms.openai import OpenAI
+
+rag = LightRAG(
+    working_dir="your/path",
+    llm_model_func=llm_model_func,  # LlamaIndex-compatible completion function
+    embedding_func=EmbeddingFunc(    # LlamaIndex-compatible embedding function
+        embedding_dim=1536,
+        max_token_size=8192,
+        func=lambda texts: llama_index_embed(texts, embed_model=embed_model)
+    ),
+)
+```
+
+#### For detailed documentation and examples, see:
+- [LlamaIndex Wrapper Documentation](lightrag/wrapper/Readme.md)
+- [Direct OpenAI Example](examples/lightrag_api_llamaindex_direct_demo_simplified.py)
+- [LiteLLM Proxy Example](examples/lightrag_api_llamaindex_litellm_demo_simplified.py)
+
+</details>
 <details>
 <summary> <b>Conversation History Support</b> </summary>
 
