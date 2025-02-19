@@ -1095,6 +1095,9 @@ async def _get_node_data(
         if n is not None
     ]  # what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
     # get entitytext chunk
+
+    node_datas = sorted(node_datas, key=lambda x: x["rank"], reverse=True)
+
     use_text_units, use_relations = await asyncio.gather(
         _find_most_related_text_unit_from_entities(
             node_datas, query_param, text_chunks_db, knowledge_graph_inst
@@ -1452,6 +1455,8 @@ async def _find_most_related_entities_from_relationships(
         {**n, "entity_name": k, "rank": d}
         for k, n, d in zip(entity_names, node_datas, node_degrees)
     ]
+
+    node_datas = sorted(node_datas, key=lambda x: x["rank"], reverse=True)
 
     len_node_datas = len(node_datas)
     node_datas = truncate_list_by_token_size(
