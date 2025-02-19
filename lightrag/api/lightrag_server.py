@@ -7,6 +7,7 @@ from fastapi import (
     HTTPException,
     Depends,
 )
+from fastapi.responses import FileResponse
 import asyncio
 import threading
 import os
@@ -875,7 +876,11 @@ def create_app(args):
     # Webui mount webui/index.html
     static_dir = Path(__file__).parent / "webui"
     static_dir.mkdir(exist_ok=True)
-    app.mount("/webui", StaticFiles(directory=static_dir, html=True), name="webui")
+    app.mount("/webui", StaticFiles(directory=static_dir, html=True, check_dir=True), name="webui")
+    
+    @app.get("/webui/")
+    async def webui_root():
+        return FileResponse(static_dir / "index.html")
 
     return app
 
