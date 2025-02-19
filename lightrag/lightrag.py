@@ -653,7 +653,7 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
-    async def apipeline_enqueue_documents(self, input: str | list[str]) -> bool:
+    async def apipeline_enqueue_documents(self, input: str | list[str]):
         """
         Pipeline for Processing Documents
 
@@ -691,12 +691,11 @@ class LightRAG:
 
         if not new_docs:
             logger.info("No new unique documents were found.")
-            return False
+            return
 
         # 4. Store status document
         await self.doc_status.upsert(new_docs)
         logger.info(f"Stored {len(new_docs)} new unique documents")
-        return True
 
     async def apipeline_process_enqueue_documents(
         self,
