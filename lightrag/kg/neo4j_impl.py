@@ -633,31 +633,6 @@ class Neo4JStorage(BaseGraphStorage):
         await traverse(label, 0)
         return result
 
-    async def get_all_labels(self) -> list[str]:
-        """
-        Get all existing node labels in the database
-        Returns:
-            ["Person", "Company", ...]  # Alphabetically sorted label list
-        """
-        async with self._driver.session(database=self._DATABASE) as session:
-            # Method 1: Direct metadata query (Available for Neo4j 4.3+)
-            # query = "CALL db.labels() YIELD label RETURN label"
-
-            # Method 2: Query compatible with older versions
-            query = """
-                MATCH (n)
-                WITH DISTINCT labels(n) AS node_labels
-                UNWIND node_labels AS label
-                RETURN DISTINCT label
-                ORDER BY label
-            """
-
-            result = await session.run(query)
-            labels = []
-            async for record in result:
-                labels.append(record["label"])
-            return labels
-
     async def delete_node(self, node_id: str) -> None:
         raise NotImplementedError
 
