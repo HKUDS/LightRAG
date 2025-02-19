@@ -48,11 +48,20 @@ class JsonDocStatusStorage(DocStatusStorage):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
-        return {
-            k: DocProcessingStatus(**v)
-            for k, v in self._data.items()
-            if v["status"] == status.value
-        }
+        result = {}
+        for k, v in self._data.items():
+            if v["status"] == status.value:
+                try:
+                    # Make a copy of the data to avoid modifying the original
+                    data = v.copy()
+                    # If content is missing, use content_summary as content
+                    if "content" not in data and "content_summary" in data:
+                        data["content"] = data["content_summary"]
+                    result[k] = DocProcessingStatus(**data)
+                except KeyError as e:
+                    logger.error(f"Missing required field for document {k}: {e}")
+                    continue
+        return result
 
     async def index_done_callback(self) -> None:
         write_json(self._data, self._file_name)
