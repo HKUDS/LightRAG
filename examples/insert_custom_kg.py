@@ -87,18 +87,27 @@ custom_kg = {
         {
             "content": "ProductX, developed by CompanyA, has revolutionized the market with its cutting-edge features.",
             "source_id": "Source1",
+            "source_chunk_index": 0,
+        },
+        {
+            "content": "One outstanding feature of ProductX is its advanced AI capabilities.",
+            "source_id": "Source1",
+            "chunk_order_index": 1,
         },
         {
             "content": "PersonA is a prominent researcher at UniversityB, focusing on artificial intelligence and machine learning.",
             "source_id": "Source2",
+            "source_chunk_index": 0,
         },
         {
             "content": "EventY, held in CityC, attracts technology enthusiasts and companies from around the globe.",
             "source_id": "Source3",
+            "source_chunk_index": 0,
         },
         {
             "content": "None",
             "source_id": "UNKNOWN",
+            "source_chunk_index": 0,
         },
     ],
 }
