@@ -14,13 +14,8 @@ if not pm.is_installed("configparser"):
 if not pm.is_installed("pymilvus"):
     pm.install("pymilvus")
 
-try:
-    import configparser
-    from pymilvus import MilvusClient
-except ImportError as e:
-    raise ImportError(
-        "`pymilvus` library is not installed. Please install it via pip: `pip install pymilvus`."
-    ) from e
+import configparser
+from pymilvus import MilvusClient
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
