@@ -398,7 +398,7 @@ class OracleKVStorage(BaseKVStorage):
 @final
 @dataclass
 class OracleVectorDBStorage(BaseVectorStorage):
-    db: OracleDB = field(default=None)
+    db: OracleDB | None = field(default=None)
 
     def __post_init__(self):
         config = self.global_config.get("vector_db_storage_cls_kwargs", {})
