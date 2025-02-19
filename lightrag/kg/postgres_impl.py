@@ -347,6 +347,10 @@ class PGKVStorage(BaseKVStorage):
 
     ################ INSERT METHODS ################
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
+
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             pass
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
@@ -448,10 +452,10 @@ class PGVectorStorage(BaseVectorStorage):
         return upsert_sql, data
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
-        if not len(data):
-            logger.warning("You insert an empty data to vector DB")
-            return []
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
+
         current_time = time.time()
         list_data = [
             {
@@ -612,6 +616,10 @@ class PGDocStatusStorage(DocStatusStorage):
         Args:
             data: dictionary of document IDs and their status data
         """
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
+
         sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content,content_summary,content_length,chunks_count,status)
                  values($1,$2,$3,$4,$5,$6,$7)
                   on conflict(id,workspace) do update set
