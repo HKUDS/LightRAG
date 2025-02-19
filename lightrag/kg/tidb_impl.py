@@ -277,7 +277,7 @@ class TiDBKVStorage(BaseKVStorage):
 @final
 @dataclass
 class TiDBVectorDBStorage(BaseVectorStorage):
-    db: TiDB = field(default=None)
+    db: TiDB | None = field(default=None)
 
     def __post_init__(self):
         self._client_file_name = os.path.join(
