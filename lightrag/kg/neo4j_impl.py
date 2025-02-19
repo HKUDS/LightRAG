@@ -17,7 +17,6 @@ from tenacity import (
 
 from ..utils import logger
 from ..base import BaseGraphStorage
-from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
@@ -473,99 +472,6 @@ class Neo4JStorage(BaseGraphStorage):
 
     async def _node2vec_embed(self):
         print("Implemented but never called.")
-
-    async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 5
-    ) -> KnowledgeGraph:
-        """
-        Get complete connected subgraph for specified node (including the starting node itself)
-
-        Key fixes:
-        1. Include the starting node itself
-        2. Handle multi-label nodes
-        3. Clarify relationship directions
-        4. Add depth control
-        """
-        label = node_label.strip('"')
-        result = KnowledgeGraph()
-        seen_nodes = set()
-        seen_edges = set()
-
-        async with self._driver.session(database=self._DATABASE) as session:
-            try:
-                main_query = ""
-                if label == "*":
-                    main_query = """
-                    MATCH (n)
-                    WITH collect(DISTINCT n) AS nodes
-                    MATCH ()-[r]-()
-                    RETURN nodes, collect(DISTINCT r) AS relationships;
-                    """
-                else:
-                    # Critical debug step: first verify if starting node exists
-                    validate_query = f"MATCH (n:`{label}`) RETURN n LIMIT 1"
-                    validate_result = await session.run(validate_query)
-                    if not await validate_result.single():
-                        logger.warning(f"Starting node {label} does not exist!")
-                        return result
-
-                    # Optimized query (including direction handling and self-loops)
-                    main_query = f"""
-                    MATCH (start:`{label}`)
-                    WITH start
-                    CALL apoc.path.subgraphAll(start, {{
-                        relationshipFilter: '>',
-                        minLevel: 0,
-                        maxLevel: {max_depth},
-                        bfs: true
-                    }})
-                    YIELD nodes, relationships
-                    RETURN nodes, relationships
-                    """
-                result_set = await session.run(main_query)
-                record = await result_set.single()
-
-                if record:
-                    # Handle nodes (compatible with multi-label cases)
-                    for node in record["nodes"]:
-                        # Use node ID + label combination as unique identifier
-                        node_id = node.id
-                        if node_id not in seen_nodes:
-                            result.nodes.append(
-                                KnowledgeGraphNode(
-                                    id=f"{node_id}",
-                                    labels=list(node.labels),
-                                    properties=dict(node),
-                                )
-                            )
-                            seen_nodes.add(node_id)
-
-                    # Handle relationships (including direction information)
-                    for rel in record["relationships"]:
-                        edge_id = rel.id
-                        if edge_id not in seen_edges:
-                            start = rel.start_node
-                            end = rel.end_node
-                            result.edges.append(
-                                KnowledgeGraphEdge(
-                                    id=f"{edge_id}",
-                                    type=rel.type,
-                                    source=f"{start.id}",
-                                    target=f"{end.id}",
-                                    properties=dict(rel),
-                                )
-                            )
-                            seen_edges.add(edge_id)
-
-                    logger.info(
-                        f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
-                    )
-
-            except neo4jExceptions.ClientError as e:
-                logger.error(f"APOC query failed: {str(e)}")
-                return await self._robust_fallback(label, max_depth)
-
-        return result
 
     async def _robust_fallback(
         self, label: str, max_depth: int
