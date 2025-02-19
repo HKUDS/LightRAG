@@ -60,10 +60,6 @@ class AGEQueryException(Exception):
 @final
 @dataclass
 class AGEStorage(BaseGraphStorage):
-    @staticmethod
-    def load_nx_graph(file_name):
-        print("no preloading of graph with AGE in production")
-
     def __init__(self, namespace, global_config, embedding_func):
         super().__init__(
             namespace=namespace,
@@ -618,9 +614,6 @@ class AGEStorage(BaseGraphStorage):
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError
-
-    async def get_all_labels(self) -> list[str]:
         raise NotImplementedError
 
     async def get_knowledge_graph(

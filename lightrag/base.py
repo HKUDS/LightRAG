@@ -199,10 +199,6 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """Get all labels in the graph."""
 
     @abstractmethod
-    async def get_all_labels(self) -> list[str]:
-        """Get a knowledge graph of a node."""
-
-    @abstractmethod
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
