@@ -18,13 +18,7 @@ from lightrag.base import (
 if not pm.is_installed("nano-vectordb"):
     pm.install("nano-vectordb")
 
-try:
-    from nano_vectordb import NanoVectorDB
-except ImportError as e:
-    raise ImportError(
-        "`nano-vectordb` library is not installed. Please install it via pip: `pip install nano-vectordb`."
-    ) from e
-
+from nano_vectordb import NanoVectorDB
 
 @final
 @dataclass
