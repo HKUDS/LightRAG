@@ -9,15 +9,14 @@ PROMPTS["DEFAULT_LANGUAGE"] = "English"
 PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
 PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
-PROMPTS["process_tickers"] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
 PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "category"]
 
-PROMPTS["entity_extraction"] = """-Goal-
+PROMPTS["entity_extraction"] = """---Goal---
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
 Use {language} as output language.
 
--Steps-
+---Steps---
 1. Identify all entities. For each identified entity, extract the following information:
 - entity_name: Name of the entity, use same language as input text. If English, capitalized the name.
 - entity_type: One of the following types: [{entity_types}]
@@ -41,18 +40,17 @@ Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_
 5. When finished, output {completion_delimiter}
 
 ######################
--Examples-
+---Examples---
 ######################
 {examples}
 
 #############################
--Real Data-
+---Real Data---
 ######################
 Entity_types: {entity_types}
 Text: {input_text}
 ######################
-Output:
-"""
+Output:"""
 
 PROMPTS["entity_extraction_examples"] = [
     """Example 1:
@@ -137,7 +135,7 @@ Make sure it is written in third person, and include the entity names so we the 
 Use {language} as output language.
 
 #######
--Data-
+---Data---
 Entities: {entity_name}
 Description List: {description_list}
 #######
@@ -205,12 +203,12 @@ Given the query and conversation history, list both high-level and low-level key
   - "low_level_keywords" for specific entities or details
 
 ######################
--Examples-
+---Examples---
 ######################
 {examples}
 
 #############################
--Real Data-
+---Real Data---
 ######################
 Conversation History:
 {history}

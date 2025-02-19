@@ -491,11 +491,9 @@ async def extract_entities(
         already_processed += 1
         already_entities += len(maybe_nodes)
         already_relations += len(maybe_edges)
-        now_ticks = PROMPTS["process_tickers"][
-            already_processed % len(PROMPTS["process_tickers"])
-        ]
+
         logger.debug(
-            f"{now_ticks} Processed {already_processed} chunks, {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
+            f"Processed {already_processed} chunks, {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
         )
         return dict(maybe_nodes), dict(maybe_edges)
 
