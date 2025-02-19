@@ -688,7 +688,7 @@ class LightRAG:
                 return
 
             update_storage = True
-            logger.info(f"[New Docs] inserting {len(new_docs)} docs")
+            logger.info(f"Inserting {len(new_docs)} docs")
 
             inserting_chunks: dict[str, Any] = {}
             for chunk_text in text_chunks:
@@ -915,6 +915,7 @@ class LightRAG:
             if storage_inst is not None
         ]
         await asyncio.gather(*tasks)
+        logger.info("All Insert done")
 
     def insert_custom_kg(self, custom_kg: dict[str, Any]) -> None:
         loop = always_get_an_event_loop()
