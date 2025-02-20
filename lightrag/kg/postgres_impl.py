@@ -55,7 +55,7 @@ class PostgreSQLDB:
 
         if self.user is None or self.password is None or self.database is None:
             raise ValueError(
-                "Missing database user, password, or database in addon_params"
+                "Missing database user, password, or database"
             )
 
     async def initdb(self):
