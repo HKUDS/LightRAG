@@ -225,6 +225,7 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
         asyncio.set_event_loop(new_loop)
         return new_loop
 
+
 @final
 @dataclass
 class LightRAG:
@@ -271,7 +272,9 @@ class LightRAG:
     chunk_token_size: int = field(default=int(os.getenv("CHUNK_SIZE", 1200)))
     """Maximum number of tokens per text chunk when splitting documents."""
 
-    chunk_overlap_token_size: int = field(default=int(os.getenv("CHUNK_OVERLAP_SIZE", 100)))
+    chunk_overlap_token_size: int = field(
+        default=int(os.getenv("CHUNK_OVERLAP_SIZE", 100))
+    )
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
 
     tiktoken_model_name: str = field(default="gpt-4o-mini")
@@ -281,11 +284,13 @@ class LightRAG:
     entity_extract_max_gleaning: int = field(default=1)
     """Maximum number of entity extraction attempts for ambiguous content."""
 
-    entity_summary_to_max_tokens: int = field(default=int(os.getenv("MAX_TOKEN_SUMMARY", 500)))
+    entity_summary_to_max_tokens: int = field(
+        default=int(os.getenv("MAX_TOKEN_SUMMARY", 500))
+    )
     """Maximum number of tokens used for summarizing extracted entities."""
 
     # Node embedding
-    node_embedding_algorithm: str = field(default="node2vec") 
+    node_embedding_algorithm: str = field(default="node2vec")
     """Algorithm used for node embedding in knowledge graphs."""
 
     node2vec_params: dict[str, int] = field(
@@ -348,19 +353,22 @@ class LightRAG:
     # Extensions
     max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 20)))
     """Maximum number of parallel insert operations."""
-    
+
     addon_params: dict[str, Any] = field(default_factory=dict)
 
     # Storages Management
     auto_manage_storages_states: bool = field(default=True)
     """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
 
-    """Dictionary for additional parameters and extensions."""
-    convert_response_to_json_func: Callable[[str], dict[str, Any]] = (
-        convert_response_to_json
+    convert_response_to_json_func: Callable[[str], dict[str, Any]] = field(
+        default_factory=lambda: convert_response_to_json
     )
+    """
+    Custom function for converting LLM responses to JSON format.
 
-    # Custom Chunking Function
+    The default function is :func:`.utils.convert_response_to_json`.
+    """
+
     chunking_func: Callable[
         [
             str,
@@ -371,7 +379,25 @@ class LightRAG:
             str,
         ],
         list[dict[str, Any]],
-    ] = chunking_by_token_size
+    ] = field(default_factory=lambda: chunking_by_token_size)
+    """
+    Custom chunking function for splitting text into chunks before processing.
+
+    The function should take the following parameters:
+
+        - `content`: The text to be split into chunks.
+        - `split_by_character`: The character to split the text on. If None, the text is split into chunks of `chunk_token_size` tokens.
+        - `split_by_character_only`: If True, the text is split only on the specified character.
+        - `chunk_token_size`: The maximum number of tokens per chunk.
+        - `chunk_overlap_token_size`: The number of overlapping tokens between consecutive chunks.
+        - `tiktoken_model_name`: The name of the tiktoken model to use for tokenization.
+
+    The function should return a list of dictionaries, where each dictionary contains the following keys:
+        - `tokens`: The number of tokens in the chunk.
+        - `content`: The text content of the chunk.
+
+    Defaults to `chunking_by_token_size` if not specified.
+    """
 
     def verify_storage_implementation(
         self, storage_type: str, storage_name: str
