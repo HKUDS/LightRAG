@@ -178,10 +178,12 @@ class PostgreSQLDB:
             asyncpg.exceptions.UniqueViolationError,
             asyncpg.exceptions.DuplicateTableError,
         ) as e:
-            if not upsert:
-                logger.error(f"PostgreSQL, upsert error: {e}")
+            if upsert:
+                print("Key value duplicate, but upsert succeeded.")
+            else:
+                logger.error(f"Upsert error: {e}")
         except Exception as e:
-            logger.error(f"PostgreSQL database, sql:{sql}, data:{data}, error:{e}")
+            logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{e}")
             raise
 
 
@@ -1083,6 +1085,9 @@ class PGGraphStorage(BaseGraphStorage):
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
+        raise NotImplementedError
+
+    async def get_all_labels(self) -> list[str]:
         raise NotImplementedError
 
     async def get_knowledge_graph(
