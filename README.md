@@ -313,30 +313,26 @@ In order to run this experiment on low RAM GPU you should select small model and
 
 </details>
 <details>
-<summary> <b>Wrappers</b> </summary>
+<summary> <b>LlamaIndex</b> </summary>
 
-LightRAG supports integration with various frameworks and model providers through wrappers. These wrappers provide a consistent interface while abstracting away the specifics of each framework.
+LightRAG supports integration with LlamaIndex.
 
-### Current Wrappers
-
-1. **LlamaIndex** (`wrapper/llama_index_impl.py`):
+1. **LlamaIndex** (`llm/llama_index_impl.py`):
    - Integrates with OpenAI and other providers through LlamaIndex
-   - Supports both direct API access and proxy services like LiteLLM
-   - Provides consistent interfaces for embeddings and completions
-   - See [LlamaIndex Wrapper Documentation](lightrag/wrapper/Readme.md) for detailed setup and examples
+   - See [LlamaIndex Documentation](lightrag/llm/Readme.md) for detailed setup and examples
 
 ### Example Usage
 
 ```python
 # Using LlamaIndex with direct OpenAI access
 from lightrag import LightRAG
-from lightrag.wrapper.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
+from lightrag.llm.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 
 rag = LightRAG(
     working_dir="your/path",
-    llm_model_func=llm_model_func,  # LlamaIndex-compatible completion function
+    llm_model_func=llama_index_complete_if_cache,  # LlamaIndex-compatible completion function
     embedding_func=EmbeddingFunc(    # LlamaIndex-compatible embedding function
         embedding_dim=1536,
         max_token_size=8192,
@@ -346,9 +342,9 @@ rag = LightRAG(
 ```
 
 #### For detailed documentation and examples, see:
-- [LlamaIndex Wrapper Documentation](lightrag/wrapper/Readme.md)
-- [Direct OpenAI Example](examples/lightrag_api_llamaindex_direct_demo_simplified.py)
-- [LiteLLM Proxy Example](examples/lightrag_api_llamaindex_litellm_demo_simplified.py)
+- [LlamaIndex Documentation](lightrag/llm/Readme.md)
+- [Direct OpenAI Example](examples/lightrag_llamaindex_direct_demo.py)
+- [LiteLLM Proxy Example](examples/lightrag_llamaindex_litellm_demo.py)
 
 </details>
 <details>
@@ -499,22 +495,14 @@ custom_kg = {
         {
             "content": "ProductX, developed by CompanyA, has revolutionized the market with its cutting-edge features.",
             "source_id": "Source1",
-            "chunk_order_index": 0,
-        },
-        {
-            "content": "One outstanding feature of ProductX is its advanced AI capabilities.",
-            "source_id": "Source1",
-            "chunk_order_index": 1,
         },
         {
             "content": "PersonA is a prominent researcher at UniversityB, focusing on artificial intelligence and machine learning.",
             "source_id": "Source2",
-            "chunk_order_index": 0,
         },
         {
             "content": "None",
             "source_id": "UNKNOWN",
-            "chunk_order_index": 0,
         },
     ],
 }
