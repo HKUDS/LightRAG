@@ -312,7 +312,41 @@ rag = LightRAG(
 In order to run this experiment on low RAM GPU you should select small model and tune context window (increasing context increase memory consumption). For example, running this ollama example on repurposed mining GPU with 6Gb of RAM required to set context size to 26k while using `gemma2:2b`. It was able to find 197 entities and 19 relations on `book.txt`.
 
 </details>
+<details>
+<summary> <b>LlamaIndex</b> </summary>
 
+LightRAG supports integration with LlamaIndex.
+
+1. **LlamaIndex** (`llm/llama_index_impl.py`):
+   - Integrates with OpenAI and other providers through LlamaIndex
+   - See [LlamaIndex Documentation](lightrag/llm/Readme.md) for detailed setup and examples
+
+### Example Usage
+
+```python
+# Using LlamaIndex with direct OpenAI access
+from lightrag import LightRAG
+from lightrag.llm.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.llms.openai import OpenAI
+
+rag = LightRAG(
+    working_dir="your/path",
+    llm_model_func=llama_index_complete_if_cache,  # LlamaIndex-compatible completion function
+    embedding_func=EmbeddingFunc(    # LlamaIndex-compatible embedding function
+        embedding_dim=1536,
+        max_token_size=8192,
+        func=lambda texts: llama_index_embed(texts, embed_model=embed_model)
+    ),
+)
+```
+
+#### For detailed documentation and examples, see:
+- [LlamaIndex Documentation](lightrag/llm/Readme.md)
+- [Direct OpenAI Example](examples/lightrag_llamaindex_direct_demo.py)
+- [LiteLLM Proxy Example](examples/lightrag_llamaindex_litellm_demo.py)
+
+</details>
 <details>
 <summary> <b>Conversation History Support</b> </summary>
 
@@ -461,22 +495,14 @@ custom_kg = {
         {
             "content": "ProductX, developed by CompanyA, has revolutionized the market with its cutting-edge features.",
             "source_id": "Source1",
-            "chunk_order_index": 0,
-        },
-        {
-            "content": "One outstanding feature of ProductX is its advanced AI capabilities.",
-            "source_id": "Source1",
-            "chunk_order_index": 1,
         },
         {
             "content": "PersonA is a prominent researcher at UniversityB, focusing on artificial intelligence and machine learning.",
             "source_id": "Source2",
-            "chunk_order_index": 0,
         },
         {
             "content": "None",
             "source_id": "UNKNOWN",
-            "chunk_order_index": 0,
         },
     ],
 }
