@@ -231,12 +231,12 @@ class LightRAG:
     """LightRAG: Simple and Fast Retrieval-Augmented Generation."""
 
     working_dir: str = field(
-        default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
+        default=f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
     """Directory where cache and temporary files are stored."""
 
     embedding_cache_config: dict[str, Any] = field(
-        default_factory=lambda: {
+        default={
             "enabled": False,
             "similarity_threshold": 0.95,
             "use_llm_check": False,
@@ -261,32 +261,31 @@ class LightRAG:
     """Storage type for tracking document processing statuses."""
 
     # Logging
-    current_log_level = logger.level
-    log_level: int = field(default=current_log_level)
+    log_level: int = field(default=logger.level)
     """Logging level for the system (e.g., 'DEBUG', 'INFO', 'WARNING')."""
 
     log_dir: str = field(default=os.getcwd())
     """Directory where logs are stored. Defaults to the current working directory."""
 
     # Text chunking
-    chunk_token_size: int = int(os.getenv("CHUNK_SIZE", "1200"))
+    chunk_token_size: int = field(default=int(os.getenv("CHUNK_SIZE", 1200)))
     """Maximum number of tokens per text chunk when splitting documents."""
 
-    chunk_overlap_token_size: int = int(os.getenv("CHUNK_OVERLAP_SIZE", "100"))
+    chunk_overlap_token_size: int = field(default=int(os.getenv("CHUNK_OVERLAP_SIZE", 100)))
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
 
-    tiktoken_model_name: str = "gpt-4o-mini"
+    tiktoken_model_name: str = field(default="gpt-4o-mini")
     """Model name used for tokenization when chunking text."""
 
     # Entity extraction
-    entity_extract_max_gleaning: int = 1
+    entity_extract_max_gleaning: int = field(default=1)
     """Maximum number of entity extraction attempts for ambiguous content."""
 
-    entity_summary_to_max_tokens: int = int(os.getenv("MAX_TOKEN_SUMMARY", "500"))
+    entity_summary_to_max_tokens: int = field(default=int(os.getenv("MAX_TOKEN_SUMMARY", 500)))
     """Maximum number of tokens used for summarizing extracted entities."""
 
     # Node embedding
-    node_embedding_algorithm: str = "node2vec"
+    node_embedding_algorithm: str = field(default="node2vec") 
     """Algorithm used for node embedding in knowledge graphs."""
 
     node2vec_params: dict[str, int] = field(
