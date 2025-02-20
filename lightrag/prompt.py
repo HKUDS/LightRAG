@@ -11,36 +11,38 @@ PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_ENTITY_TYPES"] = [
-    "stakeholder",
-    "driver",
-    "assessment",
-    "goal",
-    "outcome",
-    "principle",
-    "requirement",
-    "constraint",
-    "meaning",
-    "value"
+    "business_driver",
+    "strategic_objective",
+    "capability",
+    "target_capability", 
+    "current_capability",
+    "gap_key_shift",
+    "programme",
+    "initiative",
+    "ict_function",
+    "value_stream",
+    "value_stage"
 ]
 
 # Add entity type nodes definition
 PROMPTS["entity_type_nodes"] = [
-    ("entity_type{tuple_delimiter}stakeholder{tuple_delimiter}Represents role of individual, team, or organization with interests in architecture effects"),
-    ("entity_type{tuple_delimiter}driver{tuple_delimiter}Represents external or internal condition motivating organizational change"),
-    ("entity_type{tuple_delimiter}assessment{tuple_delimiter}Represents analysis result of enterprise state regarding drivers"),
-    ("entity_type{tuple_delimiter}goal{tuple_delimiter}Represents high-level statement of intent or desired end state"),
-    ("entity_type{tuple_delimiter}outcome{tuple_delimiter}Represents end result, effect, or consequence"),
-    ("entity_type{tuple_delimiter}principle{tuple_delimiter}Represents general property applying to any system in context"),
-    ("entity_type{tuple_delimiter}requirement{tuple_delimiter}Represents specific property needed for particular system"),
-    ("entity_type{tuple_delimiter}constraint{tuple_delimiter}Represents limitation on implementation or realization"),
-    ("entity_type{tuple_delimiter}meaning{tuple_delimiter}Represents knowledge or interpretation in context"),
-    ("entity_type{tuple_delimiter}value{tuple_delimiter}Represents relative worth, utility, or importance")
+    ("entity_type{tuple_delimiter}business_driver{tuple_delimiter}Represents an external or internal condition that motivates an organization to define its goals and implement changes"),
+    ("entity_type{tuple_delimiter}strategic_objective{tuple_delimiter}Represents a high-level statement of intent, direction, or desired end state for an organization"),
+    ("entity_type{tuple_delimiter}capability{tuple_delimiter}Represents the ability to execute a specified course of action or achieve certain outcomes"),
+    ("entity_type{tuple_delimiter}target_capability{tuple_delimiter}Represents a desired future state capability that realizes strategic objectives"),
+    ("entity_type{tuple_delimiter}current_capability{tuple_delimiter}Represents the existing capability state from which changes are initiated"),
+    ("entity_type{tuple_delimiter}gap_key_shift{tuple_delimiter}Represents the delta between current and target capabilities that must be addressed"),
+    ("entity_type{tuple_delimiter}programme{tuple_delimiter}Represents a coordinated set of initiatives to achieve specific outcomes"),
+    ("entity_type{tuple_delimiter}initiative{tuple_delimiter}Represents a specific action or project to implement changes"),
+    ("entity_type{tuple_delimiter}ict_function{tuple_delimiter}Represents IT capabilities that support business capabilities"),
+    ("entity_type{tuple_delimiter}value_stream{tuple_delimiter}Represents end-to-end collection of value-adding activities"),
+    ("entity_type{tuple_delimiter}value_stage{tuple_delimiter}Represents a distinct phase or step in a value stream")
 ]
 
-PROMPTS["entity_extraction"] = """Motivation elements are used to model the motivations, or reasons, that guide the design or change of an Enterprise Architecture.
+PROMPTS["entity_extraction"] = """Strategy and capability elements are used to model the strategic direction and ability of an enterprise to create value.
 
 ---Goal---
-Extract entities and relationships following the complete ArchiMate 3.2 Motivation Elements metamodel. Identify how elements motivate, influence, and relate to each other in the enterprise architecture.
+Extract entities and relationships following the simplified ArchiMate Strategy metamodel. Identify how elements motivate, influence, and relate to each other in the enterprise architecture.
 
 ---Steps---
 1. Create entity type nodes (if not exist):
@@ -57,45 +59,19 @@ Format: ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tu
 For each entity, create relationship to its type:
 ("instance_of"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}"Instance of entity type relationship")
 
-4. Create relationships between entities:
-- influence: How elements affect each other's effectiveness
-- realization: How elements are achieved by others
-- aggregation: How elements are composed of others
-- specialization: How elements are specialized versions of others
-- association: General relationships between elements
-- access: How elements view or access others
-- assignment: How elements are assigned responsibility for others
-
-Relationship Composition Rules:
-a) Stakeholder relationships:
-   - Can be assigned to business roles
-   - Can be associated with drivers (concerns)
-   - Can be associated with assessments
-   
-b) Driver relationships:
-   - Can influence other drivers
-   - Can be associated with assessments
-   - Can influence goals
-   
-c) Assessment relationships:
-   - Can influence other assessments
-   - Can influence goals
-   
-d) Goal relationships:
-   - Can be realized by principles/requirements
-   - Can be associated with outcomes
-   
-e) Outcome relationships:
-   - Can be influenced by other outcomes
-   - Can be realized by capabilities
-   
-f) Principle/Requirement/Constraint hierarchy:
-   - Principles can be realized by requirements
-   - Requirements can be realized by constraints
-   
-g) Meaning and Value relationships:
-   - Can be associated with any element
-   - Can be specific to stakeholders
+4. Create relationships between entities following the metamodel:
+- associated_with: Links business drivers to strategic objectives
+- enables: Links value stages to capabilities
+- achieves: Links capabilities to strategic objectives or programmes
+- realizes_later: Links target capabilities to capabilities
+- realizes_now: Links current capabilities to capabilities
+- supports: Links ICT functions to capabilities
+- included_in: Links initiatives to programmes
+- affects: Links ICT functions to initiatives
+- assigned_to: Links initiatives to gap/key shifts
+- shift_to: Links gap/key shifts to target capabilities
+- shift_from: Links gap/key shifts to current capabilities
+- part_of: Links value stages to value streams
 
 For each relationship, extract:
 - source_entity: Name of source element
@@ -105,34 +81,27 @@ For each relationship, extract:
 - relationship_strength: Numeric score (1-10)
 - relationship_keywords: High-level concepts/themes
 
-Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_strength>)
+Format: ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_keywords>{tuple_delimiter}<relationship_strength>)
 
-3. Identify high-level themes and concepts present in the motivation architecture.
+5. Identify high-level themes and concepts present in the strategy architecture.
 Format as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
 
-4. Return output in {language} as a single list using **{record_delimiter}** as delimiter.
+6. Return output in {language} as a single list using **{record_delimiter}** as delimiter.
 
-5. When finished, output {completion_delimiter}
+7. When finished, output {completion_delimiter}
 
 ---Validation Rules---
-- Drivers must be conditions, not actions
-- Goals should use qualitative terms (increase, improve, etc.)
-- Outcomes must be tangible and measurable
-- Principles must be broadly applicable
-- Requirements must be system-specific
-- Constraints must be actual limitations
-- All relationships must be valid per ArchiMate specification
-- Meanings must include specific context and interpretation
-- Values must be linked to stakeholder perspective
-- Stakeholders must be roles/individuals/groups with clear interests
-- Assessments must link to specific drivers
-- Each relationship must follow ArchiMate composition rules:
-  * Stakeholders can have concerns (drivers)
-  * Drivers can influence goals
-  * Goals can be realized by requirements
-  * Principles can be realized by requirements
-  * Requirements can be realized by constraints
-  * Any element can have meaning or value
+- Business Drivers must be conditions, not actions
+- Strategic Objectives should be high-level and directional
+- Capabilities must represent ability to achieve outcomes
+- Target/Current Capabilities must be specific and measurable
+- Gap/Key Shifts must clearly articulate required changes
+- Programmes must coordinate multiple initiatives
+- Initiatives must be specific and actionable
+- ICT Functions must support specific capabilities
+- Value Streams must deliver end-to-end value
+- Value Stages must be distinct steps in value creation
+- All relationships must follow the simplified metamodel structure
 
 ######################
 ---Examples---
@@ -150,25 +119,21 @@ Output:
 
 PROMPTS["entity_extraction_examples"] = [
     """Example 1:
-
-Entity_types: [stakeholder, driver, goal, outcome, principle, requirement]
+Entity_types: [business_driver, strategic_objective, capability, target_capability, current_capability]
 Text:
-The Chief Digital Officer emphasized that customer satisfaction was declining by 15% annually. This external driver has motivated our goal to improve digital service delivery. The principle that "All services must be digital-first" has been established, leading to specific requirements for our new customer portal. The project aims to achieve a measurable outcome of 30% improvement in customer satisfaction scores by 2024.
+The declining market share (15% drop) is driving our strategic objective to become the digital market leader. Our current digital service capability is rated as "basic" by analysts. We need to achieve an "advanced" digital service capability to enable market leadership.
 
 ################
 Output:
-("entity"{tuple_delimiter}"Chief Digital Officer"{tuple_delimiter}"stakeholder"{tuple_delimiter}"Executive stakeholder responsible for digital transformation and service delivery."){record_delimiter}
-("entity"{tuple_delimiter}"Customer Satisfaction Decline"{tuple_delimiter}"driver"{tuple_delimiter}"External driver showing 15% annual decline in customer satisfaction, representing a critical concern for the CDO."){record_delimiter}
-("entity"{tuple_delimiter}"Improve Digital Service Delivery"{tuple_delimiter}"goal"{tuple_delimiter}"High-level goal to enhance the quality and effectiveness of digital services."){record_delimiter}
-("entity"{tuple_delimiter}"Customer Satisfaction Improvement"{tuple_delimiter}"outcome"{tuple_delimiter}"Targeted 30% improvement in customer satisfaction scores by 2024, providing measurable success criteria."){record_delimiter}
-("entity"{tuple_delimiter}"Digital-First Services"{tuple_delimiter}"principle"{tuple_delimiter}"General principle stating all services must prioritize digital channels in their design and implementation."){record_delimiter}
-("entity"{tuple_delimiter}"Customer Portal Requirements"{tuple_delimiter}"requirement"{tuple_delimiter}"Specific requirements for the new customer portal system implementing the digital-first principle."){record_delimiter}
-("relationship"{tuple_delimiter}"Customer Satisfaction Decline"{tuple_delimiter}"Improve Digital Service Delivery"{tuple_delimiter}"Declining satisfaction directly motivates the goal to improve digital services"{tuple_delimiter}"motivation, causation"{tuple_delimiter}9){record_delimiter}
-("relationship"{tuple_delimiter}"Digital-First Services"{tuple_delimiter}"Customer Portal Requirements"{tuple_delimiter}"The digital-first principle guides specific requirements for the portal"{tuple_delimiter}"realization, guidance"{tuple_delimiter}8){record_delimiter}
-("relationship"{tuple_delimiter}"Improve Digital Service Delivery"{tuple_delimiter}"Customer Satisfaction Improvement"{tuple_delimiter}"The service improvement goal is measured by the satisfaction outcome"{tuple_delimiter}"measurement, realization"{tuple_delimiter}9){record_delimiter}
-("content_keywords"{tuple_delimiter}"digital transformation, customer satisfaction, service delivery, measurable outcomes"){completion_delimiter}
+("entity"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"business_driver"{tuple_delimiter}"External driver showing 15% decline in market share"){record_delimiter}
+("entity"{tuple_delimiter}"Digital Market Leadership"{tuple_delimiter}"strategic_objective"{tuple_delimiter}"Strategic goal to achieve market leadership through digital capabilities"){record_delimiter}
+("entity"{tuple_delimiter}"Digital Service Capability"{tuple_delimiter}"capability"{tuple_delimiter}"Ability to deliver and manage digital services"){record_delimiter}
+("entity"{tuple_delimiter}"Basic Digital Services"{tuple_delimiter}"current_capability"{tuple_delimiter}"Current basic level of digital service delivery"){record_delimiter}
+("entity"{tuple_delimiter}"Advanced Digital Services"{tuple_delimiter}"target_capability"{tuple_delimiter}"Target advanced level of digital service capability"){record_delimiter}
+("relationship"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"Digital Market Leadership"{tuple_delimiter}"Market decline drives digital leadership objective"{tuple_delimiter}"motivation, strategy"{tuple_delimiter}9){record_delimiter}
+("relationship"{tuple_delimiter}"Advanced Digital Services"{tuple_delimiter}"Digital Service Capability"{tuple_delimiter}"Target capability realizes service capability"{tuple_delimiter}"realization, improvement"{tuple_delimiter}8){record_delimiter}
+("content_keywords"{tuple_delimiter}"digital transformation, market leadership, capability improvement"){completion_delimiter}
 #############################""",
-
     """Example 2:
 
 Entity_types: [stakeholder, driver, assessment, goal, outcome]
