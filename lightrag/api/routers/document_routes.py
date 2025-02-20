@@ -263,7 +263,7 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path):
         file_path: Path to the saved file
     """
     try:
-        if await pipeline_enqueue_file(file_path):
+        if await pipeline_enqueue_file(rag, file_path):
             await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
