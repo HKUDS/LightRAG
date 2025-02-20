@@ -738,9 +738,8 @@ class LightRAG:
             if new_kg is None:
                 logger.info("No new entities or relationships extracted.")
             else:
-                async with self._entity_lock:
-                    logger.info("New entities or relationships extracted.")
-                    self.chunk_entity_relation_graph = new_kg
+                logger.info("New entities or relationships extracted.")
+                self.chunk_entity_relation_graph = new_kg
 
         except Exception as e:
             logger.error("Failed to extract entities and relationships")
