@@ -339,20 +339,20 @@ class LightRAG:
     namespace_prefix: str = field(default="")
     """Prefix for namespacing stored data across different environments."""
 
-    enable_llm_cache: bool = True
+    enable_llm_cache: bool = field(default=True)
     """Enables caching for LLM responses to avoid redundant computations."""
 
-    enable_llm_cache_for_entity_extract: bool = True
+    enable_llm_cache_for_entity_extract: bool = field(default=True)
     """If True, enables caching for entity extraction steps to reduce LLM costs."""
 
     # Extensions
-    max_parallel_insert: int = field(default_factory=lambda: int(os.getenv("MAX_PARALLEL_INSERT", 20)))
+    max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 20)))
     """Maximum number of parallel insert operations."""
     
     addon_params: dict[str, Any] = field(default_factory=dict)
 
     # Storages Management
-    auto_manage_storages_states: bool = True
+    auto_manage_storages_states: bool = field(default=True)
     """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
 
     """Dictionary for additional parameters and extensions."""
