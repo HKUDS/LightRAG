@@ -16,12 +16,13 @@ import pipmaster as pm
 
 if not pm.is_installed("networkx"):
     pm.install("networkx")
-    
+
 if not pm.is_installed("graspologic"):
     pm.install("graspologic")
 
 import networkx as nx
 from graspologic import embed
+
 
 @final
 @dataclass
