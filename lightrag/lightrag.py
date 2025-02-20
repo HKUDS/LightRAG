@@ -524,7 +524,7 @@ class LightRAG:
             doc_key = compute_mdhash_id(full_text.strip(), prefix="doc-")
             new_docs = {doc_key: {"content": full_text.strip()}}
 
-            _add_doc_keys = await self.full_docs.filter_keys(set(doc_key))
+            _add_doc_keys = await self.full_docs.filter_keys({doc_key})
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
             if not len(new_docs):
                 logger.warning("This document is already in the storage.")
