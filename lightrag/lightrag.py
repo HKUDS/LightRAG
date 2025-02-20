@@ -184,7 +184,7 @@ class LightRAG:
     """Maximum number of concurrent embedding function calls."""
 
     embedding_cache_config: dict[str, Any] = field(
-        default={
+        default_factory= lambda: {
             "enabled": False,
             "similarity_threshold": 0.95,
             "use_llm_check": False,
