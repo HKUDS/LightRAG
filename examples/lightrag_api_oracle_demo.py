@@ -98,7 +98,6 @@ async def init():
 
     # Initialize LightRAG
     # We use Oracle DB as the KV/vector/graph storage
-    # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
     rag = LightRAG(
         enable_llm_cache=False,
         working_dir=WORKING_DIR,

@@ -1,9 +1,8 @@
-import os
 import inspect
+import os
 from lightrag import LightRAG
 from lightrag.llm import openai_complete, openai_embed
-from lightrag.utils import EmbeddingFunc
-from lightrag.lightrag import always_get_an_event_loop
+from lightrag.utils import EmbeddingFunc, always_get_an_event_loop
 from lightrag import QueryParam
 
 # WorkingDir
