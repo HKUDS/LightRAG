@@ -1,7 +1,7 @@
 import re
 import json
-import asyncio
 from lightrag import LightRAG, QueryParam
+from lightrag.utils import always_get_an_event_loop
 
 
 def extract_queries(file_path):
@@ -21,15 +21,6 @@ async def process_query(query_text, rag_instance, query_param):
         return {"query": query_text, "result": result}, None
     except Exception as e:
         return None, {"query": query_text, "error": str(e)}
-
-
-def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop
 
 
 def run_queries_and_save_to_json(
