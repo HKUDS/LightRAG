@@ -5,6 +5,7 @@ from typing import Any, final
 import numpy as np
 
 
+from lightrag.types import KnowledgeGraph
 from lightrag.utils import (
     logger,
 )
@@ -166,3 +167,8 @@ class NetworkXStorage(BaseGraphStorage):
         for source, target in edges:
             if self._graph.has_edge(source, target):
                 self._graph.remove_edge(source, target)
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        raise NotImplementedError

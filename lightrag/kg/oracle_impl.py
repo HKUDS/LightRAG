@@ -8,6 +8,7 @@ from typing import Any, Union, final
 import numpy as np
 import configparser
 
+from lightrag.types import KnowledgeGraph
 
 from ..base import (
     BaseGraphStorage,
@@ -667,6 +668,11 @@ class OracleGraphStorage(BaseGraphStorage):
             return res
 
     async def delete_node(self, node_id: str) -> None:
+        raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
         raise NotImplementedError
 
 
