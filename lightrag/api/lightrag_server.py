@@ -1748,7 +1748,16 @@ def create_app(args):
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
 
+    # query all graph labels
+    @app.get("/graph/label/list")
+    async def get_graph_labels():
+        return await rag.get_graph_labels()
+
     # query all graph
+    @app.get("/graphs")
+    async def get_knowledge_graph(label: str):
+        return await rag.get_knowledge_graph(nodel_label=label, max_depth=100)
+
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")

@@ -16,6 +16,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from lightrag.types import KnowledgeGraph
 from lightrag.utils import logger
 
 from ..base import BaseGraphStorage
@@ -400,4 +401,12 @@ class GremlinStorage(BaseGraphStorage):
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
+        raise NotImplementedError
+
+    async def get_all_labels(self) -> list[str]:
+        raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
         raise NotImplementedError
