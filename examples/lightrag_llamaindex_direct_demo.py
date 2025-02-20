@@ -1,45 +1,42 @@
 import os
 from lightrag import LightRAG, QueryParam
-from lightrag.wrapper.llama_index_impl import (
+from lightrag.llm.llama_index_impl import (
     llama_index_complete_if_cache,
     llama_index_embed,
 )
 from lightrag.utils import EmbeddingFunc
-from llama_index.llms.litellm import LiteLLM
-from llama_index.embeddings.litellm import LiteLLMEmbedding
+from llama_index.llms.openai import OpenAI
+from llama_index.embeddings.openai import OpenAIEmbedding
 import asyncio
 
 # Configure working directory
-DEFAULT_RAG_DIR = "index_default"
-WORKING_DIR = os.environ.get("RAG_DIR", f"{DEFAULT_RAG_DIR}")
+WORKING_DIR = "./index_default"
 print(f"WORKING_DIR: {WORKING_DIR}")
 
 # Model configuration
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4")
 print(f"LLM_MODEL: {LLM_MODEL}")
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "embedding-model")
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
 print(f"EMBEDDING_MODEL: {EMBEDDING_MODEL}")
 EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192))
 print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
 
-# LiteLLM configuration
-LITELLM_URL = os.environ.get("LITELLM_URL", "http://localhost:4000")
-print(f"LITELLM_URL: {LITELLM_URL}")
-LITELLM_KEY = os.environ.get("LITELLM_KEY", "sk-1234")
+# OpenAI configuration
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "your-api-key-here")
 
 if not os.path.exists(WORKING_DIR):
+    print(f"Creating working directory: {WORKING_DIR}")
     os.mkdir(WORKING_DIR)
 
 
 # Initialize LLM function
 async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
     try:
-        # Initialize LiteLLM if not in kwargs
+        # Initialize OpenAI if not in kwargs
         if "llm_instance" not in kwargs:
-            llm_instance = LiteLLM(
-                model=f"openai/{LLM_MODEL}",  # Format: "provider/model_name"
-                api_base=LITELLM_URL,
-                api_key=LITELLM_KEY,
+            llm_instance = OpenAI(
+                model=LLM_MODEL,
+                api_key=OPENAI_API_KEY,
                 temperature=0.7,
             )
             kwargs["llm_instance"] = llm_instance
@@ -60,10 +57,9 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
 # Initialize embedding function
 async def embedding_func(texts):
     try:
-        embed_model = LiteLLMEmbedding(
-            model_name=f"openai/{EMBEDDING_MODEL}",
-            api_base=LITELLM_URL,
-            api_key=LITELLM_KEY,
+        embed_model = OpenAIEmbedding(
+            model=EMBEDDING_MODEL,
+            api_key=OPENAI_API_KEY,
         )
         return await llama_index_embed(texts, embed_model=embed_model)
     except Exception as e:
