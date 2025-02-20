@@ -8,7 +8,11 @@ from datetime import datetime
 from functools import partial
 from typing import Any, AsyncIterator, Callable, Iterator, cast, final
 
-from lightrag.kg import STORAGE_ENV_REQUIREMENTS, STORAGE_IMPLEMENTATIONS, STORAGES
+from lightrag.kg import (
+    STORAGE_ENV_REQUIREMENTS,
+    STORAGES,
+    verify_storage_implementation,
+)
 
 from .base import (
     BaseGraphStorage,
@@ -44,6 +48,7 @@ from .utils import (
     encode_string_by_tiktoken,
 )
 
+# TODO: TO REMOVE @Yannick
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
@@ -250,6 +255,10 @@ class LightRAG:
     The default function is :func:`.utils.convert_response_to_json`.
     """
 
+    cosine_better_than_threshold: float = field(
+        default=float(os.getenv("COSINE_THRESHOLD", 0.2))
+    )
+
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):
@@ -272,16 +281,13 @@ class LightRAG:
 
         for storage_type, storage_name in storage_configs:
             # Verify storage implementation compatibility
-            self.verify_storage_implementation(storage_type, storage_name)
+            verify_storage_implementation(storage_type, storage_name)
             # Check environment variables
             # self.check_storage_env_vars(storage_name)
 
         # Ensure vector_db_storage_cls_kwargs has required fields
-        default_vector_db_kwargs = {
-            "cosine_better_than_threshold": float(os.getenv("COSINE_THRESHOLD", "0.2"))
-        }
         self.vector_db_storage_cls_kwargs = {
-            **default_vector_db_kwargs,
+            "cosine_better_than_threshold": self.cosine_better_than_threshold,
             **self.vector_db_storage_cls_kwargs,
         }
 
@@ -1461,28 +1467,6 @@ class LightRAG:
             result["vector_data"] = vector_data[0] if vector_data else None
 
         return result
-
-    def verify_storage_implementation(
-        self, storage_type: str, storage_name: str
-    ) -> None:
-        """Verify if storage implementation is compatible with specified storage type
-
-        Args:
-            storage_type: Storage type (KV_STORAGE, GRAPH_STORAGE etc.)
-            storage_name: Storage implementation name
-
-        Raises:
-            ValueError: If storage implementation is incompatible or missing required methods
-        """
-        if storage_type not in STORAGE_IMPLEMENTATIONS:
-            raise ValueError(f"Unknown storage type: {storage_type}")
-
-        storage_info = STORAGE_IMPLEMENTATIONS[storage_type]
-        if storage_name not in storage_info["implementations"]:
-            raise ValueError(
-                f"Storage implementation '{storage_name}' is not compatible with {storage_type}. "
-                f"Compatible implementations are: {', '.join(storage_info['implementations'])}"
-            )
 
     def check_storage_env_vars(self, storage_name: str) -> None:
         """Check if all required environment variables for storage implementation exist

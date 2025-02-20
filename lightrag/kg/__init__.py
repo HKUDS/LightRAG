@@ -134,3 +134,24 @@ STORAGES = {
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
 }
+
+
+def verify_storage_implementation(storage_type: str, storage_name: str) -> None:
+    """Verify if storage implementation is compatible with specified storage type
+
+    Args:
+        storage_type: Storage type (KV_STORAGE, GRAPH_STORAGE etc.)
+        storage_name: Storage implementation name
+
+    Raises:
+        ValueError: If storage implementation is incompatible or missing required methods
+    """
+    if storage_type not in STORAGE_IMPLEMENTATIONS:
+        raise ValueError(f"Unknown storage type: {storage_type}")
+
+    storage_info = STORAGE_IMPLEMENTATIONS[storage_type]
+    if storage_name not in storage_info["implementations"]:
+        raise ValueError(
+            f"Storage implementation '{storage_name}' is not compatible with {storage_type}. "
+            f"Compatible implementations are: {', '.join(storage_info['implementations'])}"
+        )
