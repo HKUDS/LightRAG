@@ -713,3 +713,47 @@ def get_conversation_turns(
         )
 
     return "\n".join(formatted_turns)
+
+def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
+    """
+    Ensure that there is always an event loop available.
+
+    This function tries to get the current event loop. If the current event loop is closed or does not exist,
+    it creates a new event loop and sets it as the current event loop.
+
+    Returns:
+        asyncio.AbstractEventLoop: The current or newly created event loop.
+    """
+    try:
+        # Try to get the current event loop
+        current_loop = asyncio.get_event_loop()
+        if current_loop.is_closed():
+            raise RuntimeError("Event loop is closed.")
+        return current_loop
+
+    except RuntimeError:
+        # If no event loop exists or it is closed, create a new one
+        logger.info("Creating a new event loop in main thread.")
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        return new_loop
+    
+    
+def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any]:
+    """Lazily import a class from an external module based on the package of the caller."""
+    # Get the caller's module and package
+    import inspect
+
+    caller_frame = inspect.currentframe().f_back
+    module = inspect.getmodule(caller_frame)
+    package = module.__package__ if module else None
+
+    def import_class(*args: Any, **kwargs: Any):
+        import importlib
+
+        module = importlib.import_module(module_name, package=package)
+        cls = getattr(module, class_name)
+        return cls(*args, **kwargs)
+
+    return import_class
+    

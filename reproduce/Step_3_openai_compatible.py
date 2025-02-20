@@ -1,10 +1,9 @@
 import os
 import re
 import json
-import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.utils import EmbeddingFunc
+from lightrag.utils import EmbeddingFunc, always_get_an_event_loop
 import numpy as np
 
 
@@ -55,13 +54,7 @@ async def process_query(query_text, rag_instance, query_param):
         return None, {"query": query_text, "error": str(e)}
 
 
-def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop
+
 
 
 def run_queries_and_save_to_json(

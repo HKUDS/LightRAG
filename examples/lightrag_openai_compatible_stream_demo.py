@@ -1,9 +1,7 @@
 import os
-import inspect
 from lightrag import LightRAG
 from lightrag.llm import openai_complete, openai_embed
 from lightrag.utils import EmbeddingFunc
-from lightrag.lightrag import always_get_an_event_loop
 from lightrag import QueryParam
 
 # WorkingDir
@@ -48,8 +46,3 @@ async def print_stream(stream):
             print(chunk, end="", flush=True)
 
 
-loop = always_get_an_event_loop()
-if inspect.isasyncgen(resp):
-    loop.run_until_complete(print_stream(resp))
-else:
-    print(resp)
