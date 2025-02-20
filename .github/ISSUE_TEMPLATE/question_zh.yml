@@ -1,0 +1,26 @@
+name: Question
+description: 提交问题
+labels: ["question"]
+title: "[Question]: <title>"
+
+body:
+  - type: checkboxes
+    id: existingcheck
+    attributes:
+      label: 是否需要提问？
+      description: 请通过以下步骤避免重复和常见的问题。
+      options:
+        - label: 我已经搜索过现有的问题和讨论，这个问题还没有被回答。
+        - label: 我认为这是一个合法的问题，而不是一个 bug 或功能请求。
+  - type: textarea
+    id: question
+    attributes:
+      label: 你的问题
+      description: 清晰简洁地描述你的问题。
+      placeholder: 你的问题是什么？
+  - type: textarea
+    id: context
+    attributes:
+      label: 额外上下文
+      description: 提供任何可能帮助我们更好理解你的问题的额外上下文或细节。
+      placeholder: 在此添加任何相关信息
