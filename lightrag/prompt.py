@@ -58,20 +58,18 @@ Extract entities and relationships following the simplified ArchiMate Strategy m
 ("entity"{tuple_delimiter}"value_stream"{tuple_delimiter}"VALUE_STREAM"{tuple_delimiter}"VALUE_STREAM"){record_delimiter}
 ("entity"{tuple_delimiter}"value_stage"{tuple_delimiter}"VALUE_STAGE"{tuple_delimiter}"VALUE_STAGE"){record_delimiter}
 
-2. Then extract entities and create entity nodes:
-- entity_name: Name of the entity (capitalized in English)
-- entity_type: One of the defined entity types
-- entity_description: Comprehensive description
-Format: ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
+2. For each identified entity:
+a) Create entity node:
+("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>){record_delimiter}
 
-Example for an actual entity:
-("entity"{tuple_delimiter}"Digital Transformation"{tuple_delimiter}"CAPABILITY"{tuple_delimiter}"Ability to transform business processes through digital technologies")
+b) IMMEDIATELY create its type relationship:
+("relationship"{tuple_delimiter}<entity_name>{tuple_delimiter}<lowercase_entity_type>{tuple_delimiter}"is_type_of"{tuple_delimiter}"Entity type relationship"{tuple_delimiter}10){record_delimiter}
 
-3. Create type relationships:
-For each entity, create relationship to its type node:
-("relationship"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}"is_type_of"{tuple_delimiter}"Entity type relationship"{tuple_delimiter}10)
+Example:
+("entity"{tuple_delimiter}"Digital Transformation"{tuple_delimiter}"CAPABILITY"{tuple_delimiter}"Ability to transform business processes"){record_delimiter}
+("relationship"{tuple_delimiter}"Digital Transformation"{tuple_delimiter}"capability"{tuple_delimiter}"is_type_of"{tuple_delimiter}"Entity type relationship"{tuple_delimiter}10){record_delimiter}
 
-4. Create relationships between entities following the metamodel:
+3. Create other relationships between entities following the metamodel:
 - associated_with: Links business drivers to strategic objectives
 - enables: Links value stages to capabilities
 - achieves: Links capabilities to strategic objectives or programmes
@@ -114,7 +112,8 @@ Format as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
 - Value Streams must deliver end-to-end value
 - Value Stages must be distinct steps in value creation
 - All relationships must follow the simplified metamodel structure
-- Every entity must have an is_type_of relationship to an entity type node
+- Every entity MUST have an is_type_of relationship created immediately after its node creation
+- Check that the lowercase entity type in the relationship matches the meta-model node name
 
 ######################
 ---Examples---
