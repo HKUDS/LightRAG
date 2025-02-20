@@ -47,6 +47,7 @@ from .utils import (
     set_logger,
     encode_string_by_tiktoken,
 )
+from .types import KnowledgeGraph
 
 # TODO: TO REMOVE @Yannick
 config = configparser.ConfigParser()
@@ -456,6 +457,13 @@ class LightRAG:
 
             self._storages_status = StoragesStatus.FINALIZED
             logger.debug("Finalized Storages")
+
+    async def get_knowledge_graph(
+        self, nodel_label: str, max_depth: int
+    ) -> KnowledgeGraph:
+        return await self.chunk_entity_relation_graph.get_knowledge_graph(
+            node_label=nodel_label, max_depth=max_depth
+        )
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
         import_path = STORAGES[storage_name]
