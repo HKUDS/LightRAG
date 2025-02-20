@@ -126,7 +126,7 @@ class OllamaAPI:
         self.rag = rag
         self.ollama_server_infos = ollama_server_infos
         self.top_k = top_k
-        self.router = APIRouter(tags=["Ollama"])
+        self.router = APIRouter(tags=["ollama"])
         self.setup_routes()
 
     def setup_routes(self):
