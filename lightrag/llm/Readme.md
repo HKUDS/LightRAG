@@ -1,27 +1,11 @@
-## Wrapper Directory
 
-The `wrapper` directory contains integrations with different frameworks. These wrappers provide a consistent interface to LightRAG while abstracting away the specifics of each framework.
-
-## Wrapper Directory Structure
-
-```
-lightrag/
-├── wrapper/                    # Wrappers for different model providers and frameworks
-│   ├── llama_index_impl.py     # LlamaIndex integration for embeddings and completions
-│   └── ...                     # Other framework wrappers
-├── kg/                         # Knowledge graph implementations
-├── utils/                      # Utility functions and helpers
-└── ...
-```
-Current wrappers:
-
-1. **LlamaIndex** (`wrapper/llama_index.py`):
+1. **LlamaIndex** (`llm/llama_index.py`):
    - Provides integration with OpenAI and other providers through LlamaIndex
    - Supports both direct API access and proxy services like LiteLLM
    - Handles embeddings and completions with consistent interfaces
    - See example implementations:
-     - [Direct OpenAI Usage](../examples/lightrag_api_llamaindex_direct_demo_simplified.py)
-     - [LiteLLM Proxy Usage](../examples/lightrag_api_llamaindex_litellm_demo_simplified.py)
+     - [Direct OpenAI Usage](../../examples/lightrag_llamaindex_direct_demo.py)
+     - [LiteLLM Proxy Usage](../../examples/lightrag_llamaindex_litellm_demo.py)
 
 <details>
 <summary> <b>Using LlamaIndex</b> </summary>
@@ -39,7 +23,7 @@ pip install llama-index-llms-litellm llama-index-embeddings-litellm
 
 ```python
 from lightrag import LightRAG
-from lightrag.wrapper.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
+from lightrag.llm.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 from lightrag.utils import EmbeddingFunc
@@ -94,7 +78,7 @@ rag = LightRAG(
 
 ```python
 from lightrag import LightRAG
-from lightrag.wrapper.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
+from lightrag.llm.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
 from llama_index.llms.litellm import LiteLLM
 from llama_index.embeddings.litellm import LiteLLMEmbedding
 from lightrag.utils import EmbeddingFunc
