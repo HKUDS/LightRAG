@@ -307,26 +307,26 @@ class LightRAG:
     - random_seed: Seed value for reproducibility.
     """
 
-    embedding_func: EmbeddingFunc | None = None
+    embedding_func: EmbeddingFunc | None = field(default=None)
     """Function for computing text embeddings. Must be set before use."""
 
-    embedding_batch_num: int = 32
+    embedding_batch_num: int = field(default=32)
     """Batch size for embedding computations."""
 
-    embedding_func_max_async: int = 16
+    embedding_func_max_async: int = field(default=16)
     """Maximum number of concurrent embedding function calls."""
 
     # LLM Configuration
-    llm_model_func: Callable[..., object] | None = None
+    llm_model_func: Callable[..., object] | None = field(default=None)
     """Function for interacting with the large language model (LLM). Must be set before use."""
 
-    llm_model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
+    llm_model_name: str = field(default="gpt-4o-mini")
     """Name of the LLM model used for generating responses."""
 
-    llm_model_max_token_size: int = int(os.getenv("MAX_TOKENS", "32768"))
+    llm_model_max_token_size: int = field(default=int(os.getenv("MAX_TOKENS", 32768)))
     """Maximum number of tokens allowed per LLM response."""
 
-    llm_model_max_async: int = int(os.getenv("MAX_ASYNC", "16"))
+    llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 16)))
     """Maximum number of concurrent LLM calls."""
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
