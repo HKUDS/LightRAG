@@ -47,7 +47,7 @@ Extract entities and relationships following the simplified ArchiMate Strategy m
 ---Steps---
 1. Create entity type nodes (if not exist):
 For each entity type in the metamodel:
-("entity_type"{tuple_delimiter}<type_name>{tuple_delimiter}<type_description>)
+("node"{tuple_delimiter}<type_name>{tuple_delimiter}"entity_type"{tuple_delimiter}<type_description>)
 
 2. For each identified entity, extract:
 - entity_name: Name of the entity (capitalized in English)
@@ -55,9 +55,9 @@ For each entity type in the metamodel:
 - entity_description: Comprehensive description
 Format: ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
 
-3. Create instance relationships:
-For each entity, create relationship to its type:
-("instance_of"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}"Instance of entity type relationship")
+3. Create type relationships:
+For each entity, create relationship to its type node:
+("relationship"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}"is_type_of"{tuple_delimiter}"Entity type relationship"{tuple_delimiter}10)
 
 4. Create relationships between entities following the metamodel:
 - associated_with: Links business drivers to strategic objectives
@@ -102,11 +102,26 @@ Format as ("content_keywords"{tuple_delimiter}<high_level_keywords>)
 - Value Streams must deliver end-to-end value
 - Value Stages must be distinct steps in value creation
 - All relationships must follow the simplified metamodel structure
+- Every entity must have an is_type_of relationship to an entity type node
 
 ######################
 ---Examples---
 ######################
-{examples}
+Example 1:
+Entity_types: [business_driver, strategic_objective, capability, target_capability, current_capability]
+Text:
+The declining market share (15% drop) is driving our strategic objective to become the digital market leader. Our current digital service capability is rated as "basic" by analysts. We need to achieve an "advanced" digital service capability to enable market leadership.
+
+################
+Output:
+("node"{tuple_delimiter}"business_driver"{tuple_delimiter}"entity_type"{tuple_delimiter}"Represents an external or internal condition that motivates an organization to define its goals and implement changes"){record_delimiter}
+("node"{tuple_delimiter}"strategic_objective"{tuple_delimiter}"entity_type"{tuple_delimiter}"Represents a high-level statement of intent, direction, or desired end state for an organization"){record_delimiter}
+("entity"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"business_driver"{tuple_delimiter}"External driver showing 15% decline in market share"){record_delimiter}
+("relationship"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"business_driver"{tuple_delimiter}"is_type_of"{tuple_delimiter}"Entity type relationship"{tuple_delimiter}10){record_delimiter}
+("relationship"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"Digital Market Leadership"{tuple_delimiter}"Market decline drives digital leadership objective"{tuple_delimiter}"motivation, strategy"{tuple_delimiter}9){record_delimiter}
+("relationship"{tuple_delimiter}"Advanced Digital Services"{tuple_delimiter}"Digital Service Capability"{tuple_delimiter}"Target capability realizes service capability"{tuple_delimiter}"realization, improvement"{tuple_delimiter}8){record_delimiter}
+("content_keywords"{tuple_delimiter}"digital transformation, market leadership, capability improvement"){completion_delimiter}
+#############################
 
 #############################
 ---Real Data---
@@ -125,11 +140,10 @@ The declining market share (15% drop) is driving our strategic objective to beco
 
 ################
 Output:
+("node"{tuple_delimiter}"business_driver"{tuple_delimiter}"entity_type"{tuple_delimiter}"Represents an external or internal condition that motivates an organization to define its goals and implement changes"){record_delimiter}
+("node"{tuple_delimiter}"strategic_objective"{tuple_delimiter}"entity_type"{tuple_delimiter}"Represents a high-level statement of intent, direction, or desired end state for an organization"){record_delimiter}
 ("entity"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"business_driver"{tuple_delimiter}"External driver showing 15% decline in market share"){record_delimiter}
-("entity"{tuple_delimiter}"Digital Market Leadership"{tuple_delimiter}"strategic_objective"{tuple_delimiter}"Strategic goal to achieve market leadership through digital capabilities"){record_delimiter}
-("entity"{tuple_delimiter}"Digital Service Capability"{tuple_delimiter}"capability"{tuple_delimiter}"Ability to deliver and manage digital services"){record_delimiter}
-("entity"{tuple_delimiter}"Basic Digital Services"{tuple_delimiter}"current_capability"{tuple_delimiter}"Current basic level of digital service delivery"){record_delimiter}
-("entity"{tuple_delimiter}"Advanced Digital Services"{tuple_delimiter}"target_capability"{tuple_delimiter}"Target advanced level of digital service capability"){record_delimiter}
+("relationship"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"business_driver"{tuple_delimiter}"is_type_of"{tuple_delimiter}"Entity type relationship"{tuple_delimiter}10){record_delimiter}
 ("relationship"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"Digital Market Leadership"{tuple_delimiter}"Market decline drives digital leadership objective"{tuple_delimiter}"motivation, strategy"{tuple_delimiter}9){record_delimiter}
 ("relationship"{tuple_delimiter}"Advanced Digital Services"{tuple_delimiter}"Digital Service Capability"{tuple_delimiter}"Target capability realizes service capability"{tuple_delimiter}"realization, improvement"{tuple_delimiter}8){record_delimiter}
 ("content_keywords"{tuple_delimiter}"digital transformation, market leadership, capability improvement"){completion_delimiter}
