@@ -231,23 +231,16 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
 class LightRAG:
     """LightRAG: Simple and Fast Retrieval-Augmented Generation."""
 
+    # Directory
+    # ---
+
     working_dir: str = field(
         default=f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
     """Directory where cache and temporary files are stored."""
 
-    embedding_cache_config: dict[str, Any] = field(
-        default={
-            "enabled": False,
-            "similarity_threshold": 0.95,
-            "use_llm_check": False,
-        }
-    )
-    """Configuration for embedding cache.
-    - enabled: If True, enables caching to avoid redundant computations.
-    - similarity_threshold: Minimum similarity score to use cached embeddings.
-    - use_llm_check: If True, validates cached embeddings using an LLM.
-    """
+    # Storage
+    # ---
 
     kv_storage: str = field(default="JsonKVStorage")
     """Storage backend for key-value data."""
@@ -262,13 +255,27 @@ class LightRAG:
     """Storage type for tracking document processing statuses."""
 
     # Logging
+    # ---
+
     log_level: int = field(default=logger.level)
     """Logging level for the system (e.g., 'DEBUG', 'INFO', 'WARNING')."""
 
     log_dir: str = field(default=os.getcwd())
     """Directory where logs are stored. Defaults to the current working directory."""
 
+    # Entity extraction
+    # ---
+
+    entity_extract_max_gleaning: int = field(default=1)
+    """Maximum number of entity extraction attempts for ambiguous content."""
+
+    entity_summary_to_max_tokens: int = field(
+        default=int(os.getenv("MAX_TOKEN_SUMMARY", 500))
+    )
+
     # Text chunking
+    # ---
+
     chunk_token_size: int = field(default=int(os.getenv("CHUNK_SIZE", 1200)))
     """Maximum number of tokens per text chunk when splitting documents."""
 
@@ -280,94 +287,7 @@ class LightRAG:
     tiktoken_model_name: str = field(default="gpt-4o-mini")
     """Model name used for tokenization when chunking text."""
 
-    # Entity extraction
-    entity_extract_max_gleaning: int = field(default=1)
-    """Maximum number of entity extraction attempts for ambiguous content."""
-
-    entity_summary_to_max_tokens: int = field(
-        default=int(os.getenv("MAX_TOKEN_SUMMARY", 500))
-    )
     """Maximum number of tokens used for summarizing extracted entities."""
-
-    # Node embedding
-    node_embedding_algorithm: str = field(default="node2vec")
-    """Algorithm used for node embedding in knowledge graphs."""
-
-    node2vec_params: dict[str, int] = field(
-        default_factory=lambda: {
-            "dimensions": 1536,
-            "num_walks": 10,
-            "walk_length": 40,
-            "window_size": 2,
-            "iterations": 3,
-            "random_seed": 3,
-        }
-    )
-    """Configuration for the node2vec embedding algorithm:
-    - dimensions: Number of dimensions for embeddings.
-    - num_walks: Number of random walks per node.
-    - walk_length: Number of steps per random walk.
-    - window_size: Context window size for training.
-    - iterations: Number of iterations for training.
-    - random_seed: Seed value for reproducibility.
-    """
-
-    embedding_func: EmbeddingFunc | None = field(default=None)
-    """Function for computing text embeddings. Must be set before use."""
-
-    embedding_batch_num: int = field(default=32)
-    """Batch size for embedding computations."""
-
-    embedding_func_max_async: int = field(default=16)
-    """Maximum number of concurrent embedding function calls."""
-
-    # LLM Configuration
-    llm_model_func: Callable[..., object] | None = field(default=None)
-    """Function for interacting with the large language model (LLM). Must be set before use."""
-
-    llm_model_name: str = field(default="gpt-4o-mini")
-    """Name of the LLM model used for generating responses."""
-
-    llm_model_max_token_size: int = field(default=int(os.getenv("MAX_TOKENS", 32768)))
-    """Maximum number of tokens allowed per LLM response."""
-
-    llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 16)))
-    """Maximum number of concurrent LLM calls."""
-
-    llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
-    """Additional keyword arguments passed to the LLM model function."""
-
-    # Storage
-    vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
-    """Additional parameters for vector database storage."""
-
-    namespace_prefix: str = field(default="")
-    """Prefix for namespacing stored data across different environments."""
-
-    enable_llm_cache: bool = field(default=True)
-    """Enables caching for LLM responses to avoid redundant computations."""
-
-    enable_llm_cache_for_entity_extract: bool = field(default=True)
-    """If True, enables caching for entity extraction steps to reduce LLM costs."""
-
-    # Extensions
-    max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 20)))
-    """Maximum number of parallel insert operations."""
-
-    addon_params: dict[str, Any] = field(default_factory=dict)
-
-    # Storages Management
-    auto_manage_storages_states: bool = field(default=True)
-    """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
-
-    convert_response_to_json_func: Callable[[str], dict[str, Any]] = field(
-        default_factory=lambda: convert_response_to_json
-    )
-    """
-    Custom function for converting LLM responses to JSON format.
-
-    The default function is :func:`.utils.convert_response_to_json`.
-    """
 
     chunking_func: Callable[
         [
@@ -397,6 +317,115 @@ class LightRAG:
         - `content`: The text content of the chunk.
 
     Defaults to `chunking_by_token_size` if not specified.
+    """
+
+    # Node embedding
+    # ---
+
+    node_embedding_algorithm: str = field(default="node2vec")
+    """Algorithm used for node embedding in knowledge graphs."""
+
+    node2vec_params: dict[str, int] = field(
+        default_factory=lambda: {
+            "dimensions": 1536,
+            "num_walks": 10,
+            "walk_length": 40,
+            "window_size": 2,
+            "iterations": 3,
+            "random_seed": 3,
+        }
+    )
+    """Configuration for the node2vec embedding algorithm:
+    - dimensions: Number of dimensions for embeddings.
+    - num_walks: Number of random walks per node.
+    - walk_length: Number of steps per random walk.
+    - window_size: Context window size for training.
+    - iterations: Number of iterations for training.
+    - random_seed: Seed value for reproducibility.
+    """
+
+    # Embedding
+    # ---
+
+    embedding_func: EmbeddingFunc | None = field(default=None)
+    """Function for computing text embeddings. Must be set before use."""
+
+    embedding_batch_num: int = field(default=32)
+    """Batch size for embedding computations."""
+
+    embedding_func_max_async: int = field(default=16)
+    """Maximum number of concurrent embedding function calls."""
+
+    embedding_cache_config: dict[str, Any] = field(
+        default={
+            "enabled": False,
+            "similarity_threshold": 0.95,
+            "use_llm_check": False,
+        }
+    )
+    """Configuration for embedding cache.
+    - enabled: If True, enables caching to avoid redundant computations.
+    - similarity_threshold: Minimum similarity score to use cached embeddings.
+    - use_llm_check: If True, validates cached embeddings using an LLM.
+    """
+
+    # LLM Configuration
+    # ---
+
+    llm_model_func: Callable[..., object] | None = field(default=None)
+    """Function for interacting with the large language model (LLM). Must be set before use."""
+
+    llm_model_name: str = field(default="gpt-4o-mini")
+    """Name of the LLM model used for generating responses."""
+
+    llm_model_max_token_size: int = field(default=int(os.getenv("MAX_TOKENS", 32768)))
+    """Maximum number of tokens allowed per LLM response."""
+
+    llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 16)))
+    """Maximum number of concurrent LLM calls."""
+
+    llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
+    """Additional keyword arguments passed to the LLM model function."""
+
+    # Storage
+    # ---
+
+    vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
+    """Additional parameters for vector database storage."""
+
+    namespace_prefix: str = field(default="")
+    """Prefix for namespacing stored data across different environments."""
+
+    enable_llm_cache: bool = field(default=True)
+    """Enables caching for LLM responses to avoid redundant computations."""
+
+    enable_llm_cache_for_entity_extract: bool = field(default=True)
+    """If True, enables caching for entity extraction steps to reduce LLM costs."""
+
+    # Extensions
+    # ---
+
+    max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 20)))
+    """Maximum number of parallel insert operations."""
+
+    addon_params: dict[str, Any] = field(default_factory=dict)
+
+    # Storages Management
+    # ---
+
+    auto_manage_storages_states: bool = field(default=True)
+    """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
+
+    # Storages Management
+    # ---
+
+    convert_response_to_json_func: Callable[[str], dict[str, Any]] = field(
+        default_factory=lambda: convert_response_to_json
+    )
+    """
+    Custom function for converting LLM responses to JSON format.
+
+    The default function is :func:`.utils.convert_response_to_json`.
     """
 
     def verify_storage_implementation(
