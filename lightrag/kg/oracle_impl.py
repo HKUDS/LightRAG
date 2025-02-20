@@ -44,7 +44,7 @@ class OracleDB:
         self.increment = 1
         logger.info(f"Using the label {self.workspace} for Oracle Graph as identifier")
         if self.user is None or self.password is None:
-            raise ValueError("Missing database user or password in addon_params")
+            raise ValueError("Missing database user or password")
 
         try:
             oracledb.defaults.fetch_lobs = False
