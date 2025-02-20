@@ -1682,6 +1682,11 @@ def create_app(args):
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
 
+    # query all graph labels
+    @app.get("/graph/label/list")
+    async def get_graph_labels():
+        return await rag.get_graph_labels()
+
     # query all graph
     @app.get("/graphs")
     async def get_knowledge_graph(label: str):
