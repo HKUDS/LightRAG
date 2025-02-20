@@ -8,7 +8,11 @@ from datetime import datetime
 from functools import partial
 from typing import Any, AsyncIterator, Callable, Iterator, cast, final
 
-from lightrag.kg import STORAGE_ENV_REQUIREMENTS, STORAGES, verify_storage_implementation
+from lightrag.kg import (
+    STORAGE_ENV_REQUIREMENTS,
+    STORAGES,
+    verify_storage_implementation,
+)
 
 from .base import (
     BaseGraphStorage,
@@ -251,6 +255,10 @@ class LightRAG:
     The default function is :func:`.utils.convert_response_to_json`.
     """
 
+    cosine_better_than_threshold: float = field(
+        default=float(os.getenv("COSINE_THRESHOLD", 0.2))
+    )
+
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):
@@ -278,11 +286,8 @@ class LightRAG:
             # self.check_storage_env_vars(storage_name)
 
         # Ensure vector_db_storage_cls_kwargs has required fields
-        default_vector_db_kwargs = {
-            "cosine_better_than_threshold": float(os.getenv("COSINE_THRESHOLD", "0.2"))
-        }
         self.vector_db_storage_cls_kwargs = {
-            **default_vector_db_kwargs,
+            "cosine_better_than_threshold": self.cosine_better_than_threshold,
             **self.vector_db_storage_cls_kwargs,
         }
 
@@ -1462,7 +1467,6 @@ class LightRAG:
             result["vector_data"] = vector_data[0] if vector_data else None
 
         return result
-
 
     def check_storage_env_vars(self, storage_name: str) -> None:
         """Check if all required environment variables for storage implementation exist
