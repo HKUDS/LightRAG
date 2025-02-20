@@ -45,15 +45,27 @@ PROMPTS["entity_extraction"] = """Strategy and capability elements are used to m
 Extract entities and relationships following the simplified ArchiMate Strategy metamodel. Identify how elements motivate, influence, and relate to each other in the enterprise architecture.
 
 ---Steps---
-1. Create entity type nodes (if not exist):
-For each entity type in the metamodel:
-("node"{tuple_delimiter}<type_name>{tuple_delimiter}"entity_type"{tuple_delimiter}<type_description>)
+1. ALWAYS create ALL entity type nodes first:
+("entity"{tuple_delimiter}"business_driver"{tuple_delimiter}"BUSINESS_DRIVER"{tuple_delimiter}"BUSINESS_DRIVER"){record_delimiter}
+("entity"{tuple_delimiter}"strategic_objective"{tuple_delimiter}"STRATEGIC_OBJECTIVE"{tuple_delimiter}"STRATEGIC_OBJECTIVE"){record_delimiter}
+("entity"{tuple_delimiter}"capability"{tuple_delimiter}"CAPABILITY"{tuple_delimiter}"CAPABILITY"){record_delimiter}
+("entity"{tuple_delimiter}"target_capability"{tuple_delimiter}"TARGET_CAPABILITY"{tuple_delimiter}"TARGET_CAPABILITY"){record_delimiter}
+("entity"{tuple_delimiter}"current_capability"{tuple_delimiter}"CURRENT_CAPABILITY"{tuple_delimiter}"CURRENT_CAPABILITY"){record_delimiter}
+("entity"{tuple_delimiter}"gap_key_shift"{tuple_delimiter}"GAP_KEY_SHIFT"{tuple_delimiter}"GAP_KEY_SHIFT"){record_delimiter}
+("entity"{tuple_delimiter}"programme"{tuple_delimiter}"PROGRAMME"{tuple_delimiter}"PROGRAMME"){record_delimiter}
+("entity"{tuple_delimiter}"initiative"{tuple_delimiter}"INITIATIVE"{tuple_delimiter}"INITIATIVE"){record_delimiter}
+("entity"{tuple_delimiter}"ict_function"{tuple_delimiter}"ICT_FUNCTION"{tuple_delimiter}"ICT_FUNCTION"){record_delimiter}
+("entity"{tuple_delimiter}"value_stream"{tuple_delimiter}"VALUE_STREAM"{tuple_delimiter}"VALUE_STREAM"){record_delimiter}
+("entity"{tuple_delimiter}"value_stage"{tuple_delimiter}"VALUE_STAGE"{tuple_delimiter}"VALUE_STAGE"){record_delimiter}
 
-2. For each identified entity, extract:
+2. Then extract entities and create entity nodes:
 - entity_name: Name of the entity (capitalized in English)
 - entity_type: One of the defined entity types
 - entity_description: Comprehensive description
 Format: ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>)
+
+Example for an actual entity:
+("entity"{tuple_delimiter}"Digital Transformation"{tuple_delimiter}"CAPABILITY"{tuple_delimiter}"Ability to transform business processes through digital technologies")
 
 3. Create type relationships:
 For each entity, create relationship to its type node:
@@ -114,23 +126,23 @@ The declining market share (15% drop) is driving our strategic objective to beco
 
 ################
 Output:
-("node"{tuple_delimiter}"business_driver"{tuple_delimiter}"entity_type"{tuple_delimiter}"Represents an external or internal condition that motivates an organization to define its goals and implement changes"){record_delimiter}
-("node"{tuple_delimiter}"strategic_objective"{tuple_delimiter}"entity_type"{tuple_delimiter}"Represents a high-level statement of intent, direction, or desired end state for an organization"){record_delimiter}
-("entity"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"business_driver"{tuple_delimiter}"External driver showing 15% decline in market share"){record_delimiter}
+("entity"{tuple_delimiter}"business_driver"{tuple_delimiter}"BUSINESS_DRIVER"{tuple_delimiter}"BUSINESS_DRIVER"){record_delimiter}
+("entity"{tuple_delimiter}"strategic_objective"{tuple_delimiter}"STRATEGIC_OBJECTIVE"{tuple_delimiter}"STRATEGIC_OBJECTIVE"){record_delimiter}
+("entity"{tuple_delimiter}"capability"{tuple_delimiter}"CAPABILITY"{tuple_delimiter}"CAPABILITY"){record_delimiter}
+("entity"{tuple_delimiter}"target_capability"{tuple_delimiter}"TARGET_CAPABILITY"{tuple_delimiter}"TARGET_CAPABILITY"){record_delimiter}
+("entity"{tuple_delimiter}"current_capability"{tuple_delimiter}"CURRENT_CAPABILITY"{tuple_delimiter}"CURRENT_CAPABILITY"){record_delimiter}
+("entity"{tuple_delimiter}"gap_key_shift"{tuple_delimiter}"GAP_KEY_SHIFT"{tuple_delimiter}"GAP_KEY_SHIFT"){record_delimiter}
+("entity"{tuple_delimiter}"programme"{tuple_delimiter}"PROGRAMME"{tuple_delimiter}"PROGRAMME"){record_delimiter}
+("entity"{tuple_delimiter}"initiative"{tuple_delimiter}"INITIATIVE"{tuple_delimiter}"INITIATIVE"){record_delimiter}
+("entity"{tuple_delimiter}"ict_function"{tuple_delimiter}"ICT_FUNCTION"{tuple_delimiter}"ICT_FUNCTION"){record_delimiter}
+("entity"{tuple_delimiter}"value_stream"{tuple_delimiter}"VALUE_STREAM"{tuple_delimiter}"VALUE_STREAM"){record_delimiter}
+("entity"{tuple_delimiter}"value_stage"{tuple_delimiter}"VALUE_STAGE"{tuple_delimiter}"VALUE_STAGE"){record_delimiter}
+("entity"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"BUSINESS_DRIVER"{tuple_delimiter}"External driver showing 15% decline in market share"){record_delimiter}
 ("relationship"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"business_driver"{tuple_delimiter}"is_type_of"{tuple_delimiter}"Entity type relationship"{tuple_delimiter}10){record_delimiter}
 ("relationship"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"Digital Market Leadership"{tuple_delimiter}"Market decline drives digital leadership objective"{tuple_delimiter}"motivation, strategy"{tuple_delimiter}9){record_delimiter}
 ("relationship"{tuple_delimiter}"Advanced Digital Services"{tuple_delimiter}"Digital Service Capability"{tuple_delimiter}"Target capability realizes service capability"{tuple_delimiter}"realization, improvement"{tuple_delimiter}8){record_delimiter}
 ("content_keywords"{tuple_delimiter}"digital transformation, market leadership, capability improvement"){completion_delimiter}
-#############################
-
-#############################
----Real Data---
-######################
-Entity_types: {entity_types}
-Text: {input_text}
-######################
-Output:
-"""
+#############################"""
 
 PROMPTS["entity_extraction_examples"] = [
     """Example 1:
@@ -140,9 +152,18 @@ The declining market share (15% drop) is driving our strategic objective to beco
 
 ################
 Output:
-("node"{tuple_delimiter}"business_driver"{tuple_delimiter}"entity_type"{tuple_delimiter}"Represents an external or internal condition that motivates an organization to define its goals and implement changes"){record_delimiter}
-("node"{tuple_delimiter}"strategic_objective"{tuple_delimiter}"entity_type"{tuple_delimiter}"Represents a high-level statement of intent, direction, or desired end state for an organization"){record_delimiter}
-("entity"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"business_driver"{tuple_delimiter}"External driver showing 15% decline in market share"){record_delimiter}
+("entity"{tuple_delimiter}"business_driver"{tuple_delimiter}"BUSINESS_DRIVER"{tuple_delimiter}"BUSINESS_DRIVER"){record_delimiter}
+("entity"{tuple_delimiter}"strategic_objective"{tuple_delimiter}"STRATEGIC_OBJECTIVE"{tuple_delimiter}"STRATEGIC_OBJECTIVE"){record_delimiter}
+("entity"{tuple_delimiter}"capability"{tuple_delimiter}"CAPABILITY"{tuple_delimiter}"CAPABILITY"){record_delimiter}
+("entity"{tuple_delimiter}"target_capability"{tuple_delimiter}"TARGET_CAPABILITY"{tuple_delimiter}"TARGET_CAPABILITY"){record_delimiter}
+("entity"{tuple_delimiter}"current_capability"{tuple_delimiter}"CURRENT_CAPABILITY"{tuple_delimiter}"CURRENT_CAPABILITY"){record_delimiter}
+("entity"{tuple_delimiter}"gap_key_shift"{tuple_delimiter}"GAP_KEY_SHIFT"{tuple_delimiter}"GAP_KEY_SHIFT"){record_delimiter}
+("entity"{tuple_delimiter}"programme"{tuple_delimiter}"PROGRAMME"{tuple_delimiter}"PROGRAMME"){record_delimiter}
+("entity"{tuple_delimiter}"initiative"{tuple_delimiter}"INITIATIVE"{tuple_delimiter}"INITIATIVE"){record_delimiter}
+("entity"{tuple_delimiter}"ict_function"{tuple_delimiter}"ICT_FUNCTION"{tuple_delimiter}"ICT_FUNCTION"){record_delimiter}
+("entity"{tuple_delimiter}"value_stream"{tuple_delimiter}"VALUE_STREAM"{tuple_delimiter}"VALUE_STREAM"){record_delimiter}
+("entity"{tuple_delimiter}"value_stage"{tuple_delimiter}"VALUE_STAGE"{tuple_delimiter}"VALUE_STAGE"){record_delimiter}
+("entity"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"BUSINESS_DRIVER"{tuple_delimiter}"External driver showing 15% decline in market share"){record_delimiter}
 ("relationship"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"business_driver"{tuple_delimiter}"is_type_of"{tuple_delimiter}"Entity type relationship"{tuple_delimiter}10){record_delimiter}
 ("relationship"{tuple_delimiter}"Market Share Decline"{tuple_delimiter}"Digital Market Leadership"{tuple_delimiter}"Market decline drives digital leadership objective"{tuple_delimiter}"motivation, strategy"{tuple_delimiter}9){record_delimiter}
 ("relationship"{tuple_delimiter}"Advanced Digital Services"{tuple_delimiter}"Digital Service Capability"{tuple_delimiter}"Target capability realizes service capability"{tuple_delimiter}"realization, improvement"{tuple_delimiter}8){record_delimiter}
