@@ -347,6 +347,9 @@ class LightRAG:
     """If True, enables caching for entity extraction steps to reduce LLM costs."""
 
     # Extensions
+    max_parallel_insert: int = field(default_factory=lambda: int(os.getenv("MAX_PARALLEL_INSERT", 20)))
+    """Maximum number of parallel insert operations."""
+    
     addon_params: dict[str, Any] = field(default_factory=dict)
 
     # Storages Management
@@ -786,10 +789,9 @@ class LightRAG:
             return
 
         # 2. split docs into chunks, insert chunks, update doc status
-        batch_size = self.addon_params.get("insert_batch_size", 10)
         docs_batches = [
-            list(to_process_docs.items())[i : i + batch_size]
-            for i in range(0, len(to_process_docs), batch_size)
+            list(to_process_docs.items())[i : i + self.max_parallel_insert]
+            for i in range(0, len(to_process_docs), self.max_parallel_insert)
         ]
 
         logger.info(f"Number of batches to process: {len(docs_batches)}.")
