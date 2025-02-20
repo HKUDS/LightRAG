@@ -47,6 +47,7 @@ from .utils import (
     set_logger,
     encode_string_by_tiktoken,
 )
+from .types import KnowledgeGraph
 
 # TODO: TO REMOVE @Yannick
 config = configparser.ConfigParser()
@@ -184,7 +185,7 @@ class LightRAG:
     """Maximum number of concurrent embedding function calls."""
 
     embedding_cache_config: dict[str, Any] = field(
-        default={
+        default_factory=lambda: {
             "enabled": False,
             "similarity_threshold": 0.95,
             "use_llm_check": False,
@@ -457,6 +458,17 @@ class LightRAG:
             self._storages_status = StoragesStatus.FINALIZED
             logger.debug("Finalized Storages")
 
+    async def get_graph_labels(self):
+        text = await self.chunk_entity_relation_graph.get_all_labels()
+        return text
+
+    async def get_knowledge_graph(
+        self, nodel_label: str, max_depth: int
+    ) -> KnowledgeGraph:
+        return await self.chunk_entity_relation_graph.get_knowledge_graph(
+            node_label=nodel_label, max_depth=max_depth
+        )
+
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
         import_path = STORAGES[storage_name]
         storage_class = lazy_external_import(import_path, storage_name)
@@ -727,7 +739,7 @@ class LightRAG:
 
     async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
         try:
-            new_kg = await extract_entities(
+            await extract_entities(
                 chunk,
                 knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
@@ -735,13 +747,6 @@ class LightRAG:
                 llm_response_cache=self.llm_response_cache,
                 global_config=asdict(self),
             )
-            if new_kg is None:
-                logger.info("No new entities or relationships extracted.")
-            else:
-                async with self._entity_lock:
-                    logger.info("New entities or relationships extracted.")
-                    self.chunk_entity_relation_graph = new_kg
-
         except Exception as e:
             logger.error("Failed to extract entities and relationships")
             raise e

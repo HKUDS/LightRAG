@@ -329,7 +329,7 @@ async def extract_entities(
     relationships_vdb: BaseVectorStorage,
     global_config: dict[str, str],
     llm_response_cache: BaseKVStorage | None = None,
-) -> BaseGraphStorage | None:
+) -> None:
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     enable_llm_cache_for_entity_extract: bool = global_config[
@@ -522,16 +522,18 @@ async def extract_entities(
         ]
     )
 
-    if not len(all_entities_data) and not len(all_relationships_data):
-        logger.warning(
-            "Didn't extract any entities and relationships, maybe your LLM is not working"
-        )
-        return None
+    if not (all_entities_data or all_relationships_data):
+        logger.info("Didn't extract any entities and relationships.")
+        return
 
-    if not len(all_entities_data):
-        logger.warning("Didn't extract any entities")
-    if not len(all_relationships_data):
-        logger.warning("Didn't extract any relationships")
+    if not all_entities_data:
+        logger.info("Didn't extract any entities")
+    if not all_relationships_data:
+        logger.info("Didn't extract any relationships")
+
+    logger.info(
+        f"New entities or relationships extracted, entities:{all_entities_data}, relationships:{all_relationships_data}"
+    )
 
     if entity_vdb is not None:
         data_for_vdb = {
@@ -559,8 +561,6 @@ async def extract_entities(
             for dp in all_relationships_data
         }
         await relationships_vdb.upsert(data_for_vdb)
-
-    return knowledge_graph_inst
 
 
 async def kg_query(

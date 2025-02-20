@@ -13,6 +13,7 @@ from typing import (
 )
 import numpy as np
 from .utils import EmbeddingFunc
+from .types import KnowledgeGraph
 
 load_dotenv()
 
@@ -196,6 +197,16 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
         """Get all labels in the graph."""
+
+    @abstractmethod
+    async def get_all_labels(self) -> list[str]:
+        """Get a knowledge graph of a node."""
+
+    @abstractmethod
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        """Retrieve a subgraph of the knowledge graph starting from a given node."""
 
 
 class DocStatus(str, Enum):

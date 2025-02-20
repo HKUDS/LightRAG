@@ -5,6 +5,7 @@ from typing import Any, final
 import numpy as np
 
 
+from lightrag.types import KnowledgeGraph
 from lightrag.utils import (
     logger,
 )
@@ -16,11 +17,12 @@ import pipmaster as pm
 
 if not pm.is_installed("networkx"):
     pm.install("networkx")
+
 if not pm.is_installed("graspologic"):
     pm.install("graspologic")
 
-from graspologic import embed
 import networkx as nx
+from graspologic import embed
 
 
 @final
@@ -165,3 +167,11 @@ class NetworkXStorage(BaseGraphStorage):
         for source, target in edges:
             if self._graph.has_edge(source, target):
                 self._graph.remove_edge(source, target)
+
+    async def get_all_labels(self) -> list[str]:
+        raise NotImplementedError
+
+    async def get_knowledge_graph(
+        self, node_label: str, max_depth: int = 5
+    ) -> KnowledgeGraph:
+        raise NotImplementedError

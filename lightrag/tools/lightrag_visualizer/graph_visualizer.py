@@ -1,6 +1,6 @@
 from typing import Optional, Tuple, Dict, List
 import numpy as np
-
+import networkx as nx
 import pipmaster as pm
 
 # Added automatic libraries install using pipmaster
@@ -12,10 +12,7 @@ if not pm.is_installed("pyglm"):
     pm.install("pyglm")
 if not pm.is_installed("python-louvain"):
     pm.install("python-louvain")
-if not pm.is_installed("networkx"):
-    pm.install("networkx")
 
-import networkx as nx
 import moderngl
 from imgui_bundle import imgui, immapp, hello_imgui
 import community
