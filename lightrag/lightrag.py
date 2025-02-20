@@ -250,12 +250,14 @@ class LightRAG:
     The default function is :func:`.utils.convert_response_to_json`.
     """
 
+    _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
+
     def __post_init__(self):
+        logger.setLevel(self.log_level)
         os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
         set_logger(self.log_file_path)
-
-        logger.setLevel(self.log_level)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
+
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
             os.makedirs(self.working_dir)
@@ -282,9 +284,6 @@ class LightRAG:
             **default_vector_db_kwargs,
             **self.vector_db_storage_cls_kwargs,
         }
-
-        # Life cycle
-        self.storages_status = StoragesStatus.NOT_CREATED
 
         # Show config
         global_config = asdict(self)
@@ -393,7 +392,7 @@ class LightRAG:
             )
         )
 
-        self.storages_status = StoragesStatus.CREATED
+        self._storages_status = StoragesStatus.CREATED
 
         # Initialize storages
         if self.auto_manage_storages_states:
@@ -408,7 +407,7 @@ class LightRAG:
 
     async def initialize_storages(self):
         """Asynchronously initialize the storages"""
-        if self.storages_status == StoragesStatus.CREATED:
+        if self._storages_status == StoragesStatus.CREATED:
             tasks = []
 
             for storage in (
@@ -426,12 +425,12 @@ class LightRAG:
 
             await asyncio.gather(*tasks)
 
-            self.storages_status = StoragesStatus.INITIALIZED
+            self._storages_status = StoragesStatus.INITIALIZED
             logger.debug("Initialized Storages")
 
     async def finalize_storages(self):
         """Asynchronously finalize the storages"""
-        if self.storages_status == StoragesStatus.INITIALIZED:
+        if self._storages_status == StoragesStatus.INITIALIZED:
             tasks = []
 
             for storage in (
@@ -449,7 +448,7 @@ class LightRAG:
 
             await asyncio.gather(*tasks)
 
-            self.storages_status = StoragesStatus.FINALIZED
+            self._storages_status = StoragesStatus.FINALIZED
             logger.debug("Finalized Storages")
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
