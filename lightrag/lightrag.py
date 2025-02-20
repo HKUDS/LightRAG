@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
 from typing import Any, AsyncIterator, Callable, Iterator, cast
-from asyncio import Lock
+
 from .base import (
     BaseGraphStorage,
     BaseKVStorage,
@@ -357,9 +357,6 @@ class LightRAG:
     convert_response_to_json_func: Callable[[str], dict[str, Any]] = (
         convert_response_to_json
     )
-
-    # Lock for entity extraction
-    _entity_lock = Lock()
 
     # Custom Chunking Function
     chunking_func: Callable[
@@ -1203,7 +1200,6 @@ class LightRAG:
         # ---------------------
         # STEP 1: Keyword Extraction
         # ---------------------
-        # We'll assume 'extract_keywords_only(...)' returns (hl_keywords, ll_keywords).
         hl_keywords, ll_keywords = await extract_keywords_only(
             text=query,
             param=param,
