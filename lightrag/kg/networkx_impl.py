@@ -168,6 +168,9 @@ class NetworkXStorage(BaseGraphStorage):
             if self._graph.has_edge(source, target):
                 self._graph.remove_edge(source, target)
 
+    async def get_all_labels(self) -> list[str]:
+        raise NotImplementedError
+
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
