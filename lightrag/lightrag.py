@@ -184,7 +184,7 @@ class LightRAG:
     """Maximum number of concurrent embedding function calls."""
 
     embedding_cache_config: dict[str, Any] = field(
-        default={
+        default_factory=lambda: {
             "enabled": False,
             "similarity_threshold": 0.95,
             "use_llm_check": False,
@@ -727,7 +727,7 @@ class LightRAG:
 
     async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
         try:
-            new_kg = await extract_entities(
+            await extract_entities(
                 chunk,
                 knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
@@ -735,13 +735,6 @@ class LightRAG:
                 llm_response_cache=self.llm_response_cache,
                 global_config=asdict(self),
             )
-            if new_kg is None:
-                logger.info("No new entities or relationships extracted.")
-            else:
-                async with self._entity_lock:
-                    logger.info("New entities or relationships extracted.")
-                    self.chunk_entity_relation_graph = new_kg
-
         except Exception as e:
             logger.error("Failed to extract entities and relationships")
             raise e

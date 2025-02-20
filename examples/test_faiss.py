@@ -70,7 +70,7 @@ def main():
         ),
         vector_storage="FaissVectorDBStorage",
         vector_db_storage_cls_kwargs={
-            "cosine_better_than_threshold": 0.3  # Your desired threshold
+            "cosine_better_than_threshold": 0.2  # Your desired threshold
         },
     )
 
