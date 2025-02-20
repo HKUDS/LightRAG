@@ -714,6 +714,7 @@ def get_conversation_turns(
 
     return "\n".join(formatted_turns)
 
+
 def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
     """
     Ensure that there is always an event loop available.
@@ -737,8 +738,8 @@ def always_get_an_event_loop() -> asyncio.AbstractEventLoop:
         new_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(new_loop)
         return new_loop
-    
-    
+
+
 def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any]:
     """Lazily import a class from an external module based on the package of the caller."""
     # Get the caller's module and package
@@ -756,4 +757,3 @@ def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any
         return cls(*args, **kwargs)
 
     return import_class
-    

@@ -44,5 +44,3 @@ async def print_stream(stream):
     async for chunk in stream:
         if chunk:
             print(chunk, end="", flush=True)
-
-

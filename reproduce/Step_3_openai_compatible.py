@@ -54,9 +54,6 @@ async def process_query(query_text, rag_instance, query_param):
         return None, {"query": query_text, "error": str(e)}
 
 
-
-
-
 def run_queries_and_save_to_json(
     queries, rag_instance, query_param, output_file, error_file
 ):
