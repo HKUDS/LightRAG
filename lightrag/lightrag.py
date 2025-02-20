@@ -82,8 +82,8 @@ class LightRAG:
     log_level: int = field(default=logger.level)
     """Logging level for the system (e.g., 'DEBUG', 'INFO', 'WARNING')."""
 
-    log_dir: str = field(default=os.getcwd())
-    """Directory where logs are stored. Defaults to the current working directory."""
+    log_file_path: str = field(default=os.path.join(os.getcwd(), "lightrag.log"))
+    """Log file path."""
 
     # Entity extraction
     # ---
@@ -251,9 +251,8 @@ class LightRAG:
     """
 
     def __post_init__(self):
-        os.makedirs(self.log_dir, exist_ok=True)
-        log_file = os.path.join(self.log_dir, "lightrag.log")
-        set_logger(log_file)
+        os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
+        set_logger(self.log_file_path)
 
         logger.setLevel(self.log_level)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
