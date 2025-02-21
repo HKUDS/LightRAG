@@ -80,7 +80,7 @@ export default function UploadDocumentsDialog() {
         <FileUploader
           maxFileCount={Infinity}
           maxSize={200 * 1024 * 1024}
-          description="supported types: TXT, MD, DOC, PDF, PPTX"
+          description="supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
           onUpload={handleDocumentsUpload}
           progresses={progresses}
           disabled={isUploading}
