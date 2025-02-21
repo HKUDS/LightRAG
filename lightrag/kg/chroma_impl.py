@@ -10,13 +10,8 @@ import pipmaster as pm
 if not pm.is_installed("chromadb"):
     pm.install("chromadb")
 
-try:
-    from chromadb import HttpClient, PersistentClient
-    from chromadb.config import Settings
-except ImportError as e:
-    raise ImportError(
-        "`chromadb` library is not installed. Please install it via pip: `pip install chromadb`."
-    ) from e
+from chromadb import HttpClient, PersistentClient
+from chromadb.config import Settings
 
 
 @final
@@ -113,9 +108,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
-            logger.warning("Empty data provided to vector DB")
-            return []
+            return
 
         try:
             ids = list(data.keys())

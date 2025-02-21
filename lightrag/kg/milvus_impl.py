@@ -14,13 +14,8 @@ if not pm.is_installed("configparser"):
 if not pm.is_installed("pymilvus"):
     pm.install("pymilvus")
 
-try:
-    import configparser
-    from pymilvus import MilvusClient
-except ImportError as e:
-    raise ImportError(
-        "`pymilvus` library is not installed. Please install it via pip: `pip install pymilvus`."
-    ) from e
+import configparser
+from pymilvus import MilvusClient
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -80,11 +75,11 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
-        if not len(data):
-            logger.warning("You insert an empty data to vector DB")
-            return []
-        list_data = [
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
+
+        list_data: list[dict[str, Any]] = [
             {
                 "id": k,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},

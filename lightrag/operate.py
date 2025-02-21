@@ -329,7 +329,7 @@ async def extract_entities(
     relationships_vdb: BaseVectorStorage,
     global_config: dict[str, str],
     llm_response_cache: BaseKVStorage | None = None,
-) -> BaseGraphStorage | None:
+) -> None:
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     enable_llm_cache_for_entity_extract: bool = global_config[
@@ -491,11 +491,9 @@ async def extract_entities(
         already_processed += 1
         already_entities += len(maybe_nodes)
         already_relations += len(maybe_edges)
-        now_ticks = PROMPTS["process_tickers"][
-            already_processed % len(PROMPTS["process_tickers"])
-        ]
+
         logger.debug(
-            f"{now_ticks} Processed {already_processed} chunks, {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
+            f"Processed {already_processed} chunks, {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
         )
         return dict(maybe_nodes), dict(maybe_edges)
 
@@ -524,16 +522,18 @@ async def extract_entities(
         ]
     )
 
-    if not len(all_entities_data) and not len(all_relationships_data):
-        logger.warning(
-            "Didn't extract any entities and relationships, maybe your LLM is not working"
-        )
-        return None
+    if not (all_entities_data or all_relationships_data):
+        logger.info("Didn't extract any entities and relationships.")
+        return
 
-    if not len(all_entities_data):
-        logger.warning("Didn't extract any entities")
-    if not len(all_relationships_data):
-        logger.warning("Didn't extract any relationships")
+    if not all_entities_data:
+        logger.info("Didn't extract any entities")
+    if not all_relationships_data:
+        logger.info("Didn't extract any relationships")
+
+    logger.info(
+        f"New entities or relationships extracted, entities:{all_entities_data}, relationships:{all_relationships_data}"
+    )
 
     if entity_vdb is not None:
         data_for_vdb = {
@@ -561,8 +561,6 @@ async def extract_entities(
             for dp in all_relationships_data
         }
         await relationships_vdb.upsert(data_for_vdb)
-
-    return knowledge_graph_inst
 
 
 async def kg_query(
@@ -1328,15 +1326,12 @@ async def _get_edge_data(
         ),
     )
 
-    if not all([n is not None for n in edge_datas]):
-        logger.warning("Some edges are missing, maybe the storage is damaged")
-
     edge_datas = [
         {
             "src_id": k["src_id"],
             "tgt_id": k["tgt_id"],
             "rank": d,
-            "created_at": k.get("__created_at__", None),  # 从 KV 存储中获取时间元数据
+            "created_at": k.get("__created_at__", None),
             **v,
         }
         for k, v, d in zip(results, edge_datas, edge_degree)
@@ -1345,16 +1340,11 @@ async def _get_edge_data(
     edge_datas = sorted(
         edge_datas, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
-    len_edge_datas = len(edge_datas)
     edge_datas = truncate_list_by_token_size(
         edge_datas,
         key=lambda x: x["description"],
         max_token_size=query_param.max_token_for_global_context,
     )
-    logger.debug(
-        f"Truncate relations from {len_edge_datas} to {len(edge_datas)} (max tokens:{query_param.max_token_for_global_context})"
-    )
-
     use_entities, use_text_units = await asyncio.gather(
         _find_most_related_entities_from_relationships(
             edge_datas, query_param, knowledge_graph_inst
