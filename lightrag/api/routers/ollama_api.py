@@ -5,31 +5,13 @@ import logging
 import time
 import json
 import re
-import os
 from enum import Enum
 from fastapi.responses import StreamingResponse
 import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import encode_string_by_tiktoken
-from dotenv import load_dotenv
-
-
-# Load environment variables
-load_dotenv(override=True)
-
-
-class OllamaServerInfos:
-    # Constants for emulated Ollama model information
-    LIGHTRAG_NAME = "lightrag"
-    LIGHTRAG_TAG = os.getenv("OLLAMA_EMULATING_MODEL_TAG", "latest")
-    LIGHTRAG_MODEL = f"{LIGHTRAG_NAME}:{LIGHTRAG_TAG}"
-    LIGHTRAG_SIZE = 7365960935  # it's a dummy value
-    LIGHTRAG_CREATED_AT = "2024-01-15T00:00:00Z"
-    LIGHTRAG_DIGEST = "sha256:lightrag"
-
-
-ollama_server_infos = OllamaServerInfos()
+from ..utils_api import ollama_server_infos
 
 
 # query mode according to query prefix (bypass is not LightRAG quer mode)
@@ -144,7 +126,7 @@ class OllamaAPI:
         self.rag = rag
         self.ollama_server_infos = ollama_server_infos
         self.top_k = top_k
-        self.router = APIRouter()
+        self.router = APIRouter(tags=["ollama"])
         self.setup_routes()
 
     def setup_routes(self):
