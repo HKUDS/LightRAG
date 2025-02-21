@@ -190,9 +190,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
 
                 docx_file = BytesIO(file)
                 doc = Document(docx_file)
-                content = "\n".join(
-                    [paragraph.text for paragraph in doc.paragraphs]
-                )
+                content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
             case ".pptx":
                 if not pm.is_installed("pptx"):
                     pm.install("pptx")
@@ -232,19 +230,13 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
         # Insert into the RAG queue
         if content:
             await rag.apipeline_enqueue_documents(content)
-            logging.info(
-                f"Successfully fetched and enqueued file: {file_path.name}"
-            )
+            logging.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
         else:
-            logging.error(
-                f"No content could be extracted from file: {file_path.name}"
-            )
+            logging.error(f"No content could be extracted from file: {file_path.name}")
 
     except Exception as e:
-        logging.error(
-            f"Error processing or enqueueing file {file_path.name}: {str(e)}"
-        )
+        logging.error(f"Error processing or enqueueing file {file_path.name}: {str(e)}")
         logging.error(traceback.format_exc())
     finally:
         if file_path.name.startswith(temp_prefix):
