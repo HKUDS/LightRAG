@@ -247,7 +247,7 @@ function FileUploader(props: FileUploaderProps) {
                         ? ` ${maxFileCount === Infinity ? 'multiple' : maxFileCount}
                       files (up to ${formatBytes(maxSize)} each)`
                         : ` a file with ${formatBytes(maxSize)}`}
-                      Supported formats: TXT, MD, DOC, PDF, PPTX
+                      Supported formats: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS
                     </p>
                   )}
                 </div>

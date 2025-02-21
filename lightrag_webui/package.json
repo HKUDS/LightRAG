@@ -7,7 +7,10 @@
     "dev": "bunx --bun vite",
     "build": "bunx --bun vite build",
     "lint": "eslint .",
-    "preview": "bunx --bun vite preview"
+    "preview": "bunx --bun vite preview",
+    "dev-no-bun": "vite",
+    "build-no-bun": "vite build --emptyOutDir",
+    "preview-no-bun": "vite preview"
   },
   "dependencies": {
     "@faker-js/faker": "^9.5.0",
