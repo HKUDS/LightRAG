@@ -26,14 +26,8 @@ if not pm.is_installed("graspologic"):
 if not pm.is_installed("oracledb"):
     pm.install("oracledb")
 
-try:
-    from graspologic import embed
-    import oracledb
-
-except ImportError as e:
-    raise ImportError(
-        "`oracledb` library is not installed. Please install it via pip: `pip install oracledb`."
-    ) from e
+from graspologic import embed
+import oracledb
 
 
 class OracleDB:
@@ -51,7 +45,7 @@ class OracleDB:
         self.increment = 1
         logger.info(f"Using the label {self.workspace} for Oracle Graph as identifier")
         if self.user is None or self.password is None:
-            raise ValueError("Missing database user or password in addon_params")
+            raise ValueError("Missing database user or password")
 
         try:
             oracledb.defaults.fetch_lobs = False
@@ -332,6 +326,10 @@ class OracleKVStorage(BaseKVStorage):
 
     ################ INSERT METHODS ################
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
+
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
             list_data = [
                 {

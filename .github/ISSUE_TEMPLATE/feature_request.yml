@@ -1,0 +1,26 @@
+name: Feature Request
+description: File a feature request
+labels: ["enhancement"]
+title: "[Feature Request]: <title>"
+
+body:
+  - type: checkboxes
+    id: existingcheck
+    attributes:
+      label: Do you need to file a feature request?
+      description: Please help us manage our time by avoiding duplicates and common feature request with the steps below.
+      options:
+        - label: I have searched the existing feature request and this feature request is not already filed.
+        - label: I believe this is a legitimate feature request, not just a question or bug.
+  - type: textarea
+    id: feature_request_description
+    attributes:
+      label: Feature Request Description
+      description: A clear and concise description of the feature request you would like.
+      placeholder: What this feature request add more or improve?
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Add any other context or screenshots about the feature request here.
+      placeholder: Any additional information

@@ -25,18 +25,13 @@ if not pm.is_installed("pymongo"):
 if not pm.is_installed("motor"):
     pm.install("motor")
 
-try:
-    from motor.motor_asyncio import (
-        AsyncIOMotorClient,
-        AsyncIOMotorDatabase,
-        AsyncIOMotorCollection,
-    )
-    from pymongo.operations import SearchIndexModel
-    from pymongo.errors import PyMongoError
-except ImportError as e:
-    raise ImportError(
-        "`motor, pymongo` library is not installed. Please install it via pip: `pip install motor pymongo`."
-    ) from e
+from motor.motor_asyncio import (
+    AsyncIOMotorClient,
+    AsyncIOMotorDatabase,
+    AsyncIOMotorCollection,
+)
+from pymongo.operations import SearchIndexModel
+from pymongo.errors import PyMongoError
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -113,8 +108,12 @@ class MongoKVStorage(BaseKVStorage):
         return keys - existing_ids
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
+
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            update_tasks = []
+            update_tasks: list[Any] = []
             for mode, items in data.items():
                 for k, v in items.items():
                     key = f"{mode}_{k}"
@@ -186,7 +185,10 @@ class MongoDocStatusStorage(DocStatusStorage):
         return data - existing_ids
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        update_tasks = []
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
+        update_tasks: list[Any] = []
         for k, v in data.items():
             data[k]["_id"] = k
             update_tasks.append(
@@ -860,10 +862,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
             logger.debug("vector index already exist")
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.debug(f"Inserting {len(data)} vectors to {self.namespace}")
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
-            logger.warning("You are inserting an empty data set to vector DB")
-            return []
+            return
 
         list_data = [
             {

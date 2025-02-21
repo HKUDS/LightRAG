@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import json
 import os
+import pipmaster as pm
 from dataclasses import dataclass
 from typing import Any, Dict, List, final
 
@@ -20,14 +21,12 @@ from lightrag.utils import logger
 
 from ..base import BaseGraphStorage
 
-try:
-    from gremlin_python.driver import client, serializer
-    from gremlin_python.driver.aiohttp.transport import AiohttpTransport
-    from gremlin_python.driver.protocol import GremlinServerError
-except ImportError as e:
-    raise ImportError(
-        "`gremlin` library is not installed. Please install it via pip: `pip install gremlin`."
-    ) from e
+if not pm.is_installed("gremlinpython"):
+    pm.install("gremlinpython")
+
+from gremlin_python.driver import client, serializer
+from gremlin_python.driver.aiohttp.transport import AiohttpTransport
+from gremlin_python.driver.protocol import GremlinServerError
 
 
 @final

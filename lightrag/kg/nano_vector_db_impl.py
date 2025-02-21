@@ -18,12 +18,7 @@ from lightrag.base import (
 if not pm.is_installed("nano-vectordb"):
     pm.install("nano-vectordb")
 
-try:
-    from nano_vectordb import NanoVectorDB
-except ImportError as e:
-    raise ImportError(
-        "`nano-vectordb` library is not installed. Please install it via pip: `pip install nano-vectordb`."
-    ) from e
+from nano_vectordb import NanoVectorDB
 
 
 @final
@@ -50,10 +45,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
-        if not len(data):
-            logger.warning("You insert an empty data to vector DB")
-            return []
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
 
         current_time = time.time()
         list_data = [

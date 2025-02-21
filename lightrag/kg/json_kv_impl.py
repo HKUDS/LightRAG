@@ -43,6 +43,9 @@ class JsonKVStorage(BaseKVStorage):
         return set(keys) - set(self._data.keys())
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
         left_data = {k: v for k, v in data.items() if k not in self._data}
         self._data.update(left_data)
 

@@ -67,6 +67,10 @@ class JsonDocStatusStorage(DocStatusStorage):
         write_json(self._data, self._file_name)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        if not data:
+            return
+
         self._data.update(data)
         await self.index_done_callback()
 
