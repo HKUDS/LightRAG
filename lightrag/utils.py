@@ -25,10 +25,26 @@ VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
 def verbose_debug(msg: str, *args, **kwargs):
     """Function for outputting detailed debug information.
     When VERBOSE_DEBUG=True, outputs the complete message.
-    When VERBOSE_DEBUG=False, outputs only the first 30 characters.
+    When VERBOSE_DEBUG=False, outputs only the first 50 characters.
+
+    Args:
+        msg: The message format string
+        *args: Arguments to be formatted into the message
+        **kwargs: Keyword arguments passed to logger.debug()
     """
     if VERBOSE_DEBUG:
         logger.debug(msg, *args, **kwargs)
+    else:
+        # Format the message with args first
+        if args:
+            formatted_msg = msg % args
+        else:
+            formatted_msg = msg
+        # Then truncate the formatted message
+        truncated_msg = (
+            formatted_msg[:50] + "..." if len(formatted_msg) > 50 else formatted_msg
+        )
+        logger.debug(truncated_msg, **kwargs)
 
 
 def set_verbose_debug(enabled: bool):

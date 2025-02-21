@@ -538,9 +538,7 @@ async def extract_entities(
     verbose_debug(
         f"New entities:{all_entities_data}, relationships:{all_relationships_data}"
     )
-    verbose_debug(
-        f"New relationships:{all_relationships_data}"
-    )
+    verbose_debug(f"New relationships:{all_relationships_data}")
 
     if entity_vdb is not None:
         data_for_vdb = {
