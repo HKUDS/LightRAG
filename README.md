@@ -545,6 +545,20 @@ The `insert_batch_size` parameter in `addon_params` controls how many documents 
 
 </details>
 
+<details>
+  <summary> <b> Insert with ID </b></summary>
+
+If you want to provide your own IDs for your documents, number of documents and number of IDs must be the same.
+
+```python
+# Insert single text, and provide ID for it
+rag.insert("TEXT1", ids=["ID_FOR_TEXT1"])
+
+# Insert multiple texts, and provide IDs for them
+rag.insert(["TEXT1", "TEXT2",...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
+```
+
+</details>
 
 <details>
   <summary><b>Incremental Insert</b></summary>
