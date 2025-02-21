@@ -23,6 +23,7 @@ from .utils import (
     CacheData,
     statistic_data,
     get_conversation_turns,
+    verbose_debug,
 )
 from .base import (
     BaseGraphStorage,
@@ -532,7 +533,13 @@ async def extract_entities(
         logger.info("Didn't extract any relationships")
 
     logger.info(
-        f"New entities or relationships extracted, entities:{all_entities_data}, relationships:{all_relationships_data}"
+        f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships"
+    )
+    verbose_debug(
+        f"New entities:{all_entities_data}, relationships:{all_relationships_data}"
+    )
+    verbose_debug(
+        f"New relationships:{all_relationships_data}"
     )
 
     if entity_vdb is not None:
