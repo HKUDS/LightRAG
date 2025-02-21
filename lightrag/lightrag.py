@@ -477,7 +477,7 @@ class LightRAG:
     @staticmethod
     def clean_text(text: str) -> str:
         """Clean text by removing null bytes (0x00) and whitespace"""
-        return text.strip().replace('\x00', '')
+        return text.strip().replace("\x00", "")
 
     def insert(
         self,
