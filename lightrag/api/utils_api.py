@@ -180,6 +180,12 @@ def parse_args() -> argparse.Namespace:
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging level (default: from env or INFO)",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=get_env_value("VERBOSE", False, bool),
+        help="Enable verbose debug output(only valid for DEBUG log-level)",
+    )
 
     parser.add_argument(
         "--key",
@@ -204,12 +210,6 @@ def parse_args() -> argparse.Namespace:
         "--ssl-keyfile",
         default=get_env_value("SSL_KEYFILE", None),
         help="Path to SSL private key file (required if --ssl is enabled)",
-    )
-    parser.add_argument(
-        "--auto-scan-at-startup",
-        action="store_true",
-        default=False,
-        help="Enable automatic scanning when the program starts",
     )
 
     parser.add_argument(
@@ -252,10 +252,10 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--verbose",
-        type=bool,
-        default=get_env_value("VERBOSE", False, bool),
-        help="Verbose debug output(default: from env or false)",
+        "--auto-scan-at-startup",
+        action="store_true",
+        default=False,
+        help="Enable automatic scanning when the program starts",
     )
 
     args = parser.parse_args()
