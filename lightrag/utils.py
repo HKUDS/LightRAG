@@ -57,11 +57,17 @@ logger = logging.getLogger("lightrag")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-def set_logger(log_file: str):
-    logger.setLevel(logging.DEBUG)
+def set_logger(log_file: str, level: int = logging.DEBUG):
+    """Set up file logging with the specified level.
+    
+    Args:
+        log_file: Path to the log file
+        level: Logging level (e.g. logging.DEBUG, logging.INFO)
+    """
+    logger.setLevel(level)
 
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(logging.DEBUG)
+    file_handler.setLevel(level)
 
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
