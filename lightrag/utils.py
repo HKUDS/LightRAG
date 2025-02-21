@@ -59,7 +59,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 def set_logger(log_file: str, level: int = logging.DEBUG):
     """Set up file logging with the specified level.
-    
+
     Args:
         log_file: Path to the log file
         level: Logging level (e.g. logging.DEBUG, logging.INFO)
