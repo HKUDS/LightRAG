@@ -474,6 +474,11 @@ class LightRAG:
         storage_class = lazy_external_import(import_path, storage_name)
         return storage_class
 
+    @staticmethod
+    def clean_text(text: str) -> str:
+        """Clean text by removing null bytes (0x00) and whitespace"""
+        return text.strip().replace('\x00', '')
+
     def insert(
         self,
         input: str | list[str],
@@ -521,8 +526,13 @@ class LightRAG:
     ) -> None:
         update_storage = False
         try:
-            doc_key = compute_mdhash_id(full_text.strip(), prefix="doc-")
-            new_docs = {doc_key: {"content": full_text.strip()}}
+            # Clean input texts
+            full_text = self.clean_text(full_text)
+            text_chunks = [self.clean_text(chunk) for chunk in text_chunks]
+
+            # Process cleaned texts
+            doc_key = compute_mdhash_id(full_text, prefix="doc-")
+            new_docs = {doc_key: {"content": full_text}}
 
             _add_doc_keys = await self.full_docs.filter_keys(set(doc_key))
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
@@ -535,11 +545,10 @@ class LightRAG:
 
             inserting_chunks: dict[str, Any] = {}
             for chunk_text in text_chunks:
-                chunk_text_stripped = chunk_text.strip()
-                chunk_key = compute_mdhash_id(chunk_text_stripped, prefix="chunk-")
+                chunk_key = compute_mdhash_id(chunk_text, prefix="chunk-")
 
                 inserting_chunks[chunk_key] = {
-                    "content": chunk_text_stripped,
+                    "content": chunk_text,
                     "full_doc_id": doc_key,
                 }
 
@@ -576,8 +585,8 @@ class LightRAG:
         if isinstance(input, str):
             input = [input]
 
-        # 1. Remove duplicate contents from the list
-        unique_contents = list(set(doc.strip() for doc in input))
+        # Clean input text and remove duplicates
+        unique_contents = list(set(self.clean_text(doc) for doc in input))
 
         # 2. Generate document IDs and initial status
         new_docs: dict[str, Any] = {
@@ -779,7 +788,7 @@ class LightRAG:
             all_chunks_data: dict[str, dict[str, str]] = {}
             chunk_to_source_map: dict[str, str] = {}
             for chunk_data in custom_kg.get("chunks", {}):
-                chunk_content = chunk_data["content"].strip()
+                chunk_content = self.clean_text(chunk_data["content"])
                 source_id = chunk_data["source_id"]
                 tokens = len(
                     encode_string_by_tiktoken(
