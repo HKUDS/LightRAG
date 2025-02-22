@@ -37,20 +37,22 @@ async def main():
         llm_model_max_token_size=32768,
         enable_llm_cache_for_entity_extract=True,
         embedding_func=EmbeddingFunc(
-            embedding_dim=768,
+            embedding_dim=1024,
             max_token_size=8192,
             func=lambda texts: ollama_embedding(
-                texts, embed_model="nomic-embed-text", host="http://localhost:11434"
+                texts, embed_model="bge-m3", host="http://localhost:11434"
             ),
         ),
         kv_storage="PGKVStorage",
         doc_status_storage="PGDocStatusStorage",
         graph_storage="PGGraphStorage",
         vector_storage="PGVectorStorage",
+        auto_manage_storages_states=False,
     )
 
     # add embedding_func for graph database, it's deleted in commit 5661d76860436f7bf5aef2e50d9ee4a59660146c
     rag.chunk_entity_relation_graph.embedding_func = rag.embedding_func
+    await rag.initialize_storages()
 
     with open(f"{ROOT_DIR}/book.txt", "r", encoding="utf-8") as f:
         await rag.ainsert(f.read())
