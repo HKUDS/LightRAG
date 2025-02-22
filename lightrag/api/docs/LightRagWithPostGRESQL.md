@@ -57,15 +57,23 @@ ALTER USER your_new_role WITH PASSWORD 'your_secure_password';
 \q
 ```
 
-### 3. Install PGVector Extension
+### 3. Install PGVector and Age Extensions
 
-Install necessary dependencies and compile the extension:
-
+Install PGVector:
 ```bash
 sudo apt install postgresql-server-dev-all
 cd /tmp
 git clone --branch v0.8.0 https://github.com/pgvector/pgvector.git
 cd pgvector
+make
+sudo make install
+```
+Install age:
+```bash
+sudo apt-get install build-essential libpq-dev
+cd /tmp
+git clone https://github.com/apache/age.git
+cd age
 make
 sudo make install
 ```
