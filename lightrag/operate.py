@@ -5,6 +5,7 @@ import json
 import re
 from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
+
 from .utils import (
     logger,
     clean_str,
@@ -34,6 +35,10 @@ from .base import (
 )
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 import time
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv(override=True)
 
 
 def chunking_by_token_size(

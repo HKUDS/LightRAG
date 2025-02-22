@@ -48,6 +48,10 @@ from .utils import (
     set_logger,
 )
 from .types import KnowledgeGraph
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv(override=True)
 
 # TODO: TO REMOVE @Yannick
 config = configparser.ConfigParser()

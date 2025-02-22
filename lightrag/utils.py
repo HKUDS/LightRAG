@@ -15,8 +15,11 @@ from typing import Any, Callable
 import xml.etree.ElementTree as ET
 import numpy as np
 import tiktoken
-
 from lightrag.prompt import PROMPTS
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv(override=True)
 
 
 VERBOSE_DEBUG = os.getenv("VERBOSE", "false").lower() == "true"
