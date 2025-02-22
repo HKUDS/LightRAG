@@ -293,6 +293,12 @@ def parse_args() -> argparse.Namespace:
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
+
+    # Handle openai-ollama special case
+    if args.llm_binding == "openai-ollama":
+        args.llm_binding = "openai"
+        args.embedding_binding = "ollama"
+
     args.llm_binding_host = get_env_value(
         "LLM_BINDING_HOST", get_default_host(args.llm_binding)
     )
