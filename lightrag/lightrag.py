@@ -568,7 +568,7 @@ class LightRAG:
                 await self._insert_done()
 
     async def apipeline_enqueue_documents(
-        self, input: str | list[str], ids: list[str] | None
+        self, input: str | list[str], ids: list[str] | None = None
     ) -> None:
         """
         Pipeline for Processing Documents
