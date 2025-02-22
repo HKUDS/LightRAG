@@ -921,10 +921,8 @@ async def mix_kg_vector_query(
         return {"kg_context": kg_context, "vector_context": vector_context}
 
     # 5. Construct hybrid prompt
-    sys_prompt = (
-        system_prompt
-        if system_prompt
-        else PROMPTS["mix_rag_response"].format(
+    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["mix_rag_response"]
+    sys_prompt = (sys_prompt_temp.format(
             kg_context=kg_context
             if kg_context
             else "No relevant knowledge graph information found",
