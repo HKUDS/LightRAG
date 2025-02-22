@@ -258,6 +258,22 @@ def parse_args() -> argparse.Namespace:
         help="Enable automatic scanning when the program starts",
     )
 
+    # LLM and embedding bindings
+    parser.add_argument(
+        "--llm-binding",
+        type=str,
+        default=get_env_value("LLM_BINDING", "ollama"),
+        choices=["lollms", "ollama", "openai", "openai-ollama", "azure_openai"],
+        help="LLM binding type (default: from env or ollama)",
+    )
+    parser.add_argument(
+        "--embedding-binding",
+        type=str,
+        default=get_env_value("EMBEDDING_BINDING", "ollama"),
+        choices=["lollms", "ollama", "openai", "azure_openai"],
+        help="Embedding binding type (default: from env or ollama)",
+    )
+
     args = parser.parse_args()
 
     # convert relative path to absolute path
@@ -277,10 +293,6 @@ def parse_args() -> argparse.Namespace:
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
-
-    # Inject binding configuration
-    args.llm_binding = get_env_value("LLM_BINDING", "ollama")
-    args.embedding_binding = get_env_value("EMBEDDING_BINDING", "ollama")
     args.llm_binding_host = get_env_value(
         "LLM_BINDING_HOST", get_default_host(args.llm_binding)
     )
