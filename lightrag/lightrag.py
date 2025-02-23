@@ -577,7 +577,7 @@ class LightRAG:
                 await self._insert_done()
 
     async def apipeline_enqueue_documents(
-        self, input: str | list[str], ids: list[str] | None
+        self, input: str | list[str], ids: list[str] | None = None
     ) -> None:
         """
         Pipeline for Processing Documents
@@ -590,9 +590,6 @@ class LightRAG:
         """
         if isinstance(input, str):
             input = [input]
-
-        # Clean input text and remove duplicates
-        input = list(set(self.clean_text(doc) for doc in input))
 
         # 1. Validate ids if provided or generate MD5 hash IDs
         if ids is not None:
@@ -607,6 +604,8 @@ class LightRAG:
             # Generate contents dict of IDs provided by user and documents
             contents = {id_: doc for id_, doc in zip(ids, input)}
         else:
+            # Clean input text and remove duplicates
+            input = list(set(self.clean_text(doc) for doc in input))
             # Generate contents dict of MD5 hash IDs and documents
             contents = {compute_mdhash_id(doc, prefix="doc-"): doc for doc in input}
 
