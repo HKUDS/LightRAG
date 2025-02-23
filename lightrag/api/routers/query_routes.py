@@ -161,8 +161,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         try:
             param = request.to_query_params(False)
-            if param.top_k is None:
-                param.top_k = top_k
             response = await rag.aquery(request.query, param=param)
 
             # If response is a string (e.g. cache hit), return directly
@@ -192,8 +190,6 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         try:
             param = request.to_query_params(True)
-            if param.top_k is None:
-                param.top_k = top_k
             response = await rag.aquery(request.query, param=param)
 
             from fastapi.responses import StreamingResponse

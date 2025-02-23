@@ -19,20 +19,17 @@ from ascii_colors import ASCIIColors
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-
 from .utils_api import (
     get_api_key_dependency,
     parse_args,
     get_default_host,
     display_splash_screen,
 )
-
 from lightrag import LightRAG
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
 from lightrag.utils import logger
-
 from .routers.document_routes import (
     DocumentManager,
     create_document_routes,
@@ -66,6 +63,38 @@ scan_progress: Dict = {
 
 # Lock for thread-safe operations
 progress_lock = threading.Lock()
+
+
+class AccessLogFilter(logging.Filter):
+    def __init__(self):
+        super().__init__()
+        # Define paths to be filtered
+        self.filtered_paths = ["/documents", "/health", "/webui/"]
+
+    def filter(self, record):
+        try:
+            if not hasattr(record, "args") or not isinstance(record.args, tuple):
+                return True
+            if len(record.args) < 5:
+                return True
+
+            method = record.args[1]
+            path = record.args[2]
+            status = record.args[4]
+            # print(f"Debug - Method: {method}, Path: {path}, Status: {status}")
+            # print(f"Debug - Filtered paths: {self.filtered_paths}")
+
+            if (
+                method == "GET"
+                and (status == 200 or status == 304)
+                and path in self.filtered_paths
+            ):
+                return False
+
+            return True
+
+        except Exception:
+            return True
 
 
 def create_app(args):
@@ -151,6 +180,8 @@ def create_app(args):
                         ASCIIColors.info(
                             "Skip document scanning(another scanning is active)"
                         )
+
+            ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
             yield
 
@@ -285,7 +316,7 @@ def create_app(args):
     )
 
     # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama", "openai-ollama"]:
+    if args.llm_binding in ["lollms", "ollama", "openai"]:
         rag = LightRAG(
             working_dir=args.working_dir,
             llm_model_func=lollms_model_complete
@@ -324,12 +355,10 @@ def create_app(args):
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
         )
-    else:
+    else:  # azure_openai
         rag = LightRAG(
             working_dir=args.working_dir,
-            llm_model_func=azure_openai_model_complete
-            if args.llm_binding == "azure_openai"
-            else openai_alike_model_complete,
+            llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs={
@@ -409,6 +438,38 @@ def create_app(args):
 def main():
     args = parse_args()
     import uvicorn
+    import logging.config
+
+    # Configure uvicorn logging
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "format": "%(levelname)s: %(message)s",
+                },
+            },
+            "handlers": {
+                "default": {
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stderr",
+                },
+            },
+            "loggers": {
+                "uvicorn.access": {
+                    "handlers": ["default"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
+            },
+        }
+    )
+
+    # Add filter to uvicorn access logger
+    uvicorn_access_logger = logging.getLogger("uvicorn.access")
+    uvicorn_access_logger.addFilter(AccessLogFilter())
 
     app = create_app(args)
     display_splash_screen(args)
@@ -416,6 +477,7 @@ def main():
         "app": app,
         "host": args.host,
         "port": args.port,
+        "log_config": None,  # Disable default config
     }
     if args.ssl:
         uvicorn_config.update(
