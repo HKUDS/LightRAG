@@ -301,7 +301,7 @@ async def _merge_edges_then_upsert(
                 node_data={
                     "source_id": source_id,
                     "description": description,
-                    "entity_type": '"UNKNOWN"',
+                    "entity_type": "UNKNOWN",
                 },
             )
     description = await _handle_entity_relation_summary(
