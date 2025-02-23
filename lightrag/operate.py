@@ -497,7 +497,7 @@ async def extract_entities(
         entities_count = len(maybe_nodes)
         relations_count = len(maybe_edges)
         logger.info(
-            f"  Chunk {processed_chunks}/{total_chunks}: extracted {entities_count} entities and {relations_count} relationships (duplicated)"
+            f"  Chunk {processed_chunks}/{total_chunks}: extracted {entities_count} entities and {relations_count} relationships (deduplicated)"
         )
         return dict(maybe_nodes), dict(maybe_edges)
 
@@ -536,7 +536,7 @@ async def extract_entities(
         logger.info("Didn't extract any relationships")
 
     logger.info(
-        f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships (duplicated)"
+        f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships (deduplicated)"
     )
     verbose_debug(
         f"New entities:{all_entities_data}, relationships:{all_relationships_data}"
