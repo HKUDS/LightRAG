@@ -161,7 +161,7 @@ class DocumentManager:
         """Scan input directory for new files"""
         new_files = []
         for ext in self.supported_extensions:
-            logging.info(f"Scanning for {ext} files in {self.input_dir}")
+            logging.debug(f"Scanning for {ext} files in {self.input_dir}")
             for file_path in self.input_dir.rglob(f"*{ext}"):
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)

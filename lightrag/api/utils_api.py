@@ -122,47 +122,6 @@ def parse_args() -> argparse.Namespace:
         description="LightRAG FastAPI Server with separate working and input directories"
     )
 
-    parser.add_argument(
-        "--kv-storage",
-        default=get_env_value(
-            "LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE
-        ),
-        help=f"KV storage implementation (default: {DefaultRAGStorageConfig.KV_STORAGE})",
-    )
-    parser.add_argument(
-        "--doc-status-storage",
-        default=get_env_value(
-            "LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE
-        ),
-        help=f"Document status storage implementation (default: {DefaultRAGStorageConfig.DOC_STATUS_STORAGE})",
-    )
-    parser.add_argument(
-        "--graph-storage",
-        default=get_env_value(
-            "LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE
-        ),
-        help=f"Graph storage implementation (default: {DefaultRAGStorageConfig.GRAPH_STORAGE})",
-    )
-    parser.add_argument(
-        "--vector-storage",
-        default=get_env_value(
-            "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
-        ),
-        help=f"Vector storage implementation (default: {DefaultRAGStorageConfig.VECTOR_STORAGE})",
-    )
-
-    # Bindings configuration
-    parser.add_argument(
-        "--llm-binding",
-        default=get_env_value("LLM_BINDING", "ollama"),
-        help="LLM binding to be used. Supported: lollms, ollama, openai (default: from env or ollama)",
-    )
-    parser.add_argument(
-        "--embedding-binding",
-        default=get_env_value("EMBEDDING_BINDING", "ollama"),
-        help="Embedding binding to be used. Supported: lollms, ollama, openai (default: from env or ollama)",
-    )
-
     # Server configuration
     parser.add_argument(
         "--host",
@@ -188,66 +147,9 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing input documents (default: from env or ./inputs)",
     )
 
-    # LLM Model configuration
-    parser.add_argument(
-        "--llm-binding-host",
-        default=get_env_value("LLM_BINDING_HOST", None),
-        help="LLM server host URL. If not provided, defaults based on llm-binding:\n"
-        + "- ollama: http://localhost:11434\n"
-        + "- lollms: http://localhost:9600\n"
-        + "- openai: https://api.openai.com/v1",
-    )
-
-    default_llm_api_key = get_env_value("LLM_BINDING_API_KEY", None)
-
-    parser.add_argument(
-        "--llm-binding-api-key",
-        default=default_llm_api_key,
-        help="llm server API key (default: from env or empty string)",
-    )
-
-    parser.add_argument(
-        "--llm-model",
-        default=get_env_value("LLM_MODEL", "mistral-nemo:latest"),
-        help="LLM model name (default: from env or mistral-nemo:latest)",
-    )
-
-    # Embedding model configuration
-    parser.add_argument(
-        "--embedding-binding-host",
-        default=get_env_value("EMBEDDING_BINDING_HOST", None),
-        help="Embedding server host URL. If not provided, defaults based on embedding-binding:\n"
-        + "- ollama: http://localhost:11434\n"
-        + "- lollms: http://localhost:9600\n"
-        + "- openai: https://api.openai.com/v1",
-    )
-
-    default_embedding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
-    parser.add_argument(
-        "--embedding-binding-api-key",
-        default=default_embedding_api_key,
-        help="embedding server API key (default: from env or empty string)",
-    )
-
-    parser.add_argument(
-        "--embedding-model",
-        default=get_env_value("EMBEDDING_MODEL", "bge-m3:latest"),
-        help="Embedding model name (default: from env or bge-m3:latest)",
-    )
-
-    parser.add_argument(
-        "--chunk_size",
-        default=get_env_value("CHUNK_SIZE", 1200),
-        help="chunk chunk size default 1200",
-    )
-
-    parser.add_argument(
-        "--chunk_overlap_size",
-        default=get_env_value("CHUNK_OVERLAP_SIZE", 100),
-        help="chunk overlap size default 100",
-    )
-
     def timeout_type(value):
+        if value is None:
+            return 150
         if value is None or value == "None":
             return None
         return int(value)
@@ -272,18 +174,6 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("MAX_TOKENS", 32768, int),
         help="Maximum token size (default: from env or 32768)",
     )
-    parser.add_argument(
-        "--embedding-dim",
-        type=int,
-        default=get_env_value("EMBEDDING_DIM", 1024, int),
-        help="Embedding dimensions (default: from env or 1024)",
-    )
-    parser.add_argument(
-        "--max-embed-tokens",
-        type=int,
-        default=get_env_value("MAX_EMBED_TOKENS", 8192, int),
-        help="Maximum embedding token size (default: from env or 8192)",
-    )
 
     # Logging configuration
     parser.add_argument(
@@ -291,6 +181,12 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("LOG_LEVEL", "INFO"),
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         help="Logging level (default: from env or INFO)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        default=get_env_value("VERBOSE", False, bool),
+        help="Enable verbose debug output(only valid for DEBUG log-level)",
     )
 
     parser.add_argument(
@@ -316,12 +212,6 @@ def parse_args() -> argparse.Namespace:
         "--ssl-keyfile",
         default=get_env_value("SSL_KEYFILE", None),
         help="Path to SSL private key file (required if --ssl is enabled)",
-    )
-    parser.add_argument(
-        "--auto-scan-at-startup",
-        action="store_true",
-        default=False,
-        help="Enable automatic scanning when the program starts",
     )
 
     parser.add_argument(
@@ -364,10 +254,26 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--verbose",
-        type=bool,
-        default=get_env_value("VERBOSE", False, bool),
-        help="Verbose debug output(default: from env or false)",
+        "--auto-scan-at-startup",
+        action="store_true",
+        default=False,
+        help="Enable automatic scanning when the program starts",
+    )
+
+    # LLM and embedding bindings
+    parser.add_argument(
+        "--llm-binding",
+        type=str,
+        default=get_env_value("LLM_BINDING", "ollama"),
+        choices=["lollms", "ollama", "openai", "openai-ollama", "azure_openai"],
+        help="LLM binding type (default: from env or ollama)",
+    )
+    parser.add_argument(
+        "--embedding-binding",
+        type=str,
+        default=get_env_value("EMBEDDING_BINDING", "ollama"),
+        choices=["lollms", "ollama", "openai", "azure_openai"],
+        help="Embedding binding type (default: from env or ollama)",
     )
 
     args = parser.parse_args()
@@ -375,6 +281,44 @@ def parse_args() -> argparse.Namespace:
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
     args.input_dir = os.path.abspath(args.input_dir)
+
+    # Inject storage configuration from environment variables
+    args.kv_storage = get_env_value(
+        "LIGHTRAG_KV_STORAGE", DefaultRAGStorageConfig.KV_STORAGE
+    )
+    args.doc_status_storage = get_env_value(
+        "LIGHTRAG_DOC_STATUS_STORAGE", DefaultRAGStorageConfig.DOC_STATUS_STORAGE
+    )
+    args.graph_storage = get_env_value(
+        "LIGHTRAG_GRAPH_STORAGE", DefaultRAGStorageConfig.GRAPH_STORAGE
+    )
+    args.vector_storage = get_env_value(
+        "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
+    )
+
+    # Handle openai-ollama special case
+    if args.llm_binding == "openai-ollama":
+        args.llm_binding = "openai"
+        args.embedding_binding = "ollama"
+
+    args.llm_binding_host = get_env_value(
+        "LLM_BINDING_HOST", get_default_host(args.llm_binding)
+    )
+    args.embedding_binding_host = get_env_value(
+        "EMBEDDING_BINDING_HOST", get_default_host(args.embedding_binding)
+    )
+    args.llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
+    args.embedding_binding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
+
+    # Inject model configuration
+    args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
+    args.embedding_model = get_env_value("EMBEDDING_MODEL", "bge-m3:latest")
+    args.embedding_dim = get_env_value("EMBEDDING_DIM", 1024, int)
+    args.max_embed_tokens = get_env_value("MAX_EMBED_TOKENS", 8192, int)
+
+    # Inject chunk configuration
+    args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
+    args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
@@ -547,8 +491,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
         ASCIIColors.white("""    API Key authentication is enabled.
     Make sure to include the X-API-Key header in all your requests.
     """)
-
-    ASCIIColors.green("Server is ready to accept connections! 🚀\n")
 
     # Ensure splash output flush to system log
     sys.stdout.flush()
