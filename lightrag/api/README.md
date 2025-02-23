@@ -268,7 +268,7 @@ You can not change storage implementation selection after you add documents to L
 | --input-dir | ./inputs | Directory containing input documents |
 | --max-async | 4 | Maximum async operations |
 | --max-tokens | 32768 | Maximum token size |
-| --timeout | None | Timeout in seconds (useful when using slow AI). Use None for infinite timeout |
+| --timeout | 150 | Timeout in seconds. None for infinite timeout(not recommended) |
 | --log-level | INFO | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
 | --verbose | - | Verbose debug output (True, Flase) |
 | --key | None | API key for authentication. Protects lightrag server against unauthorized access |

@@ -148,6 +148,8 @@ def parse_args() -> argparse.Namespace:
     )
 
     def timeout_type(value):
+        if value is None:
+            return 150
         if value is None or value == "None":
             return None
         return int(value)
