@@ -237,7 +237,7 @@ class NetworkXStorage(BaseGraphStorage):
             # Create new subgraph with only top nodes
             subgraph = subgraph.subgraph(top_node_ids)
             logger.info(
-                f"Reduced graph from {origin_nodes} nodes to {max_graph_nodes} nodes by degree (depth={max_depth})"
+                f"Reduced graph from {origin_nodes} nodes to {max_graph_nodes} nodes (depth={max_depth})"
             )
 
         # Add nodes to result
