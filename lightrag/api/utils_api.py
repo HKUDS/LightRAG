@@ -548,7 +548,5 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     Make sure to include the X-API-Key header in all your requests.
     """)
 
-    ASCIIColors.green("Server is ready to accept connections! 🚀\n")
-
     # Ensure splash output flush to system log
     sys.stdout.flush()

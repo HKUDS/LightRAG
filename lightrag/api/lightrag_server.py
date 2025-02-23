@@ -181,6 +181,8 @@ def create_app(args):
                             "Skip document scanning(another scanning is active)"
                         )
 
+            ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
+
             yield
 
         finally:
