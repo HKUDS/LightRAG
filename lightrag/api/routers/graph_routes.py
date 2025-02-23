@@ -22,6 +22,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
     @router.get("/graphs", dependencies=[Depends(optional_api_key)])
     async def get_knowledge_graph(label: str):
         """Get knowledge graph for a specific label"""
-        return await rag.get_knowledge_graph(node_label=label, max_depth=100)
+        return await rag.get_knowledge_graph(node_label=label, max_depth=3)
 
     return router
