@@ -381,9 +381,8 @@ async def extract_entities(
     continue_prompt = PROMPTS["entiti_continue_extraction"]
     if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]
 
-    already_processed = 0
-    already_entities = 0
-    already_relations = 0
+    processed_chunks = 0
+    total_chunks = len(ordered_chunks)
 
     async def _user_llm_func_with_cache(
         input_text: str, history_messages: list[dict[str, str]] = None
@@ -437,7 +436,7 @@ async def extract_entities(
             chunk_key_dp (tuple[str, TextChunkSchema]):
                 ("chunck-xxxxxx", {"tokens": int, "content": str, "full_doc_id": str, "chunk_order_index": int})
         """
-        nonlocal already_processed, already_entities, already_relations
+        nonlocal processed_chunks
         chunk_key = chunk_key_dp[0]
         chunk_dp = chunk_key_dp[1]
         content = chunk_dp["content"]
@@ -494,12 +493,11 @@ async def extract_entities(
                 maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
                     if_relation
                 )
-        already_processed += 1
-        already_entities += len(maybe_nodes)
-        already_relations += len(maybe_edges)
-
-        logger.debug(
-            f"Processed {already_processed} chunks, {already_entities} entities(duplicated), {already_relations} relations(duplicated)\r",
+        processed_chunks += 1
+        entities_count = len(maybe_nodes)
+        relations_count = len(maybe_edges)
+        logger.info(
+            f"  Chunk {processed_chunks}/{total_chunks}: extracted {entities_count} entities and {relations_count} relationships (duplicated)"
         )
         return dict(maybe_nodes), dict(maybe_edges)
 
@@ -538,7 +536,7 @@ async def extract_entities(
         logger.info("Didn't extract any relationships")
 
     logger.info(
-        f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships"
+        f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships (duplicated)"
     )
     verbose_debug(
         f"New entities:{all_entities_data}, relationships:{all_relationships_data}"
