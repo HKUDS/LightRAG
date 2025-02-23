@@ -45,7 +45,7 @@ EMBEDDING_BINDING_HOST=http://localhost:11434
 LLM_BINDING_HOST=http://localhost:9600
 EMBEDDING_BINDING_HOST=http://localhost:9600
 
-# for openai, openai compatible or azure openai backend 
+# for openai, openai compatible or azure openai backend
 LLM_BINDING_HOST=https://api.openai.com/v1
 EMBEDDING_BINDING_HOST=http://localhost:9600
 ```
@@ -502,4 +502,3 @@ A query prefix in the query string can determines which LightRAG query mode is u
 For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default。
 
 "/bypass" is not a LightRAG query mode, it will tell API Server to pass the query directly to the underlying LLM with chat history. So user can use LLM to answer question base on the chat history. If you are using Open WebUI as front end, you can just switch the model to a normal LLM instead of using /bypass prefix.
-
