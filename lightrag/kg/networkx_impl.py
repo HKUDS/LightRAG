@@ -219,10 +219,21 @@ class NetworkXStorage(BaseGraphStorage):
             if not nodes_to_explore:
                 logger.warning(f"No nodes found with label {node_label}")
                 return result
-                
+
             # Get subgraph using ego_graph
             subgraph = nx.ego_graph(self._graph, nodes_to_explore[0], radius=max_depth)
         
+        # Check if number of nodes exceeds max_graph_nodes
+        max_graph_nodes=500
+        if len(subgraph.nodes()) > max_graph_nodes:
+            origin_nodes=len(subgraph.nodes())
+            node_degrees = dict(subgraph.degree())
+            top_nodes = sorted(node_degrees.items(), key=lambda x: x[1], reverse=True)[:max_graph_nodes]
+            top_node_ids = [node[0] for node in top_nodes]
+            # Create new subgraph with only top nodes
+            subgraph = subgraph.subgraph(top_node_ids)
+            logger.info(f"Reduced graph from {origin_nodes} nodes to {max_graph_nodes} nodes by degree (depth={max_depth})")
+
         # Add nodes to result
         for node in subgraph.nodes():
             if str(node) in seen_nodes:
