@@ -314,7 +314,7 @@ def create_app(args):
     )
 
     # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama", "openai-ollama"]:
+    if args.llm_binding in ["lollms", "ollama", "openai"]:
         rag = LightRAG(
             working_dir=args.working_dir,
             llm_model_func=lollms_model_complete
@@ -353,12 +353,10 @@ def create_app(args):
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
         )
-    else:
+    else:  # azure_openai
         rag = LightRAG(
             working_dir=args.working_dir,
-            llm_model_func=azure_openai_model_complete
-            if args.llm_binding == "azure_openai"
-            else openai_alike_model_complete,
+            llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs={
