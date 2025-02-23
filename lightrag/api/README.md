@@ -1,14 +1,14 @@
-## Install with API Support
+## Install LightRAG as an API Server
 
-LightRAG provides optional API support through FastAPI servers that add RAG capabilities to existing LLM services. You can install LightRAG with API support in two ways:
+LightRAG provides optional API support through FastAPI servers that add RAG capabilities to existing LLM services. You can install LightRAG API Server in two ways:
 
-### 1. Installation from PyPI
+### Installation from PyPI
 
 ```bash
 pip install "lightrag-hku[api]"
 ```
 
-### 2. Installation from Source (Development)
+### Installation from Source (Development)
 
 ```bash
 # Clone the repository
@@ -22,33 +22,80 @@ cd lightrag
 pip install -e ".[api]"
 ```
 
-### Prerequisites
+### Starting API Server with Default Settings
+
+LightRAG requires both LLM and Embedding Model to work together to complete document indexing and querying tasks. LightRAG supports binding to various LLM/Embedding backends:
+
+* ollama
+* lollms
+* openai & openai compatible
+* azure_openai
 
 Before running any of the servers, ensure you have the corresponding backend service running for both llm and embedding.
-The new api allows you to mix different bindings for llm/embeddings.
-For example, you have the possibility to use ollama for the embedding and openai for the llm.
+The LightRAG API Server provides default parameters for LLM and Embedding, allowing users to easily start the service through command line. These default configurations are:
 
-#### For LoLLMs Server
-- LoLLMs must be running and accessible
-- Default connection: http://localhost:9600
-- Configure using --llm-binding-host and/or --embedding-binding-host if running on a different host/port
+* Default endpoint of  LLM/Embeding backend(LLM_BINDING_HOST or EMBEDDING_BINDING_HOST)
 
-#### For Ollama Server
-- Ollama must be running and accessible
-- Requires environment variables setup or command line argument provided
-- Environment variables: LLM_BINDING=ollama, LLM_BINDING_HOST, LLM_MODEL
-- Command line arguments: --llm-binding=ollama, --llm-binding-host, --llm-model
-- Default connection is  http://localhost:11434 if not priveded
+```
+# for lollms backend
+LLM_BINDING_HOST=http://localhost:11434
+EMBEDDING_BINDING_HOST=http://localhost:11434
 
-> The default MAX_TOKENS(num_ctx) for Ollama is 32768. If your Ollama server is lacking or GPU memory, set it to a lower value.
+# for lollms backend
+LLM_BINDING_HOST=http://localhost:9600
+EMBEDDING_BINDING_HOST=http://localhost:9600
 
-#### For OpenAI Alike Server
-- Requires environment variables setup or command line argument provided
-- Environment variables: LLM_BINDING=ollama, LLM_BINDING_HOST, LLM_MODEL, LLM_BINDING_API_KEY
-- Command line arguments: --llm-binding=ollama, --llm-binding-host, --llm-model, --llm-binding-api-key
-- Default connection is https://api.openai.com/v1 if not priveded
+# for openai, openai compatible or azure openai backend 
+LLM_BINDING_HOST=https://api.openai.com/v1
+EMBEDDING_BINDING_HOST=http://localhost:9600
+```
 
-#### For Azure OpenAI Server
+* Default model config
+
+```
+LLM_MODEL=mistral-nemo:latest
+
+EMBEDDING_MODEL=bge-m3:latest
+EMBEDDING_DIM=1024
+MAX_EMBED_TOKENS=8192
+```
+
+* API keys for LLM/Embedding backend
+
+When connecting to backend require API KEY, corresponding environment variables must be provided:
+
+```
+LLM_BINDING_API_KEY=your_api_key
+EMBEDDING_BINDING_API_KEY=your_api_key
+```
+
+* Use command line arguments to choose LLM/Embeding backend
+
+Use `--llm-binding` to select LLM backend type, and use `--embedding-binding` to select the embedding backend type. All the supported backend types are:
+
+```
+openai: LLM default type
+ollama: Embedding defult type
+lollms:
+azure_openai:
+openai-ollama: select openai for LLM and ollama for embedding(only valid for --llm-binding)
+```
+
+The LightRAG API Server allows you to mix different bindings for llm/embeddings. For example, you have the possibility to use ollama for the embedding and openai for the llm.With the above default parameters, you can start API Server with simple CLI arguments like these:
+
+```
+# start with openai llm and ollama embedding
+LLM_BINDING_API_KEY=your_api_key Light_server
+LLM_BINDING_API_KEY=your_api_key Light_server --llm-binding openai-ollama
+
+# start with openai llm and openai embedding
+LLM_BINDING_API_KEY=your_api_key Light_server --llm-binding openai --embedding-binding openai
+
+# start with ollama llm and ollama embedding (no apikey is needed)
+Light_server --llm-binding ollama --embedding-binding ollama
+```
+
+### For Azure OpenAI Backend
 Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
 ```bash
 # Change the resource group name, location and OpenAI resource name as needed
@@ -68,13 +115,18 @@ az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_
 The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
 
 ```
+# Azure OpenAI Configuration in .env
 LLM_BINDING=azure_openai
-LLM_BINDING_HOST=endpoint_of_azure_ai
-LLM_MODEL=model_name_of_azure_ai
-LLM_BINDING_API_KEY=api_key_of_azure_ai
+LLM_BINDING_HOST=your-azure-endpoint
+LLM_MODEL=your-model-deployment-name
+LLM_BINDING_API_KEY=your-azure-api-key
+AZURE_OPENAI_API_VERSION=2024-08-01-preview  # optional, defaults to latest version
+EMBEDDING_BINDING=azure_openai  # if using Azure OpenAI for embeddings
+EMBEDDING_MODEL=your-embedding-deployment-name
+
 ```
 
-### 3. Install Lightrag as a Linux Service
+### Install Lightrag as a Linux Service
 
 Create a your service file `lightrag.sevice` from the sample file : `lightrag.sevice.example`. Modified the WorkingDirectoryand EexecStart in the service file:
 
@@ -105,40 +157,36 @@ sudo systemctl status lightrag.service
 sudo systemctl enable lightrag.service
 ```
 
+### Automatic Document Indexing
 
+When starting any of the servers with the `--auto-scan-at-startup` parameter, the system will automatically:
 
-## Configuration
+1. Scan for new files in the input directory
+2. Indexing new documents that aren't already in the database
+3. Make all content immediately available for RAG queries
 
-LightRAG can be configured using either command-line arguments or environment variables. When both are provided, command-line arguments take precedence over environment variables.
+> The `--input-dir` parameter specify the input directory to scan for.
 
-Default `TOP_K` is set to `60`. Default `COSINE_THRESHOLD` are set to `0.2`.
+## API Server Configuration
 
-### Environment Variables
+API Server can be config in three way (highest priority first):
 
-You can configure LightRAG using environment variables by creating a `.env` file in your project root directory. A sample file `.env.example` is provided for your convenience.
+* Command line arguments
+* Enviroment variables or .env file
+* Config.ini (Only for storage configuration)
 
-### Config.ini
+Most of the configurations come with a default settings, check out details in sample file: `.env.example`. Datastorage configuration can be also set by config.ini. A sample file `config.ini.example` is provided for your convenience.
 
-Datastorage configuration can be also set by config.ini. A sample file `config.ini.example` is provided for your convenience.
+### LLM and Embedding Backend Supported
 
-### Configuration Priority
+LightRAG supports binding to various LLM/Embedding backends:
 
-The configuration values are loaded in the following order (highest priority first):
-1. Command-line arguments
-2. Environment variables
-3. Config.ini
-4. Defaul values
+* ollama
+* lollms
+* openai & openai compatible
+* azure_openai
 
-For example:
-```bash
-# This command-line argument will override both the environment variable and default value
-python lightrag.py --port 8080
-
-# The environment variable will override the default value but not the command-line argument
-PORT=7000 python lightrag.py
-```
-
-> Best practices: you can set your database setting in Config.ini while testing, and you use .env for production.
+Use environment variables  `LLM_BINDING ` or CLI argument `--llm-binding` to select LLM backend type. Use environment variables  `EMBEDDING_BINDING ` or CLI argument `--embedding-binding` to select LLM backend type.
 
 ### Storage Types Supported
 
@@ -199,7 +247,16 @@ MongoDocStatusStorage       MongoDB
 
 ### How Select Storage Implementation
 
-You can select storage  implementation by enviroment variables or command line arguments. You can not change storage implementation selection after you add documents to LightRAG. Data migration from one storage implementation to anthor is not supported yet. For further information please read the sample env file or config.ini file.
+You can select storage implementation by environment variables. Your can set the following environmental variables to a specific storage implement-name before the your first start of the API  Server:
+
+```
+LIGHTRAG_KV_STORAGE=PGKVStorage
+LIGHTRAG_VECTOR_STORAGE=PGVectorStorage
+LIGHTRAG_GRAPH_STORAGE=PGGraphStorage
+LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
+```
+
+You can not change storage implementation selection after you add documents to LightRAG. Data migration from one storage implementation to anthor is not supported yet. For further information please read the sample env file or config.ini file.
 
 ### LightRag API Server Comand Line Options
 
@@ -207,32 +264,22 @@ You can select storage  implementation by enviroment variables or command line a
 |-----------|---------|-------------|
 | --host | 0.0.0.0 | Server host |
 | --port | 9621 | Server port |
-| --llm-binding | ollama | LLM binding to be used. Supported: lollms, ollama, openai |
-| --llm-binding-host | (dynamic) | LLM server host URL. Defaults based on binding: http://localhost:11434 (ollama), http://localhost:9600 (lollms), https://api.openai.com/v1 (openai) |
-| --llm-model | mistral-nemo:latest | LLM model name |
-| --llm-binding-api-key | None | API Key for OpenAI Alike LLM |
-| --embedding-binding | ollama | Embedding binding to be used. Supported: lollms, ollama, openai |
-| --embedding-binding-host | (dynamic) | Embedding server host URL. Defaults based on binding: http://localhost:11434 (ollama), http://localhost:9600 (lollms), https://api.openai.com/v1 (openai) |
-| --embedding-model | bge-m3:latest | Embedding model name |
 | --working-dir | ./rag_storage | Working directory for RAG storage |
 | --input-dir | ./inputs | Directory containing input documents |
 | --max-async | 4 | Maximum async operations |
 | --max-tokens | 32768 | Maximum token size |
-| --embedding-dim | 1024 | Embedding dimensions |
-| --max-embed-tokens | 8192 | Maximum embedding token size |
 | --timeout | None | Timeout in seconds (useful when using slow AI). Use None for infinite timeout |
 | --log-level | INFO | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
-| --verbose | False | Verbose debug output (True, Flase) |
+| --verbose | - | Verbose debug output (True, Flase) |
 | --key | None | API key for authentication. Protects lightrag server against unauthorized access |
 | --ssl | False | Enable HTTPS |
 | --ssl-certfile | None | Path to SSL certificate file (required if --ssl is enabled) |
 | --ssl-keyfile | None | Path to SSL private key file (required if --ssl is enabled) |
 | --top-k | 50 | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode. |
 | --cosine-threshold | 0.4 | The cossine threshold for nodes and relations retrieval, works with top-k to control the retrieval of nodes and relations. |
-| --kv-storage | JsonKVStorage | implement-name of  KV_STORAGE |
-| --graph-storage | NetworkXStorage | implement-name of  GRAPH_STORAGE |
-| --vector-storage | NanoVectorDBStorage | implement-name of  VECTOR_STORAGE |
-| --doc-status-storage | JsonDocStatusStorage | implement-name of  DOC_STATUS_STORAGE |
+| --llm-binding | ollama | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai) |
+| --embedding-binding | ollama | Embedding binding type (lollms, ollama, openai, azure_openai) |
+| auto-scan-at-startup | - | Scan input directory for new files and start indexing |
 
 ### Example Usage
 
@@ -244,57 +291,49 @@ Ollama is the default backend for both llm and embedding, so by default you can 
 # Run lightrag with ollama, mistral-nemo:latest for llm, and bge-m3:latest for embedding
 lightrag-server
 
-# Using specific models (ensure they are installed in your ollama instance)
-lightrag-server --llm-model adrienbrault/nous-hermes2theta-llama3-8b:f16 --embedding-model nomic-embed-text --embedding-dim 1024
-
 # Using an authentication key
 lightrag-server --key my-key
-
-# Using lollms for llm and ollama for embedding
-lightrag-server --llm-binding lollms
 ```
 
 #### Running a Lightrag server with lollms default local server as llm and embedding backends
 
 ```bash
-# Run lightrag with lollms, mistral-nemo:latest for llm, and bge-m3:latest for embedding, use lollms for both llm and embedding
-lightrag-server --llm-binding lollms --embedding-binding lollms
-
-# Using specific models (ensure they are installed in your ollama instance)
-lightrag-server --llm-binding lollms --llm-model adrienbrault/nous-hermes2theta-llama3-8b:f16 --embedding-binding lollms --embedding-model nomic-embed-text --embedding-dim 1024
+# Run lightrag with lollms, mistral-nemo:latest for llm, and bge-m3:latest for embedding
+# Configure LLM_BINDING=lollms and EMBEDDING_BINDING=lollms in .env or config.ini
+lightrag-server
 
 # Using an authentication key
 lightrag-server --key my-key
-
-# Using lollms for llm and openai for embedding
-lightrag-server --llm-binding lollms --embedding-binding openai --embedding-model text-embedding-3-small
 ```
-
 
 #### Running a Lightrag server with openai server as llm and embedding backends
 
 ```bash
-# Run lightrag with lollms, GPT-4o-mini  for llm, and text-embedding-3-small for embedding, use openai for both llm and embedding
-lightrag-server --llm-binding openai --llm-model GPT-4o-mini --embedding-binding openai --embedding-model text-embedding-3-small
+# Run lightrag with openai, GPT-4o-mini for llm, and text-embedding-3-small for embedding
+# Configure in .env or config.ini:
+# LLM_BINDING=openai
+# LLM_MODEL=GPT-4o-mini
+# EMBEDDING_BINDING=openai
+# EMBEDDING_MODEL=text-embedding-3-small
+lightrag-server
 
 # Using an authentication key
-lightrag-server --llm-binding openai --llm-model GPT-4o-mini --embedding-binding openai --embedding-model text-embedding-3-small --key my-key
-
-# Using lollms for llm and openai for embedding
-lightrag-server --llm-binding lollms --embedding-binding openai --embedding-model text-embedding-3-small
+lightrag-server --key my-key
 ```
 
 #### Running a Lightrag server with azure openai server as llm and embedding backends
 
 ```bash
-# Run lightrag with lollms, GPT-4o-mini  for llm, and text-embedding-3-small for embedding, use openai for both llm and embedding
-lightrag-server --llm-binding azure_openai --llm-model GPT-4o-mini --embedding-binding openai --embedding-model text-embedding-3-small
+# Run lightrag with azure_openai
+# Configure in .env or config.ini:
+# LLM_BINDING=azure_openai
+# LLM_MODEL=your-model
+# EMBEDDING_BINDING=azure_openai
+# EMBEDDING_MODEL=your-embedding-model
+lightrag-server
 
 # Using an authentication key
-lightrag-server --llm-binding azure_openai --llm-model GPT-4o-mini --embedding-binding azure_openai --embedding-model text-embedding-3-small --key my-key
-
-# Using lollms for llm and azure_openai for embedding
-lightrag-server --llm-binding lollms --embedding-binding azure_openai --embedding-model text-embedding-3-small
+lightrag-server --key my-key
 ```
 
 **Important Notes:**
@@ -315,7 +354,18 @@ pip install lightrag-hku
 
 ## API Endpoints
 
-All servers (LoLLMs, Ollama, OpenAI and Azure OpenAI) provide the same REST API endpoints for RAG functionality.
+All servers (LoLLMs, Ollama, OpenAI and Azure OpenAI) provide the same REST API endpoints for RAG functionality. When API Server is running, visit:
+
+- Swagger UI: http://localhost:9621/docs
+- ReDoc: http://localhost:9621/redoc
+
+You can test the API endpoints using the provided curl commands or through the Swagger UI interface. Make sure to:
+
+1. Start the appropriate backend service (LoLLMs, Ollama, or OpenAI)
+2. Start the RAG server
+3. Upload some documents using the document management endpoints
+4. Query the system using the query endpoints
+5. Trigger document scan if new files is put into inputs directory
 
 ### Query Endpoints
 
@@ -453,62 +503,3 @@ For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode q
 
 "/bypass" is not a LightRAG query mode, it will tell API Server to pass the query directly to the underlying LLM with chat history. So user can use LLM to answer question base on the chat history. If you are using Open WebUI as front end, you can just switch the model to a normal LLM instead of using /bypass prefix.
 
-## Development
-
-Contribute to the project: [Guide](contributor-readme.MD)
-
-### Running in Development Mode
-
-For LoLLMs:
-```bash
-uvicorn lollms_lightrag_server:app --reload --port 9621
-```
-
-For Ollama:
-```bash
-uvicorn ollama_lightrag_server:app --reload --port 9621
-```
-
-For OpenAI:
-```bash
-uvicorn openai_lightrag_server:app --reload --port 9621
-```
-For Azure OpenAI:
-```bash
-uvicorn azure_openai_lightrag_server:app --reload --port 9621
-```
-### API Documentation
-
-When any server is running, visit:
-- Swagger UI: http://localhost:9621/docs
-- ReDoc: http://localhost:9621/redoc
-
-### Testing API Endpoints
-
-You can test the API endpoints using the provided curl commands or through the Swagger UI interface. Make sure to:
-1. Start the appropriate backend service (LoLLMs, Ollama, or OpenAI)
-2. Start the RAG server
-3. Upload some documents using the document management endpoints
-4. Query the system using the query endpoints
-5. Trigger document scan if new files is put into inputs directory
-
-### Important Features
-
-#### Automatic Document Vectorization
-When starting any of the servers with the `--input-dir` parameter, the system will automatically:
-1. Check for existing vectorized content in the database
-2. Only vectorize new documents that aren't already in the database
-3. Make all content immediately available for RAG queries
-
-This intelligent caching mechanism:
-- Prevents unnecessary re-vectorization of existing documents
-- Reduces startup time for subsequent runs
-- Preserves system resources
-- Maintains consistency across restarts
-
-**Important Notes:**
-- The `--input-dir` parameter enables automatic document processing at startup
-- Documents already in the database are not re-vectorized
-- Only new documents in the input directory will be processed
-- This optimization significantly reduces startup time for subsequent runs
-- The working directory (`--working-dir`) stores the vectorized documents database
