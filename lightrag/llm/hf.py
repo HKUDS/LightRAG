@@ -139,11 +139,14 @@ async def hf_model_complete(
 
 async def hf_embed(texts: list[str], tokenizer, embed_model) -> np.ndarray:
     device = next(embed_model.parameters()).device
-    input_ids = tokenizer(
+    encoded_texts = tokenizer(
         texts, return_tensors="pt", padding=True, truncation=True
-    ).input_ids.to(device)
+    ).to(device)
     with torch.no_grad():
-        outputs = embed_model(input_ids)
+        outputs = embed_model(
+            input_ids=encoded_texts["input_ids"],
+            attention_mask=encoded_texts["attention_mask"],
+        )
         embeddings = outputs.last_hidden_state.mean(dim=1)
     if embeddings.dtype == torch.bfloat16:
         return embeddings.detach().to(torch.float32).cpu().numpy()
