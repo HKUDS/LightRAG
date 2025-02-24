@@ -466,10 +466,10 @@ class LightRAG:
         return text
 
     async def get_knowledge_graph(
-        self, nodel_label: str, max_depth: int
+        self, node_label: str, max_depth: int
     ) -> KnowledgeGraph:
         return await self.chunk_entity_relation_graph.get_knowledge_graph(
-            node_label=nodel_label, max_depth=max_depth
+            node_label=node_label, max_depth=max_depth
         )
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
