@@ -7,7 +7,11 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeReact from 'rehype-react'
 import remarkMath from 'remark-math'
-import ShikiHighlighter, { isInlineCode, type Element } from 'react-shiki'
+
+import type { Element } from 'hast'
+
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
 import { LoaderIcon, CopyIcon } from 'lucide-react'
 
@@ -66,25 +70,36 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
 }
 
 interface CodeHighlightProps {
-  className?: string | undefined
-  children?: ReactNode | undefined
-  node?: Element | undefined
+  inline?: boolean
+  className?: string
+  children?: ReactNode
+  node?: Element
+}
+
+const isInlineCode = (node: Element): boolean => {
+  const textContent = (node.children || [])
+    .filter((child) => child.type === 'text')
+    .map((child) => (child as any).value)
+    .join('')
+
+  return !textContent.includes('\n')
 }
 
 const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightProps) => {
   const { theme } = useTheme()
   const match = className?.match(/language-(\w+)/)
   const language = match ? match[1] : undefined
-  const inline: boolean | undefined = node ? isInlineCode(node) : undefined
+  const inline = node ? isInlineCode(node) : false
 
   return !inline ? (
-    <ShikiHighlighter
+    <SyntaxHighlighter
+      style={theme === 'dark' ? oneDark : oneLight}
+      PreTag="div"
       language={language}
-      theme={theme === 'dark' ? 'houston' : 'github-light'}
       {...props}
     >
-      {String(children)}
-    </ShikiHighlighter>
+      {String(children).replace(/\n$/, '')}
+    </SyntaxHighlighter>
   ) : (
     <code className={className} {...props}>
       {children}
