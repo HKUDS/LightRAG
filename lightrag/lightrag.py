@@ -404,16 +404,31 @@ class LightRAG:
 
         self._storages_status = StoragesStatus.CREATED
 
-        # Initialize storages
         if self.auto_manage_storages_states:
-            loop = always_get_an_event_loop()
-            loop.run_until_complete(self.initialize_storages())
+            self._run_async_safely(self.initialize_storages, "Storage Initialization")
 
     def __del__(self):
-        # Finalize storages
         if self.auto_manage_storages_states:
+            self._run_async_safely(self.finalize_storages, "Storage Finalization")
+
+    def _run_async_safely(self, async_func, action_name=""):
+        """Safely execute an async function, avoiding event loop conflicts."""
+        try:
             loop = always_get_an_event_loop()
-            loop.run_until_complete(self.finalize_storages())
+            if loop.is_running():
+                task = loop.create_task(async_func())
+                task.add_done_callback(
+                    lambda t: logger.info(f"✅ {action_name} completed!")
+                )
+            else:
+                loop.run_until_complete(async_func())
+        except RuntimeError:
+            logger.warning(
+                f"No running event loop, creating a new loop for {action_name}."
+            )
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(async_func())
+            loop.close()
 
     async def initialize_storages(self):
         """Asynchronously initialize the storages"""
