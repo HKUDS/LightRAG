@@ -55,6 +55,7 @@ export default function SiteHeader() {
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
       <a href="/" className="mr-6 flex items-center gap-2">
         <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
+        {/* <img src='/logo.png' className="size-4" /> */}
         <span className="font-bold md:inline-block">{SiteInfo.name}</span>
       </a>
 
