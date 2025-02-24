@@ -49,9 +49,6 @@ except Exception as e:
 config = configparser.ConfigParser()
 config.read("config.ini")
 
-# Global configuration
-global_top_k = 60  # default value
-
 # Global progress tracker
 scan_progress: Dict = {
     "is_scanning": False,
@@ -98,9 +95,6 @@ class AccessLogFilter(logging.Filter):
 
 
 def create_app(args):
-    # Set global top_k
-    global global_top_k
-    global_top_k = args.top_k  # save top_k from args
 
     # Initialize verbose debug setting
     from lightrag.utils import set_verbose_debug
