@@ -174,7 +174,6 @@ class NetworkXStorage(BaseGraphStorage):
         Returns:
             [label1, label2, ...]  # Alphabetically sorted label list
         """
-        # Get all labels from nodes
         labels = set()
         for node in self._graph.nodes():
             # node_data = dict(self._graph.nodes[node])
