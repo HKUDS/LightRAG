@@ -418,7 +418,7 @@ class LightRAG:
             if loop.is_running():
                 task = loop.create_task(async_func())
                 task.add_done_callback(
-                    lambda t: logger.info(f"✅ {action_name} completed!")
+                    lambda t: logger.info(f"{action_name} completed!")
                 )
             else:
                 loop.run_until_complete(async_func())
