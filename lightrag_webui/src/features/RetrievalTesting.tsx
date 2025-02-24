@@ -1,38 +1,16 @@
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { queryText, queryTextStream, Message as ChatMessage } from '@/api/lightrag'
+import { queryText, queryTextStream, Message } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
-
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
-import rehypeReact from 'rehype-react'
-import remarkMath from 'remark-math'
-
-import { EraserIcon, SendIcon, LoaderIcon } from 'lucide-react'
-
-type Message = ChatMessage & {
-  isError?: boolean
-}
-
-const ChatMessageComponent = ({ message }: { message: Message }) => {
-  return (
-    <ReactMarkdown
-      className="prose lg:prose-xs dark:prose-invert max-w-none text-base"
-      remarkPlugins={[remarkGfm, remarkMath]}
-      rehypePlugins={[rehypeReact]}
-      skipHtml={false}
-    >
-      {message.content}
-    </ReactMarkdown>
-  )
-}
+import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
+import { EraserIcon, SendIcon } from 'lucide-react'
 
 export default function RetrievalTesting() {
-  const [messages, setMessages] = useState<Message[]>(
+  const [messages, setMessages] = useState<MessageWithError[]>(
     () => useSettingsStore.getState().retrievalHistory || []
   )
   const [inputValue, setInputValue] = useState('')
@@ -147,22 +125,7 @@ export default function RetrievalTesting() {
                     key={idx}
                     className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
-                    <div
-                      className={`max-w-[80%] rounded-lg px-4 py-2 ${
-                        message.role === 'user'
-                          ? 'bg-primary text-primary-foreground'
-                          : message.isError
-                            ? 'bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
-                            : 'bg-muted'
-                      }`}
-                    >
-                      <pre className="break-words whitespace-pre-wrap">
-                        {<ChatMessageComponent message={message} />}
-                      </pre>
-                      {message.content.length === 0 && (
-                        <LoaderIcon className="animate-spin duration-2000" />
-                      )}
-                    </div>
+                    {<ChatMessage message={message} />}
                   </div>
                 ))
               )}
