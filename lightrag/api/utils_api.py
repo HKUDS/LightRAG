@@ -325,8 +325,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=int,
-        default=get_env_value("WORKERS", 2, int),
-        help="Number of worker processes (default: from env or 2)",
+        default=get_env_value("WORKERS", 1, int),
+        help="Number of worker processes (default: from env or 1)",
     )
 
     # LLM and embedding bindings
