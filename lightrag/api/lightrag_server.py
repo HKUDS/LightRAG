@@ -8,11 +8,12 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 import asyncio
-import threading
 import os
-from fastapi.staticfiles import StaticFiles
+import json
 import logging
-from typing import Dict
+import logging.config
+import uvicorn
+from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import configparser
 from ascii_colors import ASCIIColors
@@ -49,18 +50,6 @@ except Exception as e:
 config = configparser.ConfigParser()
 config.read("config.ini")
 
-# Global progress tracker
-scan_progress: Dict = {
-    "is_scanning": False,
-    "current_file": "",
-    "indexed_count": 0,
-    "total_files": 0,
-    "progress": 0,
-}
-
-# Lock for thread-safe operations
-progress_lock = threading.Lock()
-
 
 class AccessLogFilter(logging.Filter):
     def __init__(self):
@@ -95,7 +84,6 @@ class AccessLogFilter(logging.Filter):
 
 
 def create_app(args):
-
     # Initialize verbose debug setting
     from lightrag.utils import set_verbose_debug
 
@@ -155,25 +143,12 @@ def create_app(args):
 
             # Auto scan documents if enabled
             if args.auto_scan_at_startup:
-                # Start scanning in background
-                with progress_lock:
-                    if not scan_progress["is_scanning"]:
-                        scan_progress["is_scanning"] = True
-                        scan_progress["indexed_count"] = 0
-                        scan_progress["progress"] = 0
-                        # Create background task
-                        task = asyncio.create_task(
-                            run_scanning_process(rag, doc_manager)
-                        )
-                        app.state.background_tasks.add(task)
-                        task.add_done_callback(app.state.background_tasks.discard)
-                        ASCIIColors.info(
-                            f"Started background scanning of documents from {args.input_dir}"
-                        )
-                    else:
-                        ASCIIColors.info(
-                            "Skip document scanning(another scanning is active)"
-                        )
+                # Create background task
+                task = asyncio.create_task(
+                    run_scanning_process(rag, doc_manager)
+                )
+                app.state.background_tasks.add(task)
+                task.add_done_callback(app.state.background_tasks.discard)
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
@@ -429,48 +404,67 @@ def create_app(args):
     return app
 
 
+def get_application():
+    """Factory function for creating the FastAPI application"""
+    from .utils_api import initialize_manager
+    initialize_manager()
+    
+    # Get args from environment variable
+    args_json = os.environ.get('LIGHTRAG_ARGS')
+    if not args_json:
+        args = parse_args()  # Fallback to parsing args if env var not set
+    else:
+        import types
+        args = types.SimpleNamespace(**json.loads(args_json))
+    
+    return create_app(args)
+
+
 def main():
+    from multiprocessing import freeze_support
+    freeze_support()
+    
     args = parse_args()
-    import uvicorn
-    import logging.config
+    # Save args to environment variable for child processes
+    os.environ['LIGHTRAG_ARGS'] = json.dumps(vars(args))
 
     # Configure uvicorn logging
-    logging.config.dictConfig(
-        {
-            "version": 1,
-            "disable_existing_loggers": False,
-            "formatters": {
-                "default": {
-                    "format": "%(levelname)s: %(message)s",
-                },
+    logging.config.dictConfig({
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {
+            "default": {
+                "format": "%(levelname)s: %(message)s",
             },
-            "handlers": {
-                "default": {
-                    "formatter": "default",
-                    "class": "logging.StreamHandler",
-                    "stream": "ext://sys.stderr",
-                },
+        },
+        "handlers": {
+            "default": {
+                "formatter": "default",
+                "class": "logging.StreamHandler",
+                "stream": "ext://sys.stderr",
             },
-            "loggers": {
-                "uvicorn.access": {
-                    "handlers": ["default"],
-                    "level": "INFO",
-                    "propagate": False,
-                },
+        },
+        "loggers": {
+            "uvicorn.access": {
+                "handlers": ["default"],
+                "level": "INFO",
+                "propagate": False,
             },
-        }
-    )
+        },
+    })
 
     # Add filter to uvicorn access logger
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     uvicorn_access_logger.addFilter(AccessLogFilter())
 
-    app = create_app(args)
     display_splash_screen(args)
+
     uvicorn_config = {
-        "app": app,
+        "app": "lightrag.api.lightrag_server:get_application",
+        "factory": True,
         "host": args.host,
         "port": args.port,
+        "workers": args.workers,
         "log_config": None,  # Disable default config
     }
     if args.ssl:
