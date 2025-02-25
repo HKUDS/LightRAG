@@ -13,6 +13,7 @@ import Button from '@/components/ui/Button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui/Command'
 import { controlButtonVariant } from '@/lib/constants'
+import { useSettingsStore } from '@/stores/settings'
 
 import { GripIcon, PlayIcon, PauseIcon } from 'lucide-react'
 
@@ -75,13 +76,15 @@ const LayoutsControl = () => {
   const sigma = useSigma()
   const [layout, setLayout] = useState<LayoutName>('Circular')
   const [opened, setOpened] = useState<boolean>(false)
+  
+  const maxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const layoutCircular = useLayoutCircular()
   const layoutCirclepack = useLayoutCirclepack()
   const layoutRandom = useLayoutRandom()
   const layoutNoverlap = useLayoutNoverlap({ settings: { margin: 1 } })
-  const layoutForce = useLayoutForce({ maxIterations: 20 })
-  const layoutForceAtlas2 = useLayoutForceAtlas2({ iterations: 20 })
+  const layoutForce = useLayoutForce({ maxIterations: maxIterations })
+  const layoutForceAtlas2 = useLayoutForceAtlas2({ iterations: maxIterations })
   const workerNoverlap = useWorkerLayoutNoverlap()
   const workerForce = useWorkerLayoutForce()
   const workerForceAtlas2 = useWorkerLayoutForceAtlas2()
