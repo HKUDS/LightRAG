@@ -1,9 +1,10 @@
 import os
 from dataclasses import dataclass
 from typing import Any, final
+import threading
+from multiprocessing import Manager
 
 import numpy as np
-
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import (
@@ -23,6 +24,25 @@ if not pm.is_installed("graspologic"):
 
 import networkx as nx
 from graspologic import embed
+
+# Global variables for shared memory management
+_init_lock = threading.Lock()
+_manager = None
+_shared_graphs = None
+
+
+def _get_manager():
+    """Get or create the global manager instance"""
+    global _manager, _shared_graphs
+    with _init_lock:
+        if _manager is None:
+            try:
+                _manager = Manager()
+                _shared_graphs = _manager.dict()
+            except Exception as e:
+                logger.error(f"Failed to initialize shared memory manager: {e}")
+                raise RuntimeError(f"Shared memory initialization failed: {e}")
+    return _manager
 
 
 @final
@@ -78,15 +98,33 @@ class NetworkXStorage(BaseGraphStorage):
         self._graphml_xml_file = os.path.join(
             self.global_config["working_dir"], f"graph_{self.namespace}.graphml"
         )
-        preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
-        if preloaded_graph is not None:
-            logger.info(
-                f"Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
-            )
-        self._graph = preloaded_graph or nx.Graph()
-        self._node_embed_algorithms = {
-            "node2vec": self._node2vec_embed,
-        }
+        
+        # Ensure manager is initialized
+        _get_manager()
+        
+        # Get or create namespace graph
+        if self.namespace not in _shared_graphs:
+            with _init_lock:
+                if self.namespace not in _shared_graphs:
+                    try:
+                        preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
+                        if preloaded_graph is not None:
+                            logger.info(
+                                f"Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
+                            )
+                        _shared_graphs[self.namespace] = preloaded_graph or nx.Graph()
+                    except Exception as e:
+                        logger.error(f"Failed to initialize graph for namespace {self.namespace}: {e}")
+                        raise RuntimeError(f"Graph initialization failed: {e}")
+        
+        try:
+            self._graph = _shared_graphs[self.namespace]
+            self._node_embed_algorithms = {
+                "node2vec": self._node2vec_embed,
+            }
+        except Exception as e:
+            logger.error(f"Failed to access shared memory: {e}")
+            raise RuntimeError(f"Cannot access shared memory: {e}")
 
     async def index_done_callback(self) -> None:
         NetworkXStorage.write_nx_graph(self._graph, self._graphml_xml_file)

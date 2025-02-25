@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 import os
 from typing import Any, Union, final
+import threading
+from multiprocessing import Manager
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -13,6 +15,25 @@ from lightrag.utils import (
     write_json,
 )
 
+# Global variables for shared memory management
+_init_lock = threading.Lock()
+_manager = None
+_shared_doc_status_data = None
+
+
+def _get_manager():
+    """Get or create the global manager instance"""
+    global _manager, _shared_doc_status_data
+    with _init_lock:
+        if _manager is None:
+            try:
+                _manager = Manager()
+                _shared_doc_status_data = _manager.dict()
+            except Exception as e:
+                logger.error(f"Failed to initialize shared memory manager: {e}")
+                raise RuntimeError(f"Shared memory initialization failed: {e}")
+    return _manager
+
 
 @final
 @dataclass
@@ -22,8 +43,27 @@ class JsonDocStatusStorage(DocStatusStorage):
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
-        self._data: dict[str, Any] = load_json(self._file_name) or {}
-        logger.info(f"Loaded document status storage with {len(self._data)} records")
+        
+        # Ensure manager is initialized
+        _get_manager()
+        
+        # Get or create namespace data
+        if self.namespace not in _shared_doc_status_data:
+            with _init_lock:
+                if self.namespace not in _shared_doc_status_data:
+                    try:
+                        initial_data = load_json(self._file_name) or {}
+                        _shared_doc_status_data[self.namespace] = initial_data
+                    except Exception as e:
+                        logger.error(f"Failed to initialize shared data for namespace {self.namespace}: {e}")
+                        raise RuntimeError(f"Shared data initialization failed: {e}")
+        
+        try:
+            self._data = _shared_doc_status_data[self.namespace]
+            logger.info(f"Loaded document status storage with {len(self._data)} records")
+        except Exception as e:
+            logger.error(f"Failed to access shared memory: {e}")
+            raise RuntimeError(f"Cannot access shared memory: {e}")
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""

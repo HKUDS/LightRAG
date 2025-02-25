@@ -3,6 +3,8 @@ import os
 from typing import Any, final
 from dataclasses import dataclass
 import numpy as np
+import threading
+from multiprocessing import Manager
 
 import time
 
@@ -19,6 +21,25 @@ if not pm.is_installed("nano-vectordb"):
     pm.install("nano-vectordb")
 
 from nano_vectordb import NanoVectorDB
+
+# Global variables for shared memory management
+_init_lock = threading.Lock()
+_manager = None
+_shared_vector_clients = None
+
+
+def _get_manager():
+    """Get or create the global manager instance"""
+    global _manager, _shared_vector_clients
+    with _init_lock:
+        if _manager is None:
+            try:
+                _manager = Manager()
+                _shared_vector_clients = _manager.dict()
+            except Exception as e:
+                logger.error(f"Failed to initialize shared memory manager: {e}")
+                raise RuntimeError(f"Shared memory initialization failed: {e}")
+    return _manager
 
 
 @final
@@ -40,9 +61,29 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self.global_config["working_dir"], f"vdb_{self.namespace}.json"
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
-        self._client = NanoVectorDB(
-            self.embedding_func.embedding_dim, storage_file=self._client_file_name
-        )
+        
+        # Ensure manager is initialized
+        _get_manager()
+        
+        # Get or create namespace client
+        if self.namespace not in _shared_vector_clients:
+            with _init_lock:
+                if self.namespace not in _shared_vector_clients:
+                    try:
+                        client = NanoVectorDB(
+                            self.embedding_func.embedding_dim,
+                            storage_file=self._client_file_name
+                        )
+                        _shared_vector_clients[self.namespace] = client
+                    except Exception as e:
+                        logger.error(f"Failed to initialize vector DB client for namespace {self.namespace}: {e}")
+                        raise RuntimeError(f"Vector DB client initialization failed: {e}")
+        
+        try:
+            self._client = _shared_vector_clients[self.namespace]
+        except Exception as e:
+            logger.error(f"Failed to access shared memory: {e}")
+            raise RuntimeError(f"Cannot access shared memory: {e}")
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.info(f"Inserting {len(data)} to {self.namespace}")
