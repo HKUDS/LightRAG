@@ -12,28 +12,22 @@ import pipmaster as pm
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-
+from ascii_colors import ASCIIColors
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
-from ..utils_api import get_api_key_dependency
+from ..utils_api import (
+    get_api_key_dependency,
+    scan_progress,
+    update_scan_progress_if_not_scanning,
+    update_scan_progress,
+    reset_scan_progress,
+)
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
-
-# Global progress tracker
-scan_progress: Dict = {
-    "is_scanning": False,
-    "current_file": "",
-    "indexed_count": 0,
-    "total_files": 0,
-    "progress": 0,
-}
-
-# Lock for thread-safe operations
-progress_lock = asyncio.Lock()
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
@@ -166,13 +160,6 @@ class DocumentManager:
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)
         return new_files
-
-    # def scan_directory(self) -> List[Path]:
-    #     new_files = []
-    #     for ext in self.supported_extensions:
-    #         for file_path in self.input_dir.rglob(f"*{ext}"):
-    #             new_files.append(file_path)
-    #     return new_files
 
     def mark_as_indexed(self, file_path: Path):
         self.indexed_files.add(file_path)
@@ -390,24 +377,24 @@ async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
 
 
 async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
-    """Background task to scan and index documents"""
+    """Background task to scan and index documents"""    
+    if not update_scan_progress_if_not_scanning():
+        ASCIIColors.info(
+            "Skip document scanning(another scanning is active)"
+        )
+        return
+
     try:
         new_files = doc_manager.scan_directory_for_new_files()
-        scan_progress["total_files"] = len(new_files)
+        total_files = len(new_files)
+        update_scan_progress("", total_files, 0)  # Initialize progress
 
-        logging.info(f"Found {len(new_files)} new files to index.")
-        for file_path in new_files:
+        logging.info(f"Found {total_files} new files to index.")
+        for idx, file_path in enumerate(new_files):
             try:
-                async with progress_lock:
-                    scan_progress["current_file"] = os.path.basename(file_path)
-
+                update_scan_progress(os.path.basename(file_path), total_files, idx)
                 await pipeline_index_file(rag, file_path)
-
-                async with progress_lock:
-                    scan_progress["indexed_count"] += 1
-                    scan_progress["progress"] = (
-                        scan_progress["indexed_count"] / scan_progress["total_files"]
-                    ) * 100
+                update_scan_progress(os.path.basename(file_path), total_files, idx + 1)
 
             except Exception as e:
                 logging.error(f"Error indexing file {file_path}: {str(e)}")
@@ -415,8 +402,7 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     except Exception as e:
         logging.error(f"Error during scanning process: {str(e)}")
     finally:
-        async with progress_lock:
-            scan_progress["is_scanning"] = False
+        reset_scan_progress()
 
 
 def create_document_routes(
@@ -436,14 +422,6 @@ def create_document_routes(
         Returns:
             dict: A dictionary containing the scanning status
         """
-        async with progress_lock:
-            if scan_progress["is_scanning"]:
-                return {"status": "already_scanning"}
-
-            scan_progress["is_scanning"] = True
-            scan_progress["indexed_count"] = 0
-            scan_progress["progress"] = 0
-
         # Start the scanning process in the background
         background_tasks.add_task(run_scanning_process, rag, doc_manager)
         return {"status": "scanning_started"}
@@ -461,8 +439,7 @@ def create_document_routes(
                 - total_files: Total number of files to process
                 - progress: Percentage of completion
         """
-        async with progress_lock:
-            return scan_progress
+        return dict(scan_progress)
 
     @router.post("/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(
