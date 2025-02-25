@@ -406,9 +406,6 @@ def create_app(args):
 
 def get_application():
     """Factory function for creating the FastAPI application"""
-    from .utils_api import initialize_manager
-    initialize_manager()
-    
     # Get args from environment variable
     args_json = os.environ.get('LIGHTRAG_ARGS')
     if not args_json:
@@ -428,6 +425,12 @@ def main():
     # Save args to environment variable for child processes
     os.environ['LIGHTRAG_ARGS'] = json.dumps(vars(args))
 
+    if args.workers > 1:
+        from lightrag.kg.shared_storage import initialize_manager
+        initialize_manager()
+        import lightrag.kg.shared_storage as shared_storage
+        shared_storage.is_multiprocess = True
+    
     # Configure uvicorn logging
     logging.config.dictConfig({
         "version": 1,

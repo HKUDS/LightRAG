@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 import os
 from typing import Any, Union, final
-import threading
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -13,26 +12,7 @@ from lightrag.utils import (
     logger,
     write_json,
 )
-from lightrag.api.utils_api import manager as main_process_manager
-
-# Global variables for shared memory management
-_init_lock = threading.Lock()
-_manager = None
-_shared_doc_status_data = None
-
-
-def _get_manager():
-    """Get or create the global manager instance"""
-    global _manager, _shared_doc_status_data
-    with _init_lock:
-        if _manager is None:
-            try:
-                _manager = main_process_manager
-                _shared_doc_status_data = _manager.dict()
-            except Exception as e:
-                logger.error(f"Failed to initialize shared memory manager: {e}")
-                raise RuntimeError(f"Shared memory initialization failed: {e}")
-    return _manager
+from .shared_storage import get_namespace_data, get_storage_lock
 
 
 @final
@@ -43,45 +23,32 @@ class JsonDocStatusStorage(DocStatusStorage):
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
-        
-        # Ensure manager is initialized
-        _get_manager()
-        
-        # Get or create namespace data
-        if self.namespace not in _shared_doc_status_data:
-            with _init_lock:
-                if self.namespace not in _shared_doc_status_data:
-                    try:
-                        initial_data = load_json(self._file_name) or {}
-                        _shared_doc_status_data[self.namespace] = initial_data
-                    except Exception as e:
-                        logger.error(f"Failed to initialize shared data for namespace {self.namespace}: {e}")
-                        raise RuntimeError(f"Shared data initialization failed: {e}")
-        
-        try:
-            self._data = _shared_doc_status_data[self.namespace]
-            logger.info(f"Loaded document status storage with {len(self._data)} records")
-        except Exception as e:
-            logger.error(f"Failed to access shared memory: {e}")
-            raise RuntimeError(f"Cannot access shared memory: {e}")
+        self._storage_lock = get_storage_lock()
+        self._data = get_namespace_data(self.namespace)
+        with self._storage_lock:
+            self._data.update(load_json(self._file_name) or {})
+        logger.info(f"Loaded document status storage with {len(self._data)} records")
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
-        return set(keys) - set(self._data.keys())
+        with self._storage_lock:
+            return set(keys) - set(self._data.keys())
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        for id in ids:
-            data = self._data.get(id, None)
-            if data:
-                result.append(data)
+        with self._storage_lock:
+            for id in ids:
+                data = self._data.get(id, None)
+                if data:
+                    result.append(data)
         return result
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         counts = {status.value: 0 for status in DocStatus}
-        for doc in self._data.values():
-            counts[doc["status"]] += 1
+        with self._storage_lock:
+            for doc in self._data.values():
+                counts[doc["status"]] += 1
         return counts
 
     async def get_docs_by_status(
@@ -89,39 +56,46 @@ class JsonDocStatusStorage(DocStatusStorage):
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
         result = {}
-        for k, v in self._data.items():
-            if v["status"] == status.value:
-                try:
-                    # Make a copy of the data to avoid modifying the original
-                    data = v.copy()
-                    # If content is missing, use content_summary as content
-                    if "content" not in data and "content_summary" in data:
-                        data["content"] = data["content_summary"]
-                    result[k] = DocProcessingStatus(**data)
-                except KeyError as e:
-                    logger.error(f"Missing required field for document {k}: {e}")
-                    continue
+        with self._storage_lock:
+            for k, v in self._data.items():
+                if v["status"] == status.value:
+                    try:
+                        # Make a copy of the data to avoid modifying the original
+                        data = v.copy()
+                        # If content is missing, use content_summary as content
+                        if "content" not in data and "content_summary" in data:
+                            data["content"] = data["content_summary"]
+                        result[k] = DocProcessingStatus(**data)
+                    except KeyError as e:
+                        logger.error(f"Missing required field for document {k}: {e}")
+                        continue
         return result
 
     async def index_done_callback(self) -> None:
-        write_json(self._data, self._file_name)
+        # 文件写入需要加锁，防止多个进程同时写入导致文件损坏
+        with self._storage_lock:
+            write_json(self._data, self._file_name)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
-        self._data.update(data)
+        with self._storage_lock:
+            self._data.update(data)
         await self.index_done_callback()
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
-        return self._data.get(id)
+        with self._storage_lock:
+            return self._data.get(id)
 
     async def delete(self, doc_ids: list[str]):
-        for doc_id in doc_ids:
-            self._data.pop(doc_id, None)
+        with self._storage_lock:
+            for doc_id in doc_ids:
+                self._data.pop(doc_id, None)
         await self.index_done_callback()
 
     async def drop(self) -> None:
         """Drop the storage"""
-        self._data.clear()
+        with self._storage_lock:
+            self._data.clear()

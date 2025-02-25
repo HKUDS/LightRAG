@@ -6,7 +6,6 @@ import os
 import argparse
 from typing import Optional
 import sys
-from multiprocessing import Manager
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
 from fastapi import HTTPException, Security
@@ -16,66 +15,6 @@ from starlette.status import HTTP_403_FORBIDDEN
 
 # Load environment variables
 load_dotenv(override=True)
-
-# Global variables for manager and shared state
-manager = None
-scan_progress = None
-scan_lock = None
-
-def initialize_manager():
-    """Initialize manager and shared state for cross-process communication"""
-    global manager, scan_progress, scan_lock
-    if manager is None:
-        manager = Manager()
-        scan_progress = manager.dict({
-            "is_scanning": False,
-            "current_file": "",
-            "indexed_count": 0,
-            "total_files": 0,
-            "progress": 0,
-        })
-        scan_lock = manager.Lock()
-
-def update_scan_progress_if_not_scanning():
-    """
-    Atomically check if scanning is not in progress and update scan_progress if it's not.
-    Returns True if the update was successful, False if scanning was already in progress.
-    """
-    with scan_lock:
-        if not scan_progress["is_scanning"]:
-            scan_progress.update({
-                "is_scanning": True,
-                "current_file": "",
-                "indexed_count": 0,
-                "total_files": 0,
-                "progress": 0,
-            })
-            return True
-        return False
-
-def update_scan_progress(current_file: str, total_files: int, indexed_count: int):
-    """
-    Atomically update scan progress information.
-    """
-    progress = (indexed_count / total_files * 100) if total_files > 0 else 0
-    scan_progress.update({
-        "current_file": current_file,
-        "indexed_count": indexed_count,
-        "total_files": total_files,
-        "progress": progress,
-    })
-
-def reset_scan_progress():
-    """
-    Atomically reset scan progress to initial state.
-    """
-    scan_progress.update({
-        "is_scanning": False,
-        "current_file": "",
-        "indexed_count": 0,
-        "total_files": 0,
-        "progress": 0,
-    })
 
 
 class OllamaServerInfos:
