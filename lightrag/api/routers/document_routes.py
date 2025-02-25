@@ -18,12 +18,10 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
-from ..utils_api import (
-    get_api_key_dependency,
-    scan_progress,
-    update_scan_progress_if_not_scanning,
-    update_scan_progress,
-    reset_scan_progress,
+from ..utils_api import get_api_key_dependency
+from lightrag.kg.shared_storage import (
+    get_scan_progress,
+    get_scan_lock,
 )
 
 
@@ -378,23 +376,51 @@ async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
 
 async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     """Background task to scan and index documents"""    
-    if not update_scan_progress_if_not_scanning():
-        ASCIIColors.info(
-            "Skip document scanning(another scanning is active)"
-        )
-        return
+    scan_progress = get_scan_progress()
+    scan_lock = get_scan_lock()
+    
+    with scan_lock:
+        if scan_progress["is_scanning"]:
+            ASCIIColors.info(
+                "Skip document scanning(another scanning is active)"
+            )
+            return
+        scan_progress.update({
+            "is_scanning": True,
+            "current_file": "",
+            "indexed_count": 0,
+            "total_files": 0,
+            "progress": 0,
+        })
 
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
-        update_scan_progress("", total_files, 0)  # Initialize progress
+        scan_progress.update({
+            "current_file": "",
+            "total_files": total_files,
+            "indexed_count": 0,
+            "progress": 0,
+        })
 
         logging.info(f"Found {total_files} new files to index.")
         for idx, file_path in enumerate(new_files):
             try:
-                update_scan_progress(os.path.basename(file_path), total_files, idx)
+                progress = (idx / total_files * 100) if total_files > 0 else 0
+                scan_progress.update({
+                    "current_file": os.path.basename(file_path),
+                    "indexed_count": idx,
+                    "progress": progress,
+                })
+                
                 await pipeline_index_file(rag, file_path)
-                update_scan_progress(os.path.basename(file_path), total_files, idx + 1)
+                
+                progress = ((idx + 1) / total_files * 100) if total_files > 0 else 0
+                scan_progress.update({
+                    "current_file": os.path.basename(file_path),
+                    "indexed_count": idx + 1,
+                    "progress": progress,
+                })
 
             except Exception as e:
                 logging.error(f"Error indexing file {file_path}: {str(e)}")
@@ -402,7 +428,13 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     except Exception as e:
         logging.error(f"Error during scanning process: {str(e)}")
     finally:
-        reset_scan_progress()
+        scan_progress.update({
+            "is_scanning": False,
+            "current_file": "",
+            "indexed_count": 0,
+            "total_files": 0,
+            "progress": 0,
+        })
 
 
 def create_document_routes(
@@ -427,7 +459,7 @@ def create_document_routes(
         return {"status": "scanning_started"}
 
     @router.get("/scan-progress")
-    async def get_scan_progress():
+    async def get_scanning_progress():
         """
         Get the current progress of the document scanning process.
 
@@ -439,7 +471,7 @@ def create_document_routes(
                 - total_files: Total number of files to process
                 - progress: Percentage of completion
         """
-        return dict(scan_progress)
+        return dict(get_scan_progress())
 
     @router.post("/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(
