@@ -548,7 +548,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.cyan("""    3. Basic Operations:
        - POST /upload_document: Upload new documents to RAG
        - POST /query: Query your document collection
-       - GET /collections: List available collections
 
     4. Monitor the server:
        - Check server logs for detailed operation information
