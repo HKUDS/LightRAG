@@ -76,7 +76,7 @@ const LayoutsControl = () => {
   const sigma = useSigma()
   const [layout, setLayout] = useState<LayoutName>('Circular')
   const [opened, setOpened] = useState<boolean>(false)
-  
+
   const maxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const layoutCircular = useLayoutCircular()
