@@ -2,7 +2,6 @@ from dataclasses import dataclass
 import os
 from typing import Any, Union, final
 import threading
-from multiprocessing import Manager
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -14,6 +13,7 @@ from lightrag.utils import (
     logger,
     write_json,
 )
+from lightrag.api.utils_api import manager as main_process_manager
 
 # Global variables for shared memory management
 _init_lock = threading.Lock()
@@ -27,7 +27,7 @@ def _get_manager():
     with _init_lock:
         if _manager is None:
             try:
-                _manager = Manager()
+                _manager = main_process_manager
                 _shared_doc_status_data = _manager.dict()
             except Exception as e:
                 logger.error(f"Failed to initialize shared memory manager: {e}")

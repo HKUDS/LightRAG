@@ -4,14 +4,13 @@ from typing import Any, final
 from dataclasses import dataclass
 import numpy as np
 import threading
-from multiprocessing import Manager
-
 import time
 
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
 )
+from lightrag.api.utils_api import manager as main_process_manager
 import pipmaster as pm
 from lightrag.base import (
     BaseVectorStorage,
@@ -34,7 +33,7 @@ def _get_manager():
     with _init_lock:
         if _manager is None:
             try:
-                _manager = Manager()
+                _manager = main_process_manager
                 _shared_vector_clients = _manager.dict()
             except Exception as e:
                 logger.error(f"Failed to initialize shared memory manager: {e}")
