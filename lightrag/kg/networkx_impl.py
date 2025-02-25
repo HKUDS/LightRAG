@@ -214,12 +214,6 @@ class NetworkXStorage(BaseGraphStorage):
         """
         labels = set()
         for node in self._graph.nodes():
-            # node_data = dict(self._graph.nodes[node])
-            # if "entity_type" in node_data:
-            #     if isinstance(node_data["entity_type"], list):
-            #         labels.update(node_data["entity_type"])
-            #     else:
-            #         labels.add(node_data["entity_type"])
             labels.add(str(node))  # Add node id as a label
 
         # Return sorted list
