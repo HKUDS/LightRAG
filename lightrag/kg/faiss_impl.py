@@ -3,13 +3,12 @@ import time
 import asyncio
 from typing import Any, final
 import threading
-from multiprocessing import Manager
-
 import json
 import numpy as np
 
 from dataclasses import dataclass
 import pipmaster as pm
+from lightrag.api.utils_api import manager as main_process_manager
 
 from lightrag.utils import (
     logger,
@@ -22,7 +21,7 @@ from lightrag.base import (
 if not pm.is_installed("faiss"):
     pm.install("faiss")
 
-import faiss
+import faiss # type: ignore
 
 # Global variables for shared memory management
 _init_lock = threading.Lock()
@@ -37,7 +36,7 @@ def _get_manager():
     with _init_lock:
         if _manager is None:
             try:
-                _manager = Manager()
+                _manager = main_process_manager
                 _shared_indices = _manager.dict()
                 _shared_meta = _manager.dict()
             except Exception as e:

@@ -2,14 +2,13 @@ import os
 from dataclasses import dataclass
 from typing import Any, final
 import threading
-from multiprocessing import Manager
-
 import numpy as np
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import (
     logger,
 )
+from lightrag.api.utils_api import manager as main_process_manager
 
 from lightrag.base import (
     BaseGraphStorage,
@@ -37,7 +36,7 @@ def _get_manager():
     with _init_lock:
         if _manager is None:
             try:
-                _manager = Manager()
+                _manager = main_process_manager
                 _shared_graphs = _manager.dict()
             except Exception as e:
                 logger.error(f"Failed to initialize shared memory manager: {e}")
