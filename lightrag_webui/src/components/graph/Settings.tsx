@@ -1,9 +1,10 @@
+import { useState, useCallback, useEffect } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
 import Separator from '@/components/ui/Separator'
 import Input from '@/components/ui/Input'
-import { useState, useCallback, useEffect } from 'react'
+
 import { controlButtonVariant } from '@/lib/constants'
 import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
@@ -36,6 +37,74 @@ const LabeledCheckBox = ({
 }
 
 /**
+ * Component that displays a number input with a label.
+ */
+const LabeledNumberInput = ({
+  value,
+  onEditFinished,
+  label,
+  min,
+  max
+}: {
+  value: number
+  onEditFinished: (value: number) => void
+  label: string
+  min: number
+  max?: number
+}) => {
+  const [currentValue, setCurrentValue] = useState<number | null>(value)
+
+  const onValueChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const text = e.target.value.trim()
+      if (text.length === 0) {
+        setCurrentValue(null)
+        return
+      }
+      const newValue = Number.parseInt(text)
+      if (!isNaN(newValue) && newValue !== currentValue) {
+        if (min !== undefined && newValue < min) {
+          return
+        }
+        if (max !== undefined && newValue > max) {
+          return
+        }
+        setCurrentValue(newValue)
+      }
+    },
+    [currentValue, min, max]
+  )
+
+  const onBlur = useCallback(() => {
+    if (currentValue !== null && value !== currentValue) {
+      onEditFinished(currentValue)
+    }
+  }, [value, currentValue, onEditFinished])
+
+  return (
+    <div className="flex flex-col gap-2">
+      <label
+        htmlFor="terms"
+        className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+      >
+        {label}
+      </label>
+      <Input
+        value={currentValue || ''}
+        onChange={onValueChange}
+        className="h-6 w-full min-w-0"
+        onBlur={onBlur}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            onBlur()
+          }
+        }}
+      />
+    </div>
+  )
+}
+
+/**
  * Component that displays a popover with settings options.
  */
 export default function Settings() {
@@ -45,11 +114,12 @@ export default function Settings() {
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
   const showNodeLabel = useSettingsStore.use.showNodeLabel()
-
   const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
   const enableHideUnselectedEdges = useSettingsStore.use.enableHideUnselectedEdges()
   const showEdgeLabel = useSettingsStore.use.showEdgeLabel()
+  const graphQueryMaxDepth = useSettingsStore.use.graphQueryMaxDepth()
+  const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const apiKey = useSettingsStore.use.apiKey()
@@ -102,6 +172,16 @@ export default function Settings() {
     []
   )
 
+  const setGraphQueryMaxDepth = useCallback((depth: number) => {
+    if (depth < 1) return
+    useSettingsStore.setState({ graphQueryMaxDepth: depth })
+  }, [])
+
+  const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
+    if (iterations < 1) return
+    useSettingsStore.setState({ graphLayoutMaxIterations: iterations })
+  }, [])
+
   const setApiKey = useCallback(async () => {
     useSettingsStore.setState({ apiKey: tempApiKey || null })
     await useBackendState.getState().check()
@@ -129,6 +209,14 @@ export default function Settings() {
         onCloseAutoFocus={(e) => e.preventDefault()}
       >
         <div className="flex flex-col gap-2">
+          <LabeledCheckBox
+            checked={enableHealthCheck}
+            onCheckedChange={setEnableHealthCheck}
+            label="Health Check"
+          />
+
+          <Separator />
+
           <LabeledCheckBox
             checked={showPropertyPanel}
             onCheckedChange={setShowPropertyPanel}
@@ -172,11 +260,18 @@ export default function Settings() {
           />
 
           <Separator />
-
-          <LabeledCheckBox
-            checked={enableHealthCheck}
-            onCheckedChange={setEnableHealthCheck}
-            label="Health Check"
+          <LabeledNumberInput
+            label="Max Query Depth"
+            min={1}
+            value={graphQueryMaxDepth}
+            onEditFinished={setGraphQueryMaxDepth}
+          />
+          <LabeledNumberInput
+            label="Max Layout Iterations"
+            min={1}
+            max={20}
+            value={graphLayoutMaxIterations}
+            onEditFinished={setGraphLayoutMaxIterations}
           />
 
           <Separator />
