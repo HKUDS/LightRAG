@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import configparser
+import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
@@ -41,13 +41,17 @@ from .utils import (
     always_get_an_event_loop,
     compute_mdhash_id,
     convert_response_to_json,
+    encode_string_by_tiktoken,
     lazy_external_import,
     limit_async_func_call,
     logger,
     set_logger,
-    encode_string_by_tiktoken,
 )
 from .types import KnowledgeGraph
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv(override=True)
 
 # TODO: TO REMOVE @Yannick
 config = configparser.ConfigParser()
@@ -263,9 +267,8 @@ class LightRAG:
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):
-        logger.setLevel(self.log_level)
         os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
-        set_logger(self.log_file_path)
+        set_logger(self.log_file_path, self.log_level)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
 
         if not os.path.exists(self.working_dir):
@@ -401,16 +404,31 @@ class LightRAG:
 
         self._storages_status = StoragesStatus.CREATED
 
-        # Initialize storages
         if self.auto_manage_storages_states:
-            loop = always_get_an_event_loop()
-            loop.run_until_complete(self.initialize_storages())
+            self._run_async_safely(self.initialize_storages, "Storage Initialization")
 
     def __del__(self):
-        # Finalize storages
         if self.auto_manage_storages_states:
+            self._run_async_safely(self.finalize_storages, "Storage Finalization")
+
+    def _run_async_safely(self, async_func, action_name=""):
+        """Safely execute an async function, avoiding event loop conflicts."""
+        try:
             loop = always_get_an_event_loop()
-            loop.run_until_complete(self.finalize_storages())
+            if loop.is_running():
+                task = loop.create_task(async_func())
+                task.add_done_callback(
+                    lambda t: logger.info(f"{action_name} completed!")
+                )
+            else:
+                loop.run_until_complete(async_func())
+        except RuntimeError:
+            logger.warning(
+                f"No running event loop, creating a new loop for {action_name}."
+            )
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(async_func())
+            loop.close()
 
     async def initialize_storages(self):
         """Asynchronously initialize the storages"""
@@ -463,10 +481,10 @@ class LightRAG:
         return text
 
     async def get_knowledge_graph(
-        self, nodel_label: str, max_depth: int
+        self, node_label: str, max_depth: int
     ) -> KnowledgeGraph:
         return await self.chunk_entity_relation_graph.get_knowledge_graph(
-            node_label=nodel_label, max_depth=max_depth
+            node_label=node_label, max_depth=max_depth
         )
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
@@ -474,11 +492,17 @@ class LightRAG:
         storage_class = lazy_external_import(import_path, storage_name)
         return storage_class
 
+    @staticmethod
+    def clean_text(text: str) -> str:
+        """Clean text by removing null bytes (0x00) and whitespace"""
+        return text.strip().replace("\x00", "")
+
     def insert(
         self,
         input: str | list[str],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
+        ids: str | list[str] | None = None,
     ) -> None:
         """Sync Insert documents with checkpoint support
 
@@ -487,10 +511,11 @@ class LightRAG:
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
+            ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
         """
         loop = always_get_an_event_loop()
         loop.run_until_complete(
-            self.ainsert(input, split_by_character, split_by_character_only)
+            self.ainsert(input, split_by_character, split_by_character_only, ids)
         )
 
     async def ainsert(
@@ -498,6 +523,7 @@ class LightRAG:
         input: str | list[str],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
+        ids: str | list[str] | None = None,
     ) -> None:
         """Async Insert documents with checkpoint support
 
@@ -506,25 +532,34 @@ class LightRAG:
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
+            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
         """
-        await self.apipeline_enqueue_documents(input)
+        await self.apipeline_enqueue_documents(input, ids)
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
 
-    def insert_custom_chunks(self, full_text: str, text_chunks: list[str]) -> None:
+    def insert_custom_chunks(self, full_text: str, text_chunks: list[str], doc_id: str | list[str] | None = None) -> None:
         loop = always_get_an_event_loop()
-        loop.run_until_complete(self.ainsert_custom_chunks(full_text, text_chunks))
+        loop.run_until_complete(self.ainsert_custom_chunks(full_text, text_chunks, doc_id))
 
     async def ainsert_custom_chunks(
-        self, full_text: str, text_chunks: list[str]
+        self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
         update_storage = False
         try:
-            doc_key = compute_mdhash_id(full_text.strip(), prefix="doc-")
-            new_docs = {doc_key: {"content": full_text.strip()}}
+            # Clean input texts
+            full_text = self.clean_text(full_text)
+            text_chunks = [self.clean_text(chunk) for chunk in text_chunks]
 
-            _add_doc_keys = await self.full_docs.filter_keys(set(doc_key))
+            # Process cleaned texts
+            if doc_id is None:
+                doc_key = compute_mdhash_id(full_text, prefix="doc-")
+            else:
+                doc_key = doc_id
+            new_docs = {doc_key: {"content": full_text}}
+
+            _add_doc_keys = await self.full_docs.filter_keys({doc_key})
             new_docs = {k: v for k, v in new_docs.items() if k in _add_doc_keys}
             if not len(new_docs):
                 logger.warning("This document is already in the storage.")
@@ -535,11 +570,10 @@ class LightRAG:
 
             inserting_chunks: dict[str, Any] = {}
             for chunk_text in text_chunks:
-                chunk_text_stripped = chunk_text.strip()
-                chunk_key = compute_mdhash_id(chunk_text_stripped, prefix="chunk-")
+                chunk_key = compute_mdhash_id(chunk_text, prefix="chunk-")
 
                 inserting_chunks[chunk_key] = {
-                    "content": chunk_text_stripped,
+                    "content": chunk_text,
                     "full_doc_id": doc_key,
                 }
 
@@ -564,24 +598,52 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
-    async def apipeline_enqueue_documents(self, input: str | list[str]) -> None:
+    async def apipeline_enqueue_documents(
+        self, input: str | list[str], ids: list[str] | None = None
+    ) -> None:
         """
         Pipeline for Processing Documents
 
-        1. Remove duplicate contents from the list
-        2. Generate document IDs and initial status
-        3. Filter out already processed documents
-        4. Enqueue document in status
+        1. Validate ids if provided or generate MD5 hash IDs
+        2. Remove duplicate contents
+        3. Generate document initial status
+        4. Filter out already processed documents
+        5. Enqueue document in status
         """
         if isinstance(input, str):
             input = [input]
+        if isinstance(ids, str):
+            ids = [ids]
 
-        # 1. Remove duplicate contents from the list
-        unique_contents = list(set(doc.strip() for doc in input))
+        # 1. Validate ids if provided or generate MD5 hash IDs
+        if ids is not None:
+            # Check if the number of IDs matches the number of documents
+            if len(ids) != len(input):
+                raise ValueError("Number of IDs must match the number of documents")
 
-        # 2. Generate document IDs and initial status
+            # Check if IDs are unique
+            if len(ids) != len(set(ids)):
+                raise ValueError("IDs must be unique")
+
+            # Generate contents dict of IDs provided by user and documents
+            contents = {id_: doc for id_, doc in zip(ids, input)}
+        else:
+            # Clean input text and remove duplicates
+            input = list(set(self.clean_text(doc) for doc in input))
+            # Generate contents dict of MD5 hash IDs and documents
+            contents = {compute_mdhash_id(doc, prefix="doc-"): doc for doc in input}
+
+        # 2. Remove duplicate contents
+        unique_contents = {
+            id_: content
+            for content, id_ in {
+                content: id_ for id_, content in contents.items()
+            }.items()
+        }
+
+        # 3. Generate document initial status
         new_docs: dict[str, Any] = {
-            compute_mdhash_id(content, prefix="doc-"): {
+            id_: {
                 "content": content,
                 "content_summary": self._get_content_summary(content),
                 "content_length": len(content),
@@ -589,10 +651,10 @@ class LightRAG:
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
             }
-            for content in unique_contents
+            for id_, content in unique_contents.items()
         }
 
-        # 3. Filter out already processed documents
+        # 4. Filter out already processed documents
         # Get docs ids
         all_new_doc_ids = set(new_docs.keys())
         # Exclude IDs of documents that are already in progress
@@ -604,7 +666,7 @@ class LightRAG:
             logger.info("No new unique documents were found.")
             return
 
-        # 4. Store status document
+        # 5. Store status document
         await self.doc_status.upsert(new_docs)
         logger.info(f"Stored {len(new_docs)} new unique documents")
 
@@ -661,8 +723,6 @@ class LightRAG:
                 # 4. iterate over batch
                 for doc_id_processing_status in docs_batch:
                     doc_id, status_doc = doc_id_processing_status
-                    # Update status in processing
-                    doc_status_id = compute_mdhash_id(status_doc.content, prefix="doc-")
                     # Generate chunks from document
                     chunks: dict[str, Any] = {
                         compute_mdhash_id(dp["content"], prefix="chunk-"): {
@@ -682,7 +742,7 @@ class LightRAG:
                     tasks = [
                         self.doc_status.upsert(
                             {
-                                doc_status_id: {
+                                doc_id: {
                                     "status": DocStatus.PROCESSING,
                                     "updated_at": datetime.now().isoformat(),
                                     "content": status_doc.content,
@@ -703,7 +763,7 @@ class LightRAG:
                         await asyncio.gather(*tasks)
                         await self.doc_status.upsert(
                             {
-                                doc_status_id: {
+                                doc_id: {
                                     "status": DocStatus.PROCESSED,
                                     "chunks_count": len(chunks),
                                     "content": status_doc.content,
@@ -718,7 +778,7 @@ class LightRAG:
                         logger.error(f"Failed to process document {doc_id}: {str(e)}")
                         await self.doc_status.upsert(
                             {
-                                doc_status_id: {
+                                doc_id: {
                                     "status": DocStatus.FAILED,
                                     "error": str(e),
                                     "content": status_doc.content,
@@ -779,7 +839,7 @@ class LightRAG:
             all_chunks_data: dict[str, dict[str, str]] = {}
             chunk_to_source_map: dict[str, str] = {}
             for chunk_data in custom_kg.get("chunks", {}):
-                chunk_content = chunk_data["content"].strip()
+                chunk_content = self.clean_text(chunk_data["content"])
                 source_id = chunk_data["source_id"]
                 tokens = len(
                     encode_string_by_tiktoken(
