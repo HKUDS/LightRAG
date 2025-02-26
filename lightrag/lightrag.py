@@ -539,9 +539,16 @@ class LightRAG:
             split_by_character, split_by_character_only
         )
 
-    def insert_custom_chunks(self, full_text: str, text_chunks: list[str], doc_id: str | list[str] | None = None) -> None:
+    def insert_custom_chunks(
+        self,
+        full_text: str,
+        text_chunks: list[str],
+        doc_id: str | list[str] | None = None,
+    ) -> None:
         loop = always_get_an_event_loop()
-        loop.run_until_complete(self.ainsert_custom_chunks(full_text, text_chunks, doc_id))
+        loop.run_until_complete(
+            self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
+        )
 
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
