@@ -55,22 +55,13 @@ def set_verbose_debug(enabled: bool):
     global VERBOSE_DEBUG
     VERBOSE_DEBUG = enabled
 
-
-class UnlimitedSemaphore:
-    """A context manager that allows unlimited access."""
-
-    async def __aenter__(self):
-        pass
-
-    async def __aexit__(self, exc_type, exc, tb):
-        pass
-
-
-ENCODER = None
-
 statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
 
+# Initialize logger
 logger = logging.getLogger("lightrag")
+logger.propagate = False  # prevent log message send to root loggger
+# Let the main application configure the handlers
+logger.setLevel(logging.INFO)
 
 # Set httpx logging level to WARNING
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -96,6 +87,18 @@ def set_logger(log_file: str, level: int = logging.DEBUG):
     if not logger.handlers:
         logger.addHandler(file_handler)
 
+
+class UnlimitedSemaphore:
+    """A context manager that allows unlimited access."""
+
+    async def __aenter__(self):
+        pass
+
+    async def __aexit__(self, exc_type, exc, tb):
+        pass
+
+
+ENCODER = None
 
 @dataclass
 class EmbeddingFunc:
