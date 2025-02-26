@@ -54,11 +54,12 @@ config.read("config.ini")
 
 class LightragPathFilter(logging.Filter):
     """Filter for lightrag logger to filter out frequent path access logs"""
+
     def __init__(self):
         super().__init__()
         # Define paths to be filtered
         self.filtered_paths = ["/documents", "/health", "/webui/"]
-    
+
     def filter(self, record):
         try:
             # Check if record has the required attributes for an access log
@@ -90,11 +91,13 @@ def create_app(args):
     # Initialize verbose debug setting
     # Can not use the logger at the top of this module when workers > 1
     from lightrag.utils import set_verbose_debug, logger
+
     # Setup logging
     logger.setLevel(getattr(logging, args.log_level))
     set_verbose_debug(args.verbose)
 
     from lightrag.kg.shared_storage import is_multiprocess
+
     logger.info(f"==== Multi-processor mode: {is_multiprocess} ====")
 
     # Verify that bindings are correctly setup
@@ -147,9 +150,7 @@ def create_app(args):
             # Auto scan documents if enabled
             if args.auto_scan_at_startup:
                 # Create background task
-                task = asyncio.create_task(
-                    run_scanning_process(rag, doc_manager)
-                )
+                task = asyncio.create_task(run_scanning_process(rag, doc_manager))
                 app.state.background_tasks.add(task)
                 task.add_done_callback(app.state.background_tasks.discard)
 
@@ -411,17 +412,19 @@ def get_application():
     """Factory function for creating the FastAPI application"""
     # Configure logging for this worker process
     configure_logging()
-    
+
     # Get args from environment variable
-    args_json = os.environ.get('LIGHTRAG_ARGS')
+    args_json = os.environ.get("LIGHTRAG_ARGS")
     if not args_json:
         args = parse_args()  # Fallback to parsing args if env var not set
     else:
         import types
+
         args = types.SimpleNamespace(**json.loads(args_json))
-    
+
     if args.workers > 1:
         from lightrag.kg.shared_storage import initialize_share_data
+
         initialize_share_data()
 
     return create_app(args)
@@ -434,57 +437,60 @@ def configure_logging():
         logger = logging.getLogger(logger_name)
         logger.handlers = []
         logger.filters = []
-    
+
     # Configure basic logging
-    logging.config.dictConfig({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "default": {
-                "format": "%(levelname)s: %(message)s",
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "format": "%(levelname)s: %(message)s",
+                },
             },
-        },
-        "handlers": {
-            "default": {
-                "formatter": "default",
-                "class": "logging.StreamHandler",
-                "stream": "ext://sys.stderr",
+            "handlers": {
+                "default": {
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stderr",
+                },
             },
-        },
-        "loggers": {
-            "uvicorn.access": {
-                "handlers": ["default"],
-                "level": "INFO",
-                "propagate": False,
-                "filters": ["path_filter"],
+            "loggers": {
+                "uvicorn.access": {
+                    "handlers": ["default"],
+                    "level": "INFO",
+                    "propagate": False,
+                    "filters": ["path_filter"],
+                },
+                "lightrag": {
+                    "handlers": ["default"],
+                    "level": "INFO",
+                    "propagate": False,
+                    "filters": ["path_filter"],
+                },
             },
-            "lightrag": {
-                "handlers": ["default"],
-                "level": "INFO",
-                "propagate": False,
-                "filters": ["path_filter"],
+            "filters": {
+                "path_filter": {
+                    "()": "lightrag.api.lightrag_server.LightragPathFilter",
+                },
             },
-        },
-        "filters": {
-            "path_filter": {
-                "()": "lightrag.api.lightrag_server.LightragPathFilter",
-            },
-        },
-    })
+        }
+    )
+
 
 def main():
     from multiprocessing import freeze_support
+
     freeze_support()
-    
+
     args = parse_args()
     # Save args to environment variable for child processes
-    os.environ['LIGHTRAG_ARGS'] = json.dumps(vars(args))
+    os.environ["LIGHTRAG_ARGS"] = json.dumps(vars(args))
 
     # Configure logging before starting uvicorn
     configure_logging()
 
     display_splash_screen(args)
-
 
     uvicorn_config = {
         "app": "lightrag.api.lightrag_server:get_application",

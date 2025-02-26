@@ -375,62 +375,70 @@ async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
 
 
 async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
-    """Background task to scan and index documents"""    
+    """Background task to scan and index documents"""
     scan_progress = get_scan_progress()
     scan_lock = get_scan_lock()
-    
+
     # Initialize scan_progress if not already initialized
     if not scan_progress:
-        scan_progress.update({
-            "is_scanning": False,
-            "current_file": "",
-            "indexed_count": 0,
-            "total_files": 0,
-            "progress": 0,
-        })
-    
+        scan_progress.update(
+            {
+                "is_scanning": False,
+                "current_file": "",
+                "indexed_count": 0,
+                "total_files": 0,
+                "progress": 0,
+            }
+        )
+
     with scan_lock:
         if scan_progress.get("is_scanning", False):
-            ASCIIColors.info(
-                "Skip document scanning(another scanning is active)"
-            )
+            ASCIIColors.info("Skip document scanning(another scanning is active)")
             return
-        scan_progress.update({
-            "is_scanning": True,
-            "current_file": "",
-            "indexed_count": 0,
-            "total_files": 0,
-            "progress": 0,
-        })
+        scan_progress.update(
+            {
+                "is_scanning": True,
+                "current_file": "",
+                "indexed_count": 0,
+                "total_files": 0,
+                "progress": 0,
+            }
+        )
 
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
-        scan_progress.update({
-            "current_file": "",
-            "total_files": total_files,
-            "indexed_count": 0,
-            "progress": 0,
-        })
+        scan_progress.update(
+            {
+                "current_file": "",
+                "total_files": total_files,
+                "indexed_count": 0,
+                "progress": 0,
+            }
+        )
 
         logging.info(f"Found {total_files} new files to index.")
         for idx, file_path in enumerate(new_files):
             try:
                 progress = (idx / total_files * 100) if total_files > 0 else 0
-                scan_progress.update({
-                    "current_file": os.path.basename(file_path),
-                    "indexed_count": idx,
-                    "progress": progress,
-                })
-                
+                scan_progress.update(
+                    {
+                        "current_file": os.path.basename(file_path),
+                        "indexed_count": idx,
+                        "progress": progress,
+                    }
+                )
+
                 await pipeline_index_file(rag, file_path)
-                
+
                 progress = ((idx + 1) / total_files * 100) if total_files > 0 else 0
-                scan_progress.update({
-                    "current_file": os.path.basename(file_path),
-                    "indexed_count": idx + 1,
-                    "progress": progress,
-                })
+                scan_progress.update(
+                    {
+                        "current_file": os.path.basename(file_path),
+                        "indexed_count": idx + 1,
+                        "progress": progress,
+                    }
+                )
 
             except Exception as e:
                 logging.error(f"Error indexing file {file_path}: {str(e)}")
@@ -438,13 +446,15 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     except Exception as e:
         logging.error(f"Error during scanning process: {str(e)}")
     finally:
-        scan_progress.update({
-            "is_scanning": False,
-            "current_file": "",
-            "indexed_count": 0,
-            "total_files": 0,
-            "progress": 0,
-        })
+        scan_progress.update(
+            {
+                "is_scanning": False,
+                "current_file": "",
+                "indexed_count": 0,
+                "total_files": 0,
+                "progress": 0,
+            }
+        )
 
 
 def create_document_routes(

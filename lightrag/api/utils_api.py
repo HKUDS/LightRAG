@@ -433,7 +433,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.white("    └─ Document Status Storage: ", end="")
     ASCIIColors.yellow(f"{args.doc_status_storage}")
 
-
     # Server Status
     ASCIIColors.green("\n✨ Server starting up...\n")
 
