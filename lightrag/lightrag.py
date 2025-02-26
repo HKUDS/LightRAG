@@ -502,7 +502,7 @@ class LightRAG:
         input: str | list[str],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
-        ids: list[str] | None = None,
+        ids: str | list[str] | None = None,
     ) -> None:
         """Sync Insert documents with checkpoint support
 
@@ -511,7 +511,7 @@ class LightRAG:
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
-            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
+            ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
         """
         loop = always_get_an_event_loop()
         loop.run_until_complete(
@@ -523,7 +523,7 @@ class LightRAG:
         input: str | list[str],
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
-        ids: list[str] | None = None,
+        ids: str | list[str] | None = None,
     ) -> None:
         """Async Insert documents with checkpoint support
 
@@ -539,12 +539,12 @@ class LightRAG:
             split_by_character, split_by_character_only
         )
 
-    def insert_custom_chunks(self, full_text: str, text_chunks: list[str]) -> None:
+    def insert_custom_chunks(self, full_text: str, text_chunks: list[str], doc_id: str | list[str] | None = None) -> None:
         loop = always_get_an_event_loop()
-        loop.run_until_complete(self.ainsert_custom_chunks(full_text, text_chunks))
+        loop.run_until_complete(self.ainsert_custom_chunks(full_text, text_chunks, doc_id))
 
     async def ainsert_custom_chunks(
-        self, full_text: str, text_chunks: list[str]
+        self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
         update_storage = False
         try:
@@ -553,7 +553,10 @@ class LightRAG:
             text_chunks = [self.clean_text(chunk) for chunk in text_chunks]
 
             # Process cleaned texts
-            doc_key = compute_mdhash_id(full_text, prefix="doc-")
+            if doc_id is None:
+                doc_key = compute_mdhash_id(full_text, prefix="doc-")
+            else:
+                doc_key = doc_id
             new_docs = {doc_key: {"content": full_text}}
 
             _add_doc_keys = await self.full_docs.filter_keys({doc_key})
@@ -609,6 +612,8 @@ class LightRAG:
         """
         if isinstance(input, str):
             input = [input]
+        if isinstance(ids, str):
+            ids = [ids]
 
         # 1. Validate ids if provided or generate MD5 hash IDs
         if ids is not None:
