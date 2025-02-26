@@ -12,7 +12,11 @@ from lightrag.utils import (
     logger,
     write_json,
 )
-from .shared_storage import get_namespace_data, get_storage_lock
+from .shared_storage import (
+    get_namespace_data,
+    get_storage_lock,
+    try_initialize_namespace,
+)
 
 
 @final
@@ -24,11 +28,17 @@ class JsonDocStatusStorage(DocStatusStorage):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
         self._storage_lock = get_storage_lock()
+
+        # check need_init must before get_namespace_data
+        need_init = try_initialize_namespace(self.namespace)
         self._data = get_namespace_data(self.namespace)
-        with self._storage_lock:
-            if not self._data:
-                self._data.update(load_json(self._file_name) or {})
-                logger.info(f"Loaded document status storage with {len(self._data)} records")
+        if need_init:
+            loaded_data = load_json(self._file_name) or {}
+            with self._storage_lock:
+                self._data.update(loaded_data)
+                logger.info(
+                    f"Loaded document status storage with {len(loaded_data)} records"
+                )
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
