@@ -18,13 +18,13 @@ from .shared_storage import get_namespace_data, get_storage_lock
 class JsonKVStorage(BaseKVStorage):
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
+        self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
         self._storage_lock = get_storage_lock()
         self._data = get_namespace_data(self.namespace)
         with self._storage_lock:
             if not self._data:
-                self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
                 self._data: dict[str, Any] = load_json(self._file_name) or {}
-        logger.info(f"Load KV {self.namespace} with {len(self._data)} data")
+                logger.info(f"Load KV {self.namespace} with {len(self._data)} data")
 
 
     async def index_done_callback(self) -> None:

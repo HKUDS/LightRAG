@@ -47,14 +47,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 if self._client.value is None:
                     self._client.value = NanoVectorDB(
                         self.embedding_func.embedding_dim, storage_file=self._client_file_name
-                )
+                    )
+                    logger.info(f"Initialized vector DB client for namespace {self.namespace}")
             else:
                 if self._client is None:
                     self._client = NanoVectorDB(
                         self.embedding_func.embedding_dim, storage_file=self._client_file_name
                     )
-        
-        logger.info(f"Initialized vector DB client for namespace {self.namespace}")
+                    logger.info(f"Initialized vector DB client for namespace {self.namespace}")
 
     def _get_client(self):
         """Get the appropriate client instance based on multiprocess mode"""
