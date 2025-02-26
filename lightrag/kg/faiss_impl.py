@@ -57,16 +57,16 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     # If you have a large number of vectors, you might want IVF or other indexes.
                     # For demonstration, we use a simple IndexFlatIP.
                     self._index.value = faiss.IndexFlatIP(self._dim)
+                    # Keep a local store for metadata, IDs, etc.
+                    # Maps <int faiss_id> → metadata (including your original ID).
+                    self._id_to_meta.update({})
+                    # Attempt to load an existing index + metadata from disk
+                    self._load_faiss_index()
             else:
                 if self._index is None:
                     self._index = faiss.IndexFlatIP(self._dim)
-
-            # Keep a local store for metadata, IDs, etc.
-            # Maps <int faiss_id> → metadata (including your original ID).
-            self._id_to_meta.update({})
-
-            # Attempt to load an existing index + metadata from disk
-            self._load_faiss_index()
+                    self._id_to_meta.update({})
+                    self._load_faiss_index()
 
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:

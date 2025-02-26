@@ -26,8 +26,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         self._storage_lock = get_storage_lock()
         self._data = get_namespace_data(self.namespace)
         with self._storage_lock:
-            self._data.update(load_json(self._file_name) or {})
-        logger.info(f"Loaded document status storage with {len(self._data)} records")
+            if not self._data:
+                self._data.update(load_json(self._file_name) or {})
+                logger.info(f"Loaded document status storage with {len(self._data)} records")
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
