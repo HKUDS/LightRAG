@@ -379,8 +379,18 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     scan_progress = get_scan_progress()
     scan_lock = get_scan_lock()
     
+    # Initialize scan_progress if not already initialized
+    if not scan_progress:
+        scan_progress.update({
+            "is_scanning": False,
+            "current_file": "",
+            "indexed_count": 0,
+            "total_files": 0,
+            "progress": 0,
+        })
+    
     with scan_lock:
-        if scan_progress["is_scanning"]:
+        if scan_progress.get("is_scanning", False):
             ASCIIColors.info(
                 "Skip document scanning(another scanning is active)"
             )
