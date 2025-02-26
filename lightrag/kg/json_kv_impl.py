@@ -26,7 +26,6 @@ class JsonKVStorage(BaseKVStorage):
                 self._data: dict[str, Any] = load_json(self._file_name) or {}
                 logger.info(f"Load KV {self.namespace} with {len(self._data)} data")
 
-
     async def index_done_callback(self) -> None:
         # 文件写入需要加锁，防止多个进程同时写入导致文件损坏
         with self._storage_lock:

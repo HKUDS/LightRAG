@@ -8,14 +8,19 @@ import numpy as np
 from dataclasses import dataclass
 import pipmaster as pm
 
-from lightrag.utils import logger,compute_mdhash_id
+from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
-from .shared_storage import get_namespace_data, get_storage_lock, get_namespace_object, is_multiprocess
+from .shared_storage import (
+    get_namespace_data,
+    get_storage_lock,
+    get_namespace_object,
+    is_multiprocess,
+)
 
 if not pm.is_installed("faiss"):
     pm.install("faiss")
 
-import faiss # type: ignore
+import faiss  # type: ignore
 
 
 @final
@@ -46,10 +51,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Embedding dimension (e.g. 768) must match your embedding function
         self._dim = self.embedding_func.embedding_dim
         self._storage_lock = get_storage_lock()
-        
-        self._index = get_namespace_object('faiss_indices')
-        self._id_to_meta = get_namespace_data('faiss_meta')
-        
+
+        self._index = get_namespace_object("faiss_indices")
+        self._id_to_meta = get_namespace_data("faiss_meta")
+
         with self._storage_lock:
             if is_multiprocess:
                 if self._index.value is None:
@@ -67,7 +72,6 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     self._index = faiss.IndexFlatIP(self._dim)
                     self._id_to_meta.update({})
                     self._load_faiss_index()
-
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
@@ -168,7 +172,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         # Perform the similarity search
         with self._storage_lock:
-            distances, indices = (self._index.value if is_multiprocess else self._index).search(embedding, top_k)
+            distances, indices = (
+                self._index.value if is_multiprocess else self._index
+            ).search(embedding, top_k)
 
             distances = distances[0]
             indices = indices[0]
@@ -232,7 +238,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         with self._storage_lock:
             relations = []
             for fid, meta in self._id_to_meta.items():
-                if meta.get("src_id") == entity_name or meta.get("tgt_id") == entity_name:
+                if (
+                    meta.get("src_id") == entity_name
+                    or meta.get("tgt_id") == entity_name
+                ):
                     relations.append(fid)
 
             logger.debug(f"Found {len(relations)} relations for {entity_name}")
@@ -292,7 +301,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
         Save the current Faiss index + metadata to disk so it can persist across runs.
         """
         with self._storage_lock:
-            faiss.write_index(self._index.value if is_multiprocess else self._index, self._faiss_index_file)
+            faiss.write_index(
+                self._index.value if is_multiprocess else self._index,
+                self._faiss_index_file,
+            )
 
             # Save metadata dict to JSON. Convert all keys to strings for JSON storage.
             # _id_to_meta is { int: { '__id__': doc_id, '__vector__': [float,...], ... } }
@@ -320,7 +332,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._index.value = loaded_index
             else:
                 self._index = loaded_index
-            
+
             # Load metadata
             with open(self._meta_file, "r", encoding="utf-8") as f:
                 stored_dict = json.load(f)

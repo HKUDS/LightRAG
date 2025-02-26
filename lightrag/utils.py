@@ -55,6 +55,7 @@ def set_verbose_debug(enabled: bool):
     global VERBOSE_DEBUG
     VERBOSE_DEBUG = enabled
 
+
 statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
 
 # Initialize logger
@@ -99,6 +100,7 @@ class UnlimitedSemaphore:
 
 
 ENCODER = None
+
 
 @dataclass
 class EmbeddingFunc:

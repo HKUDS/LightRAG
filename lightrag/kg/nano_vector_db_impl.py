@@ -25,7 +25,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
     def __post_init__(self):
         # Initialize lock only for file operations
         self._storage_lock = get_storage_lock()
-        
+
         # Use global config value if specified, otherwise use default
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
@@ -39,22 +39,28 @@ class NanoVectorDBStorage(BaseVectorStorage):
             self.global_config["working_dir"], f"vdb_{self.namespace}.json"
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
-        
+
         self._client = get_namespace_object(self.namespace)
-        
+
         with self._storage_lock:
             if is_multiprocess:
                 if self._client.value is None:
                     self._client.value = NanoVectorDB(
-                        self.embedding_func.embedding_dim, storage_file=self._client_file_name
+                        self.embedding_func.embedding_dim,
+                        storage_file=self._client_file_name,
                     )
-                    logger.info(f"Initialized vector DB client for namespace {self.namespace}")
+                    logger.info(
+                        f"Initialized vector DB client for namespace {self.namespace}"
+                    )
             else:
                 if self._client is None:
                     self._client = NanoVectorDB(
-                        self.embedding_func.embedding_dim, storage_file=self._client_file_name
+                        self.embedding_func.embedding_dim,
+                        storage_file=self._client_file_name,
                     )
-                    logger.info(f"Initialized vector DB client for namespace {self.namespace}")
+                    logger.info(
+                        f"Initialized vector DB client for namespace {self.namespace}"
+                    )
 
     def _get_client(self):
         """Get the appropriate client instance based on multiprocess mode"""
@@ -104,7 +110,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # Execute embedding outside of lock to avoid long lock times
         embedding = await self.embedding_func([query])
         embedding = embedding[0]
-        
+
         with self._storage_lock:
             client = self._get_client()
             results = client.query(
@@ -150,7 +156,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.debug(
                 f"Attempting to delete entity {entity_name} with ID {entity_id}"
             )
-            
+
             with self._storage_lock:
                 client = self._get_client()
                 # Check if the entity exists
@@ -172,7 +178,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     for dp in storage["data"]
                     if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
                 ]
-                logger.debug(f"Found {len(relations)} relations for entity {entity_name}")
+                logger.debug(
+                    f"Found {len(relations)} relations for entity {entity_name}"
+                )
                 ids_to_delete = [relation["__id__"] for relation in relations]
 
                 if ids_to_delete:
