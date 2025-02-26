@@ -94,7 +94,6 @@ def create_app(args):
     logger.setLevel(getattr(logging, args.log_level))
     set_verbose_debug(args.verbose)
 
-    # Display splash screen
     from lightrag.kg.shared_storage import is_multiprocess
     logger.info(f"==== Multi-processor mode: {is_multiprocess} ====")
 
@@ -421,9 +420,9 @@ def get_application():
         import types
         args = types.SimpleNamespace(**json.loads(args_json))
     
-    # if args.workers > 1:
-    #     from lightrag.kg.shared_storage import initialize_manager
-    #     initialize_manager()
+    if args.workers > 1:
+        from lightrag.kg.shared_storage import initialize_share_data
+        initialize_share_data()
 
     return create_app(args)
 
@@ -485,6 +484,7 @@ def main():
     configure_logging()
 
     display_splash_screen(args)
+
 
     uvicorn_config = {
         "app": "lightrag.api.lightrag_server:get_application",
