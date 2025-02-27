@@ -74,6 +74,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._id_to_meta.update({})
                 self._load_faiss_index()
 
+    def _get_index(self):
+        """
+        Helper method to get the correct index object based on multiprocess mode.
+        Returns the actual index object that can be used for operations.
+        """
+        return self._index.value if is_multiprocess else self._index
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
         Insert or update vectors in the Faiss index.
@@ -142,11 +149,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._remove_faiss_ids(existing_ids_to_remove)
 
             # Step 2: Add new vectors
-            start_idx = (self._index.value if is_multiprocess else self._index).ntotal
-            if is_multiprocess:
-                self._index.value.add(embeddings)
-            else:
-                self._index.add(embeddings)
+            index = self._get_index()
+            start_idx = index.ntotal
+            index.add(embeddings)
 
             # Step 3: Store metadata + vector for each new ID
             for i, meta in enumerate(list_data):
@@ -173,9 +178,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         # Perform the similarity search
         with self._storage_lock:
-            distances, indices = (
-                self._index.value if is_multiprocess else self._index
-            ).search(embedding, top_k)
+            distances, indices = self._get_index().search(embedding, top_k)
 
             distances = distances[0]
             indices = indices[0]
@@ -303,7 +306,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
         with self._storage_lock:
             faiss.write_index(
-                self._index.value if is_multiprocess else self._index,
+                self._get_index(),
                 self._faiss_index_file,
             )
 
