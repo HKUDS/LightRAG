@@ -20,14 +20,11 @@ LockType = Union[ProcessLock, ThreadLock]
 _manager = None
 _initialized = None
 is_multiprocess = None
+_global_lock: Optional[LockType] = None
 
 # shared data for storage across processes
 _shared_dicts: Optional[Dict[str, Any]] = None
-_share_objects: Optional[Dict[str, Any]] = None
 _init_flags: Optional[Dict[str, bool]] = None  # namespace -> initialized
-
-_global_lock: Optional[LockType] = None
-
 
 def initialize_share_data(workers: int = 1):
     """
@@ -53,7 +50,6 @@ def initialize_share_data(workers: int = 1):
         is_multiprocess, \
         _global_lock, \
         _shared_dicts, \
-        _share_objects, \
         _init_flags, \
         _initialized
 
@@ -72,7 +68,6 @@ def initialize_share_data(workers: int = 1):
         _global_lock = _manager.Lock()
         # Create shared dictionaries with manager
         _shared_dicts = _manager.dict()
-        _share_objects = _manager.dict()
         _init_flags = (
             _manager.dict()
         )  # Use shared dictionary to store initialization flags
@@ -83,7 +78,6 @@ def initialize_share_data(workers: int = 1):
         is_multiprocess = False
         _global_lock = ThreadLock()
         _shared_dicts = {}
-        _share_objects = {}
         _init_flags = {}
         direct_log(f"Process {os.getpid()} Shared-Data created for Single Process")
 
@@ -99,11 +93,7 @@ def try_initialize_namespace(namespace: str) -> bool:
     global _init_flags, _manager
 
     if _init_flags is None:
-        direct_log(
-            f"Error: try to create nanmespace before Shared-Data is initialized, pid={os.getpid()}",
-            level="ERROR",
-        )
-        raise ValueError("Shared dictionaries not initialized")
+        raise ValueError("Try to create nanmespace before Shared-Data is initialized")
 
     if namespace not in _init_flags:
         _init_flags[namespace] = True
@@ -113,43 +103,9 @@ def try_initialize_namespace(namespace: str) -> bool:
     return False
 
 
-def _get_global_lock() -> LockType:
-    return _global_lock
-
-
 def get_storage_lock() -> LockType:
     """return storage lock for data consistency"""
-    return _get_global_lock()
-
-
-def get_scan_lock() -> LockType:
-    """return scan_progress lock for data consistency"""
-    return get_storage_lock()
-
-
-def get_namespace_object(namespace: str) -> Any:
-    """Get an object for specific namespace"""
-
-    if _share_objects is None:
-        direct_log(
-            f"Error: try to getnanmespace before Shared-Data is initialized, pid={os.getpid()}",
-            level="ERROR",
-        )
-        raise ValueError("Shared dictionaries not initialized")
-
-    lock = _get_global_lock()
-    with lock:
-        if namespace not in _share_objects:
-            if namespace not in _share_objects:
-                if is_multiprocess:
-                    _share_objects[namespace] = _manager.Value("O", None)
-                else:
-                    _share_objects[namespace] = None
-            direct_log(
-                f"Created namespace: {namespace}(type={type(_share_objects[namespace])})"
-            )
-
-    return _share_objects[namespace]
+    return _global_lock
 
 
 def get_namespace_data(namespace: str) -> Dict[str, Any]:
@@ -161,7 +117,7 @@ def get_namespace_data(namespace: str) -> Dict[str, Any]:
         )
         raise ValueError("Shared dictionaries not initialized")
 
-    lock = _get_global_lock()
+    lock = get_storage_lock()
     with lock:
         if namespace not in _shared_dicts:
             if is_multiprocess and _manager is not None:
@@ -173,11 +129,6 @@ def get_namespace_data(namespace: str) -> Dict[str, Any]:
             )
 
     return _shared_dicts[namespace]
-
-
-def get_scan_progress() -> Dict[str, Any]:
-    """get storage space for document scanning progress data"""
-    return get_namespace_data("scan_progress")
 
 
 def finalize_share_data():
@@ -195,7 +146,6 @@ def finalize_share_data():
         is_multiprocess, \
         _global_lock, \
         _shared_dicts, \
-        _share_objects, \
         _init_flags, \
         _initialized
 
@@ -216,8 +166,6 @@ def finalize_share_data():
             # Clear shared dictionaries first
             if _shared_dicts is not None:
                 _shared_dicts.clear()
-            if _share_objects is not None:
-                _share_objects.clear()
             if _init_flags is not None:
                 _init_flags.clear()
 
@@ -234,7 +182,6 @@ def finalize_share_data():
     _initialized = None
     is_multiprocess = None
     _shared_dicts = None
-    _share_objects = None
     _init_flags = None
     _global_lock = None
 

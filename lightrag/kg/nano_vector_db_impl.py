@@ -11,25 +11,19 @@ from lightrag.utils import (
 )
 import pipmaster as pm
 from lightrag.base import BaseVectorStorage
-from .shared_storage import (
-    get_storage_lock,
-    get_namespace_object,
-    is_multiprocess,
-    try_initialize_namespace,
-)
 
 if not pm.is_installed("nano-vectordb"):
     pm.install("nano-vectordb")
 
 from nano_vectordb import NanoVectorDB
-
+from threading import Lock as ThreadLock
 
 @final
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
     def __post_init__(self):
         # Initialize lock only for file operations
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = ThreadLock()
 
         # Use global config value if specified, otherwise use default
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
@@ -45,32 +39,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
-        # check need_init must before get_namespace_object
-        need_init = try_initialize_namespace(self.namespace)
-        self._client = get_namespace_object(self.namespace)
-
-        if need_init:
-            if is_multiprocess:
-                self._client.value = NanoVectorDB(
-                    self.embedding_func.embedding_dim,
-                    storage_file=self._client_file_name,
-                )
-                logger.info(
-                    f"Initialized vector DB client for namespace {self.namespace}"
-                )
-            else:
-                self._client = NanoVectorDB(
-                    self.embedding_func.embedding_dim,
-                    storage_file=self._client_file_name,
-                )
-                logger.info(
-                    f"Initialized vector DB client for namespace {self.namespace}"
-                )
+        with self._storage_lock:
+            self._client = NanoVectorDB(
+                self.embedding_func.embedding_dim,
+                storage_file=self._client_file_name,
+            )
 
     def _get_client(self):
-        """Get the appropriate client instance based on multiprocess mode"""
-        if is_multiprocess:
-            return self._client.value
+        """Check if the shtorage should be reloaded"""
         return self._client
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -101,8 +77,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if len(embeddings) == len(list_data):
             for i, d in enumerate(list_data):
                 d["__vector__"] = embeddings[i]
-            with self._storage_lock:
-                results = self._get_client().upsert(datas=list_data)
+            results = self._get_client().upsert(datas=list_data)
             return results
         else:
             # sometimes the embedding is not returned correctly. just log it.
@@ -115,21 +90,20 @@ class NanoVectorDBStorage(BaseVectorStorage):
         embedding = await self.embedding_func([query])
         embedding = embedding[0]
 
-        with self._storage_lock:
-            results = self._get_client().query(
-                query=embedding,
-                top_k=top_k,
-                better_than_threshold=self.cosine_better_than_threshold,
-            )
-            results = [
-                {
-                    **dp,
-                    "id": dp["__id__"],
-                    "distance": dp["__metrics__"],
-                    "created_at": dp.get("__created_at__"),
-                }
-                for dp in results
-            ]
+        results = self._get_client().query(
+            query=embedding,
+            top_k=top_k,
+            better_than_threshold=self.cosine_better_than_threshold,
+        )
+        results = [
+            {
+                **dp,
+                "id": dp["__id__"],
+                "distance": dp["__metrics__"],
+                "created_at": dp.get("__created_at__"),
+            }
+            for dp in results
+        ]
         return results
 
     @property
@@ -143,8 +117,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             ids: List of vector IDs to be deleted
         """
         try:
-            with self._storage_lock:
-                self._get_client().delete(ids)
+            self._get_client().delete(ids)
             logger.debug(
                 f"Successfully deleted {len(ids)} vectors from {self.namespace}"
             )
@@ -158,37 +131,35 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 f"Attempting to delete entity {entity_name} with ID {entity_id}"
             )
 
-            with self._storage_lock:
-                # Check if the entity exists
-                if self._get_client().get([entity_id]):
-                    self._get_client().delete([entity_id])
-                    logger.debug(f"Successfully deleted entity {entity_name}")
-                else:
-                    logger.debug(f"Entity {entity_name} not found in storage")
+            # Check if the entity exists
+            if self._get_client().get([entity_id]):
+                self._get_client().delete([entity_id])
+                logger.debug(f"Successfully deleted entity {entity_name}")
+            else:
+                logger.debug(f"Entity {entity_name} not found in storage")
         except Exception as e:
             logger.error(f"Error deleting entity {entity_name}: {e}")
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         try:
-            with self._storage_lock:
-                storage = getattr(self._get_client(), "_NanoVectorDB__storage")
-                relations = [
-                    dp
-                    for dp in storage["data"]
-                    if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
-                ]
-                logger.debug(
-                    f"Found {len(relations)} relations for entity {entity_name}"
-                )
-                ids_to_delete = [relation["__id__"] for relation in relations]
+            storage = getattr(self._get_client(), "_NanoVectorDB__storage")
+            relations = [
+                dp
+                for dp in storage["data"]
+                if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
+            ]
+            logger.debug(
+                f"Found {len(relations)} relations for entity {entity_name}"
+            )
+            ids_to_delete = [relation["__id__"] for relation in relations]
 
-                if ids_to_delete:
-                    self._get_client().delete(ids_to_delete)
-                    logger.debug(
-                        f"Deleted {len(ids_to_delete)} relations for {entity_name}"
-                    )
-                else:
-                    logger.debug(f"No relations found for entity {entity_name}")
+            if ids_to_delete:
+                self._get_client().delete(ids_to_delete)
+                logger.debug(
+                    f"Deleted {len(ids_to_delete)} relations for {entity_name}"
+                )
+            else:
+                logger.debug(f"No relations found for entity {entity_name}")
         except Exception as e:
             logger.error(f"Error deleting relations for {entity_name}: {e}")
 
