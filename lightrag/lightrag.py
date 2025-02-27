@@ -267,6 +267,9 @@ class LightRAG:
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):
+        from lightrag.kg.shared_storage import initialize_share_data
+        initialize_share_data()
+
         os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
         set_logger(self.log_file_path, self.log_level)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
