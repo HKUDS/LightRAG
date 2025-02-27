@@ -18,6 +18,7 @@ if not pm.is_installed("nano-vectordb"):
 from nano_vectordb import NanoVectorDB
 from threading import Lock as ThreadLock
 
+
 @final
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
@@ -148,9 +149,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 for dp in storage["data"]
                 if dp["src_id"] == entity_name or dp["tgt_id"] == entity_name
             ]
-            logger.debug(
-                f"Found {len(relations)} relations for entity {entity_name}"
-            )
+            logger.debug(f"Found {len(relations)} relations for entity {entity_name}")
             ids_to_delete = [relation["__id__"] for relation in relations]
 
             if ids_to_delete:

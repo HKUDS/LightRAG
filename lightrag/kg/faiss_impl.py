@@ -17,6 +17,7 @@ if not pm.is_installed("faiss"):
 import faiss  # type: ignore
 from threading import Lock as ThreadLock
 
+
 @final
 @dataclass
 class FaissVectorDBStorage(BaseVectorStorage):
@@ -58,7 +59,6 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Attempt to load an existing index + metadata from disk
         with self._storage_lock:
             self._load_faiss_index()
-
 
     def _get_index(self):
         """Check if the shtorage should be reloaded"""
@@ -224,10 +224,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         logger.debug(f"Searching relations for entity {entity_name}")
         relations = []
         for fid, meta in self._id_to_meta.items():
-            if (
-                meta.get("src_id") == entity_name
-                or meta.get("tgt_id") == entity_name
-            ):
+            if meta.get("src_id") == entity_name or meta.get("tgt_id") == entity_name:
                 relations.append(fid)
 
         logger.debug(f"Found {len(relations)} relations for {entity_name}")
@@ -265,14 +262,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
             new_id_to_meta[new_fid] = vec_meta
 
         with self._storage_lock:
-        # Re-init index
+            # Re-init index
             self._index = faiss.IndexFlatIP(self._dim)
             if vectors_to_keep:
                 arr = np.array(vectors_to_keep, dtype=np.float32)
                 self._index.add(arr)
 
             self._id_to_meta = new_id_to_meta
-
 
     def _save_faiss_index(self):
         """
@@ -289,7 +285,6 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         with open(self._meta_file, "w", encoding="utf-8") as f:
             json.dump(serializable_dict, f)
-
 
     def _load_faiss_index(self):
         """

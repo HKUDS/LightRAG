@@ -36,7 +36,9 @@ class JsonKVStorage(BaseKVStorage):
 
     async def index_done_callback(self) -> None:
         with self._storage_lock:
-            data_dict = dict(self._data) if hasattr(self._data, "_getvalue") else self._data
+            data_dict = (
+                dict(self._data) if hasattr(self._data, "_getvalue") else self._data
+            )
             write_json(data_dict, self._file_name)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:

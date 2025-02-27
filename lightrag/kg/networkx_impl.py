@@ -19,6 +19,7 @@ import networkx as nx
 from graspologic import embed
 from threading import Lock as ThreadLock
 
+
 @final
 @dataclass
 class NetworkXStorage(BaseGraphStorage):
@@ -231,9 +232,9 @@ class NetworkXStorage(BaseGraphStorage):
         if len(subgraph.nodes()) > max_graph_nodes:
             origin_nodes = len(subgraph.nodes())
             node_degrees = dict(subgraph.degree())
-            top_nodes = sorted(
-                node_degrees.items(), key=lambda x: x[1], reverse=True
-            )[:max_graph_nodes]
+            top_nodes = sorted(node_degrees.items(), key=lambda x: x[1], reverse=True)[
+                :max_graph_nodes
+            ]
             top_node_ids = [node[0] for node in top_nodes]
             # Create new subgraph with only top nodes
             subgraph = subgraph.subgraph(top_node_ids)
