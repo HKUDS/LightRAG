@@ -107,9 +107,9 @@ def try_initialize_namespace(namespace: str) -> bool:
 
     if namespace not in _init_flags:
         _init_flags[namespace] = True
-        direct_log(f"Process {os.getpid()} ready to initialize namespace {namespace}")
+        direct_log(f"Process {os.getpid()} ready to initialize storage namespace: [{namespace}]")
         return True
-    direct_log(f"Process {os.getpid()} namespace {namespace} already to initialized")
+    direct_log(f"Process {os.getpid()} storage namespace already to initialized: [{namespace}]")
     return False
 
 
@@ -146,7 +146,7 @@ def get_namespace_object(namespace: str) -> Any:
                 else:
                     _share_objects[namespace] = None
             direct_log(
-                f"Created namespace({namespace}): type={type(_share_objects[namespace])}, pid={os.getpid()}"
+                f"Created namespace: {namespace}(type={type(_share_objects[namespace])})"
             )
 
     return _share_objects[namespace]
@@ -169,7 +169,7 @@ def get_namespace_data(namespace: str) -> Dict[str, Any]:
             else:
                 _shared_dicts[namespace] = {}
             direct_log(
-                f"Created namespace({namespace}): type={type(_shared_dicts[namespace])}, pid={os.getpid()}"
+                f"Created namespace: {{namespace}}({type(_shared_dicts[namespace])}) "
             )
 
     return _shared_dicts[namespace]
