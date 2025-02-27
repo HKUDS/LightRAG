@@ -6,12 +6,6 @@ import numpy as np
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
 from lightrag.base import BaseGraphStorage
-from .shared_storage import (
-    get_storage_lock,
-    get_namespace_object,
-    is_multiprocess,
-    try_initialize_namespace,
-)
 
 import pipmaster as pm
 
@@ -23,7 +17,7 @@ if not pm.is_installed("graspologic"):
 
 import networkx as nx
 from graspologic import embed
-
+from threading import Lock as ThreadLock
 
 @final
 @dataclass
@@ -78,38 +72,23 @@ class NetworkXStorage(BaseGraphStorage):
         self._graphml_xml_file = os.path.join(
             self.global_config["working_dir"], f"graph_{self.namespace}.graphml"
         )
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = ThreadLock()
 
-        # check need_init must before get_namespace_object
-        need_init = try_initialize_namespace(self.namespace)
-        self._graph = get_namespace_object(self.namespace)
-
-        if need_init:
-            if is_multiprocess:
-                preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
-                self._graph.value = preloaded_graph or nx.Graph()
-                if preloaded_graph:
-                    logger.info(
-                        f"Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
-                    )
-            else:
-                preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
-                self._graph = preloaded_graph or nx.Graph()
-                if preloaded_graph:
-                    logger.info(
-                        f"Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
-                    )
-
+        with self._storage_lock:
+            preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
+        if preloaded_graph is not None:
+            logger.info(
+                f"Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
+            )
+        else:
             logger.info("Created new empty graph")
-
+        self._graph = preloaded_graph or nx.Graph()
         self._node_embed_algorithms = {
             "node2vec": self._node2vec_embed,
         }
 
     def _get_graph(self):
-        """Get the appropriate graph instance based on multiprocess mode"""
-        if is_multiprocess:
-            return self._graph.value
+        """Check if the shtorage should be reloaded"""
         return self._graph
 
     async def index_done_callback(self) -> None:
@@ -117,54 +96,44 @@ class NetworkXStorage(BaseGraphStorage):
             NetworkXStorage.write_nx_graph(self._get_graph(), self._graphml_xml_file)
 
     async def has_node(self, node_id: str) -> bool:
-        with self._storage_lock:
-            return self._get_graph().has_node(node_id)
+        return self._get_graph().has_node(node_id)
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        with self._storage_lock:
-            return self._get_graph().has_edge(source_node_id, target_node_id)
+        return self._get_graph().has_edge(source_node_id, target_node_id)
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        with self._storage_lock:
-            return self._get_graph().nodes.get(node_id)
+        return self._get_graph().nodes.get(node_id)
 
     async def node_degree(self, node_id: str) -> int:
-        with self._storage_lock:
-            return self._get_graph().degree(node_id)
+        return self._get_graph().degree(node_id)
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        with self._storage_lock:
-            return self._get_graph().degree(src_id) + self._get_graph().degree(tgt_id)
+        return self._get_graph().degree(src_id) + self._get_graph().degree(tgt_id)
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        with self._storage_lock:
-            return self._get_graph().edges.get((source_node_id, target_node_id))
+        return self._get_graph().edges.get((source_node_id, target_node_id))
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
-        with self._storage_lock:
-            if self._get_graph().has_node(source_node_id):
-                return list(self._get_graph().edges(source_node_id))
-            return None
+        if self._get_graph().has_node(source_node_id):
+            return list(self._get_graph().edges(source_node_id))
+        return None
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
-        with self._storage_lock:
-            self._get_graph().add_node(node_id, **node_data)
+        self._get_graph().add_node(node_id, **node_data)
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        with self._storage_lock:
-            self._get_graph().add_edge(source_node_id, target_node_id, **edge_data)
+        self._get_graph().add_edge(source_node_id, target_node_id, **edge_data)
 
     async def delete_node(self, node_id: str) -> None:
-        with self._storage_lock:
-            if self._get_graph().has_node(node_id):
-                self._get_graph().remove_node(node_id)
-                logger.debug(f"Node {node_id} deleted from the graph.")
-            else:
-                logger.warning(f"Node {node_id} not found in the graph for deletion.")
+        if self._get_graph().has_node(node_id):
+            self._get_graph().remove_node(node_id)
+            logger.debug(f"Node {node_id} deleted from the graph.")
+        else:
+            logger.warning(f"Node {node_id} not found in the graph for deletion.")
 
     async def embed_nodes(
         self, algorithm: str
@@ -175,13 +144,12 @@ class NetworkXStorage(BaseGraphStorage):
 
     # TODO: NOT USED
     async def _node2vec_embed(self):
-        with self._storage_lock:
-            graph = self._get_graph()
-            embeddings, nodes = embed.node2vec_embed(
-                graph,
-                **self.global_config["node2vec_params"],
-            )
-            nodes_ids = [graph.nodes[node_id]["id"] for node_id in nodes]
+        graph = self._get_graph()
+        embeddings, nodes = embed.node2vec_embed(
+            graph,
+            **self.global_config["node2vec_params"],
+        )
+        nodes_ids = [graph.nodes[node_id]["id"] for node_id in nodes]
         return embeddings, nodes_ids
 
     def remove_nodes(self, nodes: list[str]):
@@ -190,11 +158,10 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             nodes: List of node IDs to be deleted
         """
-        with self._storage_lock:
-            graph = self._get_graph()
-            for node in nodes:
-                if graph.has_node(node):
-                    graph.remove_node(node)
+        graph = self._get_graph()
+        for node in nodes:
+            if graph.has_node(node):
+                graph.remove_node(node)
 
     def remove_edges(self, edges: list[tuple[str, str]]):
         """Delete multiple edges
@@ -202,11 +169,10 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             edges: List of edges to be deleted, each edge is a (source, target) tuple
         """
-        with self._storage_lock:
-            graph = self._get_graph()
-            for source, target in edges:
-                if graph.has_edge(source, target):
-                    graph.remove_edge(source, target)
+        graph = self._get_graph()
+        for source, target in edges:
+            if graph.has_edge(source, target):
+                graph.remove_edge(source, target)
 
     async def get_all_labels(self) -> list[str]:
         """
@@ -214,10 +180,9 @@ class NetworkXStorage(BaseGraphStorage):
         Returns:
             [label1, label2, ...]  # Alphabetically sorted label list
         """
-        with self._storage_lock:
-            labels = set()
-            for node in self._get_graph().nodes():
-                labels.add(str(node))  # Add node id as a label
+        labels = set()
+        for node in self._get_graph().nodes():
+            labels.add(str(node))  # Add node id as a label
 
         # Return sorted list
         return sorted(list(labels))
@@ -239,88 +204,87 @@ class NetworkXStorage(BaseGraphStorage):
         seen_nodes = set()
         seen_edges = set()
 
-        with self._storage_lock:
-            graph = self._get_graph()
+        graph = self._get_graph()
 
-            # Handle special case for "*" label
-            if node_label == "*":
-                # For "*", return the entire graph including all nodes and edges
-                subgraph = (
-                    graph.copy()
-                )  # Create a copy to avoid modifying the original graph
-            else:
-                # Find nodes with matching node id (partial match)
-                nodes_to_explore = []
-                for n, attr in graph.nodes(data=True):
-                    if node_label in str(n):  # Use partial matching
-                        nodes_to_explore.append(n)
+        # Handle special case for "*" label
+        if node_label == "*":
+            # For "*", return the entire graph including all nodes and edges
+            subgraph = (
+                graph.copy()
+            )  # Create a copy to avoid modifying the original graph
+        else:
+            # Find nodes with matching node id (partial match)
+            nodes_to_explore = []
+            for n, attr in graph.nodes(data=True):
+                if node_label in str(n):  # Use partial matching
+                    nodes_to_explore.append(n)
 
-                if not nodes_to_explore:
-                    logger.warning(f"No nodes found with label {node_label}")
-                    return result
+            if not nodes_to_explore:
+                logger.warning(f"No nodes found with label {node_label}")
+                return result
 
-                # Get subgraph using ego_graph
-                subgraph = nx.ego_graph(graph, nodes_to_explore[0], radius=max_depth)
+            # Get subgraph using ego_graph
+            subgraph = nx.ego_graph(graph, nodes_to_explore[0], radius=max_depth)
 
-            # Check if number of nodes exceeds max_graph_nodes
-            max_graph_nodes = 500
-            if len(subgraph.nodes()) > max_graph_nodes:
-                origin_nodes = len(subgraph.nodes())
-                node_degrees = dict(subgraph.degree())
-                top_nodes = sorted(
-                    node_degrees.items(), key=lambda x: x[1], reverse=True
-                )[:max_graph_nodes]
-                top_node_ids = [node[0] for node in top_nodes]
-                # Create new subgraph with only top nodes
-                subgraph = subgraph.subgraph(top_node_ids)
-                logger.info(
-                    f"Reduced graph from {origin_nodes} nodes to {max_graph_nodes} nodes (depth={max_depth})"
+        # Check if number of nodes exceeds max_graph_nodes
+        max_graph_nodes = 500
+        if len(subgraph.nodes()) > max_graph_nodes:
+            origin_nodes = len(subgraph.nodes())
+            node_degrees = dict(subgraph.degree())
+            top_nodes = sorted(
+                node_degrees.items(), key=lambda x: x[1], reverse=True
+            )[:max_graph_nodes]
+            top_node_ids = [node[0] for node in top_nodes]
+            # Create new subgraph with only top nodes
+            subgraph = subgraph.subgraph(top_node_ids)
+            logger.info(
+                f"Reduced graph from {origin_nodes} nodes to {max_graph_nodes} nodes (depth={max_depth})"
+            )
+
+        # Add nodes to result
+        for node in subgraph.nodes():
+            if str(node) in seen_nodes:
+                continue
+
+            node_data = dict(subgraph.nodes[node])
+            # Get entity_type as labels
+            labels = []
+            if "entity_type" in node_data:
+                if isinstance(node_data["entity_type"], list):
+                    labels.extend(node_data["entity_type"])
+                else:
+                    labels.append(node_data["entity_type"])
+
+            # Create node with properties
+            node_properties = {k: v for k, v in node_data.items()}
+
+            result.nodes.append(
+                KnowledgeGraphNode(
+                    id=str(node), labels=[str(node)], properties=node_properties
                 )
+            )
+            seen_nodes.add(str(node))
 
-            # Add nodes to result
-            for node in subgraph.nodes():
-                if str(node) in seen_nodes:
-                    continue
+        # Add edges to result
+        for edge in subgraph.edges():
+            source, target = edge
+            edge_id = f"{source}-{target}"
+            if edge_id in seen_edges:
+                continue
 
-                node_data = dict(subgraph.nodes[node])
-                # Get entity_type as labels
-                labels = []
-                if "entity_type" in node_data:
-                    if isinstance(node_data["entity_type"], list):
-                        labels.extend(node_data["entity_type"])
-                    else:
-                        labels.append(node_data["entity_type"])
+            edge_data = dict(subgraph.edges[edge])
 
-                # Create node with properties
-                node_properties = {k: v for k, v in node_data.items()}
-
-                result.nodes.append(
-                    KnowledgeGraphNode(
-                        id=str(node), labels=[str(node)], properties=node_properties
-                    )
+            # Create edge with complete information
+            result.edges.append(
+                KnowledgeGraphEdge(
+                    id=edge_id,
+                    type="DIRECTED",
+                    source=str(source),
+                    target=str(target),
+                    properties=edge_data,
                 )
-                seen_nodes.add(str(node))
-
-            # Add edges to result
-            for edge in subgraph.edges():
-                source, target = edge
-                edge_id = f"{source}-{target}"
-                if edge_id in seen_edges:
-                    continue
-
-                edge_data = dict(subgraph.edges[edge])
-
-                # Create edge with complete information
-                result.edges.append(
-                    KnowledgeGraphEdge(
-                        id=edge_id,
-                        type="DIRECTED",
-                        source=str(source),
-                        target=str(target),
-                        properties=edge_data,
-                    )
-                )
-                seen_edges.add(edge_id)
+            )
+            seen_edges.add(edge_id)
 
         logger.info(
             f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
