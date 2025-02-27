@@ -62,15 +62,13 @@ def initialize_share_data(workers: int = 1):
 
     _manager = Manager()
 
-    # Force multi-process mode if workers > 1
     if workers > 1:
         is_multiprocess = True
         _global_lock = _manager.Lock()
-        # Create shared dictionaries with manager
         _shared_dicts = _manager.dict()
         _init_flags = (
             _manager.dict()
-        )  # Use shared dictionary to store initialization flags
+        )
         direct_log(
             f"Process {os.getpid()} Shared-Data created for Multiple Process (workers={workers})"
         )
@@ -124,9 +122,6 @@ def get_namespace_data(namespace: str) -> Dict[str, Any]:
                 _shared_dicts[namespace] = _manager.dict()
             else:
                 _shared_dicts[namespace] = {}
-            direct_log(
-                f"Created namespace: {{namespace}}({type(_shared_dicts[namespace])}) "
-            )
 
     return _shared_dicts[namespace]
 
