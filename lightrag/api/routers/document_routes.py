@@ -20,7 +20,7 @@ from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
 from ..utils_api import get_api_key_dependency
 from lightrag.kg.shared_storage import (
-    get_scan_progress,
+    get_namespace_data,
     get_scan_lock,
 )
 
@@ -376,21 +376,8 @@ async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
 
 async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     """Background task to scan and index documents"""
-    scan_progress = get_scan_progress()
+    scan_progress = get_namespace_data("scan_progress")
     scan_lock = get_scan_lock()
-
-    # Initialize scan_progress if not already initialized
-    if not scan_progress:
-        scan_progress.update(
-            {
-                "is_scanning": False,
-                "current_file": "",
-                "indexed_count": 0,
-                "total_files": 0,
-                "progress": 0,
-            }
-        )
-
     with scan_lock:
         if scan_progress.get("is_scanning", False):
             ASCIIColors.info("Skip document scanning(another scanning is active)")
@@ -491,7 +478,7 @@ def create_document_routes(
                 - total_files: Total number of files to process
                 - progress: Percentage of completion
         """
-        return dict(get_scan_progress())
+        return dict(get_namespace_data("scan_progress"))
 
     @router.post("/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(
