@@ -115,65 +115,54 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def index_done_callback(self) -> None:
         with self._storage_lock:
-            graph = self._get_graph()
-            NetworkXStorage.write_nx_graph(graph, self._graphml_xml_file)
+            NetworkXStorage.write_nx_graph(self._get_graph(), self._graphml_xml_file)
 
     async def has_node(self, node_id: str) -> bool:
         with self._storage_lock:
-            graph = self._get_graph()
-            return graph.has_node(node_id)
+            return self._get_graph().has_node(node_id)
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         with self._storage_lock:
-            graph = self._get_graph()
-            return graph.has_edge(source_node_id, target_node_id)
+            return self._get_graph().has_edge(source_node_id, target_node_id)
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         with self._storage_lock:
-            graph = self._get_graph()
-            return graph.nodes.get(node_id)
+            return self._get_graph().nodes.get(node_id)
 
     async def node_degree(self, node_id: str) -> int:
         with self._storage_lock:
-            graph = self._get_graph()
-            return graph.degree(node_id)
+            return self._get_graph().degree(node_id)
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         with self._storage_lock:
-            graph = self._get_graph()
-            return graph.degree(src_id) + graph.degree(tgt_id)
+            return self._get_graph().degree(src_id) + self._get_graph().degree(tgt_id)
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
         with self._storage_lock:
-            graph = self._get_graph()
-            return graph.edges.get((source_node_id, target_node_id))
+            return self._get_graph().edges.get((source_node_id, target_node_id))
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         with self._storage_lock:
-            graph = self._get_graph()
-            if graph.has_node(source_node_id):
-                return list(graph.edges(source_node_id))
+            if self._get_graph().has_node(source_node_id):
+                return list(self._get_graph().edges(source_node_id))
             return None
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         with self._storage_lock:
-            graph = self._get_graph()
-            graph.add_node(node_id, **node_data)
+            self._get_graph().add_node(node_id, **node_data)
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         with self._storage_lock:
-            graph = self._get_graph()
-            graph.add_edge(source_node_id, target_node_id, **edge_data)
+            self._get_graph().add_edge(source_node_id, target_node_id, **edge_data)
 
     async def delete_node(self, node_id: str) -> None:
         with self._storage_lock:
-            graph = self._get_graph()
-            if graph.has_node(node_id):
-                graph.remove_node(node_id)
+            if self._get_graph().has_node(node_id):
+                self._get_graph().remove_node(node_id)
                 logger.debug(f"Node {node_id} deleted from the graph.")
             else:
                 logger.warning(f"Node {node_id} not found in the graph for deletion.")
@@ -227,9 +216,8 @@ class NetworkXStorage(BaseGraphStorage):
             [label1, label2, ...]  # Alphabetically sorted label list
         """
         with self._storage_lock:
-            graph = self._get_graph()
             labels = set()
-            for node in graph.nodes():
+            for node in self._get_graph().nodes():
                 labels.add(str(node))  # Add node id as a label
 
         # Return sorted list

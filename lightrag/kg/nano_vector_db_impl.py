@@ -97,8 +97,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
             for i, d in enumerate(list_data):
                 d["__vector__"] = embeddings[i]
             with self._storage_lock:
-                client = self._get_client()
-                results = client.upsert(datas=list_data)
+                results = self._get_client().upsert(datas=list_data)
             return results
         else:
             # sometimes the embedding is not returned correctly. just log it.
@@ -112,8 +111,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         embedding = embedding[0]
 
         with self._storage_lock:
-            client = self._get_client()
-            results = client.query(
+            results = self._get_client().query(
                 query=embedding,
                 top_k=top_k,
                 better_than_threshold=self.cosine_better_than_threshold,
@@ -131,8 +129,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
     @property
     def client_storage(self):
-        client = self._get_client()
-        return getattr(client, "_NanoVectorDB__storage")
+        return getattr(self._get_client(), "_NanoVectorDB__storage")
 
     async def delete(self, ids: list[str]):
         """Delete vectors with specified IDs
@@ -142,8 +139,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         """
         try:
             with self._storage_lock:
-                client = self._get_client()
-                client.delete(ids)
+                self._get_client().delete(ids)
             logger.debug(
                 f"Successfully deleted {len(ids)} vectors from {self.namespace}"
             )
@@ -158,10 +154,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
             )
 
             with self._storage_lock:
-                client = self._get_client()
                 # Check if the entity exists
-                if client.get([entity_id]):
-                    client.delete([entity_id])
+                if self._get_client().get([entity_id]):
+                    self._get_client().delete([entity_id])
                     logger.debug(f"Successfully deleted entity {entity_name}")
                 else:
                     logger.debug(f"Entity {entity_name} not found in storage")
@@ -171,8 +166,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def delete_entity_relation(self, entity_name: str) -> None:
         try:
             with self._storage_lock:
-                client = self._get_client()
-                storage = getattr(client, "_NanoVectorDB__storage")
+                storage = getattr(self._get_client(), "_NanoVectorDB__storage")
                 relations = [
                     dp
                     for dp in storage["data"]
@@ -184,7 +178,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 ids_to_delete = [relation["__id__"] for relation in relations]
 
                 if ids_to_delete:
-                    client.delete(ids_to_delete)
+                    self._get_client().delete(ids_to_delete)
                     logger.debug(
                         f"Deleted {len(ids_to_delete)} relations for {entity_name}"
                     )
@@ -195,5 +189,4 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
     async def index_done_callback(self) -> None:
         with self._storage_lock:
-            client = self._get_client()
-            client.save()
+            self._get_client().save()
