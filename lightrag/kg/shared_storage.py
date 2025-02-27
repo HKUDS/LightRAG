@@ -52,7 +52,7 @@ def initialize_share_data(workers: int = 1):
     # Check if already initialized
     if _initialized and _initialized.value:
         is_multiprocess = _is_multiprocess.value
-        direct_log(f"Process {os.getpid()} storage data already initialized (multiprocess={_is_multiprocess.value})!")
+        direct_log(f"Process {os.getpid()} storage data already initialized (multiprocess={_is_multiprocess.value})")
         return
     
     _manager = Manager()
