@@ -92,8 +92,6 @@ class NetworkXStorage(BaseGraphStorage):
                     logger.info(
                         f"Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
                     )
-                else:
-                    logger.info("Created new empty graph")
             else:
                 preloaded_graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file)
                 self._graph = preloaded_graph or nx.Graph()
@@ -101,8 +99,8 @@ class NetworkXStorage(BaseGraphStorage):
                     logger.info(
                         f"Loaded graph from {self._graphml_xml_file} with {preloaded_graph.number_of_nodes()} nodes, {preloaded_graph.number_of_edges()} edges"
                     )
-                else:
-                    logger.info("Created new empty graph")
+
+            logger.info("Created new empty graph")
 
         self._node_embed_algorithms = {
             "node2vec": self._node2vec_embed,
