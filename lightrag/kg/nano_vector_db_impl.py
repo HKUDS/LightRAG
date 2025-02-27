@@ -11,7 +11,7 @@ from lightrag.utils import (
 )
 import pipmaster as pm
 from lightrag.base import BaseVectorStorage
-from .shared_storage import get_storage_lock, get_namespace_object, is_multiprocess
+from .shared_storage import get_storage_lock, get_namespace_object, is_multiprocess, try_initialize_namespace
 
 if not pm.is_installed("nano-vectordb"):
     pm.install("nano-vectordb")
@@ -40,27 +40,27 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
+        # check need_init must before get_namespace_object
+        need_init = try_initialize_namespace(self.namespace)
         self._client = get_namespace_object(self.namespace)
 
-        with self._storage_lock:
+        if need_init:
             if is_multiprocess:
-                if self._client.value is None:
-                    self._client.value = NanoVectorDB(
-                        self.embedding_func.embedding_dim,
-                        storage_file=self._client_file_name,
-                    )
-                    logger.info(
-                        f"Initialized vector DB client for namespace {self.namespace}"
-                    )
+                self._client.value = NanoVectorDB(
+                    self.embedding_func.embedding_dim,
+                    storage_file=self._client_file_name,
+                )
+                logger.info(
+                    f"Initialized vector DB client for namespace {self.namespace}"
+                )
             else:
-                if self._client is None:
-                    self._client = NanoVectorDB(
-                        self.embedding_func.embedding_dim,
-                        storage_file=self._client_file_name,
-                    )
-                    logger.info(
-                        f"Initialized vector DB client for namespace {self.namespace}"
-                    )
+                self._client = NanoVectorDB(
+                    self.embedding_func.embedding_dim,
+                    storage_file=self._client_file_name,
+                )
+                logger.info(
+                    f"Initialized vector DB client for namespace {self.namespace}"
+                )
 
     def _get_client(self):
         """Get the appropriate client instance based on multiprocess mode"""
