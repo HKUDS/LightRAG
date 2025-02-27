@@ -483,17 +483,28 @@ def main():
 
     display_splash_screen(args)
 
+    # Check if running under Gunicorn
+    if 'GUNICORN_CMD_ARGS' in os.environ:
+        # If started with Gunicorn, return directly as Gunicorn will call get_application
+        print("Running under Gunicorn - worker management handled by Gunicorn")
+        return
+    
+    # If not running under Gunicorn, initialize shared data here
     from lightrag.kg.shared_storage import initialize_share_data
-    initialize_share_data(args.workers)
-
+    print("Starting in single-process mode")
+    initialize_share_data(1)  # Force single process mode
+    
+    # Create application instance directly instead of using factory function
+    app = create_app(args)
+    
+    # Start Uvicorn in single process mode
     uvicorn_config = {
-        "app": "lightrag.api.lightrag_server:get_application",
-        "factory": True,
+        "app": app,  # Pass application instance directly instead of string path
         "host": args.host,
         "port": args.port,
-        "workers": args.workers,
         "log_config": None,  # Disable default config
     }
+    
     if args.ssl:
         uvicorn_config.update(
             {
@@ -501,6 +512,8 @@ def main():
                 "ssl_keyfile": args.ssl_keyfile,
             }
         )
+    
+    print(f"Starting Uvicorn server in single-process mode on {args.host}:{args.port}")
     uvicorn.run(**uvicorn_config)
 
 
