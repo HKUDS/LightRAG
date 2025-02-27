@@ -8,7 +8,7 @@ from lightrag.api.utils_api import parse_args
 args = parse_args()
 
 # Determine worker count - from environment variable or command line arguments
-workers = int(os.getenv('WORKERS', args.workers))
+workers = int(os.getenv("WORKERS", args.workers))
 
 # If not specified, use CPU count * 2 + 1 (Gunicorn recommended configuration)
 if workers <= 1:
@@ -24,7 +24,7 @@ preload_app = True
 worker_class = "uvicorn.workers.UvicornWorker"
 
 # Other Gunicorn configurations
-timeout = int(os.getenv('TIMEOUT', 120))
+timeout = int(os.getenv("TIMEOUT", 120))
 keepalive = 5
 
 # Optional SSL configuration
@@ -33,9 +33,10 @@ if args.ssl:
     keyfile = args.ssl_keyfile
 
 # Logging configuration
-errorlog = os.getenv('ERROR_LOG', '-')  # '-' means stderr
-accesslog = os.getenv('ACCESS_LOG', '-')  # '-' means stderr
-loglevel = os.getenv('LOG_LEVEL', 'info')
+errorlog = os.getenv("ERROR_LOG", "-")  # '-' means stderr
+accesslog = os.getenv("ACCESS_LOG", "-")  # '-' means stderr
+loglevel = os.getenv("LOG_LEVEL", "info")
+
 
 def on_starting(server):
     """
@@ -46,20 +47,24 @@ def on_starting(server):
     print(f"GUNICORN MASTER PROCESS: on_starting jobs for all {workers} workers")
     print(f"Process ID: {os.getpid()}")
     print("=" * 80)
-    
+
     # Memory usage monitoring
     try:
         import psutil
+
         process = psutil.Process(os.getpid())
         memory_info = process.memory_info()
-        msg = f"Memory usage after initialization: {memory_info.rss / 1024 / 1024:.2f} MB"
+        msg = (
+            f"Memory usage after initialization: {memory_info.rss / 1024 / 1024:.2f} MB"
+        )
         print(msg)
     except ImportError:
         print("psutil not installed, skipping memory usage reporting")
-    
+
     print("=" * 80)
     print("Gunicorn initialization complete, forking workers...")
     print("=" * 80)
+
 
 def on_exit(server):
     """
@@ -70,10 +75,10 @@ def on_exit(server):
     print("GUNICORN MASTER PROCESS: Shutting down")
     print(f"Process ID: {os.getpid()}")
     print("=" * 80)
-    
+
     # Release shared resources
     finalize_share_data()
-    
+
     print("=" * 80)
     print("Gunicorn shutdown complete")
     print("=" * 80)

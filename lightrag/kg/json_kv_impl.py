@@ -10,7 +10,11 @@ from lightrag.utils import (
     logger,
     write_json,
 )
-from .shared_storage import get_namespace_data, get_storage_lock, try_initialize_namespace
+from .shared_storage import (
+    get_namespace_data,
+    get_storage_lock,
+    try_initialize_namespace,
+)
 
 
 @final
@@ -20,7 +24,7 @@ class JsonKVStorage(BaseKVStorage):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
         self._storage_lock = get_storage_lock()
-        
+
         # check need_init must before get_namespace_data
         need_init = try_initialize_namespace(self.namespace)
         self._data = get_namespace_data(self.namespace)

@@ -471,12 +471,13 @@ def configure_logging():
 
 def main():
     # Check if running under Gunicorn
-    if 'GUNICORN_CMD_ARGS' in os.environ:
+    if "GUNICORN_CMD_ARGS" in os.environ:
         # If started with Gunicorn, return directly as Gunicorn will call get_application
         print("Running under Gunicorn - worker management handled by Gunicorn")
         return
 
     from multiprocessing import freeze_support
+
     freeze_support()
 
     args = parse_args()
@@ -487,10 +488,10 @@ def main():
     configure_logging()
 
     display_splash_screen(args)
-        
+
     # Create application instance directly instead of using factory function
     app = create_app(args)
-    
+
     # Start Uvicorn in single process mode
     uvicorn_config = {
         "app": app,  # Pass application instance directly instead of string path
@@ -498,7 +499,7 @@ def main():
         "port": args.port,
         "log_config": None,  # Disable default config
     }
-    
+
     if args.ssl:
         uvicorn_config.update(
             {
@@ -506,7 +507,7 @@ def main():
                 "ssl_keyfile": args.ssl_keyfile,
             }
         )
-    
+
     print(f"Starting Uvicorn server in single-process mode on {args.host}:{args.port}")
     uvicorn.run(**uvicorn_config)
 
