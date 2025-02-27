@@ -35,9 +35,9 @@ class JsonKVStorage(BaseKVStorage):
                 logger.info(f"Load KV {self.namespace} with {len(loaded_data)} data")
 
     async def index_done_callback(self) -> None:
-        # 文件写入需要加锁，防止多个进程同时写入导致文件损坏
         with self._storage_lock:
-            write_json(self._data, self._file_name)
+            data_dict = dict(self._data) if hasattr(self._data, "_getvalue") else self._data
+            write_json(data_dict, self._file_name)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         with self._storage_lock:
