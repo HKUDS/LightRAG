@@ -1,0 +1,6 @@
+services:
+  lightrag_webui:
+    build: .
+    ports:
+      - "${LIGHTRAG_WEBUI_PORT:-5173}:5173"
+    restart: unless-stopped

@@ -18,7 +18,13 @@ LightRAG WebUI is a React-based web interface for interacting with the LightRAG 
 
 3.  **Build the Project:**
 
-    Run the following command to build the project:
+    Before building, you need to adjust the constant `backendBaseUrl` in `lightrag_webui/src/lib/constants.ts`. For example:
+    ```
+    export const backendBaseUrl = 'http://127.0.0.1:9621'
+    ```
+    You must replace `http://127.0.0.1:9621` to the LightRAG API service you want to access.
+
+    Then, run the following command to build the project:
 
     ```bash
     bun run build --emptyOutDir
