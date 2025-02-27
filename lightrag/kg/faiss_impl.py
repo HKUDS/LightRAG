@@ -15,6 +15,7 @@ from .shared_storage import (
     get_storage_lock,
     get_namespace_object,
     is_multiprocess,
+    try_initialize_namespace,
 )
 
 if not pm.is_installed("faiss"):
@@ -52,26 +53,26 @@ class FaissVectorDBStorage(BaseVectorStorage):
         self._dim = self.embedding_func.embedding_dim
         self._storage_lock = get_storage_lock()
 
+        # check need_init must before get_namespace_object/get_namespace_data
+        need_init = try_initialize_namespace("faiss_indices")
         self._index = get_namespace_object("faiss_indices")
         self._id_to_meta = get_namespace_data("faiss_meta")
 
-        with self._storage_lock:
+        if need_init:
             if is_multiprocess:
-                if self._index.value is None:
-                    # Create an empty Faiss index for inner product (useful for normalized vectors = cosine similarity).
-                    # If you have a large number of vectors, you might want IVF or other indexes.
-                    # For demonstration, we use a simple IndexFlatIP.
-                    self._index.value = faiss.IndexFlatIP(self._dim)
-                    # Keep a local store for metadata, IDs, etc.
-                    # Maps <int faiss_id> → metadata (including your original ID).
-                    self._id_to_meta.update({})
-                    # Attempt to load an existing index + metadata from disk
-                    self._load_faiss_index()
+                # Create an empty Faiss index for inner product (useful for normalized vectors = cosine similarity).
+                # If you have a large number of vectors, you might want IVF or other indexes.
+                # For demonstration, we use a simple IndexFlatIP.
+                self._index.value = faiss.IndexFlatIP(self._dim)
+                # Keep a local store for metadata, IDs, etc.
+                # Maps <int faiss_id> → metadata (including your original ID).
+                self._id_to_meta.update({})
+                # Attempt to load an existing index + metadata from disk
+                self._load_faiss_index()
             else:
-                if self._index is None:
-                    self._index = faiss.IndexFlatIP(self._dim)
-                    self._id_to_meta.update({})
-                    self._load_faiss_index()
+                self._index = faiss.IndexFlatIP(self._dim)
+                self._id_to_meta.update({})
+                self._load_faiss_index()
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
