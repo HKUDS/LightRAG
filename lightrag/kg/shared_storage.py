@@ -26,6 +26,7 @@ _global_lock: Optional[LockType] = None
 _shared_dicts: Optional[Dict[str, Any]] = None
 _init_flags: Optional[Dict[str, bool]] = None  # namespace -> initialized
 
+
 def initialize_share_data(workers: int = 1):
     """
     Initialize shared storage data for single or multi-process mode.
@@ -66,9 +67,7 @@ def initialize_share_data(workers: int = 1):
         is_multiprocess = True
         _global_lock = _manager.Lock()
         _shared_dicts = _manager.dict()
-        _init_flags = (
-            _manager.dict()
-        )
+        _init_flags = _manager.dict()
         direct_log(
             f"Process {os.getpid()} Shared-Data created for Multiple Process (workers={workers})"
         )
@@ -95,9 +94,13 @@ def try_initialize_namespace(namespace: str) -> bool:
 
     if namespace not in _init_flags:
         _init_flags[namespace] = True
-        direct_log(f"Process {os.getpid()} ready to initialize storage namespace: [{namespace}]")
+        direct_log(
+            f"Process {os.getpid()} ready to initialize storage namespace: [{namespace}]"
+        )
         return True
-    direct_log(f"Process {os.getpid()} storage namespace already to initialized: [{namespace}]")
+    direct_log(
+        f"Process {os.getpid()} storage namespace already to initialized: [{namespace}]"
+    )
     return False
 
 
