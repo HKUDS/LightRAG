@@ -11,7 +11,12 @@ from lightrag.utils import (
 )
 import pipmaster as pm
 from lightrag.base import BaseVectorStorage
-from .shared_storage import get_storage_lock, get_namespace_object, is_multiprocess, try_initialize_namespace
+from .shared_storage import (
+    get_storage_lock,
+    get_namespace_object,
+    is_multiprocess,
+    try_initialize_namespace,
+)
 
 if not pm.is_installed("nano-vectordb"):
     pm.install("nano-vectordb")
