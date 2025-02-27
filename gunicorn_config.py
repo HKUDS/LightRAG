@@ -61,7 +61,7 @@ def on_starting(server):
     except ImportError:
         print("psutil not installed, skipping memory usage reporting")
 
-    print("Gunicorn initialization complete, forking workers...")
+    print("Gunicorn initialization complete, forking workers...\n")
 
 
 def on_exit(server):
