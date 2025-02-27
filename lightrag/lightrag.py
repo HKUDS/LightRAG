@@ -267,24 +267,28 @@ class LightRAG:
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):
-        from lightrag.kg.shared_storage import initialize_share_data, try_initialize_namespace, get_namespace_data
-        initialize_share_data()
-        need_init = try_initialize_namespace("scan_progress")
-        scan_progress = get_namespace_data("scan_progress")
-        if need_init:
-            scan_progress.update(
-                {
-                    "is_scanning": False,
-                    "current_file": "",
-                    "indexed_count": 0,
-                    "total_files": 0,
-                    "progress": 0,
-                }
-            )
-
         os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
         set_logger(self.log_file_path, self.log_level)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
+
+        from lightrag.kg.shared_storage import initialize_share_data, try_initialize_namespace, get_namespace_data        
+        initialize_share_data()
+
+        need_init = try_initialize_namespace("scan_progress")        
+        scan_progress = get_namespace_data("scan_progress")
+        logger.info(f"scan_progress type after init: {type(scan_progress)}")        
+        scan_progress.update(
+            {
+                "is_scanning": False,
+                "current_file": "",
+                "indexed_count": 0,
+                "total_files": 0,
+                "progress": 0,
+            }
+        )
+        scan_progress = get_namespace_data("scan_progress")
+        logger.info(f"scan_progress type after update: {type(scan_progress)}")
+        logger.info(f"Scan_progres value after update: {scan_progress}")
 
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
