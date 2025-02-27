@@ -470,8 +470,13 @@ def configure_logging():
 
 
 def main():
-    from multiprocessing import freeze_support
+    # Check if running under Gunicorn
+    if 'GUNICORN_CMD_ARGS' in os.environ:
+        # If started with Gunicorn, return directly as Gunicorn will call get_application
+        print("Running under Gunicorn - worker management handled by Gunicorn")
+        return
 
+    from multiprocessing import freeze_support
     freeze_support()
 
     args = parse_args()
@@ -482,18 +487,7 @@ def main():
     configure_logging()
 
     display_splash_screen(args)
-
-    # Check if running under Gunicorn
-    if 'GUNICORN_CMD_ARGS' in os.environ:
-        # If started with Gunicorn, return directly as Gunicorn will call get_application
-        print("Running under Gunicorn - worker management handled by Gunicorn")
-        return
-    
-    # If not running under Gunicorn, initialize shared data here
-    from lightrag.kg.shared_storage import initialize_share_data
-    print("Starting in single-process mode")
-    initialize_share_data(1)  # Force single process mode
-    
+        
     # Create application instance directly instead of using factory function
     app = create_app(args)
     
