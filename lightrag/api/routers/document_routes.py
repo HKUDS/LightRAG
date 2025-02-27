@@ -21,7 +21,7 @@ from lightrag.base import DocProcessingStatus, DocStatus
 from ..utils_api import get_api_key_dependency
 from lightrag.kg.shared_storage import (
     get_namespace_data,
-    get_scan_lock,
+    get_storage_lock,
 )
 
 
@@ -377,7 +377,7 @@ async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
 async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     """Background task to scan and index documents"""
     scan_progress = get_namespace_data("scan_progress")
-    scan_lock = get_scan_lock()
+    scan_lock = get_storage_lock()
     with scan_lock:
         if scan_progress.get("is_scanning", False):
             ASCIIColors.info("Skip document scanning(another scanning is active)")
