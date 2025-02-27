@@ -61,7 +61,6 @@ def on_starting(server):
     print("Gunicorn initialization complete, forking workers...")
     print("=" * 80)
 
-
 def on_exit(server):
     """
     Executed when Gunicorn is shutting down.
