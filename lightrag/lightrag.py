@@ -276,20 +276,7 @@ class LightRAG:
             try_initialize_namespace,
             get_namespace_data,
         )
-
         initialize_share_data()
-        need_init = try_initialize_namespace("scan_progress")
-        scan_progress = get_namespace_data("scan_progress")
-        if need_init:
-            scan_progress.update(
-                {
-                    "is_scanning": False,
-                    "current_file": "",
-                    "indexed_count": 0,
-                    "total_files": 0,
-                    "progress": 0,
-                }
-            )
 
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
