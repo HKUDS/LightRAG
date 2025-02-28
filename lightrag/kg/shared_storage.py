@@ -80,6 +80,18 @@ def initialize_share_data(workers: int = 1):
 
     # Mark as initialized
     _initialized = True
+    
+    # Initialize pipeline status for document indexing control
+    pipeline_namespace = get_namespace_data("pipeline_status")
+    pipeline_namespace.update({
+        "busy": False,                 # Control concurrent processes
+        "job_name": "Default Job",     # Current job name (indexing files/indexing texts)
+        "job_start": None,             # Job start time
+        "docs": 0,                     # Total number of documents to be indexed
+        "batchs": 0,                   # Number of batches for processing documents
+        "cur_batch": 0,                # Current processing batch
+        "request_pending": False,      # Flag for pending request for processing
+    })
 
 
 def try_initialize_namespace(namespace: str) -> bool:
