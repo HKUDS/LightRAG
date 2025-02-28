@@ -135,14 +135,16 @@ def create_app(args):
             # Initialize database connections
             await rag.initialize_storages()
 
+            # Import necessary functions from shared_storage
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_storage_lock,
+                initialize_pipeline_namespace,
+                )
+            await initialize_pipeline_namespace()
+
             # Auto scan documents if enabled
             if args.auto_scan_at_startup:
-                # Import necessary functions from shared_storage
-                from lightrag.kg.shared_storage import (
-                    get_namespace_data,
-                    get_storage_lock,
-                )
-
                 # Check if a task is already running (with lock protection)
                 pipeline_status = await get_namespace_data("pipeline_status")
                 should_start_task = False

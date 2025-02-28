@@ -20,11 +20,14 @@ from .shared_storage import (
 @final
 @dataclass
 class JsonKVStorage(BaseKVStorage):
-    async def __post_init__(self):
+    def __post_init__(self):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
         self._storage_lock = get_storage_lock()
+        self._data = None
 
+    async def initialize(self):
+        """Initialize storage data"""
         # check need_init must before get_namespace_data
         need_init = try_initialize_namespace(self.namespace)
         self._data = await get_namespace_data(self.namespace)

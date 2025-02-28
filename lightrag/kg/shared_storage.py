@@ -125,13 +125,21 @@ def initialize_share_data(workers: int = 1):
     # Mark as initialized
     _initialized = True
 
-    # Initialize pipeline status for document indexing control
-    pipeline_namespace = get_namespace_data("pipeline_status")
 
-    # Create a shared list object for history_messages
-    history_messages = _manager.list() if is_multiprocess else []
-    pipeline_namespace.update(
-        {
+async def initialize_pipeline_namespace():
+    """
+    Initialize pipeline namespace with default values.
+    """
+    pipeline_namespace = await get_namespace_data("pipeline_status")
+
+    async with get_storage_lock():
+        # Check if already initialized by checking for required fields
+        if "busy" in pipeline_namespace:
+            return
+
+        # Create a shared list object for history_messages
+        history_messages = _manager.list() if is_multiprocess else []
+        pipeline_namespace.update({
             "busy": False,  # Control concurrent processes
             "job_name": "Default Job",  # Current job name (indexing files/indexing texts)
             "job_start": None,  # Job start time
@@ -141,8 +149,8 @@ def initialize_share_data(workers: int = 1):
             "request_pending": False,  # Flag for pending request for processing
             "latest_message": "",  # Latest message from pipeline processing
             "history_messages": history_messages,  # 使用共享列表对象
-        }
-    )
+        })
+        direct_log(f"Process {os.getpid()} Pipeline namespace initialized")
 
 
 async def get_update_flags(namespace: str):

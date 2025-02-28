@@ -16,15 +16,16 @@ if not pm.is_installed("nano-vectordb"):
     pm.install("nano-vectordb")
 
 from nano_vectordb import NanoVectorDB
-from threading import Lock as ThreadLock
+from .shared_storage import get_storage_lock
 
 
 @final
 @dataclass
 class NanoVectorDBStorage(BaseVectorStorage):
     def __post_init__(self):
-        # Initialize lock only for file operations
-        self._storage_lock = ThreadLock()
+        # Initialize basic attributes
+        self._storage_lock = get_storage_lock()
+        self._client = None
 
         # Use global config value if specified, otherwise use default
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
@@ -40,7 +41,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
-        with self._storage_lock:
+    async def initialize(self):
+        """Initialize storage data"""
+        async with self._storage_lock:
             self._client = NanoVectorDB(
                 self.embedding_func.embedding_dim,
                 storage_file=self._client_file_name,
@@ -163,5 +166,5 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error deleting relations for {entity_name}: {e}")
 
     async def index_done_callback(self) -> None:
-        with self._storage_lock:
+        async with self._storage_lock:
             self._get_client().save()
