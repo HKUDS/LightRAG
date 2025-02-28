@@ -338,7 +338,7 @@ async def extract_entities(
 ) -> None:
     from lightrag.kg.shared_storage import get_namespace_data
 
-    pipeline_status = get_namespace_data("pipeline_status")
+    pipeline_status = await get_namespace_data("pipeline_status")
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     enable_llm_cache_for_entity_extract: bool = global_config[

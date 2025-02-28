@@ -667,7 +667,7 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import get_namespace_data
 
-            pipeline_status = get_namespace_data("pipeline_status")
+            pipeline_status = await get_namespace_data("pipeline_status")
 
             # Convert to regular dict if it's a Manager.dict
             status_dict = dict(pipeline_status)
