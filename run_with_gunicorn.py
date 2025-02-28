@@ -125,7 +125,6 @@ def main():
                     if callable(value):
                         self.cfg.set(key, value)
 
-
             if hasattr(gunicorn_config, "logconfig_dict"):
                 self.cfg.set(
                     "logconfig_dict", getattr(gunicorn_config, "logconfig_dict")
