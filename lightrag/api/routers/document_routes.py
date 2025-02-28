@@ -4,7 +4,6 @@ This module contains all document-related routes for the LightRAG API.
 
 import asyncio
 import logging
-import os
 import aiofiles
 import shutil
 import traceback
@@ -12,17 +11,12 @@ import pipmaster as pm
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from ascii_colors import ASCIIColors
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
 from ..utils_api import get_api_key_dependency
-from lightrag.kg.shared_storage import (
-    get_namespace_data,
-    get_storage_lock,
-)
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -376,72 +370,19 @@ async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
 
 async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     """Background task to scan and index documents"""
-    scan_progress = get_namespace_data("scan_progress")
-    scan_lock = get_storage_lock()
-    with scan_lock:
-        if scan_progress.get("is_scanning", False):
-            ASCIIColors.info("Skip document scanning(another scanning is active)")
-            return
-        scan_progress.update(
-            {
-                "is_scanning": True,
-                "current_file": "",
-                "indexed_count": 0,
-                "total_files": 0,
-                "progress": 0,
-            }
-        )
-
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
-        scan_progress.update(
-            {
-                "current_file": "",
-                "total_files": total_files,
-                "indexed_count": 0,
-                "progress": 0,
-            }
-        )
-
         logging.info(f"Found {total_files} new files to index.")
+
         for idx, file_path in enumerate(new_files):
             try:
-                progress = (idx / total_files * 100) if total_files > 0 else 0
-                scan_progress.update(
-                    {
-                        "current_file": os.path.basename(file_path),
-                        "indexed_count": idx,
-                        "progress": progress,
-                    }
-                )
-
                 await pipeline_index_file(rag, file_path)
-
-                progress = ((idx + 1) / total_files * 100) if total_files > 0 else 0
-                scan_progress.update(
-                    {
-                        "current_file": os.path.basename(file_path),
-                        "indexed_count": idx + 1,
-                        "progress": progress,
-                    }
-                )
-
             except Exception as e:
                 logging.error(f"Error indexing file {file_path}: {str(e)}")
 
     except Exception as e:
         logging.error(f"Error during scanning process: {str(e)}")
-    finally:
-        scan_progress.update(
-            {
-                "is_scanning": False,
-                "current_file": "",
-                "indexed_count": 0,
-                "total_files": 0,
-                "progress": 0,
-            }
-        )
 
 
 def create_document_routes(
@@ -465,20 +406,6 @@ def create_document_routes(
         background_tasks.add_task(run_scanning_process, rag, doc_manager)
         return {"status": "scanning_started"}
 
-    @router.get("/scan-progress")
-    async def get_scanning_progress():
-        """
-        Get the current progress of the document scanning process.
-
-        Returns:
-            dict: A dictionary containing the current scanning progress information including:
-                - is_scanning: Whether a scan is currently in progress
-                - current_file: The file currently being processed
-                - indexed_count: Number of files indexed so far
-                - total_files: Total number of files to process
-                - progress: Percentage of completion
-        """
-        return dict(get_namespace_data("scan_progress"))
 
     @router.post("/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(
