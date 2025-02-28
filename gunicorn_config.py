@@ -70,17 +70,17 @@ logconfig_dict = {
             'level': 'INFO',
             'propagate': False
         },
-        'uvicorn': {
-            'handlers': ['console', 'file'],
-            'level': 'INFO',
-            'propagate': False
-        },
         'gunicorn': {
             'handlers': ['console', 'file'],
             'level': 'INFO',
             'propagate': False
         },
         'gunicorn.error': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False
+        },
+        'gunicorn.access': {
             'handlers': ['console', 'file'],
             'level': 'INFO',
             'propagate': False

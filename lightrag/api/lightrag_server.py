@@ -39,13 +39,10 @@ from .routers.query_routes import create_query_routes
 from .routers.graph_routes import create_graph_routes
 from .routers.ollama_api import OllamaAPI
 
-from lightrag.utils import logger as utils_logger
+from lightrag.utils import logger, set_verbose_debug
 
 # Load environment variables
-try:
-    load_dotenv(override=True)
-except Exception as e:
-    utils_logger.warning(f"Failed to load .env file: {e}")
+load_dotenv(override=True)
 
 # Initialize config parser
 config = configparser.ConfigParser()
@@ -88,10 +85,6 @@ class LightragPathFilter(logging.Filter):
 
 
 def create_app(args):
-    # Initialize verbose debug setting
-    # Can not use the logger at the top of this module when workers > 1
-    from lightrag.utils import set_verbose_debug, logger
-
     # Setup logging
     logger.setLevel(getattr(logging, args.log_level))
     set_verbose_debug(args.verbose)
