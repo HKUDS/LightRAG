@@ -86,7 +86,7 @@ class LightragPathFilter(logging.Filter):
 
 def create_app(args):
     # Setup logging
-    logger.setLevel(getattr(logging, args.log_level))
+    logger.setLevel(args.log_level)
     set_verbose_debug(args.verbose)
 
     # Verify that bindings are correctly setup
@@ -412,17 +412,10 @@ def create_app(args):
     return app
 
 
-def get_application():
+def get_application(args=None):
     """Factory function for creating the FastAPI application"""
-    # Get args from environment variable
-    args_json = os.environ.get("LIGHTRAG_ARGS")
-    if not args_json:
-        args = parse_args()  # Fallback to parsing args if env var not set
-    else:
-        import types
-
-        args = types.SimpleNamespace(**json.loads(args_json))
-
+    if args is None:
+        args = parse_args()
     return create_app(args)
 
 
@@ -513,10 +506,7 @@ def main():
     # Configure logging before parsing args
     configure_logging()
 
-    args = parse_args()
-    # Save args to environment variable for child processes
-    os.environ["LIGHTRAG_ARGS"] = json.dumps(vars(args))
-
+    args = parse_args(is_uvicorn_mode=True)
     display_splash_screen(args)
 
     # Create application instance directly instead of using factory function

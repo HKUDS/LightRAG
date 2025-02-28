@@ -111,9 +111,12 @@ def get_env_value(env_key: str, default: any, value_type: type = str) -> any:
         return default
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
+
+    Args:
+        is_uvicorn_mode: Whether running under uvicorn mode
 
     Returns:
         argparse.Namespace: Parsed arguments
@@ -287,9 +290,6 @@ def parse_args() -> argparse.Namespace:
 
     args = parser.parse_args()
 
-    # Check if running under uvicorn mode (not Gunicorn)
-    is_uvicorn_mode = "GUNICORN_CMD_ARGS" not in os.environ
-    
     # If in uvicorn mode and workers > 1, force it to 1 and log warning
     if is_uvicorn_mode and args.workers > 1:
         original_workers = args.workers
