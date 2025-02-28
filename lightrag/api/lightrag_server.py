@@ -143,13 +143,10 @@ def create_app(args):
                     get_storage_lock,
                 )
 
-                # Get pipeline status and lock
-                pipeline_status = get_namespace_data("pipeline_status")
-                storage_lock = get_storage_lock()
-
                 # Check if a task is already running (with lock protection)
+                pipeline_status = await get_namespace_data("pipeline_status")
                 should_start_task = False
-                with storage_lock:
+                async with get_storage_lock():
                     if not pipeline_status.get("busy", False):
                         should_start_task = True
                 # Only start the task if no other task is running

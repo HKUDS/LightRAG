@@ -672,12 +672,12 @@ class LightRAG:
         from lightrag.kg.shared_storage import get_namespace_data, get_storage_lock
 
         # Get pipeline status shared data and lock
-        pipeline_status = get_namespace_data("pipeline_status")
+        pipeline_status = await get_namespace_data("pipeline_status")
         storage_lock = get_storage_lock()
 
         # Check if another process is already processing the queue
         process_documents = False
-        with storage_lock:
+        async with storage_lock:
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
                 # Cleaning history_messages without breaking it as a shared list object
@@ -732,8 +732,7 @@ class LightRAG:
                     break
 
                 # Update pipeline status with document count (with lock)
-                with storage_lock:
-                    pipeline_status["docs"] = len(to_process_docs)
+                pipeline_status["docs"] = len(to_process_docs)
 
                 # 2. split docs into chunks, insert chunks, update doc status
                 docs_batches = [
@@ -852,7 +851,7 @@ class LightRAG:
 
                 # Check if there's a pending request to process more documents (with lock)
                 has_pending_request = False
-                with storage_lock:
+                async with storage_lock:
                     has_pending_request = pipeline_status.get("request_pending", False)
                     if has_pending_request:
                         # Clear the request flag before checking for more documents
@@ -867,13 +866,13 @@ class LightRAG:
                 pipeline_status["history_messages"].append(log_message)
 
         finally:
-            # Always reset busy status when done or if an exception occurs (with lock)
-            with storage_lock:
-                pipeline_status["busy"] = False
             log_message = "Document processing pipeline completed"
             logger.info(log_message)
-            pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+            # Always reset busy status when done or if an exception occurs (with lock)
+            async with storage_lock:
+                pipeline_status["busy"] = False
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
     async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
         try:
@@ -911,7 +910,7 @@ class LightRAG:
         # 获取 pipeline_status 并更新 latest_message 和 history_messages
         from lightrag.kg.shared_storage import get_namespace_data
 
-        pipeline_status = get_namespace_data("pipeline_status")
+        pipeline_status = await get_namespace_data("pipeline_status")
         pipeline_status["latest_message"] = log_message
         pipeline_status["history_messages"].append(log_message)
 
