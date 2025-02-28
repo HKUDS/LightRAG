@@ -1,6 +1,5 @@
 # gunicorn_config.py
 import os
-import multiprocessing
 from lightrag.kg.shared_storage import finalize_share_data
 from lightrag.api.utils_api import parse_args
 
@@ -9,10 +8,6 @@ args = parse_args()
 
 # Determine worker count - from environment variable or command line arguments
 workers = int(os.getenv("WORKERS", args.workers))
-
-# If not specified, use CPU count * 2 + 1 (Gunicorn recommended configuration)
-if workers <= 1:
-    workers = multiprocessing.cpu_count() * 2 + 1
 
 # Binding address
 bind = f"{os.getenv('HOST', args.host)}:{os.getenv('PORT', args.port)}"
@@ -44,7 +39,7 @@ def on_starting(server):
     You can use this function to do more initialization tasks for all processes
     """
     print("=" * 80)
-    print(f"GUNICORN MASTER PROCESS: on_starting jobs for all {workers} workers")
+    print(f"GUNICORN MASTER PROCESS: on_starting jobs for {workers} worker(s)")
     print(f"Process ID: {os.getpid()}")
     print("=" * 80)
 
