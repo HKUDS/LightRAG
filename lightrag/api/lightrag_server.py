@@ -9,7 +9,6 @@ from fastapi import (
 from fastapi.responses import FileResponse
 import asyncio
 import os
-import json
 import logging
 import logging.config
 import uvicorn
@@ -139,17 +138,20 @@ def create_app(args):
             # Auto scan documents if enabled
             if args.auto_scan_at_startup:
                 # Import necessary functions from shared_storage
-                from lightrag.kg.shared_storage import get_namespace_data, get_storage_lock
-                
+                from lightrag.kg.shared_storage import (
+                    get_namespace_data,
+                    get_storage_lock,
+                )
+
                 # Get pipeline status and lock
                 pipeline_status = get_namespace_data("pipeline_status")
                 storage_lock = get_storage_lock()
-                
+
                 # Check if a task is already running (with lock protection)
                 should_start_task = False
                 with storage_lock:
                     if not pipeline_status.get("busy", False):
-                        should_start_task = True                
+                        should_start_task = True
                 # Only start the task if no other task is running
                 if should_start_task:
                     # Create background task
@@ -430,7 +432,7 @@ def configure_logging():
 
     # Configure basic logging
     log_file_path = os.path.abspath(os.path.join(os.getcwd(), "lightrag.log"))
-    
+
     logging.config.dictConfig(
         {
             "version": 1,
@@ -453,7 +455,7 @@ def configure_logging():
                     "formatter": "detailed",
                     "class": "logging.handlers.RotatingFileHandler",
                     "filename": log_file_path,
-                    "maxBytes": 10*1024*1024,  # 10MB
+                    "maxBytes": 10 * 1024 * 1024,  # 10MB
                     "backupCount": 5,
                     "encoding": "utf-8",
                 },

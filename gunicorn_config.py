@@ -28,58 +28,55 @@ keepalive = 5
 errorlog = os.getenv("ERROR_LOG", log_file_path)  # 默认写入到 lightrag.log
 accesslog = os.getenv("ACCESS_LOG", log_file_path)  # 默认写入到 lightrag.log
 
-# 配置日志系统
 logconfig_dict = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'standard': {
-            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "standard": {"format": "%(asctime)s [%(levelname)s] %(name)s: %(message)s"},
+    },
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "standard",
+            "stream": "ext://sys.stdout",
+        },
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "formatter": "standard",
+            "filename": log_file_path,
+            "maxBytes": 10485760,  # 10MB
+            "backupCount": 5,
+            "encoding": "utf8",
         },
     },
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
-            'formatter': 'standard',
-            'stream': 'ext://sys.stdout'
-        },
-        'file': {
-            'class': 'logging.handlers.RotatingFileHandler',
-            'formatter': 'standard',
-            'filename': log_file_path,
-            'maxBytes': 10485760,  # 10MB
-            'backupCount': 5,
-            'encoding': 'utf8'
-        }
-    },
-    'filters': {
-        'path_filter': {
-            '()': 'lightrag.api.lightrag_server.LightragPathFilter',
+    "filters": {
+        "path_filter": {
+            "()": "lightrag.api.lightrag_server.LightragPathFilter",
         },
     },
-    'loggers': {
-        'lightrag': {
-            'handlers': ['console', 'file'],
-            'level': loglevel.upper() if loglevel else 'INFO',
-            'propagate': False
+    "loggers": {
+        "lightrag": {
+            "handlers": ["console", "file"],
+            "level": loglevel.upper() if loglevel else "INFO",
+            "propagate": False,
         },
-        'gunicorn': {
-            'handlers': ['console', 'file'],
-            'level': loglevel.upper() if loglevel else 'INFO',
-            'propagate': False
+        "gunicorn": {
+            "handlers": ["console", "file"],
+            "level": loglevel.upper() if loglevel else "INFO",
+            "propagate": False,
         },
-        'gunicorn.error': {
-            'handlers': ['console', 'file'],
-            'level': loglevel.upper() if loglevel else 'INFO',
-            'propagate': False
+        "gunicorn.error": {
+            "handlers": ["console", "file"],
+            "level": loglevel.upper() if loglevel else "INFO",
+            "propagate": False,
         },
-        'gunicorn.access': {
-            'handlers': ['console', 'file'],
-            'level': loglevel.upper() if loglevel else 'INFO',
-            'propagate': False,
-            'filters': ['path_filter']
-        }
-    }
+        "gunicorn.access": {
+            "handlers": ["console", "file"],
+            "level": loglevel.upper() if loglevel else "INFO",
+            "propagate": False,
+            "filters": ["path_filter"],
+        },
+    },
 }
 
 
@@ -134,14 +131,15 @@ def post_fork(server, worker):
     """
     # Set lightrag logger level in worker processes using gunicorn's loglevel
     from lightrag.utils import logger
+
     logger.setLevel(loglevel.upper())
-    
+
     # Disable uvicorn.error logger in worker processes
     uvicorn_error_logger = logging.getLogger("uvicorn.error")
     uvicorn_error_logger.setLevel(logging.CRITICAL)
     uvicorn_error_logger.handlers = []
     uvicorn_error_logger.propagate = False
-    
+
     # Add log filter to uvicorn.access handler in worker processes
     uvicorn_access_logger = logging.getLogger("uvicorn.access")
     path_filter = LightragPathFilter()
