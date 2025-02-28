@@ -24,17 +24,17 @@ from .shared_storage import (
 class JsonDocStatusStorage(DocStatusStorage):
     """JSON implementation of document status storage"""
 
-    def __post_init__(self):
+    async def __post_init__(self):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
         self._storage_lock = get_storage_lock()
 
         # check need_init must before get_namespace_data
         need_init = try_initialize_namespace(self.namespace)
-        self._data = get_namespace_data(self.namespace)
+        self._data = await get_namespace_data(self.namespace)
         if need_init:
             loaded_data = load_json(self._file_name) or {}
-            with self._storage_lock:
+            async with self._storage_lock:
                 self._data.update(loaded_data)
                 logger.info(
                     f"Loaded document status storage with {len(loaded_data)} records"
@@ -42,12 +42,12 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
-        with self._storage_lock:
+        async with self._storage_lock:
             return set(keys) - set(self._data.keys())
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        with self._storage_lock:
+        async with self._storage_lock:
             for id in ids:
                 data = self._data.get(id, None)
                 if data:
@@ -57,7 +57,7 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
         counts = {status.value: 0 for status in DocStatus}
-        with self._storage_lock:
+        async with self._storage_lock:
             for doc in self._data.values():
                 counts[doc["status"]] += 1
         return counts
@@ -67,7 +67,7 @@ class JsonDocStatusStorage(DocStatusStorage):
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
         result = {}
-        with self._storage_lock:
+        async with self._storage_lock:
             for k, v in self._data.items():
                 if v["status"] == status.value:
                     try:
@@ -83,7 +83,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         return result
 
     async def index_done_callback(self) -> None:
-        with self._storage_lock:
+        async with self._storage_lock:
             data_dict = (
                 dict(self._data) if hasattr(self._data, "_getvalue") else self._data
             )
@@ -94,21 +94,21 @@ class JsonDocStatusStorage(DocStatusStorage):
         if not data:
             return
 
-        with self._storage_lock:
+        async with self._storage_lock:
             self._data.update(data)
         await self.index_done_callback()
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
-        with self._storage_lock:
+        async with self._storage_lock:
             return self._data.get(id)
 
     async def delete(self, doc_ids: list[str]):
-        with self._storage_lock:
+        async with self._storage_lock:
             for doc_id in doc_ids:
                 self._data.pop(doc_id, None)
         await self.index_done_callback()
 
     async def drop(self) -> None:
         """Drop the storage"""
-        with self._storage_lock:
+        async with self._storage_lock:
             self._data.clear()
