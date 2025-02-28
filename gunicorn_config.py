@@ -1,10 +1,9 @@
 # gunicorn_config.py
 import os
 import logging
-from logging.config import dictConfig
-from logging.handlers import RotatingFileHandler
 from lightrag.kg.shared_storage import finalize_share_data
 from lightrag.api.utils_api import parse_args
+from lightrag.api.lightrag_server import LightragPathFilter
 
 # Parse command line arguments
 args = parse_args()
@@ -64,6 +63,11 @@ logconfig_dict = {
             'encoding': 'utf8'
         }
     },
+    'filters': {
+        'path_filter': {
+            '()': 'lightrag.api.lightrag_server.LightragPathFilter',
+        },
+    },
     'loggers': {
         'lightrag': {
             'handlers': ['console', 'file'],
@@ -83,7 +87,8 @@ logconfig_dict = {
         'gunicorn.access': {
             'handlers': ['console', 'file'],
             'level': 'INFO',
-            'propagate': False
+            'propagate': False,
+            'filters': ['path_filter']
         }
     }
 }
@@ -131,3 +136,20 @@ def on_exit(server):
     print("=" * 80)
     print("Gunicorn shutdown complete")
     print("=" * 80)
+
+
+def post_fork(server, worker):
+    """
+    Executed after a worker has been forked.
+    This is a good place to set up worker-specific configurations.
+    """
+    # Disable uvicorn.error logger in worker processes
+    uvicorn_error_logger = logging.getLogger("uvicorn.error")
+    uvicorn_error_logger.setLevel(logging.CRITICAL)
+    uvicorn_error_logger.handlers = []
+    uvicorn_error_logger.propagate = False
+    
+    # Add log filter to uvicorn.access handler in worker processes
+    uvicorn_access_logger = logging.getLogger("uvicorn.access")
+    path_filter = LightragPathFilter()
+    uvicorn_access_logger.addFilter(path_filter)
