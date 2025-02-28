@@ -80,24 +80,26 @@ def initialize_share_data(workers: int = 1):
 
     # Mark as initialized
     _initialized = True
-    
+
     # Initialize pipeline status for document indexing control
     pipeline_namespace = get_namespace_data("pipeline_status")
-    
-    # 创建一个共享列表对象用于 history_messages
+
+    # Create a shared list object for history_messages
     history_messages = _manager.list() if is_multiprocess else []
-    
-    pipeline_namespace.update({
-        "busy": False,                 # Control concurrent processes
-        "job_name": "Default Job",     # Current job name (indexing files/indexing texts)
-        "job_start": None,             # Job start time
-        "docs": 0,                     # Total number of documents to be indexed
-        "batchs": 0,                   # Number of batches for processing documents
-        "cur_batch": 0,                # Current processing batch
-        "request_pending": False,      # Flag for pending request for processing
-        "latest_message": "",          # Latest message from pipeline processing
-        "history_messages": history_messages,  # 使用共享列表对象
-    })
+
+    pipeline_namespace.update(
+        {
+            "busy": False,  # Control concurrent processes
+            "job_name": "Default Job",  # Current job name (indexing files/indexing texts)
+            "job_start": None,  # Job start time
+            "docs": 0,  # Total number of documents to be indexed
+            "batchs": 0,  # Number of batches for processing documents
+            "cur_batch": 0,  # Current processing batch
+            "request_pending": False,  # Flag for pending request for processing
+            "latest_message": "",  # Latest message from pipeline processing
+            "history_messages": history_messages,  # 使用共享列表对象
+        }
+    )
 
 
 def try_initialize_namespace(namespace: str) -> bool:

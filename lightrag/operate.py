@@ -336,7 +336,6 @@ async def extract_entities(
     global_config: dict[str, str],
     llm_response_cache: BaseKVStorage | None = None,
 ) -> None:
-
     from lightrag.kg.shared_storage import get_namespace_data
 
     pipeline_status = get_namespace_data("pipeline_status")

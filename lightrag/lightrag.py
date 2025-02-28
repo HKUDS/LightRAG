@@ -45,7 +45,6 @@ from .utils import (
     lazy_external_import,
     limit_async_func_call,
     logger,
-    set_logger,
 )
 from .types import KnowledgeGraph
 from dotenv import load_dotenv
@@ -268,7 +267,6 @@ class LightRAG:
 
     def __post_init__(self):
         os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
-        set_logger(self.log_file_path, self.log_level)
         logger.info(f"Logger initialized for working directory: {self.working_dir}")
 
         from lightrag.kg.shared_storage import (
@@ -682,7 +680,7 @@ class LightRAG:
         with storage_lock:
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
-                # Cleaning history_messages without breaking it as a shared list object 
+                # Cleaning history_messages without breaking it as a shared list object
                 current_history = pipeline_status.get("history_messages", [])
                 if hasattr(current_history, "clear"):
                     current_history.clear()

@@ -68,52 +68,6 @@ logger.setLevel(logging.INFO)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
-def set_logger(log_file: str, level: int = logging.DEBUG):
-    """Set up file logging with the specified level.
-
-    Args:
-        log_file: Path to the log file
-        level: Logging level (e.g. logging.DEBUG, logging.INFO)
-    """
-
-    logger.setLevel(level)
-    log_file = os.path.abspath(log_file)
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    has_file_handler = False
-    has_console_handler = False
-
-    for handler in logger.handlers:
-        if isinstance(handler, logging.FileHandler):
-            has_file_handler = True
-        elif isinstance(handler, logging.StreamHandler) and not isinstance(
-            handler, logging.FileHandler
-        ):
-            has_console_handler = True
-
-    if not has_file_handler:
-        from logging.handlers import RotatingFileHandler
-
-        file_handler = RotatingFileHandler(
-            log_file,
-            maxBytes=10 * 1024 * 1024,  # 10MB
-            backupCount=5,
-            encoding="utf-8",
-        )
-        file_handler.setLevel(level)
-        file_handler.setFormatter(formatter)
-        logger.addHandler(file_handler)
-
-    if not has_console_handler:
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(level)
-        console_handler.setFormatter(formatter)
-        logger.addHandler(console_handler)
-
-    logger.propagate = False
-
-
 class UnlimitedSemaphore:
     """A context manager that allows unlimited access."""
 
