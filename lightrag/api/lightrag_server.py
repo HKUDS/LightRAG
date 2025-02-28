@@ -430,8 +430,13 @@ def configure_logging():
         logger.handlers = []
         logger.filters = []
 
-    # Configure basic logging
-    log_file_path = os.path.abspath(os.path.join(os.getcwd(), "lightrag.log"))
+    # Get log directory path from environment variable
+    log_dir = os.getenv("LOG_DIR", os.getcwd())
+    log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+
+    # Get log file max size and backup count from environment variables
+    log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
+    log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
 
     logging.config.dictConfig(
         {
@@ -455,8 +460,8 @@ def configure_logging():
                     "formatter": "detailed",
                     "class": "logging.handlers.RotatingFileHandler",
                     "filename": log_file_path,
-                    "maxBytes": 10 * 1024 * 1024,  # 10MB
-                    "backupCount": 5,
+                    "maxBytes": log_max_bytes,
+                    "backupCount": log_backup_count,
                     "encoding": "utf-8",
                 },
             },

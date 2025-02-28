@@ -4,8 +4,13 @@ import logging
 from lightrag.kg.shared_storage import finalize_share_data
 from lightrag.api.lightrag_server import LightragPathFilter
 
-# 获取日志文件路径
-log_file_path = os.path.abspath(os.path.join(os.getcwd(), "lightrag.log"))
+# Get log directory path from environment variable
+log_dir = os.getenv("LOG_DIR", os.getcwd())
+log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+
+# Get log file max size and backup count from environment variables
+log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
+log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
 
 # These variables will be set by run_with_gunicorn.py
 workers = None
@@ -25,8 +30,8 @@ timeout = int(os.getenv("TIMEOUT", 120))
 keepalive = 5
 
 # Logging configuration
-errorlog = os.getenv("ERROR_LOG", log_file_path)  # 默认写入到 lightrag.log
-accesslog = os.getenv("ACCESS_LOG", log_file_path)  # 默认写入到 lightrag.log
+errorlog = os.getenv("ERROR_LOG", log_file_path)  # Default write to lightrag.log
+accesslog = os.getenv("ACCESS_LOG", log_file_path)  # Default write to lightrag.log
 
 logconfig_dict = {
     "version": 1,
@@ -44,8 +49,8 @@ logconfig_dict = {
             "class": "logging.handlers.RotatingFileHandler",
             "formatter": "standard",
             "filename": log_file_path,
-            "maxBytes": 10485760,  # 10MB
-            "backupCount": 5,
+            "maxBytes": log_max_bytes,
+            "backupCount": log_backup_count,
             "encoding": "utf8",
         },
     },
