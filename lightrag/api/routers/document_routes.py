@@ -672,6 +672,10 @@ def create_document_routes(
             # Convert to regular dict if it's a Manager.dict
             status_dict = dict(pipeline_status)
             
+            # Convert history_messages to a regular list if it's a Manager.list
+            if "history_messages" in status_dict:
+                status_dict["history_messages"] = list(status_dict["history_messages"])
+            
             # Format the job_start time if it exists
             if status_dict.get("job_start"):
                 status_dict["job_start"] = str(status_dict["job_start"])

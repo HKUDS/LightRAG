@@ -681,6 +681,13 @@ class LightRAG:
         with storage_lock:
             if not pipeline_status.get("busy", False):
                 # No other process is busy, we can process documents
+                # 获取当前的 history_messages 列表
+                current_history = pipeline_status.get("history_messages", [])
+                
+                # 清空当前列表内容但保持同一个列表对象
+                if hasattr(current_history, "clear"):
+                    current_history.clear()
+                
                 pipeline_status.update({
                     "busy": True,
                     "job_name": "indexing files",
@@ -688,7 +695,10 @@ class LightRAG:
                     "docs": 0,
                     "batchs": 0,
                     "cur_batch": 0,
-                    "request_pending": False  # Clear any previous request
+                    "request_pending": False,  # Clear any previous request
+                    "latest_message": "",
+                    # 保持使用同一个列表对象
+                    "history_messages": current_history,
                 })
                 process_documents = True
             else:
@@ -715,7 +725,10 @@ class LightRAG:
                 to_process_docs.update(pending_docs)
 
                 if not to_process_docs:
-                    logger.info("All documents have been processed or are duplicates")
+                    log_message = "All documents have been processed or are duplicates"
+                    logger.info(log_message)
+                    pipeline_status["latest_message"] = log_message
+                    pipeline_status["history_messages"].append(log_message)
                     break
 
                 # Update pipeline status with document count (with lock)
@@ -734,7 +747,10 @@ class LightRAG:
                     "cur_batch": 0
                 })
                 
-                logger.info(f"Number of batches to process: {len(docs_batches)}.")
+                log_message = f"Number of batches to process: {len(docs_batches)}."
+                logger.info(log_message)
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
                 batches: list[Any] = []
                 # 3. iterate over batches
@@ -747,7 +763,10 @@ class LightRAG:
                         docs_batch: list[tuple[str, DocProcessingStatus]],
                         size_batch: int,
                     ) -> None:
-                        logger.info(f"Start processing batch {batch_idx + 1} of {size_batch}.")
+                        log_message = f"Start processing batch {batch_idx + 1} of {size_batch}."
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
                         # 4. iterate over batch
                         for doc_id_processing_status in docs_batch:
                             doc_id, status_doc = doc_id_processing_status
@@ -818,7 +837,10 @@ class LightRAG:
                                     }
                                 )
                                 continue
-                        logger.info(f"Completed batch {batch_idx + 1} of {len(docs_batches)}.")
+                        log_message = f"Completed batch {batch_idx + 1} of {len(docs_batches)}."
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
                     batches.append(batch(batch_idx, docs_batch, len(docs_batches)))
 
@@ -836,13 +858,19 @@ class LightRAG:
                 if not has_pending_request:
                     break
                     
-                logger.info("Processing additional documents due to pending request")
+                log_message = "Processing additional documents due to pending request"
+                logger.info(log_message)
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
         
         finally:
             # Always reset busy status when done or if an exception occurs (with lock)
             with storage_lock:
                 pipeline_status["busy"] = False
-            logger.info("Document processing pipeline completed")
+            log_message = "Document processing pipeline completed"
+            logger.info(log_message)
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
 
     async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
         try:
@@ -873,7 +901,15 @@ class LightRAG:
             if storage_inst is not None
         ]
         await asyncio.gather(*tasks)
-        logger.info("All Insert done")
+        
+        log_message = "All Insert done"
+        logger.info(log_message)
+        
+        # 获取 pipeline_status 并更新 latest_message 和 history_messages
+        from lightrag.kg.shared_storage import get_namespace_data
+        pipeline_status = get_namespace_data("pipeline_status")
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
 
     def insert_custom_kg(self, custom_kg: dict[str, Any]) -> None:
         loop = always_get_an_event_loop()
