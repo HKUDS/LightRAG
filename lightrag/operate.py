@@ -336,6 +336,9 @@ async def extract_entities(
     global_config: dict[str, str],
     llm_response_cache: BaseKVStorage | None = None,
 ) -> None:
+    # 在函数开始处添加获取 pipeline_status 的代码
+    from lightrag.kg.shared_storage import get_namespace_data
+    pipeline_status = get_namespace_data("pipeline_status")
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     enable_llm_cache_for_entity_extract: bool = global_config[
@@ -496,9 +499,10 @@ async def extract_entities(
         processed_chunks += 1
         entities_count = len(maybe_nodes)
         relations_count = len(maybe_edges)
-        logger.info(
-            f"  Chunk {processed_chunks}/{total_chunks}: extracted {entities_count} entities and {relations_count} relationships (deduplicated)"
-        )
+        log_message = f"  Chunk {processed_chunks}/{total_chunks}: extracted {entities_count} entities and {relations_count} relationships (deduplicated)"
+        logger.info(log_message)
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
         return dict(maybe_nodes), dict(maybe_edges)
 
     tasks = [_process_single_content(c) for c in ordered_chunks]
@@ -527,17 +531,27 @@ async def extract_entities(
     )
 
     if not (all_entities_data or all_relationships_data):
-        logger.info("Didn't extract any entities and relationships.")
+        log_message = "Didn't extract any entities and relationships."
+        logger.info(log_message)
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
         return
 
     if not all_entities_data:
-        logger.info("Didn't extract any entities")
+        log_message = "Didn't extract any entities"
+        logger.info(log_message)
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
     if not all_relationships_data:
-        logger.info("Didn't extract any relationships")
+        log_message = "Didn't extract any relationships"
+        logger.info(log_message)
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
 
-    logger.info(
-        f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships (deduplicated)"
-    )
+    log_message = f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships (deduplicated)"
+    logger.info(log_message)
+    pipeline_status["latest_message"] = log_message
+    pipeline_status["history_messages"].append(log_message)
     verbose_debug(
         f"New entities:{all_entities_data}, relationships:{all_relationships_data}"
     )

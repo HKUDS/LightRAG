@@ -83,6 +83,10 @@ def initialize_share_data(workers: int = 1):
     
     # Initialize pipeline status for document indexing control
     pipeline_namespace = get_namespace_data("pipeline_status")
+    
+    # 创建一个共享列表对象用于 history_messages
+    history_messages = _manager.list() if is_multiprocess else []
+    
     pipeline_namespace.update({
         "busy": False,                 # Control concurrent processes
         "job_name": "Default Job",     # Current job name (indexing files/indexing texts)
@@ -91,7 +95,8 @@ def initialize_share_data(workers: int = 1):
         "batchs": 0,                   # Number of batches for processing documents
         "cur_batch": 0,                # Current processing batch
         "request_pending": False,      # Flag for pending request for processing
-        "latest_message": ""           # Latest message from pipeline processing
+        "latest_message": "",          # Latest message from pipeline processing
+        "history_messages": history_messages,  # 使用共享列表对象
     })
 
 
