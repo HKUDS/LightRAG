@@ -145,10 +145,25 @@ def create_app(args):
 
             # Auto scan documents if enabled
             if args.auto_scan_at_startup:
-                # Create background task
-                task = asyncio.create_task(run_scanning_process(rag, doc_manager))
-                app.state.background_tasks.add(task)
-                task.add_done_callback(app.state.background_tasks.discard)
+                # Import necessary functions from shared_storage
+                from lightrag.kg.shared_storage import get_namespace_data, get_storage_lock
+                
+                # Get pipeline status and lock
+                pipeline_status = get_namespace_data("pipeline_status")
+                storage_lock = get_storage_lock()
+                
+                # Check if a task is already running (with lock protection)
+                should_start_task = False
+                with storage_lock:
+                    if not pipeline_status.get("busy", False):
+                        should_start_task = True                
+                # Only start the task if no other task is running
+                if should_start_task:
+                    # Create background task
+                    task = asyncio.create_task(run_scanning_process(rag, doc_manager))
+                    app.state.background_tasks.add(task)
+                    task.add_done_callback(app.state.background_tasks.discard)
+                    logger.info("Auto scan task started at startup.")
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 

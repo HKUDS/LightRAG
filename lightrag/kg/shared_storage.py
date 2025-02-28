@@ -91,6 +91,7 @@ def initialize_share_data(workers: int = 1):
         "batchs": 0,                   # Number of batches for processing documents
         "cur_batch": 0,                # Current processing batch
         "request_pending": False,      # Flag for pending request for processing
+        "latest_message": ""           # Latest message from pipeline processing
     })
 
 
