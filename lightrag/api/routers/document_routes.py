@@ -3,7 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-import logging
+from lightrag.utils import logger
 import aiofiles
 import shutil
 import traceback
@@ -147,7 +147,7 @@ class DocumentManager:
         """Scan input directory for new files"""
         new_files = []
         for ext in self.supported_extensions:
-            logging.debug(f"Scanning for {ext} files in {self.input_dir}")
+            logger.debug(f"Scanning for {ext} files in {self.input_dir}")
             for file_path in self.input_dir.rglob(f"*{ext}"):
                 if file_path not in self.indexed_files:
                     new_files.append(file_path)
@@ -266,7 +266,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                         )
                     content += "\n"
             case _:
-                logging.error(
+                logger.error(
                     f"Unsupported file type: {file_path.name} (extension {ext})"
                 )
                 return False
@@ -274,20 +274,20 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
         # Insert into the RAG queue
         if content:
             await rag.apipeline_enqueue_documents(content)
-            logging.info(f"Successfully fetched and enqueued file: {file_path.name}")
+            logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
         else:
-            logging.error(f"No content could be extracted from file: {file_path.name}")
+            logger.error(f"No content could be extracted from file: {file_path.name}")
 
     except Exception as e:
-        logging.error(f"Error processing or enqueueing file {file_path.name}: {str(e)}")
-        logging.error(traceback.format_exc())
+        logger.error(f"Error processing or enqueueing file {file_path.name}: {str(e)}")
+        logger.error(traceback.format_exc())
     finally:
         if file_path.name.startswith(temp_prefix):
             try:
                 file_path.unlink()
             except Exception as e:
-                logging.error(f"Error deleting file {file_path}: {str(e)}")
+                logger.error(f"Error deleting file {file_path}: {str(e)}")
     return False
 
 
@@ -303,8 +303,8 @@ async def pipeline_index_file(rag: LightRAG, file_path: Path):
             await rag.apipeline_process_enqueue_documents()
 
     except Exception as e:
-        logging.error(f"Error indexing file {file_path.name}: {str(e)}")
-        logging.error(traceback.format_exc())
+        logger.error(f"Error indexing file {file_path.name}: {str(e)}")
+        logger.error(traceback.format_exc())
 
 
 async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
@@ -328,8 +328,8 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         if enqueued:
             await rag.apipeline_process_enqueue_documents()
     except Exception as e:
-        logging.error(f"Error indexing files: {str(e)}")
-        logging.error(traceback.format_exc())
+        logger.error(f"Error indexing files: {str(e)}")
+        logger.error(traceback.format_exc())
 
 
 async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
@@ -373,16 +373,16 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
-        logging.info(f"Found {total_files} new files to index.")
+        logger.info(f"Found {total_files} new files to index.")
 
         for idx, file_path in enumerate(new_files):
             try:
                 await pipeline_index_file(rag, file_path)
             except Exception as e:
-                logging.error(f"Error indexing file {file_path}: {str(e)}")
+                logger.error(f"Error indexing file {file_path}: {str(e)}")
 
     except Exception as e:
-        logging.error(f"Error during scanning process: {str(e)}")
+        logger.error(f"Error during scanning process: {str(e)}")
 
 
 def create_document_routes(
@@ -447,8 +447,8 @@ def create_document_routes(
                 message=f"File '{file.filename}' uploaded successfully. Processing will continue in background.",
             )
         except Exception as e:
-            logging.error(f"Error /documents/upload: {file.filename}: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -480,8 +480,8 @@ def create_document_routes(
                 message="Text successfully received. Processing will continue in background.",
             )
         except Exception as e:
-            logging.error(f"Error /documents/text: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/text: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -515,8 +515,8 @@ def create_document_routes(
                 message="Text successfully received. Processing will continue in background.",
             )
         except Exception as e:
-            logging.error(f"Error /documents/text: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/text: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -558,8 +558,8 @@ def create_document_routes(
                 message=f"File '{file.filename}' saved successfully. Processing will continue in background.",
             )
         except Exception as e:
-            logging.error(f"Error /documents/file: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/file: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
@@ -621,8 +621,8 @@ def create_document_routes(
 
             return InsertResponse(status=status, message=status_message)
         except Exception as e:
-            logging.error(f"Error /documents/batch: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error /documents/batch: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete(
@@ -649,8 +649,8 @@ def create_document_routes(
                 status="success", message="All documents cleared successfully"
             )
         except Exception as e:
-            logging.error(f"Error DELETE /documents: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error DELETE /documents: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/pipeline_status", dependencies=[Depends(optional_api_key)])
@@ -682,8 +682,8 @@ def create_document_routes(
                 
             return status_dict
         except Exception as e:
-            logging.error(f"Error getting pipeline status: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error getting pipeline status: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("", dependencies=[Depends(optional_api_key)])
@@ -739,8 +739,8 @@ def create_document_routes(
                     )
             return response
         except Exception as e:
-            logging.error(f"Error GET /documents: {str(e)}")
-            logging.error(traceback.format_exc())
+            logger.error(f"Error GET /documents: {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
     return router

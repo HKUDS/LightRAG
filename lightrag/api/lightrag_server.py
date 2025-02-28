@@ -438,13 +438,20 @@ def get_application():
 
 def configure_logging():
     """Configure logging for both uvicorn and lightrag"""
+    # Check if running under Gunicorn
+    if "GUNICORN_CMD_ARGS" in os.environ:
+        # If started with Gunicorn, return directly as Gunicorn will handle logging
+        return
+
     # Reset any existing handlers to ensure clean configuration
-    for logger_name in ["uvicorn.access", "lightrag"]:
+    for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "lightrag"]:
         logger = logging.getLogger(logger_name)
         logger.handlers = []
         logger.filters = []
 
     # Configure basic logging
+    log_file_path = os.path.abspath(os.path.join(os.getcwd(), "lightrag.log"))
+    
     logging.config.dictConfig(
         {
             "version": 1,
@@ -453,23 +460,45 @@ def configure_logging():
                 "default": {
                     "format": "%(levelname)s: %(message)s",
                 },
+                "detailed": {
+                    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                },
             },
             "handlers": {
-                "default": {
+                "console": {
                     "formatter": "default",
                     "class": "logging.StreamHandler",
                     "stream": "ext://sys.stderr",
                 },
+                "file": {
+                    "formatter": "detailed",
+                    "class": "logging.handlers.RotatingFileHandler",
+                    "filename": log_file_path,
+                    "maxBytes": 10*1024*1024,  # 10MB
+                    "backupCount": 5,
+                    "encoding": "utf-8",
+                },
             },
             "loggers": {
+                # Configure all uvicorn related loggers
+                "uvicorn": {
+                    "handlers": ["console", "file"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
                 "uvicorn.access": {
-                    "handlers": ["default"],
+                    "handlers": ["console", "file"],
                     "level": "INFO",
                     "propagate": False,
                     "filters": ["path_filter"],
                 },
+                "uvicorn.error": {
+                    "handlers": ["console", "file"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
                 "lightrag": {
-                    "handlers": ["default"],
+                    "handlers": ["console", "file"],
                     "level": "INFO",
                     "propagate": False,
                     "filters": ["path_filter"],

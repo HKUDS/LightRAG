@@ -1,5 +1,8 @@
 # gunicorn_config.py
 import os
+import logging
+from logging.config import dictConfig
+from logging.handlers import RotatingFileHandler
 from lightrag.kg.shared_storage import finalize_share_data
 from lightrag.api.utils_api import parse_args
 
@@ -27,10 +30,63 @@ if args.ssl:
     certfile = args.ssl_certfile
     keyfile = args.ssl_keyfile
 
+# 获取日志文件路径
+log_file_path = os.path.abspath(os.path.join(os.getcwd(), "lightrag.log"))
+
 # Logging configuration
-errorlog = os.getenv("ERROR_LOG", "-")  # '-' means stderr
-accesslog = os.getenv("ACCESS_LOG", "-")  # '-' means stderr
+errorlog = os.getenv("ERROR_LOG", log_file_path)  # 默认写入到 lightrag.log
+accesslog = os.getenv("ACCESS_LOG", log_file_path)  # 默认写入到 lightrag.log
 loglevel = os.getenv("LOG_LEVEL", "info")
+
+# 配置日志系统
+logconfig_dict = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'standard': {
+            'format': '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+        },
+    },
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'level': 'INFO',
+            'formatter': 'standard',
+            'stream': 'ext://sys.stdout'
+        },
+        'file': {
+            'class': 'logging.handlers.RotatingFileHandler',
+            'level': 'INFO',
+            'formatter': 'standard',
+            'filename': log_file_path,
+            'maxBytes': 10485760,  # 10MB
+            'backupCount': 5,
+            'encoding': 'utf8'
+        }
+    },
+    'loggers': {
+        'lightrag': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False
+        },
+        'uvicorn': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False
+        },
+        'gunicorn': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False
+        },
+        'gunicorn.error': {
+            'handlers': ['console', 'file'],
+            'level': 'INFO',
+            'propagate': False
+        }
+    }
+}
 
 
 def on_starting(server):

@@ -157,6 +157,10 @@ def main():
                     value = getattr(self.config_module, key)
                     if callable(value):
                         self.cfg.set(key, value)
+            
+            # 确保正确加载 logconfig_dict
+            if hasattr(self.config_module, 'logconfig_dict'):
+                self.cfg.set('logconfig_dict', getattr(self.config_module, 'logconfig_dict'))
 
             # Override with command line arguments if provided
             if gunicorn_args.workers:
