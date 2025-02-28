@@ -6,6 +6,7 @@ import os
 import argparse
 from typing import Optional
 import sys
+import logging
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
 from fastapi import HTTPException, Security
@@ -285,6 +286,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+
+    # Check if running under uvicorn mode (not Gunicorn)
+    is_uvicorn_mode = "GUNICORN_CMD_ARGS" not in os.environ
+    
+    # If in uvicorn mode and workers > 1, force it to 1 and log warning
+    if is_uvicorn_mode and args.workers > 1:
+        original_workers = args.workers
+        args.workers = 1
+        # Log warning directly here
+        logging.warning(f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1")
 
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
