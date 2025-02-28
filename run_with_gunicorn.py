@@ -5,9 +5,7 @@ Start LightRAG server with Gunicorn
 
 import os
 import sys
-import json
 import signal
-import argparse
 from lightrag.api.utils_api import parse_args, display_splash_screen
 from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
 
@@ -33,7 +31,6 @@ def main():
 
     # Parse all arguments using parse_args
     args = parse_args(is_uvicorn_mode=False)
-
 
     # Display startup information
     display_splash_screen(args)
@@ -101,9 +98,15 @@ def main():
 
             # Set configuration variables in gunicorn_config
             gunicorn_config.workers = int(os.getenv("WORKERS", args.workers))
-            gunicorn_config.bind = f"{os.getenv('HOST', args.host)}:{os.getenv('PORT', args.port)}"
-            gunicorn_config.loglevel = args.log_level.lower() if args.log_level else os.getenv("LOG_LEVEL", "info")
-            
+            gunicorn_config.bind = (
+                f"{os.getenv('HOST', args.host)}:{os.getenv('PORT', args.port)}"
+            )
+            gunicorn_config.loglevel = (
+                args.log_level.lower()
+                if args.log_level
+                else os.getenv("LOG_LEVEL", "info")
+            )
+
             # Set SSL configuration if enabled
             if args.ssl:
                 gunicorn_config.certfile = args.ssl_certfile
@@ -121,10 +124,12 @@ def main():
                     value = getattr(gunicorn_config, key)
                     if callable(value):
                         self.cfg.set(key, value)
-            
-            # 确保正确加载 logconfig_dict
-            if hasattr(gunicorn_config, 'logconfig_dict'):
-                self.cfg.set('logconfig_dict', getattr(gunicorn_config, 'logconfig_dict'))
+
+
+            if hasattr(gunicorn_config, "logconfig_dict"):
+                self.cfg.set(
+                    "logconfig_dict", getattr(gunicorn_config, "logconfig_dict")
+                )
 
         def load(self):
             # Import the application

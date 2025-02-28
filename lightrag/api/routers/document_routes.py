@@ -406,7 +406,6 @@ def create_document_routes(
         background_tasks.add_task(run_scanning_process, rag, doc_manager)
         return {"status": "scanning_started"}
 
-
     @router.post("/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(
         background_tasks: BackgroundTasks, file: UploadFile = File(...)
@@ -657,29 +656,30 @@ def create_document_routes(
     async def get_pipeline_status():
         """
         Get the current status of the document indexing pipeline.
-        
+
         This endpoint returns information about the current state of the document processing pipeline,
         including whether it's busy, the current job name, when it started, how many documents
         are being processed, how many batches there are, and which batch is currently being processed.
-        
+
         Returns:
             dict: A dictionary containing the pipeline status information
         """
         try:
             from lightrag.kg.shared_storage import get_namespace_data
+
             pipeline_status = get_namespace_data("pipeline_status")
-            
+
             # Convert to regular dict if it's a Manager.dict
             status_dict = dict(pipeline_status)
-            
+
             # Convert history_messages to a regular list if it's a Manager.list
             if "history_messages" in status_dict:
                 status_dict["history_messages"] = list(status_dict["history_messages"])
-            
+
             # Format the job_start time if it exists
             if status_dict.get("job_start"):
                 status_dict["job_start"] = str(status_dict["job_start"])
-                
+
             return status_dict
         except Exception as e:
             logger.error(f"Error getting pipeline status: {str(e)}")

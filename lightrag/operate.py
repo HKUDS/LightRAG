@@ -336,8 +336,9 @@ async def extract_entities(
     global_config: dict[str, str],
     llm_response_cache: BaseKVStorage | None = None,
 ) -> None:
-    # 在函数开始处添加获取 pipeline_status 的代码
+
     from lightrag.kg.shared_storage import get_namespace_data
+
     pipeline_status = get_namespace_data("pipeline_status")
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]

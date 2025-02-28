@@ -295,7 +295,9 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
         original_workers = args.workers
         args.workers = 1
         # Log warning directly here
-        logging.warning(f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1")
+        logging.warning(
+            f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1"
+        )
 
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
