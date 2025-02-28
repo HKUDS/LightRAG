@@ -2,17 +2,17 @@
 import os
 import logging
 from lightrag.kg.shared_storage import finalize_share_data
-from lightrag.api.utils_api import parse_args
 from lightrag.api.lightrag_server import LightragPathFilter
 
-# Parse command line arguments
-args = parse_args()
+# 获取日志文件路径
+log_file_path = os.path.abspath(os.path.join(os.getcwd(), "lightrag.log"))
 
-# Determine worker count - from environment variable or command line arguments
-workers = int(os.getenv("WORKERS", args.workers))
-
-# Binding address
-bind = f"{os.getenv('HOST', args.host)}:{os.getenv('PORT', args.port)}"
+# These variables will be set by run_with_gunicorn.py
+workers = None
+bind = None
+loglevel = None
+certfile = None
+keyfile = None
 
 # Enable preload_app option
 preload_app = True
@@ -24,18 +24,9 @@ worker_class = "uvicorn.workers.UvicornWorker"
 timeout = int(os.getenv("TIMEOUT", 120))
 keepalive = 5
 
-# Optional SSL configuration
-if args.ssl:
-    certfile = args.ssl_certfile
-    keyfile = args.ssl_keyfile
-
-# 获取日志文件路径
-log_file_path = os.path.abspath(os.path.join(os.getcwd(), "lightrag.log"))
-
 # Logging configuration
 errorlog = os.getenv("ERROR_LOG", log_file_path)  # 默认写入到 lightrag.log
 accesslog = os.getenv("ACCESS_LOG", log_file_path)  # 默认写入到 lightrag.log
-loglevel = os.getenv("LOG_LEVEL", "info")
 
 # 配置日志系统
 logconfig_dict = {
@@ -49,13 +40,11 @@ logconfig_dict = {
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
-            'level': 'INFO',
             'formatter': 'standard',
             'stream': 'ext://sys.stdout'
         },
         'file': {
             'class': 'logging.handlers.RotatingFileHandler',
-            'level': 'INFO',
             'formatter': 'standard',
             'filename': log_file_path,
             'maxBytes': 10485760,  # 10MB
@@ -71,22 +60,22 @@ logconfig_dict = {
     'loggers': {
         'lightrag': {
             'handlers': ['console', 'file'],
-            'level': 'INFO',
+            'level': loglevel.upper() if loglevel else 'INFO',
             'propagate': False
         },
         'gunicorn': {
             'handlers': ['console', 'file'],
-            'level': 'INFO',
+            'level': loglevel.upper() if loglevel else 'INFO',
             'propagate': False
         },
         'gunicorn.error': {
             'handlers': ['console', 'file'],
-            'level': 'INFO',
+            'level': loglevel.upper() if loglevel else 'INFO',
             'propagate': False
         },
         'gunicorn.access': {
             'handlers': ['console', 'file'],
-            'level': 'INFO',
+            'level': loglevel.upper() if loglevel else 'INFO',
             'propagate': False,
             'filters': ['path_filter']
         }
@@ -143,6 +132,10 @@ def post_fork(server, worker):
     Executed after a worker has been forked.
     This is a good place to set up worker-specific configurations.
     """
+    # Set lightrag logger level in worker processes using gunicorn's loglevel
+    from lightrag.utils import logger
+    logger.setLevel(loglevel.upper())
+    
     # Disable uvicorn.error logger in worker processes
     uvicorn_error_logger = logging.getLogger("uvicorn.error")
     uvicorn_error_logger.setLevel(logging.CRITICAL)

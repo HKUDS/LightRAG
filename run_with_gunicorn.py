@@ -30,45 +30,10 @@ def main():
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # kill command
-    # Create a parser to handle Gunicorn-specific parameters
-    parser = argparse.ArgumentParser(description="Start LightRAG server with Gunicorn")
-    parser.add_argument(
-        "--workers",
-        type=int,
-        help="Number of worker processes (overrides the default or config.ini setting)",
-    )
-    parser.add_argument(
-        "--timeout", type=int, help="Worker timeout in seconds (default: 120)"
-    )
-    parser.add_argument(
-        "--log-level",
-        choices=["debug", "info", "warning", "error", "critical"],
-        help="Gunicorn log level",
-    )
 
-    # Parse Gunicorn-specific arguments
-    gunicorn_args, remaining_args = parser.parse_known_args()
+    # Parse all arguments using parse_args
+    args = parse_args(is_uvicorn_mode=False)
 
-    # Pass remaining arguments to LightRAG's parse_args
-    sys.argv = [sys.argv[0]] + remaining_args
-    args = parse_args()
-
-    # If workers specified, override args value
-    if gunicorn_args.workers:
-        args.workers = gunicorn_args.workers
-        os.environ["WORKERS"] = str(gunicorn_args.workers)
-
-    # If timeout specified, set environment variable
-    if gunicorn_args.timeout:
-        os.environ["TIMEOUT"] = str(gunicorn_args.timeout)
-
-    # If log-level specified, set environment variable
-    if gunicorn_args.log_level:
-        os.environ["LOG_LEVEL"] = gunicorn_args.log_level
-
-    # Save all LightRAG args to environment variable for worker processes
-    # This is the key step for passing arguments to lightrag_server.py
-    os.environ["LIGHTRAG_ARGS"] = json.dumps(vars(args))
 
     # Display startup information
     display_splash_screen(args)
@@ -82,11 +47,6 @@ def main():
     print(f"Process ID: {os.getpid()}")
     print(f"Workers setting: {args.workers}")
     print("=" * 80 + "\n")
-
-    # Start application with Gunicorn using direct Python API
-    # Ensure WORKERS environment variable is set before importing gunicorn_config
-    if args.workers > 1:
-        os.environ["WORKERS"] = str(args.workers)
 
     # Import Gunicorn's StandaloneApplication
     from gunicorn.app.base import BaseApplication
@@ -136,50 +96,44 @@ def main():
                 "child_exit",
             }
 
-            # Import the gunicorn_config module directly
-            import importlib.util
+            # Import and configure the gunicorn_config module
+            import gunicorn_config
 
-            spec = importlib.util.spec_from_file_location(
-                "gunicorn_config", "gunicorn_config.py"
-            )
-            self.config_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(self.config_module)
+            # Set configuration variables in gunicorn_config
+            gunicorn_config.workers = int(os.getenv("WORKERS", args.workers))
+            gunicorn_config.bind = f"{os.getenv('HOST', args.host)}:{os.getenv('PORT', args.port)}"
+            gunicorn_config.loglevel = args.log_level.lower() if args.log_level else os.getenv("LOG_LEVEL", "info")
+            
+            # Set SSL configuration if enabled
+            if args.ssl:
+                gunicorn_config.certfile = args.ssl_certfile
+                gunicorn_config.keyfile = args.ssl_keyfile
 
-            # Set configuration options
-            for key in dir(self.config_module):
+            # Set configuration options from the module
+            for key in dir(gunicorn_config):
                 if key in valid_options:
-                    value = getattr(self.config_module, key)
-                    # Skip functions like on_starting
-                    if not callable(value):
+                    value = getattr(gunicorn_config, key)
+                    # Skip functions like on_starting and None values
+                    if not callable(value) and value is not None:
                         self.cfg.set(key, value)
                 # Set special hooks
                 elif key in special_hooks:
-                    value = getattr(self.config_module, key)
+                    value = getattr(gunicorn_config, key)
                     if callable(value):
                         self.cfg.set(key, value)
             
             # 确保正确加载 logconfig_dict
-            if hasattr(self.config_module, 'logconfig_dict'):
-                self.cfg.set('logconfig_dict', getattr(self.config_module, 'logconfig_dict'))
-
-            # Override with command line arguments if provided
-            if gunicorn_args.workers:
-                self.cfg.set("workers", gunicorn_args.workers)
-            if gunicorn_args.timeout:
-                self.cfg.set("timeout", gunicorn_args.timeout)
-            if gunicorn_args.log_level:
-                self.cfg.set("loglevel", gunicorn_args.log_level)
+            if hasattr(gunicorn_config, 'logconfig_dict'):
+                self.cfg.set('logconfig_dict', getattr(gunicorn_config, 'logconfig_dict'))
 
         def load(self):
             # Import the application
             from lightrag.api.lightrag_server import get_application
 
-            return get_application()
+            return get_application(args)
 
     # Create the application
     app = GunicornApp("")
-
-    # Directly call initialize_share_data with the correct workers value
 
     # Force workers to be an integer and greater than 1 for multi-process mode
     workers_count = int(args.workers)
