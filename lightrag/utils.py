@@ -75,18 +75,51 @@ def set_logger(log_file: str, level: int = logging.DEBUG):
         log_file: Path to the log file
         level: Logging level (e.g. logging.DEBUG, logging.INFO)
     """
+    # 设置日志级别
     logger.setLevel(level)
-
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(level)
-
+    
+    # 确保使用绝对路径
+    log_file = os.path.abspath(log_file)
+    
+    # 创建格式化器
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )
-    file_handler.setFormatter(formatter)
-
-    if not logger.handlers:
+    
+    # 检查是否已经有文件处理器
+    has_file_handler = False
+    has_console_handler = False
+    
+    # 检查现有处理器
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            has_file_handler = True
+        elif isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler):
+            has_console_handler = True
+    
+    # 如果没有文件处理器，添加一个
+    if not has_file_handler:
+        # 使用 RotatingFileHandler 代替 FileHandler
+        from logging.handlers import RotatingFileHandler
+        file_handler = RotatingFileHandler(
+            log_file, 
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=5,
+            encoding="utf-8"
+        )
+        file_handler.setLevel(level)
+        file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
+    
+    # 如果没有控制台处理器，添加一个
+    if not has_console_handler:
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(level)
+        console_handler.setFormatter(formatter)
+        logger.addHandler(console_handler)
+        
+    # 设置日志传播为 False，避免重复输出
+    logger.propagate = False
 
 
 class UnlimitedSemaphore:
