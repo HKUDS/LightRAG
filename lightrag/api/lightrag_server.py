@@ -414,9 +414,6 @@ def create_app(args):
 
 def get_application():
     """Factory function for creating the FastAPI application"""
-    # Configure logging for this worker process
-    configure_logging()
-
     # Get args from environment variable
     args_json = os.environ.get("LIGHTRAG_ARGS")
     if not args_json:
@@ -430,11 +427,7 @@ def get_application():
 
 
 def configure_logging():
-    """Configure logging for both uvicorn and lightrag"""
-    # Check if running under Gunicorn
-    if "GUNICORN_CMD_ARGS" in os.environ:
-        # If started with Gunicorn, return directly as Gunicorn will handle logging
-        return
+    """Configure logging for uvicorn startup"""
 
     # Reset any existing handlers to ensure clean configuration
     for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "lightrag"]:
@@ -517,12 +510,12 @@ def main():
 
     freeze_support()
 
+    # Configure logging before parsing args
+    configure_logging()
+
     args = parse_args()
     # Save args to environment variable for child processes
     os.environ["LIGHTRAG_ARGS"] = json.dumps(vars(args))
-
-    # Configure logging before starting uvicorn
-    configure_logging()
 
     display_splash_screen(args)
 
