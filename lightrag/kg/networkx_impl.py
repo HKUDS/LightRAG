@@ -110,7 +110,7 @@ class NetworkXStorage(BaseGraphStorage):
             # Check if data needs to be reloaded
             if (is_multiprocess and self.storage_updated.value) or \
                (not is_multiprocess and self.storage_updated):
-                logger.info(f"Reloading graph for {self.namespace} due to update by another process")
+                logger.info(f"Process {os.getpid()} reloading graph {self.namespace} due to update by another process")
                 # Reload data
                 self._graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
                 # Reset update flag
@@ -329,7 +329,8 @@ class NetworkXStorage(BaseGraphStorage):
         )
         return result
 
-    async def index_done_callback(self) -> None:
+    async def index_done_callback(self) -> bool:
+        """Save data to disk"""
         # Check if storage was updated by another process
         if is_multiprocess and self.storage_updated.value:
             # Storage was updated by another process, reload data instead of saving
@@ -340,14 +341,13 @@ class NetworkXStorage(BaseGraphStorage):
             return False  # Return error
         
         # Acquire lock and perform persistence
-        graph = await self._get_graph()
         async with self._storage_lock:
             try:
                 # Save data to disk
-                NetworkXStorage.write_nx_graph(graph, self._graphml_xml_file)
+                NetworkXStorage.write_nx_graph(self._graph, self._graphml_xml_file)
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace)
-                # Reset own update flag to avoid self-notification
+                # Reset own update flag to avoid self-reloading
                 if is_multiprocess:
                     self.storage_updated.value = False
                 else:
@@ -356,3 +356,5 @@ class NetworkXStorage(BaseGraphStorage):
             except Exception as e:
                 logger.error(f"Error saving graph for {self.namespace}: {e}")
                 return False  # Return error
+        
+        return True
