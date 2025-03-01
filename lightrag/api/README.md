@@ -186,7 +186,7 @@ LightRAG supports binding to various LLM/Embedding backends:
 * openai & openai compatible
 * azure_openai
 
-Use environment variables  `LLM_BINDING ` or CLI argument `--llm-binding` to select LLM backend type. Use environment variables  `EMBEDDING_BINDING ` or CLI argument `--embedding-binding` to select LLM backend type.
+Use environment variables  `LLM_BINDING` or CLI argument `--llm-binding` to select LLM backend type. Use environment variables  `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select LLM backend type.
 
 ### Storage Types Supported
 
