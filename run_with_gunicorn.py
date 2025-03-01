@@ -45,6 +45,12 @@ def main():
     print(f"Workers setting: {args.workers}")
     print("=" * 80 + "\n")
 
+    # Check and install gunicorn if not present
+    import pipmaster as pm
+    if not pm.is_installed("gunicorn"):
+        print("Installing gunicorn...")
+        pm.install("gunicorn")
+    
     # Import Gunicorn's StandaloneApplication
     from gunicorn.app.base import BaseApplication
 
