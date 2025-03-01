@@ -134,18 +134,54 @@ def post_fork(server, worker):
     Executed after a worker has been forked.
     This is a good place to set up worker-specific configurations.
     """
-    # Set lightrag logger level in worker processes using gunicorn's loglevel
-    from lightrag.utils import logger
+    # Configure formatters
+    detailed_formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    simple_formatter = logging.Formatter("%(levelname)s: %(message)s")
 
-    logger.setLevel(loglevel.upper())
+    def setup_logger(logger_name: str, level: str = "INFO", add_filter: bool = False):
+        """Set up a logger with console and file handlers"""
+        logger_instance = logging.getLogger(logger_name)
+        logger_instance.setLevel(level)
+        logger_instance.handlers = []  # Clear existing handlers
+        logger_instance.propagate = False
 
-    # Disable uvicorn.error logger in worker processes
+        # Add console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(simple_formatter)
+        console_handler.setLevel(level)
+        logger_instance.addHandler(console_handler)
+
+        # Add file handler
+        file_handler = logging.handlers.RotatingFileHandler(
+            filename=log_file_path,
+            maxBytes=log_max_bytes,
+            backupCount=log_backup_count,
+            encoding="utf-8",
+        )
+        file_handler.setFormatter(detailed_formatter)
+        file_handler.setLevel(level)
+        logger_instance.addHandler(file_handler)
+
+        # Add path filter if requested
+        if add_filter:
+            path_filter = LightragPathFilter()
+            logger_instance.addFilter(path_filter)
+
+    # Set up main loggers
+    log_level = loglevel.upper() if loglevel else "INFO"
+    setup_logger("uvicorn", log_level)
+    setup_logger("uvicorn.access", log_level, add_filter=True)
+    setup_logger("lightrag", log_level, add_filter=True)
+
+    # Set up lightrag submodule loggers
+    for name in logging.root.manager.loggerDict:
+        if name.startswith("lightrag."):
+            setup_logger(name, log_level, add_filter=True)
+
+    # Disable uvicorn.error logger
     uvicorn_error_logger = logging.getLogger("uvicorn.error")
-    uvicorn_error_logger.setLevel(logging.CRITICAL)
     uvicorn_error_logger.handlers = []
+    uvicorn_error_logger.setLevel(logging.CRITICAL)
     uvicorn_error_logger.propagate = False
-
-    # Add log filter to uvicorn.access handler in worker processes
-    uvicorn_access_logger = logging.getLogger("uvicorn.access")
-    path_filter = LightragPathFilter()
-    uvicorn_access_logger.addFilter(path_filter)
