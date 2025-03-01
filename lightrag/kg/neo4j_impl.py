@@ -280,10 +280,7 @@ class Neo4JStorage(BaseGraphStorage):
                 MATCH (start:`{entity_name_label_source}`)-[r]->(end:`{entity_name_label_target}`)
                 RETURN properties(r) as edge_properties
                 LIMIT 1
-                """.format(
-                    entity_name_label_source=entity_name_label_source,
-                    entity_name_label_target=entity_name_label_target,
-                )
+                """
 
                 result = await session.run(query)
                 record = await result.single()
