@@ -96,21 +96,27 @@ def main():
             # Import and configure the gunicorn_config module
             import gunicorn_config
 
-            # Set configuration variables in gunicorn_config
-            gunicorn_config.workers = int(os.getenv("WORKERS", args.workers))
-            gunicorn_config.bind = (
-                f"{os.getenv('HOST', args.host)}:{os.getenv('PORT', args.port)}"
-            )
-            gunicorn_config.loglevel = (
-                args.log_level.lower()
-                if args.log_level
-                else os.getenv("LOG_LEVEL", "info")
-            )
+            # Set configuration variables in gunicorn_config, prioritizing command line arguments
+            gunicorn_config.workers = args.workers if args.workers else int(os.getenv("WORKERS", 1))
+            
+            # Bind configuration prioritizes command line arguments
+            host = args.host if args.host != "0.0.0.0" else os.getenv("HOST", "0.0.0.0")
+            port = args.port if args.port != 9621 else int(os.getenv("PORT", 9621))
+            gunicorn_config.bind = f"{host}:{port}"
+            
+            # Log level configuration prioritizes command line arguments
+            gunicorn_config.loglevel = args.log_level.lower() if args.log_level else os.getenv("LOG_LEVEL", "info")
 
-            # Set SSL configuration if enabled
-            if args.ssl:
-                gunicorn_config.certfile = args.ssl_certfile
-                gunicorn_config.keyfile = args.ssl_keyfile
+            # Timeout configuration prioritizes command line arguments
+            gunicorn_config.timeout = args.timeout if args.timeout else int(os.getenv("TIMEOUT", 150))
+            
+            # Keepalive configuration
+            gunicorn_config.keepalive = int(os.getenv("KEEPALIVE", 5))
+
+            # SSL configuration prioritizes command line arguments
+            if args.ssl or os.getenv("SSL", "").lower() in ("true", "1", "yes", "t", "on"):
+                gunicorn_config.certfile = args.ssl_certfile if args.ssl_certfile else os.getenv("SSL_CERTFILE")
+                gunicorn_config.keyfile = args.ssl_keyfile if args.ssl_keyfile else os.getenv("SSL_KEYFILE")
 
             # Set configuration options from the module
             for key in dir(gunicorn_config):
