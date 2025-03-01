@@ -1593,17 +1593,17 @@ class LightRAG:
         """Clear cache data from the LLM response cache storage.
 
         Args:
-            modes (list[str] | None): Modes of cache to clear. Options: ["default", "naive", "local", "global", "hybrid", "mix"]. 
+            modes (list[str] | None): Modes of cache to clear. Options: ["default", "naive", "local", "global", "hybrid", "mix"].
                              "default" represents extraction cache.
                              If None, clears all cache.
 
         Example:
             # Clear all cache
             await rag.aclear_cache()
-            
+
             # Clear local mode cache
             await rag.aclear_cache(modes=["local"])
-            
+
             # Clear extraction cache
             await rag.aclear_cache(modes=["default"])
         """
@@ -1620,8 +1620,8 @@ class LightRAG:
         try:
             # Reset the cache storage for specified mode
             if modes:
-                    await self.llm_response_cache.delete(modes)
-                    logger.info(f"Cleared cache for modes: {modes}")
+                await self.llm_response_cache.delete(modes)
+                logger.info(f"Cleared cache for modes: {modes}")
             else:
                 # Clear all modes
                 await self.llm_response_cache.delete(valid_modes)
@@ -1634,6 +1634,4 @@ class LightRAG:
 
     def clear_cache(self, modes: list[str] | None = None) -> None:
         """Synchronous version of aclear_cache."""
-        return always_get_an_event_loop().run_until_complete(
-            self.aclear_cache(modes)
-        )
+        return always_get_an_event_loop().run_until_complete(self.aclear_cache(modes))
