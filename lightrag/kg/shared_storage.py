@@ -16,6 +16,22 @@ def direct_log(message, level="INFO"):
 
 
 T = TypeVar('T')
+LockType = Union[ProcessLock, asyncio.Lock]
+
+is_multiprocess = None
+_workers = None
+_manager = None
+_initialized = None
+
+# shared data for storage across processes
+_shared_dicts: Optional[Dict[str, Any]] = None
+_init_flags: Optional[Dict[str, bool]] = None  # namespace -> initialized
+_update_flags: Optional[Dict[str, bool]] = None # namespace -> updated
+
+# locks for mutex access
+_storage_lock: Optional[LockType] = None
+_internal_lock: Optional[LockType] = None
+_pipeline_status_lock: Optional[LockType] = None
 
 class UnifiedLock(Generic[T]):
     """Provide a unified lock interface type for asyncio.Lock and multiprocessing.Lock"""
@@ -39,30 +55,37 @@ class UnifiedLock(Generic[T]):
     def __enter__(self) -> 'UnifiedLock[T]':
         """For backward compatibility"""
         if self._is_async:
-            raise RuntimeError("Use 'async with' for asyncio.Lock")
+            raise RuntimeError("Use 'async with' for shared_storage lock")
         self._lock.acquire()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """For backward compatibility"""
         if self._is_async:
-            raise RuntimeError("Use 'async with' for asyncio.Lock")
+            raise RuntimeError("Use 'async with' for shared_storage lock")
         self._lock.release()
 
 
-LockType = Union[ProcessLock, asyncio.Lock]
+def get_internal_lock() -> UnifiedLock:
+    """return unified storage lock for data consistency"""
+    return UnifiedLock(
+        lock=_internal_lock,
+        is_async=not is_multiprocess
+    )
 
-is_multiprocess = None
-_workers = None
-_manager = None
-_initialized = None
-_global_lock: Optional[LockType] = None
+def get_storage_lock() -> UnifiedLock:
+    """return unified storage lock for data consistency"""
+    return UnifiedLock(
+        lock=_storage_lock,
+        is_async=not is_multiprocess
+    )
 
-# shared data for storage across processes
-_shared_dicts: Optional[Dict[str, Any]] = None
-_init_flags: Optional[Dict[str, bool]] = None  # namespace -> initialized
-_update_flags: Optional[Dict[str, bool]] = None # namespace -> updated
-
+def get_pipeline_status_lock() -> UnifiedLock:
+    """return unified storage lock for data consistency"""
+    return UnifiedLock(
+        lock=_pipeline_status_lock,
+        is_async=not is_multiprocess
+    )
 
 def initialize_share_data(workers: int = 1):
     """
@@ -87,7 +110,9 @@ def initialize_share_data(workers: int = 1):
         _workers, \
         is_multiprocess, \
         is_multiprocess, \
-        _global_lock, \
+        _storage_lock, \
+        _internal_lock, \
+        _pipeline_status_lock, \
         _shared_dicts, \
         _init_flags, \
         _initialized, \
@@ -105,7 +130,9 @@ def initialize_share_data(workers: int = 1):
 
     if workers > 1:
         is_multiprocess = True
-        _global_lock = _manager.Lock()
+        _internal_lock = _manager.Lock()
+        _storage_lock = _manager.Lock()
+        _pipeline_status_lock = _manager.Lock()
         _shared_dicts = _manager.dict()
         _init_flags = _manager.dict()
         _update_flags = _manager.dict()
@@ -114,7 +141,9 @@ def initialize_share_data(workers: int = 1):
         )
     else:
         is_multiprocess = False
-        _global_lock = asyncio.Lock()
+        _internal_lock = asyncio.Lock()
+        _storage_lock = asyncio.Lock()
+        _pipeline_status_lock = asyncio.Lock()
         _shared_dicts = {}
         _init_flags = {}
         _update_flags = {}
@@ -124,13 +153,13 @@ def initialize_share_data(workers: int = 1):
     _initialized = True
 
 
-async def initialize_pipeline_namespace():
+async def initialize_pipeline_status():
     """
     Initialize pipeline namespace with default values.
     """
     pipeline_namespace = await get_namespace_data("pipeline_status")
 
-    async with get_storage_lock():
+    async with get_internal_lock():
         # Check if already initialized by checking for required fields
         if "busy" in pipeline_namespace:
             return
@@ -160,7 +189,7 @@ async def get_update_flag(namespace: str):
     if _update_flags is None:
         raise ValueError("Try to create namespace before Shared-Data is initialized")
 
-    async with get_storage_lock():
+    async with get_internal_lock():
         if namespace not in _update_flags:
             if is_multiprocess and _manager is not None:
                 _update_flags[namespace] = _manager.list()
@@ -182,7 +211,7 @@ async def set_all_update_flags(namespace: str):
     if _update_flags is None:
         raise ValueError("Try to create namespace before Shared-Data is initialized")
     
-    async with get_storage_lock():
+    async with get_internal_lock():
         if namespace not in _update_flags:
             raise ValueError(f"Namespace {namespace} not found in update flags")
         # Update flags for both modes
@@ -215,14 +244,6 @@ def try_initialize_namespace(namespace: str) -> bool:
     return False
 
 
-def get_storage_lock() -> UnifiedLock:
-    """return unified storage lock for data consistency"""
-    return UnifiedLock(
-        lock=_global_lock,
-        is_async=not is_multiprocess
-    )
-
-
 async def get_namespace_data(namespace: str) -> Dict[str, Any]:
     """get storage space for specific storage type(namespace)"""
     if _shared_dicts is None:
@@ -232,7 +253,7 @@ async def get_namespace_data(namespace: str) -> Dict[str, Any]:
         )
         raise ValueError("Shared dictionaries not initialized")
 
-    async with get_storage_lock():
+    async with get_internal_lock():
         if namespace not in _shared_dicts:
             if is_multiprocess and _manager is not None:
                 _shared_dicts[namespace] = _manager.dict()
