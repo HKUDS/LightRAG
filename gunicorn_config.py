@@ -26,8 +26,8 @@ preload_app = True
 worker_class = "uvicorn.workers.UvicornWorker"
 
 # Other Gunicorn configurations
-timeout = int(os.getenv("TIMEOUT", 120))
-keepalive = 5
+timeout = int(os.getenv("TIMEOUT", 150))  # Default 150s to match run_with_gunicorn.py
+keepalive = int(os.getenv("KEEPALIVE", 5))  # Default 5s
 
 # Logging configuration
 errorlog = os.getenv("ERROR_LOG", log_file_path)  # Default write to lightrag.log
