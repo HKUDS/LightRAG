@@ -359,7 +359,7 @@ async def index_done_callback(self) -> None:
         try:
             # Save data to disk
             self._save_faiss_index()
-            # Set all update flags to False
+            # Notify other processes that data has been updated
             await set_all_update_flags(self.namespace)
             # Reset own update flag to avoid self-reloading
             if is_multiprocess:
