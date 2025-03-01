@@ -6,8 +6,23 @@ Start LightRAG server with Gunicorn
 import os
 import sys
 import signal
+import pipmaster as pm
 from lightrag.api.utils_api import parse_args, display_splash_screen
 from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
+
+def check_and_install_dependencies():
+    """Check and install required dependencies"""
+    required_packages = [
+        "gunicorn",
+        "tiktoken",
+        # Add other required packages here
+    ]
+    
+    for package in required_packages:
+        if not pm.is_installed(package):
+            print(f"Installing {package}...")
+            pm.install(package)
+            print(f"{package} installed successfully")
 
 
 # Signal handler for graceful shutdown
@@ -25,6 +40,9 @@ def signal_handler(sig, frame):
 
 
 def main():
+    # Check and install dependencies
+    check_and_install_dependencies()
+    
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # kill command
@@ -44,13 +62,6 @@ def main():
     print(f"Process ID: {os.getpid()}")
     print(f"Workers setting: {args.workers}")
     print("=" * 80 + "\n")
-
-    # Check and install gunicorn if not present
-    import pipmaster as pm
-
-    if not pm.is_installed("gunicorn"):
-        print("Installing gunicorn...")
-        pm.install("gunicorn")
 
     # Import Gunicorn's StandaloneApplication
     from gunicorn.app.base import BaseApplication

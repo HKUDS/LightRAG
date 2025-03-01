@@ -12,6 +12,7 @@ import os
 import logging
 import logging.config
 import uvicorn
+import pipmaster as pm
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import configparser
@@ -501,12 +502,30 @@ def configure_logging():
     )
 
 
+def check_and_install_dependencies():
+    """Check and install required dependencies"""
+    required_packages = [
+        "uvicorn",
+        "tiktoken",
+        "fastapi",
+        # Add other required packages here
+    ]
+    
+    for package in required_packages:
+        if not pm.is_installed(package):
+            print(f"Installing {package}...")
+            pm.install(package)
+            print(f"{package} installed successfully")
+
 def main():
     # Check if running under Gunicorn
     if "GUNICORN_CMD_ARGS" in os.environ:
         # If started with Gunicorn, return directly as Gunicorn will call get_application
         print("Running under Gunicorn - worker management handled by Gunicorn")
         return
+
+    # Check and install dependencies
+    check_and_install_dependencies()
 
     from multiprocessing import freeze_support
 
