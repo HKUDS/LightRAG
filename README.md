@@ -751,6 +751,40 @@ rag.delete_by_entity("Project Gutenberg")
 rag.delete_by_doc_id("doc_id")
 ```
 
+## Cache
+
+<details>
+  <summary> <b>Clear Cache</b> </summary>
+
+You can clear the LLM response cache with different modes:
+
+```python
+# Clear all cache
+await rag.aclear_cache()
+
+# Clear local mode cache
+await rag.aclear_cache(modes=["local"])
+
+# Clear extraction cache
+await rag.aclear_cache(modes=["default"])
+
+# Clear multiple modes
+await rag.aclear_cache(modes=["local", "global", "hybrid"])
+
+# Synchronous version
+rag.clear_cache(modes=["local"])
+```
+
+Valid modes are:
+- `"default"`: Extraction cache
+- `"naive"`: Naive search cache
+- `"local"`: Local search cache
+- `"global"`: Global search cache
+- `"hybrid"`: Hybrid search cache
+- `"mix"`: Mix search cache
+
+</details>
+
 ## LightRAG init parameters
 
 <details>
