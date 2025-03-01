@@ -38,8 +38,8 @@ import pipmaster as pm
 if not pm.is_installed("asyncpg"):
     pm.install("asyncpg")
 
-import asyncpg # type: ignore
-from asyncpg import Pool # type: ignore
+import asyncpg  # type: ignore
+from asyncpg import Pool  # type: ignore
 
 
 class PostgreSQLDB:

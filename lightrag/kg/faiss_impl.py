@@ -50,7 +50,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         self._max_batch_size = self.global_config["embedding_batch_num"]
         # Embedding dimension (e.g. 768) must match your embedding function
         self._dim = self.embedding_func.embedding_dim
-        
+
         # Create an empty Faiss index for inner product (useful for normalized vectors = cosine similarity).
         # If you have a large number of vectors, you might want IVF or other indexes.
         # For demonstration, we use a simple IndexFlatIP.
@@ -73,9 +73,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Acquire lock to prevent concurrent read and write
         with self._storage_lock:
             # Check if storage was updated by another process
-            if (is_multiprocess and self.storage_updated.value) or \
-                (not is_multiprocess and self.storage_updated):
-                logger.info(f"Process {os.getpid()} FAISS reloading {self.namespace} due to update by another process")
+            if (is_multiprocess and self.storage_updated.value) or (
+                not is_multiprocess and self.storage_updated
+            ):
+                logger.info(
+                    f"Process {os.getpid()} FAISS reloading {self.namespace} due to update by another process"
+                )
                 # Reload data
                 self._index = faiss.IndexFlatIP(self._dim)
                 self._id_to_meta = {}
@@ -86,7 +89,6 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     self.storage_updated = False
         return self._index
 
-    
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
         Insert or update vectors in the Faiss index.
@@ -337,32 +339,35 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._index = faiss.IndexFlatIP(self._dim)
             self._id_to_meta = {}
 
+
 async def index_done_callback(self) -> None:
-        # Check if storage was updated by another process
-        if is_multiprocess and self.storage_updated.value:
-            # Storage was updated by another process, reload data instead of saving
-            logger.warning(f"Storage for FAISS {self.namespace} was updated by another process, reloading...")
-            with self._storage_lock:
-                self._index = faiss.IndexFlatIP(self._dim)
-                self._id_to_meta = {}
-                self._load_faiss_index()
+    # Check if storage was updated by another process
+    if is_multiprocess and self.storage_updated.value:
+        # Storage was updated by another process, reload data instead of saving
+        logger.warning(
+            f"Storage for FAISS {self.namespace} was updated by another process, reloading..."
+        )
+        with self._storage_lock:
+            self._index = faiss.IndexFlatIP(self._dim)
+            self._id_to_meta = {}
+            self._load_faiss_index()
+            self.storage_updated.value = False
+        return False  # Return error
+
+    # Acquire lock and perform persistence
+    async with self._storage_lock:
+        try:
+            # Save data to disk
+            self._save_faiss_index()
+            # Set all update flags to False
+            await set_all_update_flags(self.namespace)
+            # Reset own update flag to avoid self-reloading
+            if is_multiprocess:
                 self.storage_updated.value = False
+            else:
+                self.storage_updated = False
+        except Exception as e:
+            logger.error(f"Error saving FAISS index for {self.namespace}: {e}")
             return False  # Return error
 
-        # Acquire lock and perform persistence
-        async with self._storage_lock:
-            try:
-                # Save data to disk
-                self._save_faiss_index()
-                # Set all update flags to False
-                await set_all_update_flags(self.namespace)
-                # Reset own update flag to avoid self-reloading
-                if is_multiprocess:
-                    self.storage_updated.value = False
-                else:
-                    self.storage_updated = False
-            except Exception as e:
-                logger.error(f"Error saving FAISS index for {self.namespace}: {e}")
-                return False  # Return error
-            
-        return True  # Return success
+    return True  # Return success
