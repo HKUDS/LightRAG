@@ -217,7 +217,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         async with self._storage_lock:
             try:
                 # Save data to disk
-                self._get_client.save()
+                self._client.save()
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace)
                 # Reset own update flag to avoid self-reloading
