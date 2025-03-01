@@ -3,7 +3,7 @@
 <table border="0" width="100%">
 <tr>
 <td width="100" align="center">
-<img src="https://i-blog.csdnimg.cn/direct/0d97ea81439442a19ac3972ad537a811.png" width="80" height="80" alt="lightrag">
+<img src="./assets/logo.png" width="80" height="80" alt="lightrag">
 </td>
 <td>
 <div>

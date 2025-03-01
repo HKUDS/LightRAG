@@ -50,11 +50,11 @@ export type NodeType = {
 }
 export type EdgeType = { label: string }
 
-const fetchGraph = async (label: string) => {
+const fetchGraph = async (label: string, maxDepth: number) => {
   let rawData: any = null
 
   try {
-    rawData = await queryGraphs(label)
+    rawData = await queryGraphs(label, maxDepth)
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!')
     return null
@@ -161,12 +161,13 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   return graph
 }
 
-const lastQueryLabel = { label: '' }
+const lastQueryLabel = { label: '', maxQueryDepth: 0 }
 
 const useLightrangeGraph = () => {
   const queryLabel = useSettingsStore.use.queryLabel()
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
+  const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
 
   const getNode = useCallback(
     (nodeId: string) => {
@@ -184,11 +185,13 @@ const useLightrangeGraph = () => {
 
   useEffect(() => {
     if (queryLabel) {
-      if (lastQueryLabel.label !== queryLabel) {
+      if (lastQueryLabel.label !== queryLabel || lastQueryLabel.maxQueryDepth !== maxQueryDepth) {
         lastQueryLabel.label = queryLabel
+        lastQueryLabel.maxQueryDepth = maxQueryDepth
+
         const state = useGraphStore.getState()
         state.reset()
-        fetchGraph(queryLabel).then((data) => {
+        fetchGraph(queryLabel, maxQueryDepth).then((data) => {
           // console.debug('Query label: ' + queryLabel)
           state.setSigmaGraph(createSigmaGraph(data))
           data?.buildDynamicMap()
@@ -200,7 +203,7 @@ const useLightrangeGraph = () => {
       state.reset()
       state.setSigmaGraph(new DirectedGraph())
     }
-  }, [queryLabel])
+  }, [queryLabel, maxQueryDepth])
 
   const lightrageGraph = useCallback(() => {
     if (sigmaGraph) {

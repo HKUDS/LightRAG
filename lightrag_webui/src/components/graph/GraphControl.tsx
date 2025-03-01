@@ -26,8 +26,10 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const registerEvents = useRegisterEvents<NodeType, EdgeType>()
   const setSettings = useSetSettings<NodeType, EdgeType>()
   const loadGraph = useLoadGraph<NodeType, EdgeType>()
+
+  const maxIterations = useSettingsStore.use.graphLayoutMaxIterations()
   const { assign: assignLayout } = useLayoutForceAtlas2({
-    iterations: 20
+    iterations: maxIterations
   })
 
   const { theme } = useTheme()
