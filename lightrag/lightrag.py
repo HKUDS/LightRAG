@@ -696,7 +696,10 @@ class LightRAG:
         3. Process each chunk for entity and relation extraction
         4. Update the document status
         """
-        from lightrag.kg.shared_storage import get_namespace_data, get_pipeline_status_lock
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_pipeline_status_lock,
+        )
 
         # Get pipeline status shared data and lock
         pipeline_status = await get_namespace_data("pipeline_status")

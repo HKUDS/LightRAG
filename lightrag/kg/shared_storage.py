@@ -15,7 +15,7 @@ def direct_log(message, level="INFO"):
     print(f"{level}: {message}", file=sys.stderr, flush=True)
 
 
-T = TypeVar('T')
+T = TypeVar("T")
 LockType = Union[ProcessLock, asyncio.Lock]
 
 is_multiprocess = None
@@ -26,20 +26,22 @@ _initialized = None
 # shared data for storage across processes
 _shared_dicts: Optional[Dict[str, Any]] = None
 _init_flags: Optional[Dict[str, bool]] = None  # namespace -> initialized
-_update_flags: Optional[Dict[str, bool]] = None # namespace -> updated
+_update_flags: Optional[Dict[str, bool]] = None  # namespace -> updated
 
 # locks for mutex access
 _storage_lock: Optional[LockType] = None
 _internal_lock: Optional[LockType] = None
 _pipeline_status_lock: Optional[LockType] = None
 
+
 class UnifiedLock(Generic[T]):
     """Provide a unified lock interface type for asyncio.Lock and multiprocessing.Lock"""
+
     def __init__(self, lock: Union[ProcessLock, asyncio.Lock], is_async: bool):
         self._lock = lock
         self._is_async = is_async
 
-    async def __aenter__(self) -> 'UnifiedLock[T]':
+    async def __aenter__(self) -> "UnifiedLock[T]":
         if self._is_async:
             await self._lock.acquire()
         else:
@@ -52,7 +54,7 @@ class UnifiedLock(Generic[T]):
         else:
             self._lock.release()
 
-    def __enter__(self) -> 'UnifiedLock[T]':
+    def __enter__(self) -> "UnifiedLock[T]":
         """For backward compatibility"""
         if self._is_async:
             raise RuntimeError("Use 'async with' for shared_storage lock")
@@ -68,24 +70,18 @@ class UnifiedLock(Generic[T]):
 
 def get_internal_lock() -> UnifiedLock:
     """return unified storage lock for data consistency"""
-    return UnifiedLock(
-        lock=_internal_lock,
-        is_async=not is_multiprocess
-    )
+    return UnifiedLock(lock=_internal_lock, is_async=not is_multiprocess)
+
 
 def get_storage_lock() -> UnifiedLock:
     """return unified storage lock for data consistency"""
-    return UnifiedLock(
-        lock=_storage_lock,
-        is_async=not is_multiprocess
-    )
+    return UnifiedLock(lock=_storage_lock, is_async=not is_multiprocess)
+
 
 def get_pipeline_status_lock() -> UnifiedLock:
     """return unified storage lock for data consistency"""
-    return UnifiedLock(
-        lock=_pipeline_status_lock,
-        is_async=not is_multiprocess
-    )
+    return UnifiedLock(lock=_pipeline_status_lock, is_async=not is_multiprocess)
+
 
 def initialize_share_data(workers: int = 1):
     """
@@ -166,17 +162,19 @@ async def initialize_pipeline_status():
 
         # Create a shared list object for history_messages
         history_messages = _manager.list() if is_multiprocess else []
-        pipeline_namespace.update({
-            "busy": False,  # Control concurrent processes
-            "job_name": "Default Job",  # Current job name (indexing files/indexing texts)
-            "job_start": None,  # Job start time
-            "docs": 0,  # Total number of documents to be indexed
-            "batchs": 0,  # Number of batches for processing documents
-            "cur_batch": 0,  # Current processing batch
-            "request_pending": False,  # Flag for pending request for processing
-            "latest_message": "",  # Latest message from pipeline processing
-            "history_messages": history_messages,  # 使用共享列表对象
-        })
+        pipeline_namespace.update(
+            {
+                "busy": False,  # Control concurrent processes
+                "job_name": "Default Job",  # Current job name (indexing files/indexing texts)
+                "job_start": None,  # Job start time
+                "docs": 0,  # Total number of documents to be indexed
+                "batchs": 0,  # Number of batches for processing documents
+                "cur_batch": 0,  # Current processing batch
+                "request_pending": False,  # Flag for pending request for processing
+                "latest_message": "",  # Latest message from pipeline processing
+                "history_messages": history_messages,  # 使用共享列表对象
+            }
+        )
         direct_log(f"Process {os.getpid()} Pipeline namespace initialized")
 
 
@@ -195,22 +193,25 @@ async def get_update_flag(namespace: str):
                 _update_flags[namespace] = _manager.list()
             else:
                 _update_flags[namespace] = []
-            direct_log(f"Process {os.getpid()} initialized updated flags for namespace: [{namespace}]")
-        
+            direct_log(
+                f"Process {os.getpid()} initialized updated flags for namespace: [{namespace}]"
+            )
+
         if is_multiprocess and _manager is not None:
-            new_update_flag = _manager.Value('b', False)
+            new_update_flag = _manager.Value("b", False)
         else:
             new_update_flag = False
-        
+
         _update_flags[namespace].append(new_update_flag)
         return new_update_flag
+
 
 async def set_all_update_flags(namespace: str):
     """Set all update flag of namespace indicating all workers need to reload data from files"""
     global _update_flags
     if _update_flags is None:
         raise ValueError("Try to create namespace before Shared-Data is initialized")
-    
+
     async with get_internal_lock():
         if namespace not in _update_flags:
             raise ValueError(f"Namespace {namespace} not found in update flags")
@@ -225,13 +226,13 @@ async def set_all_update_flags(namespace: str):
 async def get_all_update_flags_status() -> Dict[str, list]:
     """
     Get update flags status for all namespaces.
-    
+
     Returns:
         Dict[str, list]: A dictionary mapping namespace names to lists of update flag statuses
     """
     if _update_flags is None:
         return {}
-        
+
     result = {}
     async with get_internal_lock():
         for namespace, flags in _update_flags.items():
@@ -242,7 +243,7 @@ async def get_all_update_flags_status() -> Dict[str, list]:
                 else:
                     worker_statuses.append(flag)
             result[namespace] = worker_statuses
-            
+
     return result
 
 

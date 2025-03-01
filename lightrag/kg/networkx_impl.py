@@ -91,7 +91,7 @@ class NetworkXStorage(BaseGraphStorage):
         else:
             logger.info("Created new empty graph")
         self._graph = preloaded_graph or nx.Graph()
-        
+
         self._node_embed_algorithms = {
             "node2vec": self._node2vec_embed,
         }
@@ -108,19 +108,23 @@ class NetworkXStorage(BaseGraphStorage):
         # Acquire lock to prevent concurrent read and write
         async with self._storage_lock:
             # Check if data needs to be reloaded
-            if (is_multiprocess and self.storage_updated.value) or \
-               (not is_multiprocess and self.storage_updated):
-                logger.info(f"Process {os.getpid()} reloading graph {self.namespace} due to update by another process")
+            if (is_multiprocess and self.storage_updated.value) or (
+                not is_multiprocess and self.storage_updated
+            ):
+                logger.info(
+                    f"Process {os.getpid()} reloading graph {self.namespace} due to update by another process"
+                )
                 # Reload data
-                self._graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
+                self._graph = (
+                    NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
+                )
                 # Reset update flag
                 if is_multiprocess:
                     self.storage_updated.value = False
                 else:
                     self.storage_updated = False
-            
-            return self._graph
 
+            return self._graph
 
     async def has_node(self, node_id: str) -> bool:
         graph = await self._get_graph()
@@ -334,12 +338,16 @@ class NetworkXStorage(BaseGraphStorage):
         # Check if storage was updated by another process
         if is_multiprocess and self.storage_updated.value:
             # Storage was updated by another process, reload data instead of saving
-            logger.warning(f"Graph for {self.namespace} was updated by another process, reloading...")
-            self._graph = NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
+            logger.warning(
+                f"Graph for {self.namespace} was updated by another process, reloading..."
+            )
+            self._graph = (
+                NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
+            )
             # Reset update flag
             self.storage_updated.value = False
             return False  # Return error
-        
+
         # Acquire lock and perform persistence
         async with self._storage_lock:
             try:
@@ -356,5 +364,5 @@ class NetworkXStorage(BaseGraphStorage):
             except Exception as e:
                 logger.error(f"Error saving graph for {self.namespace}: {e}")
                 return False  # Return error
-        
+
         return True
