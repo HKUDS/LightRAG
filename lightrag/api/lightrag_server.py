@@ -510,12 +510,13 @@ def check_and_install_dependencies():
         "fastapi",
         # Add other required packages here
     ]
-    
+
     for package in required_packages:
         if not pm.is_installed(package):
             print(f"Installing {package}...")
             pm.install(package)
             print(f"{package} installed successfully")
+
 
 def main():
     # Check if running under Gunicorn

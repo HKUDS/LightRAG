@@ -10,6 +10,7 @@ import pipmaster as pm
 from lightrag.api.utils_api import parse_args, display_splash_screen
 from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
 
+
 def check_and_install_dependencies():
     """Check and install required dependencies"""
     required_packages = [
@@ -17,7 +18,7 @@ def check_and_install_dependencies():
         "tiktoken",
         # Add other required packages here
     ]
-    
+
     for package in required_packages:
         if not pm.is_installed(package):
             print(f"Installing {package}...")
@@ -42,7 +43,7 @@ def signal_handler(sig, frame):
 def main():
     # Check and install dependencies
     check_and_install_dependencies()
-    
+
     # Register signal handlers for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # kill command
