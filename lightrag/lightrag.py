@@ -710,11 +710,6 @@ class LightRAG:
         async with pipeline_status_lock:
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
-                # Cleaning history_messages without breaking it as a shared list object
-                current_history = pipeline_status.get("history_messages", [])
-                if hasattr(current_history, "clear"):
-                    current_history.clear()
-
                 pipeline_status.update(
                     {
                         "busy": True,
@@ -725,9 +720,14 @@ class LightRAG:
                         "cur_batch": 0,
                         "request_pending": False,  # Clear any previous request
                         "latest_message": "",
-                        "history_messages": current_history,  # keep it as a shared list object
                     }
                 )
+                # Cleaning history_messages without breaking it as a shared list object
+                try:
+                    del pipeline_status["history_messages"][:]
+                except Exception as e:
+                    logger.error(f"Error clearing pipeline history_messages: {str(e)}")
+
                 process_documents = True
             else:
                 # Another process is busy, just set request flag and return
