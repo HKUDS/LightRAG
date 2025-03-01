@@ -222,6 +222,30 @@ async def set_all_update_flags(namespace: str):
                 _update_flags[namespace][i] = True
 
 
+async def get_all_update_flags_status() -> Dict[str, list]:
+    """
+    Get update flags status for all namespaces.
+    
+    Returns:
+        Dict[str, list]: A dictionary mapping namespace names to lists of update flag statuses
+    """
+    if _update_flags is None:
+        return {}
+        
+    result = {}
+    async with get_internal_lock():
+        for namespace, flags in _update_flags.items():
+            worker_statuses = []
+            for flag in flags:
+                if is_multiprocess:
+                    worker_statuses.append(flag.value)
+                else:
+                    worker_statuses.append(flag)
+            result[namespace] = worker_statuses
+            
+    return result
+
+
 def try_initialize_namespace(namespace: str) -> bool:
     """
     Try to initialize a namespace. Returns True if the current process gets initialization permission.
