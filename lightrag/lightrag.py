@@ -839,7 +839,7 @@ class LightRAG:
         loop = always_get_an_event_loop()
         loop.run_until_complete(self.ainsert_custom_kg(custom_kg, full_doc_id))
 
-    async def ainsert_custom_kg(self, custom_kg: dict[str, Any], full_doc_id: str | None) -> None:
+    async def ainsert_custom_kg(self, custom_kg: dict[str, Any], full_doc_id: str = None) -> None:
         update_storage = False
         try:
             # Insert chunks into vector storage
