@@ -138,17 +138,17 @@ def create_app(args):
             # Import necessary functions from shared_storage
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
-                get_storage_lock,
-                initialize_pipeline_namespace,
+                get_pipeline_status_lock,
+                initialize_pipeline_status,
                 )
-            await initialize_pipeline_namespace()
+            await initialize_pipeline_status()
 
             # Auto scan documents if enabled
             if args.auto_scan_at_startup:
                 # Check if a task is already running (with lock protection)
                 pipeline_status = await get_namespace_data("pipeline_status")
                 should_start_task = False
-                async with get_storage_lock():
+                async with get_pipeline_status_lock():
                     if not pipeline_status.get("busy", False):
                         should_start_task = True
                 # Only start the task if no other task is running
