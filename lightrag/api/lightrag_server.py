@@ -39,6 +39,12 @@ from .routers.graph_routes import create_graph_routes
 from .routers.ollama_api import OllamaAPI
 
 from lightrag.utils import logger, set_verbose_debug
+from lightrag.kg.shared_storage import (
+    get_namespace_data,
+    get_pipeline_status_lock,
+    initialize_pipeline_status,
+    get_all_update_flags_status,
+)
 
 # Load environment variables
 load_dotenv(override=True)
@@ -134,13 +140,6 @@ def create_app(args):
         try:
             # Initialize database connections
             await rag.initialize_storages()
-
-            # Import necessary functions from shared_storage
-            from lightrag.kg.shared_storage import (
-                get_namespace_data,
-                get_pipeline_status_lock,
-                initialize_pipeline_status,
-                )
             await initialize_pipeline_status()
 
             # Auto scan documents if enabled
@@ -376,6 +375,9 @@ def create_app(args):
     @app.get("/health", dependencies=[Depends(optional_api_key)])
     async def get_status():
         """Get current system status"""
+        # Get update flags status for all namespaces
+        update_status = await get_all_update_flags_status()
+
         return {
             "status": "healthy",
             "working_directory": str(args.working_dir),
@@ -395,6 +397,7 @@ def create_app(args):
                 "graph_storage": args.graph_storage,
                 "vector_storage": args.vector_storage,
             },
+            "update_status": update_status,
         }
 
     # Webui mount webui/index.html
