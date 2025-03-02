@@ -215,7 +215,27 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 | ".scss"
                 | ".less"
             ):
-                content = file.decode("utf-8")
+                try:
+                    # Try to decode as UTF-8
+                    content = file.decode("utf-8")
+
+                    # Validate content
+                    if not content or len(content.strip()) == 0:
+                        logger.error(f"Empty content in file: {file_path.name}")
+                        return False
+
+                    # Check if content looks like binary data string representation
+                    if content.startswith("b'") or content.startswith('b"'):
+                        logger.error(
+                            f"File {file_path.name} appears to contain binary data representation instead of text"
+                        )
+                        return False
+
+                except UnicodeDecodeError:
+                    logger.error(
+                        f"File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
+                    )
+                    return False
             case ".pdf":
                 if not pm.is_installed("pypdf2"):
                     pm.install("pypdf2")
@@ -229,7 +249,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
             case ".docx":
                 if not pm.is_installed("docx"):
                     pm.install("docx")
-                from docx import Document
+                from docx import Document  # type: ignore
                 from io import BytesIO
 
                 docx_file = BytesIO(file)
@@ -238,7 +258,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
             case ".pptx":
                 if not pm.is_installed("pptx"):
                     pm.install("pptx")
-                from pptx import Presentation
+                from pptx import Presentation  # type: ignore
                 from io import BytesIO
 
                 pptx_file = BytesIO(file)
@@ -250,7 +270,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
             case ".xlsx":
                 if not pm.is_installed("openpyxl"):
                     pm.install("openpyxl")
-                from openpyxl import load_workbook
+                from openpyxl import load_workbook  # type: ignore
                 from io import BytesIO
 
                 xlsx_file = BytesIO(file)
