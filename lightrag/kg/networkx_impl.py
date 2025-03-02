@@ -236,7 +236,11 @@ class NetworkXStorage(BaseGraphStorage):
     ) -> KnowledgeGraph:
         """
         Get complete connected subgraph for specified node (including the starting node itself)
-        Maximum number of nodes is limited to env MAX_GRAPH_NODES(default: 1000)
+        Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
+        When reducing the number of nodes, the prioritization criteria are as follows: 
+            1. Label matching nodes take precedence
+            2. Followed by nodes directly connected to the matching nodes
+            3. Finally, the degree of the nodes
 
         Args:
             node_label: Label of the starting node
@@ -268,14 +272,49 @@ class NetworkXStorage(BaseGraphStorage):
                 logger.warning(f"No nodes found with label {node_label}")
                 return result
 
-            # Get subgraph using ego_graph
-            subgraph = nx.ego_graph(graph, nodes_to_explore[0], radius=max_depth)
+            # Get subgraph using ego_graph from all matching nodes
+            combined_subgraph = nx.Graph()
+            for start_node in nodes_to_explore:
+                node_subgraph = nx.ego_graph(graph, start_node, radius=max_depth)
+                combined_subgraph = nx.compose(combined_subgraph, node_subgraph)
+            subgraph = combined_subgraph
 
         # Check if number of nodes exceeds max_graph_nodes
         if len(subgraph.nodes()) > MAX_GRAPH_NODES:
             origin_nodes = len(subgraph.nodes())
+
+            # 获取节点度数
             node_degrees = dict(subgraph.degree())
-            top_nodes = sorted(node_degrees.items(), key=lambda x: x[1], reverse=True)[
+
+            # 标记起点节点和直接连接的节点
+            start_nodes = set()
+            direct_connected_nodes = set()
+
+            if node_label != "*" and nodes_to_explore:
+                # 所有在 nodes_to_explore 中的节点都是起点节点
+                start_nodes = set(nodes_to_explore)
+
+                # 获取与所有起点直接连接的节点
+                for start_node in start_nodes:
+                    direct_connected_nodes.update(subgraph.neighbors(start_node))
+
+                # 从直接连接节点中移除起点节点（避免重复）
+                direct_connected_nodes -= start_nodes
+
+            # 按优先级和度数排序
+            def priority_key(node_item):
+                node, degree = node_item
+                # 优先级排序：起点(2) > 直接连接(1) > 其他节点(0)
+                if node in start_nodes:
+                    priority = 2
+                elif node in direct_connected_nodes:
+                    priority = 1
+                else:
+                    priority = 0
+                return (priority, degree)  # 先按优先级，再按度数
+
+            # 排序并选择前MAX_GRAPH_NODES个节点
+            top_nodes = sorted(node_degrees.items(), key=priority_key, reverse=True)[
                 :MAX_GRAPH_NODES
             ]
             top_node_ids = [node[0] for node in top_nodes]
