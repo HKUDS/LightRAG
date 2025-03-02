@@ -16,6 +16,7 @@ def check_and_install_dependencies():
     required_packages = [
         "gunicorn",
         "tiktoken",
+        "psutil",
         # Add other required packages here
     ]
 
