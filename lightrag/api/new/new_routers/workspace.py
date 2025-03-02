@@ -716,7 +716,6 @@ def create_workspace_routes(
         entity_name: str, entity_data: dict, rag=Depends(optional_working_dir)
     ):
         try:
-            entity_name = f'{entity_name.upper()}'
             entity_type = entity_data.get("entity_type", None)
             description = entity_data.get("description", None)
             source_id = entity_data.get("source_id", None)
