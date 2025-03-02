@@ -102,8 +102,11 @@ light-server --llm-binding ollama --embedding-binding ollama
 For production deployments, it's recommended to use Gunicorn as the WSGI server to handle concurrent requests efficiently. LightRAG provides a dedicated Gunicorn startup script that handles shared data initialization, process management, and other critical functionalities.
 
 ```bash
-# Start with run_with_gunicorn.py
-python run_with_gunicorn.py --workers 4
+# Start with lightrag-gunicorn command
+lightrag-gunicorn --workers 4
+
+# Alternatively, you can use the module directly
+python -m lightrag.api.run_with_gunicorn --workers 4
 ```
 
 The `--workers` parameter is crucial for performance:
