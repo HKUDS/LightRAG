@@ -475,7 +475,7 @@ class Neo4JStorage(BaseGraphStorage):
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
         Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
-        When reducing the number of nodes, the prioritization criteria are as follows: 
+        When reducing the number of nodes, the prioritization criteria are as follows:
             1. Label matching nodes take precedence (nodes containing the specified label string)
             2. Followed by nodes directly connected to the matching nodes
             3. Finally, the degree of the nodes
@@ -519,7 +519,9 @@ class Neo4JStorage(BaseGraphStorage):
                     """
                     validate_result = await session.run(validate_query)
                     if not await validate_result.single():
-                        logger.warning(f"No nodes containing '{label}' in their labels found!")
+                        logger.warning(
+                            f"No nodes containing '{label}' in their labels found!"
+                        )
                         return result
 
                     # Main query uses partial matching
@@ -604,7 +606,7 @@ class Neo4JStorage(BaseGraphStorage):
         result = {"nodes": [], "edges": []}
         visited_nodes = set()
         visited_edges = set()
-        
+
         async def traverse(current_label: str, current_depth: int):
             if current_depth > max_depth:
                 return

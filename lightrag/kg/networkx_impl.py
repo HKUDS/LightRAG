@@ -237,7 +237,7 @@ class NetworkXStorage(BaseGraphStorage):
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
         Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
-        When reducing the number of nodes, the prioritization criteria are as follows: 
+        When reducing the number of nodes, the prioritization criteria are as follows:
             1. Label matching nodes take precedence
             2. Followed by nodes directly connected to the matching nodes
             3. Finally, the degree of the nodes
