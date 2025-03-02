@@ -27,7 +27,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
     @router.get("/graphs", dependencies=[Depends(optional_api_key)])
     async def get_knowledge_graph(label: str, max_depth: int = 3):
         """
-        Get knowledge graph for a specific label.
+        Retrieve a connected subgraph of nodes where the label includes the specified label.
+        Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
+        When reducing the number of nodes, the prioritization criteria are as follows:
+            1. Label matching nodes take precedence
+            2. Followed by nodes directly connected to the matching nodes
+            3. Finally, the degree of the nodes
         Maximum number of nodes is limited to env MAX_GRAPH_NODES(default: 1000)
 
         Args:
