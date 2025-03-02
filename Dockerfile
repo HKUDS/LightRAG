@@ -1,5 +1,5 @@
 # base image
-FROM python:3.11 AS base
+FROM python:3.11-slim AS base
 
 # install packages
 FROM base AS packages
@@ -27,6 +27,7 @@ COPY ./lightrag/api/requirements.txt /api/requirements.txt
 
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --prefix=/pkg -r /api/requirements.txt
+
 
 # production stage
 FROM base AS production
@@ -61,6 +62,9 @@ RUN apt-get install -y --no-install-recommends curl wget vim nodejs ffmpeg libgm
 
 COPY --from=packages /pkg /usr/local
 COPY ./lightrag  /app/lightrag
+COPY setup.py .
+RUN pip install .
+
 COPY ./lightrag/api  /app/api
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

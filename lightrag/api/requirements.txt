@@ -8,3 +8,9 @@ python-multipart
 tenacity
 tiktoken
 uvicorn
+ollama
+openai
+jiter
+distro
+networkx
+oracledb

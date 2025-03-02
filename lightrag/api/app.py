@@ -31,7 +31,7 @@ def main():
                 "ssl_keyfile": args.ssl_keyfile,
             }
         )
-    uvicorn.run("app:app", **uvicorn_config)
+    uvicorn.run("lightrag.api.app:app", **uvicorn_config)
 
 
 if __name__ == "__main__":

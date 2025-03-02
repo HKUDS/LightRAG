@@ -8,8 +8,9 @@ from pathlib import Path
 from pdb import pm
 import shutil
 from typing import Callable, List, Any, Optional
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter,BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
+from lightrag.api.routers.document_routes import DocumentManager, pipeline_index_file, pipeline_index_files, pipeline_index_texts, save_temp_file
 from lightrag.base import QueryParam
 from ascii_colors import trace_exception
 from starlette.status import HTTP_403_FORBIDDEN
@@ -52,8 +53,6 @@ class QueryResponse(BaseModel):
 
 class InsertTextRequest(BaseModel):
     text: str
-    split_by_character: Optional[str] = None
-    split_by_character_only: bool = False
 
 
 class CreateWorkspaceRequest(BaseModel):
@@ -67,11 +66,11 @@ class UpdateWorkspaceRequest(BaseModel):
 class InsertResponse(BaseModel):
     status: str
     message: str
-    document_count: int
 
 
 def create_workspace_routes(
     args,
+    doc_manager: DocumentManager,
     api_key: Optional[str] = None,
     get_api_key_dependency: Optional[Callable] = None,
     get_working_dir_dependency: Optional[Callable] = None,
@@ -219,6 +218,7 @@ def create_workspace_routes(
         dependencies=[Depends(optional_api_key)],
     )
     async def insert_text(
+        background_tasks: BackgroundTasks,
         request: InsertTextRequest, rag=Depends(optional_working_dir)
     ):
         """
@@ -233,18 +233,10 @@ def create_workspace_routes(
             InsertResponse: A response object containing the status of the operation, a message, and the number of documents inserted.
         """
         try:
-            # 反转义
-            split_by_character = ast.literal_eval(f'"{request.split_by_character}"')
-
-            await rag.ainsert(
-                request.text,
-                split_by_character,
-                request.split_by_character_only,
-            )
+            background_tasks.add_task(pipeline_index_texts, rag, [request.text])
             return InsertResponse(
                 status="success",
-                message="Text successfully inserted",
-                document_count=1,
+                message="Text successfully inserted"
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -255,10 +247,8 @@ def create_workspace_routes(
         dependencies=[Depends(optional_api_key)],
     )
     async def insert_file(
+        background_tasks: BackgroundTasks,
         file: UploadFile,
-        description: Optional[str] = None,
-        split_by_character: Optional[str] = None,
-        split_by_character_only: bool = False,
         rag=Depends(optional_working_dir),
     ):
         """Insert a file directly into the RAG system
@@ -274,58 +264,19 @@ def create_workspace_routes(
             HTTPException: For unsupported file types or processing errors
         """
         try:
-            content = ""
-            # 反转义
-            split_by_character = ast.literal_eval(f'"{split_by_character}"')
-            # Get file extension in lowercase
-            ext = Path(file.filename).suffix.lower()
-
-            match ext:
-                case ".txt" | ".md":
-                    # Text files handling
-                    text_content = await file.read()
-                    content = text_content.decode("utf-8")
-
-                case ".pdf" | ".docx" | ".pptx" | ".xlsx":
-                    if not pm.is_installed("docling"):
-                        pm.install("docling")
-                    from docling.document_converter import DocumentConverter
-
-                    # Create a temporary file to save the uploaded content
-                    temp_path = Path("temp") / file.filename
-                    temp_path.parent.mkdir(exist_ok=True)
-
-                    # Save the uploaded file
-                    with temp_path.open("wb") as f:
-                        f.write(await file.read())
-
-                    try:
-                        converter = DocumentConverter()
-                        result = converter.convert(str(temp_path))
-                        content = result.document.export_to_markdown()
-                    finally:
-                        # Clean up the temporary file
-                        temp_path.unlink()
-
-            # Insert content into RAG system
-            if content:
-                # Add description if provided
-                if description:
-                    content = f"{description}\n\n{content}"
-                await rag.ainsert(content, split_by_character, split_by_character_only)
-                logging.info(f"Successfully indexed file: {file.filename}")
-
-                return InsertResponse(
-                    status="success",
-                    message=f"File '{file.filename}' successfully inserted",
-                    document_count=1,
-                )
-            else:
+            if not doc_manager.is_supported_file(file.filename):
                 raise HTTPException(
                     status_code=400,
-                    detail="No content could be extracted from the file",
+                    detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
                 )
 
+            temp_path = await save_temp_file(doc_manager.input_dir, file)
+            # Add to background tasks
+            background_tasks.add_task(pipeline_index_file, rag, temp_path)
+            return InsertResponse(
+                status="success",
+                message=f"File '{file.filename}' saved successfully. Processing will continue in background.",
+            )
         except UnicodeDecodeError:
             raise HTTPException(status_code=400, detail="File encoding not supported")
         except Exception as e:
@@ -338,10 +289,8 @@ def create_workspace_routes(
         dependencies=[Depends(optional_api_key)],
     )
     async def insert_batch(
+        background_tasks: BackgroundTasks,
         files: List[UploadFile] = File(...),
-        description: Optional[str] = None,
-        split_by_character: Optional[str] = None,
-        split_by_character_only: bool = False,
         rag=Depends(optional_working_dir),
     ):
         """Process multiple files in batch mode
@@ -356,84 +305,21 @@ def create_workspace_routes(
             HTTPException: For processing errors
         """
         try:
-            # 反转义
-            split_by_character = ast.literal_eval(f'"{split_by_character}"')
 
             inserted_count = 0
             failed_files = []
+            temp_files = []
 
             for file in files:
-                try:
-                    content = ""
-                    ext = Path(file.filename).suffix.lower()
+                if doc_manager.is_supported_file(file.filename):
+                    # Create a temporary file to save the uploaded content
+                    temp_files.append(await save_temp_file(doc_manager.input_dir, file))
+                    inserted_count += 1
+                else:
+                    failed_files.append(f"{file.filename} (unsupported type)")
 
-                    match ext:
-                        case ".txt" | ".md":
-                            text_content = await file.read()
-                            content = text_content.decode("utf-8")
-
-                        case ".pdf":
-                            if not pm.is_installed("pypdf2"):
-                                pm.install("pypdf2")
-                            from PyPDF2 import PdfReader
-                            from io import BytesIO
-
-                            pdf_content = await file.read()
-                            pdf_file = BytesIO(pdf_content)
-                            reader = PdfReader(pdf_file)
-                            for page in reader.pages:
-                                content += page.extract_text() + "\n"
-
-                        case ".docx":
-                            if not pm.is_installed("docx"):
-                                pm.install("docx")
-                            from docx import Document
-                            from io import BytesIO
-
-                            docx_content = await file.read()
-                            docx_file = BytesIO(docx_content)
-                            doc = Document(docx_file)
-                            content = "\n".join(
-                                [paragraph.text for paragraph in doc.paragraphs]
-                            )
-
-                        case ".pptx":
-                            if not pm.is_installed("pptx"):
-                                pm.install("pptx")
-                            from pptx import Presentation  # type: ignore
-                            from io import BytesIO
-
-                            pptx_content = await file.read()
-                            pptx_file = BytesIO(pptx_content)
-                            prs = Presentation(pptx_file)
-                            for slide in prs.slides:
-                                for shape in slide.shapes:
-                                    if hasattr(shape, "text"):
-                                        content += shape.text + "\n"
-
-                        case _:
-                            failed_files.append(f"{file.filename} (unsupported type)")
-                            continue
-
-                    if content:
-                        # Add description if provided
-                        if description:
-                            content = f"{description}\n\n{content}"
-                        await rag.ainsert(
-                            content,
-                            split_by_character,
-                            split_by_character_only,
-                        )
-                        inserted_count += 1
-                        logging.info(f"Successfully indexed file: {file.filename}")
-                    else:
-                        failed_files.append(f"{file.filename} (no content extracted)")
-
-                except UnicodeDecodeError:
-                    failed_files.append(f"{file.filename} (encoding error)")
-                except Exception as e:
-                    failed_files.append(f"{file.filename} ({str(e)})")
-                    logging.error(f"Error processing file {file.filename}: {str(e)}")
+            if temp_files:
+                background_tasks.add_task(pipeline_index_files, rag, temp_files)
 
             # Prepare status message
             if inserted_count == len(files):
@@ -450,11 +336,7 @@ def create_workspace_routes(
                 if failed_files:
                     status_message += f". Failed files: {', '.join(failed_files)}"
 
-            return InsertResponse(
-                status=status,
-                message=status_message,
-                document_count=inserted_count,
-            )
+            return InsertResponse(status=status, message=status_message)
 
         except Exception as e:
             logging.error(f"Batch processing error: {str(e)}")
@@ -481,8 +363,7 @@ def create_workspace_routes(
             rag.relationships_vdb = None
             return InsertResponse(
                 status="success",
-                message="All documents cleared successfully",
-                document_count=0,
+                message="All documents cleared successfully"
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))

@@ -423,7 +423,7 @@ def create_app(args):
         }
 
     
-    app.include_router(create_workspace_routes(args, api_key,get_api_key_dependency,get_working_dir_dependency))
+    app.include_router(create_workspace_routes(args,doc_manager,api_key,get_api_key_dependency,get_working_dir_dependency))
 
     # Webui mount webui/index.html
     static_dir = Path(__file__).parent / "webui"
