@@ -24,6 +24,8 @@ pip install -e ".[api]"
 
 ### Starting API Server with Default Settings
 
+After installing LightRAG with API support, you can start LightRAG by this command: `lightrag-server`
+
 LightRAG requires both LLM and Embedding Model to work together to complete document indexing and querying tasks. LightRAG supports binding to various LLM/Embedding backends:
 
 * ollama
@@ -92,10 +94,43 @@ LLM_BINDING_API_KEY=your_api_key Light_server --llm-binding openai-ollama
 LLM_BINDING_API_KEY=your_api_key Light_server --llm-binding openai --embedding-binding openai
 
 # start with ollama llm and ollama embedding (no apikey is needed)
-Light_server --llm-binding ollama --embedding-binding ollama
+light-server --llm-binding ollama --embedding-binding ollama
 ```
 
+### Starting API Server with Gunicorn (Production)
+
+For production deployments, it's recommended to use Gunicorn as the WSGI server to handle concurrent requests efficiently. LightRAG provides a dedicated Gunicorn startup script that handles shared data initialization, process management, and other critical functionalities.
+
+```bash
+# Start with lightrag-gunicorn command
+lightrag-gunicorn --workers 4
+
+# Alternatively, you can use the module directly
+python -m lightrag.api.run_with_gunicorn --workers 4
+```
+
+The `--workers` parameter is crucial for performance:
+
+- Determines how many worker processes Gunicorn will spawn to handle requests
+- Each worker can handle concurrent requests using asyncio
+- Recommended value is (2 x number_of_cores) + 1
+- For example, on a 4-core machine, use 9 workers: (2 x 4) + 1 = 9
+- Consider your server's memory when setting this value, as each worker consumes memory
+
+Other important startup parameters:
+
+- `--host`: Server listening address (default: 0.0.0.0)
+- `--port`: Server listening port (default: 9621)
+- `--timeout`: Request handling timeout (default: 150 seconds)
+- `--log-level`: Logging level (default: INFO)
+- `--ssl`: Enable HTTPS
+- `--ssl-certfile`: Path to SSL certificate file
+- `--ssl-keyfile`: Path to SSL private key file
+
+The command line parameters and enviroment variable run_with_gunicorn.py is exactly the same as `light-server`.
+
 ### For Azure OpenAI Backend
+
 Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
 ```bash
 # Change the resource group name, location and OpenAI resource name as needed
@@ -186,7 +221,7 @@ LightRAG supports binding to various LLM/Embedding backends:
 * openai & openai compatible
 * azure_openai
 
-Use environment variables  `LLM_BINDING ` or CLI argument `--llm-binding` to select LLM backend type. Use environment variables  `EMBEDDING_BINDING ` or CLI argument `--embedding-binding` to select LLM backend type.
+Use environment variables  `LLM_BINDING` or CLI argument `--llm-binding` to select LLM backend type. Use environment variables  `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select LLM backend type.
 
 ### Storage Types Supported
 

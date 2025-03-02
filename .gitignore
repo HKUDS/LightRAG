@@ -21,6 +21,7 @@ site/
 
 # Logs / Reports
 *.log
+*.log.*
 *.logfire
 *.coverage/
 log/
