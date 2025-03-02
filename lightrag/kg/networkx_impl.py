@@ -235,7 +235,7 @@ class NetworkXStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
         """
-        Get complete connected subgraph for specified node (including the starting node itself)
+        Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
         Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
         When reducing the number of nodes, the prioritization criteria are as follows: 
             1. Label matching nodes take precedence
