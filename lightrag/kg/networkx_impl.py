@@ -283,37 +283,32 @@ class NetworkXStorage(BaseGraphStorage):
         if len(subgraph.nodes()) > MAX_GRAPH_NODES:
             origin_nodes = len(subgraph.nodes())
 
-            # 获取节点度数
             node_degrees = dict(subgraph.degree())
 
-            # 标记起点节点和直接连接的节点
             start_nodes = set()
             direct_connected_nodes = set()
 
             if node_label != "*" and nodes_to_explore:
-                # 所有在 nodes_to_explore 中的节点都是起点节点
                 start_nodes = set(nodes_to_explore)
-
-                # 获取与所有起点直接连接的节点
+                # Get nodes directly connected to all start nodes
                 for start_node in start_nodes:
                     direct_connected_nodes.update(subgraph.neighbors(start_node))
 
-                # 从直接连接节点中移除起点节点（避免重复）
+                # Remove start nodes from directly connected nodes (avoid duplicates)
                 direct_connected_nodes -= start_nodes
 
-            # 按优先级和度数排序
             def priority_key(node_item):
                 node, degree = node_item
-                # 优先级排序：起点(2) > 直接连接(1) > 其他节点(0)
+                # Priority order: start(2) > directly connected(1) > other nodes(0)
                 if node in start_nodes:
                     priority = 2
                 elif node in direct_connected_nodes:
                     priority = 1
                 else:
                     priority = 0
-                return (priority, degree)  # 先按优先级，再按度数
+                return (priority, degree)
 
-            # 排序并选择前MAX_GRAPH_NODES个节点
+            # Sort by priority and degree and select top MAX_GRAPH_NODES nodes
             top_nodes = sorted(node_degrees.items(), key=priority_key, reverse=True)[
                 :MAX_GRAPH_NODES
             ]
