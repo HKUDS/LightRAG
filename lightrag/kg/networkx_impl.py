@@ -24,6 +24,8 @@ from .shared_storage import (
     is_multiprocess,
 )
 
+MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
+
 
 @final
 @dataclass
@@ -234,6 +236,7 @@ class NetworkXStorage(BaseGraphStorage):
     ) -> KnowledgeGraph:
         """
         Get complete connected subgraph for specified node (including the starting node itself)
+        Maximum number of nodes is limited to env MAX_GRAPH_NODES(default: 1000)
 
         Args:
             node_label: Label of the starting node
@@ -269,18 +272,17 @@ class NetworkXStorage(BaseGraphStorage):
             subgraph = nx.ego_graph(graph, nodes_to_explore[0], radius=max_depth)
 
         # Check if number of nodes exceeds max_graph_nodes
-        max_graph_nodes = 500
-        if len(subgraph.nodes()) > max_graph_nodes:
+        if len(subgraph.nodes()) > MAX_GRAPH_NODES:
             origin_nodes = len(subgraph.nodes())
             node_degrees = dict(subgraph.degree())
             top_nodes = sorted(node_degrees.items(), key=lambda x: x[1], reverse=True)[
-                :max_graph_nodes
+                :MAX_GRAPH_NODES
             ]
             top_node_ids = [node[0] for node in top_nodes]
-            # Create new subgraph with only top nodes
+            # Create new subgraph and keep nodes only with most degree
             subgraph = subgraph.subgraph(top_node_ids)
             logger.info(
-                f"Reduced graph from {origin_nodes} nodes to {max_graph_nodes} nodes (depth={max_depth})"
+                f"Reduced graph from {origin_nodes} nodes to {MAX_GRAPH_NODES} nodes (depth={max_depth})"
             )
 
         # Add nodes to result
@@ -320,7 +322,7 @@ class NetworkXStorage(BaseGraphStorage):
             result.edges.append(
                 KnowledgeGraphEdge(
                     id=edge_id,
-                    type="DIRECTED",
+                    type="RELATED",
                     source=str(source),
                     target=str(target),
                     properties=edge_data,
