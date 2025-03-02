@@ -937,6 +937,22 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         raise NotImplementedError
+    
+    async def drop(self) -> None:
+        """Drop the collection"""
+        await self._data.drop()
+        
+    # 通过字段查询数据
+    async def get_by_keys(self, keys=None):
+        if keys is None:
+            # 返回所有数据
+            return list(self._data.find({}))
+        # 构建查询条件,keys是一个字典，例如{"name":"John", "age":30}
+        where = {}
+        for key, value in keys.items():
+            where[key] = value
+        # 返回符合条件的数据
+        return list(self._data.find(where))
 
 
 async def get_or_create_collection(db: AsyncIOMotorDatabase, collection_name: str):

@@ -19,6 +19,9 @@ from ascii_colors import ASCIIColors
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
+
+from lightrag.api.new.new_routers.workspace import create_workspace_routes
+from lightrag.api.new.new_utils_api import get_working_dir_dependency
 from .utils_api import (
     get_api_key_dependency,
     parse_args,
@@ -418,6 +421,9 @@ def create_app(args):
                 "vector_storage": args.vector_storage,
             },
         }
+
+    
+    app.include_router(create_workspace_routes(args, api_key,get_api_key_dependency,get_working_dir_dependency))
 
     # Webui mount webui/index.html
     static_dir = Path(__file__).parent / "webui"
