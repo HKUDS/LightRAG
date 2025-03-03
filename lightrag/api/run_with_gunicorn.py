@@ -12,8 +12,9 @@ from lightrag.kg.shared_storage import initialize_share_data, finalize_share_dat
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-print("Current folder: {}".format(os.getcwd()))
+print(f"Current folder: {os.getcwd()}")
 load_dotenv()
+print(f"Check: {os.getenv('LLM_MODEL')}")
 
 def check_and_install_dependencies():
     """Check and install required dependencies"""
