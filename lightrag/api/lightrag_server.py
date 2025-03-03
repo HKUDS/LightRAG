@@ -20,7 +20,7 @@ from ascii_colors import ASCIIColors
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from .utils_api import (
+from lightrag.api.utils_api import (
     get_api_key_dependency,
     parse_args,
     get_default_host,
@@ -30,14 +30,14 @@ from lightrag import LightRAG
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
-from .routers.document_routes import (
+from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
     run_scanning_process,
 )
-from .routers.query_routes import create_query_routes
-from .routers.graph_routes import create_graph_routes
-from .routers.ollama_api import OllamaAPI
+from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.api.routers.graph_routes import create_graph_routes
+from lightrag.api.routers.ollama_api import OllamaAPI
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -48,7 +48,9 @@ from lightrag.kg.shared_storage import (
 )
 
 # Load environment variables
-load_dotenv(override=True)
+# Updated to use the .env that is inside the current folder
+# This update allows the user to put a different.env file for each lightrag folder
+load_dotenv(".env", override=True)
 
 # Initialize config parser
 config = configparser.ConfigParser()
