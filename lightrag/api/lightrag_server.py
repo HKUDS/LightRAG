@@ -329,7 +329,6 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            log_level=args.log_level,
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
         )
@@ -359,7 +358,6 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            log_level=args.log_level,
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
         )

@@ -106,6 +106,9 @@ import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete, openai_embed
 from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.utils import setup_logger
+
+setup_logger("lightrag", level="INFO")
 
 async def initialize_rag():
     rag = LightRAG(
@@ -344,6 +347,10 @@ from lightrag.llm.llama_index_impl import llama_index_complete_if_cache, llama_i
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
 from lightrag.kg.shared_storage import initialize_pipeline_status
+from lightrag.utils import setup_logger
+
+# Setup log handler for LightRAG
+setup_logger("lightrag", level="INFO")
 
 async def initialize_rag():
     rag = LightRAG(
@@ -640,6 +647,9 @@ export NEO4J_URI="neo4j://localhost:7687"
 export NEO4J_USERNAME="neo4j"
 export NEO4J_PASSWORD="password"
 
+# Setup logger for LightRAG
+setup_logger("lightrag", level="INFO")
+
 # When you launch the project be sure to override the default KG: NetworkX
 # by specifying kg="Neo4JStorage".
 
@@ -649,8 +659,12 @@ rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=gpt_4o_mini_complete,  # Use gpt_4o_mini_complete LLM model
     graph_storage="Neo4JStorage", #<-----------override KG default
-    log_level="DEBUG"  #<-----------override log_level default
 )
+
+# Initialize database connections
+await rag.initialize_storages()
+# Initialize pipeline status for document processing
+await initialize_pipeline_status()
 ```
 see test_neo4j.py for a working example.
 
@@ -859,7 +873,6 @@ Valid modes are:
 | **kv\_storage**                              | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`, `OracleKVStorage`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `JsonKVStorage`                                                                                             |
 | **vector\_storage**                          | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`, `OracleVectorDBStorage`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `NanoVectorDBStorage`                                                                                       |
 | **graph\_storage**                           | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`, `Neo4JStorage`, `OracleGraphStorage`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `NetworkXStorage`                                                                                           |
-| **log\_level**                               |     | Log level for application runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `logging.DEBUG`                                                                                             |
 | **chunk\_token\_size**                       | `int` | Maximum token size per chunk when splitting documents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `1200`                                                                                                      |
 | **chunk\_overlap\_token\_size**              | `int` | Overlap token size between two chunks when splitting documents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `100`                                                                                                       |
 | **tiktoken\_model\_name**                    | `str` | Model name for the Tiktoken encoder used to calculate token numbers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `gpt-4o-mini`                                                                                               |
@@ -881,7 +894,6 @@ Valid modes are:
 | **addon\_params**                            | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"], "insert_batch_size": 10}`: sets example limit, output language, and batch size for document processing                                                                                                                                                                                                                                                                                                                                                                                                                            | `example_number: all examples, language: English, insert_batch_size: 10`                                    |
 | **convert\_response\_to\_json\_func**        | `callable` | Not used                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `convert_response_to_json`                                                                                  |
 | **embedding\_cache\_config**                 | `dict` | Configuration for question-answer caching. Contains three parameters:<br>- `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers.<br>- `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM.<br>- `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}`                         |
-|**log\_dir**                                  | `str`  | Directory to store logs.                                                                                                                   | `./`                                                                                                    |
 
 </details>
 
