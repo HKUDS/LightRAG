@@ -1,5 +1,6 @@
 import argparse
 import base64
+import logging
 from urllib.parse import unquote
 import os
 from pathlib import Path
@@ -13,15 +14,19 @@ from lightrag.api.utils_api import (
     get_default_host,
     get_env_value,
 )
+from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
 
 ollama_server_infos = OllamaServerInfos()
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     """
     Parse command line arguments with environment variable fallback
+
+    Args:
+        is_uvicorn_mode: Whether running under uvicorn mode
 
     Returns:
         argparse.Namespace: Parsed arguments
@@ -201,7 +206,14 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-
+    # If in uvicorn mode and workers > 1, force it to 1 and log warning
+    if is_uvicorn_mode and args.workers > 1:
+        original_workers = args.workers
+        args.workers = 1
+        # Log warning directly here
+        logging.warning(
+            f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1"
+        )
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
     args.input_dir = os.path.abspath(args.input_dir)
@@ -257,7 +269,7 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def get_rag(args, workspace_path):
+async def get_rag(args, workspace_path):
     if not workspace_path:
         return None
     if not args:
@@ -358,7 +370,6 @@ def get_rag(args, workspace_path):
             )
         ),
     )
-
     # Initialize RAG
     if args.llm_binding in ["lollms", "ollama", "openai-ollama"]:
         rag = NewLightRAG(
@@ -408,15 +419,12 @@ def get_rag(args, workspace_path):
                 "language": args.language,
             },
             enable_llm_cache=args.enable_llm_cache,
+            auto_manage_storages_states=False,
         )
     else:
         rag = NewLightRAG(
             working_dir=workspace_path,
-            llm_model_func=(
-                azure_openai_model_complete
-                if args.llm_binding == "azure_openai"
-                else openai_alike_model_complete
-            ),
+            llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs={
@@ -446,7 +454,11 @@ def get_rag(args, workspace_path):
                 "language": args.language,
             },
             enable_llm_cache=args.enable_llm_cache,
+            auto_manage_storages_states=False,
         )
+    
+        await rag.initialize_storages()
+        await initialize_pipeline_status()
     return rag
 
 
@@ -458,7 +470,8 @@ def get_working_dir_dependency(args):
         working_dir_header_value: str | None = Security(working_dir_header),
     ):
         if not working_dir_header_value:
-            return get_rag(args, working_dir)
+            rag = await get_rag(args, working_dir)
+            return rag
         else:
             working_dir_header_value = unquote(working_dir_header_value)
             workspace_path = Path(
@@ -470,6 +483,7 @@ def get_working_dir_dependency(args):
             # 如果不存在该工作目录，返回错误信息
             if not Path(workspace_path).exists() or not Path(workspace_path).is_dir():
                 raise HTTPException(status_code=404, detail="Workspace not found")
-            return get_rag(args, workspace_path)
+            rag = await get_rag(args, workspace_path)
+            return rag
 
     return working_dir_auth

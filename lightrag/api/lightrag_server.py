@@ -21,7 +21,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
-from lightrag.api.new.new_routers.workspace import create_workspace_routes
+from lightrag.api.new.new_routers.workspace_routes import create_new_workspace_routes
+from lightrag.api.new.new_routers.document_routes import create_new_document_routes
+from lightrag.api.new.new_routers.graph_routes import create_new_graph_routes
+from lightrag.api.new.new_routers.query_routes import create_new_query_routes
 from lightrag.api.new.new_utils_api import get_working_dir_dependency
 from .utils_api import (
     get_api_key_dependency,
@@ -404,8 +407,11 @@ def create_app(args):
             "update_status": update_status,
         }
 
-    
-    app.include_router(create_workspace_routes(args,doc_manager,api_key,get_api_key_dependency,get_working_dir_dependency))
+
+    app.include_router(create_new_workspace_routes(args,api_key,get_api_key_dependency,get_working_dir_dependency))
+    app.include_router(create_new_document_routes(args,doc_manager,api_key,get_api_key_dependency,get_working_dir_dependency))
+    app.include_router(create_new_graph_routes(args,api_key,get_api_key_dependency,get_working_dir_dependency))
+    app.include_router(create_new_query_routes(args,api_key,get_api_key_dependency,get_working_dir_dependency))
 
     # Webui mount webui/index.html
     static_dir = Path(__file__).parent / "webui"
