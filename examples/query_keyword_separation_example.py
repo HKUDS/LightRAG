@@ -6,6 +6,7 @@ import numpy as np
 from dotenv import load_dotenv
 import logging
 from openai import AzureOpenAI
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 logging.basicConfig(level=logging.INFO)
 
@@ -79,25 +80,32 @@ async def test_funcs():
 asyncio.run(test_funcs())
 
 embedding_dimension = 3072
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=embedding_dimension,
+            max_token_size=8192,
+            func=embedding_func,
+        ),
+    )
 
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
-    embedding_func=EmbeddingFunc(
-        embedding_dim=embedding_dimension,
-        max_token_size=8192,
-        func=embedding_func,
-    ),
-)
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
-book1 = open("./book_1.txt", encoding="utf-8")
-book2 = open("./book_2.txt", encoding="utf-8")
-
-rag.insert([book1.read(), book2.read()])
+    return rag
 
 
 # Example function demonstrating the new query_with_separate_keyword_extraction usage
 async def run_example():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
+    
+    book1 = open("./book_1.txt", encoding="utf-8")
+    book2 = open("./book_2.txt", encoding="utf-8")
+
+    rag.insert([book1.read(), book2.read()])
     query = "What are the top themes in this story?"
     prompt = "Please simplify the response for a young audience."
 

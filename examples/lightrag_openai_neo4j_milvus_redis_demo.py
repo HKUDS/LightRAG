@@ -1,7 +1,9 @@
 import os
+import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.ollama import ollama_embed, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 # WorkingDir
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -48,23 +50,52 @@ embedding_func = EmbeddingFunc(
         texts, embed_model="shaw/dmeta-embedding-zh", host="http://117.50.173.35:11434"
     ),
 )
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        llm_model_max_token_size=32768,
+        embedding_func=embedding_func,
+        chunk_token_size=512,
+        chunk_overlap_token_size=256,
+        kv_storage="RedisKVStorage",
+        graph_storage="Neo4JStorage",
+        vector_storage="MilvusVectorDBStorage",
+        doc_status_storage="RedisKVStorage",
+    )
 
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
-    llm_model_max_token_size=32768,
-    embedding_func=embedding_func,
-    chunk_token_size=512,
-    chunk_overlap_token_size=256,
-    kv_storage="RedisKVStorage",
-    graph_storage="Neo4JStorage",
-    vector_storage="MilvusVectorDBStorage",
-    doc_status_storage="RedisKVStorage",
-)
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
-file = "../book.txt"
-with open(file, "r", encoding="utf-8") as f:
-    rag.insert(f.read())
+    return rag
 
 
-print(rag.query("谁会3D建模 ？", param=QueryParam(mode="mix")))
+def main():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
+
+    with open("./book.txt", "r", encoding="utf-8") as f:
+        rag.insert(f.read())
+
+    # Perform naive search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+    )
+
+    # Perform local search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+    )
+
+    # Perform global search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+    )
+
+    # Perform hybrid search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+    )
+
+if __name__ == "__main__":
+    main()

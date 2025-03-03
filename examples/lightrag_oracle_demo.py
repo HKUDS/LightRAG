@@ -6,6 +6,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 print(os.getcwd())
 script_directory = Path(__file__).resolve().parent.parent
@@ -63,41 +64,48 @@ async def get_embedding_dim():
     embedding_dim = embedding.shape[1]
     return embedding_dim
 
+async def initialize_rag():
+    # Detect embedding dimension
+    embedding_dimension = await get_embedding_dim()
+    print(f"Detected embedding dimension: {embedding_dimension}")
+
+    # Initialize LightRAG
+    # We use Oracle DB as the KV/vector/graph storage
+    # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
+    rag = LightRAG(
+        # log_level="DEBUG",
+        working_dir=WORKING_DIR,
+        entity_extract_max_gleaning=1,
+        enable_llm_cache=True,
+        enable_llm_cache_for_entity_extract=True,
+        embedding_cache_config=None,  # {"enabled": True,"similarity_threshold": 0.90},
+        chunk_token_size=CHUNK_TOKEN_SIZE,
+        llm_model_max_token_size=MAX_TOKENS,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=embedding_dimension,
+            max_token_size=500,
+            func=embedding_func,
+        ),
+        graph_storage="OracleGraphStorage",
+        kv_storage="OracleKVStorage",
+        vector_storage="OracleVectorDBStorage",
+        addon_params={
+            "example_number": 1,
+            "language": "Simplfied Chinese",
+            "entity_types": ["organization", "person", "geo", "event"],
+            "insert_batch_size": 2,
+        },
+    )
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
 
 async def main():
     try:
-        # Detect embedding dimension
-        embedding_dimension = await get_embedding_dim()
-        print(f"Detected embedding dimension: {embedding_dimension}")
-
-        # Initialize LightRAG
-        # We use Oracle DB as the KV/vector/graph storage
-        # You can add `addon_params={"example_number": 1, "language": "Simplfied Chinese"}` to control the prompt
-        rag = LightRAG(
-            # log_level="DEBUG",
-            working_dir=WORKING_DIR,
-            entity_extract_max_gleaning=1,
-            enable_llm_cache=True,
-            enable_llm_cache_for_entity_extract=True,
-            embedding_cache_config=None,  # {"enabled": True,"similarity_threshold": 0.90},
-            chunk_token_size=CHUNK_TOKEN_SIZE,
-            llm_model_max_token_size=MAX_TOKENS,
-            llm_model_func=llm_model_func,
-            embedding_func=EmbeddingFunc(
-                embedding_dim=embedding_dimension,
-                max_token_size=500,
-                func=embedding_func,
-            ),
-            graph_storage="OracleGraphStorage",
-            kv_storage="OracleKVStorage",
-            vector_storage="OracleVectorDBStorage",
-            addon_params={
-                "example_number": 1,
-                "language": "Simplfied Chinese",
-                "entity_types": ["organization", "person", "geo", "event"],
-                "insert_batch_size": 2,
-            },
-        )
+        # Initialize RAG instance
+        rag = asyncio.run(initialize_rag())
 
         # Extract and Insert into LightRAG storage
         with open(WORKING_DIR + "/docs.txt", "r", encoding="utf-8") as f:

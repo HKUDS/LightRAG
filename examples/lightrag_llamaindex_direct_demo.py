@@ -8,6 +8,11 @@ from lightrag.utils import EmbeddingFunc
 from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
 import asyncio
+import nest_asyncio
+
+nest_asyncio.apply()
+
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 # Configure working directory
 WORKING_DIR = "./index_default"
@@ -76,38 +81,53 @@ async def get_embedding_dim():
     return embedding_dim
 
 
-# Initialize RAG instance
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
-    embedding_func=EmbeddingFunc(
-        embedding_dim=asyncio.run(get_embedding_dim()),
-        max_token_size=EMBEDDING_MAX_TOKEN_SIZE,
-        func=embedding_func,
-    ),
-)
+async def initialize_rag():
+    embedding_dimension = await get_embedding_dim()
+    
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=embedding_dimension,
+            max_token_size=EMBEDDING_MAX_TOKEN_SIZE,
+            func=embedding_func,
+        ),
+    )
 
-# Insert example text
-with open("./book.txt", "r", encoding="utf-8") as f:
-    rag.insert(f.read())
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+    
+    return rag
 
-# Test different query modes
-print("\nNaive Search:")
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
-)
 
-print("\nLocal Search:")
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
-)
+def main():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
 
-print("\nGlobal Search:")
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
-)
+    # Insert example text
+    with open("./book.txt", "r", encoding="utf-8") as f:
+        rag.insert(f.read())
 
-print("\nHybrid Search:")
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
-)
+    # Test different query modes
+    print("\nNaive Search:")
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+    )
+
+    print("\nLocal Search:")
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+    )
+
+    print("\nGlobal Search:")
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+    )
+
+    print("\nHybrid Search:")
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+    )
+
+if __name__ == "__main__":
+    main()
