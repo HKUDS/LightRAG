@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 print(f"Current folder: {os.getcwd()}")
-load_dotenv()
+load_dotenv(".env")
 print(f"Check: {os.getenv('LLM_MODEL')}")
 
 def check_and_install_dependencies():
