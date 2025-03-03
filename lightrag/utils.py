@@ -56,6 +56,18 @@ def set_verbose_debug(enabled: bool):
     VERBOSE_DEBUG = enabled
 
 
+statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
+
+# Initialize logger
+logger = logging.getLogger("lightrag")
+logger.propagate = False  # prevent log message send to root loggger
+# Let the main application configure the handlers
+logger.setLevel(logging.INFO)
+
+# Set httpx logging level to WARNING
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+
 class UnlimitedSemaphore:
     """A context manager that allows unlimited access."""
 
@@ -67,34 +79,6 @@ class UnlimitedSemaphore:
 
 
 ENCODER = None
-
-statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
-
-logger = logging.getLogger("lightrag")
-
-# Set httpx logging level to WARNING
-logging.getLogger("httpx").setLevel(logging.WARNING)
-
-
-def set_logger(log_file: str, level: int = logging.DEBUG):
-    """Set up file logging with the specified level.
-
-    Args:
-        log_file: Path to the log file
-        level: Logging level (e.g. logging.DEBUG, logging.INFO)
-    """
-    logger.setLevel(level)
-
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(level)
-
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    file_handler.setFormatter(formatter)
-
-    if not logger.handlers:
-        logger.addHandler(file_handler)
 
 
 @dataclass
