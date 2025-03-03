@@ -952,11 +952,15 @@ class LightRAG:
         pipeline_status["latest_message"] = log_message
         pipeline_status["history_messages"].append(log_message)
 
-    def insert_custom_kg(self, custom_kg: dict[str, Any], full_doc_id: str = None) -> None:
+    def insert_custom_kg(
+        self, custom_kg: dict[str, Any], full_doc_id: str = None
+    ) -> None:
         loop = always_get_an_event_loop()
         loop.run_until_complete(self.ainsert_custom_kg(custom_kg, full_doc_id))
 
-    async def ainsert_custom_kg(self, custom_kg: dict[str, Any], full_doc_id: str = None) -> None:
+    async def ainsert_custom_kg(
+        self, custom_kg: dict[str, Any], full_doc_id: str = None
+    ) -> None:
         update_storage = False
         try:
             # Insert chunks into vector storage
@@ -982,7 +986,9 @@ class LightRAG:
                     "source_id": source_id,
                     "tokens": tokens,
                     "chunk_order_index": chunk_order_index,
-                    "full_doc_id": full_doc_id if full_doc_id is not None else source_id,
+                    "full_doc_id": full_doc_id
+                    if full_doc_id is not None
+                    else source_id,
                     "status": DocStatus.PROCESSED,
                 }
                 all_chunks_data[chunk_id] = chunk_entry
