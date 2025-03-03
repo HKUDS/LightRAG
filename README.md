@@ -816,13 +816,11 @@ All operations are available in both synchronous and asynchronous versions. The 
 
 - **create_entity**: Creates a new entity with specified attributes
 - **edit_entity**: Updates an existing entity's attributes or renames it
-- **delete_entity**: Removes an entity and all its relationships
 
 #### Relation Operations
 
 - **create_relation**: Creates a new relation between existing entities
 - **edit_relation**: Updates an existing relation's attributes
-- **delete_relation**: Removes a relation between entities
 
 These operations maintain data consistency across both the graph database and vector database components, ensuring your knowledge graph remains coherent.
 
