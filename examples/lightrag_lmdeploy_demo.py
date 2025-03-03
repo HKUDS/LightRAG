@@ -5,6 +5,12 @@ from lightrag.llm.lmdeploy import lmdeploy_model_if_cache
 from lightrag.llm.hf import hf_embed
 from lightrag.utils import EmbeddingFunc
 from transformers import AutoModel, AutoTokenizer
+from lightrag.kg.shared_storage import initialize_pipeline_status
+
+import asyncio
+import nest_asyncio
+
+nest_asyncio.apply()
 
 WORKING_DIR = "./dickens"
 
@@ -35,46 +41,59 @@ async def lmdeploy_model_complete(
         **kwargs,
     )
 
-
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=lmdeploy_model_complete,
-    llm_model_name="meta-llama/Llama-3.1-8B-Instruct",  # please use definite path for local model
-    embedding_func=EmbeddingFunc(
-        embedding_dim=384,
-        max_token_size=5000,
-        func=lambda texts: hf_embed(
-            texts,
-            tokenizer=AutoTokenizer.from_pretrained(
-                "sentence-transformers/all-MiniLM-L6-v2"
-            ),
-            embed_model=AutoModel.from_pretrained(
-                "sentence-transformers/all-MiniLM-L6-v2"
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=lmdeploy_model_complete,
+        llm_model_name="meta-llama/Llama-3.1-8B-Instruct",  # please use definite path for local model
+        embedding_func=EmbeddingFunc(
+            embedding_dim=384,
+            max_token_size=5000,
+            func=lambda texts: hf_embed(
+                texts,
+                tokenizer=AutoTokenizer.from_pretrained(
+                    "sentence-transformers/all-MiniLM-L6-v2"
+                ),
+                embed_model=AutoModel.from_pretrained(
+                    "sentence-transformers/all-MiniLM-L6-v2"
+                ),
             ),
         ),
-    ),
-)
+    )
 
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+    
+    return rag
 
-with open("./book.txt", "r", encoding="utf-8") as f:
-    rag.insert(f.read())
+def main():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
 
-# Perform naive search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
-)
+    # Insert example text
+    with open("./book.txt", "r", encoding="utf-8") as f:
+        rag.insert(f.read())
 
-# Perform local search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
-)
+    # Test different query modes
+    print("\nNaive Search:")
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+    )
 
-# Perform global search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
-)
+    print("\nLocal Search:")
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+    )
 
-# Perform hybrid search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
-)
+    print("\nGlobal Search:")
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+    )
+
+    print("\nHybrid Search:")
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+    )
+
+if __name__ == "__main__":
+    main()

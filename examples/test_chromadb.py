@@ -4,6 +4,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 #########
 # Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
@@ -67,7 +68,7 @@ async def create_embedding_function_instance():
 async def initialize_rag():
     embedding_func_instance = await create_embedding_function_instance()
     if CHROMADB_USE_LOCAL_PERSISTENT:
-        return LightRAG(
+        rag = LightRAG(
             working_dir=WORKING_DIR,
             llm_model_func=gpt_4o_mini_complete,
             embedding_func=embedding_func_instance,
@@ -87,7 +88,7 @@ async def initialize_rag():
             },
         )
     else:
-        return LightRAG(
+        rag = LightRAG(
             working_dir=WORKING_DIR,
             llm_model_func=gpt_4o_mini_complete,
             embedding_func=embedding_func_instance,
@@ -112,28 +113,36 @@ async def initialize_rag():
         )
 
 
-# Run the initialization
-rag = asyncio.run(initialize_rag())
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
-# with open("./dickens/book.txt", "r", encoding="utf-8") as f:
-#     rag.insert(f.read())
+    return rag
 
-# Perform naive search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
-)
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
 
-# Perform local search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
-)
+    with open("./book.txt", "r", encoding="utf-8") as f:
+        rag.insert(f.read())
 
-# Perform global search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
-)
+    # Perform naive search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+    )
 
-# Perform hybrid search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
-)
+    # Perform local search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+    )
+
+    # Perform global search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+    )
+
+    # Perform hybrid search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+    )
+
+if __name__ == "__main__":
+    main()

@@ -4,6 +4,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 #########
 # Uncomment the below two lines if running in a jupyter notebook to handle the async nature of rag.insert()
@@ -52,7 +53,7 @@ async def create_embedding_function_instance():
 async def initialize_rag():
     embedding_func_instance = await create_embedding_function_instance()
 
-    return LightRAG(
+    rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=gpt_4o_mini_complete,
         embedding_func=embedding_func_instance,
@@ -60,14 +61,38 @@ async def initialize_rag():
         log_level="DEBUG",
     )
 
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
-# Run the initialization
-rag = asyncio.run(initialize_rag())
+    return rag
 
-with open("book.txt", "r", encoding="utf-8") as f:
-    rag.insert(f.read())
 
-# Perform naive search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
-)
+def main():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
+
+    with open("./book.txt", "r", encoding="utf-8") as f:
+        rag.insert(f.read())
+
+    # Perform naive search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+    )
+
+    # Perform local search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+    )
+
+    # Perform global search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+    )
+
+    # Perform hybrid search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+    )
+
+if __name__ == "__main__":
+    main()
