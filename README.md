@@ -757,16 +757,6 @@ LightRAG now supports comprehensive knowledge graph management capabilities, all
 ### Create Entities and Relations
 
 ```python
-import asyncio
-from lightrag import LightRAG
-
-# Initialize LightRAG
-rag = LightRAG(
-    working_dir="your_working_dir",
-    embedding_func=your_embedding_function,
-    llm_model_func=your_llm_function
-)
-
 # Create new entity
 entity = rag.create_entity("Google", {
     "description": "Google is a multinational technology company specializing in internet-related services and products.",
