@@ -280,7 +280,7 @@ class LightRAG:
                 UserWarning,
                 stacklevel=2,
             )
-        
+
         # Remove these attributes to prevent their use
         if hasattr(self, "log_level"):
             delattr(self, "log_level")
