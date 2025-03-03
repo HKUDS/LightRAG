@@ -8,6 +8,13 @@ from dotenv import load_dotenv
 from lightrag.utils import EmbeddingFunc
 from lightrag import LightRAG, QueryParam
 from sentence_transformers import SentenceTransformer
+from lightrag.kg.shared_storage import initialize_pipeline_status
+
+import asyncio
+import nest_asyncio
+
+# Apply nest_asyncio to solve event loop issues
+nest_asyncio.apply()
 
 load_dotenv()
 gemini_api_key = os.getenv("GEMINI_API_KEY")
@@ -60,25 +67,39 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
     return embeddings
 
 
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
-    embedding_func=EmbeddingFunc(
-        embedding_dim=384,
-        max_token_size=8192,
-        func=embedding_func,
-    ),
-)
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=384,
+            max_token_size=8192,
+            func=embedding_func,
+        ),
+    )
 
-file_path = "story.txt"
-with open(file_path, "r") as file:
-    text = file.read()
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
-rag.insert(text)
+    return rag
 
-response = rag.query(
-    query="What is the main theme of the story?",
-    param=QueryParam(mode="hybrid", top_k=5, response_type="single line"),
-)
 
-print(response)
+def main():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
+    file_path = "story.txt"
+    with open(file_path, "r") as file:
+        text = file.read()
+
+    rag.insert(text)
+
+    response = rag.query(
+        query="What is the main theme of the story?",
+        param=QueryParam(mode="hybrid", top_k=5, response_type="single line"),
+    )
+
+    print(response)
+
+
+if __name__ == "__main__":
+    main()

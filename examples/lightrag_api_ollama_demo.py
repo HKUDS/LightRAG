@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile
+from contextlib import asynccontextmanager
 from pydantic import BaseModel
 import os
 from lightrag import LightRAG, QueryParam
@@ -8,12 +9,12 @@ from typing import Optional
 import asyncio
 import nest_asyncio
 import aiofiles
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 # Apply nest_asyncio to solve event loop issues
 nest_asyncio.apply()
 
 DEFAULT_RAG_DIR = "index_default"
-app = FastAPI(title="LightRAG API", description="API for RAG operations")
 
 DEFAULT_INPUT_FILE = "book.txt"
 INPUT_FILE = os.environ.get("INPUT_FILE", f"{DEFAULT_INPUT_FILE}")
@@ -28,20 +29,43 @@ if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
 
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=ollama_model_complete,
-    llm_model_name="gemma2:9b",
-    llm_model_max_async=4,
-    llm_model_max_token_size=8192,
-    llm_model_kwargs={"host": "http://localhost:11434", "options": {"num_ctx": 8192}},
-    embedding_func=EmbeddingFunc(
-        embedding_dim=768,
-        max_token_size=8192,
-        func=lambda texts: ollama_embed(
-            texts, embed_model="nomic-embed-text", host="http://localhost:11434"
+async def init():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=ollama_model_complete,
+        llm_model_name="gemma2:9b",
+        llm_model_max_async=4,
+        llm_model_max_token_size=8192,
+        llm_model_kwargs={
+            "host": "http://localhost:11434",
+            "options": {"num_ctx": 8192},
+        },
+        embedding_func=EmbeddingFunc(
+            embedding_dim=768,
+            max_token_size=8192,
+            func=lambda texts: ollama_embed(
+                texts, embed_model="nomic-embed-text", host="http://localhost:11434"
+            ),
         ),
-    ),
+    )
+
+    # Add initialization code
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global rag
+    rag = await init()
+    print("done!")
+    yield
+
+
+app = FastAPI(
+    title="LightRAG API", description="API for RAG operations", lifespan=lifespan
 )
 
 
