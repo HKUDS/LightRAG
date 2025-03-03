@@ -53,6 +53,7 @@ async def test_funcs():
 
 # asyncio.run(test_funcs())
 
+
 async def initialize_rag():
     embedding_dimension = await get_embedding_dim()
     print(f"Detected embedding dimension: {embedding_dimension}")
@@ -71,6 +72,8 @@ async def initialize_rag():
     await initialize_pipeline_status()
 
     return rag
+
+
 async def main():
     try:
         # Initialize RAG instance

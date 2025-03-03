@@ -28,6 +28,7 @@ os.environ["POSTGRES_USER"] = "rag"
 os.environ["POSTGRES_PASSWORD"] = "rag"
 os.environ["POSTGRES_DATABASE"] = "rag"
 
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -55,8 +56,9 @@ async def initialize_rag():
 
     return rag
 
+
 async def main():
-        # Initialize RAG instance
+    # Initialize RAG instance
     rag = asyncio.run(initialize_rag())
 
     # add embedding_func for graph database, it's deleted in commit 5661d76860436f7bf5aef2e50d9ee4a59660146c

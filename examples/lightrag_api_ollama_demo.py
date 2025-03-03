@@ -36,7 +36,10 @@ async def init():
         llm_model_name="gemma2:9b",
         llm_model_max_async=4,
         llm_model_max_token_size=8192,
-        llm_model_kwargs={"host": "http://localhost:11434", "options": {"num_ctx": 8192}},
+        llm_model_kwargs={
+            "host": "http://localhost:11434",
+            "options": {"num_ctx": 8192},
+        },
         embedding_func=EmbeddingFunc(
             embedding_dim=768,
             max_token_size=8192,
@@ -64,6 +67,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="LightRAG API", description="API for RAG operations", lifespan=lifespan
 )
+
+
 # Data models
 class QueryRequest(BaseModel):
     query: str

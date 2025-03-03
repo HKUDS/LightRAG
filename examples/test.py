@@ -1,4 +1,5 @@
 import os
+import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete
 from lightrag.kg.shared_storage import initialize_pipeline_status
@@ -12,6 +13,7 @@ WORKING_DIR = "./dickens"
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
+
 
 async def initialize_rag():
     rag = LightRAG(
@@ -35,23 +37,32 @@ def main():
 
     # Perform naive search
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="naive")
+        )
     )
 
     # Perform local search
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="local")
+        )
     )
 
     # Perform global search
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="global")
+        )
     )
 
     # Perform hybrid search
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+        )
     )
+
 
 if __name__ == "__main__":
     main()

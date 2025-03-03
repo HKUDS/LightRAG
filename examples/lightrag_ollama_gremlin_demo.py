@@ -32,6 +32,7 @@ os.environ["GREMLIN_TRAVERSE_SOURCE"] = "g"
 os.environ["GREMLIN_USER"] = ""
 os.environ["GREMLIN_PASSWORD"] = ""
 
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -39,7 +40,10 @@ async def initialize_rag():
         llm_model_name="llama3.1:8b",
         llm_model_max_async=4,
         llm_model_max_token_size=32768,
-        llm_model_kwargs={"host": "http://localhost:11434", "options": {"num_ctx": 32768}},
+        llm_model_kwargs={
+            "host": "http://localhost:11434",
+            "options": {"num_ctx": 32768},
+        },
         embedding_func=EmbeddingFunc(
             embedding_dim=768,
             max_token_size=8192,
@@ -52,12 +56,14 @@ async def initialize_rag():
 
     await rag.initialize_storages()
     await initialize_pipeline_status()
-    
+
     return rag
+
 
 async def print_stream(stream):
     async for chunk in stream:
         print(chunk, end="", flush=True)
+
 
 def main():
     # Initialize RAG instance
@@ -70,22 +76,30 @@ def main():
     # Test different query modes
     print("\nNaive Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="naive")
+        )
     )
 
     print("\nLocal Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="local")
+        )
     )
 
     print("\nGlobal Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="global")
+        )
     )
 
     print("\nHybrid Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+        )
     )
 
     # stream response
@@ -98,6 +112,7 @@ def main():
         asyncio.run(print_stream(resp))
     else:
         print(resp)
+
 
 if __name__ == "__main__":
     main()
