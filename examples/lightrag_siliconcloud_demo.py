@@ -47,6 +47,7 @@ async def test_funcs():
 
 asyncio.run(test_funcs())
 
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -71,24 +72,32 @@ def main():
 
     # Perform naive search
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="naive")
+        )
     )
 
     # Perform local search
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="local")
+        )
     )
 
     # Perform global search
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="global")
+        )
     )
 
     # Perform hybrid search
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+        )
     )
+
 
 if __name__ == "__main__":
     main()
-

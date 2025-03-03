@@ -86,7 +86,7 @@ async def get_embedding_dim():
 
 async def initialize_rag():
     embedding_dimension = await get_embedding_dim()
-    
+
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
@@ -99,7 +99,7 @@ async def initialize_rag():
 
     await rag.initialize_storages()
     await initialize_pipeline_status()
-    
+
     return rag
 
 
@@ -114,23 +114,32 @@ def main():
     # Test different query modes
     print("\nNaive Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="naive")
+        )
     )
 
     print("\nLocal Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="local")
+        )
     )
 
     print("\nGlobal Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="global")
+        )
     )
 
     print("\nHybrid Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+        )
     )
+
 
 if __name__ == "__main__":
     main()

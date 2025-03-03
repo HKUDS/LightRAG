@@ -75,7 +75,7 @@ async def get_embedding_dim():
 # Initialize RAG instance
 async def init():
     embedding_dimension = await get_embedding_dim()
-    
+
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
@@ -88,8 +88,9 @@ async def init():
 
     await rag.initialize_storages()
     await initialize_pipeline_status()
-    
+
     return rag
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
