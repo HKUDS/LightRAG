@@ -2,11 +2,14 @@
 import os
 import logging
 from lightrag.kg.shared_storage import finalize_share_data
-from lightrag.api.lightrag_server import LightragPathFilter
+from lightrag.utils import setup_logger
 
 # Get log directory path from environment variable
 log_dir = os.getenv("LOG_DIR", os.getcwd())
 log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+
+# Ensure log directory exists
+os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
 # Get log file max size and backup count from environment variables
 log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
@@ -108,6 +111,9 @@ def on_starting(server):
     except ImportError:
         print("psutil not installed, skipping memory usage reporting")
 
+    # Log the location of the LightRAG log file
+    print(f"LightRAG log file: {log_file_path}\n")
+
     print("Gunicorn initialization complete, forking workers...\n")
 
 
@@ -134,51 +140,18 @@ def post_fork(server, worker):
     Executed after a worker has been forked.
     This is a good place to set up worker-specific configurations.
     """
-    # Configure formatters
-    detailed_formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    simple_formatter = logging.Formatter("%(levelname)s: %(message)s")
-
-    def setup_logger(logger_name: str, level: str = "INFO", add_filter: bool = False):
-        """Set up a logger with console and file handlers"""
-        logger_instance = logging.getLogger(logger_name)
-        logger_instance.setLevel(level)
-        logger_instance.handlers = []  # Clear existing handlers
-        logger_instance.propagate = False
-
-        # Add console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(simple_formatter)
-        console_handler.setLevel(level)
-        logger_instance.addHandler(console_handler)
-
-        # Add file handler
-        file_handler = logging.handlers.RotatingFileHandler(
-            filename=log_file_path,
-            maxBytes=log_max_bytes,
-            backupCount=log_backup_count,
-            encoding="utf-8",
-        )
-        file_handler.setFormatter(detailed_formatter)
-        file_handler.setLevel(level)
-        logger_instance.addHandler(file_handler)
-
-        # Add path filter if requested
-        if add_filter:
-            path_filter = LightragPathFilter()
-            logger_instance.addFilter(path_filter)
-
     # Set up main loggers
     log_level = loglevel.upper() if loglevel else "INFO"
-    setup_logger("uvicorn", log_level)
-    setup_logger("uvicorn.access", log_level, add_filter=True)
-    setup_logger("lightrag", log_level, add_filter=True)
+    setup_logger("uvicorn", log_level, add_filter=False, log_file_path=log_file_path)
+    setup_logger(
+        "uvicorn.access", log_level, add_filter=True, log_file_path=log_file_path
+    )
+    setup_logger("lightrag", log_level, add_filter=True, log_file_path=log_file_path)
 
     # Set up lightrag submodule loggers
     for name in logging.root.manager.loggerDict:
         if name.startswith("lightrag."):
-            setup_logger(name, log_level, add_filter=True)
+            setup_logger(name, log_level, add_filter=True, log_file_path=log_file_path)
 
     # Disable uvicorn.error logger
     uvicorn_error_logger = logging.getLogger("uvicorn.error")
