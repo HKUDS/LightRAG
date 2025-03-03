@@ -11,10 +11,8 @@ from lightrag.api.utils_api import parse_args, display_splash_screen
 from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-print(f"Current folder: {os.getcwd()}")
+# Updated to use the .env that is inside the current folder
 load_dotenv(".env")
-print(f"Check: {os.getenv('LLM_MODEL')}")
 
 def check_and_install_dependencies():
     """Check and install required dependencies"""
