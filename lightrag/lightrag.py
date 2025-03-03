@@ -395,6 +395,7 @@ class LightRAG:
                 namespace=make_namespace(
                     self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
                 ),
+                global_config=asdict(self),
                 embedding_func=self.embedding_func,
             )
 
@@ -1421,17 +1422,19 @@ class LightRAG:
             # 3. Before deleting, check the related entities and relationships for these chunks
             for chunk_id in chunk_ids:
                 # Check entities
+                entities_storage = await self.entities_vdb.client_storage
                 entities = [
                     dp
-                    for dp in self.entities_vdb.client_storage["data"]
+                    for dp in entities_storage["data"]
                     if chunk_id in dp.get("source_id")
                 ]
                 logger.debug(f"Chunk {chunk_id} has {len(entities)} related entities")
 
                 # Check relationships
+                relationships_storage = await self.relationships_vdb.client_storage
                 relations = [
                     dp
-                    for dp in self.relationships_vdb.client_storage["data"]
+                    for dp in relationships_storage["data"]
                     if chunk_id in dp.get("source_id")
                 ]
                 logger.debug(f"Chunk {chunk_id} has {len(relations)} related relations")
@@ -1495,7 +1498,9 @@ class LightRAG:
                 for entity in entities_to_delete:
                     await self.entities_vdb.delete_entity(entity)
                     logger.debug(f"Deleted entity {entity} from vector DB")
-                self.chunk_entity_relation_graph.remove_nodes(list(entities_to_delete))
+                await self.chunk_entity_relation_graph.remove_nodes(
+                    list(entities_to_delete)
+                )
                 logger.debug(f"Deleted {len(entities_to_delete)} entities from graph")
 
             # Update entities
@@ -1514,7 +1519,7 @@ class LightRAG:
                     rel_id_1 = compute_mdhash_id(tgt + src, prefix="rel-")
                     await self.relationships_vdb.delete([rel_id_0, rel_id_1])
                     logger.debug(f"Deleted relationship {src}-{tgt} from vector DB")
-                self.chunk_entity_relation_graph.remove_edges(
+                await self.chunk_entity_relation_graph.remove_edges(
                     list(relationships_to_delete)
                 )
                 logger.debug(
@@ -1545,9 +1550,10 @@ class LightRAG:
 
             async def process_data(data_type, vdb, chunk_id):
                 # Check data (entities or relationships)
+                storage = await vdb.client_storage
                 data_with_chunk = [
                     dp
-                    for dp in vdb.client_storage["data"]
+                    for dp in storage["data"]
                     if chunk_id in (dp.get("source_id") or "").split(GRAPH_FIELD_SEP)
                 ]
 
