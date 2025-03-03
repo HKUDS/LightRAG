@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import os
+import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
@@ -85,14 +86,10 @@ class LightRAG:
     doc_status_storage: str = field(default="JsonDocStatusStorage")
     """Storage type for tracking document processing statuses."""
 
-    # Logging
+    # Logging (Deprecated, use setup_logger in utils.py instead)
     # ---
-
     log_level: int = field(default=logger.level)
-    """Logging level for the system (e.g., 'DEBUG', 'INFO', 'WARNING')."""
-
     log_file_path: str = field(default=os.path.join(os.getcwd(), "lightrag.log"))
-    """Log file path."""
 
     # Entity extraction
     # ---
@@ -269,6 +266,24 @@ class LightRAG:
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
+
+        # Handle deprecated parameters
+        kwargs = self.__dict__
+        if "log_level" in kwargs:
+            warnings.warn(
+                "WARNING: log_level parameter is deprecated, use setup_logger in utils.py instead",
+                UserWarning,
+                stacklevel=2,
+            )
+            # Remove the attribute to prevent its use
+            delattr(self, "log_level")
+        if "log_file_path" in kwargs:
+            warnings.warn(
+                "WARNING: log_file_path parameter is deprecated, use setup_logger in utils.py instead",
+                UserWarning,
+                stacklevel=2,
+            )
+            delattr(self, "log_file_path")
 
         initialize_share_data()
 
