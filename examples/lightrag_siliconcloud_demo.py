@@ -5,6 +5,7 @@ from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.llm.siliconcloud import siliconcloud_embedding
 from lightrag.utils import EmbeddingFunc
 import numpy as np
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 WORKING_DIR = "./dickens"
 
@@ -46,35 +47,48 @@ async def test_funcs():
 
 asyncio.run(test_funcs())
 
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=768, max_token_size=512, func=embedding_func
+        ),
+    )
 
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
-    embedding_func=EmbeddingFunc(
-        embedding_dim=768, max_token_size=512, func=embedding_func
-    ),
-)
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
 
 
-with open("./book.txt") as f:
-    rag.insert(f.read())
+def main():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
 
-# Perform naive search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
-)
+    with open("./book.txt", "r", encoding="utf-8") as f:
+        rag.insert(f.read())
 
-# Perform local search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
-)
+    # Perform naive search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+    )
 
-# Perform global search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
-)
+    # Perform local search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+    )
 
-# Perform hybrid search
-print(
-    rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
-)
+    # Perform global search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+    )
+
+    # Perform hybrid search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+    )
+
+if __name__ == "__main__":
+    main()
+

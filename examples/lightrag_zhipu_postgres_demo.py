@@ -8,6 +8,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.zhipu import zhipu_complete
 from lightrag.llm.ollama import ollama_embedding
 from lightrag.utils import EmbeddingFunc
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 load_dotenv()
 ROOT_DIR = os.environ.get("ROOT_DIR")
@@ -27,8 +28,7 @@ os.environ["POSTGRES_USER"] = "rag"
 os.environ["POSTGRES_PASSWORD"] = "rag"
 os.environ["POSTGRES_DATABASE"] = "rag"
 
-
-async def main():
+async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=zhipu_complete,
@@ -50,9 +50,17 @@ async def main():
         auto_manage_storages_states=False,
     )
 
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
+
+async def main():
+        # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
+
     # add embedding_func for graph database, it's deleted in commit 5661d76860436f7bf5aef2e50d9ee4a59660146c
     rag.chunk_entity_relation_graph.embedding_func = rag.embedding_func
-    await rag.initialize_storages()
 
     with open(f"{ROOT_DIR}/book.txt", "r", encoding="utf-8") as f:
         await rag.ainsert(f.read())

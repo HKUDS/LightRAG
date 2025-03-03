@@ -4,6 +4,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 WORKING_DIR = "./dickens"
 
@@ -52,25 +53,33 @@ async def test_funcs():
 
 # asyncio.run(test_funcs())
 
+async def initialize_rag():
+    embedding_dimension = await get_embedding_dim()
+    print(f"Detected embedding dimension: {embedding_dimension}")
+
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        embedding_cache_config={
+            "enabled": True,
+            "similarity_threshold": 0.90,
+        },
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=embedding_dimension,
+            max_token_size=8192,
+            func=embedding_func,
+        ),
+    )
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
 
 async def main():
     try:
-        embedding_dimension = await get_embedding_dim()
-        print(f"Detected embedding dimension: {embedding_dimension}")
-
-        rag = LightRAG(
-            working_dir=WORKING_DIR,
-            embedding_cache_config={
-                "enabled": True,
-                "similarity_threshold": 0.90,
-            },
-            llm_model_func=llm_model_func,
-            embedding_func=EmbeddingFunc(
-                embedding_dim=embedding_dimension,
-                max_token_size=8192,
-                func=embedding_func,
-            ),
-        )
+        # Initialize RAG instance
+        rag = asyncio.run(initialize_rag())
 
         with open("./book.txt", "r", encoding="utf-8") as f:
             await rag.ainsert(f.read())
