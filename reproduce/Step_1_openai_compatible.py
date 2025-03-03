@@ -1,11 +1,13 @@
 import os
 import json
 import time
+import asyncio
 import numpy as np
 
 from lightrag import LightRAG
 from lightrag.utils import EmbeddingFunc
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 
 ## For Upstage API
@@ -60,12 +62,27 @@ WORKING_DIR = f"../{cls}"
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
-    embedding_func=EmbeddingFunc(
-        embedding_dim=4096, max_token_size=8192, func=embedding_func
-    ),
-)
 
-insert_text(rag, f"../datasets/unique_contexts/{cls}_unique_contexts.json")
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=4096, max_token_size=8192, func=embedding_func
+        ),
+    )
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
+
+
+def main():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
+    insert_text(rag, f"../datasets/unique_contexts/{cls}_unique_contexts.json")
+
+
+if __name__ == "__main__":
+    main()
