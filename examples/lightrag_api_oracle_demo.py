@@ -16,6 +16,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc
 import numpy as np
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 
 print(os.getcwd())
@@ -112,6 +113,9 @@ async def init():
         kv_storage="OracleKVStorage",
         vector_storage="OracleVectorDBStorage",
     )
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
     return rag
 

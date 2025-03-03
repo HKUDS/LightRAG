@@ -10,7 +10,7 @@ import os
 from dotenv import load_dotenv
 
 from lightrag.kg.postgres_impl import PostgreSQLDB, PGKVStorage
-from lightrag.storage import JsonKVStorage
+from lightrag.kg.json_kv_impl import JsonKVStorage
 from lightrag.namespace import NameSpace
 
 load_dotenv()
