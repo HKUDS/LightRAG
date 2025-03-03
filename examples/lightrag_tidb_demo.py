@@ -6,6 +6,7 @@ import numpy as np
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import siliconcloud_embedding, openai_complete_if_cache
 from lightrag.utils import EmbeddingFunc
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 WORKING_DIR = "./dickens"
 
@@ -55,32 +56,41 @@ async def get_embedding_dim():
     return embedding_dim
 
 
+async def initialize_rag():
+    # Detect embedding dimension
+    embedding_dimension = await get_embedding_dim()
+    print(f"Detected embedding dimension: {embedding_dimension}")
+
+    # Initialize LightRAG
+    # We use TiDB DB as the KV/vector
+    rag = LightRAG(
+        enable_llm_cache=False,
+        working_dir=WORKING_DIR,
+        chunk_token_size=512,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=embedding_dimension,
+            max_token_size=512,
+            func=embedding_func,
+        ),
+        kv_storage="TiDBKVStorage",
+        vector_storage="TiDBVectorDBStorage",
+        graph_storage="TiDBGraphStorage",
+    )
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
+
+
 async def main():
     try:
-        # Detect embedding dimension
-        embedding_dimension = await get_embedding_dim()
-        print(f"Detected embedding dimension: {embedding_dimension}")
+        # Initialize RAG instance
+        rag = asyncio.run(initialize_rag())
 
-        # Initialize LightRAG
-        # We use TiDB DB as the KV/vector
-        rag = LightRAG(
-            enable_llm_cache=False,
-            working_dir=WORKING_DIR,
-            chunk_token_size=512,
-            llm_model_func=llm_model_func,
-            embedding_func=EmbeddingFunc(
-                embedding_dim=embedding_dimension,
-                max_token_size=512,
-                func=embedding_func,
-            ),
-            kv_storage="TiDBKVStorage",
-            vector_storage="TiDBVectorDBStorage",
-            graph_storage="TiDBGraphStorage",
-        )
-
-        # Extract and Insert into LightRAG storage
-        with open("./dickens/demo.txt", "r", encoding="utf-8") as f:
-            await rag.ainsert(f.read())
+        with open("./book.txt", "r", encoding="utf-8") as f:
+            rag.insert(f.read())
 
         # Perform search in different modes
         modes = ["naive", "local", "global", "hybrid"]
