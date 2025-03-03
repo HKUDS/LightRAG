@@ -12,6 +12,7 @@ from lightrag.kg.shared_storage import initialize_share_data, finalize_share_dat
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
+print("Current folder: {}".format(os.getcwd()))
 load_dotenv()
 
 def check_and_install_dependencies():
