@@ -64,6 +64,7 @@ async def get_embedding_dim():
     embedding_dim = embedding.shape[1]
     return embedding_dim
 
+
 async def initialize_rag():
     # Detect embedding dimension
     embedding_dimension = await get_embedding_dim()
@@ -101,6 +102,7 @@ async def initialize_rag():
     await initialize_pipeline_status()
 
     return rag
+
 
 async def main():
     try:

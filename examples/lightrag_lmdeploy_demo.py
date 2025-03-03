@@ -41,6 +41,7 @@ async def lmdeploy_model_complete(
         **kwargs,
     )
 
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -63,8 +64,9 @@ async def initialize_rag():
 
     await rag.initialize_storages()
     await initialize_pipeline_status()
-    
+
     return rag
+
 
 def main():
     # Initialize RAG instance
@@ -77,23 +79,32 @@ def main():
     # Test different query modes
     print("\nNaive Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="naive")
+        )
     )
 
     print("\nLocal Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="local")
+        )
     )
 
     print("\nGlobal Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="global")
+        )
     )
 
     print("\nHybrid Search:")
     print(
-        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+        rag.query(
+            "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+        )
     )
+
 
 if __name__ == "__main__":
     main()

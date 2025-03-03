@@ -80,6 +80,8 @@ async def test_funcs():
 asyncio.run(test_funcs())
 
 embedding_dimension = 3072
+
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -101,7 +103,7 @@ async def initialize_rag():
 async def run_example():
     # Initialize RAG instance
     rag = asyncio.run(initialize_rag())
-    
+
     book1 = open("./book_1.txt", encoding="utf-8")
     book2 = open("./book_2.txt", encoding="utf-8")
 

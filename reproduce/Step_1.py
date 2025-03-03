@@ -31,6 +31,7 @@ WORKING_DIR = f"../{cls}"
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
+
 async def initialize_rag():
     rag = LightRAG(working_dir=WORKING_DIR)
 
@@ -38,6 +39,7 @@ async def initialize_rag():
     await initialize_pipeline_status()
 
     return rag
+
 
 def main():
     # Initialize RAG instance

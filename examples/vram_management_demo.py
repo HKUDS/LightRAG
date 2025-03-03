@@ -14,6 +14,7 @@ TEXT_FILES_DIR = "/llm/mt"
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
+
 async def initialize_rag():
     # Initialize LightRAG
     rag = LightRAG(
@@ -30,6 +31,7 @@ async def initialize_rag():
     await initialize_pipeline_status()
 
     return rag
+
 
 # Read all .txt files from the TEXT_FILES_DIR directory
 texts = []
@@ -82,7 +84,8 @@ def main():
     try:
         print(
             rag.query(
-                "What are the top themes in this story?", param=QueryParam(mode="global")
+                "What are the top themes in this story?",
+                param=QueryParam(mode="global"),
             )
         )
     except Exception as e:
@@ -91,17 +94,16 @@ def main():
     try:
         print(
             rag.query(
-                "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+                "What are the top themes in this story?",
+                param=QueryParam(mode="hybrid"),
             )
         )
     except Exception as e:
         print(f"Error performing hybrid search: {e}")
 
-
     # Function to clear VRAM resources
     def clear_vram():
         os.system("sudo nvidia-smi --gpu-reset")
-
 
     # Regularly clear VRAM to prevent overflow
     clear_vram_interval = 3600  # Clear once every hour
@@ -113,6 +115,7 @@ def main():
             clear_vram()
             start_time = current_time
         time.sleep(60)  # Check the time every minute
+
 
 if __name__ == "__main__":
     main()

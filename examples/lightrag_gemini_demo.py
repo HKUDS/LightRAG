@@ -12,6 +12,7 @@ from lightrag.kg.shared_storage import initialize_pipeline_status
 
 import asyncio
 import nest_asyncio
+
 # Apply nest_asyncio to solve event loop issues
 nest_asyncio.apply()
 
@@ -79,8 +80,9 @@ async def initialize_rag():
 
     await rag.initialize_storages()
     await initialize_pipeline_status()
-    
+
     return rag
+
 
 def main():
     # Initialize RAG instance
@@ -97,6 +99,7 @@ def main():
     )
 
     print(response)
+
 
 if __name__ == "__main__":
     main()

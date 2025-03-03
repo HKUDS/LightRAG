@@ -15,6 +15,8 @@ if not os.path.exists(WORKING_DIR):
 print(f"WorkingDir: {WORKING_DIR}")
 
 api_key = "empty"
+
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -40,10 +42,12 @@ async def initialize_rag():
 
     return rag
 
+
 async def print_stream(stream):
     async for chunk in stream:
         if chunk:
             print(chunk, end="", flush=True)
+
 
 def main():
     # Initialize RAG instance
@@ -63,6 +67,6 @@ def main():
     else:
         print(resp)
 
+
 if __name__ == "__main__":
     main()
-

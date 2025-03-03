@@ -58,6 +58,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
     embeddings = model.encode(texts, convert_to_numpy=True)
     return embeddings
 
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -78,8 +79,8 @@ async def initialize_rag():
 
     return rag
 
+
 def main():
-    
     # Initialize RAG instance
     rag = asyncio.run(initialize_rag())
     # Insert the custom chunks into LightRAG

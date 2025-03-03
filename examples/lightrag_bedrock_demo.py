@@ -21,6 +21,7 @@ WORKING_DIR = "./dickens"
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -33,8 +34,9 @@ async def initialize_rag():
 
     await rag.initialize_storages()
     await initialize_pipeline_status()
-    
+
     return rag
+
 
 def main():
     rag = asyncio.run(initialize_rag())
@@ -47,5 +49,7 @@ def main():
         print(f"| {mode.capitalize()} |")
         print("+-" + "-" * len(mode) + "-+\n")
         print(
-            rag.query("What are the top themes in this story?", param=QueryParam(mode=mode))
+            rag.query(
+                "What are the top themes in this story?", param=QueryParam(mode=mode)
+            )
         )
