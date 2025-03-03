@@ -750,6 +750,82 @@ rag.delete_by_entity("Project Gutenberg")
 rag.delete_by_doc_id("doc_id")
 ```
 
+## Edit Entities and Relations
+
+LightRAG now supports comprehensive knowledge graph management capabilities, allowing you to create, edit, and delete entities and relationships within your knowledge graph.
+
+### Create Entities and Relations
+
+```python
+import asyncio
+from lightrag import LightRAG
+
+# Initialize LightRAG
+rag = LightRAG(
+    working_dir="your_working_dir",
+    embedding_func=your_embedding_function,
+    llm_model_func=your_llm_function
+)
+
+# Create new entity
+entity = rag.create_entity("Google", {
+    "description": "Google is a multinational technology company specializing in internet-related services and products.",
+    "entity_type": "company"
+})
+
+# Create another entity
+product = rag.create_entity("Gmail", {
+    "description": "Gmail is an email service developed by Google.",
+    "entity_type": "product"
+})
+
+# Create relation between entities
+relation = rag.create_relation("Google", "Gmail", {
+    "description": "Google develops and operates Gmail.",
+    "keywords": "develops operates service",
+    "weight": 2.0
+})
+```
+
+### Edit Entities and Relations
+
+```python
+# Edit an existing entity
+updated_entity = rag.edit_entity("Google", {
+    "description": "Google is a subsidiary of Alphabet Inc., founded in 1998.",
+    "entity_type": "tech_company"
+})
+
+# Rename an entity (with all its relationships properly migrated)
+renamed_entity = rag.edit_entity("Gmail", {
+    "entity_name": "Google Mail",
+    "description": "Google Mail (formerly Gmail) is an email service."
+})
+
+# Edit a relation between entities
+updated_relation = rag.edit_relation("Google", "Google Mail", {
+    "description": "Google created and maintains Google Mail service.",
+    "keywords": "creates maintains email service",
+    "weight": 3.0
+})
+```
+
+All operations are available in both synchronous and asynchronous versions. The asynchronous versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
+
+#### Entity Operations
+
+- **create_entity**: Creates a new entity with specified attributes
+- **edit_entity**: Updates an existing entity's attributes or renames it
+- **delete_entity**: Removes an entity and all its relationships
+
+#### Relation Operations
+
+- **create_relation**: Creates a new relation between existing entities
+- **edit_relation**: Updates an existing relation's attributes
+- **delete_relation**: Removes a relation between entities
+
+These operations maintain data consistency across both the graph database and vector database components, ensuring your knowledge graph remains coherent.
+
 ## Cache
 
 <details>
