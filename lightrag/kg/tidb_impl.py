@@ -174,6 +174,14 @@ class TiDBKVStorage(BaseKVStorage):
             self.db = None
 
     ################ QUERY METHODS ################
+    async def get_all(self) -> dict[str, Any]:
+        """Get all data from storage
+
+        Returns:
+            Dictionary containing all stored data
+        """
+        async with self._storage_lock:
+            return dict(self._data)
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Fetch doc_full data by id."""
