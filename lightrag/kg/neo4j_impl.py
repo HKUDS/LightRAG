@@ -23,7 +23,7 @@ import pipmaster as pm
 if not pm.is_installed("neo4j"):
     pm.install("neo4j")
 
-from neo4j import (
+from neo4j import (  # type: ignore
     AsyncGraphDatabase,
     exceptions as neo4jExceptions,
     AsyncDriver,
@@ -33,6 +33,9 @@ from neo4j import (
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
+
+# Get maximum number of graph nodes from environment variable, default is 1000
+MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
 
 
 @final
@@ -470,40 +473,61 @@ class Neo4JStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
         """
-        Get complete connected subgraph for specified node (including the starting node itself)
+        Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
+        Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
+        When reducing the number of nodes, the prioritization criteria are as follows:
+            1. Label matching nodes take precedence (nodes containing the specified label string)
+            2. Followed by nodes directly connected to the matching nodes
+            3. Finally, the degree of the nodes
 
-        Key fixes:
-        1. Include the starting node itself
-        2. Handle multi-label nodes
-        3. Clarify relationship directions
-        4. Add depth control
+        Args:
+            node_label (str): String to match in node labels (will match any node containing this string in its label)
+            max_depth (int, optional): Maximum depth of the graph. Defaults to 5.
+        Returns:
+            KnowledgeGraph: Complete connected subgraph for specified node
         """
         label = node_label.strip('"')
+        # Escape single quotes to prevent injection attacks
+        escaped_label = label.replace("'", "\\'")
         result = KnowledgeGraph()
         seen_nodes = set()
         seen_edges = set()
 
         async with self._driver.session(database=self._DATABASE) as session:
             try:
-                main_query = ""
                 if label == "*":
                     main_query = """
                     MATCH (n)
-                    WITH collect(DISTINCT n) AS nodes
-                    MATCH ()-[r]-()
-                    RETURN nodes, collect(DISTINCT r) AS relationships;
+                    OPTIONAL MATCH (n)-[r]-()
+                    WITH n, count(r) AS degree
+                    ORDER BY degree DESC
+                    LIMIT $max_nodes
+                    WITH collect(n) AS nodes
+                    MATCH (a)-[r]->(b)
+                    WHERE a IN nodes AND b IN nodes
+                    RETURN nodes, collect(DISTINCT r) AS relationships
                     """
+                    result_set = await session.run(
+                        main_query, {"max_nodes": MAX_GRAPH_NODES}
+                    )
+
                 else:
-                    # Critical debug step: first verify if starting node exists
-                    validate_query = f"MATCH (n:`{label}`) RETURN n LIMIT 1"
+                    validate_query = f"""
+                    MATCH (n)
+                    WHERE any(label IN labels(n) WHERE label CONTAINS '{escaped_label}')
+                    RETURN n LIMIT 1
+                    """
                     validate_result = await session.run(validate_query)
                     if not await validate_result.single():
-                        logger.warning(f"Starting node {label} does not exist!")
+                        logger.warning(
+                            f"No nodes containing '{label}' in their labels found!"
+                        )
                         return result
 
-                    # Optimized query (including direction handling and self-loops)
+                    # Main query uses partial matching
                     main_query = f"""
-                    MATCH (start:`{label}`)
+                    MATCH (start)
+                    WHERE any(label IN labels(start) WHERE label CONTAINS '{escaped_label}')
                     WITH start
                     CALL apoc.path.subgraphAll(start, {{
                         relationshipFilter: '>',
@@ -512,9 +536,25 @@ class Neo4JStorage(BaseGraphStorage):
                         bfs: true
                     }})
                     YIELD nodes, relationships
-                    RETURN nodes, relationships
+                    WITH start, nodes, relationships
+                    UNWIND nodes AS node
+                    OPTIONAL MATCH (node)-[r]-()
+                    WITH node, count(r) AS degree, start, nodes, relationships,
+                            CASE
+                            WHEN id(node) = id(start) THEN 2
+                            WHEN EXISTS((start)-->(node)) OR EXISTS((node)-->(start)) THEN 1
+                            ELSE 0
+                            END AS priority
+                    ORDER BY priority DESC, degree DESC
+                    LIMIT $max_nodes
+                    WITH collect(node) AS filtered_nodes, nodes, relationships
+                    RETURN filtered_nodes AS nodes,
+                            [rel IN relationships WHERE startNode(rel) IN filtered_nodes AND endNode(rel) IN filtered_nodes] AS relationships
                     """
-                result_set = await session.run(main_query)
+                    result_set = await session.run(
+                        main_query, {"max_nodes": MAX_GRAPH_NODES}
+                    )
+
                 record = await result_set.single()
 
                 if record:
@@ -650,8 +690,98 @@ class Neo4JStorage(BaseGraphStorage):
                 labels.append(record["label"])
             return labels
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+                neo4jExceptions.ClientError,
+            )
+        ),
+    )
     async def delete_node(self, node_id: str) -> None:
-        raise NotImplementedError
+        """Delete a node with the specified label
+
+        Args:
+            node_id: The label of the node to delete
+        """
+        label = await self._ensure_label(node_id)
+
+        async def _do_delete(tx: AsyncManagedTransaction):
+            query = f"""
+            MATCH (n:`{label}`)
+            DETACH DELETE n
+            """
+            await tx.run(query)
+            logger.debug(f"Deleted node with label '{label}'")
+
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+                await session.execute_write(_do_delete)
+        except Exception as e:
+            logger.error(f"Error during node deletion: {str(e)}")
+            raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+                neo4jExceptions.ClientError,
+            )
+        ),
+    )
+    async def remove_nodes(self, nodes: list[str]):
+        """Delete multiple nodes
+
+        Args:
+            nodes: List of node labels to be deleted
+        """
+        for node in nodes:
+            await self.delete_node(node)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+                neo4jExceptions.ClientError,
+            )
+        ),
+    )
+    async def remove_edges(self, edges: list[tuple[str, str]]):
+        """Delete multiple edges
+
+        Args:
+            edges: List of edges to be deleted, each edge is a (source, target) tuple
+        """
+        for source, target in edges:
+            source_label = await self._ensure_label(source)
+            target_label = await self._ensure_label(target)
+
+            async def _do_delete_edge(tx: AsyncManagedTransaction):
+                query = f"""
+                MATCH (source:`{source_label}`)-[r]->(target:`{target_label}`)
+                DELETE r
+                """
+                await tx.run(query)
+                logger.debug(f"Deleted edge from '{source_label}' to '{target_label}'")
+
+            try:
+                async with self._driver.session(database=self._DATABASE) as session:
+                    await session.execute_write(_do_delete_edge)
+            except Exception as e:
+                logger.error(f"Error during edge deletion: {str(e)}")
+                raise
 
     async def embed_nodes(
         self, algorithm: str

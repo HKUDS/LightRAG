@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import os
+import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
@@ -85,14 +86,10 @@ class LightRAG:
     doc_status_storage: str = field(default="JsonDocStatusStorage")
     """Storage type for tracking document processing statuses."""
 
-    # Logging
+    # Logging (Deprecated, use setup_logger in utils.py instead)
     # ---
-
-    log_level: int = field(default=logger.level)
-    """Logging level for the system (e.g., 'DEBUG', 'INFO', 'WARNING')."""
-
-    log_file_path: str = field(default=os.path.join(os.getcwd(), "lightrag.log"))
-    """Log file path."""
+    log_level: int | None = field(default=None)
+    log_file_path: str | None = field(default=None)
 
     # Entity extraction
     # ---
@@ -266,12 +263,29 @@ class LightRAG:
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):
-        os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
-        logger.info(f"Logger initialized for working directory: {self.working_dir}")
-
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
+
+        # Handle deprecated parameters
+        if self.log_level is not None:
+            warnings.warn(
+                "WARNING: log_level parameter is deprecated, use setup_logger in utils.py instead",
+                UserWarning,
+                stacklevel=2,
+            )
+        if self.log_file_path is not None:
+            warnings.warn(
+                "WARNING: log_file_path parameter is deprecated, use setup_logger in utils.py instead",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # Remove these attributes to prevent their use
+        if hasattr(self, "log_level"):
+            delattr(self, "log_level")
+        if hasattr(self, "log_file_path"):
+            delattr(self, "log_file_path")
 
         initialize_share_data()
 
@@ -671,8 +685,24 @@ class LightRAG:
         all_new_doc_ids = set(new_docs.keys())
         # Exclude IDs of documents that are already in progress
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
+
+        # Log ignored document IDs
+        ignored_ids = [
+            doc_id for doc_id in unique_new_doc_ids if doc_id not in new_docs
+        ]
+        if ignored_ids:
+            logger.warning(
+                f"Ignoring {len(ignored_ids)} document IDs not found in new_docs"
+            )
+            for doc_id in ignored_ids:
+                logger.warning(f"Ignored document ID: {doc_id}")
+
         # Filter new_docs to only include documents with unique IDs
-        new_docs = {doc_id: new_docs[doc_id] for doc_id in unique_new_doc_ids}
+        new_docs = {
+            doc_id: new_docs[doc_id]
+            for doc_id in unique_new_doc_ids
+            if doc_id in new_docs
+        }
 
         if not new_docs:
             logger.info("No new unique documents were found.")
@@ -1159,7 +1189,7 @@ class LightRAG:
         """
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query(
-                query,
+                query.strip(),
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
                 self.relationships_vdb,
@@ -1180,7 +1210,7 @@ class LightRAG:
             )
         elif param.mode == "naive":
             response = await naive_query(
-                query,
+                query.strip(),
                 self.chunks_vdb,
                 self.text_chunks,
                 param,
@@ -1199,7 +1229,7 @@ class LightRAG:
             )
         elif param.mode == "mix":
             response = await mix_kg_vector_query(
-                query,
+                query.strip(),
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
                 self.relationships_vdb,
@@ -1417,14 +1447,22 @@ class LightRAG:
 
             logger.debug(f"Starting deletion for document {doc_id}")
 
-            doc_to_chunk_id = doc_id.replace("doc", "chunk")
+            # 2. Get all chunks related to this document
+            # Find all chunks where full_doc_id equals the current doc_id
+            all_chunks = await self.text_chunks.get_all()
+            related_chunks = {
+                chunk_id: chunk_data
+                for chunk_id, chunk_data in all_chunks.items()
+                if isinstance(chunk_data, dict)
+                and chunk_data.get("full_doc_id") == doc_id
+            }
 
-            # 2. Get all related chunks
-            chunks = await self.text_chunks.get_by_id(doc_to_chunk_id)
-            if not chunks:
+            if not related_chunks:
+                logger.warning(f"No chunks found for document {doc_id}")
                 return
 
-            chunk_ids = {chunks["full_doc_id"].replace("doc", "chunk")}
+            # Get all related chunk IDs
+            chunk_ids = set(related_chunks.keys())
             logger.debug(f"Found {len(chunk_ids)} chunks to delete")
 
             # 3. Before deleting, check the related entities and relationships for these chunks
@@ -1612,9 +1650,18 @@ class LightRAG:
                     logger.warning(f"Document {doc_id} still exists in full_docs")
 
                 # Verify if chunks have been deleted
-                remaining_chunks = await self.text_chunks.get_by_id(doc_to_chunk_id)
-                if remaining_chunks:
-                    logger.warning(f"Found {len(remaining_chunks)} remaining chunks")
+                all_remaining_chunks = await self.text_chunks.get_all()
+                remaining_related_chunks = {
+                    chunk_id: chunk_data
+                    for chunk_id, chunk_data in all_remaining_chunks.items()
+                    if isinstance(chunk_data, dict)
+                    and chunk_data.get("full_doc_id") == doc_id
+                }
+
+                if remaining_related_chunks:
+                    logger.warning(
+                        f"Found {len(remaining_related_chunks)} remaining chunks"
+                    )
 
                 # Verify entities and relationships
                 for chunk_id in chunk_ids:
