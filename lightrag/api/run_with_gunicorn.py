@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 # This update allows the user to put a different.env file for each lightrag folder
 load_dotenv(".env")
 
+
 def check_and_install_dependencies():
     """Check and install required dependencies"""
     required_packages = [
