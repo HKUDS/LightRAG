@@ -6,7 +6,6 @@ from fastapi import (
     FastAPI,
     Depends,
 )
-from fastapi.responses import FileResponse
 import asyncio
 import os
 import logging
@@ -407,10 +406,6 @@ def create_app(args):
         StaticFiles(directory=static_dir, html=True, check_dir=True),
         name="webui",
     )
-
-    @app.get("/webui/")
-    async def webui_root():
-        return FileResponse(static_dir / "index.html")
 
     return app
 
