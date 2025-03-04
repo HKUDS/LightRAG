@@ -655,16 +655,19 @@ setup_logger("lightrag", level="INFO")
 
 # Note: Default settings use NetworkX
 # Initialize LightRAG with Neo4J implementation.
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=gpt_4o_mini_complete,  # Use gpt_4o_mini_complete LLM model
-    graph_storage="Neo4JStorage", #<-----------override KG default
-)
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=gpt_4o_mini_complete,  # Use gpt_4o_mini_complete LLM model
+        graph_storage="Neo4JStorage", #<-----------override KG default
+    )
 
-# Initialize database connections
-await rag.initialize_storages()
-# Initialize pipeline status for document processing
-await initialize_pipeline_status()
+    # Initialize database connections
+    await rag.initialize_storages()
+    # Initialize pipeline status for document processing
+    await initialize_pipeline_status()
+
+    return rag
 ```
 see test_neo4j.py for a working example.
 

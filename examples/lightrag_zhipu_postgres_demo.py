@@ -59,7 +59,7 @@ async def initialize_rag():
 
 async def main():
     # Initialize RAG instance
-    rag = asyncio.run(initialize_rag())
+    rag = await initialize_rag()
 
     # add embedding_func for graph database, it's deleted in commit 5661d76860436f7bf5aef2e50d9ee4a59660146c
     rag.chunk_entity_relation_graph.embedding_func = rag.embedding_func
