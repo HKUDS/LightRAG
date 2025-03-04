@@ -6,6 +6,7 @@ import numpy as np
 from dotenv import load_dotenv
 import logging
 from openai import AzureOpenAI
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 logging.basicConfig(level=logging.INFO)
 
@@ -89,6 +90,9 @@ rag = LightRAG(
         func=embedding_func,
     ),
 )
+
+rag.initialize_storages()
+initialize_pipeline_status()
 
 book1 = open("./book_1.txt", encoding="utf-8")
 book2 = open("./book_2.txt", encoding="utf-8")

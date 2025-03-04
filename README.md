@@ -102,33 +102,47 @@ Use the below Python snippet (in a script) to initialize LightRAG and perform qu
 
 ```python
 import os
+import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, gpt_4o_complete, openai_embed
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
-rag = LightRAG(
-    working_dir="your/path",
-    embedding_func=openai_embed,
-    llm_model_func=gpt_4o_mini_complete
-)
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="your/path",
+        embedding_func=openai_embed,
+        llm_model_func=gpt_4o_mini_complete
+    )
 
-# Insert text
-rag.insert("Your text")
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
-# Perform naive search
-mode="naive"
-# Perform local search
-mode="local"
-# Perform global search
-mode="global"
-# Perform hybrid search
-mode="hybrid"
-# Mix mode Integrates knowledge graph and vector retrieval.
-mode="mix"
+    return rag
 
-rag.query(
-    "What are the top themes in this story?",
-    param=QueryParam(mode=mode)
-)
+def main():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
+    # Insert text
+    rag.insert("Your text")
+
+    # Perform naive search
+    mode="naive"
+    # Perform local search
+    mode="local"
+    # Perform global search
+    mode="global"
+    # Perform hybrid search
+    mode="hybrid"
+    # Mix mode Integrates knowledge graph and vector retrieval.
+    mode="mix"
+
+    rag.query(
+        "What are the top themes in this story?",
+        param=QueryParam(mode=mode)
+    )
+
+if __name__ == "__main__":
+    main()
 ```
 
 ### Query Param
@@ -190,15 +204,21 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
         base_url="https://api.upstage.ai/v1/solar"
     )
 
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
-    embedding_func=EmbeddingFunc(
-        embedding_dim=4096,
-        max_token_size=8192,
-        func=embedding_func
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=4096,
+            max_token_size=8192,
+            func=embedding_func
+        )
     )
-)
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
 ```
 </details>
 
@@ -210,10 +230,6 @@ rag = LightRAG(
 See `lightrag_hf_demo.py`
 
 ```python
-from lightrag.llm import hf_model_complete, hf_embed
-from transformers import AutoModel, AutoTokenizer
-from lightrag.utils import EmbeddingFunc
-
 # Initialize LightRAG with Hugging Face model
 rag = LightRAG(
     working_dir=WORKING_DIR,
@@ -242,9 +258,6 @@ If you want to use Ollama models, you need to pull model you plan to use and emb
 Then you only need to set LightRAG as follows:
 
 ```python
-from lightrag.llm.ollama import ollama_model_complete, ollama_embed
-from lightrag.utils import EmbeddingFunc
-
 # Initialize LightRAG with Ollama model
 rag = LightRAG(
     working_dir=WORKING_DIR,
@@ -325,20 +338,58 @@ LightRAG supports integration with LlamaIndex.
 
 ```python
 # Using LlamaIndex with direct OpenAI access
+import asyncio
 from lightrag import LightRAG
 from lightrag.llm.llama_index_impl import llama_index_complete_if_cache, llama_index_embed
 from llama_index.embeddings.openai import OpenAIEmbedding
 from llama_index.llms.openai import OpenAI
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
-rag = LightRAG(
-    working_dir="your/path",
-    llm_model_func=llama_index_complete_if_cache,  # LlamaIndex-compatible completion function
-    embedding_func=EmbeddingFunc(    # LlamaIndex-compatible embedding function
-        embedding_dim=1536,
-        max_token_size=8192,
-        func=lambda texts: llama_index_embed(texts, embed_model=embed_model)
-    ),
-)
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir="your/path",
+        llm_model_func=llama_index_complete_if_cache,  # LlamaIndex-compatible completion function
+        embedding_func=EmbeddingFunc(    # LlamaIndex-compatible embedding function
+            embedding_dim=1536,
+            max_token_size=8192,
+            func=lambda texts: llama_index_embed(texts, embed_model=embed_model)
+        ),
+    )
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
+    return rag
+
+def main():
+    # Initialize RAG instance
+    rag = asyncio.run(initialize_rag())
+
+    with open("./book.txt", "r", encoding="utf-8") as f:
+        rag.insert(f.read())
+
+    # Perform naive search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="naive"))
+    )
+
+    # Perform local search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="local"))
+    )
+
+    # Perform global search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="global"))
+    )
+
+    # Perform hybrid search
+    print(
+        rag.query("What are the top themes in this story?", param=QueryParam(mode="hybrid"))
+    )
+
+if __name__ == "__main__":
+    main()
 ```
 
 #### For detailed documentation and examples, see:
@@ -353,11 +404,6 @@ rag = LightRAG(
 LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
 
 ```python
-from lightrag import LightRAG, QueryParam
-
-# Initialize LightRAG
-rag = LightRAG(working_dir=WORKING_DIR)
-
 # Create conversation history
 conversation_history = [
     {"role": "user", "content": "What is the main character's attitude towards Christmas?"},
@@ -387,11 +433,6 @@ response = rag.query(
 LightRAG now supports custom prompts for fine-tuned control over the system's behavior. Here's how to use it:
 
 ```python
-from lightrag import LightRAG, QueryParam
-
-# Initialize LightRAG
-rag = LightRAG(working_dir=WORKING_DIR)
-
 # Create query parameters
 query_param = QueryParam(
     mode="hybrid",  # or other mode: "local", "global", "hybrid", "mix" and "naive"
@@ -456,16 +497,6 @@ rag.query_with_separate_keyword_extraction(
 <summary> <b>Insert Custom KG</b> </summary>
 
 ```python
-rag = LightRAG(
-     working_dir=WORKING_DIR,
-     llm_model_func=llm_model_func,
-     embedding_func=EmbeddingFunc(
-          embedding_dim=embedding_dimension,
-          max_token_size=8192,
-          func=embedding_func,
-     ),
-)
-
 custom_kg = {
     "entities": [
         {
@@ -534,6 +565,7 @@ rag = LightRAG(
         "insert_batch_size": 20  # Process 20 documents per batch
     }
 )
+
 rag.insert(["TEXT1", "TEXT2", "TEXT3", ...])  # Documents will be processed in batches of 20
 ```
 
@@ -561,27 +593,6 @@ rag.insert(["TEXT1", "TEXT2",...], ids=["ID_FOR_TEXT1", "ID_FOR_TEXT2"])
 </details>
 
 <details>
-  <summary><b>Incremental Insert</b></summary>
-
-```python
-# Incremental Insert: Insert new documents into an existing LightRAG instance
-rag = LightRAG(
-     working_dir=WORKING_DIR,
-     llm_model_func=llm_model_func,
-     embedding_func=EmbeddingFunc(
-          embedding_dim=embedding_dimension,
-          max_token_size=8192,
-          func=embedding_func,
-     ),
-)
-
-with open("./newText.txt") as f:
-    rag.insert(f.read())
-```
-
-</details>
-
-<details>
   <summary><b>Insert using Pipeline</b></summary>
 
 The `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` functions allow you to perform incremental insertion of documents into the graph.
@@ -592,6 +603,7 @@ And using a routine to process news documents.
 
 ```python
 rag = LightRAG(..)
+
 await rag.apipeline_enqueue_documents(input)
 # Your routine in loop
 await rag.apipeline_process_enqueue_documents(input)
@@ -633,8 +645,6 @@ export NEO4J_PASSWORD="password"
 
 # Note: Default settings use NetworkX
 # Initialize LightRAG with Neo4J implementation.
-WORKING_DIR = "./local_neo4jWorkDir"
-
 rag = LightRAG(
     working_dir=WORKING_DIR,
     llm_model_func=gpt_4o_mini_complete,  # Use gpt_4o_mini_complete LLM model
@@ -706,26 +716,26 @@ You can also install `faiss-gpu` if you have GPU support.
 
 - Here we are using `sentence-transformers` but you can also use `OpenAIEmbedding` model with `3072` dimensions.
 
-```
+```python
 async def embedding_func(texts: list[str]) -> np.ndarray:
     model = SentenceTransformer('all-MiniLM-L6-v2')
     embeddings = model.encode(texts, convert_to_numpy=True)
     return embeddings
 
 # Initialize LightRAG with the LLM model function and embedding function
-    rag = LightRAG(
-        working_dir=WORKING_DIR,
-        llm_model_func=llm_model_func,
-        embedding_func=EmbeddingFunc(
-            embedding_dim=384,
-            max_token_size=8192,
-            func=embedding_func,
-        ),
-        vector_storage="FaissVectorDBStorage",
-        vector_db_storage_cls_kwargs={
-            "cosine_better_than_threshold": 0.3  # Your desired threshold
-        }
-    )
+rag = LightRAG(
+    working_dir=WORKING_DIR,
+    llm_model_func=llm_model_func,
+    embedding_func=EmbeddingFunc(
+        embedding_dim=384,
+        max_token_size=8192,
+        func=embedding_func,
+    ),
+    vector_storage="FaissVectorDBStorage",
+    vector_db_storage_cls_kwargs={
+        "cosine_better_than_threshold": 0.3  # Your desired threshold
+    }
+)
 ```
 
 </details>
@@ -733,23 +743,76 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 ## Delete
 
 ```python
-
-rag = LightRAG(
-     working_dir=WORKING_DIR,
-     llm_model_func=llm_model_func,
-     embedding_func=EmbeddingFunc(
-          embedding_dim=embedding_dimension,
-          max_token_size=8192,
-          func=embedding_func,
-     ),
-)
-
 #  Delete Entity: Deleting entities by their names
 rag.delete_by_entity("Project Gutenberg")
 
 #  Delete Document: Deleting entities and relationships associated with the document by doc id
 rag.delete_by_doc_id("doc_id")
 ```
+
+## Edit Entities and Relations
+
+LightRAG now supports comprehensive knowledge graph management capabilities, allowing you to create, edit, and delete entities and relationships within your knowledge graph.
+
+### Create Entities and Relations
+
+```python
+# Create new entity
+entity = rag.create_entity("Google", {
+    "description": "Google is a multinational technology company specializing in internet-related services and products.",
+    "entity_type": "company"
+})
+
+# Create another entity
+product = rag.create_entity("Gmail", {
+    "description": "Gmail is an email service developed by Google.",
+    "entity_type": "product"
+})
+
+# Create relation between entities
+relation = rag.create_relation("Google", "Gmail", {
+    "description": "Google develops and operates Gmail.",
+    "keywords": "develops operates service",
+    "weight": 2.0
+})
+```
+
+### Edit Entities and Relations
+
+```python
+# Edit an existing entity
+updated_entity = rag.edit_entity("Google", {
+    "description": "Google is a subsidiary of Alphabet Inc., founded in 1998.",
+    "entity_type": "tech_company"
+})
+
+# Rename an entity (with all its relationships properly migrated)
+renamed_entity = rag.edit_entity("Gmail", {
+    "entity_name": "Google Mail",
+    "description": "Google Mail (formerly Gmail) is an email service."
+})
+
+# Edit a relation between entities
+updated_relation = rag.edit_relation("Google", "Google Mail", {
+    "description": "Google created and maintains Google Mail service.",
+    "keywords": "creates maintains email service",
+    "weight": 3.0
+})
+```
+
+All operations are available in both synchronous and asynchronous versions. The asynchronous versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
+
+#### Entity Operations
+
+- **create_entity**: Creates a new entity with specified attributes
+- **edit_entity**: Updates an existing entity's attributes or renames it
+
+#### Relation Operations
+
+- **create_relation**: Creates a new relation between existing entities
+- **edit_relation**: Updates an existing relation's attributes
+
+These operations maintain data consistency across both the graph database and vector database components, ensuring your knowledge graph remains coherent.
 
 ## Cache
 
