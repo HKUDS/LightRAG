@@ -215,9 +215,29 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 | ".scss"
                 | ".less"
             ):
-                content = file.decode("utf-8")
+                try:
+                    # Try to decode as UTF-8
+                    content = file.decode("utf-8")
+
+                    # Validate content
+                    if not content or len(content.strip()) == 0:
+                        logger.error(f"Empty content in file: {file_path.name}")
+                        return False
+
+                    # Check if content looks like binary data string representation
+                    if content.startswith("b'") or content.startswith('b"'):
+                        logger.error(
+                            f"File {file_path.name} appears to contain binary data representation instead of text"
+                        )
+                        return False
+
+                except UnicodeDecodeError:
+                    logger.error(
+                        f"File {file_path.name} is not valid UTF-8 encoded text. Please convert it to UTF-8 before processing."
+                    )
+                    return False
             case ".pdf":
-                if not pm.is_installed("pypdf2"):
+                if not pm.is_installed("pypdf2"):  # type: ignore
                     pm.install("pypdf2")
                 from PyPDF2 import PdfReader  # type: ignore
                 from io import BytesIO
@@ -227,18 +247,18 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 for page in reader.pages:
                     content += page.extract_text() + "\n"
             case ".docx":
-                if not pm.is_installed("docx"):
+                if not pm.is_installed("python-docx"):  # type: ignore
                     pm.install("docx")
-                from docx import Document
+                from docx import Document  # type: ignore
                 from io import BytesIO
 
                 docx_file = BytesIO(file)
                 doc = Document(docx_file)
                 content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
             case ".pptx":
-                if not pm.is_installed("pptx"):
+                if not pm.is_installed("python-pptx"):  # type: ignore
                     pm.install("pptx")
-                from pptx import Presentation
+                from pptx import Presentation  # type: ignore
                 from io import BytesIO
 
                 pptx_file = BytesIO(file)
@@ -248,9 +268,9 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                         if hasattr(shape, "text"):
                             content += shape.text + "\n"
             case ".xlsx":
-                if not pm.is_installed("openpyxl"):
+                if not pm.is_installed("openpyxl"):  # type: ignore
                     pm.install("openpyxl")
-                from openpyxl import load_workbook
+                from openpyxl import load_workbook  # type: ignore
                 from io import BytesIO
 
                 xlsx_file = BytesIO(file)

@@ -44,6 +44,15 @@ class JsonKVStorage(BaseKVStorage):
             )
             write_json(data_dict, self._file_name)
 
+    async def get_all(self) -> dict[str, Any]:
+        """Get all data from storage
+
+        Returns:
+            Dictionary containing all stored data
+        """
+        async with self._storage_lock:
+            return dict(self._data)
+
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._storage_lock:
             return self._data.get(id)
