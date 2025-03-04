@@ -24,6 +24,8 @@ from .shared_storage import (
     is_multiprocess,
 )
 
+MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
+
 
 @final
 @dataclass
@@ -233,7 +235,12 @@ class NetworkXStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
         """
-        Get complete connected subgraph for specified node (including the starting node itself)
+        Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
+        Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
+        When reducing the number of nodes, the prioritization criteria are as follows:
+            1. Label matching nodes take precedence
+            2. Followed by nodes directly connected to the matching nodes
+            3. Finally, the degree of the nodes
 
         Args:
             node_label: Label of the starting node
@@ -265,22 +272,51 @@ class NetworkXStorage(BaseGraphStorage):
                 logger.warning(f"No nodes found with label {node_label}")
                 return result
 
-            # Get subgraph using ego_graph
-            subgraph = nx.ego_graph(graph, nodes_to_explore[0], radius=max_depth)
+            # Get subgraph using ego_graph from all matching nodes
+            combined_subgraph = nx.Graph()
+            for start_node in nodes_to_explore:
+                node_subgraph = nx.ego_graph(graph, start_node, radius=max_depth)
+                combined_subgraph = nx.compose(combined_subgraph, node_subgraph)
+            subgraph = combined_subgraph
 
         # Check if number of nodes exceeds max_graph_nodes
-        max_graph_nodes = 500
-        if len(subgraph.nodes()) > max_graph_nodes:
+        if len(subgraph.nodes()) > MAX_GRAPH_NODES:
             origin_nodes = len(subgraph.nodes())
+
             node_degrees = dict(subgraph.degree())
-            top_nodes = sorted(node_degrees.items(), key=lambda x: x[1], reverse=True)[
-                :max_graph_nodes
+
+            start_nodes = set()
+            direct_connected_nodes = set()
+
+            if node_label != "*" and nodes_to_explore:
+                start_nodes = set(nodes_to_explore)
+                # Get nodes directly connected to all start nodes
+                for start_node in start_nodes:
+                    direct_connected_nodes.update(subgraph.neighbors(start_node))
+
+                # Remove start nodes from directly connected nodes (avoid duplicates)
+                direct_connected_nodes -= start_nodes
+
+            def priority_key(node_item):
+                node, degree = node_item
+                # Priority order: start(2) > directly connected(1) > other nodes(0)
+                if node in start_nodes:
+                    priority = 2
+                elif node in direct_connected_nodes:
+                    priority = 1
+                else:
+                    priority = 0
+                return (priority, degree)
+
+            # Sort by priority and degree and select top MAX_GRAPH_NODES nodes
+            top_nodes = sorted(node_degrees.items(), key=priority_key, reverse=True)[
+                :MAX_GRAPH_NODES
             ]
             top_node_ids = [node[0] for node in top_nodes]
-            # Create new subgraph with only top nodes
+            # Create new subgraph and keep nodes only with most degree
             subgraph = subgraph.subgraph(top_node_ids)
             logger.info(
-                f"Reduced graph from {origin_nodes} nodes to {max_graph_nodes} nodes (depth={max_depth})"
+                f"Reduced graph from {origin_nodes} nodes to {MAX_GRAPH_NODES} nodes (depth={max_depth})"
             )
 
         # Add nodes to result
@@ -320,7 +356,7 @@ class NetworkXStorage(BaseGraphStorage):
             result.edges.append(
                 KnowledgeGraphEdge(
                     id=edge_id,
-                    type="DIRECTED",
+                    type="RELATED",
                     source=str(source),
                     target=str(target),
                     properties=edge_data,
