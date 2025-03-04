@@ -505,44 +505,58 @@ rag.query_with_separate_keyword_extraction(
 
 ```python
 custom_kg = {
+    "chunks": [
+        {
+            "content": "Alice and Bob are collaborating on quantum computing research.",
+            "source_id": "doc-1"
+        }
+    ],
     "entities": [
         {
-            "entity_name": "CompanyA",
-            "entity_type": "Organization",
-            "description": "A major technology company",
-            "source_id": "Source1"
+            "entity_name": "Alice",
+            "entity_type": "person",
+            "description": "Alice is a researcher specializing in quantum physics.",
+            "source_id": "doc-1"
         },
         {
-            "entity_name": "ProductX",
-            "entity_type": "Product",
-            "description": "A popular product developed by CompanyA",
-            "source_id": "Source1"
+            "entity_name": "Bob",
+            "entity_type": "person",
+            "description": "Bob is a mathematician.",
+            "source_id": "doc-1"
+        },
+        {
+            "entity_name": "Quantum Computing",
+            "entity_type": "technology",
+            "description": "Quantum computing utilizes quantum mechanical phenomena for computation.",
+            "source_id": "doc-1"
         }
     ],
     "relationships": [
         {
-            "src_id": "CompanyA",
-            "tgt_id": "ProductX",
-            "description": "CompanyA develops ProductX",
-            "keywords": "develop, produce",
+            "src_id": "Alice",
+            "tgt_id": "Bob",
+            "description": "Alice and Bob are research partners.",
+            "keywords": "collaboration research",
             "weight": 1.0,
-            "source_id": "Source1"
+            "source_id": "doc-1"
+        },
+        {
+            "src_id": "Alice",
+            "tgt_id": "Quantum Computing",
+            "description": "Alice conducts research on quantum computing.",
+            "keywords": "research expertise",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        },
+        {
+            "src_id": "Bob",
+            "tgt_id": "Quantum Computing",
+            "description": "Bob researches quantum computing.",
+            "keywords": "research application",
+            "weight": 1.0,
+            "source_id": "doc-1"
         }
-    ],
-    "chunks": [
-        {
-            "content": "ProductX, developed by CompanyA, has revolutionized the market with its cutting-edge features.",
-            "source_id": "Source1",
-        },
-        {
-            "content": "PersonA is a prominent researcher at UniversityB, focusing on artificial intelligence and machine learning.",
-            "source_id": "Source2",
-        },
-        {
-            "content": "None",
-            "source_id": "UNKNOWN",
-        },
-    ],
+    ]
 }
 
 rag.insert_custom_kg(custom_kg)
