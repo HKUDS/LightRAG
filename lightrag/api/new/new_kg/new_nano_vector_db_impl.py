@@ -15,14 +15,6 @@ class NewNanoVectorDBStorage(BaseVectorStorage):
         logger.info("Initializing New NanoVectorDBStorage")
         super().__post_init__()
 
-    async def get_entity_by_id(self, entity_id: str):
-        return await self._client.get(entity_id=[entity_id])
-
-    async def get_entity(self, entity_name: str):
-        return await self._client.get(
-            entity_id=[compute_mdhash_id(entity_name, prefix="ent-")]
-        )
-
     async def delete_entity_relation_by_nodes(self, src_entity_name: str,tgt_entity_name: str):
         try:
             relations = [

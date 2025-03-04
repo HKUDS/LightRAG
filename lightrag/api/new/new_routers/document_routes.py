@@ -7,6 +7,7 @@ from fastapi import APIRouter,BackgroundTasks, Depends, File, HTTPException, Upl
 from pydantic import BaseModel
 from lightrag.api.new.new_routers.workspace_routes import DataResponse
 from lightrag.api.routers.document_routes import DocStatusResponse, DocsStatusesResponse, DocumentManager, InsertResponse, InsertTextRequest, pipeline_index_file, pipeline_index_files, pipeline_index_texts, save_temp_file
+from lightrag.api.utils_api import get_api_key_dependency
 from lightrag.base import DocProcessingStatus, DocStatus
 
 router = APIRouter(prefix="/new/documents", tags=["documents"])
@@ -14,9 +15,7 @@ router = APIRouter(prefix="/new/documents", tags=["documents"])
 def create_new_document_routes(
     args,
     doc_manager: DocumentManager,
-    api_key: Optional[str] = None,
-    get_api_key_dependency: Optional[Callable] = None,
-    get_working_dir_dependency: Optional[Callable] = None,
+    api_key: Optional[str] = None
 ):
     # Setup logging
     logging.basicConfig(
@@ -24,7 +23,6 @@ def create_new_document_routes(
     )
 
     optional_api_key = get_api_key_dependency(api_key)
-    optional_working_dir = get_working_dir_dependency(args)
     @router.post(
         "/text",
         response_model=InsertResponse,
@@ -32,7 +30,7 @@ def create_new_document_routes(
     )
     async def insert_text(
         background_tasks: BackgroundTasks,
-        request: InsertTextRequest, rag=Depends(optional_working_dir)
+        request: InsertTextRequest
     ):
         """
         Insert text into the Retrieval-Augmented Generation (RAG) system.
@@ -62,7 +60,6 @@ def create_new_document_routes(
     async def insert_file(
         background_tasks: BackgroundTasks,
         file: UploadFile,
-        rag=Depends(optional_working_dir),
     ):
         """Insert a file directly into the RAG system
 
@@ -104,7 +101,6 @@ def create_new_document_routes(
     async def insert_batch(
         background_tasks: BackgroundTasks,
         files: List[UploadFile] = File(...),
-        rag=Depends(optional_working_dir),
     ):
         """Process multiple files in batch mode
 
@@ -160,7 +156,7 @@ def create_new_document_routes(
         response_model=InsertResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def clear_documents(rag=Depends(optional_working_dir)):
+    async def clear_documents():
         """
         Clear all documents from the LightRAG system.
 
@@ -186,7 +182,7 @@ def create_new_document_routes(
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def delete_document(document_id: str, rag=Depends(optional_working_dir)):
+    async def delete_document(document_id: str):
         try:
             await rag.adelete_by_doc_id(document_id)
             return DataResponse(
@@ -203,7 +199,7 @@ def create_new_document_routes(
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def clear_all_documents(rag=Depends(optional_working_dir)):
+    async def clear_all_documents():
         try:
             # 删除相关数据
             await rag.llm_response_cache.drop()
@@ -236,7 +232,7 @@ def create_new_document_routes(
         response_model=DocsStatusesResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def documents(rag=Depends(optional_working_dir)):
+    async def documents():
         try:
             statuses = (
                 DocStatus.PENDING,
@@ -280,7 +276,7 @@ def create_new_document_routes(
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_graph_document_detail(document_id, rag=Depends(optional_working_dir)):
+    async def get_graph_document_detail(document_id):
         try:
             # 查询文档状态
             doc_status_document = await rag.doc_status.get_by_id(document_id)

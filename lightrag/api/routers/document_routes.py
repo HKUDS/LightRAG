@@ -3,6 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+from lightrag.api.new.context_middleware import get_rag
 from lightrag.utils import logger
 import aiofiles
 import shutil
@@ -11,7 +12,15 @@ import pipmaster as pm
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+)
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
@@ -23,6 +32,12 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
+
+
+class DataResponse(BaseModel):
+    status: str
+    message: str
+    data: Any
 
 
 class InsertTextRequest(BaseModel):
@@ -405,13 +420,13 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         logger.error(f"Error during scanning process: {str(e)}")
 
 
-def create_document_routes(
-    rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
-):
+def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] = None):
     optional_api_key = get_api_key_dependency(api_key)
 
     @router.post("/scan", dependencies=[Depends(optional_api_key)])
-    async def scan_for_new_documents(background_tasks: BackgroundTasks):
+    async def scan_for_new_documents(
+        background_tasks: BackgroundTasks, rag: LightRAG = Depends(get_rag)
+    ):
         """
         Trigger the scanning process for new documents.
 
@@ -428,7 +443,9 @@ def create_document_routes(
 
     @router.post("/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        rag: LightRAG = Depends(get_rag),
     ):
         """
         Upload a file to the input directory and index it.
@@ -474,7 +491,9 @@ def create_document_routes(
         "/text", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
     )
     async def insert_text(
-        request: InsertTextRequest, background_tasks: BackgroundTasks
+        request: InsertTextRequest,
+        background_tasks: BackgroundTasks,
+        rag: LightRAG = Depends(get_rag),
     ):
         """
         Insert text into the RAG system.
@@ -509,7 +528,9 @@ def create_document_routes(
         dependencies=[Depends(optional_api_key)],
     )
     async def insert_texts(
-        request: InsertTextsRequest, background_tasks: BackgroundTasks
+        request: InsertTextsRequest,
+        background_tasks: BackgroundTasks,
+        rag: LightRAG = Depends(get_rag),
     ):
         """
         Insert multiple texts into the RAG system.
@@ -542,7 +563,9 @@ def create_document_routes(
         "/file", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
     )
     async def insert_file(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
+        background_tasks: BackgroundTasks,
+        file: UploadFile = File(...),
+        rag: LightRAG = Depends(get_rag),
     ):
         """
         Insert a file directly into the RAG system.
@@ -587,7 +610,9 @@ def create_document_routes(
         dependencies=[Depends(optional_api_key)],
     )
     async def insert_batch(
-        background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)
+        background_tasks: BackgroundTasks,
+        files: List[UploadFile] = File(...),
+        rag: LightRAG = Depends(get_rag),
     ):
         """
         Process multiple files in batch mode.
@@ -647,7 +672,7 @@ def create_document_routes(
     @router.delete(
         "", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
     )
-    async def clear_documents():
+    async def clear_documents(rag: LightRAG = Depends(get_rag)):
         """
         Clear all documents from the RAG system.
 
@@ -673,7 +698,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/pipeline_status", dependencies=[Depends(optional_api_key)])
-    async def get_pipeline_status():
+    async def get_pipeline_status(rag: LightRAG = Depends(get_rag)):
         """
         Get the current status of the document indexing pipeline.
 
@@ -707,7 +732,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("", dependencies=[Depends(optional_api_key)])
-    async def documents() -> DocsStatusesResponse:
+    async def documents(rag: LightRAG = Depends(get_rag)) -> DocsStatusesResponse:
         """
         Get the status of all documents in the system.
 
@@ -723,62 +748,145 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving document statuses (500).
         """
         try:
-            statuses = (
-                DocStatus.PENDING,
-                DocStatus.PROCESSING,
-                DocStatus.PROCESSED,
-                DocStatus.FAILED,
+           # 提取所有文档
+            documents = await rag.doc_status.get_all_docs()
+
+            # 返回知识图谱数据
+            return DataResponse(
+                status="success",
+                message="ok",
+                data=documents,
             )
+            # statuses = (
+            #     DocStatus.PENDING,
+            #     DocStatus.PROCESSING,
+            #     DocStatus.PROCESSED,
+            #     DocStatus.FAILED,
+            # )
+            # tasks = [rag.get_docs_by_status(status) for status in statuses]
+            # results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
 
-            tasks = [rag.get_docs_by_status(status) for status in statuses]
-            results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
+            # response = DocsStatusesResponse()
 
-            response = DocsStatusesResponse()
-
-            for idx, result in enumerate(results):
-                status = statuses[idx]
-                for doc_id, doc_status in result.items():
-                    if status not in response.statuses:
-                        response.statuses[status] = []
-                    response.statuses[status].append(
-                        DocStatusResponse(
-                            id=doc_id,
-                            content_summary=doc_status.content_summary,
-                            content_length=doc_status.content_length,
-                            status=doc_status.status,
-                            created_at=DocStatusResponse.format_datetime(
-                                doc_status.created_at
-                            ),
-                            updated_at=DocStatusResponse.format_datetime(
-                                doc_status.updated_at
-                            ),
-                            chunks_count=doc_status.chunks_count,
-                            error=doc_status.error,
-                            metadata=doc_status.metadata,
-                        )
-                    )
-            return response
+            # for idx, result in enumerate(results):
+            #     status = statuses[idx]
+            #     for doc_id, doc_status in result.items():
+            #         if status not in response.statuses:
+            #             response.statuses[status] = []
+            #         response.statuses[status].append(
+            #             DocStatusResponse(
+            #                 id=doc_id,
+            #                 content_summary=doc_status.content_summary,
+            #                 content_length=doc_status.content_length,
+            #                 status=doc_status.status,
+            #                 created_at=DocStatusResponse.format_datetime(
+            #                     doc_status.created_at
+            #                 ),
+            #                 updated_at=DocStatusResponse.format_datetime(
+            #                     doc_status.updated_at
+            #                 ),
+            #                 chunks_count=doc_status.chunks_count,
+            #                 error=doc_status.error,
+            #                 metadata=doc_status.metadata,
+            #             )
+            #         )
+            # return response
         except Exception as e:
             logger.error(f"Error GET /documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
-    # 删除单个文档及其建立的知识图谱
-    
+
+    # 知识图谱-文档-查询
+    @router.get(
+        "/{document_id}",
+        response_model=DataResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
+    async def get_graph_document_detail(document_id, rag: LightRAG = Depends(get_rag)):
+        try:
+            # 查询文档状态
+            doc_status_document = await rag.doc_status.get_by_id(document_id)
+            document = await rag.full_docs.get_by_id(document_id)
+            if not doc_status_document:
+                return DataResponse(
+                    status="success",
+                    message=f"Document {document_id} get successfully",
+                    data=None,
+                )
+
+            # 查询文档的chunk
+            chunks = await rag.text_chunks.get_by_keys({"full_doc_id": document_id})
+            # 将chunks转换为list,chunk[0]为id，chunk[1]为其他字段
+            chunk_List = []
+            for chunk in chunks:
+                chunk_List.append(
+                    {
+                        "id": chunk[0],
+                        # 解构chunk[1]为其他字段
+                        **chunk[1],
+                    }
+                )
+            # 返回知识图谱数据
+            return DataResponse(
+                status="success",
+                message="ok",
+                data={
+                    "doc_status_document": doc_status_document,
+                    "document": document,
+                    "chunks": chunk_List,
+                    # "details": details,
+                },
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.delete(
+        "/all",
+        response_model=InsertResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
+    async def clear_all_documents(rag: LightRAG = Depends(get_rag)):
+        try:
+            # 删除相关数据
+            await rag.llm_response_cache.drop()
+            await rag.full_docs.drop()
+            await rag.text_chunks.drop()
+            await rag.doc_status.drop()
+            await rag.chunk_entity_relation_graph.delete_all()
+            await rag.entities_vdb.delete_all()
+            await rag.relationships_vdb.delete_all()
+            await rag.chunks_vdb.delete_all()
+
+            await rag.llm_response_cache.index_done_callback()
+            await rag.full_docs.index_done_callback()
+            await rag.text_chunks.index_done_callback()
+            await rag.doc_status.index_done_callback()
+            await rag.chunk_entity_relation_graph.index_done_callback()
+            await rag.entities_vdb.index_done_callback()
+            await rag.relationships_vdb.index_done_callback()
+            await rag.chunks_vdb.index_done_callback()
+
+            return InsertResponse(
+                status="success", message="All documents cleared successfully"
+            )
+        except Exception as e:
+            print(e)
+            raise HTTPException(status_code=500, detail=str(e))
+
     # 删除单个文档及其建立的知识图谱
     @router.delete(
         "/{document_id}",
         response_model=InsertResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def delete_document(document_id: str):
+    async def delete_document(document_id: str, rag: LightRAG = Depends(get_rag)):
         try:
             await rag.adelete_by_doc_id(document_id)
             return InsertResponse(
-                status="success",
-                message=f"Document {document_id} cleared successfully"
+                status="success", message=f"Document {document_id} cleared successfully"
             )
         except Exception as e:
             print(e)
             raise HTTPException(status_code=500, detail=str(e))
-    
+
     return router

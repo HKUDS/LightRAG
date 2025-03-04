@@ -4,6 +4,8 @@ import logging
 from typing import Callable, Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
+from lightrag.api.new.new_routers.workspace_routes import DataResponse
+from lightrag.api.utils_api import get_api_key_dependency
 from lightrag.base import  QueryParam
 from ascii_colors import trace_exception
 
@@ -142,9 +144,7 @@ class QueryResponse(BaseModel):
 
 def create_new_query_routes(
     args,
-    api_key: Optional[str] = None,
-    get_api_key_dependency: Optional[Callable] = None,
-    get_working_dir_dependency: Optional[Callable] = None,
+    api_key: Optional[str] = None
 ):
     # Setup logging
     logging.basicConfig(
@@ -152,12 +152,11 @@ def create_new_query_routes(
     )
 
     optional_api_key = get_api_key_dependency(api_key)
-    optional_working_dir = get_working_dir_dependency(args)
 
     @router.post(
         "/query", response_model=QueryResponse, dependencies=[Depends(optional_api_key)]
     )
-    async def query_text(request: QueryRequest, rag=Depends(optional_working_dir)):
+    async def query_text(request: QueryRequest):
         """
         Handle a POST request at the /query endpoint to process user queries using RAG capabilities.
 
@@ -190,7 +189,7 @@ def create_new_query_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/query/stream", dependencies=[Depends(optional_api_key)])
-    async def query_text(request: QueryRequest, rag=Depends(optional_working_dir)):
+    async def query_text(request: QueryRequest):
         """
         Handle a POST request at the /query endpoint to process user queries using RAG capabilities.
 
@@ -220,6 +219,20 @@ def create_new_query_routes(
                 return QueryResponse(response=str(response))
         except Exception as e:
             trace_exception(e)
+            raise HTTPException(status_code=500, detail=str(e))
+        
+    # 删除缓存
+    @router.post("/clearcache", dependencies=[Depends(optional_api_key)])
+    async def clear_cache():
+        """Manually clear cache"""
+        try:
+            await rag.clear_cache()
+            return DataResponse(
+                status="success",
+                message=f"Manually reset clear successfully",
+                data="ok",
+            )
+        except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
     return router

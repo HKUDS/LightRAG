@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 import os
-from typing import Any, Union, final
+from typing import Any, Dict, Union, final
 
 from lightrag.base import (
     DocProcessingStatus,
@@ -111,6 +111,10 @@ class JsonDocStatusStorage(DocStatusStorage):
                 self._data.pop(doc_id, None)
         await self.index_done_callback()
 
+    async def get_all_docs(self) -> Dict[str, DocProcessingStatus]:
+        """Get all documents"""
+        return {k: v for k, v in self._data.items()}
+    
     async def drop(self) -> None:
         """Drop the storage"""
         async with self._storage_lock:

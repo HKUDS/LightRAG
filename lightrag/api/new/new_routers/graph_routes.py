@@ -4,6 +4,8 @@ from typing import Callable, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from lightrag.api.utils_api import get_api_key_dependency
+
 router = APIRouter(prefix="/new", tags=["query"])
 
 
@@ -15,9 +17,7 @@ class DataResponse(BaseModel):
 
 def create_new_graph_routes(
     args,
-    api_key: Optional[str] = None,
-    get_api_key_dependency: Optional[Callable] = None,
-    get_working_dir_dependency: Optional[Callable] = None,
+    api_key: Optional[str] = None
 ):
     # Setup logging
     logging.basicConfig(
@@ -25,25 +25,6 @@ def create_new_graph_routes(
     )
 
     optional_api_key = get_api_key_dependency(api_key)
-    optional_working_dir = get_working_dir_dependency(args)
-
-    # 删除缓存
-    @router.post("/resetcache", dependencies=[Depends(optional_api_key)])
-    async def reset_cache(rag=Depends(optional_working_dir)):
-        """Manually reset cache"""
-        try:
-            cachefile = rag.working_dir + "/kv_store_llm_response_cache.json"
-            if os.path.exists(cachefile):
-                with open(cachefile, "w") as f:
-                    f.write("{}")
-            return DataResponse(
-                status="success",
-                message=f"Manually reset cache successfully",
-                data="ok",
-            )
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-
 
     # 知识图谱-实体修改
     @router.put(
@@ -52,7 +33,7 @@ def create_new_graph_routes(
         dependencies=[Depends(optional_api_key)],
     )
     async def update_entity(
-        entity_name: str, entity_data: dict, rag=Depends(optional_working_dir)
+        entity_name: str, entity_data: dict
     ):
         try:
             print("Updating entity:", entity_name)
@@ -84,7 +65,7 @@ def create_new_graph_routes(
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def delete_entity(entity_name: str, rag=Depends(optional_working_dir)):
+    async def delete_entity(entity_name: str):
         print(f"Deleting entity {entity_name}")
         try:
             await rag.adelete_by_entity(entity_name)
@@ -101,8 +82,7 @@ def create_new_graph_routes(
     async def update_relation_by_nodes(
         src_entity_name: str,
         tgt_entity_name: str,
-        relation_data: dict,
-        rag=Depends(optional_working_dir),
+        relation_data: dict
     ):
         try:
             src_id = src_entity_name
@@ -139,7 +119,7 @@ def create_new_graph_routes(
         dependencies=[Depends(optional_api_key)],
     )
     async def delete_relation_by_nodes(
-        src_entity_name: str, tgt_entity_name: str, rag=Depends(optional_working_dir)
+        src_entity_name: str, tgt_entity_name: str
     ):
         try:
             await rag.relationships_vdb.delete_entity_relation_by_nodes(
@@ -160,7 +140,7 @@ def create_new_graph_routes(
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_node(entity_name: str, rag=Depends(optional_working_dir)):
+    async def get_node(entity_name: str):
         try:
             node = await rag.chunk_entity_relation_graph.get_node(entity_name)
             return DataResponse(status="success", message="ok", data=node)
@@ -174,7 +154,7 @@ def create_new_graph_routes(
         dependencies=[Depends(optional_api_key)],
     )
     async def get_relation_by_nodes(
-        src_entity_name: str, tgt_entity_name: str, rag=Depends(optional_working_dir)
+        src_entity_name: str, tgt_entity_name: str
     ):
         try:
             relation = await rag.chunk_entity_relation_graph.get_edge(
@@ -190,7 +170,7 @@ def create_new_graph_routes(
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_relation_by_node(node_id: str, rag=Depends(optional_working_dir)):
+    async def get_relation_by_node(node_id: str):
         try:
             relations = await rag.chunk_entity_relation_graph.get_node_edges(node_id)
             return DataResponse(status="success", message="ok", data=relations)
@@ -203,7 +183,7 @@ def create_new_graph_routes(
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_graph_entity_list(rag=Depends(optional_working_dir)):
+    async def get_graph_entity_list():
         try:
             # 提取所有实体和关系
             entities = await rag.chunk_entity_relation_graph.query_all()
@@ -222,7 +202,7 @@ def create_new_graph_routes(
         "/graphs",
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_graph_data(label: str, max_depth: int = 3,rag=Depends(optional_working_dir)):
+    async def get_graph_data(label: str, max_depth: int = 3):
         try:
             return await rag.get_knowledge_graph(node_label=label, max_depth=max_depth)
         except Exception as e:

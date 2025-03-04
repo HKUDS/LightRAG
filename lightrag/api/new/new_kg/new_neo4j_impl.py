@@ -85,92 +85,6 @@ class NewNeo4JStorage(BaseGraphStorage):
     def __post_init__(self):
         super().__post_init__()
 
-    async def delete_edge(
-        self, source_node_id: str, target_node_id: str
-    ) -> Union[dict, None]:
-        entity_name_label_source = source_node_id.strip('"')
-        entity_name_label_target = target_node_id.strip('"')
-        # 删除节点及关联关系
-        query = f"""
-            MATCH (start:`{entity_name_label_source}`)-[r]->(end:`{entity_name_label_target}`)
-            OPTIONAL MATCH (n)-[r]-()
-            DELETE r
-            """
-
-        try:
-            async with self._driver.session(database=self._DATABASE) as session:
-                await session.run(query)
-        except Exception as e:
-            logger.error(f"Error during edge delete: {str(e)}")
-            raise
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.WriteServiceUnavailable,
-            )
-        ),
-    )
-    async def delete_node(self, node_label: str):
-        node_label = node_label.strip('"')
-        # 删除节点及关系
-        query = f"""
-            MATCH (n:`{node_label}`)
-            OPTIONAL MATCH (n)-[r]-()
-            DELETE n, r
-            RETRURN n, r
-            """
-        try:
-            async with self._driver.session(database=self._DATABASE) as session:
-                await session.run(query)
-        except Exception as e:
-            logger.error(f"Error during node delete: {str(e)}")
-            raise
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.WriteServiceUnavailable,
-            )
-        ),
-    )
-    async def delete_node_by_id(self, node_id: str):
-        node_id = node_id.strip('"')
-        # 删除节点及关系-通过节点ID
-        query = f"""
-            MATCH (n)
-            WHERE elementId(n)  = '{node_id}'
-            OPTIONAL MATCH (n)-[r]-()
-            DELETE n, r
-            RETURN n, r
-            """
-        try:
-            async with self._driver.session(database=self._DATABASE) as session:
-                await session.run(query)
-        except Exception as e:
-            logger.error(f"Error during node delete: {str(e)}")
-            raise
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.WriteServiceUnavailable,
-            )
-        ),
-    )
-    
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -201,17 +115,6 @@ class NewNeo4JStorage(BaseGraphStorage):
             logger.error(f"Error during delete all: {str(e)}")
             raise
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.WriteServiceUnavailable,
-            )
-        ),
-    )
 
     @retry(
         stop=stop_after_attempt(3),
@@ -311,18 +214,6 @@ class NewNeo4JStorage(BaseGraphStorage):
         except Exception as e:
             logger.error(f"Error occurred while querying all nodes: {e}")
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.WriteServiceUnavailable,
-            )
-        ),
-    )
-    async def get_node_data(self, node_label: str) -> Dict[Any, None]:
         async with self._driver.session(database=self._DATABASE) as session:
             entity_name_label = node_label.strip('"')
             query = f"""

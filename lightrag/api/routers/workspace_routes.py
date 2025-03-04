@@ -16,7 +16,7 @@ from lightrag.base import  QueryParam
 from ascii_colors import trace_exception
 from starlette.status import HTTP_403_FORBIDDEN
 
-router = APIRouter(prefix="/new", tags=["workspace"])
+router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 class DataResponse(BaseModel):
     status: str
@@ -43,7 +43,7 @@ def create_new_workspace_routes(
 
     # 获取所有工作空间
     @router.get(
-        "/workspaces/all",
+        "/all",
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
@@ -77,7 +77,7 @@ def create_new_workspace_routes(
 
     # 获取工作空间详情
     @router.get(
-        "/workspaces/{workspace}",
+        "/{workspace}",
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
@@ -103,7 +103,7 @@ def create_new_workspace_routes(
 
     # 创建新的工作空间
     @router.post(
-        "/workspaces",
+        "",
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
@@ -131,7 +131,7 @@ def create_new_workspace_routes(
 
     # 修改工作空间
     @router.put(
-        "/workspaces/{workspace}",
+        "/{workspace}",
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
@@ -174,7 +174,7 @@ def create_new_workspace_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     # 删除工作空间
-    @router.delete("/workspaces/{workspace}", response_model=DataResponse)
+    @router.delete("/{workspace}", response_model=DataResponse)
     async def delete_workspace(workspace: str):
         try:
             # 如果为空

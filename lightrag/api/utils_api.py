@@ -288,6 +288,13 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
         help="Embedding binding type (default: from env or ollama)",
     )
 
+    parser.add_argument(
+        "--reload",
+        action="store_true",
+        default=get_env_value("SERVER_BIND_RELOAD", False, bool),
+        help="Enable auto-reload for development",
+    )
+
     args = parser.parse_args()
 
     # If in uvicorn mode and workers > 1, force it to 1 and log warning
@@ -342,7 +349,13 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
-
+    # addon params
+    args.example_number = int(os.getenv("EXAMPLE_NUMBER", 1))
+    args.language = os.getenv("SUMMARY_LANGUAGE", "Simplfied Chinese")
+    args.enable_llm_cache_for_entity_extract = os.getenv(
+        "ENABLE_LLM_CACHE_FOR_ENTITY_EXTRACT", False
+    )
+    args.enable_llm_cache = bool(os.getenv("ENABLE_LLM_CACHE", True))
     return args
 
 

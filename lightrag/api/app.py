@@ -9,7 +9,7 @@ from lightrag.api.lightrag_server import (
     create_app,
     display_splash_screen
 )
-from lightrag.api.new.new_utils_api import parse_args
+from lightrag.api.utils_api import parse_args
 
 # Load environment variables
 load_dotenv(override=True)

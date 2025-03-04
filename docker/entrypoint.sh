@@ -15,6 +15,6 @@ if [[ "${DEBUG}" == "true" ]]; then
   python /app/api/app.py --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621} --reload
   # uvicorn  app:app --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621} --reload
 else
-  python /app/api/app.py --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621} --workers=${SERVER_BIND_WORKERS:-1}
+  python /app/api/app.py --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621} --workers=${WORKERS:-1}
   # uvicorn  app:app --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621}
 fi

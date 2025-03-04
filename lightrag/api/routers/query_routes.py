@@ -7,7 +7,9 @@ import logging
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from lightrag.api.new.context_middleware import get_rag
 from lightrag.base import QueryParam
+from lightrag.lightrag import LightRAG
 from ..utils_api import get_api_key_dependency
 from pydantic import BaseModel, Field, field_validator
 
@@ -138,13 +140,14 @@ class QueryResponse(BaseModel):
     )
 
 
-def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+def create_query_routes(api_key: Optional[str] = None, top_k: int = 60):
+
     optional_api_key = get_api_key_dependency(api_key)
 
     @router.post(
         "/query", response_model=QueryResponse, dependencies=[Depends(optional_api_key)]
     )
-    async def query_text(request: QueryRequest):
+    async def query_text(request: QueryRequest, rag: LightRAG = Depends(get_rag)):
         """
         Handle a POST request at the /query endpoint to process user queries using RAG capabilities.
 
@@ -177,7 +180,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post("/query/stream", dependencies=[Depends(optional_api_key)])
-    async def query_text_stream(request: QueryRequest):
+    async def query_text_stream(request: QueryRequest, rag: LightRAG = Depends(get_rag)):
         """
         This endpoint performs a retrieval-augmented generation (RAG) query and streams the response.
 

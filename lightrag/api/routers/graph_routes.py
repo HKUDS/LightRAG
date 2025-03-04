@@ -4,24 +4,29 @@ This module contains all graph-related routes for the LightRAG API.
 
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from lightrag.api.new.context_middleware import get_rag
+from lightrag.lightrag import LightRAG
+
 from ..utils_api import get_api_key_dependency
+
 
 class DataResponse(BaseModel):
     status: str
     message: str
     data: Any
 
+
 router = APIRouter(tags=["graph"])
 
 
-def create_graph_routes(rag, api_key: Optional[str] = None):
+def create_graph_routes(api_key: Optional[str] = None):
     optional_api_key = get_api_key_dependency(api_key)
 
     @router.get("/graph/label/list", dependencies=[Depends(optional_api_key)])
-    async def get_graph_labels():
+    async def get_graph_labels(rag: LightRAG = Depends(get_rag)):
         """
         Get all graph labels
 
@@ -31,7 +36,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         return await rag.get_graph_labels()
 
     @router.get("/graphs", dependencies=[Depends(optional_api_key)])
-    async def get_knowledge_graph(label: str, max_depth: int = 3):
+    async def get_knowledge_graph(
+        label: str, max_depth: int = 3, rag: LightRAG = Depends(get_rag)
+    ):
         """
         Retrieve a connected subgraph of nodes where the label includes the specified label.
         Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
@@ -50,7 +57,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """
         return await rag.get_knowledge_graph(node_label=label, max_depth=max_depth)
 
-
     # 知识图谱-实体添加
     @router.post(
         "/graph/entity",
@@ -58,7 +64,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         dependencies=[Depends(optional_api_key)],
     )
     async def create_entity(
-        entity_name: str, entity_data: dict
+        entity_name: str, entity_data: dict, rag: LightRAG = Depends(get_rag)
     ):
         try:
             print("Updating entity:", entity_name)
@@ -73,12 +79,13 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "description": description,
                 "source_id": source_id,
             }
-            await rag.acreate_entity(entity_name,node_data)
-            
+            await rag.acreate_entity(entity_name, node_data)
+
             data = {"id": entity_name, "label": entity_name, **node_data}
             return DataResponse(status="success", message="ok", data=data)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
     # 知识图谱-实体修改
     @router.put(
         "/graph/entity/{entity_name}",
@@ -86,7 +93,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         dependencies=[Depends(optional_api_key)],
     )
     async def update_entity(
-        entity_name: str, entity_data: dict
+        entity_name: str, entity_data: dict, rag: LightRAG = Depends(get_rag)
     ):
         try:
             print("Updating entity:", entity_name)
@@ -105,7 +112,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             if new_entity_name:
                 node_data["entity_name"] = new_entity_name
 
-            await rag.aedit_entity(entity_name,node_data)
+            await rag.aedit_entity(entity_name, node_data)
             new_entity_name = entity_name
             data = {"id": new_entity_name, "label": new_entity_name, **node_data}
             return DataResponse(status="success", message="ok", data=data)
@@ -118,13 +125,14 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def delete_entity(entity_name: str):
+    async def delete_entity(entity_name: str, rag: LightRAG = Depends(get_rag)):
         print(f"Deleting entity {entity_name}")
         try:
             await rag.adelete_by_entity(entity_name)
             return DataResponse(status="success", message="ok", data=None)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
+
     # 知识图谱-关系添加-通过开始节点和结束节点查询关系
     @router.post(
         "/graph/relation/by_nodes",
@@ -135,6 +143,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         src_entity_name: str,
         tgt_entity_name: str,
         relation_data: dict,
+        rag: LightRAG = Depends(get_rag),
     ):
         try:
             src_id = src_entity_name
@@ -143,7 +152,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             keywords = relation_data.get("keywords", None)
             description = relation_data.get("description", None)
             source_id = relation_data.get("source_id", None)
-            
+
             edge_data = dict(
                 weight=weight,
                 description=description,
@@ -174,6 +183,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         src_entity_name: str,
         tgt_entity_name: str,
         relation_data: dict,
+        rag: LightRAG = Depends(get_rag),
     ):
         try:
             src_id = src_entity_name
@@ -210,7 +220,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         dependencies=[Depends(optional_api_key)],
     )
     async def delete_relation_by_nodes(
-        src_entity_name: str, tgt_entity_name: str
+        src_entity_name: str, tgt_entity_name: str, rag: LightRAG = Depends(get_rag)
     ):
         try:
             await rag.relationships_vdb.delete_entity_relation_by_nodes(
@@ -218,7 +228,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
             relationships_to_delete = set()
             relationships_to_delete.add((src_entity_name, tgt_entity_name))
-            rag.chunk_entity_relation_graph.remove_edges(list(relationships_to_delete))
+            await rag.chunk_entity_relation_graph.remove_edges(list(relationships_to_delete))
             await rag.relationships_vdb.index_done_callback()
             await rag.chunk_entity_relation_graph.index_done_callback()
             return DataResponse(status="success", message="ok", data="")
@@ -231,7 +241,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_node(entity_name: str):
+    async def get_node(entity_name: str, rag: LightRAG = Depends(get_rag)):
         try:
             node = await rag.chunk_entity_relation_graph.get_node(entity_name)
             return DataResponse(status="success", message="ok", data=node)
@@ -245,7 +255,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         dependencies=[Depends(optional_api_key)],
     )
     async def get_relation_by_nodes(
-        src_entity_name: str, tgt_entity_name: str
+        src_entity_name: str, tgt_entity_name: str, rag: LightRAG = Depends(get_rag)
     ):
         try:
             relation = await rag.chunk_entity_relation_graph.get_edge(
@@ -261,7 +271,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_relation_by_node(node_id: str):
+    async def get_relation_by_node(node_id: str, rag: LightRAG = Depends(get_rag)):
         try:
             relations = await rag.chunk_entity_relation_graph.get_node_edges(node_id)
             return DataResponse(status="success", message="ok", data=relations)
@@ -274,7 +284,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_graph_entity_list():
+    async def get_graph_entity_list(rag: LightRAG = Depends(get_rag)):
         try:
             # 提取所有实体和关系
             entities = await rag.chunk_entity_relation_graph.query_all()
@@ -287,6 +297,5 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-
 
     return router

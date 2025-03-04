@@ -787,3 +787,159 @@ class Neo4JStorage(BaseGraphStorage):
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
         raise NotImplementedError
+
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+            )
+        ),
+    )
+    async def delete_all(self):
+        # 删除全部实体和关系
+        query = f"""
+            MATCH (n)-[r]->(m)
+            DELETE n, r, m
+            RETURN n as source_node, r as relationship, m as target_node
+            UNION ALL
+            MATCH (n)
+            WHERE NOT (n)--()
+            DELETE n
+            RETURN n as source_node, null as relationship, null as target_node
+            """
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+                await session.run(query)
+        except Exception as e:
+            logger.error(f"Error during delete all: {str(e)}")
+            raise
+
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+            )
+        ),
+    )
+    async def query_all(self) -> List[Dict[str, Any]]:
+        """
+        Retrieves all nodes and their relationships in the Neo4j database.
+
+        Returns:
+            list: List of dictionaries containing node and relationship information
+        """
+        query = f"""
+            MATCH (n)-[r]->(m)
+            RETURN n AS source_node, r AS relationship, m AS target_node
+            UNION
+            MATCH (n)
+            WHERE NOT (n)--()
+            RETURN n AS source_node, null AS relationship, null AS target_node
+            """
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+                result = await session.run(query)
+                entities = []
+                async for record in result:
+                    s_node = record["source_node"]
+                    r_ship = record["relationship"]
+                    t_node = record["target_node"]
+                    # 获取源节点信息
+                    source_node = {
+                        "id": (
+                            s_node.element_id
+                            if s_node and hasattr(s_node, "element_id")
+                            else None
+                        ),
+                        "labels": (
+                            list(s_node.labels)
+                            if s_node and hasattr(s_node, "labels")
+                            else []
+                        ),
+                        "properties": dict(s_node.items()) if s_node else None,
+                    }
+                    # 获取关系信息
+                    relationship = (
+                        {
+                            "id": (
+                                r_ship.element_id
+                                if r_ship and hasattr(r_ship, "element_id")
+                                else None
+                            ),
+                            "type": (
+                                r_ship.type
+                                if r_ship and hasattr(r_ship, "type")
+                                else None
+                            ),
+                            "properties": dict(r_ship.items()) if r_ship else None,
+                        }
+                        if r_ship
+                        else None
+                    )
+
+                    # 获取目标节点信息
+                    target_node = (
+                        {
+                            "id": (
+                                t_node.element_id
+                                if t_node and hasattr(t_node, "element_id")
+                                else None
+                            ),
+                            "labels": (
+                                list(t_node.labels)
+                                if t_node and hasattr(t_node, "labels")
+                                else []
+                            ),
+                            "properties": dict(t_node.items()) if t_node else None,
+                        }
+                        if t_node
+                        else None
+                    )
+
+                    entities.append(
+                        {
+                            "source_node": source_node,
+                            "relationship": relationship,
+                            "target_node": target_node,
+                        }
+                    )
+
+                return entities
+        except Exception as e:
+            logger.error(f"Error occurred while querying all nodes: {e}")
+
+        async with self._driver.session(database=self._DATABASE) as session:
+            entity_name_label = node_label.strip('"')
+            query = f"""
+                MATCH (n:`{entity_name_label}`) RETURN n
+                """
+            result = await session.run(query)
+            record = await result.single()
+            if record:
+                node = record["n"]
+                node_dict = {
+                    "id": (
+                        node.element_id
+                        if node and hasattr(node, "element_id")
+                        else None
+                    ),
+                    "labels": (
+                        list(node.labels) if node and hasattr(node, "labels") else []
+                    ),
+                    "properties": dict(node.items()) if node else None,
+                }
+                logger.debug(
+                    f"{inspect.currentframe().f_code.co_name}: query: {query}, result: {node_dict}"
+                )
+                return node_dict
+            return None
