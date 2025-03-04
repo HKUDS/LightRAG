@@ -217,7 +217,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
             ):
                 content = file.decode("utf-8")
             case ".pdf":
-                if not pm.is_installed("pypdf2"):
+                if not pm.is_installed("pypdf2"):  # type: ignore
                     pm.install("pypdf2")
                 from PyPDF2 import PdfReader  # type: ignore
                 from io import BytesIO
@@ -227,7 +227,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 for page in reader.pages:
                     content += page.extract_text() + "\n"
             case ".docx":
-                if not pm.is_installed("docx"):
+                if not pm.is_installed("python-docx"):  # type: ignore
                     pm.install("docx")
                 from docx import Document
                 from io import BytesIO
@@ -236,7 +236,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 doc = Document(docx_file)
                 content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
             case ".pptx":
-                if not pm.is_installed("pptx"):
+                if not pm.is_installed("python-pptx"):  # type: ignore
                     pm.install("pptx")
                 from pptx import Presentation
                 from io import BytesIO
@@ -248,7 +248,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                         if hasattr(shape, "text"):
                             content += shape.text + "\n"
             case ".xlsx":
-                if not pm.is_installed("openpyxl"):
+                if not pm.is_installed("openpyxl"):  # type: ignore
                     pm.install("openpyxl")
                 from openpyxl import load_workbook
                 from io import BytesIO
