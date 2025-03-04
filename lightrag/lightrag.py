@@ -685,8 +685,24 @@ class LightRAG:
         all_new_doc_ids = set(new_docs.keys())
         # Exclude IDs of documents that are already in progress
         unique_new_doc_ids = await self.doc_status.filter_keys(all_new_doc_ids)
+
+        # Log ignored document IDs
+        ignored_ids = [
+            doc_id for doc_id in unique_new_doc_ids if doc_id not in new_docs
+        ]
+        if ignored_ids:
+            logger.warning(
+                f"Ignoring {len(ignored_ids)} document IDs not found in new_docs"
+            )
+            for doc_id in ignored_ids:
+                logger.warning(f"Ignored document ID: {doc_id}")
+
         # Filter new_docs to only include documents with unique IDs
-        new_docs = {doc_id: new_docs[doc_id] for doc_id in unique_new_doc_ids}
+        new_docs = {
+            doc_id: new_docs[doc_id]
+            for doc_id in unique_new_doc_ids
+            if doc_id in new_docs
+        }
 
         if not new_docs:
             logger.info("No new unique documents were found.")
