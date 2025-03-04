@@ -36,7 +36,7 @@ from .operate import (
     mix_kg_vector_query,
     naive_query,
 )
-from .prompt import GRAPH_FIELD_SEP
+from .prompt import GRAPH_FIELD_SEP, PROMPTS
 from .utils import (
     EmbeddingFunc,
     always_get_an_event_loop,
@@ -236,7 +236,9 @@ class LightRAG:
     max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 20)))
     """Maximum number of parallel insert operations."""
 
-    addon_params: dict[str, Any] = field(default_factory=dict)
+    addon_params: dict[str, Any] = field(default_factory=lambda: {
+        "language": os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"])
+    })
 
     # Storages Management
     # ---
