@@ -785,7 +785,8 @@ rag.delete_by_doc_id("doc_id")
 
 LightRAG now supports comprehensive knowledge graph management capabilities, allowing you to create, edit, and delete entities and relationships within your knowledge graph.
 
-### Create Entities and Relations
+<details>
+<summary> <b>Create Entities and Relations</b> </summary>
 
 ```python
 # Create new entity
@@ -807,8 +808,10 @@ relation = rag.create_relation("Google", "Gmail", {
     "weight": 2.0
 })
 ```
+</details>
 
-### Edit Entities and Relations
+<details>
+<summary> <b>Edit Entities and Relations</b> </summary>
 
 ```python
 # Edit an existing entity
@@ -830,6 +833,7 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
     "weight": 3.0
 })
 ```
+</details>
 
 All operations are available in both synchronous and asynchronous versions. The asynchronous versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
