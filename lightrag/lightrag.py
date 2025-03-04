@@ -1399,6 +1399,54 @@ class LightRAG:
             ]
         )
 
+    def delete_by_relation(self, source_entity: str, target_entity: str) -> None:
+        """Synchronously delete a relation between two entities.
+        
+        Args:
+            source_entity: Name of the source entity
+            target_entity: Name of the target entity
+        """
+        loop = always_get_an_event_loop()
+        return loop.run_until_complete(self.adelete_by_relation(source_entity, target_entity))
+
+    async def adelete_by_relation(self, source_entity: str, target_entity: str) -> None:
+        """Asynchronously delete a relation between two entities.
+        
+        Args:
+            source_entity: Name of the source entity
+            target_entity: Name of the target entity
+        """
+        try:
+            # Check if the relation exists
+            edge_exists = await self.chunk_entity_relation_graph.has_edge(source_entity, target_entity)
+            if not edge_exists:
+                logger.warning(f"Relation from '{source_entity}' to '{target_entity}' does not exist")
+                return
+            
+            # Delete relation from vector database
+            relation_id = compute_mdhash_id(source_entity + target_entity, prefix="rel-")
+            await self.relationships_vdb.delete([relation_id])
+            
+            # Delete relation from knowledge graph
+            await self.chunk_entity_relation_graph.remove_edges([(source_entity, target_entity)])
+            
+            logger.info(f"Successfully deleted relation from '{source_entity}' to '{target_entity}'")
+            await self._delete_relation_done()
+        except Exception as e:
+            logger.error(f"Error while deleting relation from '{source_entity}' to '{target_entity}': {e}")
+    
+    async def _delete_relation_done(self) -> None:
+        """Callback after relation deletion is complete"""
+        await asyncio.gather(
+            *[
+                cast(StorageNameSpace, storage_inst).index_done_callback()
+                for storage_inst in [  # type: ignore
+                    self.relationships_vdb,
+                    self.chunk_entity_relation_graph,
+                ]
+            ]
+        )
+
     def _get_content_summary(self, content: str, max_length: int = 100) -> str:
         """Get summary of document content
 

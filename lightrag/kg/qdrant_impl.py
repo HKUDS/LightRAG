@@ -1,6 +1,6 @@
 import asyncio
 import os
-from typing import Any, final
+from typing import Any, final, List
 from dataclasses import dataclass
 import numpy as np
 import hashlib
@@ -141,8 +141,91 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         # Qdrant handles persistence automatically
         pass
 
+    async def delete(self, ids: List[str]) -> None:
+        """Delete vectors with specified IDs
+        
+        Args:
+            ids: List of vector IDs to be deleted
+        """
+        try:
+            # Convert regular ids to Qdrant compatible ids
+            qdrant_ids = [compute_mdhash_id_for_qdrant(id) for id in ids]
+            # Delete points from the collection
+            self._client.delete(
+                collection_name=self.namespace,
+                points_selector=models.PointIdsList(
+                    points=qdrant_ids,
+                ),
+                wait=True
+            )
+            logger.debug(f"Successfully deleted {len(ids)} vectors from {self.namespace}")
+        except Exception as e:
+            logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
+
     async def delete_entity(self, entity_name: str) -> None:
-        raise NotImplementedError
+        """Delete an entity by name
+        
+        Args:
+            entity_name: Name of the entity to delete
+        """
+        try:
+            # Generate the entity ID
+            entity_id = compute_mdhash_id_for_qdrant(entity_name, prefix="ent-")
+            logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
+            
+            # Delete the entity point from the collection
+            self._client.delete(
+                collection_name=self.namespace,
+                points_selector=models.PointIdsList(
+                    points=[entity_id],
+                ),
+                wait=True
+            )
+            logger.debug(f"Successfully deleted entity {entity_name}")
+        except Exception as e:
+            logger.error(f"Error deleting entity {entity_name}: {e}")
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        raise NotImplementedError
+        """Delete all relations associated with an entity
+        
+        Args:
+            entity_name: Name of the entity whose relations should be deleted
+        """
+        try:
+            # Find relations where the entity is either source or target
+            results = self._client.scroll(
+                collection_name=self.namespace,
+                scroll_filter=models.Filter(
+                    should=[
+                        models.FieldCondition(
+                            key="src_id",
+                            match=models.MatchValue(value=entity_name)
+                        ),
+                        models.FieldCondition(
+                            key="tgt_id",
+                            match=models.MatchValue(value=entity_name)
+                        )
+                    ]
+                ),
+                with_payload=True,
+                limit=1000  # Adjust as needed for your use case
+            )
+            
+            # Extract points that need to be deleted
+            relation_points = results[0]
+            ids_to_delete = [point.id for point in relation_points]
+            
+            if ids_to_delete:
+                # Delete the relations
+                self._client.delete(
+                    collection_name=self.namespace,
+                    points_selector=models.PointIdsList(
+                        points=ids_to_delete,
+                    ),
+                    wait=True
+                )
+                logger.debug(f"Deleted {len(ids_to_delete)} relations for {entity_name}")
+            else:
+                logger.debug(f"No relations found for entity {entity_name}")
+        except Exception as e:
+            logger.error(f"Error deleting relations for {entity_name}: {e}")
