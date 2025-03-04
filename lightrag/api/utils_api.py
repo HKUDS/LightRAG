@@ -340,6 +340,7 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
+    args.language = get_env_value("LANGUAGE", "English")
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
