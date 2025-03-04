@@ -397,12 +397,12 @@ class GremlinStorage(BaseGraphStorage):
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node with the specified entity_name
-        
+
         Args:
             node_id: The entity_name of the node to delete
         """
         entity_name = GremlinStorage._fix_name(node_id)
-        
+
         query = f"""g
                  .V().has('graph', {self.graph_name})
                  .has('entity_name', {entity_name})
@@ -413,7 +413,7 @@ class GremlinStorage(BaseGraphStorage):
             logger.debug(
                 "{%s}: Deleted node with entity_name '%s'",
                 inspect.currentframe().f_code.co_name,
-                entity_name
+                entity_name,
             )
         except Exception as e:
             logger.error(f"Error during node deletion: {str(e)}")
@@ -425,13 +425,13 @@ class GremlinStorage(BaseGraphStorage):
         """
         Embed nodes using the specified algorithm.
         Currently, only node2vec is supported but never called.
-        
+
         Args:
             algorithm: The name of the embedding algorithm to use
-            
+
         Returns:
             A tuple of (embeddings, node_ids)
-            
+
         Raises:
             NotImplementedError: If the specified algorithm is not supported
             ValueError: If the algorithm is not supported
@@ -458,7 +458,7 @@ class GremlinStorage(BaseGraphStorage):
             logger.debug(
                 "{%s}: Retrieved %d labels",
                 inspect.currentframe().f_code.co_name,
-                len(labels)
+                len(labels),
             )
             return labels
         except Exception as e:
@@ -471,7 +471,7 @@ class GremlinStorage(BaseGraphStorage):
         """
         Retrieve a connected subgraph of nodes where the entity_name includes the specified `node_label`.
         Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
-        
+
         Args:
             node_label: Entity name of the starting node
             max_depth: Maximum depth of the subgraph
@@ -482,12 +482,12 @@ class GremlinStorage(BaseGraphStorage):
         result = KnowledgeGraph()
         seen_nodes = set()
         seen_edges = set()
-        
+
         # Get maximum number of graph nodes from environment variable, default is 1000
         MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
-        
+
         entity_name = GremlinStorage._fix_name(node_label)
-        
+
         # Handle special case for "*" label
         if node_label == "*":
             # For "*", get all nodes and their edges (limited by MAX_GRAPH_NODES)
@@ -497,25 +497,27 @@ class GremlinStorage(BaseGraphStorage):
                      .elementMap()
                      """
             nodes_result = await self._query(query)
-            
+
             # Add nodes to result
             for node_data in nodes_result:
-                node_id = node_data.get('entity_name', str(node_data.get('id', '')))
+                node_id = node_data.get("entity_name", str(node_data.get("id", "")))
                 if str(node_id) in seen_nodes:
                     continue
-                
+
                 # Create node with properties
-                node_properties = {k: v for k, v in node_data.items() if k not in ['id', 'label']}
-                
+                node_properties = {
+                    k: v for k, v in node_data.items() if k not in ["id", "label"]
+                }
+
                 result.nodes.append(
                     KnowledgeGraphNode(
                         id=str(node_id),
-                        labels=[str(node_id)], 
-                        properties=node_properties
+                        labels=[str(node_id)],
+                        properties=node_properties,
                     )
                 )
                 seen_nodes.add(str(node_id))
-            
+
             # Get and add edges
             if nodes_result:
                 query = f"""g
@@ -530,30 +532,34 @@ class GremlinStorage(BaseGraphStorage):
                          .by(elementMap())
                          """
                 edges_result = await self._query(query)
-                
+
                 for path in edges_result:
                     if len(path) >= 3:  # source -> edge -> target
                         source = path[0]
                         edge_data = path[1]
                         target = path[2]
-                        
-                        source_id = source.get('entity_name', str(source.get('id', '')))
-                        target_id = target.get('entity_name', str(target.get('id', '')))
-                        
+
+                        source_id = source.get("entity_name", str(source.get("id", "")))
+                        target_id = target.get("entity_name", str(target.get("id", "")))
+
                         edge_id = f"{source_id}-{target_id}"
                         if edge_id in seen_edges:
                             continue
-                        
+
                         # Create edge with properties
-                        edge_properties = {k: v for k, v in edge_data.items() if k not in ['id', 'label']}
-                        
+                        edge_properties = {
+                            k: v
+                            for k, v in edge_data.items()
+                            if k not in ["id", "label"]
+                        }
+
                         result.edges.append(
                             KnowledgeGraphEdge(
                                 id=edge_id,
                                 type="DIRECTED",
                                 source=str(source_id),
                                 target=str(target_id),
-                                properties=edge_properties
+                                properties=edge_properties,
                             )
                         )
                         seen_edges.add(edge_id)
@@ -570,30 +576,36 @@ class GremlinStorage(BaseGraphStorage):
                      .elementMap()
                      """
             nodes_result = await self._query(query)
-            
+
             # Add nodes to result
             for node_data in nodes_result:
-                node_id = node_data.get('entity_name', str(node_data.get('id', '')))
+                node_id = node_data.get("entity_name", str(node_data.get("id", "")))
                 if str(node_id) in seen_nodes:
                     continue
-                
+
                 # Create node with properties
-                node_properties = {k: v for k, v in node_data.items() if k not in ['id', 'label']}
-                
+                node_properties = {
+                    k: v for k, v in node_data.items() if k not in ["id", "label"]
+                }
+
                 result.nodes.append(
                     KnowledgeGraphNode(
                         id=str(node_id),
-                        labels=[str(node_id)], 
-                        properties=node_properties
+                        labels=[str(node_id)],
+                        properties=node_properties,
                     )
                 )
                 seen_nodes.add(str(node_id))
-            
+
             # Get edges between the nodes in the result
             if nodes_result:
-                node_ids = [n.get('entity_name', str(n.get('id', ''))) for n in nodes_result]
-                node_ids_query = ", ".join([GremlinStorage._to_value_map(nid) for nid in node_ids])
-                
+                node_ids = [
+                    n.get("entity_name", str(n.get("id", ""))) for n in nodes_result
+                ]
+                node_ids_query = ", ".join(
+                    [GremlinStorage._to_value_map(nid) for nid in node_ids]
+                )
+
                 query = f"""g
                          .V().has('graph', {self.graph_name})
                          .has('entity_name', within({node_ids_query}))
@@ -606,38 +618,42 @@ class GremlinStorage(BaseGraphStorage):
                          .by(elementMap())
                          """
                 edges_result = await self._query(query)
-                
+
                 for path in edges_result:
                     if len(path) >= 3:  # source -> edge -> target
                         source = path[0]
                         edge_data = path[1]
                         target = path[2]
-                        
-                        source_id = source.get('entity_name', str(source.get('id', '')))
-                        target_id = target.get('entity_name', str(target.get('id', '')))
-                        
+
+                        source_id = source.get("entity_name", str(source.get("id", "")))
+                        target_id = target.get("entity_name", str(target.get("id", "")))
+
                         edge_id = f"{source_id}-{target_id}"
                         if edge_id in seen_edges:
                             continue
-                        
+
                         # Create edge with properties
-                        edge_properties = {k: v for k, v in edge_data.items() if k not in ['id', 'label']}
-                        
+                        edge_properties = {
+                            k: v
+                            for k, v in edge_data.items()
+                            if k not in ["id", "label"]
+                        }
+
                         result.edges.append(
                             KnowledgeGraphEdge(
                                 id=edge_id,
                                 type="DIRECTED",
                                 source=str(source_id),
                                 target=str(target_id),
-                                properties=edge_properties
+                                properties=edge_properties,
                             )
                         )
                         seen_edges.add(edge_id)
-        
+
         logger.info(
             "Subgraph query successful | Node count: %d | Edge count: %d",
             len(result.nodes),
-            len(result.edges)
+            len(result.edges),
         )
         return result
 
@@ -659,7 +675,7 @@ class GremlinStorage(BaseGraphStorage):
         for source, target in edges:
             entity_name_source = GremlinStorage._fix_name(source)
             entity_name_target = GremlinStorage._fix_name(target)
-            
+
             query = f"""g
                      .V().has('graph', {self.graph_name})
                      .has('entity_name', {entity_name_source})
@@ -674,7 +690,7 @@ class GremlinStorage(BaseGraphStorage):
                     "{%s}: Deleted edge from '%s' to '%s'",
                     inspect.currentframe().f_code.co_name,
                     entity_name_source,
-                    entity_name_target
+                    entity_name_target,
                 )
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")

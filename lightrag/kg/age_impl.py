@@ -619,7 +619,7 @@ class AGEStorage(BaseGraphStorage):
             node_id: The label of the node to delete
         """
         entity_name_label = node_id.strip('"')
-        
+
         query = """
         MATCH (n:`{label}`)
         DETACH DELETE n
@@ -650,18 +650,20 @@ class AGEStorage(BaseGraphStorage):
         for source, target in edges:
             entity_name_label_source = source.strip('"')
             entity_name_label_target = target.strip('"')
-            
+
             query = """
             MATCH (source:`{src_label}`)-[r]->(target:`{tgt_label}`)
             DELETE r
             """
             params = {
                 "src_label": AGEStorage._encode_graph_label(entity_name_label_source),
-                "tgt_label": AGEStorage._encode_graph_label(entity_name_label_target)
+                "tgt_label": AGEStorage._encode_graph_label(entity_name_label_target),
             }
             try:
                 await self._query(query, **params)
-                logger.debug(f"Deleted edge from '{entity_name_label_source}' to '{entity_name_label_target}'")
+                logger.debug(
+                    f"Deleted edge from '{entity_name_label_source}' to '{entity_name_label_target}'"
+                )
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")
                 raise
@@ -683,7 +685,7 @@ class AGEStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """Get all node labels in the database
-        
+
         Returns:
             ["label1", "label2", ...]  # Alphabetically sorted label list
         """
@@ -692,7 +694,7 @@ class AGEStorage(BaseGraphStorage):
         RETURN DISTINCT labels(n) AS node_labels
         """
         results = await self._query(query)
-        
+
         all_labels = []
         for record in results:
             if record and "node_labels" in record:
@@ -701,7 +703,7 @@ class AGEStorage(BaseGraphStorage):
                         # Decode label
                         decoded_label = AGEStorage._decode_graph_label(label)
                         all_labels.append(decoded_label)
-        
+
         # Remove duplicates and sort
         return sorted(list(set(all_labels)))
 
@@ -719,7 +721,7 @@ class AGEStorage(BaseGraphStorage):
         Args:
             node_label: String to match in node labels (will match any node containing this string in its label)
             max_depth: Maximum depth of the graph. Defaults to 5.
-            
+
         Returns:
             KnowledgeGraph: Complete connected subgraph for specified node
         """
@@ -727,7 +729,7 @@ class AGEStorage(BaseGraphStorage):
         result = KnowledgeGraph()
         seen_nodes = set()
         seen_edges = set()
-        
+
         # Handle special case for "*" label
         if node_label == "*":
             # Query all nodes and sort by degree
@@ -741,7 +743,7 @@ class AGEStorage(BaseGraphStorage):
             """
             params = {"max_nodes": max_graph_nodes}
             nodes_result = await self._query(query, **params)
-            
+
             # Add nodes to result
             node_ids = []
             for record in nodes_result:
@@ -755,12 +757,12 @@ class AGEStorage(BaseGraphStorage):
                             KnowledgeGraphNode(
                                 id=node_id,
                                 labels=[node_label],
-                                properties=node_properties
+                                properties=node_properties,
                             )
                         )
                         seen_nodes.add(node_id)
                         node_ids.append(node_id)
-            
+
             # Query edges between these nodes
             if node_ids:
                 edges_query = """
@@ -770,7 +772,7 @@ class AGEStorage(BaseGraphStorage):
                 """
                 edges_params = {"node_ids": node_ids}
                 edges_result = await self._query(edges_query, **edges_params)
-                
+
                 # Add edges to result
                 for record in edges_result:
                     if "r" in record and "a" in record and "b" in record:
@@ -785,7 +787,7 @@ class AGEStorage(BaseGraphStorage):
                                     type="DIRECTED",
                                     source=source,
                                     target=target,
-                                    properties=edge_properties
+                                    properties=edge_properties,
                                 )
                             )
                             seen_edges.add(edge_id)
@@ -793,7 +795,7 @@ class AGEStorage(BaseGraphStorage):
             # For specific label, use partial matching
             entity_name_label = node_label.strip('"')
             encoded_label = AGEStorage._encode_graph_label(entity_name_label)
-            
+
             # Find matching start nodes
             start_query = """
             MATCH (n:`{label}`)
@@ -801,17 +803,14 @@ class AGEStorage(BaseGraphStorage):
             """
             start_params = {"label": encoded_label}
             start_nodes = await self._query(start_query, **start_params)
-            
+
             if not start_nodes:
                 logger.warning(f"No nodes found with label '{entity_name_label}'!")
                 return result
-            
+
             # Traverse graph from each start node
             for start_node_record in start_nodes:
                 if "n" in start_node_record:
-                    start_node = start_node_record["n"]
-                    start_id = str(start_node.get("id", ""))
-                    
                     # Use BFS to traverse graph
                     query = """
                     MATCH (start:`{label}`)
@@ -823,25 +822,28 @@ class AGEStorage(BaseGraphStorage):
                     """
                     params = {"label": encoded_label, "max_depth": max_depth}
                     results = await self._query(query, **params)
-                    
+
                     # Extract nodes and edges from results
                     for record in results:
                         if "path_nodes" in record:
                             # Process nodes
                             for node in record["path_nodes"]:
                                 node_id = str(node.get("id", ""))
-                                if node_id not in seen_nodes and len(seen_nodes) < max_graph_nodes:
+                                if (
+                                    node_id not in seen_nodes
+                                    and len(seen_nodes) < max_graph_nodes
+                                ):
                                     node_properties = {k: v for k, v in node.items()}
                                     node_label = node.get("label", "")
                                     result.nodes.append(
                                         KnowledgeGraphNode(
                                             id=node_id,
                                             labels=[node_label],
-                                            properties=node_properties
+                                            properties=node_properties,
                                         )
                                     )
                                     seen_nodes.add(node_id)
-                        
+
                         if "path_rels" in record:
                             # Process edges
                             for rel in record["path_rels"]:
@@ -856,11 +858,11 @@ class AGEStorage(BaseGraphStorage):
                                             type=rel.get("label", "DIRECTED"),
                                             source=source,
                                             target=target,
-                                            properties=edge_properties
+                                            properties=edge_properties,
                                         )
                                     )
                                     seen_edges.add(edge_id)
-        
+
         logger.info(
             f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
         )
