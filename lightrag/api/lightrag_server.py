@@ -6,7 +6,6 @@ from fastapi import (
     FastAPI,
     Depends,
 )
-from fastapi.responses import FileResponse
 import asyncio
 import os
 import logging
