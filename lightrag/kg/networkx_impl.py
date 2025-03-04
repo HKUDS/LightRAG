@@ -232,7 +232,7 @@ class NetworkXStorage(BaseGraphStorage):
         return sorted(list(labels))
 
     async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 5
+        self, node_label: str, max_depth: int = 5, search_mode: str = "exact", min_degree: int = 0
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -245,6 +245,8 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             node_label: Label of the starting node
             max_depth: Maximum depth of the subgraph
+            search_mode (str, optional): Search mode, either "exact" or "inclusive". Defaults to "exact".
+            min_degree (int, optional): Minimum degree of nodes to include. Defaults to 0.
 
         Returns:
             KnowledgeGraph object containing nodes and edges
@@ -262,11 +264,16 @@ class NetworkXStorage(BaseGraphStorage):
                 graph.copy()
             )  # Create a copy to avoid modifying the original graph
         else:
-            # Find nodes with matching node id (partial match)
+            # Find nodes with matching node id based on search_mode
             nodes_to_explore = []
             for n, attr in graph.nodes(data=True):
-                if node_label in str(n):  # Use partial matching
-                    nodes_to_explore.append(n)
+                node_str = str(n)
+                if search_mode == "exact":
+                    if node_label == node_str:  # Use exact matching
+                        nodes_to_explore.append(n)
+                else:  # inclusive mode
+                    if node_label in node_str:  # Use partial matching
+                        nodes_to_explore.append(n)
 
             if not nodes_to_explore:
                 logger.warning(f"No nodes found with label {node_label}")
@@ -277,6 +284,12 @@ class NetworkXStorage(BaseGraphStorage):
             for start_node in nodes_to_explore:
                 node_subgraph = nx.ego_graph(graph, start_node, radius=max_depth)
                 combined_subgraph = nx.compose(combined_subgraph, node_subgraph)
+            
+            # Filter nodes based on min_degree
+            if min_degree > 0:
+                nodes_to_keep = [node for node, degree in combined_subgraph.degree() if degree >= min_degree]
+                combined_subgraph = combined_subgraph.subgraph(nodes_to_keep)
+            
             subgraph = combined_subgraph
 
         # Check if number of nodes exceeds max_graph_nodes
