@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import configparser
 import os
+import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
@@ -85,14 +86,10 @@ class LightRAG:
     doc_status_storage: str = field(default="JsonDocStatusStorage")
     """Storage type for tracking document processing statuses."""
 
-    # Logging
+    # Logging (Deprecated, use setup_logger in utils.py instead)
     # ---
-
-    log_level: int = field(default=logger.level)
-    """Logging level for the system (e.g., 'DEBUG', 'INFO', 'WARNING')."""
-
-    log_file_path: str = field(default=os.path.join(os.getcwd(), "lightrag.log"))
-    """Log file path."""
+    log_level: int | None = field(default=None)
+    log_file_path: str | None = field(default=None)
 
     # Entity extraction
     # ---
@@ -266,12 +263,29 @@ class LightRAG:
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):
-        os.makedirs(os.path.dirname(self.log_file_path), exist_ok=True)
-        logger.info(f"Logger initialized for working directory: {self.working_dir}")
-
         from lightrag.kg.shared_storage import (
             initialize_share_data,
         )
+
+        # Handle deprecated parameters
+        if self.log_level is not None:
+            warnings.warn(
+                "WARNING: log_level parameter is deprecated, use setup_logger in utils.py instead",
+                UserWarning,
+                stacklevel=2,
+            )
+        if self.log_file_path is not None:
+            warnings.warn(
+                "WARNING: log_file_path parameter is deprecated, use setup_logger in utils.py instead",
+                UserWarning,
+                stacklevel=2,
+            )
+
+        # Remove these attributes to prevent their use
+        if hasattr(self, "log_level"):
+            delattr(self, "log_level")
+        if hasattr(self, "log_file_path"):
+            delattr(self, "log_file_path")
 
         initialize_share_data()
 
