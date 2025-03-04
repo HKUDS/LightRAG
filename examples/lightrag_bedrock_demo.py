@@ -53,3 +53,7 @@ def main():
                 "What are the top themes in this story?", param=QueryParam(mode=mode)
             )
         )
+
+
+if __name__ == "__main__":
+    main()
