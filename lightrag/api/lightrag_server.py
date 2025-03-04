@@ -6,7 +6,6 @@ from fastapi import (
     FastAPI,
     Depends,
 )
-from fastapi.responses import FileResponse
 import asyncio
 import os
 import logging
@@ -331,7 +330,6 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            log_level=args.log_level,
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
         )
@@ -361,7 +359,6 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            log_level=args.log_level,
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
         )
@@ -412,10 +409,6 @@ def create_app(args):
         name="webui",
     )
 
-    @app.get("/webui/")
-    async def webui_root():
-        return FileResponse(static_dir / "index.html")
-
     return app
 
 
@@ -438,6 +431,9 @@ def configure_logging():
     # Get log directory path from environment variable
     log_dir = os.getenv("LOG_DIR", os.getcwd())
     log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+
+    print(f"\nLightRAG log file: {log_file_path}\n")
+    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
