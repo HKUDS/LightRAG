@@ -1431,14 +1431,22 @@ class LightRAG:
 
             logger.debug(f"Starting deletion for document {doc_id}")
 
-            doc_to_chunk_id = doc_id.replace("doc", "chunk")
+            # 2. Get all chunks related to this document
+            # Find all chunks where full_doc_id equals the current doc_id
+            all_chunks = await self.text_chunks.get_all()
+            related_chunks = {
+                chunk_id: chunk_data
+                for chunk_id, chunk_data in all_chunks.items()
+                if isinstance(chunk_data, dict)
+                and chunk_data.get("full_doc_id") == doc_id
+            }
 
-            # 2. Get all related chunks
-            chunks = await self.text_chunks.get_by_id(doc_to_chunk_id)
-            if not chunks:
+            if not related_chunks:
+                logger.warning(f"No chunks found for document {doc_id}")
                 return
 
-            chunk_ids = {chunks["full_doc_id"].replace("doc", "chunk")}
+            # Get all related chunk IDs
+            chunk_ids = set(related_chunks.keys())
             logger.debug(f"Found {len(chunk_ids)} chunks to delete")
 
             # 3. Before deleting, check the related entities and relationships for these chunks
@@ -1626,9 +1634,18 @@ class LightRAG:
                     logger.warning(f"Document {doc_id} still exists in full_docs")
 
                 # Verify if chunks have been deleted
-                remaining_chunks = await self.text_chunks.get_by_id(doc_to_chunk_id)
-                if remaining_chunks:
-                    logger.warning(f"Found {len(remaining_chunks)} remaining chunks")
+                all_remaining_chunks = await self.text_chunks.get_all()
+                remaining_related_chunks = {
+                    chunk_id: chunk_data
+                    for chunk_id, chunk_data in all_remaining_chunks.items()
+                    if isinstance(chunk_data, dict)
+                    and chunk_data.get("full_doc_id") == doc_id
+                }
+
+                if remaining_related_chunks:
+                    logger.warning(
+                        f"Found {len(remaining_related_chunks)} remaining chunks"
+                    )
 
                 # Verify entities and relationships
                 for chunk_id in chunk_ids:
