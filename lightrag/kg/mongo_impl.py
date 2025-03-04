@@ -804,16 +804,15 @@ class MongoGraphStorage(BaseGraphStorage):
         logger.info(f"Deleting {len(nodes)} nodes")
         if not nodes:
             return
-        
+
         # 1. Remove all edges referencing these nodes (remove from edges array of other nodes)
         await self.collection.update_many(
-            {}, 
-            {"$pull": {"edges": {"target": {"$in": nodes}}}}
+            {}, {"$pull": {"edges": {"target": {"$in": nodes}}}}
         )
-        
+
         # 2. Delete the node documents
         await self.collection.delete_many({"_id": {"$in": nodes}})
-        
+
         logger.debug(f"Successfully deleted nodes: {nodes}")
 
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
@@ -825,20 +824,19 @@ class MongoGraphStorage(BaseGraphStorage):
         logger.info(f"Deleting {len(edges)} edges")
         if not edges:
             return
-        
+
         update_tasks = []
         for source, target in edges:
             # Remove edge pointing to target from source node's edges array
             update_tasks.append(
                 self.collection.update_one(
-                    {"_id": source},
-                    {"$pull": {"edges": {"target": target}}}
+                    {"_id": source}, {"$pull": {"edges": {"target": target}}}
                 )
             )
-        
+
         if update_tasks:
             await asyncio.gather(*update_tasks)
-            
+
         logger.debug(f"Successfully deleted edges: {edges}")
 
 
@@ -987,23 +985,29 @@ class MongoVectorDBStorage(BaseVectorStorage):
         logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
         if not ids:
             return
-        
+
         try:
             result = await self._data.delete_many({"_id": {"$in": ids}})
-            logger.debug(f"Successfully deleted {result.deleted_count} vectors from {self.namespace}")
+            logger.debug(
+                f"Successfully deleted {result.deleted_count} vectors from {self.namespace}"
+            )
         except PyMongoError as e:
-            logger.error(f"Error while deleting vectors from {self.namespace}: {str(e)}")
+            logger.error(
+                f"Error while deleting vectors from {self.namespace}: {str(e)}"
+            )
 
     async def delete_entity(self, entity_name: str) -> None:
         """Delete an entity by its name
-        
+
         Args:
             entity_name: Name of the entity to delete
         """
         try:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
-            
+            logger.debug(
+                f"Attempting to delete entity {entity_name} with ID {entity_id}"
+            )
+
             result = await self._data.delete_one({"_id": entity_id})
             if result.deleted_count > 0:
                 logger.debug(f"Successfully deleted entity {entity_name}")
@@ -1014,7 +1018,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete all relations associated with an entity
-        
+
         Args:
             entity_name: Name of the entity whose relations should be deleted
         """
@@ -1024,15 +1028,17 @@ class MongoVectorDBStorage(BaseVectorStorage):
                 {"$or": [{"src_id": entity_name}, {"tgt_id": entity_name}]}
             )
             relations = await relations_cursor.to_list(length=None)
-            
+
             if not relations:
                 logger.debug(f"No relations found for entity {entity_name}")
                 return
-            
+
             # Extract IDs of relations to delete
             relation_ids = [relation["_id"] for relation in relations]
-            logger.debug(f"Found {len(relation_ids)} relations for entity {entity_name}")
-            
+            logger.debug(
+                f"Found {len(relation_ids)} relations for entity {entity_name}"
+            )
+
             # Delete the relations
             result = await self._data.delete_many({"_id": {"$in": relation_ids}})
             logger.debug(f"Deleted {result.deleted_count} relations for {entity_name}")

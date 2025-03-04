@@ -444,27 +444,29 @@ class OracleVectorDBStorage(BaseVectorStorage):
 
     async def delete(self, ids: list[str]) -> None:
         """Delete vectors with specified IDs
-        
+
         Args:
             ids: List of vector IDs to be deleted
         """
         if not ids:
             return
-            
+
         try:
             SQL = SQL_TEMPLATES["delete_vectors"].format(
                 ids=",".join([f"'{id}'" for id in ids])
             )
             params = {"workspace": self.db.workspace}
             await self.db.execute(SQL, params)
-            logger.info(f"Successfully deleted {len(ids)} vectors from {self.namespace}")
+            logger.info(
+                f"Successfully deleted {len(ids)} vectors from {self.namespace}"
+            )
         except Exception as e:
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
             raise
 
     async def delete_entity(self, entity_name: str) -> None:
         """Delete entity by name
-        
+
         Args:
             entity_name: Name of the entity to delete
         """
@@ -479,7 +481,7 @@ class OracleVectorDBStorage(BaseVectorStorage):
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete all relations connected to an entity
-        
+
         Args:
             entity_name: Name of the entity whose relations should be deleted
         """
@@ -713,7 +715,7 @@ class OracleGraphStorage(BaseGraphStorage):
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node from the graph
-        
+
         Args:
             node_id: ID of the node to delete
         """
@@ -722,33 +724,35 @@ class OracleGraphStorage(BaseGraphStorage):
             delete_relations_sql = SQL_TEMPLATES["delete_entity_relations"]
             params_relations = {"workspace": self.db.workspace, "entity_name": node_id}
             await self.db.execute(delete_relations_sql, params_relations)
-            
+
             # Then delete the node itself
             delete_node_sql = SQL_TEMPLATES["delete_entity"]
             params_node = {"workspace": self.db.workspace, "entity_name": node_id}
             await self.db.execute(delete_node_sql, params_node)
-            
-            logger.info(f"Successfully deleted node {node_id} and all its relationships")
+
+            logger.info(
+                f"Successfully deleted node {node_id} and all its relationships"
+            )
         except Exception as e:
             logger.error(f"Error deleting node {node_id}: {e}")
             raise
 
     async def get_all_labels(self) -> list[str]:
         """Get all unique entity types (labels) in the graph
-        
+
         Returns:
             List of unique entity types/labels
         """
         try:
             SQL = """
-                SELECT DISTINCT entity_type 
-                FROM LIGHTRAG_GRAPH_NODES 
-                WHERE workspace = :workspace 
+                SELECT DISTINCT entity_type
+                FROM LIGHTRAG_GRAPH_NODES
+                WHERE workspace = :workspace
                 ORDER BY entity_type
             """
             params = {"workspace": self.db.workspace}
             results = await self.db.query(SQL, params, multirows=True)
-            
+
             if results:
                 labels = [row["entity_type"] for row in results]
                 return labels
@@ -762,26 +766,26 @@ class OracleGraphStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
         """Retrieve a connected subgraph starting from nodes matching the given label
-        
+
         Maximum number of nodes is constrained by MAX_GRAPH_NODES environment variable.
         Prioritizes nodes by:
         1. Nodes matching the specified label
         2. Nodes directly connected to matching nodes
         3. Node degree (number of connections)
-        
+
         Args:
             node_label: Label to match for starting nodes (use "*" for all nodes)
             max_depth: Maximum depth of traversal from starting nodes
-            
+
         Returns:
             KnowledgeGraph object containing nodes and edges
         """
         result = KnowledgeGraph()
-        
+
         try:
             # Define maximum number of nodes to return
             max_graph_nodes = int(os.environ.get("MAX_GRAPH_NODES", 1000))
-            
+
             if node_label == "*":
                 # For "*" label, get all nodes up to the limit
                 nodes_sql = """
@@ -791,30 +795,33 @@ class OracleGraphStorage(BaseGraphStorage):
                     ORDER BY id
                     FETCH FIRST :limit ROWS ONLY
                 """
-                nodes_params = {"workspace": self.db.workspace, "limit": max_graph_nodes}
+                nodes_params = {
+                    "workspace": self.db.workspace,
+                    "limit": max_graph_nodes,
+                }
                 nodes = await self.db.query(nodes_sql, nodes_params, multirows=True)
             else:
                 # For specific label, find matching nodes and related nodes
                 nodes_sql = """
                     WITH matching_nodes AS (
-                        SELECT name 
+                        SELECT name
                         FROM LIGHTRAG_GRAPH_NODES
-                        WHERE workspace = :workspace 
+                        WHERE workspace = :workspace
                         AND (name LIKE '%' || :node_label || '%' OR entity_type LIKE '%' || :node_label || '%')
                     )
                     SELECT n.name, n.entity_type, n.description, n.source_chunk_id,
                            CASE
                                WHEN n.name IN (SELECT name FROM matching_nodes) THEN 2
                                WHEN EXISTS (
-                                   SELECT 1 FROM LIGHTRAG_GRAPH_EDGES e 
+                                   SELECT 1 FROM LIGHTRAG_GRAPH_EDGES e
                                    WHERE workspace = :workspace
                                    AND ((e.source_name = n.name AND e.target_name IN (SELECT name FROM matching_nodes))
                                       OR (e.target_name = n.name AND e.source_name IN (SELECT name FROM matching_nodes)))
                                ) THEN 1
                                ELSE 0
                            END AS priority,
-                           (SELECT COUNT(*) FROM LIGHTRAG_GRAPH_EDGES e 
-                            WHERE workspace = :workspace 
+                           (SELECT COUNT(*) FROM LIGHTRAG_GRAPH_EDGES e
+                            WHERE workspace = :workspace
                             AND (e.source_name = n.name OR e.target_name = n.name)) AS degree
                     FROM LIGHTRAG_GRAPH_NODES n
                     WHERE workspace = :workspace
@@ -822,43 +829,41 @@ class OracleGraphStorage(BaseGraphStorage):
                     FETCH FIRST :limit ROWS ONLY
                 """
                 nodes_params = {
-                    "workspace": self.db.workspace, 
+                    "workspace": self.db.workspace,
                     "node_label": node_label,
-                    "limit": max_graph_nodes
+                    "limit": max_graph_nodes,
                 }
                 nodes = await self.db.query(nodes_sql, nodes_params, multirows=True)
-            
+
             if not nodes:
                 logger.warning(f"No nodes found matching '{node_label}'")
                 return result
-                
+
             # Create mapping of node IDs to be used to filter edges
             node_names = [node["name"] for node in nodes]
-            
+
             # Add nodes to result
             seen_nodes = set()
             for node in nodes:
                 node_id = node["name"]
                 if node_id in seen_nodes:
                     continue
-                    
+
                 # Create node properties dictionary
                 properties = {
                     "entity_type": node["entity_type"],
                     "description": node["description"] or "",
-                    "source_id": node["source_chunk_id"] or ""
+                    "source_id": node["source_chunk_id"] or "",
                 }
-                
+
                 # Add node to result
                 result.nodes.append(
                     KnowledgeGraphNode(
-                        id=node_id,
-                        labels=[node["entity_type"]],
-                        properties=properties
+                        id=node_id, labels=[node["entity_type"]], properties=properties
                     )
                 )
                 seen_nodes.add(node_id)
-            
+
             # Get edges between these nodes
             edges_sql = """
                 SELECT source_name, target_name, weight, keywords, description, source_chunk_id
@@ -868,30 +873,27 @@ class OracleGraphStorage(BaseGraphStorage):
                 AND target_name IN (SELECT COLUMN_VALUE FROM TABLE(CAST(:node_names AS SYS.ODCIVARCHAR2LIST)))
                 ORDER BY id
             """
-            edges_params = {
-                "workspace": self.db.workspace,
-                "node_names": node_names
-            }
+            edges_params = {"workspace": self.db.workspace, "node_names": node_names}
             edges = await self.db.query(edges_sql, edges_params, multirows=True)
-            
+
             # Add edges to result
             seen_edges = set()
             for edge in edges:
                 source = edge["source_name"]
                 target = edge["target_name"]
                 edge_id = f"{source}-{target}"
-                
+
                 if edge_id in seen_edges:
                     continue
-                
+
                 # Create edge properties dictionary
                 properties = {
                     "weight": edge["weight"] or 0.0,
                     "keywords": edge["keywords"] or "",
                     "description": edge["description"] or "",
-                    "source_id": edge["source_chunk_id"] or ""
+                    "source_id": edge["source_chunk_id"] or "",
                 }
-                
+
                 # Add edge to result
                 result.edges.append(
                     KnowledgeGraphEdge(
@@ -899,18 +901,18 @@ class OracleGraphStorage(BaseGraphStorage):
                         type="RELATED",
                         source=source,
                         target=target,
-                        properties=properties
+                        properties=properties,
                     )
                 )
                 seen_edges.add(edge_id)
-            
+
             logger.info(
                 f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
             )
-            
+
         except Exception as e:
             logger.error(f"Error retrieving knowledge graph: {e}")
-        
+
         return result
 
 
@@ -1166,8 +1168,8 @@ SQL_TEMPLATES = {
     "delete_vectors": "DELETE FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=:workspace AND id IN ({ids})",
     "delete_entity": "DELETE FROM LIGHTRAG_GRAPH_NODES WHERE workspace=:workspace AND name=:entity_name",
     "delete_entity_relations": "DELETE FROM LIGHTRAG_GRAPH_EDGES WHERE workspace=:workspace AND (source_name=:entity_name OR target_name=:entity_name)",
-    "delete_node": """DELETE FROM GRAPH_TABLE (lightrag_graph 
-        MATCH (a) 
-        WHERE a.workspace=:workspace AND a.name=:node_id 
+    "delete_node": """DELETE FROM GRAPH_TABLE (lightrag_graph
+        MATCH (a)
+        WHERE a.workspace=:workspace AND a.name=:node_id
         ACTION DELETE a)""",
 }
