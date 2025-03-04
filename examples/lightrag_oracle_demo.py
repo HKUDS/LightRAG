@@ -107,7 +107,7 @@ async def initialize_rag():
 async def main():
     try:
         # Initialize RAG instance
-        rag = asyncio.run(initialize_rag())
+        rag = await initialize_rag()
 
         # Extract and Insert into LightRAG storage
         with open(WORKING_DIR + "/docs.txt", "r", encoding="utf-8") as f:

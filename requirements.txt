@@ -3,7 +3,7 @@ configparser
 future
 
 # Basic modules
-numpy
+gensim
 pipmaster
 pydantic
 python-dotenv
