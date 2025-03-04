@@ -16,7 +16,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from lightrag.types import KnowledgeGraph
+from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
 
 from ..base import BaseGraphStorage
@@ -396,17 +396,302 @@ class GremlinStorage(BaseGraphStorage):
         print("Implemented but never called.")
 
     async def delete_node(self, node_id: str) -> None:
-        raise NotImplementedError
+        """Delete a node with the specified entity_name
+
+        Args:
+            node_id: The entity_name of the node to delete
+        """
+        entity_name = GremlinStorage._fix_name(node_id)
+
+        query = f"""g
+                 .V().has('graph', {self.graph_name})
+                 .has('entity_name', {entity_name})
+                 .drop()
+                 """
+        try:
+            await self._query(query)
+            logger.debug(
+                "{%s}: Deleted node with entity_name '%s'",
+                inspect.currentframe().f_code.co_name,
+                entity_name,
+            )
+        except Exception as e:
+            logger.error(f"Error during node deletion: {str(e)}")
+            raise
 
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError
+        """
+        Embed nodes using the specified algorithm.
+        Currently, only node2vec is supported but never called.
+
+        Args:
+            algorithm: The name of the embedding algorithm to use
+
+        Returns:
+            A tuple of (embeddings, node_ids)
+
+        Raises:
+            NotImplementedError: If the specified algorithm is not supported
+            ValueError: If the algorithm is not supported
+        """
+        if algorithm not in self._node_embed_algorithms:
+            raise ValueError(f"Node embedding algorithm {algorithm} not supported")
+        return await self._node_embed_algorithms[algorithm]()
 
     async def get_all_labels(self) -> list[str]:
-        raise NotImplementedError
+        """
+        Get all node entity_names in the graph
+        Returns:
+            [entity_name1, entity_name2, ...]  # Alphabetically sorted entity_name list
+        """
+        query = f"""g
+                 .V().has('graph', {self.graph_name})
+                 .values('entity_name')
+                 .dedup()
+                 .order()
+                 """
+        try:
+            result = await self._query(query)
+            labels = result if result else []
+            logger.debug(
+                "{%s}: Retrieved %d labels",
+                inspect.currentframe().f_code.co_name,
+                len(labels),
+            )
+            return labels
+        except Exception as e:
+            logger.error(f"Error retrieving labels: {str(e)}")
+            return []
 
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
-        raise NotImplementedError
+        """
+        Retrieve a connected subgraph of nodes where the entity_name includes the specified `node_label`.
+        Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
+
+        Args:
+            node_label: Entity name of the starting node
+            max_depth: Maximum depth of the subgraph
+
+        Returns:
+            KnowledgeGraph object containing nodes and edges
+        """
+        result = KnowledgeGraph()
+        seen_nodes = set()
+        seen_edges = set()
+
+        # Get maximum number of graph nodes from environment variable, default is 1000
+        MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
+
+        entity_name = GremlinStorage._fix_name(node_label)
+
+        # Handle special case for "*" label
+        if node_label == "*":
+            # For "*", get all nodes and their edges (limited by MAX_GRAPH_NODES)
+            query = f"""g
+                     .V().has('graph', {self.graph_name})
+                     .limit({MAX_GRAPH_NODES})
+                     .elementMap()
+                     """
+            nodes_result = await self._query(query)
+
+            # Add nodes to result
+            for node_data in nodes_result:
+                node_id = node_data.get("entity_name", str(node_data.get("id", "")))
+                if str(node_id) in seen_nodes:
+                    continue
+
+                # Create node with properties
+                node_properties = {
+                    k: v for k, v in node_data.items() if k not in ["id", "label"]
+                }
+
+                result.nodes.append(
+                    KnowledgeGraphNode(
+                        id=str(node_id),
+                        labels=[str(node_id)],
+                        properties=node_properties,
+                    )
+                )
+                seen_nodes.add(str(node_id))
+
+            # Get and add edges
+            if nodes_result:
+                query = f"""g
+                         .V().has('graph', {self.graph_name})
+                         .limit({MAX_GRAPH_NODES})
+                         .outE()
+                         .inV().has('graph', {self.graph_name})
+                         .limit({MAX_GRAPH_NODES})
+                         .path()
+                         .by(elementMap())
+                         .by(elementMap())
+                         .by(elementMap())
+                         """
+                edges_result = await self._query(query)
+
+                for path in edges_result:
+                    if len(path) >= 3:  # source -> edge -> target
+                        source = path[0]
+                        edge_data = path[1]
+                        target = path[2]
+
+                        source_id = source.get("entity_name", str(source.get("id", "")))
+                        target_id = target.get("entity_name", str(target.get("id", "")))
+
+                        edge_id = f"{source_id}-{target_id}"
+                        if edge_id in seen_edges:
+                            continue
+
+                        # Create edge with properties
+                        edge_properties = {
+                            k: v
+                            for k, v in edge_data.items()
+                            if k not in ["id", "label"]
+                        }
+
+                        result.edges.append(
+                            KnowledgeGraphEdge(
+                                id=edge_id,
+                                type="DIRECTED",
+                                source=str(source_id),
+                                target=str(target_id),
+                                properties=edge_properties,
+                            )
+                        )
+                        seen_edges.add(edge_id)
+        else:
+            # Search for specific node and get its neighborhood
+            query = f"""g
+                     .V().has('graph', {self.graph_name})
+                     .has('entity_name', {entity_name})
+                     .repeat(__.both().simplePath().dedup())
+                     .times({max_depth})
+                     .emit()
+                     .dedup()
+                     .limit({MAX_GRAPH_NODES})
+                     .elementMap()
+                     """
+            nodes_result = await self._query(query)
+
+            # Add nodes to result
+            for node_data in nodes_result:
+                node_id = node_data.get("entity_name", str(node_data.get("id", "")))
+                if str(node_id) in seen_nodes:
+                    continue
+
+                # Create node with properties
+                node_properties = {
+                    k: v for k, v in node_data.items() if k not in ["id", "label"]
+                }
+
+                result.nodes.append(
+                    KnowledgeGraphNode(
+                        id=str(node_id),
+                        labels=[str(node_id)],
+                        properties=node_properties,
+                    )
+                )
+                seen_nodes.add(str(node_id))
+
+            # Get edges between the nodes in the result
+            if nodes_result:
+                node_ids = [
+                    n.get("entity_name", str(n.get("id", ""))) for n in nodes_result
+                ]
+                node_ids_query = ", ".join(
+                    [GremlinStorage._to_value_map(nid) for nid in node_ids]
+                )
+
+                query = f"""g
+                         .V().has('graph', {self.graph_name})
+                         .has('entity_name', within({node_ids_query}))
+                         .outE()
+                         .where(inV().has('graph', {self.graph_name})
+                                .has('entity_name', within({node_ids_query})))
+                         .path()
+                         .by(elementMap())
+                         .by(elementMap())
+                         .by(elementMap())
+                         """
+                edges_result = await self._query(query)
+
+                for path in edges_result:
+                    if len(path) >= 3:  # source -> edge -> target
+                        source = path[0]
+                        edge_data = path[1]
+                        target = path[2]
+
+                        source_id = source.get("entity_name", str(source.get("id", "")))
+                        target_id = target.get("entity_name", str(target.get("id", "")))
+
+                        edge_id = f"{source_id}-{target_id}"
+                        if edge_id in seen_edges:
+                            continue
+
+                        # Create edge with properties
+                        edge_properties = {
+                            k: v
+                            for k, v in edge_data.items()
+                            if k not in ["id", "label"]
+                        }
+
+                        result.edges.append(
+                            KnowledgeGraphEdge(
+                                id=edge_id,
+                                type="DIRECTED",
+                                source=str(source_id),
+                                target=str(target_id),
+                                properties=edge_properties,
+                            )
+                        )
+                        seen_edges.add(edge_id)
+
+        logger.info(
+            "Subgraph query successful | Node count: %d | Edge count: %d",
+            len(result.nodes),
+            len(result.edges),
+        )
+        return result
+
+    async def remove_nodes(self, nodes: list[str]):
+        """Delete multiple nodes
+
+        Args:
+            nodes: List of node entity_names to be deleted
+        """
+        for node in nodes:
+            await self.delete_node(node)
+
+    async def remove_edges(self, edges: list[tuple[str, str]]):
+        """Delete multiple edges
+
+        Args:
+            edges: List of edges to be deleted, each edge is a (source, target) tuple
+        """
+        for source, target in edges:
+            entity_name_source = GremlinStorage._fix_name(source)
+            entity_name_target = GremlinStorage._fix_name(target)
+
+            query = f"""g
+                     .V().has('graph', {self.graph_name})
+                     .has('entity_name', {entity_name_source})
+                     .outE()
+                     .where(inV().has('graph', {self.graph_name})
+                            .has('entity_name', {entity_name_target}))
+                     .drop()
+                     """
+            try:
+                await self._query(query)
+                logger.debug(
+                    "{%s}: Deleted edge from '%s' to '%s'",
+                    inspect.currentframe().f_code.co_name,
+                    entity_name_source,
+                    entity_name_target,
+                )
+            except Exception as e:
+                logger.error(f"Error during edge deletion: {str(e)}")
+                raise
