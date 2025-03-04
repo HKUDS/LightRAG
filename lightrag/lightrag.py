@@ -236,9 +236,11 @@ class LightRAG:
     max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 20)))
     """Maximum number of parallel insert operations."""
 
-    addon_params: dict[str, Any] = field(default_factory=lambda: {
-        "language": os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"])
-    })
+    addon_params: dict[str, Any] = field(
+        default_factory=lambda: {
+            "language": os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"])
+        }
+    )
 
     # Storages Management
     # ---
