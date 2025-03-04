@@ -860,18 +860,28 @@ class LightRAG:
                                     }
                                 )
                             )
-                            chunks_vdb_task = asyncio.create_task(self.chunks_vdb.upsert(chunks))
-                            entity_relation_task = asyncio.create_task(self._process_entity_relation_graph(chunks))
-                            full_docs_task = asyncio.create_task(
-                                self.full_docs.upsert({doc_id: {"content": status_doc.content}})
+                            chunks_vdb_task = asyncio.create_task(
+                                self.chunks_vdb.upsert(chunks)
                             )
-                            text_chunks_task = asyncio.create_task(self.text_chunks.upsert(chunks))
-
-                            tasks = [doc_status_task, chunks_vdb_task, entity_relation_task, full_docs_task, text_chunks_task]
+                            entity_relation_task = asyncio.create_task(
+                                self._process_entity_relation_graph(chunks)
+                            )
+                            full_docs_task = asyncio.create_task(
+                                self.full_docs.upsert(
+                                    {doc_id: {"content": status_doc.content}}
+                                )
+                            )
+                            text_chunks_task = asyncio.create_task(
+                                self.text_chunks.upsert(chunks)
+                            )
+                            tasks = [
+                                doc_status_task,
+                                chunks_vdb_task,
+                                entity_relation_task,
+                                full_docs_task,
+                                text_chunks_task,
+                            ]
                             try:
-                                # Wait for entity_relation_task first as it's critical
-                                await entity_relation_task
-                                # If successful, wait for other tasks
                                 await asyncio.gather(*tasks)
                                 await self.doc_status.upsert(
                                     {
@@ -888,13 +898,20 @@ class LightRAG:
                                 )
                             except Exception as e:
                                 # Log error and update pipeline status
-                                error_msg = f"Failed to process document {doc_id}: {str(e)}"
+                                error_msg = (
+                                    f"Failed to process document {doc_id}: {str(e)}"
+                                )
                                 logger.error(error_msg)
                                 pipeline_status["latest_message"] = error_msg
                                 pipeline_status["history_messages"].append(error_msg)
 
                                 # Cancel other tasks as they are no longer meaningful
-                                for task in [chunks_vdb_task, full_docs_task, text_chunks_task]:
+                                for task in [
+                                    chunks_vdb_task,
+                                    entity_relation_task,
+                                    full_docs_task,
+                                    text_chunks_task,
+                                ]:
                                     if not task.done():
                                         task.cancel()
 
@@ -941,7 +958,7 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-                # 获取新的待处理文档
+                # Check for pending documents again
                 processing_docs, failed_docs, pending_docs = await asyncio.gather(
                     self.doc_status.get_docs_by_status(DocStatus.PROCESSING),
                     self.doc_status.get_docs_by_status(DocStatus.FAILED),
