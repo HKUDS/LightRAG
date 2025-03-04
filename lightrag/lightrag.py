@@ -1173,7 +1173,7 @@ class LightRAG:
         """
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query(
-                query,
+                query.strip(),
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
                 self.relationships_vdb,
@@ -1194,7 +1194,7 @@ class LightRAG:
             )
         elif param.mode == "naive":
             response = await naive_query(
-                query,
+                query.strip(),
                 self.chunks_vdb,
                 self.text_chunks,
                 param,
@@ -1213,7 +1213,7 @@ class LightRAG:
             )
         elif param.mode == "mix":
             response = await mix_kg_vector_query(
-                query,
+                query.strip(),
                 self.chunk_entity_relation_graph,
                 self.entities_vdb,
                 self.relationships_vdb,
