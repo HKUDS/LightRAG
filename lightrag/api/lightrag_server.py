@@ -410,10 +410,6 @@ def create_app(args):
         name="webui",
     )
 
-    @app.get("/webui/")
-    async def webui_root():
-        return FileResponse(static_dir / "index.html")
-
     return app
 
 
