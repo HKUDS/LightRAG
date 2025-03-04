@@ -742,5 +742,23 @@ def create_document_routes(
             logger.error(f"Error GET /documents: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
-
+    # 删除单个文档及其建立的知识图谱
+    
+    # 删除单个文档及其建立的知识图谱
+    @router.delete(
+        "/{document_id}",
+        response_model=InsertResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
+    async def delete_document(document_id: str):
+        try:
+            await rag.adelete_by_doc_id(document_id)
+            return InsertResponse(
+                status="success",
+                message=f"Document {document_id} cleared successfully"
+            )
+        except Exception as e:
+            print(e)
+            raise HTTPException(status_code=500, detail=str(e))
+    
     return router

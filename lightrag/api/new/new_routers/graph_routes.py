@@ -8,7 +8,7 @@ router = APIRouter(prefix="/new", tags=["query"])
 
 
 class DataResponse(BaseModel):
-    code: int
+    status: str
     message: str
     data: Any
 
@@ -37,7 +37,7 @@ def create_new_graph_routes(
                 with open(cachefile, "w") as f:
                     f.write("{}")
             return DataResponse(
-                code=0,
+                status="success",
                 message=f"Manually reset cache successfully",
                 data="ok",
             )
@@ -74,7 +74,7 @@ def create_new_graph_routes(
             await rag.aedit_entity(entity_name,node_data)
             new_entity_name = entity_name
             data = {"id": new_entity_name, "label": new_entity_name, **node_data}
-            return DataResponse(code=0, message="ok", data=data)
+            return DataResponse(status="success", message="ok", data=data)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -88,7 +88,7 @@ def create_new_graph_routes(
         print(f"Deleting entity {entity_name}")
         try:
             await rag.adelete_by_entity(entity_name)
-            return DataResponse(code=0, message="ok", data=None)
+            return DataResponse(status="success", message="ok", data=None)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -123,12 +123,12 @@ def create_new_graph_routes(
             # Insert node data into the knowledge graph
             await rag.aedit_relation(src_id, tgt_id, edge_data)
             data = {
-                "id": src_id + "_" + tgt_id,
+                "id": src_id + "-" + tgt_id,
                 "source": src_id,
                 "target": tgt_id,
                 **edge_data,
             }
-            return DataResponse(code=0, message="ok", data=data)
+            return DataResponse(status="success", message="ok", data=data)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -150,7 +150,7 @@ def create_new_graph_routes(
             rag.chunk_entity_relation_graph.remove_edges(list(relationships_to_delete))
             await rag.relationships_vdb.index_done_callback()
             await rag.chunk_entity_relation_graph.index_done_callback()
-            return DataResponse(code=0, message="ok", data="")
+            return DataResponse(status="success", message="ok", data="")
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -163,7 +163,7 @@ def create_new_graph_routes(
     async def get_node(entity_name: str, rag=Depends(optional_working_dir)):
         try:
             node = await rag.chunk_entity_relation_graph.get_node(entity_name)
-            return DataResponse(code=0, message="ok", data=node)
+            return DataResponse(status="success", message="ok", data=node)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -180,7 +180,7 @@ def create_new_graph_routes(
             relation = await rag.chunk_entity_relation_graph.get_edge(
                 src_entity_name, tgt_entity_name
             )
-            return DataResponse(code=0, message="ok", data=relation)
+            return DataResponse(status="success", message="ok", data=relation)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -193,7 +193,7 @@ def create_new_graph_routes(
     async def get_relation_by_node(node_id: str, rag=Depends(optional_working_dir)):
         try:
             relations = await rag.chunk_entity_relation_graph.get_node_edges(node_id)
-            return DataResponse(code=0, message="ok", data=relations)
+            return DataResponse(status="success", message="ok", data=relations)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -210,7 +210,7 @@ def create_new_graph_routes(
 
             # 返回知识图谱数据
             return DataResponse(
-                code=0,
+                status="success",
                 message="ok",
                 data=entities,
             )
@@ -219,18 +219,13 @@ def create_new_graph_routes(
 
     # 知识图谱-数据查询
     @router.get(
-        "/graph/data",
-        response_model=DataResponse,
+        "/graphs",
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_graph_data(rag=Depends(optional_working_dir)):
+    async def get_graph_data(label: str, max_depth: int = 3,rag=Depends(optional_working_dir)):
         try:
-            # 提取所有实体和关系
-            entities = await rag.chunk_entity_relation_graph.query_all()
-            # 返回知识图谱数据
-            return DataResponse(code=0, message="ok", data=entities)
+            return await rag.get_knowledge_graph(node_label=label, max_depth=max_depth)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-
-
+        
     return router

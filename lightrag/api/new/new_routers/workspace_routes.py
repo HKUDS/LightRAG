@@ -18,7 +18,7 @@ from starlette.status import HTTP_403_FORBIDDEN
 router = APIRouter(prefix="/new", tags=["workspace"])
 
 class DataResponse(BaseModel):
-    code: int
+    status: str
     message: str
     data: Any
 
@@ -70,7 +70,7 @@ def create_new_workspace_routes(
                         }
                     )
             return DataResponse(
-                code=0,
+                status="success",
                 message="ok",
                 data=workspaces,
             )
@@ -99,7 +99,7 @@ def create_new_workspace_routes(
                 "mtime": dir_info.st_mtime,
                 "birthtime": getattr(dir_info, "st_birthtime", dir_info.st_mtime),
             }
-            return DataResponse(code=0, message="ok", data=data)
+            return DataResponse(status="success", message="ok", data=data)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -127,7 +127,7 @@ def create_new_workspace_routes(
             data = {
                 "name": workspace,
             }
-            return DataResponse(code=0, message="ok", data=data)
+            return DataResponse(status="success", message="ok", data=data)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -171,7 +171,7 @@ def create_new_workspace_routes(
             data = {
                 "name": new_workspace,
             }
-            return DataResponse(code=0, message="ok", data=data)
+            return DataResponse(status="success", message="ok", data=data)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -189,7 +189,7 @@ def create_new_workspace_routes(
             # 如果存在 workspace，则删除它
             if Path(workspace_path).exists():
                 shutil.rmtree(workspace_path)
-            return DataResponse(code=0, message="ok", data=None)
+            return DataResponse(status="success", message="ok", data=None)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 

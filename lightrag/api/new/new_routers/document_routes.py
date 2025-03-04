@@ -190,7 +190,7 @@ def create_new_document_routes(
         try:
             await rag.adelete_by_doc_id(document_id)
             return DataResponse(
-                code=0,
+                status="success",
                 message=f"Document {document_id} cleared successfully",
                 data="ok",
             )
@@ -225,7 +225,7 @@ def create_new_document_routes(
             await rag.chunks_vdb.index_done_callback()
 
             return DataResponse(
-                code=0, message="All documents cleared successfully", data="ok"
+                status="success", message="All documents cleared successfully", data="ok"
             )
         except Exception as e:
             print(e)
@@ -287,7 +287,7 @@ def create_new_document_routes(
             document = await rag.full_docs.get_by_id(document_id)
             if not doc_status_document:
                 return DataResponse(
-                    code=0,
+                    status="success",
                     message=f"Document {document_id} get successfully",
                     data=None,
                 )
@@ -306,7 +306,7 @@ def create_new_document_routes(
                 )
             # 返回知识图谱数据
             return DataResponse(
-                code=0,
+                status="success",
                 message="ok",
                 data={
                     "doc_status_document": doc_status_document,
