@@ -1555,51 +1555,57 @@ class LightRAG:
                 await self.text_chunks.delete(chunk_ids)
 
             # 5. Find and process entities and relationships that have these chunks as source
-            # Get all nodes in the graph
-            nodes = self.chunk_entity_relation_graph._graph.nodes(data=True)
-            edges = self.chunk_entity_relation_graph._graph.edges(data=True)
-
-            # Track which entities and relationships need to be deleted or updated
+            # Get all nodes and edges from the graph storage using storage-agnostic methods
             entities_to_delete = set()
             entities_to_update = {}  # entity_name -> new_source_id
             relationships_to_delete = set()
             relationships_to_update = {}  # (src, tgt) -> new_source_id
 
-            # Process entities
-            for node, data in nodes:
-                if "source_id" in data:
+            # Process entities - use storage-agnostic methods
+            all_labels = await self.chunk_entity_relation_graph.get_all_labels()
+            for node_label in all_labels:
+                node_data = await self.chunk_entity_relation_graph.get_node(node_label)
+                if node_data and "source_id" in node_data:
                     # Split source_id using GRAPH_FIELD_SEP
-                    sources = set(data["source_id"].split(GRAPH_FIELD_SEP))
+                    sources = set(node_data["source_id"].split(GRAPH_FIELD_SEP))
                     sources.difference_update(chunk_ids)
                     if not sources:
-                        entities_to_delete.add(node)
+                        entities_to_delete.add(node_label)
                         logger.debug(
-                            f"Entity {node} marked for deletion - no remaining sources"
+                            f"Entity {node_label} marked for deletion - no remaining sources"
                         )
                     else:
                         new_source_id = GRAPH_FIELD_SEP.join(sources)
-                        entities_to_update[node] = new_source_id
+                        entities_to_update[node_label] = new_source_id
                         logger.debug(
-                            f"Entity {node} will be updated with new source_id: {new_source_id}"
+                            f"Entity {node_label} will be updated with new source_id: {new_source_id}"
                         )
 
             # Process relationships
-            for src, tgt, data in edges:
-                if "source_id" in data:
-                    # Split source_id using GRAPH_FIELD_SEP
-                    sources = set(data["source_id"].split(GRAPH_FIELD_SEP))
-                    sources.difference_update(chunk_ids)
-                    if not sources:
-                        relationships_to_delete.add((src, tgt))
-                        logger.debug(
-                            f"Relationship {src}-{tgt} marked for deletion - no remaining sources"
+            for node_label in all_labels:
+                node_edges = await self.chunk_entity_relation_graph.get_node_edges(
+                    node_label
+                )
+                if node_edges:
+                    for src, tgt in node_edges:
+                        edge_data = await self.chunk_entity_relation_graph.get_edge(
+                            src, tgt
                         )
-                    else:
-                        new_source_id = GRAPH_FIELD_SEP.join(sources)
-                        relationships_to_update[(src, tgt)] = new_source_id
-                        logger.debug(
-                            f"Relationship {src}-{tgt} will be updated with new source_id: {new_source_id}"
-                        )
+                        if edge_data and "source_id" in edge_data:
+                            # Split source_id using GRAPH_FIELD_SEP
+                            sources = set(edge_data["source_id"].split(GRAPH_FIELD_SEP))
+                            sources.difference_update(chunk_ids)
+                            if not sources:
+                                relationships_to_delete.add((src, tgt))
+                                logger.debug(
+                                    f"Relationship {src}-{tgt} marked for deletion - no remaining sources"
+                                )
+                            else:
+                                new_source_id = GRAPH_FIELD_SEP.join(sources)
+                                relationships_to_update[(src, tgt)] = new_source_id
+                                logger.debug(
+                                    f"Relationship {src}-{tgt} will be updated with new source_id: {new_source_id}"
+                                )
 
             # Delete entities
             if entities_to_delete:
@@ -1613,12 +1619,15 @@ class LightRAG:
 
             # Update entities
             for entity, new_source_id in entities_to_update.items():
-                node_data = self.chunk_entity_relation_graph._graph.nodes[entity]
-                node_data["source_id"] = new_source_id
-                await self.chunk_entity_relation_graph.upsert_node(entity, node_data)
-                logger.debug(
-                    f"Updated entity {entity} with new source_id: {new_source_id}"
-                )
+                node_data = await self.chunk_entity_relation_graph.get_node(entity)
+                if node_data:
+                    node_data["source_id"] = new_source_id
+                    await self.chunk_entity_relation_graph.upsert_node(
+                        entity, node_data
+                    )
+                    logger.debug(
+                        f"Updated entity {entity} with new source_id: {new_source_id}"
+                    )
 
             # Delete relationships
             if relationships_to_delete:
@@ -1636,12 +1645,15 @@ class LightRAG:
 
             # Update relationships
             for (src, tgt), new_source_id in relationships_to_update.items():
-                edge_data = self.chunk_entity_relation_graph._graph.edges[src, tgt]
-                edge_data["source_id"] = new_source_id
-                await self.chunk_entity_relation_graph.upsert_edge(src, tgt, edge_data)
-                logger.debug(
-                    f"Updated relationship {src}-{tgt} with new source_id: {new_source_id}"
-                )
+                edge_data = await self.chunk_entity_relation_graph.get_edge(src, tgt)
+                if edge_data:
+                    edge_data["source_id"] = new_source_id
+                    await self.chunk_entity_relation_graph.upsert_edge(
+                        src, tgt, edge_data
+                    )
+                    logger.debug(
+                        f"Updated relationship {src}-{tgt} with new source_id: {new_source_id}"
+                    )
 
             # 6. Delete original document and status
             await self.full_docs.delete([doc_id])
