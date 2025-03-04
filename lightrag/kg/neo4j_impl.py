@@ -23,7 +23,7 @@ import pipmaster as pm
 if not pm.is_installed("neo4j"):
     pm.install("neo4j")
 
-from neo4j import (
+from neo4j import (  # type: ignore
     AsyncGraphDatabase,
     exceptions as neo4jExceptions,
     AsyncDriver,
@@ -33,6 +33,9 @@ from neo4j import (
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
+
+# Get maximum number of graph nodes from environment variable, default is 1000
+MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
 
 
 @final
@@ -470,40 +473,61 @@ class Neo4JStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
         """
-        Get complete connected subgraph for specified node (including the starting node itself)
+        Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
+        Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
+        When reducing the number of nodes, the prioritization criteria are as follows:
+            1. Label matching nodes take precedence (nodes containing the specified label string)
+            2. Followed by nodes directly connected to the matching nodes
+            3. Finally, the degree of the nodes
 
-        Key fixes:
-        1. Include the starting node itself
-        2. Handle multi-label nodes
-        3. Clarify relationship directions
-        4. Add depth control
+        Args:
+            node_label (str): String to match in node labels (will match any node containing this string in its label)
+            max_depth (int, optional): Maximum depth of the graph. Defaults to 5.
+        Returns:
+            KnowledgeGraph: Complete connected subgraph for specified node
         """
         label = node_label.strip('"')
+        # Escape single quotes to prevent injection attacks
+        escaped_label = label.replace("'", "\\'")
         result = KnowledgeGraph()
         seen_nodes = set()
         seen_edges = set()
 
         async with self._driver.session(database=self._DATABASE) as session:
             try:
-                main_query = ""
                 if label == "*":
                     main_query = """
                     MATCH (n)
-                    WITH collect(DISTINCT n) AS nodes
-                    MATCH ()-[r]-()
-                    RETURN nodes, collect(DISTINCT r) AS relationships;
+                    OPTIONAL MATCH (n)-[r]-()
+                    WITH n, count(r) AS degree
+                    ORDER BY degree DESC
+                    LIMIT $max_nodes
+                    WITH collect(n) AS nodes
+                    MATCH (a)-[r]->(b)
+                    WHERE a IN nodes AND b IN nodes
+                    RETURN nodes, collect(DISTINCT r) AS relationships
                     """
+                    result_set = await session.run(
+                        main_query, {"max_nodes": MAX_GRAPH_NODES}
+                    )
+
                 else:
-                    # Critical debug step: first verify if starting node exists
-                    validate_query = f"MATCH (n:`{label}`) RETURN n LIMIT 1"
+                    validate_query = f"""
+                    MATCH (n)
+                    WHERE any(label IN labels(n) WHERE label CONTAINS '{escaped_label}')
+                    RETURN n LIMIT 1
+                    """
                     validate_result = await session.run(validate_query)
                     if not await validate_result.single():
-                        logger.warning(f"Starting node {label} does not exist!")
+                        logger.warning(
+                            f"No nodes containing '{label}' in their labels found!"
+                        )
                         return result
 
-                    # Optimized query (including direction handling and self-loops)
+                    # Main query uses partial matching
                     main_query = f"""
-                    MATCH (start:`{label}`)
+                    MATCH (start)
+                    WHERE any(label IN labels(start) WHERE label CONTAINS '{escaped_label}')
                     WITH start
                     CALL apoc.path.subgraphAll(start, {{
                         relationshipFilter: '>',
@@ -512,9 +536,25 @@ class Neo4JStorage(BaseGraphStorage):
                         bfs: true
                     }})
                     YIELD nodes, relationships
-                    RETURN nodes, relationships
+                    WITH start, nodes, relationships
+                    UNWIND nodes AS node
+                    OPTIONAL MATCH (node)-[r]-()
+                    WITH node, count(r) AS degree, start, nodes, relationships,
+                            CASE
+                            WHEN id(node) = id(start) THEN 2
+                            WHEN EXISTS((start)-->(node)) OR EXISTS((node)-->(start)) THEN 1
+                            ELSE 0
+                            END AS priority
+                    ORDER BY priority DESC, degree DESC
+                    LIMIT $max_nodes
+                    WITH collect(node) AS filtered_nodes, nodes, relationships
+                    RETURN filtered_nodes AS nodes,
+                            [rel IN relationships WHERE startNode(rel) IN filtered_nodes AND endNode(rel) IN filtered_nodes] AS relationships
                     """
-                result_set = await session.run(main_query)
+                    result_set = await session.run(
+                        main_query, {"max_nodes": MAX_GRAPH_NODES}
+                    )
+
                 record = await result_set.single()
 
                 if record:
