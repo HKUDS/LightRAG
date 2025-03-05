@@ -299,7 +299,9 @@ class NetworkXStorage(BaseGraphStorage):
                 start_nodes = set(nodes_to_explore)
                 # Get nodes directly connected to all start nodes
                 for start_node in start_nodes:
-                    direct_connected_nodes.update(combined_subgraph.neighbors(start_node))
+                    direct_connected_nodes.update(
+                        combined_subgraph.neighbors(start_node)
+                    )
 
                 # Remove start nodes from directly connected nodes (avoid duplicates)
                 direct_connected_nodes -= start_nodes
@@ -309,7 +311,9 @@ class NetworkXStorage(BaseGraphStorage):
                 nodes_to_keep = [
                     node
                     for node, degree in combined_subgraph.degree()
-                    if node in start_nodes or node in direct_connected_nodes or degree >= min_degree
+                    if node in start_nodes
+                    or node in direct_connected_nodes
+                    or degree >= min_degree
                 ]
                 combined_subgraph = combined_subgraph.subgraph(nodes_to_keep)
 
