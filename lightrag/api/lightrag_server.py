@@ -5,6 +5,9 @@ LightRAG FastAPI Server
 from fastapi import (
     FastAPI,
     Depends,
+    HTTPException,
+    Request,
+    status
 )
 import asyncio
 import os
@@ -24,6 +27,7 @@ from lightrag.api.utils_api import (
     parse_args,
     get_default_host,
     display_splash_screen,
+    get_auth_dependency,
 )
 from lightrag import LightRAG
 from lightrag.types import GPTKeywordExtractionFormat
@@ -45,6 +49,8 @@ from lightrag.kg.shared_storage import (
     initialize_pipeline_status,
     get_all_update_flags_status,
 )
+from fastapi.security import OAuth2PasswordRequestForm
+from .auth import auth_handler
 
 # Load environment variables
 # Updated to use the .env that is inside the current folder
@@ -372,6 +378,28 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")
 
+    @app.post("/login")
+    async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+        username = os.getenv("AUTH_USERNAME")
+        password = os.getenv("AUTH_PASSWORD")
+
+        if not (username and password):
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Authentication not configured"
+            )
+
+        if form_data.username != username or form_data.password != password:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect credentials"
+            )
+
+        return {
+            "access_token": auth_handler.create_token(username),
+            "token_type": "bearer"
+        }
+
     @app.get("/health", dependencies=[Depends(optional_api_key)])
     async def get_status():
         """Get current system status"""
@@ -408,7 +436,7 @@ def create_app(args):
         StaticFiles(directory=static_dir, html=True, check_dir=True),
         name="webui",
     )
-
+    
     return app
 
 
