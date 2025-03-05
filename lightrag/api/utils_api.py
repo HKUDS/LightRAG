@@ -17,9 +17,7 @@ from starlette.status import HTTP_403_FORBIDDEN
 # Load environment variables
 load_dotenv(override=True)
 
-global_args={
-    "main_args":None
-}
+global_args = {"main_args": None}
 
 
 class OllamaServerInfos:
@@ -344,13 +342,13 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
-    
+
     # Select Document loading tool
     args.document_loading_tool = get_env_value("DOCUMENT_LOADING_TOOL", "DOCLING")
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
-    global_args["main_args"]= args
+    global_args["main_args"] = args
     return args
 
 
