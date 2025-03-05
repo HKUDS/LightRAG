@@ -9,10 +9,16 @@ import sys
 import logging
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
-from fastapi import HTTPException, Security
+from fastapi import (
+    HTTPException,
+    Security,
+    Depends,
+    Request
+)
 from dotenv import load_dotenv
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
+from .auth import auth_handler
 
 # Load environment variables
 load_dotenv(override=True)
@@ -29,6 +35,24 @@ class OllamaServerInfos:
 
 
 ollama_server_infos = OllamaServerInfos()
+
+
+def get_auth_dependency():
+    whitelist = os.getenv("WHITELIST_PATHS", "").split(",")
+
+    async def dependency(
+            request: Request,
+            token: str = Depends(OAuth2PasswordBearer(tokenUrl="login", auto_error=False))
+    ):
+        if request.url.path in whitelist:
+            return
+
+        if not (os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD")):
+            return
+
+        auth_handler.validate_token(token)
+
+    return dependency
 
 
 def get_api_key_dependency(api_key: Optional[str]):
@@ -286,6 +310,38 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
         default=get_env_value("EMBEDDING_BINDING", "ollama"),
         choices=["lollms", "ollama", "openai", "azure_openai"],
         help="Embedding binding type (default: from env or ollama)",
+    )
+
+    # Authentication configuration
+    parser.add_argument(
+        "--auth-username",
+        type=str,
+        default=get_env_value("AUTH_USERNAME", ""),
+        help="Login username (default: from env or empty)"
+    )
+    parser.add_argument(
+        "--auth-password",
+        type=str,
+        default=get_env_value("AUTH_PASSWORD", ""),
+        help="Login password (default: from env or empty)"
+    )
+    parser.add_argument(
+        "--token-secret",
+        type=str,
+        default=get_env_value("TOKEN_SECRET", ""),
+        help="JWT signing secret (default: from env or empty)"
+    )
+    parser.add_argument(
+        "--token-expire-hours",
+        type=int,
+        default=get_env_value("TOKEN_EXPIRE_HOURS", 4, int),
+        help="Token validity in hours (default: from env or 4)"
+    )
+    parser.add_argument(
+        "--whitelist-paths",
+        type=str,
+        default=get_env_value("WHITELIST_PATHS", "/login,/health"),
+        help="Comma-separated auth-exempt paths (default: from env or /login,/health)"
     )
 
     args = parser.parse_args()
