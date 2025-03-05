@@ -232,7 +232,11 @@ class NetworkXStorage(BaseGraphStorage):
         return sorted(list(labels))
 
     async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 5, search_mode: str = "exact", min_degree: int = 0
+        self,
+        node_label: str,
+        max_depth: int = 5,
+        min_degree: int = 0,
+        inclusive: bool = False,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -268,7 +272,7 @@ class NetworkXStorage(BaseGraphStorage):
             nodes_to_explore = []
             for n, attr in graph.nodes(data=True):
                 node_str = str(n)
-                if search_mode == "exact":
+                if not inclusive:
                     if node_label == node_str:  # Use exact matching
                         nodes_to_explore.append(n)
                 else:  # inclusive mode
@@ -284,12 +288,16 @@ class NetworkXStorage(BaseGraphStorage):
             for start_node in nodes_to_explore:
                 node_subgraph = nx.ego_graph(graph, start_node, radius=max_depth)
                 combined_subgraph = nx.compose(combined_subgraph, node_subgraph)
-            
+
             # Filter nodes based on min_degree
             if min_degree > 0:
-                nodes_to_keep = [node for node, degree in combined_subgraph.degree() if degree >= min_degree]
+                nodes_to_keep = [
+                    node
+                    for node, degree in combined_subgraph.degree()
+                    if degree >= min_degree
+                ]
                 combined_subgraph = combined_subgraph.subgraph(nodes_to_keep)
-            
+
             subgraph = combined_subgraph
 
         # Check if number of nodes exceeds max_graph_nodes
