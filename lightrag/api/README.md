@@ -295,32 +295,26 @@ You can not change storage implementation selection after you add documents to L
 
 ### LightRag API Server Comand Line Options
 
-| Parameter               | Default        | Description                                                                                                                 |
-|-------------------------|----------------|-----------------------------------------------------------------------------------------------------------------------------|
-| --host                  | 0.0.0.0        | Server host                                                                                                                 |
-| --port                  | 9621           | Server port                                                                                                                 |
-| --working-dir           | ./rag_storage  | Working directory for RAG storage                                                                                           |
-| --input-dir             | ./inputs       | Directory containing input documents                                                                                        |
-| --max-async             | 4              | Maximum async operations                                                                                                    |
-| --max-tokens            | 32768          | Maximum token size                                                                                                          |
-| --timeout               | 150            | Timeout in seconds. None for infinite timeout(not recommended)                                                              |
-| --log-level             | INFO           | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)                                                                       |
-| --verbose               | -              | Verbose debug output (True, Flase)                                                                                          |
-| --key                   | None           | API key for authentication. Protects lightrag server against unauthorized access                                            |
-| --ssl                   | False          | Enable HTTPS                                                                                                                |
-| --ssl-certfile          | None           | Path to SSL certificate file (required if --ssl is enabled)                                                                 |
-| --ssl-keyfile           | None           | Path to SSL private key file (required if --ssl is enabled)                                                                 |
-| --top-k                 | 50             | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode.              |
-| --cosine-threshold      | 0.4            | The cossine threshold for nodes and relations retrieval, works with top-k to control the retrieval of nodes and relations.  |
-| --llm-binding           | ollama         | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai)                                                      |
-| --embedding-binding     | ollama         | Embedding binding type (lollms, ollama, openai, azure_openai)                                                               |
-| --auto-scan-at-startup  | -              | Scan input directory for new files and start indexing                                                                       |
-| --auth-username         | -              | Enable jwt if not empty                                                                                                     |
-| --auth-password         | -              | Enable jwt if not empty                                                                                                     |
-| --token-secret          | -              | JWT key                                                                                                                     |
-| --token-expire-hours    | 4              | expire duration                                                                                                             |
-| --whitelist-paths       | /login,/health | white list                                                                                                                  |
-
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| --host | 0.0.0.0 | Server host |
+| --port | 9621 | Server port |
+| --working-dir | ./rag_storage | Working directory for RAG storage |
+| --input-dir | ./inputs | Directory containing input documents |
+| --max-async | 4 | Maximum async operations |
+| --max-tokens | 32768 | Maximum token size |
+| --timeout | 150 | Timeout in seconds. None for infinite timeout(not recommended) |
+| --log-level | INFO | Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL) |
+| --verbose | - | Verbose debug output (True, Flase) |
+| --key | None | API key for authentication. Protects lightrag server against unauthorized access |
+| --ssl | False | Enable HTTPS |
+| --ssl-certfile | None | Path to SSL certificate file (required if --ssl is enabled) |
+| --ssl-keyfile | None | Path to SSL private key file (required if --ssl is enabled) |
+| --top-k | 50 | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode. |
+| --cosine-threshold | 0.4 | The cossine threshold for nodes and relations retrieval, works with top-k to control the retrieval of nodes and relations. |
+| --llm-binding | ollama | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai) |
+| --embedding-binding | ollama | Embedding binding type (lollms, ollama, openai, azure_openai) |
+| auto-scan-at-startup | - | Scan input directory for new files and start indexing |
 
 ### Example Usage
 
@@ -399,11 +393,11 @@ pip install lightrag-hku
 LightRAG API Server implements JWT-based authentication using HS256 algorithm. To enable secure access control, the following environment variables are required:
 ```bash
 # For jwt auth
-AUTH_USERNAME=admin      # login name --auth-username
-AUTH_PASSWORD=admin123   # password --auth-password
-TOKEN_SECRET=your-key # JWT key  --token-secret
-TOKEN_EXPIRE_HOURS=4     # expire duration  --token-expire-hours
-WHITELIST_PATHS=/login,/health  # white list  --whitelist-paths
+AUTH_USERNAME=admin      # login name
+AUTH_PASSWORD=admin123   # password
+TOKEN_SECRET=your-key # JWT key
+TOKEN_EXPIRE_HOURS=4     # expire duration
+WHITELIST_PATHS=/api1,/api2  # white list. /login,/health,/docs,/redoc,/openapi.json are whitelisted by default.
 ```
 
 ## API Endpoints

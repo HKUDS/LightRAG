@@ -400,7 +400,7 @@ def create_app(args):
             "token_type": "bearer"
         }
 
-    @app.get("/health", dependencies=[Depends(optional_api_key), Depends(get_auth_dependency())])
+    @app.get("/health", dependencies=[Depends(optional_api_key)])
     async def get_status():
         """Get current system status"""
         # Get update flags status for all namespaces

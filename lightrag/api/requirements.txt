@@ -8,14 +8,12 @@ python-multipart
 tenacity
 tiktoken
 uvicorn
-tqdm
 jiter
 httpcore
 distro
 httpx
 openai
 asyncpg
-neo4j
 pytz
 python-jose[cryptography]
 passlib[bcrypt]

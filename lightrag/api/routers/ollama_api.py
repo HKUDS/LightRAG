@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Request, Depends
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import logging
@@ -11,7 +11,7 @@ import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import encode_string_by_tiktoken
-from ..utils_api import ollama_server_infos, get_auth_dependency
+from ..utils_api import ollama_server_infos
 
 
 # query mode according to query prefix (bypass is not LightRAG quer mode)
@@ -126,7 +126,7 @@ class OllamaAPI:
         self.rag = rag
         self.ollama_server_infos = ollama_server_infos
         self.top_k = top_k
-        self.router = APIRouter(tags=["ollama"], dependencies=[Depends(get_auth_dependency())])
+        self.router = APIRouter(tags=["ollama"])
         self.setup_routes()
 
     def setup_routes(self):

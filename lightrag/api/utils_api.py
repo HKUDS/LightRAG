@@ -312,38 +312,6 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
         help="Embedding binding type (default: from env or ollama)",
     )
 
-    # Authentication configuration
-    parser.add_argument(
-        "--auth-username",
-        type=str,
-        default=get_env_value("AUTH_USERNAME", ""),
-        help="Login username (default: from env or empty)"
-    )
-    parser.add_argument(
-        "--auth-password",
-        type=str,
-        default=get_env_value("AUTH_PASSWORD", ""),
-        help="Login password (default: from env or empty)"
-    )
-    parser.add_argument(
-        "--token-secret",
-        type=str,
-        default=get_env_value("TOKEN_SECRET", ""),
-        help="JWT signing secret (default: from env or empty)"
-    )
-    parser.add_argument(
-        "--token-expire-hours",
-        type=int,
-        default=get_env_value("TOKEN_EXPIRE_HOURS", 4, int),
-        help="Token validity in hours (default: from env or 4)"
-    )
-    parser.add_argument(
-        "--whitelist-paths",
-        type=str,
-        default=get_env_value("WHITELIST_PATHS", "/login,/health"),
-        help="Comma-separated auth-exempt paths (default: from env or /login,/health)"
-    )
-
     args = parser.parse_args()
 
     # If in uvicorn mode and workers > 1, force it to 1 and log warning
