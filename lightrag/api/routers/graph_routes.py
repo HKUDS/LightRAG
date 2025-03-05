@@ -5,7 +5,6 @@ This module contains all graph-related routes for the LightRAG API.
 from typing import Optional
 from fastapi import APIRouter, Depends
 
-from ...utils import logger
 from ..utils_api import get_api_key_dependency
 
 router = APIRouter(tags=["graph"])
@@ -25,7 +24,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         return await rag.get_graph_labels()
 
     @router.get("/graphs", dependencies=[Depends(optional_api_key)])
-    async def get_knowledge_graph(label: str, max_depth: int = 3, inclusive: bool = False, min_degree: int = 0):
+    async def get_knowledge_graph(
+        label: str, max_depth: int = 3, min_degree: int = 0, inclusive: bool = False
+    ):
         """
         Retrieve a connected subgraph of nodes where the label includes the specified label.
         Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
@@ -44,7 +45,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         Returns:
             Dict[str, List[str]]: Knowledge graph for label
         """
-        logger.info(f"Inclusive search : {inclusive}, Min degree: {min_degree}, Label: {label}")            
-        return await rag.get_knowledge_graph(node_label=label, max_depth=max_depth, inclusive=inclusive, min_degree=min_degree)
+        return await rag.get_knowledge_graph(
+            node_label=label,
+            max_depth=max_depth,
+            inclusive=inclusive,
+            min_degree=min_degree,
+        )
 
     return router
