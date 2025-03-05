@@ -1963,12 +1963,16 @@ class LightRAG:
                                 await self.chunk_entity_relation_graph.upsert_edge(
                                     new_entity_name, target, edge_data
                                 )
-                                relations_to_update.append((new_entity_name, target, edge_data))
+                                relations_to_update.append(
+                                    (new_entity_name, target, edge_data)
+                                )
                             else:  # target == entity_name
                                 await self.chunk_entity_relation_graph.upsert_edge(
                                     source, new_entity_name, edge_data
                                 )
-                                relations_to_update.append((source, new_entity_name, edge_data))
+                                relations_to_update.append(
+                                    (source, new_entity_name, edge_data)
+                                )
 
                 # Delete old entity
                 await self.chunk_entity_relation_graph.delete_node(entity_name)
@@ -1983,13 +1987,13 @@ class LightRAG:
                     keywords = edge_data.get("keywords", "")
                     source_id = edge_data.get("source_id", "")
                     weight = float(edge_data.get("weight", 1.0))
-                    
+
                     # Create new content for embedding
                     content = f"{src}\t{tgt}\n{keywords}\n{description}"
-                    
+
                     # Calculate relationship ID
                     relation_id = compute_mdhash_id(src + tgt, prefix="rel-")
-                    
+
                     # Prepare data for vector database update
                     relation_data = {
                         relation_id: {
@@ -2002,7 +2006,7 @@ class LightRAG:
                             "weight": weight,
                         }
                     }
-                    
+
                     # Update vector database
                     await self.relationships_vdb.upsert(relation_data)
 
