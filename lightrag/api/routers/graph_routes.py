@@ -7,7 +7,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from lightrag.api.new.context_middleware import get_rag
+from lightrag.api.context_middleware import get_rag
 from lightrag.lightrag import LightRAG
 
 from ..utils_api import get_api_key_dependency

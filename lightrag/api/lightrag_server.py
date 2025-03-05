@@ -11,7 +11,7 @@ import os
 import logging
 import logging.config
 import uvicorn
-from lightrag.api.new.context_middleware import ContextMiddleware
+from lightrag.api.context_middleware import ContextMiddleware
 from lightrag.api.routers.workspace_routes import create_new_workspace_routes
 import pipmaster as pm
 from fastapi.staticfiles import StaticFiles
@@ -150,6 +150,7 @@ def create_app(args):
                         should_start_task = True
                 # Only start the task if no other task is running
                 if should_start_task:
+                    rag=await  initialize_rag(args)
                     # Create background task
                     task = asyncio.create_task(run_scanning_process(rag, doc_manager))
                     app.state.background_tasks.add(task)

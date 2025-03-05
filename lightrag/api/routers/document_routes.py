@@ -3,7 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-from lightrag.api.new.context_middleware import get_rag
+from lightrag.api.context_middleware import get_rag
 from lightrag.utils import logger
 import aiofiles
 import shutil
@@ -748,49 +748,49 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
             HTTPException: If an error occurs while retrieving document statuses (500).
         """
         try:
-           # 提取所有文档
-            documents = await rag.doc_status.get_all_docs()
+        #    # 提取所有文档
+        #     documents = await rag.doc_status.get_all_docs()
 
-            # 返回知识图谱数据
-            return DataResponse(
-                status="success",
-                message="ok",
-                data=documents,
+        #     # 返回知识图谱数据
+        #     return DataResponse(
+        #         status="success",
+        #         message="ok",
+        #         data=documents,
+        #     )
+            statuses = (
+                DocStatus.PENDING,
+                DocStatus.PROCESSING,
+                DocStatus.PROCESSED,
+                DocStatus.FAILED,
             )
-            # statuses = (
-            #     DocStatus.PENDING,
-            #     DocStatus.PROCESSING,
-            #     DocStatus.PROCESSED,
-            #     DocStatus.FAILED,
-            # )
-            # tasks = [rag.get_docs_by_status(status) for status in statuses]
-            # results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
+            tasks = [rag.get_docs_by_status(status) for status in statuses]
+            results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
 
-            # response = DocsStatusesResponse()
+            response = DocsStatusesResponse()
 
-            # for idx, result in enumerate(results):
-            #     status = statuses[idx]
-            #     for doc_id, doc_status in result.items():
-            #         if status not in response.statuses:
-            #             response.statuses[status] = []
-            #         response.statuses[status].append(
-            #             DocStatusResponse(
-            #                 id=doc_id,
-            #                 content_summary=doc_status.content_summary,
-            #                 content_length=doc_status.content_length,
-            #                 status=doc_status.status,
-            #                 created_at=DocStatusResponse.format_datetime(
-            #                     doc_status.created_at
-            #                 ),
-            #                 updated_at=DocStatusResponse.format_datetime(
-            #                     doc_status.updated_at
-            #                 ),
-            #                 chunks_count=doc_status.chunks_count,
-            #                 error=doc_status.error,
-            #                 metadata=doc_status.metadata,
-            #             )
-            #         )
-            # return response
+            for idx, result in enumerate(results):
+                status = statuses[idx]
+                for doc_id, doc_status in result.items():
+                    if status not in response.statuses:
+                        response.statuses[status] = []
+                    response.statuses[status].append(
+                        DocStatusResponse(
+                            id=doc_id,
+                            content_summary=doc_status.content_summary,
+                            content_length=doc_status.content_length,
+                            status=doc_status.status,
+                            created_at=DocStatusResponse.format_datetime(
+                                doc_status.created_at
+                            ),
+                            updated_at=DocStatusResponse.format_datetime(
+                                doc_status.updated_at
+                            ),
+                            chunks_count=doc_status.chunks_count,
+                            error=doc_status.error,
+                            metadata=doc_status.metadata,
+                        )
+                    )
+            return response
         except Exception as e:
             logger.error(f"Error GET /documents: {str(e)}")
             logger.error(traceback.format_exc())

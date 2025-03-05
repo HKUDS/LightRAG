@@ -7,7 +7,7 @@ import logging
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from lightrag.api.new.context_middleware import get_rag
+from lightrag.api.context_middleware import get_rag
 from lightrag.base import QueryParam
 from lightrag.lightrag import LightRAG
 from ..utils_api import get_api_key_dependency
