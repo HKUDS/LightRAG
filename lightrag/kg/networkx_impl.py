@@ -270,7 +270,9 @@ class NetworkXStorage(BaseGraphStorage):
         # Handle special case for "*" label
         if node_label == "*":
             # For "*", return the entire graph including all nodes and edges
-            subgraph = graph.copy()  # Create a copy to avoid modifying the original graph
+            subgraph = (
+                graph.copy()
+            )  # Create a copy to avoid modifying the original graph
         else:
             # Find nodes with matching node id based on search_mode
             nodes_to_explore = []
@@ -312,7 +314,8 @@ class NetworkXStorage(BaseGraphStorage):
             nodes_to_keep = [
                 node
                 for node, degree in subgraph.degree()
-                if node in start_nodes or node in direct_connected_nodes
+                if node in start_nodes
+                or node in direct_connected_nodes
                 or degree >= min_degree
             ]
             subgraph = subgraph.subgraph(nodes_to_keep)
