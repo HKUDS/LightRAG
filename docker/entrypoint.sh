@@ -12,9 +12,9 @@ export PYTHONPATH="${PYTHONPATH}:/app/api/"
 
 # 启动服务
 if [[ "${DEBUG}" == "true" ]]; then
-  python /app/api/app.py --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621} --reload
+  python -m lightrag.api.lightrag_server --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621} --reload
   # uvicorn  app:app --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621} --reload
 else
-  python /app/api/app.py --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621} --workers=${WORKERS:-1}
+  python -m lightrag.api.lightrag_server --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621} --workers=${WORKERS:-1}
   # uvicorn  app:app --host=${SERVER_BIND_ADDRESS:-0.0.0.0} --port=${SERVER_BIND_PORT:-9621}
 fi
