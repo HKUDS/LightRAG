@@ -504,10 +504,28 @@ class LightRAG:
         return text
 
     async def get_knowledge_graph(
-        self, node_label: str, max_depth: int
+        self,
+        node_label: str,
+        max_depth: int,
+        min_degree: int = 0,
+        inclusive: bool = False,
     ) -> KnowledgeGraph:
+        """Get knowledge graph for a given label
+
+        Args:
+            node_label (str): Label to get knowledge graph for
+            max_depth (int): Maximum depth of graph
+            search_mode (str, optional): Search mode, either "exact" or "inclusive". Defaults to "exact".
+            min_degree (int, optional): Minimum degree of nodes to include. Defaults to 0.
+
+        Returns:
+            KnowledgeGraph: Knowledge graph containing nodes and edges
+        """
         return await self.chunk_entity_relation_graph.get_knowledge_graph(
-            node_label=node_label, max_depth=max_depth
+            node_label=node_label,
+            max_depth=max_depth,
+            min_degree=min_degree,
+            inclusive=inclusive,
         )
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:

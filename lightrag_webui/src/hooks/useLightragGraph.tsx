@@ -50,11 +50,11 @@ export type NodeType = {
 }
 export type EdgeType = { label: string }
 
-const fetchGraph = async (label: string, maxDepth: number) => {
+const fetchGraph = async (label: string, maxDepth: number, minDegree: number) => {
   let rawData: any = null
 
   try {
-    rawData = await queryGraphs(label, maxDepth)
+    rawData = await queryGraphs(label, maxDepth, minDegree)
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!')
     return null
@@ -161,13 +161,14 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   return graph
 }
 
-const lastQueryLabel = { label: '', maxQueryDepth: 0 }
+const lastQueryLabel = { label: '', maxQueryDepth: 0, minDegree: 0 }
 
 const useLightrangeGraph = () => {
   const queryLabel = useSettingsStore.use.queryLabel()
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
+  const minDegree = useSettingsStore.use.graphMinDegree()
 
   const getNode = useCallback(
     (nodeId: string) => {
@@ -185,13 +186,16 @@ const useLightrangeGraph = () => {
 
   useEffect(() => {
     if (queryLabel) {
-      if (lastQueryLabel.label !== queryLabel || lastQueryLabel.maxQueryDepth !== maxQueryDepth) {
+      if (lastQueryLabel.label !== queryLabel ||
+          lastQueryLabel.maxQueryDepth !== maxQueryDepth ||
+          lastQueryLabel.minDegree !== minDegree) {
         lastQueryLabel.label = queryLabel
         lastQueryLabel.maxQueryDepth = maxQueryDepth
+        lastQueryLabel.minDegree = minDegree
 
         const state = useGraphStore.getState()
         state.reset()
-        fetchGraph(queryLabel, maxQueryDepth).then((data) => {
+        fetchGraph(queryLabel, maxQueryDepth, minDegree).then((data) => {
           // console.debug('Query label: ' + queryLabel)
           state.setSigmaGraph(createSigmaGraph(data))
           data?.buildDynamicMap()
@@ -203,7 +207,7 @@ const useLightrangeGraph = () => {
       state.reset()
       state.setSigmaGraph(new DirectedGraph())
     }
-  }, [queryLabel, maxQueryDepth])
+  }, [queryLabel, maxQueryDepth, minDegree])
 
   const lightrageGraph = useCallback(() => {
     if (sigmaGraph) {
