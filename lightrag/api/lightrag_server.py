@@ -331,9 +331,6 @@ def create_app(args):
                 "use_llm_check": False,
             },
             namespace_prefix=args.namespace_prefix,
-            addon_params={
-                "language": args.language,
-            },
             auto_manage_storages_states=False,
         )
     else:  # azure_openai
