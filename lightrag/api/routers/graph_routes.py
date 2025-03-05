@@ -31,9 +31,10 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         Retrieve a connected subgraph of nodes where the label includes the specified label.
         Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
         When reducing the number of nodes, the prioritization criteria are as follows:
-            1. Label matching nodes take precedence
-            2. Followed by nodes directly connected to the matching nodes
-            3. Finally, the degree of the nodes
+            1. min_degree does not affect nodes directly connected to the matching nodes
+            2. Label matching nodes take precedence
+            3. Followed by nodes directly connected to the matching nodes
+            4. Finally, the degree of the nodes
         Maximum number of nodes is limited to env MAX_GRAPH_NODES(default: 1000)
 
         Args:
