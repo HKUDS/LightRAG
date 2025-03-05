@@ -14,6 +14,7 @@ export default defineConfig({
   },
   base: './',
   build: {
-    outDir: path.resolve(__dirname, '../lightrag/api/webui')
+    outDir: path.resolve(__dirname, '../lightrag/api/webui'),
+    emptyOutDir: true
   }
 })
