@@ -1981,6 +1981,9 @@ class LightRAG:
                     new_entity_name, new_node_data
                 )
 
+                # Store relationships that need to be updated
+                relations_to_update = []
+
                 # Get all edges related to the original entity
                 edges = await self.chunk_entity_relation_graph.get_node_edges(
                     entity_name
@@ -1996,9 +1999,15 @@ class LightRAG:
                                 await self.chunk_entity_relation_graph.upsert_edge(
                                     new_entity_name, target, edge_data
                                 )
+                                relations_to_update.append(
+                                    (new_entity_name, target, edge_data)
+                                )
                             else:  # target == entity_name
                                 await self.chunk_entity_relation_graph.upsert_edge(
                                     source, new_entity_name, edge_data
+                                )
+                                relations_to_update.append(
+                                    (source, new_entity_name, edge_data)
                                 )
 
                 # Delete old entity
@@ -2007,6 +2016,35 @@ class LightRAG:
                 # Delete old entity record from vector database
                 old_entity_id = compute_mdhash_id(entity_name, prefix="ent-")
                 await self.entities_vdb.delete([old_entity_id])
+
+                # Update relationship vector representations
+                for src, tgt, edge_data in relations_to_update:
+                    description = edge_data.get("description", "")
+                    keywords = edge_data.get("keywords", "")
+                    source_id = edge_data.get("source_id", "")
+                    weight = float(edge_data.get("weight", 1.0))
+
+                    # Create new content for embedding
+                    content = f"{src}\t{tgt}\n{keywords}\n{description}"
+
+                    # Calculate relationship ID
+                    relation_id = compute_mdhash_id(src + tgt, prefix="rel-")
+
+                    # Prepare data for vector database update
+                    relation_data = {
+                        relation_id: {
+                            "content": content,
+                            "src_id": src,
+                            "tgt_id": tgt,
+                            "source_id": source_id,
+                            "description": description,
+                            "keywords": keywords,
+                            "weight": weight,
+                        }
+                    }
+
+                    # Update vector database
+                    await self.relationships_vdb.upsert(relation_data)
 
                 # Update working entity name to new name
                 entity_name = new_entity_name
@@ -2118,7 +2156,7 @@ class LightRAG:
             weight = float(new_edge_data.get("weight", 1.0))
 
             # Create content for embedding
-            content = f"{keywords}\t{source_entity}\n{target_entity}\n{description}"
+            content = f"{source_entity}\t{target_entity}\n{keywords}\n{description}"
 
             # Calculate relation ID
             relation_id = compute_mdhash_id(
