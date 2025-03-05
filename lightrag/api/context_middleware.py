@@ -35,12 +35,10 @@ class ContextMiddleware(BaseHTTPMiddleware):
                     working_dir_header_value.encode("utf-8")
                 ).decode("utf-8"),
             )
-            # 如果不存在该工作目录，返回错误信息
             if not Path(workspace_path).exists() or not Path(workspace_path).is_dir():
                 raise HTTPException(status_code=404, detail="Workspace not found")
             rag = await initialize_rag(workspace_path)
 
-        # 将 rag 添加到请求对象中，以便在路由处理函数中使用
         request.state.rag = rag
 
         response = await call_next(request)

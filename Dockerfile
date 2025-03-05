@@ -64,6 +64,7 @@ COPY --from=packages /pkg /usr/local
 COPY ./lightrag  /app/lightrag
 COPY setup.py .
 RUN pip install .
+RUN pip install graspologic
 
 COPY ./lightrag/api  /app/api
 COPY docker/entrypoint.sh /entrypoint.sh
