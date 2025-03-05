@@ -9,7 +9,6 @@ from fastapi import (
     Request,
     status
 )
-from fastapi.responses import FileResponse
 import asyncio
 import os
 import logging
@@ -23,7 +22,7 @@ from ascii_colors import ASCIIColors
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
-from .utils_api import (
+from lightrag.api.utils_api import (
     get_api_key_dependency,
     parse_args,
     get_default_host,
@@ -34,14 +33,14 @@ from lightrag import LightRAG
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
-from .routers.document_routes import (
+from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
     run_scanning_process,
 )
-from .routers.query_routes import create_query_routes
-from .routers.graph_routes import create_graph_routes
-from .routers.ollama_api import OllamaAPI
+from lightrag.api.routers.query_routes import create_query_routes
+from lightrag.api.routers.graph_routes import create_graph_routes
+from lightrag.api.routers.ollama_api import OllamaAPI
 
 from lightrag.utils import logger, set_verbose_debug
 from lightrag.kg.shared_storage import (
@@ -54,7 +53,9 @@ from fastapi.security import OAuth2PasswordRequestForm
 from .auth import auth_handler
 
 # Load environment variables
-load_dotenv(override=True)
+# Updated to use the .env that is inside the current folder
+# This update allows the user to put a different.env file for each lightrag folder
+load_dotenv(".env", override=True)
 
 # Initialize config parser
 config = configparser.ConfigParser()
@@ -335,8 +336,10 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            log_level=args.log_level,
             namespace_prefix=args.namespace_prefix,
+            addon_params={
+                "language": args.language,
+            },
             auto_manage_storages_states=False,
         )
     else:  # azure_openai
@@ -365,7 +368,6 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            log_level=args.log_level,
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
         )
@@ -437,17 +439,7 @@ def create_app(args):
         StaticFiles(directory=static_dir, html=True, check_dir=True),
         name="webui",
     )
-
-    @app.get("/webui/")
-    async def webui_root():
-        return FileResponse(static_dir / "index.html")
-
-    @app.middleware("http")
-    async def debug_middleware(request: Request, call_next):
-        print(f"Request path: {request.url.path}")
-        response = await call_next(request)
-        return response
-
+    
     return app
 
 
@@ -470,6 +462,9 @@ def configure_logging():
     # Get log directory path from environment variable
     log_dir = os.getenv("LOG_DIR", os.getcwd())
     log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+
+    print(f"\nLightRAG log file: {log_file_path}\n")
+    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
