@@ -312,7 +312,7 @@ class NetworkXStorage(BaseGraphStorage):
             nodes_to_keep = [
                 node
                 for node, degree in subgraph.degree()
-                if (node_label != "*" and (node in start_nodes or node in direct_connected_nodes))
+                if node in start_nodes or node in direct_connected_nodes
                 or degree >= min_degree
             ]
             subgraph = subgraph.subgraph(nodes_to_keep)
