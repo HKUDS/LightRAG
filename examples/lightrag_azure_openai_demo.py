@@ -81,34 +81,46 @@ asyncio.run(test_funcs())
 
 embedding_dimension = 3072
 
-rag = LightRAG(
-    working_dir=WORKING_DIR,
-    llm_model_func=llm_model_func,
-    embedding_func=EmbeddingFunc(
-        embedding_dim=embedding_dimension,
-        max_token_size=8192,
-        func=embedding_func,
-    ),
-)
 
-rag.initialize_storages()
-initialize_pipeline_status()
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=llm_model_func,
+        embedding_func=EmbeddingFunc(
+            embedding_dim=embedding_dimension,
+            max_token_size=8192,
+            func=embedding_func,
+        ),
+    )
 
-book1 = open("./book_1.txt", encoding="utf-8")
-book2 = open("./book_2.txt", encoding="utf-8")
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
-rag.insert([book1.read(), book2.read()])
+    return rag
 
-query_text = "What are the main themes?"
 
-print("Result (Naive):")
-print(rag.query(query_text, param=QueryParam(mode="naive")))
+def main():
+    rag = asyncio.run(initialize_rag())
 
-print("\nResult (Local):")
-print(rag.query(query_text, param=QueryParam(mode="local")))
+    book1 = open("./book_1.txt", encoding="utf-8")
+    book2 = open("./book_2.txt", encoding="utf-8")
 
-print("\nResult (Global):")
-print(rag.query(query_text, param=QueryParam(mode="global")))
+    rag.insert([book1.read(), book2.read()])
 
-print("\nResult (Hybrid):")
-print(rag.query(query_text, param=QueryParam(mode="hybrid")))
+    query_text = "What are the main themes?"
+
+    print("Result (Naive):")
+    print(rag.query(query_text, param=QueryParam(mode="naive")))
+
+    print("\nResult (Local):")
+    print(rag.query(query_text, param=QueryParam(mode="local")))
+
+    print("\nResult (Global):")
+    print(rag.query(query_text, param=QueryParam(mode="global")))
+
+    print("\nResult (Hybrid):")
+    print(rag.query(query_text, param=QueryParam(mode="hybrid")))
+
+
+if __name__ == "__main__":
+    main()
