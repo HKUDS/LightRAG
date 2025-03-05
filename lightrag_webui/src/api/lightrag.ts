@@ -161,8 +161,12 @@ axiosInstance.interceptors.response.use(
 )
 
 // API methods
-export const queryGraphs = async (label: string, maxDepth: number): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${label}&max_depth=${maxDepth}`)
+export const queryGraphs = async (
+  label: string, 
+  maxDepth: number,
+  inclusive: boolean = false
+): Promise<LightragGraphType> => {
+  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&inclusive=${inclusive}`)
   return response.data
 }
 
