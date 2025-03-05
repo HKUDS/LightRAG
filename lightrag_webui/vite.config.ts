@@ -16,5 +16,19 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, '../lightrag/api/webui'),
     emptyOutDir: true
+  },
+  server: {
+    proxy: import.meta.env.VITE_API_PROXY === 'true' && import.meta.env.VITE_API_ENDPOINTS ? 
+      Object.fromEntries(
+        import.meta.env.VITE_API_ENDPOINTS.split(',').map(endpoint => [
+          endpoint,
+          {
+            target: import.meta.env.VITE_BACKEND_URL || 'http://localhost:9621',
+            changeOrigin: true,
+            rewrite: endpoint === '/api' ? 
+              (path) => path.replace(/^\/api/, '') : undefined
+          }
+        ])
+      ) : {}
   }
 })
