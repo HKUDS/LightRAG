@@ -344,7 +344,7 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
 
     # Select Document loading tool
-    args.document_loading_tool = get_env_value("DOCUMENT_LOADING_TOOL", "DOCLING")
+    args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DOCLING")
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
