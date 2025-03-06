@@ -800,7 +800,6 @@ class Neo4JStorage(BaseGraphStorage):
         ),
     )
     async def delete_all(self):
-        # 删除全部实体和关系
         query = f"""
             MATCH (n)-[r]->(m)
             DELETE n, r, m
@@ -853,7 +852,6 @@ class Neo4JStorage(BaseGraphStorage):
                     s_node = record["source_node"]
                     r_ship = record["relationship"]
                     t_node = record["target_node"]
-                    # 获取源节点信息
                     source_node = {
                         "id": (
                             s_node.element_id
@@ -867,7 +865,6 @@ class Neo4JStorage(BaseGraphStorage):
                         ),
                         "properties": dict(s_node.items()) if s_node else None,
                     }
-                    # 获取关系信息
                     relationship = (
                         {
                             "id": (
@@ -885,8 +882,6 @@ class Neo4JStorage(BaseGraphStorage):
                         if r_ship
                         else None
                     )
-
-                    # 获取目标节点信息
                     target_node = (
                         {
                             "id": (

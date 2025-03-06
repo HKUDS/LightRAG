@@ -241,7 +241,6 @@ class NanoVectorDBStorage(BaseVectorStorage):
     
     async def delete_all(self):
         try:
-            # 查询并删除所有id
             client = await self._get_client()
             storage = getattr(client, "_NanoVectorDB__storage")
             storage["data"]= []

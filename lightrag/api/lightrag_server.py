@@ -348,7 +348,7 @@ def create_app(args):
             auto_manage_storages_states=False,
             addon_params={
                 "example_number": int(os.getenv("EXAMPLE_NUMBER", 1)),
-                "language": os.getenv("SUMMARY_LANGUAGE", "Simplfied Chinese"),
+                "language": os.getenv("SUMMARY_LANGUAGE", "English"),
             },
         )
     else:  # azure_openai
@@ -381,7 +381,7 @@ def create_app(args):
             auto_manage_storages_states=False,
             addon_params={
                 "example_number": int(os.getenv("EXAMPLE_NUMBER", 1)),
-                "language": os.getenv("SUMMARY_LANGUAGE", "Simplfied Chinese"),
+                "language": os.getenv("SUMMARY_LANGUAGE", "English"),
             },
         )
 

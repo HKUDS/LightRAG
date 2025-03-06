@@ -2079,7 +2079,6 @@ class LightRAG:
 
             # 4. Save changes
             await self._edit_entity_done()
-            await self._edit_relation_done()
 
             logger.info(f"Entity '{entity_name}' successfully updated")
             return await self.get_entity_info(entity_name, include_vector_data=True)
@@ -2114,6 +2113,7 @@ class LightRAG:
                 cast(StorageNameSpace, storage_inst).index_done_callback()
                 for storage_inst in [  # type: ignore
                     self.entities_vdb,
+                    self.relationships_vdb,
                     self.chunk_entity_relation_graph,
                 ]
             ]

@@ -728,15 +728,6 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving document statuses (500).
         """
         try:
-        #    # 提取所有文档
-        #     documents = await rag.doc_status.get_all_docs()
-
-        #     # 返回知识图谱数据
-        #     return DataResponse(
-        #         status="success",
-        #         message="ok",
-        #         data=documents,
-        #     )
             statuses = (
                 DocStatus.PENDING,
                 DocStatus.PROCESSING,
@@ -776,7 +767,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-文档-查询
+    # Knowledge Graph - Document - Query
     @router.get(
         "/{document_id}",
         response_model=DataResponse,
@@ -784,7 +775,6 @@ def create_document_routes(
     )
     async def get_graph_document_detail(document_id):
         try:
-            # 查询文档状态
             doc_status_document = await rag.doc_status.get_by_id(document_id)
             document = await rag.full_docs.get_by_id(document_id)
             if not doc_status_document:
@@ -794,19 +784,15 @@ def create_document_routes(
                     data=None,
                 )
 
-            # 查询文档的chunk
             chunks = await rag.text_chunks.get_by_keys({"full_doc_id": document_id})
-            # 将chunks转换为list,chunk[0]为id，chunk[1]为其他字段
             chunk_List = []
             for chunk in chunks:
                 chunk_List.append(
                     {
                         "id": chunk[0],
-                        # 解构chunk[1]为其他字段
                         **chunk[1],
                     }
                 )
-            # 返回知识图谱数据
             return DataResponse(
                 status="success",
                 message="ok",
@@ -820,6 +806,7 @@ def create_document_routes(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
+    # Clear all document data
     @router.delete(
         "/all",
         response_model=InsertResponse,
@@ -827,7 +814,6 @@ def create_document_routes(
     )
     async def clear_all_documents():
         try:
-            # 删除相关数据
             await rag.llm_response_cache.drop()
             await rag.full_docs.drop()
             await rag.text_chunks.drop()
@@ -853,7 +839,7 @@ def create_document_routes(
             print(e)
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 删除单个文档及其建立的知识图谱
+    # Delete a single document and the knowledge graph it has built.
     @router.delete(
         "/{document_id}",
         response_model=InsertResponse,

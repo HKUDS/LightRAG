@@ -51,7 +51,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         return await rag.get_knowledge_graph(node_label=label, max_depth=max_depth)
 
 
-    # 知识图谱-实体添加
+    # Knowledge Graph - Entity Addition
     @router.post(
         "/graph/entity",
         response_model=DataResponse,
@@ -80,7 +80,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-实体修改
+    # Knowledge Graph - Entity Modification
     @router.put(
         "/graph/entity/{entity_name}",
         response_model=DataResponse,
@@ -102,7 +102,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "description": description,
                 "source_id": source_id,
             }
-            # 如果new_entity_name存在，node_data中添加new_entity_name
+            # If new_entity_name exists, add it to node_data.
             if new_entity_name:
                 node_data["entity_name"] = new_entity_name
 
@@ -113,7 +113,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-实体删除
+    # Knowledge Graph - Entity Deletion
     @router.delete(
         "/graph/entity/{entity_name}",
         response_model=DataResponse,
@@ -127,7 +127,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-关系添加-通过开始节点和结束节点查询关系
+    # Knowledge graph - Relationship addition - Query relationships by start node and end node
     @router.post(
         "/graph/relation/by_nodes",
         response_model=DataResponse,
@@ -166,7 +166,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-关系修改-通过开始节点和结束节点查询关系
+    # Knowledge Graph - Relationship Modification - Query Relationships by Start and End Nodes
     @router.put(
         "/graph/relation/by_nodes",
         response_model=DataResponse,
@@ -193,7 +193,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
 
             print("Edge Data:", edge_data)  # Debugging print
-            # Insert node data into the knowledge graph
             await rag.aedit_relation(src_id, tgt_id, edge_data)
             data = {
                 "id": src_id + "-" + tgt_id,
@@ -205,7 +204,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-关系删除-通过开始节点和结束节点查询关系
+    # Knowledge Graph - Relationship Deletion - Query relationships through start and end nodes
     @router.delete(
         "/graph/relation/by_nodes",
         response_model=DataResponse,
@@ -220,7 +219,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-实体查询
+    # Knowledge Graph - Entity Query
     @router.get(
         "/graph/entity/{entity_name}",
         response_model=DataResponse,
@@ -233,7 +232,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-关系查询-通过开始节点和结束节点查询关系
+    # Knowledge Graph - Relationship Query - Query Relationships by Start and End Nodes
     @router.get(
         "/graph/relation/by_nodes",
         response_model=DataResponse,
@@ -250,7 +249,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-关系查询-通过节点ID查询关系
+    # Knowledge Graph - Relationship Query - Query Relationships by Node ID
     @router.get(
         "/graph/relation/node/{node_id}",
         response_model=DataResponse,
@@ -263,7 +262,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 知识图谱-实体列表-查询
+    # Knowledge Graph - Entity List - Query
     @router.get(
         "/graph/entity",
         response_model=DataResponse,
@@ -271,10 +270,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
     )
     async def get_graph_entity_list():
         try:
-            # 提取所有实体和关系
             entities = await rag.chunk_entity_relation_graph.query_all()
-
-            # 返回知识图谱数据
             return DataResponse(
                 status="success",
                 message="ok",

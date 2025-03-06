@@ -41,7 +41,7 @@ def create_new_workspace_routes(
 
     optional_api_key = get_api_key_dependency(api_key)
 
-    # 获取所有工作空间
+    # Get all workspaces
     @router.get(
         "/all",
         response_model=DataResponse,
@@ -54,7 +54,7 @@ def create_new_workspace_routes(
             for item_name in os.listdir(working_dir):
                 item_path = os.path.join(working_dir, item_name)
                 if os.path.isdir(item_path):
-                    # 获取文件夹相关信息
+                    # Get folder information
                     dir_info = os.stat(item_path)
                     workspaces.append(
                         {
@@ -75,7 +75,7 @@ def create_new_workspace_routes(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 获取工作空间详情
+    # Get workspace details
     @router.get(
         "/{workspace}",
         response_model=DataResponse,
@@ -87,10 +87,9 @@ def create_new_workspace_routes(
                 args.working_dir,
                 base64.urlsafe_b64encode(workspace.encode("utf-8")).decode("utf-8"),
             )
-            # 如果文件夹已存在，抛出异常
             if not os.path.exists(workspace_path):
                 raise FileExistsError(f"Workspace not found: {workspace}")
-            # 获取文件夹相关信息
+            # Get folder information
             dir_info = os.stat(workspace_path)
             data = {
                 "name": workspace,
@@ -101,7 +100,7 @@ def create_new_workspace_routes(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 创建新的工作空间
+    # Create a new workspace
     @router.post(
         "",
         response_model=DataResponse,
@@ -110,7 +109,6 @@ def create_new_workspace_routes(
     async def create_workspace(request: CreateWorkspaceRequest):
         try:
             workspace = request.workspace
-            # 如果为空
             if not workspace:
                 raise ValueError("Workspace name is required")
 
@@ -118,7 +116,6 @@ def create_new_workspace_routes(
                 args.working_dir,
                 base64.urlsafe_b64encode(workspace.encode("utf-8")).decode("utf-8"),
             )
-            # 如果文件夹已存在，抛出异常
             if os.path.exists(workspace_path):
                 raise FileExistsError(f"Workspace already exists: {workspace}")
             Path(workspace_path).mkdir(parents=False, exist_ok=True)
@@ -129,7 +126,7 @@ def create_new_workspace_routes(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 修改工作空间
+    # Modify the workspace
     @router.put(
         "/{workspace}",
         response_model=DataResponse,
@@ -138,12 +135,11 @@ def create_new_workspace_routes(
     async def update_workspace(workspace: str, request: UpdateWorkspaceRequest):
         try:
             new_workspace = request.workspace
-            # 如果为空
             if not workspace:
                 raise ValueError("Workspace name is required")
             if not new_workspace:
                 raise ValueError("New workspace name is required")
-            # 如果工作区名称与新工作区名称相同，抛出异常
+            # If the workspace name is the same as the new workspace name, raise an exception
             if workspace == new_workspace:
                 raise ValueError("New workspace name is the same as the original one")
             print("Renaming workspace...")
@@ -154,17 +150,17 @@ def create_new_workspace_routes(
                 base64.urlsafe_b64encode(workspace.encode("utf-8")).decode("utf-8"),
             )
 
-            # 如果文件夹不存在，抛出异常
+            # If the directory does not exist, raise an exception
             if not Path(origin_workspace_path).exists():
                 raise FileExistsError(f"Workspace not exists: {workspace}")
             new_workspace_path = Path(
                 args.working_dir,
                 base64.urlsafe_b64encode(new_workspace.encode("utf-8")).decode("utf-8"),
             )
-            # 如果文件夹已存在，抛出异常
+            # If the folder already exists, raise an exception.
             if Path(new_workspace_path).exists():
                 raise FileExistsError(f"Workspace '{new_workspace}' already exists")
-            # 修改工作空间
+            # Modify workspace
             Path(origin_workspace_path).rename(new_workspace_path)
             data = {
                 "name": new_workspace,
@@ -173,18 +169,17 @@ def create_new_workspace_routes(
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
 
-    # 删除工作空间
+    # Delete workspace
     @router.delete("/{workspace}", response_model=DataResponse)
     async def delete_workspace(workspace: str):
         try:
-            # 如果为空
             if not workspace:
                 raise ValueError("Workspace name is required")
             workspace_path = Path(
                 args.working_dir,
                 base64.urlsafe_b64encode(workspace.encode("utf-8")).decode("utf-8"),
             )
-            # 如果存在 workspace，则删除它
+            # If the workspace exists, delete it.
             if Path(workspace_path).exists():
                 shutil.rmtree(workspace_path)
             return DataResponse(status="success", message="ok", data=None)
