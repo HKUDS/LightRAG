@@ -9,12 +9,7 @@ import sys
 import logging
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
-from fastapi import (
-    HTTPException,
-    Security,
-    Depends,
-    Request
-)
+from fastapi import HTTPException, Security, Depends, Request
 from dotenv import load_dotenv
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
@@ -41,8 +36,8 @@ def get_auth_dependency():
     whitelist = os.getenv("WHITELIST_PATHS", "").split(",")
 
     async def dependency(
-            request: Request,
-            token: str = Depends(OAuth2PasswordBearer(tokenUrl="login", auto_error=False))
+        request: Request,
+        token: str = Depends(OAuth2PasswordBearer(tokenUrl="login", auto_error=False)),
     ):
         if request.url.path in whitelist:
             return
