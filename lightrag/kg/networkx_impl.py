@@ -234,7 +234,7 @@ class NetworkXStorage(BaseGraphStorage):
     async def get_knowledge_graph(
         self,
         node_label: str,
-        max_depth: int = 5,
+        max_depth: int = 3,
         min_degree: int = 0,
         inclusive: bool = False,
     ) -> KnowledgeGraph:
@@ -250,8 +250,8 @@ class NetworkXStorage(BaseGraphStorage):
         Args:
             node_label: Label of the starting node
             max_depth: Maximum depth of the subgraph
-            search_mode (str, optional): Search mode, either "exact" or "inclusive". Defaults to "exact".
-            min_degree (int, optional): Minimum degree of nodes to include. Defaults to 0.
+            min_degree: Minimum degree of nodes to include. Defaults to 0
+            inclusive: Do an inclusive search if true
 
         Returns:
             KnowledgeGraph object containing nodes and edges
@@ -383,7 +383,7 @@ class NetworkXStorage(BaseGraphStorage):
             result.edges.append(
                 KnowledgeGraphEdge(
                     id=edge_id,
-                    type="RELATED",
+                    type="DIRECTED",
                     source=str(source),
                     target=str(target),
                     properties=edge_data,
