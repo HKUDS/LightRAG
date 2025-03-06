@@ -247,7 +247,6 @@ class NetworkXStorage(BaseGraphStorage):
             3. Followed by nodes directly connected to the matching nodes
             4. Finally, the degree of the nodes
 
-
         Args:
             node_label: Label of the starting node
             max_depth: Maximum depth of the subgraph

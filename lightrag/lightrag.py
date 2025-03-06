@@ -515,18 +515,28 @@ class LightRAG:
         Args:
             node_label (str): Label to get knowledge graph for
             max_depth (int): Maximum depth of graph
-            search_mode (str, optional): Search mode, either "exact" or "inclusive". Defaults to "exact".
             min_degree (int, optional): Minimum degree of nodes to include. Defaults to 0.
+            inclusive (bool, optional): Whether to use inclusive search mode. Defaults to False.
 
         Returns:
             KnowledgeGraph: Knowledge graph containing nodes and edges
         """
-        return await self.chunk_entity_relation_graph.get_knowledge_graph(
-            node_label=node_label,
-            max_depth=max_depth,
-            min_degree=min_degree,
-            inclusive=inclusive,
-        )
+        # get params supported by get_knowledge_graph of specified storage
+        import inspect
+        storage_params = inspect.signature(self.chunk_entity_relation_graph.get_knowledge_graph).parameters
+        
+        kwargs = {
+            'node_label': node_label,
+            'max_depth': max_depth
+        }
+        
+        if 'min_degree' in storage_params and min_degree > 0:
+            kwargs['min_degree'] = min_degree
+            
+        if 'inclusive' in storage_params:
+            kwargs['inclusive'] = inclusive
+            
+        return await self.chunk_entity_relation_graph.get_knowledge_graph(**kwargs)
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
         import_path = STORAGES[storage_name]
