@@ -3,7 +3,6 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
-from lightrag.api.context_middleware import get_rag
 from lightrag.utils import logger
 import aiofiles
 import shutil
@@ -12,15 +11,7 @@ import pipmaster as pm
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from fastapi import (
-    APIRouter,
-    BackgroundTasks,
-    Depends,
-    File,
-    HTTPException,
-    Request,
-    UploadFile,
-)
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
@@ -32,7 +23,6 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
-
 
 class DataResponse(BaseModel):
     status: str
@@ -420,13 +410,13 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         logger.error(f"Error during scanning process: {str(e)}")
 
 
-def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] = None):
+def create_document_routes(
+    rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
+):
     optional_api_key = get_api_key_dependency(api_key)
 
     @router.post("/scan", dependencies=[Depends(optional_api_key)])
-    async def scan_for_new_documents(
-        background_tasks: BackgroundTasks, rag: LightRAG = Depends(get_rag)
-    ):
+    async def scan_for_new_documents(background_tasks: BackgroundTasks):
         """
         Trigger the scanning process for new documents.
 
@@ -443,9 +433,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
 
     @router.post("/upload", dependencies=[Depends(optional_api_key)])
     async def upload_to_input_dir(
-        background_tasks: BackgroundTasks,
-        file: UploadFile = File(...),
-        rag: LightRAG = Depends(get_rag),
+        background_tasks: BackgroundTasks, file: UploadFile = File(...)
     ):
         """
         Upload a file to the input directory and index it.
@@ -491,9 +479,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
         "/text", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
     )
     async def insert_text(
-        request: InsertTextRequest,
-        background_tasks: BackgroundTasks,
-        rag: LightRAG = Depends(get_rag),
+        request: InsertTextRequest, background_tasks: BackgroundTasks
     ):
         """
         Insert text into the RAG system.
@@ -528,9 +514,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
         dependencies=[Depends(optional_api_key)],
     )
     async def insert_texts(
-        request: InsertTextsRequest,
-        background_tasks: BackgroundTasks,
-        rag: LightRAG = Depends(get_rag),
+        request: InsertTextsRequest, background_tasks: BackgroundTasks
     ):
         """
         Insert multiple texts into the RAG system.
@@ -563,9 +547,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
         "/file", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
     )
     async def insert_file(
-        background_tasks: BackgroundTasks,
-        file: UploadFile = File(...),
-        rag: LightRAG = Depends(get_rag),
+        background_tasks: BackgroundTasks, file: UploadFile = File(...)
     ):
         """
         Insert a file directly into the RAG system.
@@ -610,9 +592,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
         dependencies=[Depends(optional_api_key)],
     )
     async def insert_batch(
-        background_tasks: BackgroundTasks,
-        files: List[UploadFile] = File(...),
-        rag: LightRAG = Depends(get_rag),
+        background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)
     ):
         """
         Process multiple files in batch mode.
@@ -672,7 +652,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
     @router.delete(
         "", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
     )
-    async def clear_documents(rag: LightRAG = Depends(get_rag)):
+    async def clear_documents():
         """
         Clear all documents from the RAG system.
 
@@ -698,7 +678,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("/pipeline_status", dependencies=[Depends(optional_api_key)])
-    async def get_pipeline_status(rag: LightRAG = Depends(get_rag)):
+    async def get_pipeline_status():
         """
         Get the current status of the document indexing pipeline.
 
@@ -732,7 +712,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.get("", dependencies=[Depends(optional_api_key)])
-    async def documents(rag: LightRAG = Depends(get_rag)) -> DocsStatusesResponse:
+    async def documents() -> DocsStatusesResponse:
         """
         Get the status of all documents in the system.
 
@@ -802,7 +782,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
         response_model=DataResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def get_graph_document_detail(document_id, rag: LightRAG = Depends(get_rag)):
+    async def get_graph_document_detail(document_id):
         try:
             # 查询文档状态
             doc_status_document = await rag.doc_status.get_by_id(document_id)
@@ -845,7 +825,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
         response_model=InsertResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def clear_all_documents(rag: LightRAG = Depends(get_rag)):
+    async def clear_all_documents():
         try:
             # 删除相关数据
             await rag.llm_response_cache.drop()
@@ -879,7 +859,7 @@ def create_document_routes(doc_manager: DocumentManager, api_key: Optional[str] 
         response_model=InsertResponse,
         dependencies=[Depends(optional_api_key)],
     )
-    async def delete_document(document_id: str, rag: LightRAG = Depends(get_rag)):
+    async def delete_document(document_id: str):
         try:
             await rag.adelete_by_doc_id(document_id)
             return InsertResponse(

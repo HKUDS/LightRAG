@@ -788,7 +788,6 @@ class Neo4JStorage(BaseGraphStorage):
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
         raise NotImplementedError
 
-
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
@@ -917,7 +916,19 @@ class Neo4JStorage(BaseGraphStorage):
                 return entities
         except Exception as e:
             logger.error(f"Error occurred while querying all nodes: {e}")
-
+        
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(
+            (
+                neo4jExceptions.ServiceUnavailable,
+                neo4jExceptions.TransientError,
+                neo4jExceptions.WriteServiceUnavailable,
+            )
+        ),
+    )
+    async def get_node_data(self, node_label: str) -> Dict[Any, None]:
         async with self._driver.session(database=self._DATABASE) as session:
             entity_name_label = node_label.strip('"')
             query = f"""

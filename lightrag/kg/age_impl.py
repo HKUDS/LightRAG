@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional, Union, final
 import numpy as np
 import pipmaster as pm
-from lightrag.types import KnowledgeGraph
+from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 
 from tenacity import (
     retry,
@@ -613,20 +613,260 @@ class AGEStorage(BaseGraphStorage):
             await self._driver.putconn(connection)
 
     async def delete_node(self, node_id: str) -> None:
-        raise NotImplementedError
+        """Delete a node with the specified label
+
+        Args:
+            node_id: The label of the node to delete
+        """
+        entity_name_label = node_id.strip('"')
+
+        query = """
+        MATCH (n:`{label}`)
+        DETACH DELETE n
+        """
+        params = {"label": AGEStorage._encode_graph_label(entity_name_label)}
+        try:
+            await self._query(query, **params)
+            logger.debug(f"Deleted node with label '{entity_name_label}'")
+        except Exception as e:
+            logger.error(f"Error during node deletion: {str(e)}")
+            raise
+
+    async def remove_nodes(self, nodes: list[str]):
+        """Delete multiple nodes
+
+        Args:
+            nodes: List of node labels to be deleted
+        """
+        for node in nodes:
+            await self.delete_node(node)
+
+    async def remove_edges(self, edges: list[tuple[str, str]]):
+        """Delete multiple edges
+
+        Args:
+            edges: List of edges to be deleted, each edge is a (source, target) tuple
+        """
+        for source, target in edges:
+            entity_name_label_source = source.strip('"')
+            entity_name_label_target = target.strip('"')
+
+            query = """
+            MATCH (source:`{src_label}`)-[r]->(target:`{tgt_label}`)
+            DELETE r
+            """
+            params = {
+                "src_label": AGEStorage._encode_graph_label(entity_name_label_source),
+                "tgt_label": AGEStorage._encode_graph_label(entity_name_label_target),
+            }
+            try:
+                await self._query(query, **params)
+                logger.debug(
+                    f"Deleted edge from '{entity_name_label_source}' to '{entity_name_label_target}'"
+                )
+            except Exception as e:
+                logger.error(f"Error during edge deletion: {str(e)}")
+                raise
 
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError
+        """Embed nodes using the specified algorithm
+
+        Args:
+            algorithm: Name of the embedding algorithm
+
+        Returns:
+            tuple: (embedding matrix, list of node identifiers)
+        """
+        if algorithm not in self._node_embed_algorithms:
+            raise ValueError(f"Node embedding algorithm {algorithm} not supported")
+        return await self._node_embed_algorithms[algorithm]()
 
     async def get_all_labels(self) -> list[str]:
-        raise NotImplementedError
+        """Get all node labels in the database
+
+        Returns:
+            ["label1", "label2", ...]  # Alphabetically sorted label list
+        """
+        query = """
+        MATCH (n)
+        RETURN DISTINCT labels(n) AS node_labels
+        """
+        results = await self._query(query)
+
+        all_labels = []
+        for record in results:
+            if record and "node_labels" in record:
+                for label in record["node_labels"]:
+                    if label:
+                        # Decode label
+                        decoded_label = AGEStorage._decode_graph_label(label)
+                        all_labels.append(decoded_label)
+
+        # Remove duplicates and sort
+        return sorted(list(set(all_labels)))
 
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
-        raise NotImplementedError
+        """
+        Retrieve a connected subgraph of nodes where the label includes the specified 'node_label'.
+        Maximum number of nodes is constrained by the environment variable 'MAX_GRAPH_NODES' (default: 1000).
+        When reducing the number of nodes, the prioritization criteria are as follows:
+            1. Label matching nodes take precedence (nodes containing the specified label string)
+            2. Followed by nodes directly connected to the matching nodes
+            3. Finally, the degree of the nodes
+
+        Args:
+            node_label: String to match in node labels (will match any node containing this string in its label)
+            max_depth: Maximum depth of the graph. Defaults to 5.
+
+        Returns:
+            KnowledgeGraph: Complete connected subgraph for specified node
+        """
+        max_graph_nodes = int(os.getenv("MAX_GRAPH_NODES", 1000))
+        result = KnowledgeGraph()
+        seen_nodes = set()
+        seen_edges = set()
+
+        # Handle special case for "*" label
+        if node_label == "*":
+            # Query all nodes and sort by degree
+            query = """
+            MATCH (n)
+            OPTIONAL MATCH (n)-[r]-()
+            WITH n, count(r) AS degree
+            ORDER BY degree DESC
+            LIMIT {max_nodes}
+            RETURN n, degree
+            """
+            params = {"max_nodes": max_graph_nodes}
+            nodes_result = await self._query(query, **params)
+
+            # Add nodes to result
+            node_ids = []
+            for record in nodes_result:
+                if "n" in record:
+                    node = record["n"]
+                    node_id = str(node.get("id", ""))
+                    if node_id not in seen_nodes:
+                        node_properties = {k: v for k, v in node.items()}
+                        node_label = node.get("label", "")
+                        result.nodes.append(
+                            KnowledgeGraphNode(
+                                id=node_id,
+                                labels=[node_label],
+                                properties=node_properties,
+                            )
+                        )
+                        seen_nodes.add(node_id)
+                        node_ids.append(node_id)
+
+            # Query edges between these nodes
+            if node_ids:
+                edges_query = """
+                MATCH (a)-[r]->(b)
+                WHERE a.id IN {node_ids} AND b.id IN {node_ids}
+                RETURN a, r, b
+                """
+                edges_params = {"node_ids": node_ids}
+                edges_result = await self._query(edges_query, **edges_params)
+
+                # Add edges to result
+                for record in edges_result:
+                    if "r" in record and "a" in record and "b" in record:
+                        source = record["a"].get("id", "")
+                        target = record["b"].get("id", "")
+                        edge_id = f"{source}-{target}"
+                        if edge_id not in seen_edges:
+                            edge_properties = {k: v for k, v in record["r"].items()}
+                            result.edges.append(
+                                KnowledgeGraphEdge(
+                                    id=edge_id,
+                                    type="DIRECTED",
+                                    source=source,
+                                    target=target,
+                                    properties=edge_properties,
+                                )
+                            )
+                            seen_edges.add(edge_id)
+        else:
+            # For specific label, use partial matching
+            entity_name_label = node_label.strip('"')
+            encoded_label = AGEStorage._encode_graph_label(entity_name_label)
+
+            # Find matching start nodes
+            start_query = """
+            MATCH (n:`{label}`)
+            RETURN n
+            """
+            start_params = {"label": encoded_label}
+            start_nodes = await self._query(start_query, **start_params)
+
+            if not start_nodes:
+                logger.warning(f"No nodes found with label '{entity_name_label}'!")
+                return result
+
+            # Traverse graph from each start node
+            for start_node_record in start_nodes:
+                if "n" in start_node_record:
+                    # Use BFS to traverse graph
+                    query = """
+                    MATCH (start:`{label}`)
+                    CALL {
+                        MATCH path = (start)-[*0..{max_depth}]->(n)
+                        RETURN nodes(path) AS path_nodes, relationships(path) AS path_rels
+                    }
+                    RETURN DISTINCT path_nodes, path_rels
+                    """
+                    params = {"label": encoded_label, "max_depth": max_depth}
+                    results = await self._query(query, **params)
+
+                    # Extract nodes and edges from results
+                    for record in results:
+                        if "path_nodes" in record:
+                            # Process nodes
+                            for node in record["path_nodes"]:
+                                node_id = str(node.get("id", ""))
+                                if (
+                                    node_id not in seen_nodes
+                                    and len(seen_nodes) < max_graph_nodes
+                                ):
+                                    node_properties = {k: v for k, v in node.items()}
+                                    node_label = node.get("label", "")
+                                    result.nodes.append(
+                                        KnowledgeGraphNode(
+                                            id=node_id,
+                                            labels=[node_label],
+                                            properties=node_properties,
+                                        )
+                                    )
+                                    seen_nodes.add(node_id)
+
+                        if "path_rels" in record:
+                            # Process edges
+                            for rel in record["path_rels"]:
+                                source = str(rel.get("start_id", ""))
+                                target = str(rel.get("end_id", ""))
+                                edge_id = f"{source}-{target}"
+                                if edge_id not in seen_edges:
+                                    edge_properties = {k: v for k, v in rel.items()}
+                                    result.edges.append(
+                                        KnowledgeGraphEdge(
+                                            id=edge_id,
+                                            type=rel.get("label", "DIRECTED"),
+                                            source=source,
+                                            target=target,
+                                            properties=edge_properties,
+                                        )
+                                    )
+                                    seen_edges.add(edge_id)
+
+        logger.info(
+            f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+        )
+        return result
 
     async def index_done_callback(self) -> None:
         # AGES handles persistence automatically
