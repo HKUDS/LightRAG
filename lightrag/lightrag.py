@@ -506,7 +506,7 @@ class LightRAG:
     async def get_knowledge_graph(
         self,
         node_label: str,
-        max_depth: int,
+        max_depth: int = 3,
         min_degree: int = 0,
         inclusive: bool = False,
     ) -> KnowledgeGraph:
