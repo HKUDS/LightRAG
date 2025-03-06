@@ -29,14 +29,12 @@ class AuthHandler:
 
             if datetime.utcnow() > expire_time:
                 raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Token expired"
+                    status_code=status.HTTP_401_UNAUTHORIZED, detail="Token expired"
                 )
             return payload["sub"]
         except jwt.PyJWTError:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token"
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
             )
 
 

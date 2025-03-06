@@ -2,13 +2,7 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import (
-    FastAPI,
-    Depends,
-    HTTPException,
-    Request,
-    status
-)
+from fastapi import FastAPI, Depends, HTTPException, status
 import asyncio
 import os
 import logging
@@ -27,7 +21,6 @@ from lightrag.api.utils_api import (
     parse_args,
     get_default_host,
     display_splash_screen,
-    get_auth_dependency,
 )
 from lightrag import LightRAG
 from lightrag.types import GPTKeywordExtractionFormat
@@ -386,18 +379,17 @@ def create_app(args):
         if not (username and password):
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail="Authentication not configured"
+                detail="Authentication not configured",
             )
 
         if form_data.username != username or form_data.password != password:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect credentials"
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
             )
 
         return {
             "access_token": auth_handler.create_token(username),
-            "token_type": "bearer"
+            "token_type": "bearer",
         }
 
     @app.get("/health", dependencies=[Depends(optional_api_key)])
@@ -436,7 +428,7 @@ def create_app(args):
         StaticFiles(directory=static_dir, html=True, check_dir=True),
         name="webui",
     )
-    
+
     return app
 
 
