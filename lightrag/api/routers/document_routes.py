@@ -237,7 +237,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     )
                     return False
             case ".pdf":
-                if global_args["main_args"].document_loading_tool == "DOCLING":
+                if global_args["main_args"].document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter
@@ -256,7 +256,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     for page in reader.pages:
                         content += page.extract_text() + "\n"
             case ".docx":
-                if global_args["main_args"].document_loading_tool == "DOCLING":
+                if global_args["main_args"].document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter
@@ -276,7 +276,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                         [paragraph.text for paragraph in doc.paragraphs]
                     )
             case ".pptx":
-                if global_args["main_args"].document_loading_tool == "DOCLING":
+                if global_args["main_args"].document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter
@@ -297,7 +297,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                             if hasattr(shape, "text"):
                                 content += shape.text + "\n"
             case ".xlsx":
-                if global_args["main_args"].document_loading_tool == "DOCLING":
+                if global_args["main_args"].document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter
