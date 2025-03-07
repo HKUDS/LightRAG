@@ -602,6 +602,7 @@ async def kg_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
+    ids: list[str] | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
     use_model_func = global_config["llm_model_func"]
@@ -649,6 +650,7 @@ async def kg_query(
         relationships_vdb,
         text_chunks_db,
         query_param,
+        ids
     )
 
     if query_param.only_need_context:
@@ -1016,6 +1018,7 @@ async def _build_query_context(
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
+    ids: list[str] = None,
 ):
     if query_param.mode == "local":
         entities_context, relations_context, text_units_context = await _get_node_data(
@@ -1032,6 +1035,7 @@ async def _build_query_context(
             relationships_vdb,
             text_chunks_db,
             query_param,
+            ids = ids
         )
     else:  # hybrid mode
         ll_data, hl_data = await asyncio.gather(
@@ -1348,11 +1352,16 @@ async def _get_edge_data(
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
+    ids: list[str] | None = None,
 ):
     logger.info(
         f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {relationships_vdb.cosine_better_than_threshold}"
     )
-    results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+    if ids: 
+        #TODO: add ids to the query
+        results = await relationships_vdb.query(keywords, top_k = query_param.top_k, ids = ids)
+    else:   
+        results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
 
     if not len(results):
         return "", "", ""

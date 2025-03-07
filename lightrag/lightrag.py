@@ -1243,6 +1243,7 @@ class LightRAG:
                     embedding_func=self.embedding_func,
                 ),
                 system_prompt=system_prompt,
+                ids = param.ids
             )
         elif param.mode == "naive":
             response = await naive_query(
