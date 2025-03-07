@@ -6,9 +6,9 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 
-from ..utils_api import get_api_key_dependency
+from ..utils_api import get_api_key_dependency, get_auth_dependency
 
-router = APIRouter(tags=["graph"])
+router = APIRouter(tags=["graph"], dependencies=[Depends(get_auth_dependency())])
 
 
 def create_graph_routes(rag, api_key: Optional[str] = None):

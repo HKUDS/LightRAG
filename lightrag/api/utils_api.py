@@ -9,10 +9,11 @@ import sys
 import logging
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
-from fastapi import HTTPException, Security
+from fastapi import HTTPException, Security, Depends, Request
 from dotenv import load_dotenv
-from fastapi.security import APIKeyHeader
+from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
+from .auth import auth_handler
 
 # Load environment variables
 load_dotenv(override=True)
@@ -29,6 +30,24 @@ class OllamaServerInfos:
 
 
 ollama_server_infos = OllamaServerInfos()
+
+
+def get_auth_dependency():
+    whitelist = os.getenv("WHITELIST_PATHS", "").split(",")
+
+    async def dependency(
+        request: Request,
+        token: str = Depends(OAuth2PasswordBearer(tokenUrl="login", auto_error=False)),
+    ):
+        if request.url.path in whitelist:
+            return
+
+        if not (os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD")):
+            return
+
+        auth_handler.validate_token(token)
+
+    return dependency
 
 
 def get_api_key_dependency(api_key: Optional[str]):
