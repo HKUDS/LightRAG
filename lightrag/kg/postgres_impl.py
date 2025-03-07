@@ -492,7 +492,7 @@ class PGVectorStorage(BaseVectorStorage):
             await self.db.execute(upsert_sql, data)
 
     #################### query method ###############
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(self, query: str, top_k: int, ids: list[str] = None) -> list[dict[str, Any]]:
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
         embedding_string = ",".join(map(str, embedding))
@@ -1387,6 +1387,8 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
+                    document_id VARCHAR(255) NULL,
+                    chunk_id VARCHAR(255) NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -1400,6 +1402,8 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
+                    document_id VARCHAR(255) NULL,
+                    chunk_id VARCHAR(255) NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     )"""
     },
