@@ -223,6 +223,9 @@ LightRAG supports binding to various LLM/Embedding backends:
 
 Use environment variables  `LLM_BINDING` or CLI argument `--llm-binding` to select LLM backend type. Use environment variables  `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select LLM backend type.
 
+### Entity Extraction Configuration
+- ENABLE_LLM_CACHE_FOR_EXTRACT: Enable LLM cache for entity extraction (default: false)
+
 ### Storage Types Supported
 
 LightRAG uses 4 types of storage for difference purposes:
