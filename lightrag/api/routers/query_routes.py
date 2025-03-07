@@ -8,12 +8,12 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
-from ..utils_api import get_api_key_dependency
+from ..utils_api import get_api_key_dependency, get_auth_dependency
 from pydantic import BaseModel, Field, field_validator
 
 from ascii_colors import trace_exception
 
-router = APIRouter(tags=["query"])
+router = APIRouter(tags=["query"], dependencies=[Depends(get_auth_dependency())])
 
 
 class QueryRequest(BaseModel):
