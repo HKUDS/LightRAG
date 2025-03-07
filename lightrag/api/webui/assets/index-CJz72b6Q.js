@@ -236,23 +236,23 @@ ${(t=e.config)==null?void 0:t.url}`):e});const sq=async(e,t,n)=>(await Mr.get(`/
     margin-right: `).concat(u,"px ").concat(r,`;
     `),n==="padding"&&"padding-right: ".concat(u,"px ").concat(r,";")].filter(Boolean).join(""),`
   }
-  
+
   .`).concat(hd,` {
     right: `).concat(u,"px ").concat(r,`;
   }
-  
+
   .`).concat(md,` {
     margin-right: `).concat(u,"px ").concat(r,`;
   }
-  
+
   .`).concat(hd," .").concat(hd,` {
     right: 0 `).concat(r,`;
   }
-  
+
   .`).concat(md," .").concat(md,` {
     margin-right: 0 `).concat(r,`;
   }
-  
+
   body[`).concat(cl,`] {
     `).concat(X8,": ").concat(u,`px;
   }
@@ -702,7 +702,7 @@ void main() {
   vec2 sourceCompensationVector =
     vec2(-sourceDirection * unitNormal.y, sourceDirection * unitNormal.x)
     * (webGLSourceRadius + webGLSourceArrowHeadLength);
-    
+
   // Target arrow head
   float targetRadius = a_targetRadius * a_targetRadiusCoef;
   float targetDirection = sign(targetRadius);
@@ -1009,7 +1009,7 @@ void main() {
 
   position = viewportToClipspace(viewportOffsetPosition, u_dimensions);
   gl_Position = vec4(position, 0, 1);
-    
+
 `).concat(n?`
   v_targetSize = a_targetSize * u_pixelRatio / u_sizeRatio;
   v_targetPoint = viewportTarget;
