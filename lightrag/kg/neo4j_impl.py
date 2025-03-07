@@ -15,6 +15,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
+import logging
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -37,6 +38,8 @@ config.read("config.ini", "utf-8")
 # Get maximum number of graph nodes from environment variable, default is 1000
 MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
 
+# Set neo4j logger level to ERROR to suppress warning logs
+logging.getLogger("neo4j").setLevel(logging.ERROR)
 
 @final
 @dataclass
