@@ -16,10 +16,13 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
-from ..utils_api import get_api_key_dependency
+from ..utils_api import get_api_key_dependency, get_auth_dependency
 
-
-router = APIRouter(prefix="/documents", tags=["documents"])
+router = APIRouter(
+    prefix="/documents",
+    tags=["documents"],
+    dependencies=[Depends(get_auth_dependency())],
+)
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
