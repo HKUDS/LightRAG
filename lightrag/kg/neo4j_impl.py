@@ -164,23 +164,13 @@ class Neo4JStorage(BaseGraphStorage):
         # Noe4J handles persistence automatically
         pass
 
-    async def _label_exists(self, label: str) -> bool:
-        """Check if a label exists in the Neo4j database."""
-        query = "CALL db.labels() YIELD label RETURN label"
-        try:
-            async with self._driver.session(database=self._DATABASE) as session:
-                result = await session.run(query)
-                labels = [record["label"] for record in await result.data()]
-                return label in labels
-        except Exception as e:
-            logger.error(f"Error checking label existence: {e}")
-            return False
-
     async def _ensure_label(self, label: str) -> str:
-        """Ensure a label exists by validating it."""
+        """Ensure a label is valid
+        
+        Args:
+            label: The label to validate
+        """
         clean_label = label.strip('"')
-        if not await self._label_exists(clean_label):
-            logger.warning(f"Label '{clean_label}' does not exist in Neo4j")
         return clean_label
 
     async def has_node(self, node_id: str) -> bool:
@@ -290,7 +280,7 @@ class Neo4JStorage(BaseGraphStorage):
                 if record:
                     try:
                         result = dict(record["edge_properties"])
-                        logger.info(f"Result: {result}")
+                        logger.debug(f"Result: {result}")
                         # Ensure required keys exist with defaults
                         required_keys = {
                             "weight": 0.0,
