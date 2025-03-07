@@ -438,6 +438,7 @@ class PGVectorStorage(BaseVectorStorage):
             "entity_name": item["entity_name"],
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
+            "chunk_id": item["source_id"],
         }
         return upsert_sql, data
 
@@ -450,6 +451,7 @@ class PGVectorStorage(BaseVectorStorage):
             "target_id": item["tgt_id"],
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
+            "chunk_id": item["source_id"]
         }
         return upsert_sql, data
 
@@ -1486,8 +1488,9 @@ SQL_TEMPLATES = {
                       content_vector=EXCLUDED.content_vector,
                       update_time = CURRENT_TIMESTAMP
                      """,
-    "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content, content_vector)
-                      VALUES ($1, $2, $3, $4, $5)
+    "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content, 
+                      content_vector, chunk_id)
+                      VALUES ($1, $2, $3, $4, $5, $6)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET entity_name=EXCLUDED.entity_name,
                       content=EXCLUDED.content,
@@ -1495,8 +1498,8 @@ SQL_TEMPLATES = {
                       update_time=CURRENT_TIMESTAMP
                      """,
     "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
-                      target_id, content, content_vector)
-                      VALUES ($1, $2, $3, $4, $5, $6)
+                      target_id, content, content_vector, chunk_id)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET source_id=EXCLUDED.source_id,
                       target_id=EXCLUDED.target_id,
