@@ -494,6 +494,41 @@ class OracleVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error deleting relations for entity {entity_name}: {e}")
             raise
 
+    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search for records with IDs starting with a specific prefix.
+
+        Args:
+            prefix: The prefix to search for in record IDs
+
+        Returns:
+            List of records with matching ID prefixes
+        """
+        try:
+            # Determine the appropriate table based on namespace
+            table_name = namespace_to_table_name(self.namespace)
+
+            # Create SQL query to find records with IDs starting with prefix
+            search_sql = f"""
+                SELECT * FROM {table_name}
+                WHERE workspace = :workspace
+                AND id LIKE :prefix_pattern
+                ORDER BY id
+            """
+
+            params = {"workspace": self.db.workspace, "prefix_pattern": f"{prefix}%"}
+
+            # Execute query and get results
+            results = await self.db.query(search_sql, params, multirows=True)
+
+            logger.debug(
+                f"Found {len(results) if results else 0} records with prefix '{prefix}'"
+            )
+            return results or []
+
+        except Exception as e:
+            logger.error(f"Error searching records with prefix '{prefix}': {e}")
+            return []
+
 
 @final
 @dataclass

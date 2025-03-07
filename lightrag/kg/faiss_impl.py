@@ -371,3 +371,24 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 return False  # Return error
 
         return True  # Return success
+
+    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search for records with IDs starting with a specific prefix.
+
+        Args:
+            prefix: The prefix to search for in record IDs
+
+        Returns:
+            List of records with matching ID prefixes
+        """
+        matching_records = []
+
+        # Search for records with IDs starting with the prefix
+        for faiss_id, meta in self._id_to_meta.items():
+            if "__id__" in meta and meta["__id__"].startswith(prefix):
+                # Create a copy of all metadata and add "id" field
+                record = {**meta, "id": meta["__id__"]}
+                matching_records.append(record)
+
+        logger.debug(f"Found {len(matching_records)} records with prefix '{prefix}'")
+        return matching_records
