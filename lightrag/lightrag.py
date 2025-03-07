@@ -523,19 +523,19 @@ class LightRAG:
         """
         # get params supported by get_knowledge_graph of specified storage
         import inspect
-        storage_params = inspect.signature(self.chunk_entity_relation_graph.get_knowledge_graph).parameters
-        
-        kwargs = {
-            'node_label': node_label,
-            'max_depth': max_depth
-        }
-        
-        if 'min_degree' in storage_params and min_degree > 0:
-            kwargs['min_degree'] = min_degree
-            
-        if 'inclusive' in storage_params:
-            kwargs['inclusive'] = inclusive
-            
+
+        storage_params = inspect.signature(
+            self.chunk_entity_relation_graph.get_knowledge_graph
+        ).parameters
+
+        kwargs = {"node_label": node_label, "max_depth": max_depth}
+
+        if "min_degree" in storage_params and min_degree > 0:
+            kwargs["min_degree"] = min_degree
+
+        if "inclusive" in storage_params:
+            kwargs["inclusive"] = inclusive
+
         return await self.chunk_entity_relation_graph.get_knowledge_graph(**kwargs)
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
