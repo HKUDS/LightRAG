@@ -33,6 +33,10 @@ class InsertTextRequest(BaseModel):
         min_length=1,
         description="The text to insert",
     )
+    id: Optional[str] = Field(
+        default=None,
+        description="The id of the text",
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -44,6 +48,10 @@ class InsertTextsRequest(BaseModel):
     texts: list[str] = Field(
         min_length=1,
         description="The texts to insert",
+    )
+    ids: Optional[list[str]] = Field(
+        default=None,
+        description="The ids of the texts",
     )
 
     @field_validator("texts", mode="after")
@@ -355,7 +363,7 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
+async def pipeline_index_texts(rag: LightRAG, texts: List[str], ids: Optional[List[str]] = None):
     """Index a list of texts
 
     Args:
@@ -364,7 +372,7 @@ async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
     """
     if not texts:
         return
-    await rag.apipeline_enqueue_documents(texts)
+    await rag.apipeline_enqueue_documents(texts, ids)
     await rag.apipeline_process_enqueue_documents()
 
 
@@ -496,7 +504,7 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, [request.text])
+            background_tasks.add_task(pipeline_index_texts, rag, [request.text], [request.id])
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
@@ -531,7 +539,7 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, request.texts)
+            background_tasks.add_task(pipeline_index_texts, rag, request.texts, request.ids)
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
