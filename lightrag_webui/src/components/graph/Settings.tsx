@@ -91,9 +91,12 @@ const LabeledNumberInput = ({
         {label}
       </label>
       <Input
-        value={currentValue || ''}
+        type="number"
+        value={currentValue === null ? '' : currentValue}
         onChange={onValueChange}
-        className="h-6 w-full min-w-0"
+        className="h-6 w-full min-w-0 pr-1"
+        min={min}
+        max={max}
         onBlur={onBlur}
         onKeyDown={(e) => {
           if (e.key === 'Enter') {
@@ -120,6 +123,7 @@ export default function Settings() {
   const enableHideUnselectedEdges = useSettingsStore.use.enableHideUnselectedEdges()
   const showEdgeLabel = useSettingsStore.use.showEdgeLabel()
   const graphQueryMaxDepth = useSettingsStore.use.graphQueryMaxDepth()
+  const graphMinDegree = useSettingsStore.use.graphMinDegree()
   const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
@@ -176,6 +180,11 @@ export default function Settings() {
   const setGraphQueryMaxDepth = useCallback((depth: number) => {
     if (depth < 1) return
     useSettingsStore.setState({ graphQueryMaxDepth: depth })
+  }, [])
+
+  const setGraphMinDegree = useCallback((degree: number) => {
+    if (degree < 0) return
+    useSettingsStore.setState({ graphMinDegree: degree })
   }, [])
 
   const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
@@ -274,7 +283,7 @@ export default function Settings() {
             min={0}
             value={graphMinDegree}
             onEditFinished={setGraphMinDegree}
-          />   
+          />
           <LabeledNumberInput
             label={t("graphPanel.sideBar.settings.maxLayoutIterations")}
             min={1}
@@ -282,7 +291,6 @@ export default function Settings() {
             value={graphLayoutMaxIterations}
             onEditFinished={setGraphLayoutMaxIterations}
           />
-
           <Separator />
 
           <div className="flex flex-col gap-2">

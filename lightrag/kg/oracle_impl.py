@@ -8,7 +8,7 @@ from typing import Any, Union, final
 import numpy as np
 import configparser
 
-from lightrag.types import KnowledgeGraph
+from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 
 from ..base import (
     BaseGraphStorage,
@@ -442,11 +442,92 @@ class OracleVectorDBStorage(BaseVectorStorage):
         # Oracles handles persistence automatically
         pass
 
+    async def delete(self, ids: list[str]) -> None:
+        """Delete vectors with specified IDs
+
+        Args:
+            ids: List of vector IDs to be deleted
+        """
+        if not ids:
+            return
+
+        try:
+            SQL = SQL_TEMPLATES["delete_vectors"].format(
+                ids=",".join([f"'{id}'" for id in ids])
+            )
+            params = {"workspace": self.db.workspace}
+            await self.db.execute(SQL, params)
+            logger.info(
+                f"Successfully deleted {len(ids)} vectors from {self.namespace}"
+            )
+        except Exception as e:
+            logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
+            raise
+
     async def delete_entity(self, entity_name: str) -> None:
-        raise NotImplementedError
+        """Delete entity by name
+
+        Args:
+            entity_name: Name of the entity to delete
+        """
+        try:
+            SQL = SQL_TEMPLATES["delete_entity"]
+            params = {"workspace": self.db.workspace, "entity_name": entity_name}
+            await self.db.execute(SQL, params)
+            logger.info(f"Successfully deleted entity {entity_name}")
+        except Exception as e:
+            logger.error(f"Error deleting entity {entity_name}: {e}")
+            raise
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        raise NotImplementedError
+        """Delete all relations connected to an entity
+
+        Args:
+            entity_name: Name of the entity whose relations should be deleted
+        """
+        try:
+            SQL = SQL_TEMPLATES["delete_entity_relations"]
+            params = {"workspace": self.db.workspace, "entity_name": entity_name}
+            await self.db.execute(SQL, params)
+            logger.info(f"Successfully deleted relations for entity {entity_name}")
+        except Exception as e:
+            logger.error(f"Error deleting relations for entity {entity_name}: {e}")
+            raise
+
+    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search for records with IDs starting with a specific prefix.
+
+        Args:
+            prefix: The prefix to search for in record IDs
+
+        Returns:
+            List of records with matching ID prefixes
+        """
+        try:
+            # Determine the appropriate table based on namespace
+            table_name = namespace_to_table_name(self.namespace)
+
+            # Create SQL query to find records with IDs starting with prefix
+            search_sql = f"""
+                SELECT * FROM {table_name}
+                WHERE workspace = :workspace
+                AND id LIKE :prefix_pattern
+                ORDER BY id
+            """
+
+            params = {"workspace": self.db.workspace, "prefix_pattern": f"{prefix}%"}
+
+            # Execute query and get results
+            results = await self.db.query(search_sql, params, multirows=True)
+
+            logger.debug(
+                f"Found {len(results) if results else 0} records with prefix '{prefix}'"
+            )
+            return results or []
+
+        except Exception as e:
+            logger.error(f"Error searching records with prefix '{prefix}': {e}")
+            return []
 
 
 @final
@@ -668,15 +749,266 @@ class OracleGraphStorage(BaseGraphStorage):
             return res
 
     async def delete_node(self, node_id: str) -> None:
-        raise NotImplementedError
+        """Delete a node from the graph
+
+        Args:
+            node_id: ID of the node to delete
+        """
+        try:
+            # First delete all relations connected to this node
+            delete_relations_sql = SQL_TEMPLATES["delete_entity_relations"]
+            params_relations = {"workspace": self.db.workspace, "entity_name": node_id}
+            await self.db.execute(delete_relations_sql, params_relations)
+
+            # Then delete the node itself
+            delete_node_sql = SQL_TEMPLATES["delete_entity"]
+            params_node = {"workspace": self.db.workspace, "entity_name": node_id}
+            await self.db.execute(delete_node_sql, params_node)
+
+            logger.info(
+                f"Successfully deleted node {node_id} and all its relationships"
+            )
+        except Exception as e:
+            logger.error(f"Error deleting node {node_id}: {e}")
+            raise
+
+    async def remove_nodes(self, nodes: list[str]) -> None:
+        """Delete multiple nodes from the graph
+
+        Args:
+            nodes: List of node IDs to be deleted
+        """
+        if not nodes:
+            return
+
+        try:
+            for node in nodes:
+                # For each node, first delete all its relationships
+                delete_relations_sql = SQL_TEMPLATES["delete_entity_relations"]
+                params_relations = {"workspace": self.db.workspace, "entity_name": node}
+                await self.db.execute(delete_relations_sql, params_relations)
+
+                # Then delete the node itself
+                delete_node_sql = SQL_TEMPLATES["delete_entity"]
+                params_node = {"workspace": self.db.workspace, "entity_name": node}
+                await self.db.execute(delete_node_sql, params_node)
+
+            logger.info(
+                f"Successfully deleted {len(nodes)} nodes and their relationships"
+            )
+        except Exception as e:
+            logger.error(f"Error during batch node deletion: {e}")
+            raise
+
+    async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
+        """Delete multiple edges from the graph
+
+        Args:
+            edges: List of edges to be deleted, each edge is a (source, target) tuple
+        """
+        if not edges:
+            return
+
+        try:
+            for source, target in edges:
+                # Check if the edge exists before attempting to delete
+                if await self.has_edge(source, target):
+                    # Delete the edge using a SQL query that matches both source and target
+                    delete_edge_sql = """
+                        DELETE FROM LIGHTRAG_GRAPH_EDGES
+                        WHERE workspace = :workspace
+                        AND source_name = :source_name
+                        AND target_name = :target_name
+                    """
+                    params = {
+                        "workspace": self.db.workspace,
+                        "source_name": source,
+                        "target_name": target,
+                    }
+                    await self.db.execute(delete_edge_sql, params)
+
+            logger.info(f"Successfully deleted {len(edges)} edges from the graph")
+        except Exception as e:
+            logger.error(f"Error during batch edge deletion: {e}")
+            raise
 
     async def get_all_labels(self) -> list[str]:
-        raise NotImplementedError
+        """Get all unique entity types (labels) in the graph
+
+        Returns:
+            List of unique entity types/labels
+        """
+        try:
+            SQL = """
+                SELECT DISTINCT entity_type
+                FROM LIGHTRAG_GRAPH_NODES
+                WHERE workspace = :workspace
+                ORDER BY entity_type
+            """
+            params = {"workspace": self.db.workspace}
+            results = await self.db.query(SQL, params, multirows=True)
+
+            if results:
+                labels = [row["entity_type"] for row in results]
+                return labels
+            else:
+                return []
+        except Exception as e:
+            logger.error(f"Error retrieving entity types: {e}")
+            return []
 
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
-        raise NotImplementedError
+        """Retrieve a connected subgraph starting from nodes matching the given label
+
+        Maximum number of nodes is constrained by MAX_GRAPH_NODES environment variable.
+        Prioritizes nodes by:
+        1. Nodes matching the specified label
+        2. Nodes directly connected to matching nodes
+        3. Node degree (number of connections)
+
+        Args:
+            node_label: Label to match for starting nodes (use "*" for all nodes)
+            max_depth: Maximum depth of traversal from starting nodes
+
+        Returns:
+            KnowledgeGraph object containing nodes and edges
+        """
+        result = KnowledgeGraph()
+
+        try:
+            # Define maximum number of nodes to return
+            max_graph_nodes = int(os.environ.get("MAX_GRAPH_NODES", 1000))
+
+            if node_label == "*":
+                # For "*" label, get all nodes up to the limit
+                nodes_sql = """
+                    SELECT name, entity_type, description, source_chunk_id
+                    FROM LIGHTRAG_GRAPH_NODES
+                    WHERE workspace = :workspace
+                    ORDER BY id
+                    FETCH FIRST :limit ROWS ONLY
+                """
+                nodes_params = {
+                    "workspace": self.db.workspace,
+                    "limit": max_graph_nodes,
+                }
+                nodes = await self.db.query(nodes_sql, nodes_params, multirows=True)
+            else:
+                # For specific label, find matching nodes and related nodes
+                nodes_sql = """
+                    WITH matching_nodes AS (
+                        SELECT name
+                        FROM LIGHTRAG_GRAPH_NODES
+                        WHERE workspace = :workspace
+                        AND (name LIKE '%' || :node_label || '%' OR entity_type LIKE '%' || :node_label || '%')
+                    )
+                    SELECT n.name, n.entity_type, n.description, n.source_chunk_id,
+                           CASE
+                               WHEN n.name IN (SELECT name FROM matching_nodes) THEN 2
+                               WHEN EXISTS (
+                                   SELECT 1 FROM LIGHTRAG_GRAPH_EDGES e
+                                   WHERE workspace = :workspace
+                                   AND ((e.source_name = n.name AND e.target_name IN (SELECT name FROM matching_nodes))
+                                      OR (e.target_name = n.name AND e.source_name IN (SELECT name FROM matching_nodes)))
+                               ) THEN 1
+                               ELSE 0
+                           END AS priority,
+                           (SELECT COUNT(*) FROM LIGHTRAG_GRAPH_EDGES e
+                            WHERE workspace = :workspace
+                            AND (e.source_name = n.name OR e.target_name = n.name)) AS degree
+                    FROM LIGHTRAG_GRAPH_NODES n
+                    WHERE workspace = :workspace
+                    ORDER BY priority DESC, degree DESC
+                    FETCH FIRST :limit ROWS ONLY
+                """
+                nodes_params = {
+                    "workspace": self.db.workspace,
+                    "node_label": node_label,
+                    "limit": max_graph_nodes,
+                }
+                nodes = await self.db.query(nodes_sql, nodes_params, multirows=True)
+
+            if not nodes:
+                logger.warning(f"No nodes found matching '{node_label}'")
+                return result
+
+            # Create mapping of node IDs to be used to filter edges
+            node_names = [node["name"] for node in nodes]
+
+            # Add nodes to result
+            seen_nodes = set()
+            for node in nodes:
+                node_id = node["name"]
+                if node_id in seen_nodes:
+                    continue
+
+                # Create node properties dictionary
+                properties = {
+                    "entity_type": node["entity_type"],
+                    "description": node["description"] or "",
+                    "source_id": node["source_chunk_id"] or "",
+                }
+
+                # Add node to result
+                result.nodes.append(
+                    KnowledgeGraphNode(
+                        id=node_id, labels=[node["entity_type"]], properties=properties
+                    )
+                )
+                seen_nodes.add(node_id)
+
+            # Get edges between these nodes
+            edges_sql = """
+                SELECT source_name, target_name, weight, keywords, description, source_chunk_id
+                FROM LIGHTRAG_GRAPH_EDGES
+                WHERE workspace = :workspace
+                AND source_name IN (SELECT COLUMN_VALUE FROM TABLE(CAST(:node_names AS SYS.ODCIVARCHAR2LIST)))
+                AND target_name IN (SELECT COLUMN_VALUE FROM TABLE(CAST(:node_names AS SYS.ODCIVARCHAR2LIST)))
+                ORDER BY id
+            """
+            edges_params = {"workspace": self.db.workspace, "node_names": node_names}
+            edges = await self.db.query(edges_sql, edges_params, multirows=True)
+
+            # Add edges to result
+            seen_edges = set()
+            for edge in edges:
+                source = edge["source_name"]
+                target = edge["target_name"]
+                edge_id = f"{source}-{target}"
+
+                if edge_id in seen_edges:
+                    continue
+
+                # Create edge properties dictionary
+                properties = {
+                    "weight": edge["weight"] or 0.0,
+                    "keywords": edge["keywords"] or "",
+                    "description": edge["description"] or "",
+                    "source_id": edge["source_chunk_id"] or "",
+                }
+
+                # Add edge to result
+                result.edges.append(
+                    KnowledgeGraphEdge(
+                        id=edge_id,
+                        type="RELATED",
+                        source=source,
+                        target=target,
+                        properties=properties,
+                    )
+                )
+                seen_edges.add(edge_id)
+
+            logger.info(
+                f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+            )
+
+        except Exception as e:
+            logger.error(f"Error retrieving knowledge graph: {e}")
+
+        return result
 
 
 N_T = {
@@ -927,4 +1259,12 @@ SQL_TEMPLATES = {
                 select 'edge' as type, TO_CHAR(id) id FROM GRAPH_TABLE (lightrag_graph
                     MATCH (a)-[e]->(b) WHERE e.workspace=:workspace columns(e.id))
                 )""",
+    # SQL for deletion
+    "delete_vectors": "DELETE FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=:workspace AND id IN ({ids})",
+    "delete_entity": "DELETE FROM LIGHTRAG_GRAPH_NODES WHERE workspace=:workspace AND name=:entity_name",
+    "delete_entity_relations": "DELETE FROM LIGHTRAG_GRAPH_EDGES WHERE workspace=:workspace AND (source_name=:entity_name OR target_name=:entity_name)",
+    "delete_node": """DELETE FROM GRAPH_TABLE (lightrag_graph
+        MATCH (a)
+        WHERE a.workspace=:workspace AND a.name=:node_id
+        ACTION DELETE a)""",
 }
