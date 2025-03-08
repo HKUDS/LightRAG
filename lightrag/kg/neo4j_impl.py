@@ -520,7 +520,7 @@ class Neo4JStorage(BaseGraphStorage):
                             edges.append((source_label, target_label))
 
                     await results.consume()  # Ensure results are consumed
-                    return edges if edges else None
+                    return edges
                 except Exception as e:
                     logger.error(f"Error getting edges for node {node_label}: {str(e)}")
                     await results.consume()  # Ensure results are consumed even on error
