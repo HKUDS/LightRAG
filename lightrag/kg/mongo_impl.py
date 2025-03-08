@@ -1045,6 +1045,32 @@ class MongoVectorDBStorage(BaseVectorStorage):
         except PyMongoError as e:
             logger.error(f"Error deleting relations for {entity_name}: {str(e)}")
 
+    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search for records with IDs starting with a specific prefix.
+
+        Args:
+            prefix: The prefix to search for in record IDs
+
+        Returns:
+            List of records with matching ID prefixes
+        """
+        try:
+            # Use MongoDB regex to find documents where _id starts with the prefix
+            cursor = self._data.find({"_id": {"$regex": f"^{prefix}"}})
+            matching_records = await cursor.to_list(length=None)
+
+            # Format results
+            results = [{**doc, "id": doc["_id"]} for doc in matching_records]
+
+            logger.debug(
+                f"Found {len(results)} records with prefix '{prefix}' in {self.namespace}"
+            )
+            return results
+
+        except PyMongoError as e:
+            logger.error(f"Error searching by prefix in {self.namespace}: {str(e)}")
+            return []
+
 
 async def get_or_create_collection(db: AsyncIOMotorDatabase, collection_name: str):
     collection_names = await db.list_collection_names()

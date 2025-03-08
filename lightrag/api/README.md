@@ -387,6 +387,19 @@ Note: If you don't need the API functionality, you can install the base package 
 pip install lightrag-hku
 ```
 
+## Authentication Endpoints
+
+### JWT Authentication Mechanism
+LightRAG API Server implements JWT-based authentication using HS256 algorithm. To enable secure access control, the following environment variables are required:
+```bash
+# For jwt auth
+AUTH_USERNAME=admin      # login name
+AUTH_PASSWORD=admin123   # password
+TOKEN_SECRET=your-key # JWT key
+TOKEN_EXPIRE_HOURS=4     # expire duration
+WHITELIST_PATHS=/api1,/api2  # white list. /login,/health,/docs,/redoc,/openapi.json are whitelisted by default.
+```
+
 ## API Endpoints
 
 All servers (LoLLMs, Ollama, OpenAI and Azure OpenAI) provide the same REST API endpoints for RAG functionality. When API Server is running, visit:

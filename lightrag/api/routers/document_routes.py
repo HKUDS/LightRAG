@@ -18,8 +18,11 @@ from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.api.utils_api import get_api_key_dependency, global_args
 
-
-router = APIRouter(prefix="/documents", tags=["documents"])
+router = APIRouter(
+    prefix="/documents",
+    tags=["documents"],
+    dependencies=[Depends(get_auth_dependency())],
+)
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
