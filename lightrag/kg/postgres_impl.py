@@ -1597,7 +1597,7 @@ SQL_TEMPLATES = {
                 SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
                 FROM LIGHTRAG_DOC_CHUNKS 
                 where workspace=$1
-                AND chunk_id IN (SELECT chunk_id FROM relevant_chunks)
+                AND id IN (SELECT chunk_id FROM relevant_chunks)
             )
             WHERE distance>$2 
             ORDER BY distance DESC 
