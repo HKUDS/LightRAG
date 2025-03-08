@@ -50,6 +50,9 @@ from .auth import auth_handler
 # This update allows the user to put a different.env file for each lightrag folder
 load_dotenv(".env", override=True)
 
+# Read entity extraction cache config
+enable_llm_cache = os.getenv("ENABLE_LLM_CACHE_FOR_EXTRACT", "false").lower() == "true"
+
 # Initialize config parser
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -323,7 +326,7 @@ def create_app(args):
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
-            enable_llm_cache_for_entity_extract=False,  # set to True for debuging to reduce llm fee
+            enable_llm_cache_for_entity_extract=enable_llm_cache,  # Read from environment variable
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
@@ -352,7 +355,7 @@ def create_app(args):
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
-            enable_llm_cache_for_entity_extract=False,  # set to True for debuging to reduce llm fee
+            enable_llm_cache_for_entity_extract=enable_llm_cache,  # Read from environment variable
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
