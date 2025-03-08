@@ -1242,9 +1242,11 @@ async def _find_most_related_text_unit_from_entities(
 
     all_text_units_lookup = {}
     tasks = []
+
     for index, (this_text_units, this_edges) in enumerate(zip(text_units, edges)):
         for c_id in this_text_units:
             if c_id not in all_text_units_lookup:
+                all_text_units_lookup[c_id] = index
                 tasks.append((c_id, index, this_edges))
 
     results = await asyncio.gather(

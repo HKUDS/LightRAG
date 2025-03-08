@@ -3,7 +3,7 @@ import os
 from typing import Any, final
 from dataclasses import dataclass
 import numpy as np
-from lightrag.utils import logger
+from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
 import pipmaster as pm
 
@@ -124,7 +124,110 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         pass
 
     async def delete_entity(self, entity_name: str) -> None:
-        raise NotImplementedError
+        """Delete an entity from the vector database
+
+        Args:
+            entity_name: The name of the entity to delete
+        """
+        try:
+            # Compute entity ID from name
+            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
+            logger.debug(
+                f"Attempting to delete entity {entity_name} with ID {entity_id}"
+            )
+
+            # Delete the entity from Milvus collection
+            result = self._client.delete(
+                collection_name=self.namespace, pks=[entity_id]
+            )
+
+            if result and result.get("delete_count", 0) > 0:
+                logger.debug(f"Successfully deleted entity {entity_name}")
+            else:
+                logger.debug(f"Entity {entity_name} not found in storage")
+
+        except Exception as e:
+            logger.error(f"Error deleting entity {entity_name}: {e}")
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        raise NotImplementedError
+        """Delete all relations associated with an entity
+
+        Args:
+            entity_name: The name of the entity whose relations should be deleted
+        """
+        try:
+            # Search for relations where entity is either source or target
+            expr = f'src_id == "{entity_name}" or tgt_id == "{entity_name}"'
+
+            # Find all relations involving this entity
+            results = self._client.query(
+                collection_name=self.namespace, filter=expr, output_fields=["id"]
+            )
+
+            if not results or len(results) == 0:
+                logger.debug(f"No relations found for entity {entity_name}")
+                return
+
+            # Extract IDs of relations to delete
+            relation_ids = [item["id"] for item in results]
+            logger.debug(
+                f"Found {len(relation_ids)} relations for entity {entity_name}"
+            )
+
+            # Delete the relations
+            if relation_ids:
+                delete_result = self._client.delete(
+                    collection_name=self.namespace, pks=relation_ids
+                )
+
+                logger.debug(
+                    f"Deleted {delete_result.get('delete_count', 0)} relations for {entity_name}"
+                )
+
+        except Exception as e:
+            logger.error(f"Error deleting relations for {entity_name}: {e}")
+
+    async def delete(self, ids: list[str]) -> None:
+        """Delete vectors with specified IDs
+
+        Args:
+            ids: List of vector IDs to be deleted
+        """
+        try:
+            # Delete vectors by IDs
+            result = self._client.delete(collection_name=self.namespace, pks=ids)
+
+            if result and result.get("delete_count", 0) > 0:
+                logger.debug(
+                    f"Successfully deleted {result.get('delete_count', 0)} vectors from {self.namespace}"
+                )
+            else:
+                logger.debug(f"No vectors were deleted from {self.namespace}")
+
+        except Exception as e:
+            logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
+
+    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search for records with IDs starting with a specific prefix.
+
+        Args:
+            prefix: The prefix to search for in record IDs
+
+        Returns:
+            List of records with matching ID prefixes
+        """
+        try:
+            # Use Milvus query with expression to find IDs with the given prefix
+            expression = f'id like "{prefix}%"'
+            results = self._client.query(
+                collection_name=self.namespace,
+                filter=expression,
+                output_fields=list(self.meta_fields) + ["id"],
+            )
+
+            logger.debug(f"Found {len(results)} records with prefix '{prefix}'")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error searching for records with prefix '{prefix}': {e}")
+            return []

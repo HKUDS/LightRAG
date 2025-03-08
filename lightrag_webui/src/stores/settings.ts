@@ -22,6 +22,9 @@ interface SettingsState {
   graphQueryMaxDepth: number
   setGraphQueryMaxDepth: (depth: number) => void
 
+  graphMinDegree: number
+  setGraphMinDegree: (degree: number) => void
+
   graphLayoutMaxIterations: number
   setGraphLayoutMaxIterations: (iterations: number) => void
 
@@ -66,6 +69,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       enableEdgeEvents: false,
 
       graphQueryMaxDepth: 3,
+      graphMinDegree: 0,
       graphLayoutMaxIterations: 10,
 
       queryLabel: defaultQueryLabel,
@@ -106,6 +110,8 @@ const useSettingsStoreBase = create<SettingsState>()(
         }),
 
       setGraphQueryMaxDepth: (depth: number) => set({ graphQueryMaxDepth: depth }),
+
+      setGraphMinDegree: (degree: number) => set({ graphMinDegree: degree }),
 
       setEnableHealthCheck: (enable: boolean) => set({ enableHealthCheck: enable }),
 
