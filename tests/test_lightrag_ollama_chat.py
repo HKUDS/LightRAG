@@ -38,16 +38,16 @@ class McpError(Exception):
 
 DEFAULT_CONFIG = {
     "server": {
-        "host": "host.docker.internal",
-        "port": 11434,
-        "model": "llama3.2:latest",
+        "host": "localhost",
+        "port": 9621,
+        "model": "lightrag:latest",
         "timeout": 300,
         "max_retries": 1,
         "retry_delay": 1,
     },
     "test_cases": {
-        "basic": {"query": "How many disciples did Tang Seng have?"},
-        "generate": {"query": "Who directed the TV series Journey to the West?"},
+        "basic": {"query": "唐僧有几个徒弟"},
+        "generate": {"query": "电视剧西游记导演是谁"},
     },
 }
 
@@ -763,8 +763,8 @@ def parse_args() -> argparse.Namespace:
 Configuration file (config.json):
   {
     "server": {
-      "host": "host.docker.internal",      # Server address
-      "port": 11434,            # Server port
+      "host": "localhost",      # Server address
+      "port": 9621,            # Server port
       "model": "lightrag:latest" # Default model name
     },
     "test_cases": {
