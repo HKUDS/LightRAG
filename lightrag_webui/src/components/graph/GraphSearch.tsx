@@ -9,6 +9,7 @@ import { AsyncSearch } from '@/components/ui/AsyncSearch'
 import { searchResultLimit } from '@/lib/constants'
 import { useGraphStore } from '@/stores/graph'
 import MiniSearch from 'minisearch'
+import { useTranslation } from 'react-i18next'
 
 interface OptionItem {
   id: string
@@ -44,6 +45,7 @@ export const GraphSearchInput = ({
   onFocus?: GraphSearchInputProps['onFocus']
   value?: GraphSearchInputProps['value']
 }) => {
+  const { t } = useTranslation()
   const graph = useGraphStore.use.sigmaGraph()
 
   const searchEngine = useMemo(() => {
@@ -97,7 +99,7 @@ export const GraphSearchInput = ({
           {
             type: 'message',
             id: messageId,
-            message: `And ${result.length - searchResultLimit} others`
+            message: t('graphPanel.search.message', { count: result.length - searchResultLimit })
           }
         ]
     },
@@ -118,7 +120,7 @@ export const GraphSearchInput = ({
         if (id !== messageId && onFocus) onFocus(id ? { id, type: 'nodes' } : null)
       }}
       label={'item'}
-      placeholder="Search nodes..."
+      placeholder={t('graphPanel.search.placeholder')}
     />
   )
 }
