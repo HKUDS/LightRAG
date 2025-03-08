@@ -5,6 +5,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
 import { labelListLimit } from '@/lib/constants'
 import MiniSearch from 'minisearch'
+import { useTranslation } from 'react-i18next'
 
 const lastGraph: any = {
   graph: null,
@@ -13,6 +14,7 @@ const lastGraph: any = {
 }
 
 const GraphLabels = () => {
+  const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
   const graph = useGraphStore.use.sigmaGraph()
 
@@ -69,7 +71,7 @@ const GraphLabels = () => {
 
       return result.length <= labelListLimit
         ? result
-        : [...result.slice(0, labelListLimit), `And ${result.length - labelListLimit} others`]
+        : [...result.slice(0, labelListLimit), t('graphLabels.andOthers', { count: result.length - labelListLimit })]
     },
     [getSearchEngine]
   )
@@ -84,14 +86,14 @@ const GraphLabels = () => {
       className="ml-2"
       triggerClassName="max-h-8"
       searchInputClassName="max-h-8"
-      triggerTooltip="Select query label"
+      triggerTooltip={t('graphPanel.graphLabels.selectTooltip')}
       fetcher={fetchData}
       renderOption={(item) => <div>{item}</div>}
       getOptionValue={(item) => item}
       getDisplayValue={(item) => <div>{item}</div>}
       notFound={<div className="py-6 text-center text-sm">No labels found</div>}
-      label="Label"
-      placeholder="Search labels..."
+      label={t('graphPanel.graphLabels.label')}
+      placeholder={t('graphPanel.graphLabels.placeholder')}
       value={label !== null ? label : ''}
       onChange={setQueryLabel}
     />

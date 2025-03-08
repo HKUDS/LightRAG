@@ -14,8 +14,10 @@ import { errorMessage } from '@/lib/utils'
 import { uploadDocument } from '@/api/lightrag'
 
 import { UploadIcon } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 export default function UploadDocumentsDialog() {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
@@ -29,24 +31,24 @@ export default function UploadDocumentsDialog() {
           filesToUpload.map(async (file) => {
             try {
               const result = await uploadDocument(file, (percentCompleted: number) => {
-                console.debug(`Uploading ${file.name}: ${percentCompleted}%`)
+                console.debug(t('documentPanel.uploadDocuments.uploading', { name: file.name, percent: percentCompleted }))
                 setProgresses((pre) => ({
                   ...pre,
                   [file.name]: percentCompleted
                 }))
               })
               if (result.status === 'success') {
-                toast.success(`Upload Success:\n${file.name} uploaded successfully`)
+                toast.success(t('documentPanel.uploadDocuments.success', { name: file.name }))
               } else {
-                toast.error(`Upload Failed:\n${file.name}\n${result.message}`)
+                toast.error(t('documentPanel.uploadDocuments.failed', { name: file.name, message: result.message }))
               }
             } catch (err) {
-              toast.error(`Upload Failed:\n${file.name}\n${errorMessage(err)}`)
+              toast.error(t('documentPanel.uploadDocuments.error', { name: file.name, error: errorMessage(err) }))
             }
           })
         )
       } catch (err) {
-        toast.error('Upload Failed\n' + errorMessage(err))
+        toast.error(t('documentPanel.uploadDocuments.generalError', { error: errorMessage(err) }))
       } finally {
         setIsUploading(false)
         // setOpen(false)
@@ -66,21 +68,21 @@ export default function UploadDocumentsDialog() {
       }}
     >
       <DialogTrigger asChild>
-        <Button variant="default" side="bottom" tooltip="Upload documents" size="sm">
-          <UploadIcon /> Upload
+        <Button variant="default" side="bottom" tooltip={t('documentPanel.uploadDocuments.tooltip')} size="sm">
+          <UploadIcon /> {t('documentPanel.uploadDocuments.button')}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-xl" onCloseAutoFocus={(e) => e.preventDefault()}>
         <DialogHeader>
-          <DialogTitle>Upload documents</DialogTitle>
+          <DialogTitle>{t('documentPanel.uploadDocuments.title')}</DialogTitle>
           <DialogDescription>
-            Drag and drop your documents here or click to browse.
+            {t('documentPanel.uploadDocuments.description')}
           </DialogDescription>
         </DialogHeader>
         <FileUploader
           maxFileCount={Infinity}
           maxSize={200 * 1024 * 1024}
-          description="supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
+          description={t('documentPanel.uploadDocuments.fileTypes')}
           onUpload={handleDocumentsUpload}
           progresses={progresses}
           disabled={isUploading}
