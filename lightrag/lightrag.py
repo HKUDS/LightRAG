@@ -2809,3 +2809,146 @@ class LightRAG:
                 ]
             ]
         )
+
+    async def infer_new_relationships(self, entity_types: list[str] = None, bidirectional: bool = False, max_graph_depth: int = 2) -> None:
+        """Using large models to infer implicit relationships in knowledge graphs
+        
+        Based on existing entities and relationships, use a large model to infer possible new relationships,
+        Especially common sense relationships such as family relationships and social relationships.
+
+        Args:
+        entity_types:  The list of entity types to be processed defaults to ["person"]. If it is None, the default value is used
+        bidirectional:  Whether to perform bidirectional relationship inference, default to False, only infers unidirectional relationships
+        max_graph_depth:  Get the maximum depth of the subgraph, default is 2
+        """
+        try:
+            if entity_types is None:
+                entity_types = ["person"]
+
+            all_entities = await self.chunk_entity_relation_graph.get_all_labels()
+            if not all_entities or len(all_entities) < 2:
+                logger.info("Insufficient number of entities in the knowledge graph for relational reasoning")
+                return
+                
+            filtered_entities = []
+            for entity in all_entities:
+                node_data = await self.chunk_entity_relation_graph.get_node(entity)
+                if node_data and "entity_type" in node_data:
+                    entity_type = node_data["entity_type"]
+                    if entity_type in entity_types:
+                        filtered_entities.append(entity)
+            
+            if not filtered_entities:
+                logger.info(f"No entity of type {physical_types} found, unable to perform relationship inference")
+                return
+                
+            logger.info(f"We will perform relational inference on {len(filtered_entities)} entities")
+
+            kg_data = {}
+            for entity in filtered_entities:
+                subgraph = await self.get_knowledge_graph(entity, max_depth=max_graph_depth)
+                if subgraph:
+                    kg_data[entity] = subgraph
+                    
+            if not kg_data:
+                logger.info("Unable to obtain knowledge graph data, unable to perform relational reasoning")
+                return
+                
+            prompt = PROMPTS["relation_inference"].format(
+                kg_data=kg_data
+            )
+            
+            if not self.llm_model_func:
+                logger.warning("LLM model function not set, skipping relationship inference")
+                return
+                
+            response = await self.llm_model_func(
+                prompt,
+                model=self.llm_model_name,
+                temperature=0.1,
+                max_tokens=self.llm_model_max_token_size,
+            )
+            
+            try:
+                import re
+                import json
+                
+                json_match = re.search(r'\[\s*\{.*\}\s*\]', response, re.DOTALL)
+                
+                if json_match:
+                    json_str = json_match.group(0)
+                    try:
+                        new_relationships = json.loads(json_str)
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"Unable to parse extracted JSON string:{e}")
+                        return
+                else:
+                    try:
+                        new_relationships = convert_response_to_json(response)
+                    except Exception as e:
+                        logger.warning(f"Unable to parse large model response as JSON:{e}")
+                        return(response)
+                if not isinstance(new_relationships, list):
+                    logger.warning(f"The relationship format returned by the large model is incorrect:{new_relationships}")
+                    return
+                
+                processed_relations = set()
+
+                added_count = 0
+                for rel in new_relationships:
+                    try:
+                        source = rel.get("source_entity")
+                        target = rel.get("target_entity")
+
+                        if not source or not target:
+                            continue
+                            
+                        relation_key = f"{source}_{target}"
+                        reverse_key = f"{target}_{source}"
+                        
+                        if not bidirectional and reverse_key in processed_relations:
+                            logger.info(f"Skip processed reverse relationships:{target} -> {source}")
+                            continue
+                            
+                        processed_relations.add(relation_key)
+
+                        description = rel.get("relationship_description", "")
+                        keywords = rel.get("relationship_keywords", "")
+                        strength = float(rel.get("relationship_strength", 0.7))
+                        
+                        source_exists = await self.chunk_entity_relation_graph.has_node(source)
+                        target_exists = await self.chunk_entity_relation_graph.has_node(target)
+                        
+                        if not source_exists or not target_exists:
+                            logger.warning(f"Entity does not exist: {source} or {target}")
+                            continue
+
+                        existing_edge = await self.chunk_entity_relation_graph.get_edge(source, target)
+                        if existing_edge:
+                            logger.info(f"Relationship already exists: {source} -> {target}")
+                            continue
+                            
+                        relation_data = {
+                            "description": description,
+                            "keywords": keywords,
+                            "source_id": "inferred",
+                            "weight": strength
+                        }
+                        
+                        await self.acreate_relation(source, target, relation_data)
+                        added_count += 1
+                        logger.info(f"Successfully added relationship: {source} -> {target},  Description: {description}")
+                        
+                    except Exception as e:
+                        logger.error(f"Error adding inference relationship: {e}")
+                        continue
+                        
+                logger.info(f"Successfully added {added_count} inference relationships")
+                
+            except Exception as e:
+                logger.error(f"Error parsing large model response: {e}")
+                raise
+                
+        except Exception as e:
+            logger.error(f"Error occurred during the process of relational reasoning: {e}")
+            raise

@@ -345,3 +345,30 @@ When handling information with timestamps:
 - List up to 5 most important reference sources at the end under "References" sesction. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), in the following format: [KG/DC] Source content
 - If you don't know the answer, just say so. Do not make anything up.
 - Do not include information not provided by the Data Sources."""
+
+
+PROMPTS["relation_inference"] = """
+Based on the following entities and relationships in the knowledge graph, please infer possible relationships that may exist but are not explicitly stated.
+Focus especially on the following types of relationships:
+1. Family relationships (such as spouse, parent-child, grandparent-grandchild, siblings, in-laws, etc.)
+2. Social relationships (such as friends, colleagues, teacher-student, etc.)
+3. Geographic relationships (such as residence, workplace, etc.)
+
+Known entities and relationships:
+{kg_data}
+
+Please return the inferred new relationships in JSON format as follows:
+[
+{{
+    "source_entity": "Entity A",
+    "target_entity": "Entity B",
+    "relationship_description": "relationship description",
+    "relationship_keywords": "relationship type",
+    "relationship_strength": 0.9  // confidence between 0-1
+}},
+// more relationships...
+]
+
+Only return high-confidence relationships (>0.8), and do not return relationships that already exist.
+Please ensure that source_entity and target_entity are names of known entities.
+"""
