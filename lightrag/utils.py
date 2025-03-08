@@ -667,11 +667,11 @@ async def handle_cache(
                 cache_type=cache_type,
             )
             if best_cached_response is not None:
-                logger.info(f"Embedding cached hit(mode:{mode} type:{cache_type})")
+                logger.debug(f"Embedding cached hit(mode:{mode} type:{cache_type})")
                 return best_cached_response, None, None, None
             else:
                 # if caching keyword embedding is enabled, return the quantized embedding for saving it latter
-                logger.info(f"Embedding cached missed(mode:{mode} type:{cache_type})")
+                logger.debug(f"Embedding cached missed(mode:{mode} type:{cache_type})")
                 return None, quantized, min_val, max_val
 
     # For default mode or is_embedding_cache_enabled is False, use regular cache
@@ -681,10 +681,10 @@ async def handle_cache(
     else:
         mode_cache = await hashing_kv.get_by_id(mode) or {}
     if args_hash in mode_cache:
-        logger.info(f"Non-embedding cached hit(mode:{mode} type:{cache_type})")
+        logger.debug(f"Non-embedding cached hit(mode:{mode} type:{cache_type})")
         return mode_cache[args_hash]["return"], None, None, None
 
-    logger.info(f"Non-embedding cached missed(mode:{mode} type:{cache_type})")
+    logger.debug(f"Non-embedding cached missed(mode:{mode} type:{cache_type})")
     return None, None, None, None
 
 
