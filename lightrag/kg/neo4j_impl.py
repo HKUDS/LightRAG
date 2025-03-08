@@ -865,17 +865,17 @@ class Neo4JStorage(BaseGraphStorage):
                         if b_node.labels:  # Only process if target node has labels
                             # Create KnowledgeGraphNode for target
                             target_node = KnowledgeGraphNode(
-                                id=target_id,
+                                id=f"{target_id}",
                                 labels=list(b_node.labels),
                                 properties=dict(b_node),
                             )
 
                             # Create KnowledgeGraphEdge
                             target_edge = KnowledgeGraphEdge(
-                                id=edge_id,
+                                id=f"{edge_id}",
                                 type=rel.type,
-                                source=node.id,
-                                target=target_id,
+                                source=f"{node.id}",
+                                target=f"{target_id}",
                                 properties=dict(rel),
                             )
 
@@ -905,7 +905,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                 # Create initial KnowledgeGraphNode
                 start_node = KnowledgeGraphNode(
-                    id=str(node_record["node_id"]),
+                    id=f"{node_record['node_id']}",
                     labels=list(node_record["n"].labels),
                     properties=dict(node_record["n"]),
                 )
