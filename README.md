@@ -176,6 +176,8 @@ class QueryParam:
     """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
     max_token_for_local_context: int = 4000
     """Maximum number of tokens allocated for entity descriptions in local retrieval."""
+    ids: list[str] | None = None
+    """List of ids to filter the RAG."""
     ...
 ```
 
