@@ -135,7 +135,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         logger.debug(f"query result: {results}")
 
-        return [{**dp.payload, "id": dp.id, "distance": dp.score} for dp in results]
+        return [{**dp.payload, "distance": dp.score} for dp in results]
 
     async def index_done_callback(self) -> None:
         # Qdrant handles persistence automatically
@@ -263,9 +263,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             matching_records = results[0]
 
             # Format the results to match expected return format
-            formatted_results = [
-                {**point.payload, "id": point.id} for point in matching_records
-            ]
+            formatted_results = [{**point.payload} for point in matching_records]
 
             logger.debug(
                 f"Found {len(formatted_results)} records with prefix '{prefix}'"
