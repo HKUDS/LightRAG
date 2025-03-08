@@ -522,8 +522,9 @@ async def extract_entities(
             maybe_edges[tuple(sorted(k))].extend(v)
 
     from .kg.shared_storage import get_graph_db_lock
-    graph_db_lock = get_graph_db_lock(enable_logging = True)
-    
+
+    graph_db_lock = get_graph_db_lock(enable_logging=True)
+
     # Ensure that nodes and edges are merged and upserted atomically
     async with graph_db_lock:
         all_entities_data = await asyncio.gather(
@@ -535,7 +536,9 @@ async def extract_entities(
 
         all_relationships_data = await asyncio.gather(
             *[
-                _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
+                _merge_edges_then_upsert(
+                    k[0], k[1], v, knowledge_graph_inst, global_config
+                )
                 for k, v in maybe_edges.items()
             ]
         )

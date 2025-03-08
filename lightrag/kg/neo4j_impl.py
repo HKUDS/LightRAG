@@ -181,10 +181,10 @@ class Neo4JStorage(BaseGraphStorage):
 
         Args:
             label: The label to validate
-            
+
         Returns:
             str: The cleaned label
-            
+
         Raises:
             ValueError: If label is empty after cleaning
         """
@@ -283,7 +283,9 @@ class Neo4JStorage(BaseGraphStorage):
                 query = f"MATCH (n:`{entity_name_label}` {{entity_id: $entity_id}}) RETURN n"
                 result = await session.run(query, entity_id=entity_name_label)
                 try:
-                    records = await result.fetch(2)  # Get 2 records for duplication check
+                    records = await result.fetch(
+                        2
+                    )  # Get 2 records for duplication check
 
                     if len(records) > 1:
                         logger.warning(
@@ -552,6 +554,7 @@ class Neo4JStorage(BaseGraphStorage):
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:
+
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     query = f"""
                     MERGE (n:`{label}` {{entity_id: $properties.entity_id}})
@@ -562,7 +565,7 @@ class Neo4JStorage(BaseGraphStorage):
                         f"Upserted node with label '{label}' and properties: {properties}"
                     )
                     await result.consume()  # Ensure result is fully consumed
-                
+
                 await session.execute_write(execute_upsert)
         except Exception as e:
             logger.error(f"Error during upsert: {str(e)}")
@@ -602,18 +605,26 @@ class Neo4JStorage(BaseGraphStorage):
             """
             result = await session.run(query)
             try:
-                records = await result.fetch(2)  # We only need to know if there are 0, 1, or >1 nodes
-                
+                records = await result.fetch(
+                    2
+                )  # We only need to know if there are 0, 1, or >1 nodes
+
                 if not records or records[0]["node_count"] == 0:
-                    raise ValueError(f"Neo4j: node with label '{node_label}' does not exist")
-                
+                    raise ValueError(
+                        f"Neo4j: node with label '{node_label}' does not exist"
+                    )
+
                 if records[0]["node_count"] > 1:
-                    raise ValueError(f"Neo4j: multiple nodes found with label '{node_label}', cannot determine unique node")
-                
+                    raise ValueError(
+                        f"Neo4j: multiple nodes found with label '{node_label}', cannot determine unique node"
+                    )
+
                 node = records[0]["n"]
                 if "entity_id" not in node:
-                    raise ValueError(f"Neo4j: node with label '{node_label}' does not have an entity_id property")
-                
+                    raise ValueError(
+                        f"Neo4j: node with label '{node_label}' does not have an entity_id property"
+                    )
+
                 return node["entity_id"]
             finally:
                 await result.consume()  # Ensure result is fully consumed
@@ -656,6 +667,7 @@ class Neo4JStorage(BaseGraphStorage):
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:
+
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     query = f"""
                     MATCH (source:`{source_label}` {{entity_id: $source_entity_id}})
@@ -666,10 +678,10 @@ class Neo4JStorage(BaseGraphStorage):
                     RETURN r, source, target
                     """
                     result = await tx.run(
-                        query, 
+                        query,
                         source_entity_id=source_entity_id,
                         target_entity_id=target_entity_id,
-                        properties=edge_properties
+                        properties=edge_properties,
                     )
                     try:
                         records = await result.fetch(100)
@@ -681,7 +693,7 @@ class Neo4JStorage(BaseGraphStorage):
                             )
                     finally:
                         await result.consume()  # Ensure result is consumed
-                
+
                 await session.execute_write(execute_upsert)
         except Exception as e:
             logger.error(f"Error during edge upsert: {str(e)}")
@@ -891,7 +903,9 @@ class Neo4JStorage(BaseGraphStorage):
                 results = await session.run(query, {"node_id": node.id})
 
                 # Get all records and release database connection
-                records = await results.fetch(1000)  # Max neighbour nodes we can handled
+                records = await results.fetch(
+                    1000
+                )  # Max neighbour nodes we can handled
                 await results.consume()  # Ensure results are consumed
 
                 # Nodes not connected to start node need to check degree
