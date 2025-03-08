@@ -48,3 +48,18 @@ tiktoken==0.9.0
 torch==2.6.0
 transformers==4.49.0
 uvicorn==0.34.0
+aiohttp
+configparser
+future
+
+# Basic modules
+gensim
+pipmaster
+pydantic
+python-dotenv
+
+setuptools
+tenacity
+
+# LLM packages
+tiktoken
