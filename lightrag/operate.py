@@ -602,7 +602,6 @@ async def kg_query(
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
-    ids: list[str] | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
     use_model_func = global_config["llm_model_func"]
@@ -650,7 +649,6 @@ async def kg_query(
         relationships_vdb,
         text_chunks_db,
         query_param,
-        ids
     )
 
     if query_param.only_need_context:
@@ -1035,7 +1033,6 @@ async def _build_query_context(
             relationships_vdb,
             text_chunks_db,
             query_param,
-            ids = ids
         )
     else:  # hybrid mode
         ll_data, hl_data = await asyncio.gather(
@@ -1104,7 +1101,9 @@ async def _get_node_data(
     logger.info(
         f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {entities_vdb.cosine_better_than_threshold}"
     )
-    results = await entities_vdb.query(query, top_k=query_param.top_k)
+
+    results = await entities_vdb.query(query, top_k=query_param.top_k, ids = query_param.ids)
+
     if not len(results):
         return "", "", ""
     # get entity information
@@ -1352,16 +1351,12 @@ async def _get_edge_data(
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    ids: list[str] | None = None,
 ):
     logger.info(
         f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {relationships_vdb.cosine_better_than_threshold}"
     )
-    if ids: 
-        #TODO: add ids to the query
-        results = await relationships_vdb.query(keywords, top_k = query_param.top_k, ids = ids)
-    else:   
-        results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+
+    results = await relationships_vdb.query(keywords, top_k = query_param.top_k, ids = query_param.ids)
 
     if not len(results):
         return "", "", ""
@@ -1610,7 +1605,7 @@ async def naive_query(
     if cached_response is not None:
         return cached_response
 
-    results = await chunks_vdb.query(query, top_k=query_param.top_k)
+    results = await chunks_vdb.query(query, top_k=query_param.top_k, ids = query_param.ids)
     if not len(results):
         return PROMPTS["fail_response"]
 
