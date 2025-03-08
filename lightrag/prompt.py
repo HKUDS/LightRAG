@@ -149,7 +149,7 @@ Description List: {description_list}
 Output:
 """
 
-PROMPTS['entity_continue_extraction'] = """
+PROMPTS["entity_continue_extraction"] = """
 MANY entities and relationships were missed in the last extraction.
 
 ---Remember Steps---
@@ -181,7 +181,7 @@ Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_
 Add them below using the same format:\n
 """.strip()
 
-PROMPTS['entity_if_loop_extraction'] = """
+PROMPTS["entity_if_loop_extraction"] = """
 ---Goal---'
 
 It appears some entities may have still been missed.
