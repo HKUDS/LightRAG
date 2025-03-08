@@ -15,3 +15,7 @@ tenacity
 tiktoken
 
 # Extra libraries are installed when needed using pipmaster
+
+#Requirements for data extraction
+xlsxwriter
+pandas
