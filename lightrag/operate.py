@@ -892,7 +892,8 @@ async def mix_kg_vector_query(
         try:
             # Reduce top_k for vector search in hybrid mode since we have structured information from KG
             mix_topk = min(10, query_param.top_k)
-            results = await chunks_vdb.query(augmented_query, top_k=mix_topk)
+            # TODO: add ids to the query
+            results = await chunks_vdb.query(augmented_query, top_k=mix_topk, ids = query_param.ids)
             if not results:
                 return None
 
