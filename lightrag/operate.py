@@ -523,7 +523,7 @@ async def extract_entities(
 
     from .kg.shared_storage import get_graph_db_lock
 
-    graph_db_lock = get_graph_db_lock(enable_logging=True)
+    graph_db_lock = get_graph_db_lock(enable_logging=False)
 
     # Ensure that nodes and edges are merged and upserted atomically
     async with graph_db_lock:
