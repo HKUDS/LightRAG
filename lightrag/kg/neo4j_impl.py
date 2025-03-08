@@ -843,7 +843,7 @@ class Neo4JStorage(BaseGraphStorage):
                 results = await session.run(query, {"node_id": node.id})
 
                 # Get all records and release database connection
-                records = await results.fetch()
+                records = await results.fetch(1000)  # Max neighbour nodes we can handled
                 await results.consume()  # Ensure results are consumed
 
                 # Nodes not connected to start node need to check degree
