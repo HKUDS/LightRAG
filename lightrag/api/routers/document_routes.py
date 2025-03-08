@@ -545,7 +545,7 @@ def create_document_routes(
                 message="Text successfully received. Processing will continue in background.",
             )
         except Exception as e:
-            logger.error(f"Error /documents/text: {str(e)}")
+            logger.error(f"Error /documents/texts: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
