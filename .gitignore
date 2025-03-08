@@ -64,24 +64,3 @@ gui/
 
 # unit-test files
 test_*
-Miniconda3-latest-Linux-x86_64.sh
-requirements_basic.txt
-requirements.txt
-examples/test_chromadb.py
-examples/test_faiss.py
-examples/test_neo4j.py
-.gitignore
-requirements.txt
-examples/test_chromadb.py
-examples/test_faiss.py
-examples/*
-tests/test_lightrag_ollama_chat.py
-requirements.txt
-requirements.txt
-examples/test_chromadb.py
-examples/test_faiss.py
-examples/test_neo4j.py
-tests/test_lightrag_ollama_chat.py
-examples/test_chromadb.py
-examples/test_faiss.py
-examples/test_neo4j.py
