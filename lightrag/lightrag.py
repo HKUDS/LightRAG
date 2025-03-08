@@ -504,11 +504,39 @@ class LightRAG:
         return text
 
     async def get_knowledge_graph(
-        self, node_label: str, max_depth: int
+        self,
+        node_label: str,
+        max_depth: int = 3,
+        min_degree: int = 0,
+        inclusive: bool = False,
     ) -> KnowledgeGraph:
-        return await self.chunk_entity_relation_graph.get_knowledge_graph(
-            node_label=node_label, max_depth=max_depth
-        )
+        """Get knowledge graph for a given label
+
+        Args:
+            node_label (str): Label to get knowledge graph for
+            max_depth (int): Maximum depth of graph
+            min_degree (int, optional): Minimum degree of nodes to include. Defaults to 0.
+            inclusive (bool, optional): Whether to use inclusive search mode. Defaults to False.
+
+        Returns:
+            KnowledgeGraph: Knowledge graph containing nodes and edges
+        """
+        # get params supported by get_knowledge_graph of specified storage
+        import inspect
+
+        storage_params = inspect.signature(
+            self.chunk_entity_relation_graph.get_knowledge_graph
+        ).parameters
+
+        kwargs = {"node_label": node_label, "max_depth": max_depth}
+
+        if "min_degree" in storage_params and min_degree > 0:
+            kwargs["min_degree"] = min_degree
+
+        if "inclusive" in storage_params:
+            kwargs["inclusive"] = inclusive
+
+        return await self.chunk_entity_relation_graph.get_knowledge_graph(**kwargs)
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
         import_path = STORAGES[storage_name]
@@ -2016,6 +2044,9 @@ class LightRAG:
                 # Delete old entity record from vector database
                 old_entity_id = compute_mdhash_id(entity_name, prefix="ent-")
                 await self.entities_vdb.delete([old_entity_id])
+                logger.info(
+                    f"Deleted old entity '{entity_name}' and its vector embedding from database"
+                )
 
                 # Update relationship vector representations
                 for src, tgt, edge_data in relations_to_update:
@@ -2142,6 +2173,15 @@ class LightRAG:
                 raise ValueError(
                     f"Relation from '{source_entity}' to '{target_entity}' does not exist"
                 )
+
+            # Important: First delete the old relation record from the vector database
+            old_relation_id = compute_mdhash_id(
+                source_entity + target_entity, prefix="rel-"
+            )
+            await self.relationships_vdb.delete([old_relation_id])
+            logger.info(
+                f"Deleted old relation record from vector database for relation {source_entity} -> {target_entity}"
+            )
 
             # 2. Update relation information in the graph
             new_edge_data = {**edge_data, **updated_data}
@@ -2641,12 +2681,29 @@ class LightRAG:
 
             # 9. Delete source entities
             for entity_name in source_entities:
-                # Delete entity node
+                # Delete entity node from knowledge graph
                 await self.chunk_entity_relation_graph.delete_node(entity_name)
-                # Delete record from vector database
+
+                # Delete entity record from vector database
                 entity_id = compute_mdhash_id(entity_name, prefix="ent-")
                 await self.entities_vdb.delete([entity_id])
-                logger.info(f"Deleted source entity '{entity_name}'")
+
+                # Also ensure any relationships specific to this entity are deleted from vector DB
+                # This is a safety check, as these should have been transformed to the target entity already
+                entity_relation_prefix = compute_mdhash_id(entity_name, prefix="rel-")
+                relations_with_entity = await self.relationships_vdb.search_by_prefix(
+                    entity_relation_prefix
+                )
+                if relations_with_entity:
+                    relation_ids = [r["id"] for r in relations_with_entity]
+                    await self.relationships_vdb.delete(relation_ids)
+                    logger.info(
+                        f"Deleted {len(relation_ids)} relation records for entity '{entity_name}' from vector database"
+                    )
+
+                logger.info(
+                    f"Deleted source entity '{entity_name}' and its vector embedding from database"
+                )
 
             # 10. Save changes
             await self._merge_entities_done()
