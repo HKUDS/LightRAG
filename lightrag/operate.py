@@ -220,6 +220,7 @@ async def _merge_nodes_then_upsert(
         entity_name, description, global_config
     )
     node_data = dict(
+        entity_id=entity_name,
         entity_type=entity_type,
         description=description,
         source_id=source_id,
@@ -301,6 +302,7 @@ async def _merge_edges_then_upsert(
             await knowledge_graph_inst.upsert_node(
                 need_insert_id,
                 node_data={
+                    "entity_id": need_insert_id,
                     "source_id": source_id,
                     "description": description,
                     "entity_type": "UNKNOWN",
