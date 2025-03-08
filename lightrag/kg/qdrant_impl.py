@@ -263,9 +263,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             matching_records = results[0]
 
             # Format the results to match expected return format
-            formatted_results = [
-                {**point.payload} for point in matching_records
-            ]
+            formatted_results = [{**point.payload} for point in matching_records]
 
             logger.debug(
                 f"Found {len(formatted_results)} records with prefix '{prefix}'"
