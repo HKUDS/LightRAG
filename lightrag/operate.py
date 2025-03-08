@@ -384,8 +384,8 @@ async def extract_entities(
         language=language,
     )
 
-    continue_prompt = PROMPTS["entiti_continue_extraction"]
-    if_loop_prompt = PROMPTS["entiti_if_loop_extraction"]
+    continue_prompt = PROMPTS["entity_continue_extraction"]
+    if_loop_prompt = PROMPTS["entity_if_loop_extraction"]
 
     processed_chunks = 0
     total_chunks = len(ordered_chunks)
@@ -1156,7 +1156,8 @@ async def _get_node_data(
             "entity",
             "type",
             "description",
-            "rank" "created_at",
+            "rank",
+            "created_at",
         ]
     ]
     for i, n in enumerate(node_datas):

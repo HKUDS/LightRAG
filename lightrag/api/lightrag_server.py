@@ -2,10 +2,7 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import (
-    FastAPI,
-    Depends,
-)
+from fastapi import FastAPI, Depends, HTTPException, status
 import asyncio
 import os
 import logging
@@ -45,11 +42,16 @@ from lightrag.kg.shared_storage import (
     initialize_pipeline_status,
     get_all_update_flags_status,
 )
+from fastapi.security import OAuth2PasswordRequestForm
+from .auth import auth_handler
 
 # Load environment variables
 # Updated to use the .env that is inside the current folder
 # This update allows the user to put a different.env file for each lightrag folder
 load_dotenv(".env", override=True)
+
+# Read entity extraction cache config
+enable_llm_cache = os.getenv("ENABLE_LLM_CACHE_FOR_EXTRACT", "false").lower() == "true"
 
 # Initialize config parser
 config = configparser.ConfigParser()
@@ -324,16 +326,13 @@ def create_app(args):
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
-            enable_llm_cache_for_entity_extract=False,  # set to True for debuging to reduce llm fee
+            enable_llm_cache_for_entity_extract=enable_llm_cache,  # Read from environment variable
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
             namespace_prefix=args.namespace_prefix,
-            addon_params={
-                "language": args.language,
-            },
             auto_manage_storages_states=False,
         )
     else:  # azure_openai
@@ -356,7 +355,7 @@ def create_app(args):
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
-            enable_llm_cache_for_entity_extract=False,  # set to True for debuging to reduce llm fee
+            enable_llm_cache_for_entity_extract=enable_llm_cache,  # Read from environment variable
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
@@ -374,6 +373,27 @@ def create_app(args):
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")
+
+    @app.post("/login")
+    async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+        username = os.getenv("AUTH_USERNAME")
+        password = os.getenv("AUTH_PASSWORD")
+
+        if not (username and password):
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Authentication not configured",
+            )
+
+        if form_data.username != username or form_data.password != password:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
+            )
+
+        return {
+            "access_token": auth_handler.create_token(username),
+            "token_type": "bearer",
+        }
 
     @app.get("/health", dependencies=[Depends(optional_api_key)])
     async def get_status():

@@ -223,6 +223,11 @@ LightRAG supports binding to various LLM/Embedding backends:
 
 Use environment variables  `LLM_BINDING` or CLI argument `--llm-binding` to select LLM backend type. Use environment variables  `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select LLM backend type.
 
+### Entity Extraction Configuration
+* ENABLE_LLM_CACHE_FOR_EXTRACT: Enable LLM cache for entity extraction (default: false)
+
+It's very common to set `ENABLE_LLM_CACHE_FOR_EXTRACT` to true for test environment to reduce the cost of LLM calls.
+
 ### Storage Types Supported
 
 LightRAG uses 4 types of storage for difference purposes:
@@ -385,6 +390,19 @@ lightrag-server --help
 Note: If you don't need the API functionality, you can install the base package without API support using:
 ```bash
 pip install lightrag-hku
+```
+
+## Authentication Endpoints
+
+### JWT Authentication Mechanism
+LightRAG API Server implements JWT-based authentication using HS256 algorithm. To enable secure access control, the following environment variables are required:
+```bash
+# For jwt auth
+AUTH_USERNAME=admin      # login name
+AUTH_PASSWORD=admin123   # password
+TOKEN_SECRET=your-key # JWT key
+TOKEN_EXPIRE_HOURS=4     # expire duration
+WHITELIST_PATHS=/api1,/api2  # white list. /login,/health,/docs,/redoc,/openapi.json are whitelisted by default.
 ```
 
 ## API Endpoints
