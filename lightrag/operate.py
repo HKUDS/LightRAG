@@ -1152,7 +1152,8 @@ async def _get_node_data(
             "entity",
             "type",
             "description",
-            "rank" "created_at",
+            "rank",
+            "created_at",
         ]
     ]
     for i, n in enumerate(node_datas):
