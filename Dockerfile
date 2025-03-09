@@ -1,76 +1,35 @@
-# base image
-FROM python:3.11-slim AS base
-
-# install packages
-FROM base AS packages
-
-# # 删除其他源配置文件
-# RUN rm -rf /etc/apt/sources.list.d/*
-# # 复制自定义镜像源文件
-# COPY ./docker/sources.list /etc/apt/sources.list
-# if you located in China, you can use aliyun mirror to speed up
-RUN sed -i 's@deb.debian.org@mirrors.aliyun.com@g' /etc/apt/sources.list.d/debian.sources
-
-RUN apt-get clean \
-    && apt-get update \
-    && apt-get upgrade -y \
-    && apt-get dist-upgrade -y 
-
-RUN apt-get install -y --no-install-recommends gcc g++ libc-dev libffi-dev libgmp-dev libmpfr-dev libmpc-dev
-
-COPY requirements.txt /requirements.txt
-
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --prefix=/pkg -r requirements.txt
-
-COPY ./lightrag/api/requirements.txt /api/requirements.txt
-
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --prefix=/pkg -r /api/requirements.txt
-
-
-# production stage
-FROM base AS production
-
-ENV DEBUG false
-
-ENV EDITION SELF_HOSTED
-ENV DEPLOY_ENV PRODUCTION
-
-EXPOSE 9621
-
-# set timezone
-ENV TZ UTC
+# Build stage
+FROM python:3.11-slim as builder
 
 WORKDIR /app
 
-# # 删除其他源配置文件
-# RUN rm -rf /etc/apt/sources.list.d/*
-# # 复制自定义镜像源文件
-# COPY ./docker/sources.list /etc/apt/sources.list
-# if you located in China, you can use aliyun mirror to speed up
-RUN sed -i 's@deb.debian.org@mirrors.aliyun.com@g' /etc/apt/sources.list.d/debian.sources
+# Copy only requirements files first to leverage Docker cache
+COPY requirements.txt .
+COPY lightrag/api/requirements.txt ./lightrag/api/
 
-RUN apt-get clean \
-    && apt-get update \
-    && apt-get upgrade -y \
-    && apt-get dist-upgrade -y 
+# Install dependencies
+RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --user --no-cache-dir -r lightrag/api/requirements.txt
 
-RUN apt-get install -y --no-install-recommends curl wget vim nodejs ffmpeg libgmp-dev libmpfr-dev libmpc-dev \
-    && apt-get autoremove \
-    && rm -rf /var/lib/apt/lists/*
+# Final stage
+FROM python:3.11-slim
 
-COPY --from=packages /pkg /usr/local
-COPY ./lightrag  /app/lightrag
+WORKDIR /app
+
+# Copy only necessary files from builder
+COPY --from=builder /root/.local /root/.local
+COPY ./lightrag ./lightrag
 COPY setup.py .
+
 RUN pip install .
-RUN pip install lightrag-hku
-RUN pip install graspologic ollama
-COPY ./lightrag/api  /app/api
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+# Make sure scripts in .local are usable
+ENV PATH=/root/.local/bin:$PATH
 
-ARG COMMIT_SHA
-ENV COMMIT_SHA ${COMMIT_SHA}
+# Create necessary directories
+RUN mkdir -p /app/data/rag_storage /app/data/inputs
 
-ENTRYPOINT ["/bin/bash", "/entrypoint.sh"]
+# Expose the default port
+EXPOSE 9621
+
+# Set entrypoint
+ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]
