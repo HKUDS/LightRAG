@@ -96,12 +96,12 @@ class JsonDocStatusStorage(DocStatusStorage):
             write_json(data_dict, self._file_name)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
-
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
         async with self._storage_lock:
             self._data.update(data)
+
         await self.index_done_callback()
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
