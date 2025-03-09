@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
-from ..utils_api import get_api_key_dependency, get_auth_dependency
+from lightrag.api.utils_api import (
+    get_api_key_dependency,
+    global_args,
+    get_auth_dependency,
+)
 
 router = APIRouter(
     prefix="/documents",
@@ -240,54 +244,93 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     )
                     return False
             case ".pdf":
-                if not pm.is_installed("pypdf2"):  # type: ignore
-                    pm.install("pypdf2")
-                from PyPDF2 import PdfReader  # type: ignore
-                from io import BytesIO
+                if global_args["main_args"].document_loading_engine == "DOCLING":
+                    if not pm.is_installed("docling"):  # type: ignore
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter
 
-                pdf_file = BytesIO(file)
-                reader = PdfReader(pdf_file)
-                for page in reader.pages:
-                    content += page.extract_text() + "\n"
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
+                else:
+                    if not pm.is_installed("pypdf2"):  # type: ignore
+                        pm.install("pypdf2")
+                    from PyPDF2 import PdfReader  # type: ignore
+                    from io import BytesIO
+
+                    pdf_file = BytesIO(file)
+                    reader = PdfReader(pdf_file)
+                    for page in reader.pages:
+                        content += page.extract_text() + "\n"
             case ".docx":
-                if not pm.is_installed("python-docx"):  # type: ignore
-                    pm.install("docx")
-                from docx import Document  # type: ignore
-                from io import BytesIO
+                if global_args["main_args"].document_loading_engine == "DOCLING":
+                    if not pm.is_installed("docling"):  # type: ignore
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter
 
-                docx_file = BytesIO(file)
-                doc = Document(docx_file)
-                content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
+                else:
+                    if not pm.is_installed("python-docx"):  # type: ignore
+                        pm.install("docx")
+                    from docx import Document  # type: ignore
+                    from io import BytesIO
+
+                    docx_file = BytesIO(file)
+                    doc = Document(docx_file)
+                    content = "\n".join(
+                        [paragraph.text for paragraph in doc.paragraphs]
+                    )
             case ".pptx":
-                if not pm.is_installed("python-pptx"):  # type: ignore
-                    pm.install("pptx")
-                from pptx import Presentation  # type: ignore
-                from io import BytesIO
+                if global_args["main_args"].document_loading_engine == "DOCLING":
+                    if not pm.is_installed("docling"):  # type: ignore
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter
 
-                pptx_file = BytesIO(file)
-                prs = Presentation(pptx_file)
-                for slide in prs.slides:
-                    for shape in slide.shapes:
-                        if hasattr(shape, "text"):
-                            content += shape.text + "\n"
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
+                else:
+                    if not pm.is_installed("python-pptx"):  # type: ignore
+                        pm.install("pptx")
+                    from pptx import Presentation  # type: ignore
+                    from io import BytesIO
+
+                    pptx_file = BytesIO(file)
+                    prs = Presentation(pptx_file)
+                    for slide in prs.slides:
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text"):
+                                content += shape.text + "\n"
             case ".xlsx":
-                if not pm.is_installed("openpyxl"):  # type: ignore
-                    pm.install("openpyxl")
-                from openpyxl import load_workbook  # type: ignore
-                from io import BytesIO
+                if global_args["main_args"].document_loading_engine == "DOCLING":
+                    if not pm.is_installed("docling"):  # type: ignore
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter
 
-                xlsx_file = BytesIO(file)
-                wb = load_workbook(xlsx_file)
-                for sheet in wb:
-                    content += f"Sheet: {sheet.title}\n"
-                    for row in sheet.iter_rows(values_only=True):
-                        content += (
-                            "\t".join(
-                                str(cell) if cell is not None else "" for cell in row
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
+                else:
+                    if not pm.is_installed("openpyxl"):  # type: ignore
+                        pm.install("openpyxl")
+                    from openpyxl import load_workbook  # type: ignore
+                    from io import BytesIO
+
+                    xlsx_file = BytesIO(file)
+                    wb = load_workbook(xlsx_file)
+                    for sheet in wb:
+                        content += f"Sheet: {sheet.title}\n"
+                        for row in sheet.iter_rows(values_only=True):
+                            content += (
+                                "\t".join(
+                                    str(cell) if cell is not None else ""
+                                    for cell in row
+                                )
+                                + "\n"
                             )
-                            + "\n"
-                        )
-                    content += "\n"
+                        content += "\n"
             case _:
                 logger.error(
                     f"Unsupported file type: {file_path.name} (extension {ext})"

@@ -11,7 +11,7 @@ import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
 from lightrag.utils import encode_string_by_tiktoken
-from ..utils_api import ollama_server_infos
+from lightrag.api.utils_api import ollama_server_infos
 
 
 # query mode according to query prefix (bypass is not LightRAG quer mode)
