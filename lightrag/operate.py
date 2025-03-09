@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import os
 from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
 
@@ -220,6 +221,7 @@ async def _merge_nodes_then_upsert(
         entity_name, description, global_config
     )
     node_data = dict(
+        entity_id=entity_name,
         entity_type=entity_type,
         description=description,
         source_id=source_id,
@@ -301,6 +303,7 @@ async def _merge_edges_then_upsert(
             await knowledge_graph_inst.upsert_node(
                 need_insert_id,
                 node_data={
+                    "entity_id": need_insert_id,
                     "source_id": source_id,
                     "description": description,
                     "entity_type": "UNKNOWN",
@@ -400,6 +403,7 @@ async def extract_entities(
             else:
                 _prompt = input_text
 
+            # TODO： add cache_type="extract"
             arg_hash = compute_args_hash(_prompt)
             cached_return, _1, _2, _3 = await handle_cache(
                 llm_response_cache,
@@ -407,7 +411,6 @@ async def extract_entities(
                 _prompt,
                 "default",
                 cache_type="extract",
-                force_llm_cache=True,
             )
             if cached_return:
                 logger.debug(f"Found cache for {arg_hash}")
@@ -519,19 +522,27 @@ async def extract_entities(
         for k, v in m_edges.items():
             maybe_edges[tuple(sorted(k))].extend(v)
 
-    all_entities_data = await asyncio.gather(
-        *[
-            _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-            for k, v in maybe_nodes.items()
-        ]
-    )
+    from .kg.shared_storage import get_graph_db_lock
 
-    all_relationships_data = await asyncio.gather(
-        *[
-            _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
-            for k, v in maybe_edges.items()
-        ]
-    )
+    graph_db_lock = get_graph_db_lock(enable_logging=False)
+
+    # Ensure that nodes and edges are merged and upserted atomically
+    async with graph_db_lock:
+        all_entities_data = await asyncio.gather(
+            *[
+                _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
+                for k, v in maybe_nodes.items()
+            ]
+        )
+
+        all_relationships_data = await asyncio.gather(
+            *[
+                _merge_edges_then_upsert(
+                    k[0], k[1], v, knowledge_graph_inst, global_config
+                )
+                for k, v in maybe_edges.items()
+            ]
+        )
 
     if not (all_entities_data or all_relationships_data):
         log_message = "Didn't extract any entities and relationships."
@@ -1017,6 +1028,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
+    logger.info(f"Process {os.getpid()} buidling query context...")
     if query_param.mode == "local":
         entities_context, relations_context, text_units_context = await _get_node_data(
             ll_keywords,

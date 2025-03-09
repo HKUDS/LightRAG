@@ -360,6 +360,11 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
 
+    # Inject LLM cache configuration
+    args.enable_llm_cache_for_extract = get_env_value(
+        "ENABLE_LLM_CACHE_FOR_EXTRACT", False, bool
+    )
+
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
     return args
@@ -451,8 +456,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.history_turns}")
     ASCIIColors.white("    ├─ Cosine Threshold: ", end="")
     ASCIIColors.yellow(f"{args.cosine_threshold}")
-    ASCIIColors.white("    └─ Top-K: ", end="")
+    ASCIIColors.white("    ├─ Top-K: ", end="")
     ASCIIColors.yellow(f"{args.top_k}")
+    ASCIIColors.white("    └─ LLM Cache for Extraction Enabled: ", end="")
+    ASCIIColors.yellow(f"{args.enable_llm_cache_for_extract}")
 
     # System Configuration
     ASCIIColors.magenta("\n💾 Storage Configuration:")
