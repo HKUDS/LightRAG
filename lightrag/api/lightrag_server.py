@@ -349,8 +349,8 @@ def create_app(args):
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
             addon_params={
-                "example_number": int(os.getenv("EXAMPLE_NUMBER", 1)),
-                "language": os.getenv("SUMMARY_LANGUAGE", "English"),
+                "example_number": args.example_number,
+                "language": args.language,
             },
         )
     else:  # azure_openai

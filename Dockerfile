@@ -64,8 +64,8 @@ COPY --from=packages /pkg /usr/local
 COPY ./lightrag  /app/lightrag
 COPY setup.py .
 RUN pip install .
-RUN pip install graspologic
-
+RUN pip install lightrag-hku
+RUN pip install graspologic ollama
 COPY ./lightrag/api  /app/api
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

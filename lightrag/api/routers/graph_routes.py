@@ -74,7 +74,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         try:
             print("Updating entity:", entity_name)
             print("Entity data:", entity_data)
-            new_entity_name = entity_data.get("entity_name", None)
             entity_type = entity_data.get("entity_type", None)
             description = entity_data.get("description", None)
             source_id = entity_data.get("source_id", None)
