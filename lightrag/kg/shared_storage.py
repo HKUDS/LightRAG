@@ -344,6 +344,21 @@ async def set_all_update_flags(namespace: str):
             else:
                 _update_flags[namespace][i] = True
 
+async def clear_all_update_flags(namespace: str):
+    """Clear all update flag of namespace indicating all workers need to reload data from files"""
+    global _update_flags
+    if _update_flags is None:
+        raise ValueError("Try to create namespace before Shared-Data is initialized")
+
+    async with get_internal_lock():
+        if namespace not in _update_flags:
+            raise ValueError(f"Namespace {namespace} not found in update flags")
+        # Update flags for both modes
+        for i in range(len(_update_flags[namespace])):
+            if is_multiprocess:
+                _update_flags[namespace][i].value = False
+            else:
+                _update_flags[namespace][i] = False
 
 async def get_all_update_flags_status() -> Dict[str, list]:
     """
