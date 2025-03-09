@@ -2144,6 +2144,7 @@ class LightRAG:
                 cast(StorageNameSpace, storage_inst).index_done_callback()
                 for storage_inst in [  # type: ignore
                     self.entities_vdb,
+                    self.relationships_vdb,
                     self.chunk_entity_relation_graph,
                 ]
             ]
