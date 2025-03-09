@@ -98,11 +98,9 @@ class JsonKVStorage(BaseKVStorage):
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not data:
             return
+        logger.info(f"Inserting {len(data)} to {self.namespace}")
         async with self._storage_lock:
-            left_data = {k: v for k, v in data.items() if k not in self._data}
-            if left_data:
-                logger.info(f"Process {os.getpid()} KV inserting {len(left_data)} to {self.namespace}")
-                self._data.update(left_data)
+            self._data.update(data)
 
     async def delete(self, ids: list[str]) -> None:
         async with self._storage_lock:

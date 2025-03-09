@@ -403,6 +403,7 @@ async def extract_entities(
             else:
                 _prompt = input_text
 
+            # TODO： add cache_type="extract"
             arg_hash = compute_args_hash(_prompt)
             cached_return, _1, _2, _3 = await handle_cache(
                 llm_response_cache,
@@ -431,7 +432,6 @@ async def extract_entities(
                     cache_type="extract",
                 ),
             )
-            logger.info(f"Extract: saved cache for {arg_hash}")
             return res
 
         if history_messages:
