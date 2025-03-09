@@ -16,6 +16,9 @@ from .shared_storage import (
     get_namespace_data,
     get_storage_lock,
     get_data_init_lock,
+    get_update_flag,
+    set_all_update_flags,
+    clear_all_update_flags,
     try_initialize_namespace,
 )
 
@@ -29,10 +32,13 @@ class JsonDocStatusStorage(DocStatusStorage):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
         self._data = None
+        self._storage_lock = None
+        self.storage_updated = None
 
     async def initialize(self):
         """Initialize storage data"""
         self._storage_lock = get_storage_lock()
+        self.storage_updated = await get_update_flag(self.namespace)
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
             need_init = await try_initialize_namespace(self.namespace)
@@ -89,11 +95,13 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def index_done_callback(self) -> None:
         async with self._storage_lock:
-            data_dict = (
-                dict(self._data) if hasattr(self._data, "_getvalue") else self._data
-            )
-            logger.info(f"Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}")
-            write_json(data_dict, self._file_name)
+            if self.storage_updated:
+                data_dict = (
+                    dict(self._data) if hasattr(self._data, "_getvalue") else self._data
+                )
+                logger.info(f"Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}")
+                write_json(data_dict, self._file_name)
+                await clear_all_update_flags(self.namespace)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not data:
@@ -101,6 +109,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         logger.info(f"Inserting {len(data)} to {self.namespace}")
         async with self._storage_lock:
             self._data.update(data)
+            await set_all_update_flags(self.namespace)
 
         await self.index_done_callback()
 
@@ -112,9 +121,12 @@ class JsonDocStatusStorage(DocStatusStorage):
         async with self._storage_lock:
             for doc_id in doc_ids:
                 self._data.pop(doc_id, None)
+            await set_all_update_flags(self.namespace)
         await self.index_done_callback()
 
     async def drop(self) -> None:
         """Drop the storage"""
         async with self._storage_lock:
             self._data.clear()
+            await set_all_update_flags(self.namespace)
+        await self.index_done_callback()
