@@ -33,10 +33,10 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def initialize(self):
         """Initialize storage data"""
         self._storage_lock = get_storage_lock()
-        self._data = await get_namespace_data(self.namespace)
         async with get_data_init_lock():
             # check need_init must before get_namespace_data
             need_init = await try_initialize_namespace(self.namespace)
+            self._data = await get_namespace_data(self.namespace)
             if need_init:
                 loaded_data = load_json(self._file_name) or {}
                 async with self._storage_lock:
