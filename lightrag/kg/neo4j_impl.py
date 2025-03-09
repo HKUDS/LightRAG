@@ -842,7 +842,7 @@ class Neo4JStorage(BaseGraphStorage):
                                 seen_edges.add(edge_id)
 
                         logger.info(
-                            f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+                            f"Process {os.getpid()} graph query return: {len(result.nodes)} nodes, {len(result.edges)} edges"
                         )
                 finally:
                     await result_set.consume()  # Ensure result set is consumed

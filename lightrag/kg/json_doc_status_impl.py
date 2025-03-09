@@ -40,7 +40,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             async with self._storage_lock:
                 self._data.update(loaded_data)
                 logger.info(
-                    f"Loaded document status storage with {len(loaded_data)} records"
+                    f"Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
                 )
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
@@ -90,6 +90,7 @@ class JsonDocStatusStorage(DocStatusStorage):
             data_dict = (
                 dict(self._data) if hasattr(self._data, "_getvalue") else self._data
             )
+            logger.info(f"Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}")
             write_json(data_dict, self._file_name)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:

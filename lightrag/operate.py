@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import os
 from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
 
@@ -1027,6 +1028,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
+    logger.info(f"Process {os.getpid()} buidling query context...")
     if query_param.mode == "local":
         entities_context, relations_context, text_units_context = await _get_node_data(
             ll_keywords,
