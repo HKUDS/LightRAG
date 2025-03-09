@@ -107,7 +107,7 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not data:
             return
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.info(f"Inserting {len(data)} records to {self.namespace}")
         async with self._storage_lock:
             self._data.update(data)
             await set_all_update_flags(self.namespace)
