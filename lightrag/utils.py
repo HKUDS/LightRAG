@@ -633,15 +633,15 @@ async def handle_cache(
     prompt,
     mode="default",
     cache_type=None,
-    force_llm_cache=False,
 ):
     """Generic cache handling function"""
-    if hashing_kv is None or not (
-        force_llm_cache or hashing_kv.global_config.get("enable_llm_cache")
-    ):
+    if hashing_kv is None:
         return None, None, None, None
 
-    if mode != "default":
+    if mode != "default":  # handle cache for all type of query
+        if not hashing_kv.global_config.get("enable_llm_cache"):
+            return None, None, None, None
+
         # Get embedding cache configuration
         embedding_cache_config = hashing_kv.global_config.get(
             "embedding_cache_config",
@@ -651,8 +651,7 @@ async def handle_cache(
         use_llm_check = embedding_cache_config.get("use_llm_check", False)
 
         quantized = min_val = max_val = None
-        if is_embedding_cache_enabled:
-            # Use embedding cache
+        if is_embedding_cache_enabled:  # Use embedding simularity to match cache
             current_embedding = await hashing_kv.embedding_func([prompt])
             llm_model_func = hashing_kv.global_config.get("llm_model_func")
             quantized, min_val, max_val = quantize_embedding(current_embedding[0])
@@ -674,8 +673,13 @@ async def handle_cache(
                 logger.debug(f"Embedding cached missed(mode:{mode} type:{cache_type})")
                 return None, quantized, min_val, max_val
 
-    # For default mode or is_embedding_cache_enabled is False, use regular cache
-    # default mode is for extract_entities or naive query
+    else:  # handle cache for entity extraction
+        if not hashing_kv.global_config.get("enable_llm_cache_for_entity_extract"):
+            return None, None, None, None
+
+    # Here is the conditions of code reaching this point:
+    #     1. All query mode: enable_llm_cache is True and embedding simularity is not enabled
+    #     2. Entity extract: enable_llm_cache_for_entity_extract is True
     if exists_func(hashing_kv, "get_by_mode_and_id"):
         mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
     else:

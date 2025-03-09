@@ -410,7 +410,6 @@ async def extract_entities(
                 _prompt,
                 "default",
                 cache_type="extract",
-                force_llm_cache=True,
             )
             if cached_return:
                 logger.debug(f"Found cache for {arg_hash}")
@@ -432,6 +431,7 @@ async def extract_entities(
                     cache_type="extract",
                 ),
             )
+            logger.info(f"Extract: saved cache for {arg_hash}")
             return res
 
         if history_messages:

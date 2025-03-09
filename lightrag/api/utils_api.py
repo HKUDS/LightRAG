@@ -361,7 +361,7 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
     
     # Inject LLM cache configuration
-    args.enable_llm_cache = get_env_value(
+    args.enable_llm_cache_for_extract = get_env_value(
         "ENABLE_LLM_CACHE_FOR_EXTRACT", 
         False, 
         bool
@@ -460,8 +460,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.cosine_threshold}")
     ASCIIColors.white("    ├─ Top-K: ", end="")
     ASCIIColors.yellow(f"{args.top_k}")
-    ASCIIColors.white("    └─ LLM Cache Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache}")
+    ASCIIColors.white("    └─ LLM Cache for Extraction Enabled: ", end="")
+    ASCIIColors.yellow(f"{args.enable_llm_cache_for_extract}")
 
     # System Configuration
     ASCIIColors.magenta("\n💾 Storage Configuration:")
