@@ -35,13 +35,34 @@ class JsonKVStorage(BaseKVStorage):
             loaded_data = load_json(self._file_name) or {}
             async with self._storage_lock:
                 self._data.update(loaded_data)
-                logger.info(f"Load KV {self.namespace} with {len(loaded_data)} data")
+                
+                # Calculate data count based on namespace
+                if self.namespace.endswith("cache"):
+                    # For cache namespaces, sum the cache entries across all cache types
+                    data_count = sum(len(first_level_dict) for first_level_dict in loaded_data.values() 
+                                    if isinstance(first_level_dict, dict))
+                else:
+                    # For non-cache namespaces, use the original count method
+                    data_count = len(loaded_data)
+                
+                logger.info(f"Process {os.getpid()} KV load {self.namespace} with {data_count} records")
 
     async def index_done_callback(self) -> None:
         async with self._storage_lock:
             data_dict = (
                 dict(self._data) if hasattr(self._data, "_getvalue") else self._data
             )
+            
+            # Calculate data count based on namespace
+            if self.namespace.endswith("cache"):
+                # # For cache namespaces, sum the cache entries across all cache types
+                data_count = sum(len(first_level_dict) for first_level_dict in data_dict.values() 
+                                if isinstance(first_level_dict, dict))
+            else:
+                # For non-cache namespaces, use the original count method
+                data_count = len(data_dict)
+                
+            logger.info(f"Process {os.getpid()} KV writting {data_count} records to {self.namespace}")
             write_json(data_dict, self._file_name)
 
     async def get_all(self) -> dict[str, Any]:
@@ -73,12 +94,13 @@ class JsonKVStorage(BaseKVStorage):
             return set(keys) - set(self._data.keys())
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
         async with self._storage_lock:
             left_data = {k: v for k, v in data.items() if k not in self._data}
-            self._data.update(left_data)
+            if left_data:
+                logger.info(f"Process {os.getpid()} KV inserting {len(left_data)} to {self.namespace}")
+                self._data.update(left_data)
 
     async def delete(self, ids: list[str]) -> None:
         async with self._storage_lock:
