@@ -80,8 +80,26 @@ class JsonKVStorage(BaseKVStorage):
             left_data = {k: v for k, v in data.items() if k not in self._data}
             self._data.update(left_data)
 
+    async def drop(self) -> None:
+        self._data = {}
+    
     async def delete(self, ids: list[str]) -> None:
-        async with self._storage_lock:
-            for doc_id in ids:
-                self._data.pop(doc_id, None)
+        for id in ids:
+            self._data.pop(id, None)
         await self.index_done_callback()
+        
+    # 通过字段查询数据
+    async def get_by_keys(self, keys=None):
+        if keys is None:
+            # 返回所有数据
+            return list(self._data.items())
+        # 构建查询条件,keys是一个字典，例如{"name":"John", "age":30}
+        data = list(self._data.items())
+        for key, value in keys.items():
+            data = [
+                i
+                for i in data
+                if key is not None and key in i[1] and i[1][key] == value
+            ]
+        # 返回符合条件的数据
+        return data

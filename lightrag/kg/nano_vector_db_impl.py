@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import numpy as np
 import time
 
+from sqlalchemy import Float
+
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -256,3 +258,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         logger.debug(f"Found {len(matching_records)} records with prefix '{prefix}'")
         return matching_records
+    
+    async def delete_all(self):
+        try:
+            client = await self._get_client()
+            storage = getattr(client, "_NanoVectorDB__storage")
+            storage["data"]= []
+            storage["matrix"] = np.array([], dtype=Float).reshape(0, self.embedding_func.embedding_dim)
+        except Exception as e:
+            logger.error(f"Error while deleting all collections: {e}")

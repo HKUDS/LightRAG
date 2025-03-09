@@ -359,6 +359,10 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
+    
+    # Inject addon params configuration
+    args.example_number= int(os.getenv("EXAMPLE_NUMBER", 1))
+    args.language = os.getenv("SUMMARY_LANGUAGE", "English")
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
@@ -464,7 +468,13 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.graph_storage}")
     ASCIIColors.white("    └─ Document Status Storage: ", end="")
     ASCIIColors.yellow(f"{args.doc_status_storage}")
-
+    # RAG Addon params Configuration
+    ASCIIColors.magenta("\n🧩 Addon params Configuration:")
+    ASCIIColors.white("    ├─ Example Number: ", end="")
+    ASCIIColors.yellow(f"{args.example_number}")
+    ASCIIColors.white("    └─ Language: ", end="")
+    ASCIIColors.yellow(f"{args.language}")
+    
     # Server Status
     ASCIIColors.green("\n✨ Server starting up...\n")
 

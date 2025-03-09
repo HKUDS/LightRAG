@@ -1082,3 +1082,15 @@ async def get_or_create_collection(db: AsyncIOMotorDatabase, collection_name: st
     else:
         logger.debug(f"Collection '{collection_name}' already exists.")
         return db.get_collection(collection_name)
+    
+async def drop(self) -> None:
+    """Drop the collection"""
+    await self._data.drop()
+    
+async def get_by_keys(self, keys=None):
+    if keys is None:
+        return list(self._data.find({}))
+    where = {}
+    for key, value in keys.items():
+        where[key] = value
+    return list(self._data.find(where))
