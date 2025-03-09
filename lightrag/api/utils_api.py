@@ -359,12 +359,10 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
     args.chunk_overlap_size = get_env_value("CHUNK_OVERLAP_SIZE", 100, int)
-    
+
     # Inject LLM cache configuration
     args.enable_llm_cache_for_extract = get_env_value(
-        "ENABLE_LLM_CACHE_FOR_EXTRACT", 
-        False, 
-        bool
+        "ENABLE_LLM_CACHE_FOR_EXTRACT", False, bool
     )
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name

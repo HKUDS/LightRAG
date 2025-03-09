@@ -354,7 +354,9 @@ class LightRAG:
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
             ),
-            global_config=asdict(self),  # Add global_config to ensure cache works properly
+            global_config=asdict(
+                self
+            ),  # Add global_config to ensure cache works properly
             embedding_func=self.embedding_func,
         )
 

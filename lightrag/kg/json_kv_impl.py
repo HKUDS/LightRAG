@@ -44,21 +44,28 @@ class JsonKVStorage(BaseKVStorage):
                 loaded_data = load_json(self._file_name) or {}
                 async with self._storage_lock:
                     self._data.update(loaded_data)
-                    
+
                     # Calculate data count based on namespace
                     if self.namespace.endswith("cache"):
                         # For cache namespaces, sum the cache entries across all cache types
-                        data_count = sum(len(first_level_dict) for first_level_dict in loaded_data.values() 
-                                        if isinstance(first_level_dict, dict))
+                        data_count = sum(
+                            len(first_level_dict)
+                            for first_level_dict in loaded_data.values()
+                            if isinstance(first_level_dict, dict)
+                        )
                     else:
                         # For non-cache namespaces, use the original count method
                         data_count = len(loaded_data)
-                    
-                    logger.info(f"Process {os.getpid()} KV load {self.namespace} with {data_count} records")
+
+                    logger.info(
+                        f"Process {os.getpid()} KV load {self.namespace} with {data_count} records"
+                    )
 
     async def index_done_callback(self) -> None:
         async with self._storage_lock:
-            if (is_multiprocess and self.storage_updated.value) or (not is_multiprocess and self.storage_updated):
+            if (is_multiprocess and self.storage_updated.value) or (
+                not is_multiprocess and self.storage_updated
+            ):
                 data_dict = (
                     dict(self._data) if hasattr(self._data, "_getvalue") else self._data
                 )
@@ -66,16 +73,20 @@ class JsonKVStorage(BaseKVStorage):
                 # Calculate data count based on namespace
                 if self.namespace.endswith("cache"):
                     # # For cache namespaces, sum the cache entries across all cache types
-                    data_count = sum(len(first_level_dict) for first_level_dict in data_dict.values() 
-                                    if isinstance(first_level_dict, dict))
+                    data_count = sum(
+                        len(first_level_dict)
+                        for first_level_dict in data_dict.values()
+                        if isinstance(first_level_dict, dict)
+                    )
                 else:
                     # For non-cache namespaces, use the original count method
                     data_count = len(data_dict)
-                    
-                logger.info(f"Process {os.getpid()} KV writting {data_count} records to {self.namespace}")
+
+                logger.info(
+                    f"Process {os.getpid()} KV writting {data_count} records to {self.namespace}"
+                )
                 write_json(data_dict, self._file_name)
                 await clear_all_update_flags(self.namespace)
-
 
     async def get_all(self) -> dict[str, Any]:
         """Get all data from storage
