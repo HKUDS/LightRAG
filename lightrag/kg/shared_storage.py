@@ -355,7 +355,7 @@ async def get_all_update_flags_status() -> Dict[str, list]:
     return result
 
 
-def try_initialize_namespace(namespace: str) -> bool:
+async def try_initialize_namespace(namespace: str) -> bool:
     """
     Returns True if the current worker(process) gets initialization permission for loading data later.
     The worker does not get the permission is prohibited to load data from files.
@@ -365,15 +365,17 @@ def try_initialize_namespace(namespace: str) -> bool:
     if _init_flags is None:
         raise ValueError("Try to create nanmespace before Shared-Data is initialized")
 
-    if namespace not in _init_flags:
-        _init_flags[namespace] = True
+    async with get_internal_lock():
+        if namespace not in _init_flags:
+            _init_flags[namespace] = True
+            direct_log(
+                f"Process {os.getpid()} ready to initialize storage namespace: [{namespace}]"
+            )
+            return True
         direct_log(
-            f"Process {os.getpid()} ready to initialize storage namespace: [{namespace}]"
+            f"Process {os.getpid()} storage namespace already initialized: [{namespace}]"
         )
-        return True
-    direct_log(
-        f"Process {os.getpid()} storage namespace already initialized: [{namespace}]"
-    )
+
     return False
 
 
