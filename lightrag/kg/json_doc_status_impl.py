@@ -96,11 +96,15 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def index_done_callback(self) -> None:
         async with self._storage_lock:
-            if (is_multiprocess and self.storage_updated.value) or (not is_multiprocess and self.storage_updated):
+            if (is_multiprocess and self.storage_updated.value) or (
+                not is_multiprocess and self.storage_updated
+            ):
                 data_dict = (
                     dict(self._data) if hasattr(self._data, "_getvalue") else self._data
                 )
-                logger.info(f"Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}")
+                logger.info(
+                    f"Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}"
+                )
                 write_json(data_dict, self._file_name)
                 await clear_all_update_flags(self.namespace)
 

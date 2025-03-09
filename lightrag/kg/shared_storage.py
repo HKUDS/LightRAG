@@ -344,6 +344,7 @@ async def set_all_update_flags(namespace: str):
             else:
                 _update_flags[namespace][i] = True
 
+
 async def clear_all_update_flags(namespace: str):
     """Clear all update flag of namespace indicating all workers need to reload data from files"""
     global _update_flags
@@ -359,6 +360,7 @@ async def clear_all_update_flags(namespace: str):
                 _update_flags[namespace][i].value = False
             else:
                 _update_flags[namespace][i] = False
+
 
 async def get_all_update_flags_status() -> Dict[str, list]:
     """
