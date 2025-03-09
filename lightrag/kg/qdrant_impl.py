@@ -135,7 +135,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         logger.debug(f"query result: {results}")
 
-        return [{**dp.payload, "id": dp.id, "distance": dp.score} for dp in results]
+        return [{**dp.payload, "distance": dp.score} for dp in results]
 
     async def index_done_callback(self) -> None:
         # Qdrant handles persistence automatically
@@ -233,3 +233,43 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 logger.debug(f"No relations found for entity {entity_name}")
         except Exception as e:
             logger.error(f"Error deleting relations for {entity_name}: {e}")
+
+    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search for records with IDs starting with a specific prefix.
+
+        Args:
+            prefix: The prefix to search for in record IDs
+
+        Returns:
+            List of records with matching ID prefixes
+        """
+        try:
+            # Use scroll method to find records with IDs starting with the prefix
+            results = self._client.scroll(
+                collection_name=self.namespace,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="id", match=models.MatchText(text=prefix, prefix=True)
+                        )
+                    ]
+                ),
+                with_payload=True,
+                with_vectors=False,
+                limit=1000,  # Adjust as needed for your use case
+            )
+
+            # Extract matching points
+            matching_records = results[0]
+
+            # Format the results to match expected return format
+            formatted_results = [{**point.payload} for point in matching_records]
+
+            logger.debug(
+                f"Found {len(formatted_results)} records with prefix '{prefix}'"
+            )
+            return formatted_results
+
+        except Exception as e:
+            logger.error(f"Error searching for prefix '{prefix}': {e}")
+            return []

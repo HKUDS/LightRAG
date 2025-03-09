@@ -1976,6 +1976,9 @@ class LightRAG:
                 # Delete old entity record from vector database
                 old_entity_id = compute_mdhash_id(entity_name, prefix="ent-")
                 await self.entities_vdb.delete([old_entity_id])
+                logger.info(
+                    f"Deleted old entity '{entity_name}' and its vector embedding from database"
+                )
 
                 # Update relationship vector representations
                 for src, tgt, edge_data in relations_to_update:
@@ -2102,6 +2105,15 @@ class LightRAG:
                 raise ValueError(
                     f"Relation from '{source_entity}' to '{target_entity}' does not exist"
                 )
+
+            # Important: First delete the old relation record from the vector database
+            old_relation_id = compute_mdhash_id(
+                source_entity + target_entity, prefix="rel-"
+            )
+            await self.relationships_vdb.delete([old_relation_id])
+            logger.info(
+                f"Deleted old relation record from vector database for relation {source_entity} -> {target_entity}"
+            )
 
             # 2. Update relation information in the graph
             new_edge_data = {**edge_data, **updated_data}
@@ -2601,12 +2613,29 @@ class LightRAG:
 
             # 9. Delete source entities
             for entity_name in source_entities:
-                # Delete entity node
+                # Delete entity node from knowledge graph
                 await self.chunk_entity_relation_graph.delete_node(entity_name)
-                # Delete record from vector database
+
+                # Delete entity record from vector database
                 entity_id = compute_mdhash_id(entity_name, prefix="ent-")
                 await self.entities_vdb.delete([entity_id])
-                logger.info(f"Deleted source entity '{entity_name}'")
+
+                # Also ensure any relationships specific to this entity are deleted from vector DB
+                # This is a safety check, as these should have been transformed to the target entity already
+                entity_relation_prefix = compute_mdhash_id(entity_name, prefix="rel-")
+                relations_with_entity = await self.relationships_vdb.search_by_prefix(
+                    entity_relation_prefix
+                )
+                if relations_with_entity:
+                    relation_ids = [r["id"] for r in relations_with_entity]
+                    await self.relationships_vdb.delete(relation_ids)
+                    logger.info(
+                        f"Deleted {len(relation_ids)} relation records for entity '{entity_name}' from vector database"
+                    )
+
+                logger.info(
+                    f"Deleted source entity '{entity_name}' and its vector embedding from database"
+                )
 
             # 10. Save changes
             await self._merge_entities_done()
