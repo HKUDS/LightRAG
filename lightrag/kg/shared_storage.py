@@ -39,6 +39,7 @@ _storage_lock: Optional[LockType] = None
 _internal_lock: Optional[LockType] = None
 _pipeline_status_lock: Optional[LockType] = None
 _graph_db_lock: Optional[LockType] = None
+_data_init_lock: Optional[LockType] = None
 
 
 class UnifiedLock(Generic[T]):
@@ -188,6 +189,16 @@ def get_graph_db_lock(enable_logging: bool = False) -> UnifiedLock:
     )
 
 
+def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
+    """return unified data initialization lock for ensuring atomic data initialization"""
+    return UnifiedLock(
+        lock=_data_init_lock,
+        is_async=not is_multiprocess,
+        name="data_init_lock",
+        enable_logging=enable_logging,
+    )
+
+
 def initialize_share_data(workers: int = 1):
     """
     Initialize shared storage data for single or multi-process mode.
@@ -214,6 +225,7 @@ def initialize_share_data(workers: int = 1):
         _internal_lock, \
         _pipeline_status_lock, \
         _graph_db_lock, \
+        _data_init_lock, \
         _shared_dicts, \
         _init_flags, \
         _initialized, \
@@ -226,15 +238,16 @@ def initialize_share_data(workers: int = 1):
         )
         return
 
-    _manager = Manager()
     _workers = workers
 
     if workers > 1:
         is_multiprocess = True
+        _manager = Manager()
         _internal_lock = _manager.Lock()
         _storage_lock = _manager.Lock()
         _pipeline_status_lock = _manager.Lock()
         _graph_db_lock = _manager.Lock()
+        _data_init_lock = _manager.Lock()
         _shared_dicts = _manager.dict()
         _init_flags = _manager.dict()
         _update_flags = _manager.dict()
@@ -247,6 +260,7 @@ def initialize_share_data(workers: int = 1):
         _storage_lock = asyncio.Lock()
         _pipeline_status_lock = asyncio.Lock()
         _graph_db_lock = asyncio.Lock()
+        _data_init_lock = asyncio.Lock()
         _shared_dicts = {}
         _init_flags = {}
         _update_flags = {}
@@ -415,6 +429,7 @@ def finalize_share_data():
         _internal_lock, \
         _pipeline_status_lock, \
         _graph_db_lock, \
+        _data_init_lock, \
         _shared_dicts, \
         _init_flags, \
         _initialized, \
@@ -481,6 +496,7 @@ def finalize_share_data():
     _internal_lock = None
     _pipeline_status_lock = None
     _graph_db_lock = None
+    _data_init_lock = None
     _update_flags = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")

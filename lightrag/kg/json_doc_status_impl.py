@@ -15,6 +15,7 @@ from lightrag.utils import (
 from .shared_storage import (
     get_namespace_data,
     get_storage_lock,
+    get_data_init_lock,
     try_initialize_namespace,
 )
 
@@ -27,21 +28,22 @@ class JsonDocStatusStorage(DocStatusStorage):
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
         self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
-        self._storage_lock = get_storage_lock()
         self._data = None
 
     async def initialize(self):
         """Initialize storage data"""
-        # check need_init must before get_namespace_data
-        need_init = await try_initialize_namespace(self.namespace)
+        self._storage_lock = get_storage_lock()
         self._data = await get_namespace_data(self.namespace)
-        if need_init:
-            loaded_data = load_json(self._file_name) or {}
-            async with self._storage_lock:
-                self._data.update(loaded_data)
-                logger.info(
-                    f"Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
-                )
+        async with get_data_init_lock():
+            # check need_init must before get_namespace_data
+            need_init = await try_initialize_namespace(self.namespace)
+            if need_init:
+                loaded_data = load_json(self._file_name) or {}
+                async with self._storage_lock:
+                    self._data.update(loaded_data)
+                    logger.info(
+                        f"Process {os.getpid()} doc status load {self.namespace} with {len(loaded_data)} records"
+                    )
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         """Return keys that should be processed (not in storage or not successfully processed)"""
