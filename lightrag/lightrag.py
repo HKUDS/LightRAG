@@ -583,6 +583,7 @@ class LightRAG:
             split_by_character, split_by_character_only
         )
 
+    # TODO: deprecated, use insert instead
     def insert_custom_chunks(
         self,
         full_text: str,
@@ -594,6 +595,7 @@ class LightRAG:
             self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
         )
 
+    # TODO: deprecated, use ainsert instead
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
@@ -885,7 +887,7 @@ class LightRAG:
                                 self.chunks_vdb.upsert(chunks)
                             )
                             entity_relation_task = asyncio.create_task(
-                                self._process_entity_relation_graph(chunks)
+                                self._process_entity_relation_graph(chunks, pipeline_status, pipeline_status_lock)
                             )
                             full_docs_task = asyncio.create_task(
                                 self.full_docs.upsert(
@@ -1000,21 +1002,23 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-    async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
+    async def _process_entity_relation_graph(self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None) -> None:
         try:
             await extract_entities(
                 chunk,
                 knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
                 relationships_vdb=self.relationships_vdb,
-                llm_response_cache=self.llm_response_cache,
                 global_config=asdict(self),
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+                llm_response_cache=self.llm_response_cache,
             )
         except Exception as e:
             logger.error("Failed to extract entities and relationships")
             raise e
 
-    async def _insert_done(self) -> None:
+    async def _insert_done(self, pipeline_status=None, pipeline_status_lock=None) -> None:
         tasks = [
             cast(StorageNameSpace, storage_inst).index_done_callback()
             for storage_inst in [  # type: ignore
@@ -1033,12 +1037,10 @@ class LightRAG:
         log_message = "All Insert done"
         logger.info(log_message)
 
-        # 获取 pipeline_status 并更新 latest_message 和 history_messages
-        from lightrag.kg.shared_storage import get_namespace_data
-
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
     def insert_custom_kg(
         self, custom_kg: dict[str, Any], full_doc_id: str = None
