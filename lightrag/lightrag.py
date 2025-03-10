@@ -887,7 +887,9 @@ class LightRAG:
                                 self.chunks_vdb.upsert(chunks)
                             )
                             entity_relation_task = asyncio.create_task(
-                                self._process_entity_relation_graph(chunks, pipeline_status, pipeline_status_lock)
+                                self._process_entity_relation_graph(
+                                    chunks, pipeline_status, pipeline_status_lock
+                                )
                             )
                             full_docs_task = asyncio.create_task(
                                 self.full_docs.upsert(
@@ -1002,7 +1004,9 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-    async def _process_entity_relation_graph(self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None) -> None:
+    async def _process_entity_relation_graph(
+        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
         try:
             await extract_entities(
                 chunk,
@@ -1018,7 +1022,9 @@ class LightRAG:
             logger.error("Failed to extract entities and relationships")
             raise e
 
-    async def _insert_done(self, pipeline_status=None, pipeline_status_lock=None) -> None:
+    async def _insert_done(
+        self, pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
         tasks = [
             cast(StorageNameSpace, storage_inst).index_done_callback()
             for storage_inst in [  # type: ignore

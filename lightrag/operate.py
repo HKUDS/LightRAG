@@ -341,7 +341,7 @@ async def extract_entities(
     relationships_vdb: BaseVectorStorage,
     global_config: dict[str, str],
     pipeline_status: dict = None,
-    pipeline_status_lock = None,
+    pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
 ) -> None:
     use_llm_func: callable = global_config["llm_model_func"]
