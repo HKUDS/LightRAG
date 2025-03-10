@@ -18,6 +18,8 @@ from .auth import auth_handler
 # Load environment variables
 load_dotenv(override=True)
 
+global_args = {"main_args": None}
+
 
 class OllamaServerInfos:
     # Constants for emulated Ollama model information
@@ -365,8 +367,12 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
         "ENABLE_LLM_CACHE_FOR_EXTRACT", False, bool
     )
 
+    # Select Document loading tool (DOCLING, DEFAULT)
+    args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
+
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 
+    global_args["main_args"] = args
     return args
 
 
