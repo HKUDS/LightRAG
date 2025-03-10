@@ -31,6 +31,11 @@ router = APIRouter(
 # Temporary file prefix
 temp_prefix = "__tmp__"
 
+class DataResponse(BaseModel):
+    status: str
+    message: str
+    data: Any
+
 
 class InsertTextRequest(BaseModel):
     text: str = Field(
@@ -775,7 +780,6 @@ def create_document_routes(
                 DocStatus.PROCESSED,
                 DocStatus.FAILED,
             )
-
             tasks = [rag.get_docs_by_status(status) for status in statuses]
             results: List[Dict[str, DocProcessingStatus]] = await asyncio.gather(*tasks)
 
@@ -807,6 +811,94 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error GET /documents: {str(e)}")
             logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Knowledge Graph - Document - Query
+    @router.get(
+        "/{document_id}",
+        response_model=DataResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
+    async def get_graph_document_detail(document_id):
+        try:
+            doc_status_document = await rag.doc_status.get_by_id(document_id)
+            document = await rag.full_docs.get_by_id(document_id)
+            if not doc_status_document:
+                return DataResponse(
+                    status="success",
+                    message=f"Document {document_id} get successfully",
+                    data=None,
+                )
+
+            chunks = await rag.text_chunks.get_by_keys({"full_doc_id": document_id})
+            chunk_List = []
+            for chunk in chunks:
+                chunk_List.append(
+                    {
+                        "id": chunk[0],
+                        **chunk[1],
+                    }
+                )
+            return DataResponse(
+                status="success",
+                message="ok",
+                data={
+                    "doc_status_document": doc_status_document,
+                    "document": document,
+                    "chunks": chunk_List,
+                    # "details": details,
+                },
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Clear all document data
+    @router.delete(
+        "/all",
+        response_model=InsertResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
+    async def clear_all_documents():
+        try:
+            await rag.llm_response_cache.drop()
+            await rag.full_docs.drop()
+            await rag.text_chunks.drop()
+            await rag.doc_status.drop()
+            await rag.chunk_entity_relation_graph.delete_all()
+            await rag.entities_vdb.delete_all()
+            await rag.relationships_vdb.delete_all()
+            await rag.chunks_vdb.delete_all()
+
+            await rag.llm_response_cache.index_done_callback()
+            await rag.full_docs.index_done_callback()
+            await rag.text_chunks.index_done_callback()
+            await rag.doc_status.index_done_callback()
+            await rag.chunk_entity_relation_graph.index_done_callback()
+            await rag.entities_vdb.index_done_callback()
+            await rag.relationships_vdb.index_done_callback()
+            await rag.chunks_vdb.index_done_callback()
+
+            return InsertResponse(
+                status="success", message="All documents cleared successfully"
+            )
+        except Exception as e:
+            print(e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Delete a single document and the knowledge graph it has built.
+    @router.delete(
+        "/{document_id}",
+        response_model=InsertResponse,
+        dependencies=[Depends(optional_api_key)],
+    )
+    async def delete_document(document_id: str):
+        try:
+            await rag.adelete_by_doc_id(document_id)
+            return InsertResponse(
+                status="success", message=f"Document {document_id} cleared successfully"
+            )
+        except Exception as e:
+            print(e)
             raise HTTPException(status_code=500, detail=str(e))
 
     return router
