@@ -322,7 +322,12 @@ async def get_update_flag(namespace: str):
         if is_multiprocess and _manager is not None:
             new_update_flag = _manager.Value("b", False)
         else:
-            new_update_flag = False
+            # Create a simple mutable object to store boolean value for compatibility with mutiprocess
+            class MutableBoolean:
+                def __init__(self, initial_value=False):
+                    self.value = initial_value
+            
+            new_update_flag = MutableBoolean(False)
 
         _update_flags[namespace].append(new_update_flag)
         return new_update_flag
@@ -342,7 +347,8 @@ async def set_all_update_flags(namespace: str):
             if is_multiprocess:
                 _update_flags[namespace][i].value = True
             else:
-                _update_flags[namespace][i] = True
+                # Use .value attribute instead of direct assignment
+                _update_flags[namespace][i].value = True
 
 
 async def clear_all_update_flags(namespace: str):
@@ -359,7 +365,8 @@ async def clear_all_update_flags(namespace: str):
             if is_multiprocess:
                 _update_flags[namespace][i].value = False
             else:
-                _update_flags[namespace][i] = False
+                # Use .value attribute instead of direct assignment
+                _update_flags[namespace][i].value = False
 
 
 async def get_all_update_flags_status() -> Dict[str, list]:
