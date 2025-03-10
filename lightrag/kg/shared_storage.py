@@ -326,7 +326,7 @@ async def get_update_flag(namespace: str):
             class MutableBoolean:
                 def __init__(self, initial_value=False):
                     self.value = initial_value
-            
+
             new_update_flag = MutableBoolean(False)
 
         _update_flags[namespace].append(new_update_flag)
