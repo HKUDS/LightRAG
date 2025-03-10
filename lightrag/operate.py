@@ -1017,7 +1017,6 @@ async def _build_query_context(
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    ids: list[str] = None,
 ):
     if query_param.mode == "local":
         entities_context, relations_context, text_units_context = await _get_node_data(
