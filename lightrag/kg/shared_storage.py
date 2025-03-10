@@ -286,6 +286,7 @@ async def initialize_pipeline_status():
         history_messages = _manager.list() if is_multiprocess else []
         pipeline_namespace.update(
             {
+                "autoscanned": False,  # Auto-scan started
                 "busy": False,  # Control concurrent processes
                 "job_name": "Default Job",  # Current job name (indexing files/indexing texts)
                 "job_start": None,  # Job start time
