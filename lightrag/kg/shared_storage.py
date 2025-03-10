@@ -7,12 +7,18 @@ from typing import Any, Dict, Optional, Union, TypeVar, Generic
 
 
 # Define a direct print function for critical logs that must be visible in all processes
-def direct_log(message, level="INFO"):
+def direct_log(message, level="INFO", enable_output: bool = True):
     """
     Log a message directly to stderr to ensure visibility in all processes,
     including the Gunicorn master process.
+
+    Args:
+        message: The message to log
+        level: Log level (default: "INFO")
+        enable_output: Whether to actually output the log (default: True)
     """
-    print(f"{level}: {message}", file=sys.stderr, flush=True)
+    if enable_output:
+        print(f"{level}: {message}", file=sys.stderr, flush=True)
 
 
 T = TypeVar("T")
@@ -32,55 +38,165 @@ _update_flags: Optional[Dict[str, bool]] = None  # namespace -> updated
 _storage_lock: Optional[LockType] = None
 _internal_lock: Optional[LockType] = None
 _pipeline_status_lock: Optional[LockType] = None
+_graph_db_lock: Optional[LockType] = None
+_data_init_lock: Optional[LockType] = None
 
 
 class UnifiedLock(Generic[T]):
     """Provide a unified lock interface type for asyncio.Lock and multiprocessing.Lock"""
 
-    def __init__(self, lock: Union[ProcessLock, asyncio.Lock], is_async: bool):
+    def __init__(
+        self,
+        lock: Union[ProcessLock, asyncio.Lock],
+        is_async: bool,
+        name: str = "unnamed",
+        enable_logging: bool = True,
+    ):
         self._lock = lock
         self._is_async = is_async
+        self._pid = os.getpid()  # for debug only
+        self._name = name  # for debug only
+        self._enable_logging = enable_logging  # for debug only
 
     async def __aenter__(self) -> "UnifiedLock[T]":
-        if self._is_async:
-            await self._lock.acquire()
-        else:
-            self._lock.acquire()
-        return self
+        try:
+            direct_log(
+                f"== Lock == Process {self._pid}: Acquiring lock '{self._name}' (async={self._is_async})",
+                enable_output=self._enable_logging,
+            )
+            if self._is_async:
+                await self._lock.acquire()
+            else:
+                self._lock.acquire()
+            direct_log(
+                f"== Lock == Process {self._pid}: Lock '{self._name}' acquired (async={self._is_async})",
+                enable_output=self._enable_logging,
+            )
+            return self
+        except Exception as e:
+            direct_log(
+                f"== Lock == Process {self._pid}: Failed to acquire lock '{self._name}': {e}",
+                level="ERROR",
+                enable_output=self._enable_logging,
+            )
+            raise
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        if self._is_async:
-            self._lock.release()
-        else:
-            self._lock.release()
+        try:
+            direct_log(
+                f"== Lock == Process {self._pid}: Releasing lock '{self._name}' (async={self._is_async})",
+                enable_output=self._enable_logging,
+            )
+            if self._is_async:
+                self._lock.release()
+            else:
+                self._lock.release()
+            direct_log(
+                f"== Lock == Process {self._pid}: Lock '{self._name}' released (async={self._is_async})",
+                enable_output=self._enable_logging,
+            )
+        except Exception as e:
+            direct_log(
+                f"== Lock == Process {self._pid}: Failed to release lock '{self._name}': {e}",
+                level="ERROR",
+                enable_output=self._enable_logging,
+            )
+            raise
 
     def __enter__(self) -> "UnifiedLock[T]":
         """For backward compatibility"""
-        if self._is_async:
-            raise RuntimeError("Use 'async with' for shared_storage lock")
-        self._lock.acquire()
-        return self
+        try:
+            if self._is_async:
+                raise RuntimeError("Use 'async with' for shared_storage lock")
+            direct_log(
+                f"== Lock == Process {self._pid}: Acquiring lock '{self._name}' (sync)",
+                enable_output=self._enable_logging,
+            )
+            self._lock.acquire()
+            direct_log(
+                f"== Lock == Process {self._pid}: Lock '{self._name}' acquired (sync)",
+                enable_output=self._enable_logging,
+            )
+            return self
+        except Exception as e:
+            direct_log(
+                f"== Lock == Process {self._pid}: Failed to acquire lock '{self._name}' (sync): {e}",
+                level="ERROR",
+                enable_output=self._enable_logging,
+            )
+            raise
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """For backward compatibility"""
-        if self._is_async:
-            raise RuntimeError("Use 'async with' for shared_storage lock")
-        self._lock.release()
+        try:
+            if self._is_async:
+                raise RuntimeError("Use 'async with' for shared_storage lock")
+            direct_log(
+                f"== Lock == Process {self._pid}: Releasing lock '{self._name}' (sync)",
+                enable_output=self._enable_logging,
+            )
+            self._lock.release()
+            direct_log(
+                f"== Lock == Process {self._pid}: Lock '{self._name}' released (sync)",
+                enable_output=self._enable_logging,
+            )
+        except Exception as e:
+            direct_log(
+                f"== Lock == Process {self._pid}: Failed to release lock '{self._name}' (sync): {e}",
+                level="ERROR",
+                enable_output=self._enable_logging,
+            )
+            raise
 
 
-def get_internal_lock() -> UnifiedLock:
+def get_internal_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified storage lock for data consistency"""
-    return UnifiedLock(lock=_internal_lock, is_async=not is_multiprocess)
+    return UnifiedLock(
+        lock=_internal_lock,
+        is_async=not is_multiprocess,
+        name="internal_lock",
+        enable_logging=enable_logging,
+    )
 
 
-def get_storage_lock() -> UnifiedLock:
+def get_storage_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified storage lock for data consistency"""
-    return UnifiedLock(lock=_storage_lock, is_async=not is_multiprocess)
+    return UnifiedLock(
+        lock=_storage_lock,
+        is_async=not is_multiprocess,
+        name="storage_lock",
+        enable_logging=enable_logging,
+    )
 
 
-def get_pipeline_status_lock() -> UnifiedLock:
+def get_pipeline_status_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified storage lock for data consistency"""
-    return UnifiedLock(lock=_pipeline_status_lock, is_async=not is_multiprocess)
+    return UnifiedLock(
+        lock=_pipeline_status_lock,
+        is_async=not is_multiprocess,
+        name="pipeline_status_lock",
+        enable_logging=enable_logging,
+    )
+
+
+def get_graph_db_lock(enable_logging: bool = False) -> UnifiedLock:
+    """return unified graph database lock for ensuring atomic operations"""
+    return UnifiedLock(
+        lock=_graph_db_lock,
+        is_async=not is_multiprocess,
+        name="graph_db_lock",
+        enable_logging=enable_logging,
+    )
+
+
+def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
+    """return unified data initialization lock for ensuring atomic data initialization"""
+    return UnifiedLock(
+        lock=_data_init_lock,
+        is_async=not is_multiprocess,
+        name="data_init_lock",
+        enable_logging=enable_logging,
+    )
 
 
 def initialize_share_data(workers: int = 1):
@@ -108,6 +224,8 @@ def initialize_share_data(workers: int = 1):
         _storage_lock, \
         _internal_lock, \
         _pipeline_status_lock, \
+        _graph_db_lock, \
+        _data_init_lock, \
         _shared_dicts, \
         _init_flags, \
         _initialized, \
@@ -120,14 +238,16 @@ def initialize_share_data(workers: int = 1):
         )
         return
 
-    _manager = Manager()
     _workers = workers
 
     if workers > 1:
         is_multiprocess = True
+        _manager = Manager()
         _internal_lock = _manager.Lock()
         _storage_lock = _manager.Lock()
         _pipeline_status_lock = _manager.Lock()
+        _graph_db_lock = _manager.Lock()
+        _data_init_lock = _manager.Lock()
         _shared_dicts = _manager.dict()
         _init_flags = _manager.dict()
         _update_flags = _manager.dict()
@@ -139,6 +259,8 @@ def initialize_share_data(workers: int = 1):
         _internal_lock = asyncio.Lock()
         _storage_lock = asyncio.Lock()
         _pipeline_status_lock = asyncio.Lock()
+        _graph_db_lock = asyncio.Lock()
+        _data_init_lock = asyncio.Lock()
         _shared_dicts = {}
         _init_flags = {}
         _update_flags = {}
@@ -164,6 +286,7 @@ async def initialize_pipeline_status():
         history_messages = _manager.list() if is_multiprocess else []
         pipeline_namespace.update(
             {
+                "autoscanned": False,  # Auto-scan started
                 "busy": False,  # Control concurrent processes
                 "job_name": "Default Job",  # Current job name (indexing files/indexing texts)
                 "job_start": None,  # Job start time
@@ -200,7 +323,12 @@ async def get_update_flag(namespace: str):
         if is_multiprocess and _manager is not None:
             new_update_flag = _manager.Value("b", False)
         else:
-            new_update_flag = False
+            # Create a simple mutable object to store boolean value for compatibility with mutiprocess
+            class MutableBoolean:
+                def __init__(self, initial_value=False):
+                    self.value = initial_value
+
+            new_update_flag = MutableBoolean(False)
 
         _update_flags[namespace].append(new_update_flag)
         return new_update_flag
@@ -220,7 +348,26 @@ async def set_all_update_flags(namespace: str):
             if is_multiprocess:
                 _update_flags[namespace][i].value = True
             else:
-                _update_flags[namespace][i] = True
+                # Use .value attribute instead of direct assignment
+                _update_flags[namespace][i].value = True
+
+
+async def clear_all_update_flags(namespace: str):
+    """Clear all update flag of namespace indicating all workers need to reload data from files"""
+    global _update_flags
+    if _update_flags is None:
+        raise ValueError("Try to create namespace before Shared-Data is initialized")
+
+    async with get_internal_lock():
+        if namespace not in _update_flags:
+            raise ValueError(f"Namespace {namespace} not found in update flags")
+        # Update flags for both modes
+        for i in range(len(_update_flags[namespace])):
+            if is_multiprocess:
+                _update_flags[namespace][i].value = False
+            else:
+                # Use .value attribute instead of direct assignment
+                _update_flags[namespace][i].value = False
 
 
 async def get_all_update_flags_status() -> Dict[str, list]:
@@ -247,7 +394,7 @@ async def get_all_update_flags_status() -> Dict[str, list]:
     return result
 
 
-def try_initialize_namespace(namespace: str) -> bool:
+async def try_initialize_namespace(namespace: str) -> bool:
     """
     Returns True if the current worker(process) gets initialization permission for loading data later.
     The worker does not get the permission is prohibited to load data from files.
@@ -257,15 +404,17 @@ def try_initialize_namespace(namespace: str) -> bool:
     if _init_flags is None:
         raise ValueError("Try to create nanmespace before Shared-Data is initialized")
 
-    if namespace not in _init_flags:
-        _init_flags[namespace] = True
+    async with get_internal_lock():
+        if namespace not in _init_flags:
+            _init_flags[namespace] = True
+            direct_log(
+                f"Process {os.getpid()} ready to initialize storage namespace: [{namespace}]"
+            )
+            return True
         direct_log(
-            f"Process {os.getpid()} ready to initialize storage namespace: [{namespace}]"
+            f"Process {os.getpid()} storage namespace already initialized: [{namespace}]"
         )
-        return True
-    direct_log(
-        f"Process {os.getpid()} storage namespace already initialized: [{namespace}]"
-    )
+
     return False
 
 
@@ -304,6 +453,8 @@ def finalize_share_data():
         _storage_lock, \
         _internal_lock, \
         _pipeline_status_lock, \
+        _graph_db_lock, \
+        _data_init_lock, \
         _shared_dicts, \
         _init_flags, \
         _initialized, \
@@ -369,6 +520,8 @@ def finalize_share_data():
     _storage_lock = None
     _internal_lock = None
     _pipeline_status_lock = None
+    _graph_db_lock = None
+    _data_init_lock = None
     _update_flags = None
 
     direct_log(f"Process {os.getpid()} storage data finalization complete")

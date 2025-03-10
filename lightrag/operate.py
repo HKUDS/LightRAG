@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import os
 from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
 
@@ -220,6 +221,7 @@ async def _merge_nodes_then_upsert(
         entity_name, description, global_config
     )
     node_data = dict(
+        entity_id=entity_name,
         entity_type=entity_type,
         description=description,
         source_id=source_id,
@@ -301,6 +303,7 @@ async def _merge_edges_then_upsert(
             await knowledge_graph_inst.upsert_node(
                 need_insert_id,
                 node_data={
+                    "entity_id": need_insert_id,
                     "source_id": source_id,
                     "description": description,
                     "entity_type": "UNKNOWN",
@@ -337,11 +340,10 @@ async def extract_entities(
     entity_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
     global_config: dict[str, str],
+    pipeline_status: dict = None,
+    pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
 ) -> None:
-    from lightrag.kg.shared_storage import get_namespace_data
-
-    pipeline_status = await get_namespace_data("pipeline_status")
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     enable_llm_cache_for_entity_extract: bool = global_config[
@@ -400,6 +402,7 @@ async def extract_entities(
             else:
                 _prompt = input_text
 
+            # TODO： add cache_type="extract"
             arg_hash = compute_args_hash(_prompt)
             cached_return, _1, _2, _3 = await handle_cache(
                 llm_response_cache,
@@ -407,7 +410,6 @@ async def extract_entities(
                 _prompt,
                 "default",
                 cache_type="extract",
-                force_llm_cache=True,
             )
             if cached_return:
                 logger.debug(f"Found cache for {arg_hash}")
@@ -504,8 +506,10 @@ async def extract_entities(
         relations_count = len(maybe_edges)
         log_message = f"  Chunk {processed_chunks}/{total_chunks}: extracted {entities_count} entities and {relations_count} relationships (deduplicated)"
         logger.info(log_message)
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
         return dict(maybe_nodes), dict(maybe_edges)
 
     tasks = [_process_single_content(c) for c in ordered_chunks]
@@ -519,42 +523,58 @@ async def extract_entities(
         for k, v in m_edges.items():
             maybe_edges[tuple(sorted(k))].extend(v)
 
-    all_entities_data = await asyncio.gather(
-        *[
-            _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-            for k, v in maybe_nodes.items()
-        ]
-    )
+    from .kg.shared_storage import get_graph_db_lock
 
-    all_relationships_data = await asyncio.gather(
-        *[
-            _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
-            for k, v in maybe_edges.items()
-        ]
-    )
+    graph_db_lock = get_graph_db_lock(enable_logging=False)
+
+    # Ensure that nodes and edges are merged and upserted atomically
+    async with graph_db_lock:
+        all_entities_data = await asyncio.gather(
+            *[
+                _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
+                for k, v in maybe_nodes.items()
+            ]
+        )
+
+        all_relationships_data = await asyncio.gather(
+            *[
+                _merge_edges_then_upsert(
+                    k[0], k[1], v, knowledge_graph_inst, global_config
+                )
+                for k, v in maybe_edges.items()
+            ]
+        )
 
     if not (all_entities_data or all_relationships_data):
         log_message = "Didn't extract any entities and relationships."
         logger.info(log_message)
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
         return
 
     if not all_entities_data:
         log_message = "Didn't extract any entities"
         logger.info(log_message)
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
     if not all_relationships_data:
         log_message = "Didn't extract any relationships"
         logger.info(log_message)
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
     log_message = f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships (deduplicated)"
     logger.info(log_message)
-    pipeline_status["latest_message"] = log_message
-    pipeline_status["history_messages"].append(log_message)
+    if pipeline_status is not None:
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
     verbose_debug(
         f"New entities:{all_entities_data}, relationships:{all_relationships_data}"
     )
@@ -1017,6 +1037,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
+    logger.info(f"Process {os.getpid()} buidling query context...")
     if query_param.mode == "local":
         entities_context, relations_context, text_units_context = await _get_node_data(
             ll_keywords,

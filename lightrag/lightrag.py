@@ -354,6 +354,9 @@ class LightRAG:
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
             ),
+            global_config=asdict(
+                self
+            ),  # Add global_config to ensure cache works properly
             embedding_func=self.embedding_func,
         )
 
@@ -404,18 +407,8 @@ class LightRAG:
             embedding_func=None,
         )
 
-        if self.llm_response_cache and hasattr(
-            self.llm_response_cache, "global_config"
-        ):
-            hashing_kv = self.llm_response_cache
-        else:
-            hashing_kv = self.key_string_value_json_storage_cls(  # type: ignore
-                namespace=make_namespace(
-                    self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                ),
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-            )
+        # Directly use llm_response_cache, don't create a new object
+        hashing_kv = self.llm_response_cache
 
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(
@@ -590,6 +583,7 @@ class LightRAG:
             split_by_character, split_by_character_only
         )
 
+    # TODO: deprecated, use insert instead
     def insert_custom_chunks(
         self,
         full_text: str,
@@ -601,6 +595,7 @@ class LightRAG:
             self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
         )
 
+    # TODO: deprecated, use ainsert instead
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
@@ -892,7 +887,9 @@ class LightRAG:
                                 self.chunks_vdb.upsert(chunks)
                             )
                             entity_relation_task = asyncio.create_task(
-                                self._process_entity_relation_graph(chunks)
+                                self._process_entity_relation_graph(
+                                    chunks, pipeline_status, pipeline_status_lock
+                                )
                             )
                             full_docs_task = asyncio.create_task(
                                 self.full_docs.upsert(
@@ -1007,21 +1004,27 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-    async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
+    async def _process_entity_relation_graph(
+        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
         try:
             await extract_entities(
                 chunk,
                 knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
                 relationships_vdb=self.relationships_vdb,
-                llm_response_cache=self.llm_response_cache,
                 global_config=asdict(self),
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+                llm_response_cache=self.llm_response_cache,
             )
         except Exception as e:
             logger.error("Failed to extract entities and relationships")
             raise e
 
-    async def _insert_done(self) -> None:
+    async def _insert_done(
+        self, pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
         tasks = [
             cast(StorageNameSpace, storage_inst).index_done_callback()
             for storage_inst in [  # type: ignore
@@ -1040,12 +1043,10 @@ class LightRAG:
         log_message = "All Insert done"
         logger.info(log_message)
 
-        # 获取 pipeline_status 并更新 latest_message 和 history_messages
-        from lightrag.kg.shared_storage import get_namespace_data
-
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
     def insert_custom_kg(
         self, custom_kg: dict[str, Any], full_doc_id: str = None
@@ -1260,16 +1261,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         elif param.mode == "naive":
@@ -1279,16 +1271,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         elif param.mode == "mix":
@@ -1301,16 +1284,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         else:
@@ -1344,14 +1318,7 @@ class LightRAG:
             text=query,
             param=param,
             global_config=asdict(self),
-            hashing_kv=self.llm_response_cache
-            or self.key_string_value_json_storage_cls(
-                namespace=make_namespace(
-                    self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                ),
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-            ),
+            hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
         )
 
         param.hl_keywords = hl_keywords
@@ -1375,16 +1342,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
             )
         elif param.mode == "naive":
             response = await naive_query(
@@ -1393,16 +1351,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
             )
         elif param.mode == "mix":
             response = await mix_kg_vector_query(
@@ -1414,16 +1363,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
