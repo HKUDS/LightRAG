@@ -206,3 +206,28 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         except Exception as e:
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
+
+    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
+        """Search for records with IDs starting with a specific prefix.
+
+        Args:
+            prefix: The prefix to search for in record IDs
+
+        Returns:
+            List of records with matching ID prefixes
+        """
+        try:
+            # Use Milvus query with expression to find IDs with the given prefix
+            expression = f'id like "{prefix}%"'
+            results = self._client.query(
+                collection_name=self.namespace,
+                filter=expression,
+                output_fields=list(self.meta_fields) + ["id"],
+            )
+
+            logger.debug(f"Found {len(results)} records with prefix '{prefix}'")
+            return results
+
+        except Exception as e:
+            logger.error(f"Error searching for records with prefix '{prefix}': {e}")
+            return []
