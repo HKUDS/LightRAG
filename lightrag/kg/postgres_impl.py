@@ -439,7 +439,7 @@ class PGVectorStorage(BaseVectorStorage):
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
             "chunk_id": item["source_id"],
-            #TODO: add document_id
+            # TODO: add document_id
         }
         return upsert_sql, data
 
@@ -452,8 +452,8 @@ class PGVectorStorage(BaseVectorStorage):
             "target_id": item["tgt_id"],
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
-            "chunk_id": item["source_id"]
-            #TODO: add document_id
+            "chunk_id": item["source_id"],
+            # TODO: add document_id
         }
         return upsert_sql, data
 
@@ -496,7 +496,9 @@ class PGVectorStorage(BaseVectorStorage):
             await self.db.execute(upsert_sql, data)
 
     #################### query method ###############
-    async def query(self, query: str, top_k: int, ids: list[str] | None = None) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
         embedding_string = ",".join(map(str, embedding))
@@ -505,10 +507,9 @@ class PGVectorStorage(BaseVectorStorage):
             formatted_ids = ",".join(f"'{id}'" for id in ids)
         else:
             formatted_ids = "NULL"
-            
+
         sql = SQL_TEMPLATES[self.base_namespace].format(
-            embedding_string=embedding_string,
-            doc_ids=formatted_ids
+            embedding_string=embedding_string, doc_ids=formatted_ids
         )
         params = {
             "workspace": self.db.workspace,
@@ -1598,7 +1599,7 @@ SQL_TEMPLATES = {
                       content_vector=EXCLUDED.content_vector,
                       update_time = CURRENT_TIMESTAMP
                      """,
-    "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content, 
+    "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
                       content_vector, chunk_id)
                       VALUES ($1, $2, $3, $4, $5, $6)
                       ON CONFLICT (workspace,id) DO UPDATE
@@ -1657,54 +1658,53 @@ SQL_TEMPLATES = {
        """,
     "relationships": """
     WITH relevant_chunks AS (
-        SELECT id as chunk_id 
-        FROM LIGHTRAG_DOC_CHUNKS 
+        SELECT id as chunk_id
+        FROM LIGHTRAG_DOC_CHUNKS
         WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
     )
-    SELECT source_id as src_id, target_id as tgt_id 
+    SELECT source_id as src_id, target_id as tgt_id
     FROM (
         SELECT r.id, r.source_id, r.target_id, 1 - (r.content_vector <=> '[{embedding_string}]'::vector) as distance
         FROM LIGHTRAG_VDB_RELATION r
-        WHERE r.workspace=$1 
+        WHERE r.workspace=$1
         AND r.chunk_id IN (SELECT chunk_id FROM relevant_chunks)
     ) filtered
-    WHERE distance>$2 
-    ORDER BY distance DESC 
+    WHERE distance>$2
+    ORDER BY distance DESC
     LIMIT $3
     """,
-    "entities": 
-    '''
+    "entities": """
         WITH relevant_chunks AS (
-            SELECT id as chunk_id 
-            FROM LIGHTRAG_DOC_CHUNKS 
+            SELECT id as chunk_id
+            FROM LIGHTRAG_DOC_CHUNKS
             WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
         )
         SELECT entity_name FROM
             (
                 SELECT id, entity_name, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-                FROM LIGHTRAG_VDB_ENTITY 
+                FROM LIGHTRAG_VDB_ENTITY
                 where workspace=$1
                 AND chunk_id IN (SELECT chunk_id FROM relevant_chunks)
             )
-        WHERE distance>$2 
-        ORDER BY distance DESC  
+        WHERE distance>$2
+        ORDER BY distance DESC
         LIMIT $3
-    ''',
-    'chunks': """
+    """,
+    "chunks": """
         WITH relevant_chunks AS (
-            SELECT id as chunk_id 
-            FROM LIGHTRAG_DOC_CHUNKS 
+            SELECT id as chunk_id
+            FROM LIGHTRAG_DOC_CHUNKS
             WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
         )
         SELECT id FROM
             (
                 SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-                FROM LIGHTRAG_DOC_CHUNKS 
+                FROM LIGHTRAG_DOC_CHUNKS
                 where workspace=$1
                 AND id IN (SELECT chunk_id FROM relevant_chunks)
             )
-            WHERE distance>$2 
-            ORDER BY distance DESC 
+            WHERE distance>$2
+            ORDER BY distance DESC
             LIMIT $3
-    """
+    """,
 }
