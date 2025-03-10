@@ -108,8 +108,11 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     embedding_func: EmbeddingFunc
     cosine_better_than_threshold: float = field(default=0.2)
     meta_fields: set[str] = field(default_factory=set)
+
     @abstractmethod
-    async def query(self, query: str, top_k: int, ids: list[str] | None = None) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Query the vector storage and retrieve top_k results."""
 
     @abstractmethod
