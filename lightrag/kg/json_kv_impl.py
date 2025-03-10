@@ -18,7 +18,6 @@ from .shared_storage import (
     set_all_update_flags,
     clear_all_update_flags,
     try_initialize_namespace,
-    is_multiprocess,
 )
 
 
@@ -63,9 +62,7 @@ class JsonKVStorage(BaseKVStorage):
 
     async def index_done_callback(self) -> None:
         async with self._storage_lock:
-            if (is_multiprocess and self.storage_updated.value) or (
-                not is_multiprocess and self.storage_updated
-            ):
+            if self.storage_updated.value:
                 data_dict = (
                     dict(self._data) if hasattr(self._data, "_getvalue") else self._data
                 )
