@@ -2622,6 +2622,12 @@ class LightRAG:
 
             # 9. Delete source entities
             for entity_name in source_entities:
+                if entity_name == target_entity:
+                    logger.info(
+                        f"Skipping deletion of '{entity_name}' as it's also the target entity"
+                    )
+                    continue
+
                 # Delete entity node from knowledge graph
                 await self.chunk_entity_relation_graph.delete_node(entity_name)
 
