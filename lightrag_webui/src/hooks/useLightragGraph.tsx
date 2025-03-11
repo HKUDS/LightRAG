@@ -205,6 +205,21 @@ const useLightrangeGraph = () => {
           state.setSigmaGraph(createSigmaGraph(data))
           data?.buildDynamicMap()
           state.setRawGraph(data)
+          
+          // Extract labels from graph data
+          if (data) {
+            const labelSet = new Set<string>(['*'])
+            for (const node of data.nodes) {
+              if (node.labels && Array.isArray(node.labels)) {
+                for (const label of node.labels) {
+                  labelSet.add(label)
+                }
+              }
+            }
+            state.setGraphLabels(Array.from(labelSet).sort())
+          } else {
+            state.setGraphLabels(['*'])
+          }
         })
       }
     } else {

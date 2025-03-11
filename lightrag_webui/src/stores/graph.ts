@@ -65,6 +65,7 @@ interface GraphState {
 
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
+  graphLabels: string[]
 
   moveToSelectedNode: boolean
 
@@ -79,6 +80,7 @@ interface GraphState {
 
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
+  setGraphLabels: (labels: string[]) => void
 }
 
 const useGraphStoreBase = create<GraphState>()((set) => ({
@@ -91,6 +93,7 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   rawGraph: null,
   sigmaGraph: null,
+  graphLabels: [],
 
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
@@ -112,6 +115,7 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       focusedEdge: null,
       rawGraph: null,
       sigmaGraph: null,
+      graphLabels: [],
       moveToSelectedNode: false
     }),
 
@@ -121,6 +125,8 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
     }),
 
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => set({ sigmaGraph }),
+  
+  setGraphLabels: (labels: string[]) => set({ graphLabels: labels }),
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode })
 }))
