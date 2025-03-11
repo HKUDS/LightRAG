@@ -962,7 +962,10 @@ async def mix_kg_vector_query(
         try:
             # Reduce top_k for vector search in hybrid mode since we have structured information from KG
             mix_topk = min(10, query_param.top_k)
-            results = await chunks_vdb.query(augmented_query, top_k=mix_topk)
+            # TODO: add ids to the query
+            results = await chunks_vdb.query(
+                augmented_query, top_k=mix_topk, ids=query_param.ids
+            )
             if not results:
                 return None
 
@@ -1171,7 +1174,11 @@ async def _get_node_data(
     logger.info(
         f"Query nodes: {query}, top_k: {query_param.top_k}, cosine: {entities_vdb.cosine_better_than_threshold}"
     )
-    results = await entities_vdb.query(query, top_k=query_param.top_k)
+
+    results = await entities_vdb.query(
+        query, top_k=query_param.top_k, ids=query_param.ids
+    )
+
     if not len(results):
         return "", "", ""
     # get entity information
@@ -1424,7 +1431,10 @@ async def _get_edge_data(
     logger.info(
         f"Query edges: {keywords}, top_k: {query_param.top_k}, cosine: {relationships_vdb.cosine_better_than_threshold}"
     )
-    results = await relationships_vdb.query(keywords, top_k=query_param.top_k)
+
+    results = await relationships_vdb.query(
+        keywords, top_k=query_param.top_k, ids=query_param.ids
+    )
 
     if not len(results):
         return "", "", ""
@@ -1673,7 +1683,9 @@ async def naive_query(
     if cached_response is not None:
         return cached_response
 
-    results = await chunks_vdb.query(query, top_k=query_param.top_k)
+    results = await chunks_vdb.query(
+        query, top_k=query_param.top_k, ids=query_param.ids
+    )
     if not len(results):
         return PROMPTS["fail_response"]
 
