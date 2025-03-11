@@ -138,7 +138,7 @@ const PropertyRow = ({
         className="hover:bg-primary/20 rounded p-1 text-ellipsis"
         tooltipClassName="max-w-80"
         text={value}
-        tooltip={tooltip || value}
+        tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
         side="left"
         onClick={onClick}
       />
