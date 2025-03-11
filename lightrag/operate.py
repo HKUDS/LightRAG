@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import os
 from typing import Any, AsyncIterator
 from collections import Counter, defaultdict
 
@@ -140,18 +141,36 @@ async def _handle_single_entity_extraction(
 ):
     if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
         return None
-    # add this record as a node in the G
+
+    # Clean and validate entity name
     entity_name = clean_str(record_attributes[1]).strip('"')
     if not entity_name.strip():
+        logger.warning(
+            f"Entity extraction error: empty entity name in: {record_attributes}"
+        )
         return None
+
+    # Clean and validate entity type
     entity_type = clean_str(record_attributes[2]).strip('"')
+    if not entity_type.strip() or entity_type.startswith('("'):
+        logger.warning(
+            f"Entity extraction error: invalid entity type in: {record_attributes}"
+        )
+        return None
+
+    # Clean and validate description
     entity_description = clean_str(record_attributes[3]).strip('"')
-    entity_source_id = chunk_key
+    if not entity_description.strip():
+        logger.warning(
+            f"Entity extraction error: empty description for entity '{entity_name}' of type '{entity_type}'"
+        )
+        return None
+
     return dict(
         entity_name=entity_name,
         entity_type=entity_type,
         description=entity_description,
-        source_id=entity_source_id,
+        source_id=chunk_key,
         metadata={"created_at": time.time()},
     )
 
@@ -220,6 +239,7 @@ async def _merge_nodes_then_upsert(
         entity_name, description, global_config
     )
     node_data = dict(
+        entity_id=entity_name,
         entity_type=entity_type,
         description=description,
         source_id=source_id,
@@ -301,6 +321,7 @@ async def _merge_edges_then_upsert(
             await knowledge_graph_inst.upsert_node(
                 need_insert_id,
                 node_data={
+                    "entity_id": need_insert_id,
                     "source_id": source_id,
                     "description": description,
                     "entity_type": "UNKNOWN",
@@ -337,11 +358,10 @@ async def extract_entities(
     entity_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
     global_config: dict[str, str],
+    pipeline_status: dict = None,
+    pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
 ) -> None:
-    from lightrag.kg.shared_storage import get_namespace_data
-
-    pipeline_status = await get_namespace_data("pipeline_status")
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
     enable_llm_cache_for_entity_extract: bool = global_config[
@@ -400,6 +420,7 @@ async def extract_entities(
             else:
                 _prompt = input_text
 
+            # TODO： add cache_type="extract"
             arg_hash = compute_args_hash(_prompt)
             cached_return, _1, _2, _3 = await handle_cache(
                 llm_response_cache,
@@ -407,7 +428,6 @@ async def extract_entities(
                 _prompt,
                 "default",
                 cache_type="extract",
-                force_llm_cache=True,
             )
             if cached_return:
                 logger.debug(f"Found cache for {arg_hash}")
@@ -436,47 +456,22 @@ async def extract_entities(
         else:
             return await use_llm_func(input_text)
 
-    async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
-        """ "Prpocess a single chunk
+    async def _process_extraction_result(result: str, chunk_key: str):
+        """Process a single extraction result (either initial or gleaning)
         Args:
-            chunk_key_dp (tuple[str, TextChunkSchema]):
-                ("chunck-xxxxxx", {"tokens": int, "content": str, "full_doc_id": str, "chunk_order_index": int})
+            result (str): The extraction result to process
+            chunk_key (str): The chunk key for source tracking
+        Returns:
+            tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
         """
-        nonlocal processed_chunks
-        chunk_key = chunk_key_dp[0]
-        chunk_dp = chunk_key_dp[1]
-        content = chunk_dp["content"]
-        # hint_prompt = entity_extract_prompt.format(**context_base, input_text=content)
-        hint_prompt = entity_extract_prompt.format(
-            **context_base, input_text="{input_text}"
-        ).format(**context_base, input_text=content)
-
-        final_result = await _user_llm_func_with_cache(hint_prompt)
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
-        for now_glean_index in range(entity_extract_max_gleaning):
-            glean_result = await _user_llm_func_with_cache(
-                continue_prompt, history_messages=history
-            )
-
-            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
-            final_result += glean_result
-            if now_glean_index == entity_extract_max_gleaning - 1:
-                break
-
-            if_loop_result: str = await _user_llm_func_with_cache(
-                if_loop_prompt, history_messages=history
-            )
-            if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
-            if if_loop_result != "yes":
-                break
+        maybe_nodes = defaultdict(list)
+        maybe_edges = defaultdict(list)
 
         records = split_string_by_multi_markers(
-            final_result,
+            result,
             [context_base["record_delimiter"], context_base["completion_delimiter"]],
         )
 
-        maybe_nodes = defaultdict(list)
-        maybe_edges = defaultdict(list)
         for record in records:
             record = re.search(r"\((.*)\)", record)
             if record is None:
@@ -485,6 +480,7 @@ async def extract_entities(
             record_attributes = split_string_by_multi_markers(
                 record, [context_base["tuple_delimiter"]]
             )
+
             if_entities = await _handle_single_entity_extraction(
                 record_attributes, chunk_key
             )
@@ -499,13 +495,71 @@ async def extract_entities(
                 maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
                     if_relation
                 )
+
+        return maybe_nodes, maybe_edges
+
+    async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
+        """Process a single chunk
+        Args:
+            chunk_key_dp (tuple[str, TextChunkSchema]):
+                ("chunk-xxxxxx", {"tokens": int, "content": str, "full_doc_id": str, "chunk_order_index": int})
+        """
+        nonlocal processed_chunks
+        chunk_key = chunk_key_dp[0]
+        chunk_dp = chunk_key_dp[1]
+        content = chunk_dp["content"]
+
+        # Get initial extraction
+        hint_prompt = entity_extract_prompt.format(
+            **context_base, input_text="{input_text}"
+        ).format(**context_base, input_text=content)
+
+        final_result = await _user_llm_func_with_cache(hint_prompt)
+        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
+
+        # Process initial extraction
+        maybe_nodes, maybe_edges = await _process_extraction_result(
+            final_result, chunk_key
+        )
+
+        # Process additional gleaning results
+        for now_glean_index in range(entity_extract_max_gleaning):
+            glean_result = await _user_llm_func_with_cache(
+                continue_prompt, history_messages=history
+            )
+
+            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
+
+            # Process gleaning result separately
+            glean_nodes, glean_edges = await _process_extraction_result(
+                glean_result, chunk_key
+            )
+
+            # Merge results
+            for entity_name, entities in glean_nodes.items():
+                maybe_nodes[entity_name].extend(entities)
+            for edge_key, edges in glean_edges.items():
+                maybe_edges[edge_key].extend(edges)
+
+            if now_glean_index == entity_extract_max_gleaning - 1:
+                break
+
+            if_loop_result: str = await _user_llm_func_with_cache(
+                if_loop_prompt, history_messages=history
+            )
+            if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
+            if if_loop_result != "yes":
+                break
+
         processed_chunks += 1
         entities_count = len(maybe_nodes)
         relations_count = len(maybe_edges)
         log_message = f"  Chunk {processed_chunks}/{total_chunks}: extracted {entities_count} entities and {relations_count} relationships (deduplicated)"
         logger.info(log_message)
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
         return dict(maybe_nodes), dict(maybe_edges)
 
     tasks = [_process_single_content(c) for c in ordered_chunks]
@@ -519,42 +573,58 @@ async def extract_entities(
         for k, v in m_edges.items():
             maybe_edges[tuple(sorted(k))].extend(v)
 
-    all_entities_data = await asyncio.gather(
-        *[
-            _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-            for k, v in maybe_nodes.items()
-        ]
-    )
+    from .kg.shared_storage import get_graph_db_lock
 
-    all_relationships_data = await asyncio.gather(
-        *[
-            _merge_edges_then_upsert(k[0], k[1], v, knowledge_graph_inst, global_config)
-            for k, v in maybe_edges.items()
-        ]
-    )
+    graph_db_lock = get_graph_db_lock(enable_logging=False)
+
+    # Ensure that nodes and edges are merged and upserted atomically
+    async with graph_db_lock:
+        all_entities_data = await asyncio.gather(
+            *[
+                _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
+                for k, v in maybe_nodes.items()
+            ]
+        )
+
+        all_relationships_data = await asyncio.gather(
+            *[
+                _merge_edges_then_upsert(
+                    k[0], k[1], v, knowledge_graph_inst, global_config
+                )
+                for k, v in maybe_edges.items()
+            ]
+        )
 
     if not (all_entities_data or all_relationships_data):
         log_message = "Didn't extract any entities and relationships."
         logger.info(log_message)
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
         return
 
     if not all_entities_data:
         log_message = "Didn't extract any entities"
         logger.info(log_message)
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
     if not all_relationships_data:
         log_message = "Didn't extract any relationships"
         logger.info(log_message)
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
     log_message = f"Extracted {len(all_entities_data)} entities and {len(all_relationships_data)} relationships (deduplicated)"
     logger.info(log_message)
-    pipeline_status["latest_message"] = log_message
-    pipeline_status["history_messages"].append(log_message)
+    if pipeline_status is not None:
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
     verbose_debug(
         f"New entities:{all_entities_data}, relationships:{all_relationships_data}"
     )
@@ -1020,6 +1090,7 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
+    logger.info(f"Process {os.getpid()} buidling query context...")
     if query_param.mode == "local":
         entities_context, relations_context, text_units_context = await _get_node_data(
             ll_keywords,
@@ -1845,3 +1916,90 @@ async def kg_query_with_keywords(
         )
 
     return response
+
+
+async def query_with_keywords(
+    query: str,
+    prompt: str,
+    param: QueryParam,
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    chunks_vdb: BaseVectorStorage,
+    text_chunks_db: BaseKVStorage,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+) -> str | AsyncIterator[str]:
+    """
+    Extract keywords from the query and then use them for retrieving information.
+
+    1. Extracts high-level and low-level keywords from the query
+    2. Formats the query with the extracted keywords and prompt
+    3. Uses the appropriate query method based on param.mode
+
+    Args:
+        query: The user's query
+        prompt: Additional prompt to prepend to the query
+        param: Query parameters
+        knowledge_graph_inst: Knowledge graph storage
+        entities_vdb: Entities vector database
+        relationships_vdb: Relationships vector database
+        chunks_vdb: Document chunks vector database
+        text_chunks_db: Text chunks storage
+        global_config: Global configuration
+        hashing_kv: Cache storage
+
+    Returns:
+        Query response or async iterator
+    """
+    # Extract keywords
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        text=query,
+        param=param,
+        global_config=global_config,
+        hashing_kv=hashing_kv,
+    )
+
+    param.hl_keywords = hl_keywords
+    param.ll_keywords = ll_keywords
+
+    # Create a new string with the prompt and the keywords
+    ll_keywords_str = ", ".join(ll_keywords)
+    hl_keywords_str = ", ".join(hl_keywords)
+    formatted_question = f"{prompt}\n\n### Keywords:\nHigh-level: {hl_keywords_str}\nLow-level: {ll_keywords_str}\n\n### Query:\n{query}"
+
+    # Use appropriate query method based on mode
+    if param.mode in ["local", "global", "hybrid"]:
+        return await kg_query_with_keywords(
+            formatted_question,
+            knowledge_graph_inst,
+            entities_vdb,
+            relationships_vdb,
+            text_chunks_db,
+            param,
+            global_config,
+            hashing_kv=hashing_kv,
+        )
+    elif param.mode == "naive":
+        return await naive_query(
+            formatted_question,
+            chunks_vdb,
+            text_chunks_db,
+            param,
+            global_config,
+            hashing_kv=hashing_kv,
+        )
+    elif param.mode == "mix":
+        return await mix_kg_vector_query(
+            formatted_question,
+            knowledge_graph_inst,
+            entities_vdb,
+            relationships_vdb,
+            chunks_vdb,
+            text_chunks_db,
+            param,
+            global_config,
+            hashing_kv=hashing_kv,
+        )
+    else:
+        raise ValueError(f"Unknown mode {param.mode}")

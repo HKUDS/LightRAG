@@ -1,0 +1,235 @@
+{
+  "header": {
+    "documents": "文档",
+    "knowledgeGraph": "知识图谱",
+    "retrieval": "检索",
+    "api": "API",
+    "projectRepository": "项目仓库",
+    "themeToggle": {
+      "switchToLight": "切换到亮色主题",
+      "switchToDark": "切换到暗色主题"
+    }
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "清除",
+      "tooltip": "清除文档",
+      "title": "清除文档",
+      "confirm": "您确定要清除所有文档吗？",
+      "confirmButton": "确定",
+      "success": "文档已成功清除",
+      "failed": "清除文档失败:\n{{message}}",
+      "error": "清除文档失败:\n{{error}}"
+    },
+    "uploadDocuments": {
+      "button": "上传",
+      "tooltip": "上传文档",
+      "title": "上传文档",
+      "description": "拖放文档到此处或点击浏览。",
+      "uploading": "正在上传 {{name}}: {{percent}}%",
+      "success": "上传成功:\n{{name}} 上传成功",
+      "failed": "上传失败:\n{{name}}\n{{message}}",
+      "error": "上传失败:\n{{name}}\n{{error}}",
+      "generalError": "上传失败\n{{error}}",
+      "fileTypes": "支持的文件类型: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
+    },
+    "documentManager": {
+      "title": "文档管理",
+      "scanButton": "扫描",
+      "scanTooltip": "扫描文档",
+      "uploadedTitle": "已上传文档",
+      "uploadedDescription": "已上传文档及其状态列表。",
+      "emptyTitle": "暂无文档",
+      "emptyDescription": "尚未上传任何文档。",
+      "columns": {
+        "id": "ID",
+        "summary": "摘要",
+        "status": "状态",
+        "length": "长度",
+        "chunks": "分块",
+        "created": "创建时间",
+        "updated": "更新时间",
+        "metadata": "元数据"
+      },
+      "status": {
+        "completed": "已完成",
+        "processing": "处理中",
+        "pending": "待处理",
+        "failed": "失败"
+      },
+      "errors": {
+        "loadFailed": "加载文档失败\n{{error}}",
+        "scanFailed": "扫描文档失败\n{{error}}",
+        "scanProgressFailed": "获取扫描进度失败\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "sideBar": {
+      "settings": {
+        "settings": "设置",
+        "healthCheck": "健康检查",
+        "showPropertyPanel": "显示属性面板",
+        "showSearchBar": "显示搜索栏",
+        "showNodeLabel": "显示节点标签",
+        "nodeDraggable": "节点可拖动",
+        "showEdgeLabel": "显示边标签",
+        "hideUnselectedEdges": "隐藏未选中边",
+        "edgeEvents": "边事件",
+        "maxQueryDepth": "最大查询深度",
+        "minDegree": "最小度数",
+        "maxLayoutIterations": "最大布局迭代次数",
+        "apiKey": "API 密钥",
+        "enterYourAPIkey": "输入您的 API 密钥",
+        "save": "保存"
+      },
+
+      "zoomControl": {
+        "zoomIn": "放大",
+        "zoomOut": "缩小",
+        "resetZoom": "重置缩放"
+      },
+
+      "layoutsControl": {
+        "startAnimation": "开始布局动画",
+        "stopAnimation": "停止布局动画",
+        "layoutGraph": "布局图",
+        "layouts": {
+          "Circular": "环形布局",
+          "Circlepack": "圆形打包布局",
+          "Random": "随机布局",
+          "Noverlaps": "无重叠布局",
+          "Force Directed": "力导向布局",
+          "Force Atlas": "力导向图谱布局"
+        }
+      },
+
+      "fullScreenControl": {
+        "fullScreen": "全屏",
+        "windowed": "窗口模式"
+      }
+    },
+    "statusIndicator": {
+      "connected": "已连接",
+      "disconnected": "未连接"
+    },
+    "statusCard": {
+      "unavailable": "状态信息不可用",
+      "storageInfo": "存储信息",
+      "workingDirectory": "工作目录",
+      "inputDirectory": "输入目录",
+      "llmConfig": "LLM 配置",
+      "llmBinding": "LLM 绑定",
+      "llmBindingHost": "LLM 绑定主机",
+      "llmModel": "LLM 模型",
+      "maxTokens": "最大 Token 数",
+      "embeddingConfig": "嵌入配置",
+      "embeddingBinding": "嵌入绑定",
+      "embeddingBindingHost": "嵌入绑定主机",
+      "embeddingModel": "嵌入模型",
+      "storageConfig": "存储配置",
+      "kvStorage": "KV 存储",
+      "docStatusStorage": "文档状态存储",
+      "graphStorage": "图存储",
+      "vectorStorage": "向量存储"
+    },
+    "propertiesView": {
+      "node": {
+        "title": "节点",
+        "id": "ID",
+        "labels": "标签",
+        "degree": "度数",
+        "properties": "属性",
+        "relationships": "关系"
+      },
+      "edge": {
+        "title": "关系",
+        "id": "ID",
+        "type": "类型",
+        "source": "源",
+        "target": "目标",
+        "properties": "属性"
+      }
+    },
+    "search": {
+      "placeholder": "搜索节点...",
+      "message": "以及其它 {count} 项"
+    },
+    "graphLabels": {
+      "selectTooltip": "选择查询标签",
+      "noLabels": "未找到标签",
+      "label": "标签",
+      "placeholder": "搜索标签...",
+      "andOthers": "以及其它 {count} 个"
+    }
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "复制到剪贴板",
+      "copyError": "无法复制文本到剪贴板"
+    },
+
+    "retrieval": {
+      "startPrompt": "在下面输入您的查询以开始检索",
+      "clear": "清除",
+      "send": "发送",
+      "placeholder": "输入您的查询...",
+      "error": "错误：无法获取响应"
+    },
+    "querySettings": {
+      "parametersTitle": "参数设置",
+      "parametersDescription": "配置查询参数",
+
+      "queryMode": "查询模式",
+      "queryModeTooltip": "选择检索策略：\n• 朴素：不使用高级技术的基本搜索\n• 本地：基于上下文的信息检索\n• 全局：利用全局知识库\n• 混合：结合本地和全局检索\n• 综合：集成知识图谱与向量检索",
+      "queryModeOptions": {
+        "naive": "朴素",
+        "local": "本地",
+        "global": "全局",
+        "hybrid": "混合",
+        "mix": "综合"
+      },
+
+      "responseFormat": "响应格式",
+      "responseFormatTooltip": "定义响应格式。例如：\n• 多个段落\n• 单个段落\n• 项目符号",
+      "responseFormatOptions": {
+        "multipleParagraphs": "多个段落",
+        "singleParagraph": "单个段落",
+        "bulletPoints": "项目符号"
+      },
+
+      "topK": "Top K 结果数",
+      "topKTooltip": "要检索的前 K 个项目数量。在“本地”模式下表示实体，在“全局”模式下表示关系",
+      "topKPlaceholder": "结果数",
+
+      "maxTokensTextUnit": "文本单元最大 Token 数",
+      "maxTokensTextUnitTooltip": "每个检索到的文本块允许的最大 Token 数",
+
+      "maxTokensGlobalContext": "全局上下文最大 Token 数",
+      "maxTokensGlobalContextTooltip": "在全局检索中为关系描述分配的最大 Token 数",
+
+      "maxTokensLocalContext": "本地上下文最大 Token 数",
+      "maxTokensLocalContextTooltip": "在本地检索中为实体描述分配的最大 Token 数",
+
+      "historyTurns": "历史轮次",
+      "historyTurnsTooltip": "在响应上下文中考虑的完整对话轮次（用户-助手对）",
+      "historyTurnsPlaceholder": "历史轮次的数量",
+
+      "hlKeywords": "高级关键词",
+      "hlKeywordsTooltip": "检索时优先考虑的高级关键词。请用逗号分隔",
+      "hlkeywordsPlaceHolder": "输入关键词",
+
+      "llKeywords": "低级关键词",
+      "llKeywordsTooltip": "用于优化检索焦点的低级关键词。请用逗号分隔",
+
+      "onlyNeedContext": "仅需要上下文",
+      "onlyNeedContextTooltip": "如果为 True，则仅返回检索到的上下文，而不会生成回复",
+
+      "onlyNeedPrompt": "仅需要提示",
+      "onlyNeedPromptTooltip": "如果为 True，则仅返回生成的提示，而不会生成回复",
+
+      "streamResponse": "流式响应",
+      "streamResponseTooltip": "如果为 True，则启用流式输出以获得实时响应"
+    }
+  }
+}

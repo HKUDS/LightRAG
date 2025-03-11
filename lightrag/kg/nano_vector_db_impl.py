@@ -258,3 +258,33 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         logger.debug(f"Found {len(matching_records)} records with prefix '{prefix}'")
         return matching_records
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        client = await self._get_client()
+        result = client.get([id])
+        if result:
+            return result[0]
+        return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        client = await self._get_client()
+        return client.get(ids)
