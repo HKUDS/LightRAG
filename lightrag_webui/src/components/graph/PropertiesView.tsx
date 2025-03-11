@@ -95,9 +95,9 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
         const neighbour = state.rawGraph.getNode(neighbourId)
         if (neighbour) {
           relationships.push({
-            type: isTarget ? 'Target' : 'Source',
+            type: 'Target',
             id: neighbourId,
-            label: neighbour.labels.join(', ')
+            label: neighbour.properties['entity_id']
           })
         }
       }
