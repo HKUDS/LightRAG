@@ -1756,19 +1756,7 @@ class LightRAG:
     async def get_entity_info(
         self, entity_name: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
-        """Get detailed information of an entity
-
-        Args:
-            entity_name: Entity name (no need for quotes)
-            include_vector_data: Whether to include data from the vector database
-
-        Returns:
-            dict: A dictionary containing entity information, including:
-                - entity_name: Entity name
-                - source_id: Source document ID
-                - graph_data: Complete node data from the graph database
-                - vector_data: (optional) Data from the vector database
-        """
+        """Get detailed information of an entity"""
 
         # Get information from the graph
         node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
@@ -1783,29 +1771,15 @@ class LightRAG:
         # Optional: Get vector database information
         if include_vector_data:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            vector_data = self.entities_vdb._client.get([entity_id])
-            result["vector_data"] = vector_data[0] if vector_data else None
+            vector_data = await self.entities_vdb.get_by_id(entity_id)
+            result["vector_data"] = vector_data
 
         return result
 
     async def get_relation_info(
         self, src_entity: str, tgt_entity: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
-        """Get detailed information of a relationship
-
-        Args:
-            src_entity: Source entity name (no need for quotes)
-            tgt_entity: Target entity name (no need for quotes)
-            include_vector_data: Whether to include data from the vector database
-
-        Returns:
-            dict: A dictionary containing relationship information, including:
-                - src_entity: Source entity name
-                - tgt_entity: Target entity name
-                - source_id: Source document ID
-                - graph_data: Complete edge data from the graph database
-                - vector_data: (optional) Data from the vector database
-        """
+        """Get detailed information of a relationship"""
 
         # Get information from the graph
         edge_data = await self.chunk_entity_relation_graph.get_edge(
@@ -1823,8 +1797,8 @@ class LightRAG:
         # Optional: Get vector database information
         if include_vector_data:
             rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
-            vector_data = self.relationships_vdb._client.get([rel_id])
-            result["vector_data"] = vector_data[0] if vector_data else None
+            vector_data = await self.relationships_vdb.get_by_id(rel_id)
+            result["vector_data"] = vector_data
 
         return result
 
