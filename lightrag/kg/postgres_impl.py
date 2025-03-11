@@ -701,7 +701,7 @@ class PGDocStatusStorage(DocStatusStorage):
         result = await self.db.query(sql, params, True)
         docs_by_status = {
             element["id"]: DocProcessingStatus(
-                content=result[0]["content"],
+                content=element["content"],
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
