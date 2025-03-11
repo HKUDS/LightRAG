@@ -81,6 +81,9 @@ class QueryParam:
     history_turns: int = 3
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
+    ids: list[str] | None = None
+    """List of ids to filter the results."""
+
 
 @dataclass
 class StorageNameSpace(ABC):
@@ -107,7 +110,9 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     meta_fields: set[str] = field(default_factory=set)
 
     @abstractmethod
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Query the vector storage and retrieve top_k results."""
 
     @abstractmethod
