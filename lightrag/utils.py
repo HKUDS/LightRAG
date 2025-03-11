@@ -890,3 +890,52 @@ def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any
         return cls(*args, **kwargs)
 
     return import_class
+
+
+def get_content_summary(content: str, max_length: int = 100) -> str:
+    """Get summary of document content
+
+    Args:
+        content: Original document content
+        max_length: Maximum length of summary
+
+    Returns:
+        Truncated content with ellipsis if needed
+    """
+    content = content.strip()
+    if len(content) <= max_length:
+        return content
+    return content[:max_length] + "..."
+
+
+def clean_text(text: str) -> str:
+    """Clean text by removing null bytes (0x00) and whitespace
+
+    Args:
+        text: Input text to clean
+
+    Returns:
+        Cleaned text
+    """
+    return text.strip().replace("\x00", "")
+
+
+def check_storage_env_vars(storage_name: str) -> None:
+    """Check if all required environment variables for storage implementation exist
+
+    Args:
+        storage_name: Storage implementation name
+
+    Raises:
+        ValueError: If required environment variables are missing
+    """
+    from lightrag.kg import STORAGE_ENV_REQUIREMENTS
+
+    required_vars = STORAGE_ENV_REQUIREMENTS.get(storage_name, [])
+    missing_vars = [var for var in required_vars if var not in os.environ]
+
+    if missing_vars:
+        raise ValueError(
+            f"Storage implementation '{storage_name}' requires the following "
+            f"environment variables: {', '.join(missing_vars)}"
+        )
