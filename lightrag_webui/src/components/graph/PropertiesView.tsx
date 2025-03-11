@@ -97,7 +97,7 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
           relationships.push({
             type: isTarget ? 'Target' : 'Source',
             id: neighbourId,
-            label: neighbour.labels.join(', ')
+            label: neighbour.properties.entity_id || neighbour.labels.join(', ')
           })
         }
       }
