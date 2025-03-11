@@ -891,6 +891,7 @@ def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any
 
     return import_class
 
+
 def get_content_summary(content: str, max_length: int = 100) -> str:
     """Get summary of document content
 
@@ -906,6 +907,7 @@ def get_content_summary(content: str, max_length: int = 100) -> str:
         return content
     return content[:max_length] + "..."
 
+
 def clean_text(text: str) -> str:
     """Clean text by removing null bytes (0x00) and whitespace
 
@@ -917,6 +919,7 @@ def clean_text(text: str) -> str:
     """
     return text.strip().replace("\x00", "")
 
+
 def check_storage_env_vars(storage_name: str) -> None:
     """Check if all required environment variables for storage implementation exist
 
@@ -927,7 +930,7 @@ def check_storage_env_vars(storage_name: str) -> None:
         ValueError: If required environment variables are missing
     """
     from lightrag.kg import STORAGE_ENV_REQUIREMENTS
-    
+
     required_vars = STORAGE_ENV_REQUIREMENTS.get(storage_name, [])
     missing_vars = [var for var in required_vars if var not in os.environ]
 

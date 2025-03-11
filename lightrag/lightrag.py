@@ -1294,14 +1294,14 @@ class LightRAG:
     ):
         """
         Query with separate keyword extraction step.
-        
+
         This method extracts keywords from the query first, then uses them for the query.
-        
+
         Args:
             query: User query
             prompt: Additional prompt for the query
             param: Query parameters
-            
+
         Returns:
             Query response
         """
@@ -1315,12 +1315,12 @@ class LightRAG:
     ) -> str | AsyncIterator[str]:
         """
         Async version of query_with_separate_keyword_extraction.
-        
+
         Args:
             query: User query
             prompt: Additional prompt for the query
             param: Query parameters
-            
+
         Returns:
             Query response or async iterator
         """
@@ -1336,7 +1336,7 @@ class LightRAG:
             global_config=asdict(self),
             hashing_kv=self.llm_response_cache,
         )
-        
+
         await self._query_done()
         return response
 
