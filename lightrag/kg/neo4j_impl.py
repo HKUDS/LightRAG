@@ -666,7 +666,7 @@ class Neo4JStorage(BaseGraphStorage):
                     main_query = """
                     MATCH (n)
                     OPTIONAL MATCH (n)-[r]-()
-                    WITH n, count(r) AS degree
+                    WITH n, COALESCE(count(r), 0) AS degree
                     WHERE degree >= $min_degree
                     ORDER BY degree DESC
                     LIMIT $max_nodes
@@ -703,7 +703,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH start, nodes, relationships
                     UNWIND nodes AS node
                     OPTIONAL MATCH (node)-[r]-()
-                    WITH node, count(r) AS degree, start, nodes, relationships
+                    WITH node, COALESCE(count(r), 0) AS degree, start, nodes, relationships
                     WHERE node = start OR EXISTS((start)--(node)) OR degree >= $min_degree
                     ORDER BY
                         CASE
