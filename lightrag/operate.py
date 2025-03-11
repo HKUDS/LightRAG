@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 import os
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 from collections import Counter, defaultdict
 
 from .utils import (
@@ -619,12 +619,11 @@ async def kg_query(
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict[str, str],
+    llm_model_func: Callable[..., object] | None,
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
-    use_model_func = global_config["llm_model_func"]
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -634,7 +633,10 @@ async def kg_query(
 
     # Extract keywords using extract_keywords_only function which already supports conversation history
     hl_keywords, ll_keywords = await extract_keywords_only(
-        query, query_param, global_config, hashing_kv
+        text=query,
+        param=query_param,
+        llm_model_func=llm_model_func,
+        hashing_kv=hashing_kv,
     )
 
     logger.debug(f"High-level keywords: {hl_keywords}")
@@ -696,7 +698,7 @@ async def kg_query(
     len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
     logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
-    response = await use_model_func(
+    response = await llm_model_func(
         query,
         system_prompt=sys_prompt,
         stream=query_param.stream,
@@ -732,7 +734,7 @@ async def kg_query(
 async def extract_keywords_only(
     text: str,
     param: QueryParam,
-    global_config: dict[str, str],
+    llm_model_func: Callable[..., object] | None,
     hashing_kv: BaseKVStorage | None = None,
 ) -> tuple[list[str], list[str]]:
     """
@@ -758,16 +760,7 @@ async def extract_keywords_only(
             )
 
     # 2. Build the examples
-    example_number = global_config["addon_params"].get("example_number", None)
-    if example_number and example_number < len(PROMPTS["keywords_extraction_examples"]):
-        examples = "\n".join(
-            PROMPTS["keywords_extraction_examples"][: int(example_number)]
-        )
-    else:
-        examples = "\n".join(PROMPTS["keywords_extraction_examples"])
-    language = global_config["addon_params"].get(
-        "language", PROMPTS["DEFAULT_LANGUAGE"]
-    )
+    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
 
     # 3. Process conversation history
     history_context = ""
@@ -776,17 +769,16 @@ async def extract_keywords_only(
             param.conversation_history, param.history_turns
         )
 
-    # 4. Build the keyword-extraction prompt
+    # 4. Build the keyword-extraction prompt (default language only, for now)
     kw_prompt = PROMPTS["keywords_extraction"].format(
-        query=text, examples=examples, language=language, history=history_context
+        query=text, examples=examples, language=PROMPTS["DEFAULT_LANGUAGE"], history=history_context
     )
 
     len_of_prompts = len(encode_string_by_tiktoken(kw_prompt))
     logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
     # 5. Call the LLM for keyword extraction
-    use_model_func = global_config["llm_model_func"]
-    result = await use_model_func(kw_prompt, keyword_extraction=True)
+    result = await llm_model_func(kw_prompt, keyword_extraction=True)
 
     # 6. Parse out JSON from the LLM response
     match = re.search(r"\{.*\}", result, re.DOTALL)
@@ -832,7 +824,7 @@ async def mix_kg_vector_query(
     chunks_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict[str, str],
+    llm_model_func: Callable[..., object] | None = None,
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
@@ -845,7 +837,6 @@ async def mix_kg_vector_query(
     3. Combining both results for comprehensive answer generation
     """
     # 1. Cache handling
-    use_model_func = global_config["llm_model_func"]
     args_hash = compute_args_hash("mix", query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, "mix", cache_type="query"
@@ -865,7 +856,10 @@ async def mix_kg_vector_query(
         try:
             # Extract keywords using extract_keywords_only function which already supports conversation history
             hl_keywords, ll_keywords = await extract_keywords_only(
-                query, query_param, global_config, hashing_kv
+                text=query,
+                param=query_param,
+                llm_model_func=llm_model_func,
+                hashing_kv=hashing_kv,
             )
 
             if not hl_keywords and not ll_keywords:
@@ -992,7 +986,7 @@ async def mix_kg_vector_query(
     logger.debug(f"[mix_kg_vector_query]Prompt Tokens: {len_of_prompts}")
 
     # 6. Generate response
-    response = await use_model_func(
+    response = await llm_model_func(
         query,
         system_prompt=sys_prompt,
         stream=query_param.stream,
@@ -1610,12 +1604,11 @@ async def naive_query(
     chunks_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict[str, str],
+    llm_model_func: Callable[..., object] | None,
     hashing_kv: BaseKVStorage | None = None,
     system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     # Handle cache
-    use_model_func = global_config["llm_model_func"]
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -1678,7 +1671,7 @@ async def naive_query(
     len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
     logger.debug(f"[naive_query]Prompt Tokens: {len_of_prompts}")
 
-    response = await use_model_func(
+    response = await llm_model_func(
         query,
         system_prompt=sys_prompt,
     )
@@ -1720,7 +1713,7 @@ async def kg_query_with_keywords(
     relationships_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
-    global_config: dict[str, str],
+    llm_model_func: Callable[..., object] | None,
     hashing_kv: BaseKVStorage | None = None,
 ) -> str | AsyncIterator[str]:
     """
@@ -1732,7 +1725,6 @@ async def kg_query_with_keywords(
     # ---------------------------
     # 1) Handle potential cache for query results
     # ---------------------------
-    use_model_func = global_config["llm_model_func"]
     args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
@@ -1820,7 +1812,7 @@ async def kg_query_with_keywords(
     len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
     logger.debug(f"[kg_query_with_keywords]Prompt Tokens: {len_of_prompts}")
 
-    response = await use_model_func(
+    response = await llm_model_func(
         query,
         system_prompt=sys_prompt,
         stream=query_param.stream,

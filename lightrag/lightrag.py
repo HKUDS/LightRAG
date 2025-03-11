@@ -1254,36 +1254,36 @@ class LightRAG:
         """
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query(
-                query.strip(),
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
+                query=query.strip(),
+                knowledge_graph_inst=self.chunk_entity_relation_graph,
+                entities_vdb=self.entities_vdb,
+                relationships_vdb=self.relationships_vdb,
+                text_chunks_db=self.text_chunks,
+                query_param=param,
+                llm_model_func=self.llm_model_func,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         elif param.mode == "naive":
             response = await naive_query(
-                query.strip(),
-                self.chunks_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
+                query=query.strip(),
+                chunks_vdb=self.chunks_vdb,
+                text_chunks_db=self.text_chunks,
+                query_param=param,
+                llm_model_func=self.llm_model_func,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         elif param.mode == "mix":
             response = await mix_kg_vector_query(
-                query.strip(),
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.chunks_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
+                query=query.strip(),
+                knowledge_graph_inst=self.chunk_entity_relation_graph,
+                entities_vdb=self.entities_vdb,
+                relationships_vdb=self.relationships_vdb,
+                chunks_vdb=self.chunks_vdb,
+                text_chunks_db=self.text_chunks,
+                query_param=param,
+                llm_model_func=self.llm_model_func,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
@@ -1317,7 +1317,7 @@ class LightRAG:
         hl_keywords, ll_keywords = await extract_keywords_only(
             text=query,
             param=param,
-            global_config=asdict(self),
+            llm_model_func=self.llm_model_func,
             hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
         )
 
@@ -1335,34 +1335,34 @@ class LightRAG:
 
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query_with_keywords(
-                formatted_question,
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
+                query=formatted_question,
+                knowledge_graph_inst=self.chunk_entity_relation_graph,
+                entities_vdb=self.entities_vdb,
+                relationships_vdb=self.relationships_vdb,
+                text_chunks_db=self.text_chunks,
+                query_param=param,
+                llm_model_func=self.llm_model_func,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
             )
         elif param.mode == "naive":
             response = await naive_query(
-                formatted_question,
-                self.chunks_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
+                query=formatted_question,
+                chunks_vdb=self.chunks_vdb,
+                text_chunks_db=self.text_chunks,
+                query_param=param,
+                llm_model_func=self.llm_model_func,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
             )
         elif param.mode == "mix":
             response = await mix_kg_vector_query(
-                formatted_question,
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.chunks_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
+                query=formatted_question,
+                knowledge_graph_inst=self.chunk_entity_relation_graph,
+                entities_vdb=self.entities_vdb,
+                relationships_vdb=self.relationships_vdb,
+                chunks_vdb=self.chunks_vdb,
+                text_chunks_db=self.text_chunks,
+                query_param=param,
+                llm_model_func=self.llm_model_func,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
             )
         else:
