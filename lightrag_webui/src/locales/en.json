@@ -8,8 +8,8 @@
     "themeToggle": {
       "switchToLight": "Switch to light theme",
       "switchToDark": "Switch to dark theme"
-    }     
-  },  
+    }
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "Clear",
@@ -20,7 +20,7 @@
       "success": "Documents cleared successfully",
       "failed": "Clear Documents Failed:\n{{message}}",
       "error": "Clear Documents Failed:\n{{error}}"
-    },    
+    },
     "uploadDocuments": {
       "button": "Upload",
       "tooltip": "Upload documents",
@@ -32,7 +32,7 @@
       "error": "Upload Failed:\n{{name}}\n{{error}}",
       "generalError": "Upload Failed\n{{error}}",
       "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
-    },    
+    },
     "documentManager": {
       "title": "Document Management",
       "scanButton": "Scan",
@@ -81,7 +81,7 @@
         "maxLayoutIterations": "Max Layout Iterations",
         "apiKey": "API Key",
         "enterYourAPIkey": "Enter your API key",
-        "save": "Save"      
+        "save": "Save"
       },
 
       "zoomControl": {
@@ -107,7 +107,7 @@
       "fullScreenControl": {
         "fullScreen": "Full Screen",
         "windowed": "Windowed"
-      }      
+      }
     },
     "statusIndicator": {
       "connected": "Connected",
@@ -149,7 +149,7 @@
         "source": "Source",
         "target": "Target",
         "properties": "Properties"
-      }      
+      }
     },
     "search": {
       "placeholder": "Search nodes...",
@@ -161,7 +161,7 @@
       "label": "Label",
       "placeholder": "Search labels...",
       "andOthers": "And {count} others"
-    }        
+    }
   },
   "retrievePanel": {
     "chatMessage": {
@@ -229,6 +229,6 @@
 
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses"
-    }   
-  } 
+    }
+  }
 }

@@ -119,7 +119,7 @@ export default function RetrievalTesting() {
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               {messages.length === 0 ? (
                 <div className="text-muted-foreground flex h-full items-center justify-center text-lg">
-                  {t('retrievePanel.retrieval.startPrompt')} 
+                  {t('retrievePanel.retrieval.startPrompt')}
                 </div>
               ) : (
                 messages.map((message, idx) => (

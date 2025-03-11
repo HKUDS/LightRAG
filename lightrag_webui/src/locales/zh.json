@@ -8,8 +8,8 @@
     "themeToggle": {
       "switchToLight": "切换到亮色主题",
       "switchToDark": "切换到暗色主题"
-    }    
-  },  
+    }
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "清除",
@@ -103,11 +103,11 @@
           "Force Atlas": "力导向图谱布局"
         }
       },
-      
+
       "fullScreenControl": {
         "fullScreen": "全屏",
         "windowed": "窗口模式"
-      }      
+      }
     },
     "statusIndicator": {
       "connected": "已连接",
@@ -149,7 +149,7 @@
         "source": "源",
         "target": "目标",
         "properties": "属性"
-      } 
+      }
     },
     "search": {
       "placeholder": "搜索节点...",
@@ -161,7 +161,7 @@
       "label": "标签",
       "placeholder": "搜索标签...",
       "andOthers": "以及其它 {count} 个"
-    }    
+    }
   },
   "retrievePanel": {
     "chatMessage": {
@@ -231,6 +231,5 @@
       "streamResponse": "流式响应",
       "streamResponseTooltip": "如果为 True，则启用流式输出以获得实时响应"
     }
-  }  
+  }
 }
-  
