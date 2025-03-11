@@ -6,6 +6,7 @@ import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
+type Language = 'en' | 'zh'
 
 interface SettingsState {
   // Graph viewer settings
@@ -46,6 +47,9 @@ interface SettingsState {
   theme: Theme
   setTheme: (theme: Theme) => void
 
+  language: Language
+  setLanguage: (language: Language) => void
+
   enableHealthCheck: boolean
   setEnableHealthCheck: (enable: boolean) => void
 
@@ -57,6 +61,7 @@ const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
       theme: 'system',
+      language: 'en',
 
       showPropertyPanel: true,
       showNodeSearchBar: true,
@@ -98,6 +103,8 @@ const useSettingsStoreBase = create<SettingsState>()(
       },
 
       setTheme: (theme: Theme) => set({ theme }),
+
+      setLanguage: (language: Language) => set({ language }),
 
       setGraphLayoutMaxIterations: (iterations: number) =>
         set({

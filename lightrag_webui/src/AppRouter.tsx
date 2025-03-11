@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import App from './App'
 import LoginPage from '@/features/LoginPage'
+import ThemeProvider from '@/components/ThemeProvider'
 
 interface ProtectedRouteProps {
   children: React.ReactNode
@@ -20,20 +21,22 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
 
 const AppRouter = () => {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route
-          path="/*"
-          element={
-            <ProtectedRoute>
-              <App />
-            </ProtectedRoute>
-          }
-        />
-      </Routes>
-      <Toaster position="top-center" />
-    </BrowserRouter>
+    <ThemeProvider>
+      <BrowserRouter>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/*"
+            element={
+              <ProtectedRoute>
+                <App />
+              </ProtectedRoute>
+            }
+          />
+        </Routes>
+        <Toaster position="top-center" />
+      </BrowserRouter>
+    </ThemeProvider>
   )
 }
 

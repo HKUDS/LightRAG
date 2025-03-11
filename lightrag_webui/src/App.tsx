@@ -1,5 +1,4 @@
 import { useState, useCallback } from 'react'
-import ThemeProvider from '@/components/ThemeProvider'
 import MessageAlert from '@/components/MessageAlert'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/graph/StatusIndicator'
@@ -52,7 +51,6 @@ function App() {
   }, [message, setApiKeyInvalid])
 
   return (
-    <ThemeProvider>
       <main className="flex h-screen w-screen overflow-x-hidden">
         <Tabs
           defaultValue={currentTab}
@@ -79,7 +77,6 @@ function App() {
         {message !== null && !apiKeyInvalid && <MessageAlert />}
         {apiKeyInvalid && <ApiKeyAlert />}
       </main>
-    </ThemeProvider>
   )
 }
 

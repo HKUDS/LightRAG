@@ -1,6 +1,7 @@
 import Button from '@/components/ui/Button'
 import { SiteInfo } from '@/lib/constants'
 import ThemeToggle from '@/components/ThemeToggle'
+import LanguageToggle from '@/components/LanguageToggle'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
@@ -82,6 +83,7 @@ export default function SiteHeader() {
             <GithubIcon className="size-4" aria-hidden="true" />
           </a>
         </Button>
+        <LanguageToggle />
         <ThemeToggle />
         <Button
           variant="ghost"
