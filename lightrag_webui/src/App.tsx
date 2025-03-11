@@ -7,7 +7,6 @@ import { healthCheckInterval } from '@/lib/constants'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { useEffect } from 'react'
-import { Toaster } from 'sonner'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 
@@ -79,7 +78,6 @@ function App() {
         {enableHealthCheck && <StatusIndicator />}
         {message !== null && !apiKeyInvalid && <MessageAlert />}
         {apiKeyInvalid && <ApiKeyAlert />}
-        <Toaster />
       </main>
     </ThemeProvider>
   )

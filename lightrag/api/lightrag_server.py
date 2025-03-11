@@ -373,7 +373,7 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")
 
-    @app.post("/login")
+    @app.post("/login", dependencies=[Depends(optional_api_key)])
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         username = os.getenv("AUTH_USERNAME")
         password = os.getenv("AUTH_PASSWORD")

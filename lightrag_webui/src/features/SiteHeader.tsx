@@ -3,9 +3,11 @@ import { SiteInfo } from '@/lib/constants'
 import ThemeToggle from '@/components/ThemeToggle'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
+import { useNavigate } from 'react-router-dom'
 
-import { ZapIcon, GithubIcon } from 'lucide-react'
+import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
 
 interface NavigationTabProps {
   value: string
@@ -51,6 +53,14 @@ function TabsNavigation() {
 }
 
 export default function SiteHeader() {
+  const navigate = useNavigate()
+  const { logout } = useAuthStore()
+
+  const handleLogout = () => {
+    logout()
+    navigate('/login')
+  }
+
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
       <a href="/" className="mr-6 flex items-center gap-2">
@@ -63,13 +73,22 @@ export default function SiteHeader() {
         <TabsNavigation />
       </div>
 
-      <nav className="flex items-center">
+      <nav className="flex items-center gap-2">
         <Button variant="ghost" size="icon" side="bottom" tooltip="Project Repository">
           <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
             <GithubIcon className="size-4" aria-hidden="true" />
           </a>
         </Button>
         <ThemeToggle />
+        <Button
+          variant="ghost"
+          size="icon"
+          side="bottom"
+          tooltip="Log Out"
+          onClick={handleLogout}
+        >
+          <LogOutIcon className="size-4" aria-hidden="true" />
+        </Button>
       </nav>
     </header>
   )
