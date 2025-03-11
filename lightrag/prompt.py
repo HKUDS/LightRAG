@@ -236,7 +236,7 @@ Given the query and conversation history, list both high-level and low-level key
 ---Instructions---
 
 - Consider both the current query and relevant conversation history when extracting keywords
-- Output the keywords in JSON format
+- Output the keywords in JSON format, it will be parsed by a JSON parser, do not add any extra content in output
 - The JSON should have two keys:
   - "high_level_keywords" for overarching concepts or themes
   - "low_level_keywords" for specific entities or details
