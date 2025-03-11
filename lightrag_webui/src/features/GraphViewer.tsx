@@ -17,6 +17,7 @@ import Settings from '@/components/graph/Settings'
 import GraphSearch from '@/components/graph/GraphSearch'
 import GraphLabels from '@/components/graph/GraphLabels'
 import PropertiesView from '@/components/graph/PropertiesView'
+import SettingsDisplay from '@/components/graph/SettingsDisplay'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -178,6 +179,8 @@ const GraphViewer = () => {
       {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
         <MiniMap width="100px" height="100px" />
       </div> */}
+
+      <SettingsDisplay />
     </SigmaContainer>
   )
 }
