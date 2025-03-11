@@ -1073,6 +1073,59 @@ class MongoVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error searching by prefix in {self.namespace}: {str(e)}")
             return []
 
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        try:
+            # Search for the specific ID in MongoDB
+            result = await self._data.find_one({"_id": id})
+            if result:
+                # Format the result to include id field expected by API
+                result_dict = dict(result)
+                if "_id" in result_dict and "id" not in result_dict:
+                    result_dict["id"] = result_dict["_id"]
+                return result_dict
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        try:
+            # Query MongoDB for multiple IDs
+            cursor = self._data.find({"_id": {"$in": ids}})
+            results = await cursor.to_list(length=None)
+
+            # Format results to include id field expected by API
+            formatted_results = []
+            for result in results:
+                result_dict = dict(result)
+                if "_id" in result_dict and "id" not in result_dict:
+                    result_dict["id"] = result_dict["_id"]
+                formatted_results.append(result_dict)
+
+            return formatted_results
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
+            return []
+
 
 async def get_or_create_collection(db: AsyncIOMotorDatabase, collection_name: str):
     collection_names = await db.list_collection_names()

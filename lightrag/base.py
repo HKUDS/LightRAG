@@ -127,6 +127,30 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete relations for a given entity."""
 
+    @abstractmethod
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        pass
+
 
 @dataclass
 class BaseKVStorage(StorageNameSpace, ABC):
