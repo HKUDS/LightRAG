@@ -37,7 +37,7 @@ export default function QuerySettings() {
             <>
               <Text
                 className="ml-1"
-                text={t('retrievePanel.querySettings.queryMode')} 
+                text={t('retrievePanel.querySettings.queryMode')}
                 tooltip={t('retrievePanel.querySettings.queryModeTooltip')}
                 side="left"
               />
