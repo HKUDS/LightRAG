@@ -186,9 +186,14 @@ const useLightrangeGraph = () => {
 
   useEffect(() => {
     if (queryLabel) {
-      if (lastQueryLabel.label !== queryLabel ||
-          lastQueryLabel.maxQueryDepth !== maxQueryDepth ||
-          lastQueryLabel.minDegree !== minDegree) {
+      // Always fetch data for "*" label
+      // For other labels, only fetch when parameters change
+      const shouldUpdate = queryLabel === '*' ||
+        lastQueryLabel.label !== queryLabel ||
+        lastQueryLabel.maxQueryDepth !== maxQueryDepth ||
+        lastQueryLabel.minDegree !== minDegree;
+
+      if (shouldUpdate) {
         lastQueryLabel.label = queryLabel
         lastQueryLabel.maxQueryDepth = maxQueryDepth
         lastQueryLabel.minDegree = minDegree

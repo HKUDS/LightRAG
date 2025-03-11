@@ -64,7 +64,7 @@ const GraphLabels = () => {
       let result: string[] = labels
       if (query) {
         // Search labels
-        result = searchEngine.search(query).map((r) => labels[r.id])
+        result = searchEngine.search(query).map((r: { id: number }) => labels[r.id])
       }
 
       return result.length <= labelListLimit
