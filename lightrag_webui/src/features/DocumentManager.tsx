@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { useTranslation } from 'react-i18next'
 import Button from '@/components/ui/Button'
 import {
   Table,
@@ -22,6 +23,7 @@ import { useBackendState } from '@/stores/state'
 import { RefreshCwIcon } from 'lucide-react'
 
 export default function DocumentManager() {
+  const { t } = useTranslation()
   const health = useBackendState.use.health()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
 
@@ -44,7 +46,7 @@ export default function DocumentManager() {
         setDocs(null)
       }
     } catch (err) {
-      toast.error('Failed to load documents\n' + errorMessage(err))
+      toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
     }
   }, [setDocs])
 
@@ -57,7 +59,7 @@ export default function DocumentManager() {
       const { status } = await scanNewDocuments()
       toast.message(status)
     } catch (err) {
-      toast.error('Failed to load documents\n' + errorMessage(err))
+      toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }))
     }
   }, [])
 
@@ -69,7 +71,7 @@ export default function DocumentManager() {
       try {
         await fetchDocuments()
       } catch (err) {
-        toast.error('Failed to get scan progress\n' + errorMessage(err))
+        toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
       }
     }, 5000)
     return () => clearInterval(interval)
@@ -78,7 +80,7 @@ export default function DocumentManager() {
   return (
     <Card className="!size-full !rounded-none !border-none">
       <CardHeader>
-        <CardTitle className="text-lg">Document Management</CardTitle>
+        <CardTitle className="text-lg">{t('documentPanel.documentManager.title')}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex gap-2">
@@ -86,10 +88,10 @@ export default function DocumentManager() {
             variant="outline"
             onClick={scanDocuments}
             side="bottom"
-            tooltip="Scan documents"
+            tooltip={t('documentPanel.documentManager.scanTooltip')}
             size="sm"
           >
-            <RefreshCwIcon /> Scan
+            <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
           </Button>
           <div className="flex-1" />
           <ClearDocumentsDialog />
@@ -98,29 +100,29 @@ export default function DocumentManager() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Uploaded documents</CardTitle>
-            <CardDescription>view the uploaded documents here</CardDescription>
+            <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
+            <CardDescription>{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
 
           <CardContent>
             {!docs && (
               <EmptyCard
-                title="No documents uploaded"
-                description="upload documents to see them here"
+                title={t('documentPanel.documentManager.emptyTitle')}
+                description={t('documentPanel.documentManager.emptyDescription')}
               />
             )}
             {docs && (
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>ID</TableHead>
-                    <TableHead>Summary</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Length</TableHead>
-                    <TableHead>Chunks</TableHead>
-                    <TableHead>Created</TableHead>
-                    <TableHead>Updated</TableHead>
-                    <TableHead>Metadata</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
+                    <TableHead>{t('documentPanel.documentManager.columns.metadata')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody className="text-sm">
@@ -137,13 +139,13 @@ export default function DocumentManager() {
                         </TableCell>
                         <TableCell>
                           {status === 'processed' && (
-                            <span className="text-green-600">Completed</span>
+                            <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
                           )}
                           {status === 'processing' && (
-                            <span className="text-blue-600">Processing</span>
+                            <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
                           )}
-                          {status === 'pending' && <span className="text-yellow-600">Pending</span>}
-                          {status === 'failed' && <span className="text-red-600">Failed</span>}
+                          {status === 'pending' && <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>}
+                          {status === 'failed' && <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>}
                           {doc.error && (
                             <span className="ml-2 text-red-500" title={doc.error}>
                               ⚠️
