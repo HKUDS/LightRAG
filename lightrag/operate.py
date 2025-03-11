@@ -1919,7 +1919,7 @@ async def query_with_keywords(
     relationships_vdb: BaseVectorStorage,
     chunks_vdb: BaseVectorStorage,
     text_chunks_db: BaseKVStorage,
-    global_config: dict[str, str],
+    llm_model_func: Callable[..., object] | None,
     hashing_kv: BaseKVStorage | None = None,
 ) -> str | AsyncIterator[str]:
     """
@@ -1938,7 +1938,7 @@ async def query_with_keywords(
         relationships_vdb: Relationships vector database
         chunks_vdb: Document chunks vector database
         text_chunks_db: Text chunks storage
-        global_config: Global configuration
+        llm_model_func: LLM model function
         hashing_kv: Cache storage
 
     Returns:
@@ -1948,7 +1948,7 @@ async def query_with_keywords(
     hl_keywords, ll_keywords = await extract_keywords_only(
         text=query,
         param=param,
-        global_config=global_config,
+        llm_model_func=llm_model_func,
         hashing_kv=hashing_kv,
     )
 
@@ -1969,7 +1969,7 @@ async def query_with_keywords(
             relationships_vdb,
             text_chunks_db,
             param,
-            global_config,
+            llm_model_func,
             hashing_kv=hashing_kv,
         )
     elif param.mode == "naive":
@@ -1978,7 +1978,7 @@ async def query_with_keywords(
             chunks_vdb,
             text_chunks_db,
             param,
-            global_config,
+            llm_model_func,
             hashing_kv=hashing_kv,
         )
     elif param.mode == "mix":
@@ -1990,7 +1990,7 @@ async def query_with_keywords(
             chunks_vdb,
             text_chunks_db,
             param,
-            global_config,
+            llm_model_func,
             hashing_kv=hashing_kv,
         )
     else:
