@@ -938,7 +938,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
         return list_data
 
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Queries the vector database using Atlas Vector Search."""
         # Generate the embedding
         embedding = await self.embedding_func([query])
