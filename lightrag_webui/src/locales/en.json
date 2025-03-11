@@ -10,6 +10,18 @@
       "switchToDark": "Switch to dark theme"
     }
   },
+  "login": {
+    "description": "Please enter your account and password to log in to the system",
+    "username": "Username",
+    "usernamePlaceholder": "Please input a username",
+    "password": "Password",
+    "passwordPlaceholder": "Please input a password",
+    "loginButton": "Login",
+    "loggingIn": "Logging in...",
+    "successMessage": "Login succeeded",
+    "errorEmptyFields": "Please enter your username and password",
+    "errorInvalidCredentials": "Login failed, please check username and password"
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "Clear",
