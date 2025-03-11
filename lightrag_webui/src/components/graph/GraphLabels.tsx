@@ -1,35 +1,15 @@
 import { useCallback } from 'react'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
-import { getGraphLabels } from '@/api/lightrag'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
 import { labelListLimit } from '@/lib/constants'
 import MiniSearch from 'minisearch'
 
-const lastGraph: any = {
-  graph: null,
-  searchEngine: null,
-  labels: []
-}
-
 const GraphLabels = () => {
   const label = useSettingsStore.use.queryLabel()
-  const graph = useGraphStore.use.sigmaGraph()
+  const graphLabels = useGraphStore.use.graphLabels()
 
-  const getSearchEngine = useCallback(async () => {
-    if (lastGraph.graph == graph) {
-      return {
-        labels: lastGraph.labels,
-        searchEngine: lastGraph.searchEngine
-      }
-    }
-    const labels = ['*'].concat(await getGraphLabels())
-
-    // Ensure query label exists
-    if (!labels.includes(useSettingsStore.getState().queryLabel)) {
-      useSettingsStore.getState().setQueryLabel(labels[0])
-    }
-
+  const getSearchEngine = useCallback(() => {
     // Create search engine
     const searchEngine = new MiniSearch({
       idField: 'id',
@@ -44,22 +24,18 @@ const GraphLabels = () => {
     })
 
     // Add documents
-    const documents = labels.map((str, index) => ({ id: index, value: str }))
+    const documents = graphLabels.map((str, index) => ({ id: index, value: str }))
     searchEngine.addAll(documents)
 
-    lastGraph.graph = graph
-    lastGraph.searchEngine = searchEngine
-    lastGraph.labels = labels
-
     return {
-      labels,
+      labels: graphLabels,
       searchEngine
     }
-  }, [graph])
+  }, [graphLabels])
 
   const fetchData = useCallback(
     async (query?: string): Promise<string[]> => {
-      const { labels, searchEngine } = await getSearchEngine()
+      const { labels, searchEngine } = getSearchEngine()
 
       let result: string[] = labels
       if (query) {
