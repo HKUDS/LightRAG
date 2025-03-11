@@ -10,6 +10,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
 
 import { SettingsIcon } from 'lucide-react'
+import { useTranslation } from "react-i18next";
 
 /**
  * Component that displays a checkbox with a label.
@@ -204,10 +205,12 @@ export default function Settings() {
     [setTempApiKey]
   )
 
+  const { t } = useTranslation();
+
   return (
     <Popover open={opened} onOpenChange={setOpened}>
       <PopoverTrigger asChild>
-        <Button variant={controlButtonVariant} tooltip="Settings" size="icon">
+        <Button variant={controlButtonVariant} tooltip={t("graphPanel.sideBar.settings.settings")} size="icon">
           <SettingsIcon />
         </Button>
       </PopoverTrigger>
@@ -221,7 +224,7 @@ export default function Settings() {
           <LabeledCheckBox
             checked={enableHealthCheck}
             onCheckedChange={setEnableHealthCheck}
-            label="Health Check"
+            label={t("graphPanel.sideBar.settings.healthCheck")}
           />
 
           <Separator />
@@ -229,12 +232,12 @@ export default function Settings() {
           <LabeledCheckBox
             checked={showPropertyPanel}
             onCheckedChange={setShowPropertyPanel}
-            label="Show Property Panel"
+            label={t("graphPanel.sideBar.settings.showPropertyPanel")}
           />
           <LabeledCheckBox
             checked={showNodeSearchBar}
             onCheckedChange={setShowNodeSearchBar}
-            label="Show Search Bar"
+            label={t("graphPanel.sideBar.settings.showSearchBar")}
           />
 
           <Separator />
@@ -242,12 +245,12 @@ export default function Settings() {
           <LabeledCheckBox
             checked={showNodeLabel}
             onCheckedChange={setShowNodeLabel}
-            label="Show Node Label"
+            label={t("graphPanel.sideBar.settings.showNodeLabel")}
           />
           <LabeledCheckBox
             checked={enableNodeDrag}
             onCheckedChange={setEnableNodeDrag}
-            label="Node Draggable"
+            label={t("graphPanel.sideBar.settings.nodeDraggable")}
           />
 
           <Separator />
@@ -255,51 +258,50 @@ export default function Settings() {
           <LabeledCheckBox
             checked={showEdgeLabel}
             onCheckedChange={setShowEdgeLabel}
-            label="Show Edge Label"
+            label={t("graphPanel.sideBar.settings.showEdgeLabel")}
           />
           <LabeledCheckBox
             checked={enableHideUnselectedEdges}
             onCheckedChange={setEnableHideUnselectedEdges}
-            label="Hide Unselected Edges"
+            label={t("graphPanel.sideBar.settings.hideUnselectedEdges")}
           />
           <LabeledCheckBox
             checked={enableEdgeEvents}
             onCheckedChange={setEnableEdgeEvents}
-            label="Edge Events"
+            label={t("graphPanel.sideBar.settings.edgeEvents")}
           />
 
           <Separator />
           <LabeledNumberInput
-            label="Max Query Depth"
+            label={t("graphPanel.sideBar.settings.maxQueryDepth")}
             min={1}
             value={graphQueryMaxDepth}
             onEditFinished={setGraphQueryMaxDepth}
           />
           <LabeledNumberInput
-            label="Minimum Degree"
+            label={t("graphPanel.sideBar.settings.minDegree")}
             min={0}
             value={graphMinDegree}
             onEditFinished={setGraphMinDegree}
           />
           <LabeledNumberInput
-            label="Max Layout Iterations"
+            label={t("graphPanel.sideBar.settings.maxLayoutIterations")}
             min={1}
             max={20}
             value={graphLayoutMaxIterations}
             onEditFinished={setGraphLayoutMaxIterations}
           />
-
           <Separator />
 
           <div className="flex flex-col gap-2">
-            <label className="text-sm font-medium">API Key</label>
+            <label className="text-sm font-medium">{t("graphPanel.sideBar.settings.apiKey")}</label>
             <form className="flex h-6 gap-2" onSubmit={(e) => e.preventDefault()}>
               <div className="w-0 flex-1">
                 <Input
                   type="password"
                   value={tempApiKey}
                   onChange={handleTempApiKeyChange}
-                  placeholder="Enter your API key"
+                  placeholder={t("graphPanel.sideBar.settings.enterYourAPIkey")}
                   className="max-h-full w-full min-w-0"
                   autoComplete="off"
                 />
@@ -310,7 +312,7 @@ export default function Settings() {
                 size="sm"
                 className="max-h-full shrink-0"
               >
-                Save
+                {t("graphPanel.sideBar.settings.save")}
               </Button>
             </form>
           </div>
