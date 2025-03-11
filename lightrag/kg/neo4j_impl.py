@@ -744,11 +744,7 @@ class Neo4JStorage(BaseGraphStorage):
                                 result.nodes.append(
                                     KnowledgeGraphNode(
                                         id=f"{node_id}",
-                                        labels=[
-                                            label
-                                            for label in node.labels
-                                            if label != "base"
-                                        ],
+                                        labels=[node.get("entity_id")],
                                         properties=dict(node),
                                     )
                                 )
@@ -865,9 +861,7 @@ class Neo4JStorage(BaseGraphStorage):
                             # Create KnowledgeGraphNode for target
                             target_node = KnowledgeGraphNode(
                                 id=f"{target_id}",
-                                labels=[
-                                    label for label in b_node.labels if label != "base"
-                                ],
+                                labels=list(f"{target_id}"),
                                 properties=dict(b_node.properties),
                             )
 
@@ -907,9 +901,7 @@ class Neo4JStorage(BaseGraphStorage):
                 # Create initial KnowledgeGraphNode
                 start_node = KnowledgeGraphNode(
                     id=f"{node_record['n'].get('entity_id')}",
-                    labels=[
-                        label for label in node_record["n"].labels if label != "base"
-                    ],
+                    labels=list(f"{node_record['n'].get('entity_id')}"),
                     properties=dict(node_record["n"].properties),
                 )
             finally:
