@@ -1917,6 +1917,7 @@ async def kg_query_with_keywords(
 
     return response
 
+
 async def query_with_keywords(
     query: str,
     prompt: str,
@@ -1931,11 +1932,11 @@ async def query_with_keywords(
 ) -> str | AsyncIterator[str]:
     """
     Extract keywords from the query and then use them for retrieving information.
-    
+
     1. Extracts high-level and low-level keywords from the query
     2. Formats the query with the extracted keywords and prompt
     3. Uses the appropriate query method based on param.mode
-    
+
     Args:
         query: The user's query
         prompt: Additional prompt to prepend to the query
@@ -1947,7 +1948,7 @@ async def query_with_keywords(
         text_chunks_db: Text chunks storage
         global_config: Global configuration
         hashing_kv: Cache storage
-        
+
     Returns:
         Query response or async iterator
     """
