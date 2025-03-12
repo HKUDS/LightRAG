@@ -11,8 +11,8 @@ i18n
       en: { translation: en },
       zh: { translation: zh }
     },
-    lng: 'zh', // default
-    fallbackLng: 'zh',
+    lng: 'en', // default
+    fallbackLng: 'en',
     interpolation: {
       escapeValue: false
     }
