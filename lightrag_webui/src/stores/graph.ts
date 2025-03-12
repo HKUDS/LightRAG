@@ -93,7 +93,7 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   rawGraph: null,
   sigmaGraph: null,
-  graphLabels: [],
+  graphLabels: ['*'],
 
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
@@ -115,7 +115,7 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       focusedEdge: null,
       rawGraph: null,
       sigmaGraph: null,
-      graphLabels: [],
+      graphLabels: ['*'],
       moveToSelectedNode: false
     }),
 
