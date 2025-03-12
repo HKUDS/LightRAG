@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { DirectedGraph } from 'graphology'
+import { getGraphLabels } from '@/api/lightrag'
 
 export type RawNodeType = {
   id: string
@@ -66,8 +67,10 @@ interface GraphState {
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
   graphLabels: string[]
+  allDatabaseLabels: string[]
 
   moveToSelectedNode: boolean
+  isFetching: boolean
 
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
   setFocusedNode: (nodeId: string | null) => void
@@ -81,6 +84,9 @@ interface GraphState {
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
   setGraphLabels: (labels: string[]) => void
+  setAllDatabaseLabels: (labels: string[]) => void
+  fetchAllDatabaseLabels: () => Promise<void>
+  setIsFetching: (isFetching: boolean) => void
 }
 
 const useGraphStoreBase = create<GraphState>()((set) => ({
@@ -90,11 +96,14 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   focusedEdge: null,
 
   moveToSelectedNode: false,
+  isFetching: false,
 
   rawGraph: null,
   sigmaGraph: null,
   graphLabels: ['*'],
+  allDatabaseLabels: ['*'],
 
+  setIsFetching: (isFetching: boolean) => set({ isFetching }),
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
   setFocusedNode: (nodeId: string | null) => set({ focusedNode: nodeId }),
@@ -125,8 +134,20 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
     }),
 
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => set({ sigmaGraph }),
-  
+
   setGraphLabels: (labels: string[]) => set({ graphLabels: labels }),
+
+  setAllDatabaseLabels: (labels: string[]) => set({ allDatabaseLabels: labels }),
+
+  fetchAllDatabaseLabels: async () => {
+    try {
+      const labels = await getGraphLabels();
+      set({ allDatabaseLabels: ['*', ...labels] });
+    } catch (error) {
+      console.error('Failed to fetch all database labels:', error);
+      set({ allDatabaseLabels: ['*'] });
+    }
+  },
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode })
 }))

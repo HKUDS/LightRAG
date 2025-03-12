@@ -9,10 +9,10 @@ import { useTranslation } from 'react-i18next'
 export default function AppSettings() {
   const [opened, setOpened] = useState<boolean>(false)
   const { t } = useTranslation()
-  
+
   const language = useSettingsStore.use.language()
   const setLanguage = useSettingsStore.use.setLanguage()
-  
+
   const theme = useSettingsStore.use.theme()
   const setTheme = useSettingsStore.use.setTheme()
 

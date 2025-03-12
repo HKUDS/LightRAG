@@ -34,10 +34,10 @@ export default function ThemeProvider({ children, ...props }: ThemeProviderProps
         root.classList.remove('light', 'dark')
         root.classList.add(e.matches ? 'dark' : 'light')
       }
-      
+
       root.classList.add(mediaQuery.matches ? 'dark' : 'light')
       mediaQuery.addEventListener('change', handleChange)
-      
+
       return () => mediaQuery.removeEventListener('change', handleChange)
     } else {
       root.classList.add(theme)
