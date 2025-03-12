@@ -661,7 +661,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH collect({node: n}) AS filtered_nodes
                     UNWIND filtered_nodes AS node_info
                     WITH collect(node_info.node) AS kept_nodes, filtered_nodes
-                    MATCH (a)-[r]-(b)
+                    OPTIONAL MATCH (a)-[r]-(b)
                     WHERE a IN kept_nodes AND b IN kept_nodes
                     RETURN filtered_nodes AS node_info,
                            collect(DISTINCT r) AS relationships
@@ -704,7 +704,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH collect({node: node}) AS filtered_nodes
                     UNWIND filtered_nodes AS node_info
                     WITH collect(node_info.node) AS kept_nodes, filtered_nodes
-                    MATCH (a)-[r]-(b)
+                    OPTIONAL MATCH (a)-[r]-(b)
                     WHERE a IN kept_nodes AND b IN kept_nodes
                     RETURN filtered_nodes AS node_info,
                            collect(DISTINCT r) AS relationships
