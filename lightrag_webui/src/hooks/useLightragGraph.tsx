@@ -169,6 +169,11 @@ const useLightrangeGraph = () => {
   const minDegree = useSettingsStore.use.graphMinDegree()
   const isFetching = useGraphStore.use.isFetching()
 
+  // Fetch all database labels on mount
+  useEffect(() => {
+    useGraphStore.getState().fetchAllDatabaseLabels()
+  }, [])
+
   // Use ref to track fetch status
   const fetchStatusRef = useRef<Record<string, boolean>>({});
 
@@ -222,7 +227,7 @@ const useLightrangeGraph = () => {
           state.setSigmaGraph(newSigmaGraph)
           state.setRawGraph(data)
 
-          // Extract labels from graph data
+          // Extract labels from current graph data
           if (data) {
             const labelSet = new Set<string>();
             for (const node of data.nodes) {
@@ -241,6 +246,9 @@ const useLightrangeGraph = () => {
             // Ensure * is there eventhough there is no graph data
             state.setGraphLabels(['*']);
           }
+
+          // Fetch all database labels after graph update
+          state.fetchAllDatabaseLabels();
           if (!data) {
             // If data is invalid, remove the fetch flag to allow retry
             delete fetchStatusRef.current[fetchKey];
