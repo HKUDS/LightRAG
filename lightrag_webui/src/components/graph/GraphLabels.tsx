@@ -49,7 +49,7 @@ const GraphLabels = () => {
         ? result
         : [...result.slice(0, labelListLimit), t('graphLabels.andOthers', { count: result.length - labelListLimit })]
     },
-    [getSearchEngine]
+    [getSearchEngine, t]
   )
 
   const setQueryLabel = useCallback((newLabel: string) => {
