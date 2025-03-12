@@ -1,4 +1,11 @@
 {
+  "settings": {
+    "language": "Language",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
   "header": {
     "documents": "Documents",
     "knowledgeGraph": "Knowledge Graph",

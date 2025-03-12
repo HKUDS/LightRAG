@@ -6,6 +6,7 @@ import { Message, QueryRequest } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
 
 type Theme = 'dark' | 'light' | 'system'
+type Language = 'en' | 'zh'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
 
 interface SettingsState {
@@ -48,6 +49,9 @@ interface SettingsState {
   theme: Theme
   setTheme: (theme: Theme) => void
 
+  language: Language
+  setLanguage: (lang: Language) => void
+
   enableHealthCheck: boolean
   setEnableHealthCheck: (enable: boolean) => void
 
@@ -59,6 +63,7 @@ const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
       theme: 'system',
+      language: 'zh',
       refreshLayout: () => {
         const graphState = useGraphStore.getState();
         const currentGraph = graphState.sigmaGraph;
@@ -109,6 +114,13 @@ const useSettingsStoreBase = create<SettingsState>()(
       },
 
       setTheme: (theme: Theme) => set({ theme }),
+
+      setLanguage: (language: Language) => {
+        import('i18next').then(({ default: i18n }) => {
+          i18n.changeLanguage(language);
+        });
+        set({ language });
+      },
 
       setGraphLayoutMaxIterations: (iterations: number) =>
         set({
