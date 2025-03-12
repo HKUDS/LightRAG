@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useGraphStore, RawNodeType, RawEdgeType } from '@/stores/graph'
 import Text from '@/components/ui/Text'
 import useLightragGraph from '@/hooks/useLightragGraph'
+import { useTranslation } from 'react-i18next'
 
 /**
  * Component that view properties of elements in graph.
@@ -147,21 +148,22 @@ const PropertyRow = ({
 }
 
 const NodePropertiesView = ({ node }: { node: NodeType }) => {
+  const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-md pl-1 font-bold tracking-wide text-sky-300">Node</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-sky-300">{t('graphPanel.propertiesView.node.title')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
-        <PropertyRow name={'Id'} value={node.id} />
+        <PropertyRow name={t('graphPanel.propertiesView.node.id')} value={node.id} />
         <PropertyRow
-          name={'Labels'}
+          name={t('graphPanel.propertiesView.node.labels')}
           value={node.labels.join(', ')}
           onClick={() => {
             useGraphStore.getState().setSelectedNode(node.id, true)
           }}
         />
-        <PropertyRow name={'Degree'} value={node.degree} />
+        <PropertyRow name={t('graphPanel.propertiesView.node.degree')} value={node.degree} />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">Properties</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">{t('graphPanel.propertiesView.node.properties')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(node.properties)
           .sort()
@@ -172,7 +174,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
       {node.relationships.length > 0 && (
         <>
           <label className="text-md pl-1 font-bold tracking-wide text-teal-600/90">
-            Relationships
+            {t('graphPanel.propertiesView.node.relationships')}
           </label>
           <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
             {node.relationships.map(({ type, id, label }) => {
@@ -195,28 +197,29 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
 }
 
 const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
+  const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-md pl-1 font-bold tracking-wide text-teal-600">Relationship</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-teal-600">{t('graphPanel.propertiesView.edge.title')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
-        <PropertyRow name={'Id'} value={edge.id} />
-        {edge.type && <PropertyRow name={'Type'} value={edge.type} />}
+        <PropertyRow name={t('graphPanel.propertiesView.edge.id')} value={edge.id} />
+        {edge.type && <PropertyRow name={t('graphPanel.propertiesView.edge.type')} value={edge.type} />}
         <PropertyRow
-          name={'Source'}
+          name={t('graphPanel.propertiesView.edge.source')}
           value={edge.sourceNode ? edge.sourceNode.labels.join(', ') : edge.source}
           onClick={() => {
             useGraphStore.getState().setSelectedNode(edge.source, true)
           }}
         />
         <PropertyRow
-          name={'Target'}
+          name={t('graphPanel.propertiesView.edge.target')}
           value={edge.targetNode ? edge.targetNode.labels.join(', ') : edge.target}
           onClick={() => {
             useGraphStore.getState().setSelectedNode(edge.target, true)
           }}
         />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">Properties</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">{t('graphPanel.propertiesView.edge.properties')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(edge.properties)
           .sort()

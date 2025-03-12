@@ -3,12 +3,14 @@ import { useCallback } from 'react'
 import Button from '@/components/ui/Button'
 import { ZoomInIcon, ZoomOutIcon, FullscreenIcon } from 'lucide-react'
 import { controlButtonVariant } from '@/lib/constants'
+import { useTranslation } from "react-i18next";
 
 /**
  * Component that provides zoom controls for the graph viewer.
  */
 const ZoomControl = () => {
   const { zoomIn, zoomOut, reset } = useCamera({ duration: 200, factor: 1.5 })
+  const { t } = useTranslation();
 
   const handleZoomIn = useCallback(() => zoomIn(), [zoomIn])
   const handleZoomOut = useCallback(() => zoomOut(), [zoomOut])
@@ -16,16 +18,16 @@ const ZoomControl = () => {
 
   return (
     <>
-      <Button variant={controlButtonVariant} onClick={handleZoomIn} tooltip="Zoom In" size="icon">
+      <Button variant={controlButtonVariant} onClick={handleZoomIn} tooltip={t("graphPanel.sideBar.zoomControl.zoomIn")} size="icon">
         <ZoomInIcon />
       </Button>
-      <Button variant={controlButtonVariant} onClick={handleZoomOut} tooltip="Zoom Out" size="icon">
+      <Button variant={controlButtonVariant} onClick={handleZoomOut} tooltip={t("graphPanel.sideBar.zoomControl.zoomOut")} size="icon">
         <ZoomOutIcon />
       </Button>
       <Button
         variant={controlButtonVariant}
         onClick={handleResetZoom}
-        tooltip="Reset Zoom"
+        tooltip={t("graphPanel.sideBar.zoomControl.resetZoom")}
         size="icon"
       >
         <FullscreenIcon />
