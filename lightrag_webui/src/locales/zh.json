@@ -86,6 +86,8 @@
         "maxQueryDepth": "最大查询深度",
         "minDegree": "最小度数",
         "maxLayoutIterations": "最大布局迭代次数",
+        "depth": "深度",
+        "degree": "邻边",
         "apiKey": "API密钥",
         "enterYourAPIkey": "输入您的API密钥",
         "save": "保存",
