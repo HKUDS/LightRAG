@@ -254,6 +254,8 @@ const useLightrangeGraph = () => {
             delete fetchStatusRef.current[fetchKey];
           }
           // Reset fetching state after all updates are complete
+          // Reset camera view by triggering FocusOnNode component
+          state.setMoveToSelectedNode(true);
           state.setIsFetching(false);
         }).catch(() => {
           // Reset fetching state and remove flag in case of error
