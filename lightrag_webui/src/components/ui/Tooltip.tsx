@@ -25,7 +25,7 @@ const TooltipContent = React.forwardRef<
   }
 >(({ className, side = 'left', align = 'start', children, ...props }, ref) => {
   const contentRef = React.useRef<HTMLDivElement>(null);
-  
+
   React.useEffect(() => {
     if (contentRef.current) {
       contentRef.current.scrollTop = 0;

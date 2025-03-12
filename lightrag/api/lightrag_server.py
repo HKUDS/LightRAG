@@ -427,10 +427,12 @@ def create_app(args):
     class NoCacheStaticFiles(StaticFiles):
         async def get_response(self, path: str, scope):
             response = await super().get_response(path, scope)
-            if path.endswith('.html'):
-                response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-                response.headers['Pragma'] = 'no-cache'
-                response.headers['Expires'] = '0'
+            if path.endswith(".html"):
+                response.headers["Cache-Control"] = (
+                    "no-cache, no-store, must-revalidate"
+                )
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
             return response
 
     # Webui mount webui/index.html
