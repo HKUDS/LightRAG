@@ -214,7 +214,16 @@ const useLightrangeGraph = () => {
 
       // Only fetch if we haven't fetched this combination in the current component lifecycle
       if (!isFetching && !fetchStatusRef.current[fetchKey]) {
-        useGraphStore.getState().setIsFetching(true);
+        const state = useGraphStore.getState();
+        // Clear selection and highlighted nodes before fetching new graph
+        state.clearSelection();
+        if (state.sigmaGraph) {
+          state.sigmaGraph.forEachNode((node) => {
+            state.sigmaGraph?.setNodeAttribute(node, 'highlighted', false);
+          });
+        }
+        
+        state.setIsFetching(true);
         fetchStatusRef.current[fetchKey] = true;
         fetchGraph(queryLabel, maxQueryDepth, minDegree).then((data) => {
           const state = useGraphStore.getState()
