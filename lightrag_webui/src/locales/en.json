@@ -1,0 +1,235 @@
+{
+  "header": {
+    "documents": "Documents",
+    "knowledgeGraph": "Knowledge Graph",
+    "retrieval": "Retrieval",
+    "api": "API",
+    "projectRepository": "Project Repository",
+    "themeToggle": {
+      "switchToLight": "Switch to light theme",
+      "switchToDark": "Switch to dark theme"
+    }
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "Clear",
+      "tooltip": "Clear documents",
+      "title": "Clear Documents",
+      "confirm": "Do you really want to clear all documents?",
+      "confirmButton": "YES",
+      "success": "Documents cleared successfully",
+      "failed": "Clear Documents Failed:\n{{message}}",
+      "error": "Clear Documents Failed:\n{{error}}"
+    },
+    "uploadDocuments": {
+      "button": "Upload",
+      "tooltip": "Upload documents",
+      "title": "Upload Documents",
+      "description": "Drag and drop your documents here or click to browse.",
+      "uploading": "Uploading {{name}}: {{percent}}%",
+      "success": "Upload Success:\n{{name}} uploaded successfully",
+      "failed": "Upload Failed:\n{{name}}\n{{message}}",
+      "error": "Upload Failed:\n{{name}}\n{{error}}",
+      "generalError": "Upload Failed\n{{error}}",
+      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
+    },
+    "documentManager": {
+      "title": "Document Management",
+      "scanButton": "Scan",
+      "scanTooltip": "Scan documents",
+      "uploadedTitle": "Uploaded Documents",
+      "uploadedDescription": "List of uploaded documents and their statuses.",
+      "emptyTitle": "No Documents",
+      "emptyDescription": "There are no uploaded documents yet.",
+      "columns": {
+        "id": "ID",
+        "summary": "Summary",
+        "status": "Status",
+        "length": "Length",
+        "chunks": "Chunks",
+        "created": "Created",
+        "updated": "Updated",
+        "metadata": "Metadata"
+      },
+      "status": {
+        "completed": "Completed",
+        "processing": "Processing",
+        "pending": "Pending",
+        "failed": "Failed"
+      },
+      "errors": {
+        "loadFailed": "Failed to load documents\n{{error}}",
+        "scanFailed": "Failed to scan documents\n{{error}}",
+        "scanProgressFailed": "Failed to get scan progress\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "sideBar": {
+      "settings": {
+        "settings": "Settings",
+        "healthCheck": "Health Check",
+        "showPropertyPanel": "Show Property Panel",
+        "showSearchBar": "Show Search Bar",
+        "showNodeLabel": "Show Node Label",
+        "nodeDraggable": "Node Draggable",
+        "showEdgeLabel": "Show Edge Label",
+        "hideUnselectedEdges": "Hide Unselected Edges",
+        "edgeEvents": "Edge Events",
+        "maxQueryDepth": "Max Query Depth",
+        "minDegree": "Minimum Degree",
+        "maxLayoutIterations": "Max Layout Iterations",
+        "apiKey": "API Key",
+        "enterYourAPIkey": "Enter your API key",
+        "save": "Save",
+        "refreshLayout": "Refresh Layout"
+      },
+
+      "zoomControl": {
+        "zoomIn": "Zoom In",
+        "zoomOut": "Zoom Out",
+        "resetZoom": "Reset Zoom"
+      },
+
+      "layoutsControl": {
+        "startAnimation": "Start the layout animation",
+        "stopAnimation": "Stop the layout animation",
+        "layoutGraph": "Layout Graph",
+        "layouts": {
+          "Circular": "Circular",
+          "Circlepack": "Circlepack",
+          "Random": "Random",
+          "Noverlaps": "Noverlaps",
+          "Force Directed": "Force Directed",
+          "Force Atlas": "Force Atlas"
+        }
+      },
+
+      "fullScreenControl": {
+        "fullScreen": "Full Screen",
+        "windowed": "Windowed"
+      }
+    },
+    "statusIndicator": {
+      "connected": "Connected",
+      "disconnected": "Disconnected"
+    },
+    "statusCard": {
+      "unavailable": "Status information unavailable",
+      "storageInfo": "Storage Info",
+      "workingDirectory": "Working Directory",
+      "inputDirectory": "Input Directory",
+      "llmConfig": "LLM Configuration",
+      "llmBinding": "LLM Binding",
+      "llmBindingHost": "LLM Binding Host",
+      "llmModel": "LLM Model",
+      "maxTokens": "Max Tokens",
+      "embeddingConfig": "Embedding Configuration",
+      "embeddingBinding": "Embedding Binding",
+      "embeddingBindingHost": "Embedding Binding Host",
+      "embeddingModel": "Embedding Model",
+      "storageConfig": "Storage Configuration",
+      "kvStorage": "KV Storage",
+      "docStatusStorage": "Doc Status Storage",
+      "graphStorage": "Graph Storage",
+      "vectorStorage": "Vector Storage"
+    },
+    "propertiesView": {
+      "node": {
+        "title": "Node",
+        "id": "ID",
+        "labels": "Labels",
+        "degree": "Degree",
+        "properties": "Properties",
+        "relationships": "Relationships"
+      },
+      "edge": {
+        "title": "Relationship",
+        "id": "ID",
+        "type": "Type",
+        "source": "Source",
+        "target": "Target",
+        "properties": "Properties"
+      }
+    },
+    "search": {
+      "placeholder": "Search nodes...",
+      "message": "And {count} others"
+    },
+    "graphLabels": {
+      "selectTooltip": "Select query label",
+      "noLabels": "No labels found",
+      "label": "Label",
+      "placeholder": "Search labels...",
+      "andOthers": "And {count} others"
+    }
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "Copy to clipboard",
+      "copyError": "Failed to copy text to clipboard"
+    },
+    "retrieval": {
+      "startPrompt": "Start a retrieval by typing your query below",
+      "clear": "Clear",
+      "send": "Send",
+      "placeholder": "Type your query...",
+      "error": "Error: Failed to get response"
+    },
+    "querySettings": {
+      "parametersTitle": "Parameters",
+      "parametersDescription": "Configure your query parameters",
+
+      "queryMode": "Query Mode",
+      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval",
+      "queryModeOptions": {
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix"
+      },
+
+      "responseFormat": "Response Format",
+      "responseFormatTooltip": "Defines the response format. Examples:\n• Multiple Paragraphs\n• Single Paragraph\n• Bullet Points",
+      "responseFormatOptions": {
+        "multipleParagraphs": "Multiple Paragraphs",
+        "singleParagraph": "Single Paragraph",
+        "bulletPoints": "Bullet Points"
+      },
+
+      "topK": "Top K Results",
+      "topKTooltip": "Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode",
+      "topKPlaceholder": "Number of results",
+
+      "maxTokensTextUnit": "Max Tokens for Text Unit",
+      "maxTokensTextUnitTooltip": "Maximum number of tokens allowed for each retrieved text chunk",
+
+      "maxTokensGlobalContext": "Max Tokens for Global Context",
+      "maxTokensGlobalContextTooltip": "Maximum number of tokens allocated for relationship descriptions in global retrieval",
+
+      "maxTokensLocalContext": "Max Tokens for Local Context",
+      "maxTokensLocalContextTooltip": "Maximum number of tokens allocated for entity descriptions in local retrieval",
+
+      "historyTurns": "History Turns",
+      "historyTurnsTooltip": "Number of complete conversation turns (user-assistant pairs) to consider in the response context",
+      "historyTurnsPlaceholder": "Number of history turns",
+
+      "hlKeywords": "High-Level Keywords",
+      "hlKeywordsTooltip": "List of high-level keywords to prioritize in retrieval. Separate with commas",
+      "hlkeywordsPlaceHolder": "Enter keywords",
+
+      "llKeywords": "Low-Level Keywords",
+      "llKeywordsTooltip": "List of low-level keywords to refine retrieval focus. Separate with commas",
+
+      "onlyNeedContext": "Only Need Context",
+      "onlyNeedContextTooltip": "If True, only returns the retrieved context without generating a response",
+
+      "onlyNeedPrompt": "Only Need Prompt",
+      "onlyNeedPromptTooltip": "If True, only returns the generated prompt without producing a response",
+
+      "streamResponse": "Stream Response",
+      "streamResponseTooltip": "If True, enables streaming output for real-time responses"
+    }
+  }
+}

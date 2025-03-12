@@ -171,7 +171,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
         logger.info(f"Upserted {len(list_data)} vectors into Faiss index.")
         return [m["__id__"] for m in list_data]
 
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """
         Search by a textual query; returns top_k results with their metadata + similarity distance.
         """
@@ -392,3 +394,46 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         logger.debug(f"Found {len(matching_records)} records with prefix '{prefix}'")
         return matching_records
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        # Find the Faiss internal ID for the custom ID
+        fid = self._find_faiss_id_by_custom_id(id)
+        if fid is None:
+            return None
+
+        # Get the metadata for the found ID
+        metadata = self._id_to_meta.get(fid, {})
+        if not metadata:
+            return None
+
+        return {**metadata, "id": metadata.get("__id__")}
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        results = []
+        for id in ids:
+            fid = self._find_faiss_id_by_custom_id(id)
+            if fid is not None:
+                metadata = self._id_to_meta.get(fid, {})
+                if metadata:
+                    results.append({**metadata, "id": metadata.get("__id__")})
+
+        return results
