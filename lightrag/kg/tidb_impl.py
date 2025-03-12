@@ -306,7 +306,9 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             await ClientManager.release_client(self.db)
             self.db = None
 
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Search from tidb vector"""
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
@@ -461,6 +463,100 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             return results if results else []
         except Exception as e:
             logger.error(f"Error searching records with prefix '{prefix}': {e}")
+            return []
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        try:
+            # Determine which table to query based on namespace
+            if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
+                sql_template = """
+                    SELECT entity_id as id, name as entity_name, entity_type, description, content
+                    FROM LIGHTRAG_GRAPH_NODES
+                    WHERE entity_id = :entity_id AND workspace = :workspace
+                """
+                params = {"entity_id": id, "workspace": self.db.workspace}
+            elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
+                sql_template = """
+                    SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
+                           keywords, description, content
+                    FROM LIGHTRAG_GRAPH_EDGES
+                    WHERE relation_id = :relation_id AND workspace = :workspace
+                """
+                params = {"relation_id": id, "workspace": self.db.workspace}
+            elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
+                sql_template = """
+                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+                    FROM LIGHTRAG_DOC_CHUNKS
+                    WHERE chunk_id = :chunk_id AND workspace = :workspace
+                """
+                params = {"chunk_id": id, "workspace": self.db.workspace}
+            else:
+                logger.warning(
+                    f"Namespace {self.namespace} not supported for get_by_id"
+                )
+                return None
+
+            result = await self.db.query(sql_template, params=params)
+            return result
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        try:
+            # Format IDs for SQL IN clause
+            ids_str = ", ".join([f"'{id}'" for id in ids])
+
+            # Determine which table to query based on namespace
+            if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
+                sql_template = f"""
+                    SELECT entity_id as id, name as entity_name, entity_type, description, content
+                    FROM LIGHTRAG_GRAPH_NODES
+                    WHERE entity_id IN ({ids_str}) AND workspace = :workspace
+                """
+            elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
+                sql_template = f"""
+                    SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
+                           keywords, description, content
+                    FROM LIGHTRAG_GRAPH_EDGES
+                    WHERE relation_id IN ({ids_str}) AND workspace = :workspace
+                """
+            elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
+                sql_template = f"""
+                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+                    FROM LIGHTRAG_DOC_CHUNKS
+                    WHERE chunk_id IN ({ids_str}) AND workspace = :workspace
+                """
+            else:
+                logger.warning(
+                    f"Namespace {self.namespace} not supported for get_by_ids"
+                )
+                return []
+
+            params = {"workspace": self.db.workspace}
+            results = await self.db.query(sql_template, params=params, multirows=True)
+            return results if results else []
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
 
 

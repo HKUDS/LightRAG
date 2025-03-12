@@ -6,6 +6,7 @@ import { Message, QueryRequest } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
 
 type Theme = 'dark' | 'light' | 'system'
+type Language = 'en' | 'zh'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
 
 interface SettingsState {
@@ -48,6 +49,9 @@ interface SettingsState {
   theme: Theme
   setTheme: (theme: Theme) => void
 
+  language: Language
+  setLanguage: (lang: Language) => void
+
   enableHealthCheck: boolean
   setEnableHealthCheck: (enable: boolean) => void
 
@@ -55,10 +59,27 @@ interface SettingsState {
   setCurrentTab: (tab: Tab) => void
 }
 
+// Helper to get initial state from localStorage
+const getInitialState = () => {
+  try {
+    const stored = localStorage.getItem('settings-storage')
+    if (stored) {
+      const { state } = JSON.parse(stored)
+      return {
+        theme: state?.theme || 'system',
+        language: state?.language || 'zh'
+      }
+    }
+  } catch (e) {
+    console.error('Failed to parse settings from localStorage:', e)
+  }
+  return { theme: 'system', language: 'zh' }
+}
+
 const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
-      theme: 'system',
+      ...getInitialState(),
       refreshLayout: () => {
         const graphState = useGraphStore.getState();
         const currentGraph = graphState.sigmaGraph;
@@ -109,6 +130,16 @@ const useSettingsStoreBase = create<SettingsState>()(
       },
 
       setTheme: (theme: Theme) => set({ theme }),
+
+      setLanguage: (language: Language) => {
+        set({ language })
+        // Update i18n after state is updated
+        import('i18next').then(({ default: i18n }) => {
+          if (i18n.language !== language) {
+            i18n.changeLanguage(language)
+          }
+        })
+      },
 
       setGraphLayoutMaxIterations: (iterations: number) =>
         set({

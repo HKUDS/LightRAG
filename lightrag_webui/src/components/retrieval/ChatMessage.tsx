@@ -15,18 +15,21 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/cjs/styles/prism'
 
 import { LoaderIcon, CopyIcon } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 export type MessageWithError = Message & {
   isError?: boolean
 }
 
 export const ChatMessage = ({ message }: { message: MessageWithError }) => {
+  const { t } = useTranslation()
+
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
       try {
         await navigator.clipboard.writeText(message.content)
       } catch (err) {
-        console.error('Failed to copy:', err)
+        console.error(t('chat.copyError'), err)
       }
     }
   }, [message])
@@ -57,7 +60,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
           <Button
             onClick={handleCopyMarkdown}
             className="absolute right-0 bottom-0 size-6 rounded-md opacity-20 transition-opacity hover:opacity-100"
-            tooltip="Copy to clipboard"
+            tooltip={t('retrievePanel.chatMessage.copyTooltip')}
             variant="default"
             size="icon"
           >
