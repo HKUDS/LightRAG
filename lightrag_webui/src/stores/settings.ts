@@ -171,7 +171,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 7,
+      version: 8,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -208,7 +208,13 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 7) {
           state.graphQueryMaxDepth = 3
-          state.graphLayoutMaxIterations = 10
+          state.graphLayoutMaxIterations = 15
+        }
+        if (version < 8) {
+          state.enableNodeDrag = true
+          state.enableHideUnselectedEdges = true
+          state.enableEdgeEvents = false
+          state.graphMinDegree = 0
         }
         return state
       }

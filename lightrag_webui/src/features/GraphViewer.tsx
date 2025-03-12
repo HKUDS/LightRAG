@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
 import { Settings as SigmaSettings } from 'sigma/settings'
@@ -91,8 +91,12 @@ const GraphEvents = () => {
         }
       },
       // Disable the autoscale at the first down interaction
-      mousedown: () => {
-        if (!sigma.getCustomBBox()) sigma.setCustomBBox(sigma.getBBox())
+      mousedown: (e) => {
+        // Only set custom BBox if it's a drag operation (mouse button is pressed)
+        const mouseEvent = e.original as MouseEvent;
+        if (mouseEvent.buttons !== 0 && !sigma.getCustomBBox()) {
+          sigma.setCustomBBox(sigma.getBBox())
+        }
       }
     })
   }, [registerEvents, sigma, draggedNode])
@@ -102,6 +106,7 @@ const GraphEvents = () => {
 
 const GraphViewer = () => {
   const [sigmaSettings, setSigmaSettings] = useState(defaultSigmaSettings)
+  const sigmaRef = useRef<any>(null)
 
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
@@ -144,7 +149,11 @@ const GraphViewer = () => {
   )
 
   return (
-    <SigmaContainer settings={sigmaSettings} className="!bg-background !size-full overflow-hidden">
+    <SigmaContainer
+      settings={sigmaSettings}
+      className="!bg-background !size-full overflow-hidden"
+      ref={sigmaRef}
+    >
       <GraphControl />
 
       {enableNodeDrag && <GraphEvents />}
