@@ -101,7 +101,7 @@ class DocsStatusesResponse(BaseModel):
 
 class PipelineStatusResponse(BaseModel):
     """Response model for pipeline status
-    
+
     Attributes:
         autoscanned: Whether auto-scan has started
         busy: Whether the pipeline is currently busy
@@ -114,6 +114,7 @@ class PipelineStatusResponse(BaseModel):
         latest_message: Latest message from pipeline processing
         history_messages: List of history messages
     """
+
     autoscanned: bool = False
     busy: bool = False
     job_name: str = "Default Job"
@@ -277,7 +278,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 if global_args["main_args"].document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
-                    from docling.document_converter import DocumentConverter # type: ignore
+                    from docling.document_converter import DocumentConverter  # type: ignore
 
                     converter = DocumentConverter()
                     result = converter.convert(file_path)
@@ -296,7 +297,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 if global_args["main_args"].document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
-                    from docling.document_converter import DocumentConverter # type: ignore
+                    from docling.document_converter import DocumentConverter  # type: ignore
 
                     converter = DocumentConverter()
                     result = converter.convert(file_path)
@@ -316,7 +317,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 if global_args["main_args"].document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
-                    from docling.document_converter import DocumentConverter # type: ignore
+                    from docling.document_converter import DocumentConverter  # type: ignore
 
                     converter = DocumentConverter()
                     result = converter.convert(file_path)
@@ -337,7 +338,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 if global_args["main_args"].document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
-                    from docling.document_converter import DocumentConverter # type: ignore
+                    from docling.document_converter import DocumentConverter  # type: ignore
 
                     converter = DocumentConverter()
                     result = converter.convert(file_path)
@@ -748,7 +749,11 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.get("/pipeline_status", dependencies=[Depends(optional_api_key)], response_model=PipelineStatusResponse)
+    @router.get(
+        "/pipeline_status",
+        dependencies=[Depends(optional_api_key)],
+        response_model=PipelineStatusResponse,
+    )
     async def get_pipeline_status() -> PipelineStatusResponse:
         """
         Get the current status of the document indexing pipeline.
