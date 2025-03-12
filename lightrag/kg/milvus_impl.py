@@ -101,7 +101,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         results = self._client.upsert(collection_name=self.namespace, data=list_data)
         return results
 
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         embedding = await self.embedding_func([query])
         results = self._client.search(
             collection_name=self.namespace,
@@ -230,4 +232,58 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
         except Exception as e:
             logger.error(f"Error searching for records with prefix '{prefix}': {e}")
+            return []
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        try:
+            # Query Milvus for a specific ID
+            result = self._client.query(
+                collection_name=self.namespace,
+                filter=f'id == "{id}"',
+                output_fields=list(self.meta_fields) + ["id"],
+            )
+
+            if not result or len(result) == 0:
+                return None
+
+            return result[0]
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        try:
+            # Prepare the ID filter expression
+            id_list = '", "'.join(ids)
+            filter_expr = f'id in ["{id_list}"]'
+
+            # Query Milvus with the filter
+            result = self._client.query(
+                collection_name=self.namespace,
+                filter=filter_expr,
+                output_fields=list(self.meta_fields) + ["id"],
+            )
+
+            return result or []
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
