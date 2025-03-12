@@ -57,8 +57,11 @@ const GraphLabels = () => {
     
     const currentLabel = useSettingsStore.getState().queryLabel
     
-    // When selecting the same label (except '*'), switch to '*'
-    if (newLabel === currentLabel && newLabel !== '*') {
+    if (newLabel === '*' && currentLabel === '*') {
+      // When reselecting '*', just set it again to trigger a new fetch
+      useSettingsStore.getState().setQueryLabel('*')
+    } else if (newLabel === currentLabel && newLabel !== '*') {
+      // When selecting the same label (except '*'), switch to '*'
       useSettingsStore.getState().setQueryLabel('*')
     } else {
       useSettingsStore.getState().setQueryLabel(newLabel)
