@@ -417,7 +417,9 @@ class OracleVectorDBStorage(BaseVectorStorage):
             self.db = None
 
     #################### query method ###############
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
         # 转换精度
@@ -527,6 +529,80 @@ class OracleVectorDBStorage(BaseVectorStorage):
 
         except Exception as e:
             logger.error(f"Error searching records with prefix '{prefix}': {e}")
+            return []
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        try:
+            # Determine the table name based on namespace
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                logger.error(f"Unknown namespace for ID lookup: {self.namespace}")
+                return None
+
+            # Create the appropriate ID field name based on namespace
+            id_field = "entity_id" if "NODES" in table_name else "relation_id"
+            if "CHUNKS" in table_name:
+                id_field = "chunk_id"
+
+            # Prepare and execute the query
+            query = f"""
+                SELECT * FROM {table_name}
+                WHERE {id_field} = :id AND workspace = :workspace
+            """
+            params = {"id": id, "workspace": self.db.workspace}
+
+            result = await self.db.query(query, params)
+            return result
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        try:
+            # Determine the table name based on namespace
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                logger.error(f"Unknown namespace for IDs lookup: {self.namespace}")
+                return []
+
+            # Create the appropriate ID field name based on namespace
+            id_field = "entity_id" if "NODES" in table_name else "relation_id"
+            if "CHUNKS" in table_name:
+                id_field = "chunk_id"
+
+            # Format the list of IDs for SQL IN clause
+            ids_list = ", ".join([f"'{id}'" for id in ids])
+
+            # Prepare and execute the query
+            query = f"""
+                SELECT * FROM {table_name}
+                WHERE {id_field} IN ({ids_list}) AND workspace = :workspace
+            """
+            params = {"workspace": self.db.workspace}
+
+            results = await self.db.query(query, params, multirows=True)
+            return results or []
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
 
 
