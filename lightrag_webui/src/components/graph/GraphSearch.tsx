@@ -86,7 +86,7 @@ export const GraphSearchInput = ({
     async (query?: string): Promise<OptionItem[]> => {
       if (onFocus) onFocus(null)
       if (!query || !searchEngine) return []
-      const result: OptionItem[] = searchEngine.search(query).map((r) => ({
+      const result: OptionItem[] = searchEngine.search(query).map((r: { id: string }) => ({
         id: r.id,
         type: 'nodes'
       }))
@@ -103,7 +103,7 @@ export const GraphSearchInput = ({
           }
         ]
     },
-    [searchEngine, onFocus]
+    [searchEngine, onFocus, t]
   )
 
   return (
