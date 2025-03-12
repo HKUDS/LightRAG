@@ -85,7 +85,18 @@ export const GraphSearchInput = ({
   const loadOptions = useCallback(
     async (query?: string): Promise<OptionItem[]> => {
       if (onFocus) onFocus(null)
-      if (!query || !searchEngine) return []
+      if (!graph || !searchEngine) return []
+
+      // If no query, return first searchResultLimit nodes
+      if (!query) {
+        const nodeIds = graph.nodes().slice(0, searchResultLimit)
+        return nodeIds.map(id => ({
+          id,
+          type: 'nodes'
+        }))
+      }
+
+      // If has query, search nodes
       const result: OptionItem[] = searchEngine.search(query).map((r: { id: string }) => ({
         id: r.id,
         type: 'nodes'
@@ -103,7 +114,7 @@ export const GraphSearchInput = ({
           }
         ]
     },
-    [searchEngine, onFocus, t]
+    [graph, searchEngine, onFocus, t]
   )
 
   return (
