@@ -149,8 +149,8 @@ const GraphViewer = () => {
   )
 
   return (
-    <SigmaContainer 
-      settings={sigmaSettings} 
+    <SigmaContainer
+      settings={sigmaSettings}
       className="!bg-background !size-full overflow-hidden"
       ref={sigmaRef}
     >
