@@ -68,6 +68,7 @@ interface GraphState {
   graphLabels: string[]
 
   moveToSelectedNode: boolean
+  isFetching: boolean
 
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
   setFocusedNode: (nodeId: string | null) => void
@@ -81,6 +82,7 @@ interface GraphState {
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
   setGraphLabels: (labels: string[]) => void
+  setIsFetching: (isFetching: boolean) => void
 }
 
 const useGraphStoreBase = create<GraphState>()((set) => ({
@@ -90,11 +92,13 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   focusedEdge: null,
 
   moveToSelectedNode: false,
+  isFetching: false,
 
   rawGraph: null,
   sigmaGraph: null,
   graphLabels: ['*'],
 
+  setIsFetching: (isFetching: boolean) => set({ isFetching }),
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
   setFocusedNode: (nodeId: string | null) => set({ focusedNode: nodeId }),

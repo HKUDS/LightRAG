@@ -162,13 +162,32 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
 }
 
 const useLightrangeGraph = () => {
-  // Use useRef to maintain lastQueryLabel state between renders
-  const lastQueryLabelRef = useRef({ label: '', maxQueryDepth: 0, minDegree: 0 })
   const queryLabel = useSettingsStore.use.queryLabel()
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
   const minDegree = useSettingsStore.use.graphMinDegree()
+  const isFetching = useGraphStore.use.isFetching()
+
+  // Use ref to track fetch status
+  const fetchStatusRef = useRef<Record<string, boolean>>({});
+
+  // Track previous parameters to detect actual changes
+  const prevParamsRef = useRef({ queryLabel, maxQueryDepth, minDegree });
+
+  // Reset fetch status only when parameters actually change
+  useEffect(() => {
+    const prevParams = prevParamsRef.current;
+    if (prevParams.queryLabel !== queryLabel || 
+        prevParams.maxQueryDepth !== maxQueryDepth || 
+        prevParams.minDegree !== minDegree) {
+      useGraphStore.getState().setIsFetching(false);
+      // Reset fetch status for new parameters
+      fetchStatusRef.current = {};
+      // Update previous parameters
+      prevParamsRef.current = { queryLabel, maxQueryDepth, minDegree };
+    }
+  }, [queryLabel, maxQueryDepth, minDegree])
 
   const getNode = useCallback(
     (nodeId: string) => {
@@ -186,17 +205,12 @@ const useLightrangeGraph = () => {
 
   useEffect(() => {
     if (queryLabel) {
-      // Always fetch data for "*" label
-      // For other labels, only fetch when parameters change
-      const shouldUpdate = true;
-
-      if (shouldUpdate) {
-        lastQueryLabelRef.current = {
-          label: queryLabel,
-          maxQueryDepth,
-          minDegree
-        }
-
+      const fetchKey = `${queryLabel}-${maxQueryDepth}-${minDegree}`;
+      
+      // Only fetch if we haven't fetched this combination in the current component lifecycle
+      if (!isFetching && !fetchStatusRef.current[fetchKey]) {
+        useGraphStore.getState().setIsFetching(true);
+        fetchStatusRef.current[fetchKey] = true;
         fetchGraph(queryLabel, maxQueryDepth, minDegree).then((data) => {
           const state = useGraphStore.getState()
           const newSigmaGraph = createSigmaGraph(data)
@@ -227,6 +241,16 @@ const useLightrangeGraph = () => {
             // Ensure * is there eventhough there is no graph data
             state.setGraphLabels(['*']);
           }
+          if (!data) {
+            // If data is invalid, remove the fetch flag to allow retry
+            delete fetchStatusRef.current[fetchKey];
+          }
+          // Reset fetching state after all updates are complete
+          state.setIsFetching(false);
+        }).catch(() => {
+          // Reset fetching state and remove flag in case of error
+          useGraphStore.getState().setIsFetching(false);
+          delete fetchStatusRef.current[fetchKey];
         })
       }
     } else {
