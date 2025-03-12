@@ -1,5 +1,5 @@
 import Graph, { DirectedGraph } from 'graphology'
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { randomColor, errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
 import { useGraphStore, RawGraph } from '@/stores/graph'
@@ -161,9 +161,9 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   return graph
 }
 
-const lastQueryLabel = { label: '', maxQueryDepth: 0, minDegree: 0 }
-
 const useLightrangeGraph = () => {
+  // Use useRef to maintain lastQueryLabel state between renders
+  const lastQueryLabelRef = useRef({ label: '', maxQueryDepth: 0, minDegree: 0 })
   const queryLabel = useSettingsStore.use.queryLabel()
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
@@ -188,37 +188,44 @@ const useLightrangeGraph = () => {
     if (queryLabel) {
       // Always fetch data for "*" label
       // For other labels, only fetch when parameters change
-      const shouldUpdate = queryLabel === '*' ||
-        lastQueryLabel.label !== queryLabel ||
-        lastQueryLabel.maxQueryDepth !== maxQueryDepth ||
-        lastQueryLabel.minDegree !== minDegree;
+      const shouldUpdate = true;
 
       if (shouldUpdate) {
-        lastQueryLabel.label = queryLabel
-        lastQueryLabel.maxQueryDepth = maxQueryDepth
-        lastQueryLabel.minDegree = minDegree
+        lastQueryLabelRef.current = {
+          label: queryLabel,
+          maxQueryDepth,
+          minDegree
+        }
 
-        const state = useGraphStore.getState()
-        state.reset()
         fetchGraph(queryLabel, maxQueryDepth, minDegree).then((data) => {
-          // console.debug('Query label: ' + queryLabel)
-          state.setSigmaGraph(createSigmaGraph(data))
+          const state = useGraphStore.getState()
+          const newSigmaGraph = createSigmaGraph(data)
           data?.buildDynamicMap()
+          
+          // Update all graph data at once to minimize UI flicker
+          state.clearSelection()
+          state.setMoveToSelectedNode(false)
+          state.setSigmaGraph(newSigmaGraph)
           state.setRawGraph(data)
           
           // Extract labels from graph data
           if (data) {
-            const labelSet = new Set<string>(['*'])
+            const labelSet = new Set<string>();
             for (const node of data.nodes) {
               if (node.labels && Array.isArray(node.labels)) {
                 for (const label of node.labels) {
-                  labelSet.add(label)
+                  if (label !== '*') {  // filter out label "*"
+                    labelSet.add(label);
+                  }
                 }
               }
             }
-            state.setGraphLabels(Array.from(labelSet).sort())
+            // Put * on top of other labels
+            const sortedLabels = Array.from(labelSet).sort();
+            state.setGraphLabels(['*', ...sortedLabels]);
           } else {
-            state.setGraphLabels(['*'])
+            // Ensure * is there eventhough there is no graph data
+            state.setGraphLabels(['*']);
           }
         })
       }

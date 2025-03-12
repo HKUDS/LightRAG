@@ -50,9 +50,17 @@ const GraphLabels = () => {
     [getSearchEngine]
   )
 
-  const setQueryLabel = useCallback((label: string) => {
-    if (label.startsWith('And ') && label.endsWith(' others')) return
-    useSettingsStore.getState().setQueryLabel(label)
+  const setQueryLabel = useCallback((newLabel: string) => {
+    if (newLabel.startsWith('And ') && newLabel.endsWith(' others')) return
+    
+    const currentLabel = useSettingsStore.getState().queryLabel
+    
+    // When selecting the same label (except '*'), switch to '*'
+    if (newLabel === currentLabel && newLabel !== '*') {
+      useSettingsStore.getState().setQueryLabel('*')
+    } else {
+      useSettingsStore.getState().setQueryLabel(newLabel)
+    }
   }, [])
 
   return (
@@ -70,6 +78,7 @@ const GraphLabels = () => {
       placeholder="Search labels..."
       value={label !== null ? label : ''}
       onChange={setQueryLabel}
+      clearable={false}  // Prevent clearing value on reselect
     />
   )
 }
