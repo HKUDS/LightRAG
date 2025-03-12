@@ -81,7 +81,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       graphQueryMaxDepth: 3,
       graphMinDegree: 0,
-      graphLayoutMaxIterations: 10,
+      graphLayoutMaxIterations: 15,
 
       queryLabel: defaultQueryLabel,
 

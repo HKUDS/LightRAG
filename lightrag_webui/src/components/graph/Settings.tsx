@@ -294,7 +294,7 @@ export default function Settings() {
             <LabeledNumberInput
               label="Max Layout Iterations"
               min={1}
-              max={20}
+              max={30}
               value={graphLayoutMaxIterations}
               onEditFinished={setGraphLayoutMaxIterations}
             />
