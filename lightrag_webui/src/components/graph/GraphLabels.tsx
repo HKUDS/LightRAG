@@ -54,9 +54,9 @@ const GraphLabels = () => {
 
   const setQueryLabel = useCallback((newLabel: string) => {
     if (newLabel.startsWith('And ') && newLabel.endsWith(' others')) return
-    
+
     const currentLabel = useSettingsStore.getState().queryLabel
-    
+
     if (newLabel === '*' && currentLabel === '*') {
       // When reselecting '*', just set it again to trigger a new fetch
       useSettingsStore.getState().setQueryLabel('*')

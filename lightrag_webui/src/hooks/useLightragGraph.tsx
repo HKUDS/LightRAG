@@ -178,8 +178,8 @@ const useLightrangeGraph = () => {
   // Reset fetch status only when parameters actually change
   useEffect(() => {
     const prevParams = prevParamsRef.current;
-    if (prevParams.queryLabel !== queryLabel || 
-        prevParams.maxQueryDepth !== maxQueryDepth || 
+    if (prevParams.queryLabel !== queryLabel ||
+        prevParams.maxQueryDepth !== maxQueryDepth ||
         prevParams.minDegree !== minDegree) {
       useGraphStore.getState().setIsFetching(false);
       // Reset fetch status for new parameters
@@ -206,7 +206,7 @@ const useLightrangeGraph = () => {
   useEffect(() => {
     if (queryLabel) {
       const fetchKey = `${queryLabel}-${maxQueryDepth}-${minDegree}`;
-      
+
       // Only fetch if we haven't fetched this combination in the current component lifecycle
       if (!isFetching && !fetchStatusRef.current[fetchKey]) {
         useGraphStore.getState().setIsFetching(true);
@@ -215,13 +215,13 @@ const useLightrangeGraph = () => {
           const state = useGraphStore.getState()
           const newSigmaGraph = createSigmaGraph(data)
           data?.buildDynamicMap()
-          
+
           // Update all graph data at once to minimize UI flicker
           state.clearSelection()
           state.setMoveToSelectedNode(false)
           state.setSigmaGraph(newSigmaGraph)
           state.setRawGraph(data)
-          
+
           // Extract labels from graph data
           if (data) {
             const labelSet = new Set<string>();

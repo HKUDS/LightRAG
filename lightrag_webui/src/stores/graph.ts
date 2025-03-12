@@ -129,7 +129,7 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
     }),
 
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => set({ sigmaGraph }),
-  
+
   setGraphLabels: (labels: string[]) => set({ graphLabels: labels }),
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode })
