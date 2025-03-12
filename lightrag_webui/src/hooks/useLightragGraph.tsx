@@ -222,7 +222,7 @@ const useLightrangeGraph = () => {
             state.sigmaGraph?.setNodeAttribute(node, 'highlighted', false);
           });
         }
-        
+
         state.setIsFetching(true);
         fetchStatusRef.current[fetchKey] = true;
         fetchGraph(queryLabel, maxQueryDepth, minDegree).then((data) => {

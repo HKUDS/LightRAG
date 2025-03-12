@@ -49,7 +49,7 @@ const GraphLabels = () => {
         ? result
         : [...result.slice(0, labelListLimit), '...']
     },
-    [getSearchEngine, t]
+    [getSearchEngine]
   )
 
   return (
@@ -68,7 +68,7 @@ const GraphLabels = () => {
       value={label !== null ? label : '*'}
       onChange={(newLabel) => {
         const currentLabel = useSettingsStore.getState().queryLabel
-        
+
         if (newLabel === '...') {
           newLabel = '*'
         }
