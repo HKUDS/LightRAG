@@ -187,7 +187,7 @@ const useLightrangeGraph = () => {
       // Update previous parameters
       prevParamsRef.current = { queryLabel, maxQueryDepth, minDegree };
     }
-  }, [queryLabel, maxQueryDepth, minDegree])
+  }, [queryLabel, maxQueryDepth, minDegree, isFetching])
 
   const getNode = useCallback(
     (nodeId: string) => {
@@ -258,7 +258,7 @@ const useLightrangeGraph = () => {
       state.reset()
       state.setSigmaGraph(new DirectedGraph())
     }
-  }, [queryLabel, maxQueryDepth, minDegree])
+  }, [queryLabel, maxQueryDepth, minDegree, isFetching])
 
   const lightrageGraph = useCallback(() => {
     if (sigmaGraph) {
