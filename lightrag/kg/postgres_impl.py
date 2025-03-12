@@ -621,6 +621,60 @@ class PGVectorStorage(BaseVectorStorage):
             logger.error(f"Error during prefix search for '{prefix}': {e}")
             return []
 
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(f"Unknown namespace for ID lookup: {self.namespace}")
+            return None
+
+        query = f"SELECT * FROM {table_name} WHERE workspace=$1 AND id=$2"
+        params = {"workspace": self.db.workspace, "id": id}
+
+        try:
+            result = await self.db.query(query, params)
+            if result:
+                return dict(result)
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(f"Unknown namespace for IDs lookup: {self.namespace}")
+            return []
+
+        ids_str = ",".join([f"'{id}'" for id in ids])
+        query = f"SELECT * FROM {table_name} WHERE workspace=$1 AND id IN ({ids_str})"
+        params = {"workspace": self.db.workspace}
+
+        try:
+            results = await self.db.query(query, params, multirows=True)
+            return [dict(record) for record in results]
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
+            return []
+
 
 @final
 @dataclass
