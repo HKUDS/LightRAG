@@ -14,8 +14,10 @@ import {
   SelectValue
 } from '@/components/ui/Select'
 import { useSettingsStore } from '@/stores/settings'
+import { useTranslation } from 'react-i18next'
 
 export default function QuerySettings() {
+  const { t } = useTranslation()
   const querySettings = useSettingsStore((state) => state.querySettings)
 
   const handleChange = useCallback((key: keyof QueryRequest, value: any) => {
@@ -25,8 +27,8 @@ export default function QuerySettings() {
   return (
     <Card className="flex shrink-0 flex-col">
       <CardHeader className="px-4 pt-4 pb-2">
-        <CardTitle>Parameters</CardTitle>
-        <CardDescription>Configure your query parameters</CardDescription>
+        <CardTitle>{t('retrievePanel.querySettings.parametersTitle')}</CardTitle>
+        <CardDescription>{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
       </CardHeader>
       <CardContent className="m-0 flex grow flex-col p-0 text-xs">
         <div className="relative size-full">
@@ -35,8 +37,8 @@ export default function QuerySettings() {
             <>
               <Text
                 className="ml-1"
-                text="Query Mode"
-                tooltip="Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval"
+                text={t('retrievePanel.querySettings.queryMode')}
+                tooltip={t('retrievePanel.querySettings.queryModeTooltip')}
                 side="left"
               />
               <Select
@@ -48,11 +50,11 @@ export default function QuerySettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value="naive">Naive</SelectItem>
-                    <SelectItem value="local">Local</SelectItem>
-                    <SelectItem value="global">Global</SelectItem>
-                    <SelectItem value="hybrid">Hybrid</SelectItem>
-                    <SelectItem value="mix">Mix</SelectItem>
+                    <SelectItem value="naive">{t('retrievePanel.querySettings.queryModeOptions.naive')}</SelectItem>
+                    <SelectItem value="local">{t('retrievePanel.querySettings.queryModeOptions.local')}</SelectItem>
+                    <SelectItem value="global">{t('retrievePanel.querySettings.queryModeOptions.global')}</SelectItem>
+                    <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
+                    <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -62,8 +64,8 @@ export default function QuerySettings() {
             <>
               <Text
                 className="ml-1"
-                text="Response Format"
-                tooltip="Defines the response format. Examples:\n• Multiple Paragraphs\n• Single Paragraph\n• Bullet Points"
+                text={t('retrievePanel.querySettings.responseFormat')}
+                tooltip={t('retrievePanel.querySettings.responseFormatTooltip')}
                 side="left"
               />
               <Select
@@ -75,9 +77,9 @@ export default function QuerySettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value="Multiple Paragraphs">Multiple Paragraphs</SelectItem>
-                    <SelectItem value="Single Paragraph">Single Paragraph</SelectItem>
-                    <SelectItem value="Bullet Points">Bullet Points</SelectItem>
+                    <SelectItem value="Multiple Paragraphs">{t('retrievePanel.querySettings.responseFormatOptions.multipleParagraphs')}</SelectItem>
+                    <SelectItem value="Single Paragraph">{t('retrievePanel.querySettings.responseFormatOptions.singleParagraph')}</SelectItem>
+                    <SelectItem value="Bullet Points">{t('retrievePanel.querySettings.responseFormatOptions.bulletPoints')}</SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -87,8 +89,8 @@ export default function QuerySettings() {
             <>
               <Text
                 className="ml-1"
-                text="Top K Results"
-                tooltip="Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode"
+                text={t('retrievePanel.querySettings.topK')}
+                tooltip={t('retrievePanel.querySettings.topKTooltip')}
                 side="left"
               />
               <NumberInput
@@ -97,7 +99,7 @@ export default function QuerySettings() {
                 value={querySettings.top_k}
                 onValueChange={(v) => handleChange('top_k', v)}
                 min={1}
-                placeholder="Number of results"
+                placeholder={t('retrievePanel.querySettings.topKPlaceholder')}
               />
             </>
 
@@ -106,8 +108,8 @@ export default function QuerySettings() {
               <>
                 <Text
                   className="ml-1"
-                  text="Max Tokens for Text Unit"
-                  tooltip="Maximum number of tokens allowed for each retrieved text chunk"
+                  text={t('retrievePanel.querySettings.maxTokensTextUnit')}
+                  tooltip={t('retrievePanel.querySettings.maxTokensTextUnitTooltip')}
                   side="left"
                 />
                 <NumberInput
@@ -116,14 +118,14 @@ export default function QuerySettings() {
                   value={querySettings.max_token_for_text_unit}
                   onValueChange={(v) => handleChange('max_token_for_text_unit', v)}
                   min={1}
-                  placeholder="Max tokens for text unit"
+                  placeholder={t('retrievePanel.querySettings.maxTokensTextUnit')}
                 />
               </>
 
               <>
                 <Text
-                  text="Max Tokens for Global Context"
-                  tooltip="Maximum number of tokens allocated for relationship descriptions in global retrieval"
+                  text={t('retrievePanel.querySettings.maxTokensGlobalContext')}
+                  tooltip={t('retrievePanel.querySettings.maxTokensGlobalContextTooltip')}
                   side="left"
                 />
                 <NumberInput
@@ -132,15 +134,15 @@ export default function QuerySettings() {
                   value={querySettings.max_token_for_global_context}
                   onValueChange={(v) => handleChange('max_token_for_global_context', v)}
                   min={1}
-                  placeholder="Max tokens for global context"
+                  placeholder={t('retrievePanel.querySettings.maxTokensGlobalContext')}
                 />
               </>
 
               <>
                 <Text
                   className="ml-1"
-                  text="Max Tokens for Local Context"
-                  tooltip="Maximum number of tokens allocated for entity descriptions in local retrieval"
+                  text={t('retrievePanel.querySettings.maxTokensLocalContext')}
+                  tooltip={t('retrievePanel.querySettings.maxTokensLocalContextTooltip')}
                   side="left"
                 />
                 <NumberInput
@@ -149,7 +151,7 @@ export default function QuerySettings() {
                   value={querySettings.max_token_for_local_context}
                   onValueChange={(v) => handleChange('max_token_for_local_context', v)}
                   min={1}
-                  placeholder="Max tokens for local context"
+                  placeholder={t('retrievePanel.querySettings.maxTokensLocalContext')}
                 />
               </>
             </>
@@ -158,8 +160,8 @@ export default function QuerySettings() {
             <>
               <Text
                 className="ml-1"
-                text="History Turns"
-                tooltip="Number of complete conversation turns (user-assistant pairs) to consider in the response context"
+                text={t('retrievePanel.querySettings.historyTurns')}
+                tooltip={t('retrievePanel.querySettings.historyTurnsTooltip')}
                 side="left"
               />
               <NumberInput
@@ -170,7 +172,7 @@ export default function QuerySettings() {
                 value={querySettings.history_turns}
                 onValueChange={(v) => handleChange('history_turns', v)}
                 min={0}
-                placeholder="Number of history turns"
+                placeholder={t('retrievePanel.querySettings.historyTurnsPlaceholder')}
               />
             </>
 
@@ -179,8 +181,8 @@ export default function QuerySettings() {
               <>
                 <Text
                   className="ml-1"
-                  text="High-Level Keywords"
-                  tooltip="List of high-level keywords to prioritize in retrieval. Separate with commas"
+                  text={t('retrievePanel.querySettings.hlKeywords')}
+                  tooltip={t('retrievePanel.querySettings.hlKeywordsTooltip')}
                   side="left"
                 />
                 <Input
@@ -194,15 +196,15 @@ export default function QuerySettings() {
                       .filter((k) => k !== '')
                     handleChange('hl_keywords', keywords)
                   }}
-                  placeholder="Enter keywords"
+                  placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
                 />
               </>
 
               <>
                 <Text
                   className="ml-1"
-                  text="Low-Level Keywords"
-                  tooltip="List of low-level keywords to refine retrieval focus. Separate with commas"
+                  text={t('retrievePanel.querySettings.llKeywords')}
+                  tooltip={t('retrievePanel.querySettings.llKeywordsTooltip')}
                   side="left"
                 />
                 <Input
@@ -216,7 +218,7 @@ export default function QuerySettings() {
                       .filter((k) => k !== '')
                     handleChange('ll_keywords', keywords)
                   }}
-                  placeholder="Enter keywords"
+                  placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
                 />
               </>
             </>
@@ -226,8 +228,8 @@ export default function QuerySettings() {
               <div className="flex items-center gap-2">
                 <Text
                   className="ml-1"
-                  text="Only Need Context"
-                  tooltip="If True, only returns the retrieved context without generating a response"
+                  text={t('retrievePanel.querySettings.onlyNeedContext')}
+                  tooltip={t('retrievePanel.querySettings.onlyNeedContextTooltip')}
                   side="left"
                 />
                 <div className="grow" />
@@ -242,8 +244,8 @@ export default function QuerySettings() {
               <div className="flex items-center gap-2">
                 <Text
                   className="ml-1"
-                  text="Only Need Prompt"
-                  tooltip="If True, only returns the generated prompt without producing a response"
+                  text={t('retrievePanel.querySettings.onlyNeedPrompt')}
+                  tooltip={t('retrievePanel.querySettings.onlyNeedPromptTooltip')}
                   side="left"
                 />
                 <div className="grow" />
@@ -258,8 +260,8 @@ export default function QuerySettings() {
               <div className="flex items-center gap-2">
                 <Text
                   className="ml-1"
-                  text="Stream Response"
-                  tooltip="If True, enables streaming output for real-time responses"
+                  text={t('retrievePanel.querySettings.streamResponse')}
+                  tooltip={t('retrievePanel.querySettings.streamResponseTooltip')}
                   side="left"
                 />
                 <div className="grow" />
