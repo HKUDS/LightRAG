@@ -48,11 +48,11 @@ export default function DocumentManager() {
     } catch (err) {
       toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
     }
-  }, [setDocs])
+  }, [setDocs, t])
 
   useEffect(() => {
     fetchDocuments()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fetchDocuments, t])
 
   const scanDocuments = useCallback(async () => {
     try {
@@ -61,7 +61,7 @@ export default function DocumentManager() {
     } catch (err) {
       toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }))
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     const interval = setInterval(async () => {
@@ -75,7 +75,7 @@ export default function DocumentManager() {
       }
     }, 5000)
     return () => clearInterval(interval)
-  }, [health, fetchDocuments])
+  }, [health, fetchDocuments, t])
 
   return (
     <Card className="!size-full !rounded-none !border-none">
