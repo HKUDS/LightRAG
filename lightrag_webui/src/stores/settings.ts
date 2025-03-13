@@ -3,7 +3,6 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
 import { defaultQueryLabel } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
-import { useGraphStore } from '@/stores/graph'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh'
@@ -11,7 +10,6 @@ type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
 
 interface SettingsState {
   // Graph viewer settings
-  refreshLayout: () => void
   showPropertyPanel: boolean
   showNodeSearchBar: boolean
 
@@ -59,37 +57,11 @@ interface SettingsState {
   setCurrentTab: (tab: Tab) => void
 }
 
-// Helper to get initial state from localStorage
-const getInitialState = () => {
-  try {
-    const stored = localStorage.getItem('settings-storage')
-    if (stored) {
-      const { state } = JSON.parse(stored)
-      return {
-        theme: state?.theme || 'system',
-        language: state?.language || 'zh'
-      }
-    }
-  } catch (e) {
-    console.error('Failed to parse settings from localStorage:', e)
-  }
-  return { theme: 'system', language: 'zh' }
-}
-
 const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
-      ...getInitialState(),
-      refreshLayout: () => {
-        const graphState = useGraphStore.getState();
-        const currentGraph = graphState.sigmaGraph;
-        graphState.clearSelection();
-        graphState.setSigmaGraph(null);
-        setTimeout(() => {
-          graphState.setSigmaGraph(currentGraph);
-        }, 10);
-      },
-
+      theme: 'system',
+      language: 'en',
       showPropertyPanel: true,
       showNodeSearchBar: true,
 
@@ -211,10 +183,8 @@ const useSettingsStoreBase = create<SettingsState>()(
           state.graphLayoutMaxIterations = 15
         }
         if (version < 8) {
-          state.enableNodeDrag = true
-          state.enableHideUnselectedEdges = true
-          state.enableEdgeEvents = false
           state.graphMinDegree = 0
+          state.language = 'en'
         }
         return state
       }
