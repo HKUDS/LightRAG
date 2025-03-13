@@ -177,6 +177,9 @@ def create_app(args):
         if api_key
         else "",
         version=__api_version__,
+        openapi_url="/openapi.json",  # Explicitly set OpenAPI schema URL
+        docs_url="/docs",  # Explicitly set docs URL
+        redoc_url="/redoc",  # Explicitly set redoc URL
         openapi_tags=[{"name": "api"}],
         lifespan=lifespan,
     )
