@@ -2386,7 +2386,9 @@ class LightRAG:
             # 1. Check if all source entities exist
             source_entities_data = {}
             for entity_name in source_entities:
-                node_exists = await self.chunk_entity_relation_graph.has_node(entity_name)
+                node_exists = await self.chunk_entity_relation_graph.has_node(
+                    entity_name
+                )
                 if not node_exists:
                     raise ValueError(f"Source entity '{entity_name}' does not exist")
                 node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
