@@ -147,7 +147,14 @@
         "labels": "标签",
         "degree": "度数",
         "properties": "属性",
-        "relationships": "关系"
+        "relationships": "关系",
+        "propertyNames": {
+          "description": "描述",
+          "entity_id": "名称",
+          "entity_type": "类型",
+          "source_id": "信源ID",
+          "Neighbour": "邻接"
+        }
       },
       "edge": {
         "title": "关系",
