@@ -141,7 +141,7 @@ Start the LightRAG server using specified options:
 lightrag-server --port 9621 --key sk-somepassword --kv-storage PGKVStorage --graph-storage PGGraphStorage --vector-storage PGVectorStorage --doc-status-storage PGDocStatusStorage
 ```
 
-Replace `the-port-number` with your desired port number (default is 9621) and `your-secret-key` with a secure key.
+Replace the `port` number with your desired port number (default is 9621) and `your-secret-key` with a secure key.
 
 ## Conclusion
 
