@@ -124,9 +124,7 @@ const GraphViewer = () => {
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
   const renderLabels = useSettingsStore.use.showNodeLabel()
 
-  const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
-  const renderEdgeLabels = useSettingsStore.use.showEdgeLabel()
 
   // Handle component mount/unmount and tab visibility
   useEffect(() => {
@@ -146,14 +144,14 @@ const GraphViewer = () => {
     }
   }, [isGraphTabVisible, shouldRender, isFetching])
 
+  // Initialize sigma settings once on component mount
+  // Edge-related settings will be updated in GraphControl using useSetSettings
   useEffect(() => {
     setSigmaSettings({
       ...defaultSigmaSettings,
-      enableEdgeEvents,
-      renderEdgeLabels,
       renderLabels
     })
-  }, [renderLabels, enableEdgeEvents, renderEdgeLabels])
+  }, [renderLabels])
 
   const onSearchFocus = useCallback((value: GraphSearchOption | null) => {
     if (value === null) useGraphStore.getState().setFocusedNode(null)
