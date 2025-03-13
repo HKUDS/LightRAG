@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { useTabVisibility } from '@/contexts/useTabVisibility'
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
 import { Settings as SigmaSettings } from 'sigma/settings'
@@ -107,10 +108,17 @@ const GraphEvents = () => {
 const GraphViewer = () => {
   const [sigmaSettings, setSigmaSettings] = useState(defaultSigmaSettings)
   const sigmaRef = useRef<any>(null)
+  const initAttemptedRef = useRef(false)
 
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
+  const isFetching = useGraphStore.use.isFetching()
+  const shouldRender = useGraphStore.use.shouldRender() // Rendering control state
+  
+  // Get tab visibility
+  const { isTabVisible } = useTabVisibility()
+  const isGraphTabVisible = isTabVisible('knowledge-graph')
 
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
@@ -119,6 +127,15 @@ const GraphViewer = () => {
   const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
   const renderEdgeLabels = useSettingsStore.use.showEdgeLabel()
+
+  // Ensure rendering is enabled when tab becomes visible
+  useEffect(() => {
+    if (isGraphTabVisible && !shouldRender && !isFetching && !initAttemptedRef.current) {
+      // If tab is visible but graph is not rendering, try to enable rendering
+      useGraphStore.getState().setShouldRender(true)
+      initAttemptedRef.current = true
+    }
+  }, [isGraphTabVisible, shouldRender, isFetching])
 
   useEffect(() => {
     setSigmaSettings({
@@ -147,6 +164,24 @@ const GraphViewer = () => {
     (): OptionItem | null => (selectedNode ? { type: 'nodes', id: selectedNode } : null),
     [selectedNode]
   )
+
+  // If we shouldn't render, show loading state or empty state
+  if (!shouldRender) {
+    return (
+      <div className="flex h-full w-full items-center justify-center bg-background">
+        {isFetching ? (
+          <div className="text-center">
+            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
+            <p>Reloading Graph Data...</p>
+          </div>
+        ) : (
+          <div className="text-center text-muted-foreground">
+            {/* Empty or hint message */}
+          </div>
+        )}
+      </div>
+    )
+  }
 
   return (
     <SigmaContainer

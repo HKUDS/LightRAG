@@ -25,12 +25,10 @@ const TabContent: React.FC<TabContentProps> = ({ tabId, children, className = ''
     };
   }, [tabId, setTabVisibility]);
 
-  if (!isVisible) {
-    return null;
-  }
-
+  // Use CSS to hide content instead of not rendering it
+  // This prevents components from unmounting when tabs are switched
   return (
-    <div className={className}>
+    <div className={`${className} ${isVisible ? '' : 'hidden'}`}>
       {children}
     </div>
   );

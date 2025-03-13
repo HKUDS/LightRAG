@@ -71,6 +71,11 @@ interface GraphState {
 
   moveToSelectedNode: boolean
   isFetching: boolean
+  shouldRender: boolean
+  
+  // Global flags to track data fetching attempts
+  graphDataFetchAttempted: boolean
+  labelsFetchAttempted: boolean
 
   refreshLayout: () => void
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
@@ -88,6 +93,11 @@ interface GraphState {
   setAllDatabaseLabels: (labels: string[]) => void
   fetchAllDatabaseLabels: () => Promise<void>
   setIsFetching: (isFetching: boolean) => void
+  setShouldRender: (shouldRender: boolean) => void
+  
+  // Methods to set global flags
+  setGraphDataFetchAttempted: (attempted: boolean) => void
+  setLabelsFetchAttempted: (attempted: boolean) => void
 }
 
 const useGraphStoreBase = create<GraphState>()((set, get) => ({
@@ -98,6 +108,11 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   moveToSelectedNode: false,
   isFetching: false,
+  shouldRender: false,
+  
+  // Initialize global flags
+  graphDataFetchAttempted: false,
+  labelsFetchAttempted: false,
 
   rawGraph: null,
   sigmaGraph: null,
@@ -116,6 +131,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   },
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
+  setShouldRender: (shouldRender: boolean) => set({ shouldRender }),
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
   setFocusedNode: (nodeId: string | null) => set({ focusedNode: nodeId }),
@@ -137,7 +153,8 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       rawGraph: null,
       sigmaGraph: null,
       graphLabels: ['*'],
-      moveToSelectedNode: false
+      moveToSelectedNode: false,
+      shouldRender: false
     }),
 
   setRawGraph: (rawGraph: RawGraph | null) =>
@@ -153,15 +170,22 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   fetchAllDatabaseLabels: async () => {
     try {
+      console.log('Fetching all database labels...');
       const labels = await getGraphLabels();
       set({ allDatabaseLabels: ['*', ...labels] });
+      return;
     } catch (error) {
       console.error('Failed to fetch all database labels:', error);
       set({ allDatabaseLabels: ['*'] });
+      throw error;
     }
   },
 
-  setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode })
+  setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
+  
+  // Methods to set global flags
+  setGraphDataFetchAttempted: (attempted: boolean) => set({ graphDataFetchAttempted: attempted }),
+  setLabelsFetchAttempted: (attempted: boolean) => set({ labelsFetchAttempted: attempted })
 }))
 
 const useGraphStore = createSelectors(useGraphStoreBase)
