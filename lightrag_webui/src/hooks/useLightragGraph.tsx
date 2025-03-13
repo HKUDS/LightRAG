@@ -169,11 +169,6 @@ const useLightrangeGraph = () => {
   const minDegree = useSettingsStore.use.graphMinDegree()
   const isFetching = useGraphStore.use.isFetching()
 
-  // Fetch all database labels on mount
-  useEffect(() => {
-    useGraphStore.getState().fetchAllDatabaseLabels()
-  }, [])
-
   // Use ref to track fetch status
   const fetchStatusRef = useRef<Record<string, boolean>>({});
 
@@ -276,6 +271,7 @@ const useLightrangeGraph = () => {
       const state = useGraphStore.getState()
       state.reset()
       state.setSigmaGraph(new DirectedGraph())
+      state.setGraphLabels(['*'])
     }
   }, [queryLabel, maxQueryDepth, minDegree, isFetching])
 
