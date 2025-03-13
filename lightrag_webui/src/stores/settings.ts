@@ -3,7 +3,6 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import { createSelectors } from '@/lib/utils'
 import { defaultQueryLabel } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
-import { useGraphStore } from '@/stores/graph'
 
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh'
@@ -11,7 +10,6 @@ type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
 
 interface SettingsState {
   // Graph viewer settings
-  refreshLayout: () => void
   showPropertyPanel: boolean
   showNodeSearchBar: boolean
 
@@ -64,16 +62,6 @@ const useSettingsStoreBase = create<SettingsState>()(
     (set) => ({
       theme: 'system',
       language: 'en',
-      refreshLayout: () => {
-        const graphState = useGraphStore.getState();
-        const currentGraph = graphState.sigmaGraph;
-        graphState.clearSelection();
-        graphState.setSigmaGraph(null);
-        setTimeout(() => {
-          graphState.setSigmaGraph(currentGraph);
-        }, 10);
-      },
-
       showPropertyPanel: true,
       showNodeSearchBar: true,
 
