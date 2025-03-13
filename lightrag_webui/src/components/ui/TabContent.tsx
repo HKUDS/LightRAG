@@ -18,7 +18,7 @@ const TabContent: React.FC<TabContentProps> = ({ tabId, children, className = ''
   // Register this tab with the context when mounted
   useEffect(() => {
     setTabVisibility(tabId, true);
-    
+
     // Cleanup when unmounted
     return () => {
       setTabVisibility(tabId, false);

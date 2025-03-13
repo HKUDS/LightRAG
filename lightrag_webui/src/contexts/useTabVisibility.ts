@@ -8,10 +8,10 @@ import { TabVisibilityContextType } from './types';
  */
 export const useTabVisibility = (): TabVisibilityContextType => {
   const context = useContext(TabVisibilityContext);
-  
+
   if (!context) {
     throw new Error('useTabVisibility must be used within a TabVisibilityProvider');
   }
-  
+
   return context;
 };

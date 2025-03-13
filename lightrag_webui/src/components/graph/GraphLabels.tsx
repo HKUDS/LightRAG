@@ -11,23 +11,23 @@ const GraphLabels = () => {
   const label = useSettingsStore.use.queryLabel()
   const allDatabaseLabels = useGraphStore.use.allDatabaseLabels()
   const labelsLoadedRef = useRef(false)
-  
+
   // Track if a fetch is in progress to prevent multiple simultaneous fetches
   const fetchInProgressRef = useRef(false)
-  
+
   // Fetch labels once on component mount, using global flag to prevent duplicates
   useEffect(() => {
     // Check if we've already attempted to fetch labels in this session
     const labelsFetchAttempted = useGraphStore.getState().labelsFetchAttempted
-    
+
     // Only fetch if we haven't attempted in this session and no fetch is in progress
     if (!labelsFetchAttempted && !fetchInProgressRef.current) {
       fetchInProgressRef.current = true
       // Set global flag to indicate we've attempted to fetch in this session
       useGraphStore.getState().setLabelsFetchAttempted(true)
-      
+
       console.log('Fetching graph labels (once per session)...')
-      
+
       useGraphStore.getState().fetchAllDatabaseLabels()
         .then(() => {
           labelsLoadedRef.current = true
@@ -103,22 +103,22 @@ const GraphLabels = () => {
         if (newLabel === '...') {
           newLabel = '*'
         }
-        
+
         // Reset the fetch attempted flag to force a new data fetch
         useGraphStore.getState().setGraphDataFetchAttempted(false)
-        
+
         // Clear current graph data to ensure complete reload when label changes
         if (newLabel !== currentLabel) {
           const graphStore = useGraphStore.getState();
           graphStore.clearSelection();
-          
+
           // Reset the graph state but preserve the instance
           if (graphStore.sigmaGraph) {
             const nodes = Array.from(graphStore.sigmaGraph.nodes());
             nodes.forEach(node => graphStore.sigmaGraph?.dropNode(node));
           }
         }
-        
+
         if (newLabel === currentLabel && newLabel !== '*') {
           // 选择相同标签时切换到'*'
           useSettingsStore.getState().setQueryLabel('*')

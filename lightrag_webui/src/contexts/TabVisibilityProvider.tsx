@@ -14,7 +14,7 @@ interface TabVisibilityProviderProps {
 export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ children }) => {
   // Get current tab from settings store
   const currentTab = useSettingsStore.use.currentTab();
-  
+
   // Initialize visibility state with current tab as visible
   const [visibleTabs, setVisibleTabs] = useState<Record<string, boolean>>(() => ({
     [currentTab]: true

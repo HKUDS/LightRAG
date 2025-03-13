@@ -115,7 +115,7 @@ const GraphViewer = () => {
   const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
   const isFetching = useGraphStore.use.isFetching()
   const shouldRender = useGraphStore.use.shouldRender() // Rendering control state
-  
+
   // Get tab visibility
   const { isTabVisible } = useTabVisibility()
   const isGraphTabVisible = isTabVisible('knowledge-graph')
@@ -137,7 +137,7 @@ const GraphViewer = () => {
       initAttemptedRef.current = true
       console.log('Graph viewer initialized')
     }
-    
+
     // Cleanup function when component unmounts
     return () => {
       // Only log cleanup, don't actually clean up the WebGL context

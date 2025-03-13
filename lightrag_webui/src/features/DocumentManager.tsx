@@ -76,7 +76,7 @@ export default function DocumentManager() {
     if (!isDocumentsTabVisible || !health) {
       return
     }
-    
+
     const interval = setInterval(async () => {
       try {
         await fetchDocuments()
@@ -84,7 +84,7 @@ export default function DocumentManager() {
         toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
       }
     }, 5000)
-    
+
     return () => clearInterval(interval)
   }, [health, fetchDocuments, t, isDocumentsTabVisible])
 
