@@ -8,20 +8,20 @@ export default function ApiSite() {
   const { isTabVisible } = useTabVisibility()
   const isApiTabVisible = isTabVisible('api')
   const [iframeLoaded, setIframeLoaded] = useState(false)
-  
+
   // Load the iframe once on component mount
   useEffect(() => {
     if (!iframeLoaded) {
       setIframeLoaded(true)
     }
   }, [iframeLoaded])
-  
+
   // Use CSS to hide content when tab is not visible
   return (
     <div className={`size-full ${isApiTabVisible ? '' : 'hidden'}`}>
       {iframeLoaded ? (
-        <iframe 
-          src={backendBaseUrl + '/docs'} 
+        <iframe
+          src={backendBaseUrl + '/docs'}
           className="size-full w-full h-full"
           style={{ width: '100%', height: '100%', border: 'none' }}
           // Use key to ensure iframe doesn't reload

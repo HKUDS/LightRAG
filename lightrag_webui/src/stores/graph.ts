@@ -72,7 +72,7 @@ interface GraphState {
   moveToSelectedNode: boolean
   isFetching: boolean
   shouldRender: boolean
-  
+
   // Global flags to track data fetching attempts
   graphDataFetchAttempted: boolean
   labelsFetchAttempted: boolean
@@ -94,7 +94,7 @@ interface GraphState {
   fetchAllDatabaseLabels: () => Promise<void>
   setIsFetching: (isFetching: boolean) => void
   setShouldRender: (shouldRender: boolean) => void
-  
+
   // Methods to set global flags
   setGraphDataFetchAttempted: (attempted: boolean) => void
   setLabelsFetchAttempted: (attempted: boolean) => void
@@ -109,7 +109,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   moveToSelectedNode: false,
   isFetching: false,
   shouldRender: false,
-  
+
   // Initialize global flags
   graphDataFetchAttempted: false,
   labelsFetchAttempted: false,
@@ -147,13 +147,13 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   reset: () => {
     // Get the existing graph
     const existingGraph = get().sigmaGraph;
-    
+
     // If we have an existing graph, clear it by removing all nodes
     if (existingGraph) {
       const nodes = Array.from(existingGraph.nodes());
       nodes.forEach(node => existingGraph.dropNode(node));
     }
-    
+
     set({
       selectedNode: null,
       focusedNode: null,
@@ -195,7 +195,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   },
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
-  
+
   // Methods to set global flags
   setGraphDataFetchAttempted: (attempted: boolean) => set({ graphDataFetchAttempted: attempted }),
   setLabelsFetchAttempted: (attempted: boolean) => set({ labelsFetchAttempted: attempted })
