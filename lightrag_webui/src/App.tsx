@@ -22,7 +22,7 @@ import { Tabs, TabsContent } from '@/components/ui/Tabs'
 function App() {
   const message = useBackendState.use.message()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
-  const [currentTab] = useState(() => useSettingsStore.getState().currentTab)
+  const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyInvalid, setApiKeyInvalid] = useState(false)
 
   // Health check
