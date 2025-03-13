@@ -59,27 +59,11 @@ interface SettingsState {
   setCurrentTab: (tab: Tab) => void
 }
 
-// Helper to get initial state from localStorage
-const getInitialState = () => {
-  try {
-    const stored = localStorage.getItem('settings-storage')
-    if (stored) {
-      const { state } = JSON.parse(stored)
-      return {
-        theme: state?.theme || 'system',
-        language: state?.language || 'zh'
-      }
-    }
-  } catch (e) {
-    console.error('Failed to parse settings from localStorage:', e)
-  }
-  return { theme: 'system', language: 'zh' }
-}
-
 const useSettingsStoreBase = create<SettingsState>()(
   persist(
     (set) => ({
-      ...getInitialState(),
+      theme: 'system',
+      language: 'en',
       refreshLayout: () => {
         const graphState = useGraphStore.getState();
         const currentGraph = graphState.sigmaGraph;
@@ -211,10 +195,8 @@ const useSettingsStoreBase = create<SettingsState>()(
           state.graphLayoutMaxIterations = 15
         }
         if (version < 8) {
-          state.enableNodeDrag = true
-          state.enableHideUnselectedEdges = true
-          state.enableEdgeEvents = false
           state.graphMinDegree = 0
+          state.language = 'en'
         }
         return state
       }
