@@ -225,7 +225,6 @@ const useLightrangeGraph = () => {
       if (rawGraph !== null || sigmaGraph !== null) {
         const state = useGraphStore.getState()
         state.reset()
-        state.setGraphLabels(['*'])
         state.setGraphDataFetchAttempted(false)
         state.setLabelsFetchAttempted(false)
       }
@@ -285,24 +284,7 @@ const useLightrangeGraph = () => {
         state.setSigmaGraph(newSigmaGraph)
         state.setRawGraph(data)
 
-        // Extract labels from current graph data
-        if (data) {
-          const labelSet = new Set<string>()
-          for (const node of data.nodes) {
-            if (node.labels && Array.isArray(node.labels)) {
-              for (const label of node.labels) {
-                if (label !== '*') {  // filter out label "*"
-                  labelSet.add(label)
-                }
-              }
-            }
-          }
-          // Put * on top of other labels
-          const sortedLabels = Array.from(labelSet).sort()
-          state.setGraphLabels(['*', ...sortedLabels])
-        } else {
-          state.setGraphLabels(['*'])
-        }
+        // No longer need to extract labels from graph data
 
         // Update flags
         dataLoadedRef.current = true

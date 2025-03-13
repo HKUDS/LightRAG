@@ -66,7 +66,6 @@ interface GraphState {
 
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
-  graphLabels: string[]
   allDatabaseLabels: string[]
 
   moveToSelectedNode: boolean
@@ -89,7 +88,6 @@ interface GraphState {
 
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
-  setGraphLabels: (labels: string[]) => void
   setAllDatabaseLabels: (labels: string[]) => void
   fetchAllDatabaseLabels: () => Promise<void>
   setIsFetching: (isFetching: boolean) => void
@@ -116,7 +114,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   rawGraph: null,
   sigmaGraph: null,
-  graphLabels: ['*'],
   allDatabaseLabels: ['*'],
 
   refreshLayout: () => {
@@ -161,7 +158,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       focusedEdge: null,
       rawGraph: null,
       // Keep the existing graph instance but with cleared data
-      graphLabels: ['*'],
       moveToSelectedNode: false,
       shouldRender: false
     });
@@ -176,8 +172,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
     // Replace graph instance, no need to keep WebGL context
     set({ sigmaGraph });
   },
-
-  setGraphLabels: (labels: string[]) => set({ graphLabels: labels }),
 
   setAllDatabaseLabels: (labels: string[]) => set({ allDatabaseLabels: labels }),
 
