@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useTabVisibility } from '@/contexts/useTabVisibility'
 import { backendBaseUrl } from '@/lib/constants'
+import { useTranslation } from 'react-i18next'
 
 export default function ApiSite() {
+  const { t } = useTranslation()
   const { isTabVisible } = useTabVisibility()
   const isApiTabVisible = isTabVisible('api')
   const [iframeLoaded, setIframeLoaded] = useState(false)
@@ -29,7 +31,7 @@ export default function ApiSite() {
         <div className="flex h-full w-full items-center justify-center bg-background">
           <div className="text-center">
             <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
-            <p>Loading API Documentation...</p>
+            <p>{t('apiSite.loading')}</p>
           </div>
         </div>
       )}

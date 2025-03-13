@@ -225,5 +225,8 @@
       "streamResponse": "流式响应",
       "streamResponseTooltip": "如果为True，启用实时流式输出响应"
     }
+  },
+  "apiSite": {
+    "loading": "正在加载 API 文档..."
   }
 }
