@@ -240,5 +240,8 @@
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses"
     }
+  },
+  "apiSite": {
+    "loading": "Loading API Documentation..."
   }
 }
