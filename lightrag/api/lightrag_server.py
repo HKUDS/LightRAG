@@ -55,41 +55,6 @@ config = configparser.ConfigParser()
 config.read("config.ini")
 
 
-class LightragPathFilter(logging.Filter):
-    """Filter for lightrag logger to filter out frequent path access logs"""
-
-    def __init__(self):
-        super().__init__()
-        # Define paths to be filtered
-        self.filtered_paths = ["/documents", "/health", "/webui/"]
-
-    def filter(self, record):
-        try:
-            # Check if record has the required attributes for an access log
-            if not hasattr(record, "args") or not isinstance(record.args, tuple):
-                return True
-            if len(record.args) < 5:
-                return True
-
-            # Extract method, path and status from the record args
-            method = record.args[1]
-            path = record.args[2]
-            status = record.args[4]
-
-            # Filter out successful GET requests to filtered paths
-            if (
-                method == "GET"
-                and (status == 200 or status == 304)
-                and path in self.filtered_paths
-            ):
-                return False
-
-            return True
-        except Exception:
-            # In case of any error, let the message through
-            return True
-
-
 def create_app(args):
     # Setup logging
     logger.setLevel(args.log_level)
@@ -177,6 +142,9 @@ def create_app(args):
         if api_key
         else "",
         version=__api_version__,
+        openapi_url="/openapi.json",  # Explicitly set OpenAPI schema URL
+        docs_url="/docs",  # Explicitly set docs URL
+        redoc_url="/redoc",  # Explicitly set redoc URL
         openapi_tags=[{"name": "api"}],
         lifespan=lifespan,
     )
@@ -516,7 +484,7 @@ def configure_logging():
             },
             "filters": {
                 "path_filter": {
-                    "()": "lightrag.api.lightrag_server.LightragPathFilter",
+                    "()": "lightrag.utils.LightragPathFilter",
                 },
             },
         }
