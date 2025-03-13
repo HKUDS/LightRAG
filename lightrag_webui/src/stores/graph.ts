@@ -173,7 +173,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
     }),
 
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => {
-    // 直接替换图形实例，不尝试保留WebGL上下文
+    // Replace graph instance, no need to keep WebGL context
     set({ sigmaGraph });
   },
 
