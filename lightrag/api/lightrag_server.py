@@ -50,47 +50,9 @@ from .auth import auth_handler
 # This update allows the user to put a different.env file for each lightrag folder
 load_dotenv(".env", override=True)
 
-# Read entity extraction cache config
-enable_llm_cache = os.getenv("ENABLE_LLM_CACHE_FOR_EXTRACT", "false").lower() == "true"
-
 # Initialize config parser
 config = configparser.ConfigParser()
 config.read("config.ini")
-
-
-class LightragPathFilter(logging.Filter):
-    """Filter for lightrag logger to filter out frequent path access logs"""
-
-    def __init__(self):
-        super().__init__()
-        # Define paths to be filtered
-        self.filtered_paths = ["/documents", "/health", "/webui/"]
-
-    def filter(self, record):
-        try:
-            # Check if record has the required attributes for an access log
-            if not hasattr(record, "args") or not isinstance(record.args, tuple):
-                return True
-            if len(record.args) < 5:
-                return True
-
-            # Extract method, path and status from the record args
-            method = record.args[1]
-            path = record.args[2]
-            status = record.args[4]
-
-            # Filter out successful GET requests to filtered paths
-            if (
-                method == "GET"
-                and (status == 200 or status == 304)
-                and path in self.filtered_paths
-            ):
-                return False
-
-            return True
-        except Exception:
-            # In case of any error, let the message through
-            return True
 
 
 def create_app(args):
@@ -144,23 +106,25 @@ def create_app(args):
         try:
             # Initialize database connections
             await rag.initialize_storages()
-            await initialize_pipeline_status()
 
-            # Auto scan documents if enabled
-            if args.auto_scan_at_startup:
-                # Check if a task is already running (with lock protection)
-                pipeline_status = await get_namespace_data("pipeline_status")
-                should_start_task = False
-                async with get_pipeline_status_lock():
-                    if not pipeline_status.get("busy", False):
-                        should_start_task = True
-                # Only start the task if no other task is running
-                if should_start_task:
-                    # Create background task
-                    task = asyncio.create_task(run_scanning_process(rag, doc_manager))
-                    app.state.background_tasks.add(task)
-                    task.add_done_callback(app.state.background_tasks.discard)
-                    logger.info("Auto scan task started at startup.")
+            await initialize_pipeline_status()
+            pipeline_status = await get_namespace_data("pipeline_status")
+
+            should_start_autoscan = False
+            async with get_pipeline_status_lock():
+                # Auto scan documents if enabled
+                if args.auto_scan_at_startup:
+                    if not pipeline_status.get("autoscanned", False):
+                        pipeline_status["autoscanned"] = True
+                        should_start_autoscan = True
+
+            # Only run auto scan when no other process started it first
+            if should_start_autoscan:
+                # Create background task
+                task = asyncio.create_task(run_scanning_process(rag, doc_manager))
+                app.state.background_tasks.add(task)
+                task.add_done_callback(app.state.background_tasks.discard)
+                logger.info(f"Process {os.getpid()} auto scan task started at startup.")
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 
@@ -180,6 +144,9 @@ def create_app(args):
             else ""
         ),
         version=__api_version__,
+        openapi_url="/openapi.json",  # Explicitly set OpenAPI schema URL
+        docs_url="/docs",  # Explicitly set docs URL
+        redoc_url="/redoc",  # Explicitly set redoc URL
         openapi_tags=[{"name": "api"}],
         lifespan=lifespan,
     )
@@ -340,7 +307,7 @@ def create_app(args):
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
-            enable_llm_cache_for_entity_extract=enable_llm_cache,  # Read from environment variable
+            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
@@ -373,7 +340,7 @@ def create_app(args):
             vector_db_storage_cls_kwargs={
                 "cosine_better_than_threshold": args.cosine_threshold
             },
-            enable_llm_cache_for_entity_extract=enable_llm_cache,  # Read from environment variable
+            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
@@ -441,6 +408,7 @@ def create_app(args):
                 "doc_status_storage": args.doc_status_storage,
                 "graph_storage": args.graph_storage,
                 "vector_storage": args.vector_storage,
+                "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
             },
             "update_status": update_status,
         }
@@ -538,7 +506,7 @@ def configure_logging():
             },
             "filters": {
                 "path_filter": {
-                    "()": "lightrag.api.lightrag_server.LightragPathFilter",
+                    "()": "lightrag.utils.LightragPathFilter",
                 },
             },
         }

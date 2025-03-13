@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
-from ..utils_api import get_api_key_dependency, get_auth_dependency
+from lightrag.api.utils_api import (
+    get_api_key_dependency,
+    global_args,
+    get_auth_dependency,
+)
 
 router = APIRouter(
     prefix="/documents",
@@ -98,6 +102,37 @@ class DocStatusResponse(BaseModel):
 
 class DocsStatusesResponse(BaseModel):
     statuses: Dict[DocStatus, List[DocStatusResponse]] = {}
+
+
+class PipelineStatusResponse(BaseModel):
+    """Response model for pipeline status
+
+    Attributes:
+        autoscanned: Whether auto-scan has started
+        busy: Whether the pipeline is currently busy
+        job_name: Current job name (e.g., indexing files/indexing texts)
+        job_start: Job start time as ISO format string (optional)
+        docs: Total number of documents to be indexed
+        batchs: Number of batches for processing documents
+        cur_batch: Current processing batch
+        request_pending: Flag for pending request for processing
+        latest_message: Latest message from pipeline processing
+        history_messages: List of history messages
+    """
+
+    autoscanned: bool = False
+    busy: bool = False
+    job_name: str = "Default Job"
+    job_start: Optional[str] = None
+    docs: int = 0
+    batchs: int = 0
+    cur_batch: int = 0
+    request_pending: bool = False
+    latest_message: str = ""
+    history_messages: Optional[List[str]] = None
+
+    class Config:
+        extra = "allow"  # Allow additional fields from the pipeline status
 
 
 class DocumentManager:
@@ -245,54 +280,93 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     )
                     return False
             case ".pdf":
-                if not pm.is_installed("pypdf2"):  # type: ignore
-                    pm.install("pypdf2")
-                from PyPDF2 import PdfReader  # type: ignore
-                from io import BytesIO
+                if global_args["main_args"].document_loading_engine == "DOCLING":
+                    if not pm.is_installed("docling"):  # type: ignore
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter  # type: ignore
 
-                pdf_file = BytesIO(file)
-                reader = PdfReader(pdf_file)
-                for page in reader.pages:
-                    content += page.extract_text() + "\n"
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
+                else:
+                    if not pm.is_installed("pypdf2"):  # type: ignore
+                        pm.install("pypdf2")
+                    from PyPDF2 import PdfReader  # type: ignore
+                    from io import BytesIO
+
+                    pdf_file = BytesIO(file)
+                    reader = PdfReader(pdf_file)
+                    for page in reader.pages:
+                        content += page.extract_text() + "\n"
             case ".docx":
-                if not pm.is_installed("python-docx"):  # type: ignore
-                    pm.install("docx")
-                from docx import Document  # type: ignore
-                from io import BytesIO
+                if global_args["main_args"].document_loading_engine == "DOCLING":
+                    if not pm.is_installed("docling"):  # type: ignore
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter  # type: ignore
 
-                docx_file = BytesIO(file)
-                doc = Document(docx_file)
-                content = "\n".join([paragraph.text for paragraph in doc.paragraphs])
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
+                else:
+                    if not pm.is_installed("python-docx"):  # type: ignore
+                        pm.install("docx")
+                    from docx import Document  # type: ignore
+                    from io import BytesIO
+
+                    docx_file = BytesIO(file)
+                    doc = Document(docx_file)
+                    content = "\n".join(
+                        [paragraph.text for paragraph in doc.paragraphs]
+                    )
             case ".pptx":
-                if not pm.is_installed("python-pptx"):  # type: ignore
-                    pm.install("pptx")
-                from pptx import Presentation  # type: ignore
-                from io import BytesIO
+                if global_args["main_args"].document_loading_engine == "DOCLING":
+                    if not pm.is_installed("docling"):  # type: ignore
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter  # type: ignore
 
-                pptx_file = BytesIO(file)
-                prs = Presentation(pptx_file)
-                for slide in prs.slides:
-                    for shape in slide.shapes:
-                        if hasattr(shape, "text"):
-                            content += shape.text + "\n"
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
+                else:
+                    if not pm.is_installed("python-pptx"):  # type: ignore
+                        pm.install("pptx")
+                    from pptx import Presentation  # type: ignore
+                    from io import BytesIO
+
+                    pptx_file = BytesIO(file)
+                    prs = Presentation(pptx_file)
+                    for slide in prs.slides:
+                        for shape in slide.shapes:
+                            if hasattr(shape, "text"):
+                                content += shape.text + "\n"
             case ".xlsx":
-                if not pm.is_installed("openpyxl"):  # type: ignore
-                    pm.install("openpyxl")
-                from openpyxl import load_workbook  # type: ignore
-                from io import BytesIO
+                if global_args["main_args"].document_loading_engine == "DOCLING":
+                    if not pm.is_installed("docling"):  # type: ignore
+                        pm.install("docling")
+                    from docling.document_converter import DocumentConverter  # type: ignore
 
-                xlsx_file = BytesIO(file)
-                wb = load_workbook(xlsx_file)
-                for sheet in wb:
-                    content += f"Sheet: {sheet.title}\n"
-                    for row in sheet.iter_rows(values_only=True):
-                        content += (
-                            "\t".join(
-                                str(cell) if cell is not None else "" for cell in row
+                    converter = DocumentConverter()
+                    result = converter.convert(file_path)
+                    content = result.document.export_to_markdown()
+                else:
+                    if not pm.is_installed("openpyxl"):  # type: ignore
+                        pm.install("openpyxl")
+                    from openpyxl import load_workbook  # type: ignore
+                    from io import BytesIO
+
+                    xlsx_file = BytesIO(file)
+                    wb = load_workbook(xlsx_file)
+                    for sheet in wb:
+                        content += f"Sheet: {sheet.title}\n"
+                        for row in sheet.iter_rows(values_only=True):
+                            content += (
+                                "\t".join(
+                                    str(cell) if cell is not None else ""
+                                    for cell in row
+                                )
+                                + "\n"
                             )
-                            + "\n"
-                        )
-                    content += "\n"
+                        content += "\n"
             case _:
                 logger.error(
                     f"Unsupported file type: {file_path.name} (extension {ext})"
@@ -680,17 +754,33 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.get("/pipeline_status", dependencies=[Depends(optional_api_key)])
-    async def get_pipeline_status():
+    @router.get(
+        "/pipeline_status",
+        dependencies=[Depends(optional_api_key)],
+        response_model=PipelineStatusResponse,
+    )
+    async def get_pipeline_status() -> PipelineStatusResponse:
         """
         Get the current status of the document indexing pipeline.
 
         This endpoint returns information about the current state of the document processing pipeline,
-        including whether it's busy, the current job name, when it started, how many documents
-        are being processed, how many batches there are, and which batch is currently being processed.
+        including the processing status, progress information, and history messages.
 
         Returns:
-            dict: A dictionary containing the pipeline status information
+            PipelineStatusResponse: A response object containing:
+                - autoscanned (bool): Whether auto-scan has started
+                - busy (bool): Whether the pipeline is currently busy
+                - job_name (str): Current job name (e.g., indexing files/indexing texts)
+                - job_start (str, optional): Job start time as ISO format string
+                - docs (int): Total number of documents to be indexed
+                - batchs (int): Number of batches for processing documents
+                - cur_batch (int): Current processing batch
+                - request_pending (bool): Flag for pending request for processing
+                - latest_message (str): Latest message from pipeline processing
+                - history_messages (List[str], optional): List of history messages
+
+        Raises:
+            HTTPException: If an error occurs while retrieving pipeline status (500)
         """
         try:
             from lightrag.kg.shared_storage import get_namespace_data
@@ -708,7 +798,7 @@ def create_document_routes(
             if status_dict.get("job_start"):
                 status_dict["job_start"] = str(status_dict["job_start"])
 
-            return status_dict
+            return PipelineStatusResponse(**status_dict)
         except Exception as e:
             logger.error(f"Error getting pipeline status: {str(e)}")
             logger.error(traceback.format_exc())

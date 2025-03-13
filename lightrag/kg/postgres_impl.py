@@ -438,6 +438,8 @@ class PGVectorStorage(BaseVectorStorage):
             "entity_name": item["entity_name"],
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
+            "chunk_id": item["source_id"],
+            # TODO: add document_id
         }
         return upsert_sql, data
 
@@ -450,6 +452,8 @@ class PGVectorStorage(BaseVectorStorage):
             "target_id": item["tgt_id"],
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
+            "chunk_id": item["source_id"],
+            # TODO: add document_id
         }
         return upsert_sql, data
 
@@ -492,13 +496,20 @@ class PGVectorStorage(BaseVectorStorage):
             await self.db.execute(upsert_sql, data)
 
     #################### query method ###############
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
         embedding_string = ",".join(map(str, embedding))
 
+        if ids:
+            formatted_ids = ",".join(f"'{id}'" for id in ids)
+        else:
+            formatted_ids = "NULL"
+
         sql = SQL_TEMPLATES[self.base_namespace].format(
-            embedding_string=embedding_string
+            embedding_string=embedding_string, doc_ids=formatted_ids
         )
         params = {
             "workspace": self.db.workspace,
@@ -608,6 +619,60 @@ class PGVectorStorage(BaseVectorStorage):
             return formatted_results
         except Exception as e:
             logger.error(f"Error during prefix search for '{prefix}': {e}")
+            return []
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(f"Unknown namespace for ID lookup: {self.namespace}")
+            return None
+
+        query = f"SELECT * FROM {table_name} WHERE workspace=$1 AND id=$2"
+        params = {"workspace": self.db.workspace, "id": id}
+
+        try:
+            result = await self.db.query(query, params)
+            if result:
+                return dict(result)
+            return None
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(f"Unknown namespace for IDs lookup: {self.namespace}")
+            return []
+
+        ids_str = ",".join([f"'{id}'" for id in ids])
+        query = f"SELECT * FROM {table_name} WHERE workspace=$1 AND id IN ({ids_str})"
+        params = {"workspace": self.db.workspace}
+
+        try:
+            results = await self.db.query(query, params, multirows=True)
+            return [dict(record) for record in results]
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
 
 
@@ -1491,6 +1556,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
+                    chunk_id VARCHAR(255) NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -1504,6 +1570,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
+                    chunk_id VARCHAR(255) NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -1586,8 +1653,9 @@ SQL_TEMPLATES = {
                       content_vector=EXCLUDED.content_vector,
                       update_time = CURRENT_TIMESTAMP
                      """,
-    "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content, content_vector)
-                      VALUES ($1, $2, $3, $4, $5)
+    "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
+                      content_vector, chunk_id)
+                      VALUES ($1, $2, $3, $4, $5, $6)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET entity_name=EXCLUDED.entity_name,
                       content=EXCLUDED.content,
@@ -1595,8 +1663,8 @@ SQL_TEMPLATES = {
                       update_time=CURRENT_TIMESTAMP
                      """,
     "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
-                      target_id, content, content_vector)
-                      VALUES ($1, $2, $3, $4, $5, $6)
+                      target_id, content, content_vector, chunk_id)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET source_id=EXCLUDED.source_id,
                       target_id=EXCLUDED.target_id,
@@ -1604,21 +1672,21 @@ SQL_TEMPLATES = {
                       content_vector=EXCLUDED.content_vector, update_time = CURRENT_TIMESTAMP
                      """,
     # SQL for VectorStorage
-    "entities": """SELECT entity_name FROM
-        (SELECT id, entity_name, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-        FROM LIGHTRAG_VDB_ENTITY where workspace=$1)
-        WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
-       """,
-    "relationships": """SELECT source_id as src_id, target_id as tgt_id FROM
-        (SELECT id, source_id,target_id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-        FROM LIGHTRAG_VDB_RELATION where workspace=$1)
-        WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
-       """,
-    "chunks": """SELECT id FROM
-        (SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-        FROM LIGHTRAG_DOC_CHUNKS where workspace=$1)
-        WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
-       """,
+    # "entities": """SELECT entity_name FROM
+    #     (SELECT id, entity_name, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
+    #     FROM LIGHTRAG_VDB_ENTITY where workspace=$1)
+    #     WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
+    #    """,
+    # "relationships": """SELECT source_id as src_id, target_id as tgt_id FROM
+    #     (SELECT id, source_id,target_id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
+    #     FROM LIGHTRAG_VDB_RELATION where workspace=$1)
+    #     WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
+    #    """,
+    # "chunks": """SELECT id FROM
+    #     (SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
+    #     FROM LIGHTRAG_DOC_CHUNKS where workspace=$1)
+    #     WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
+    #    """,
     # DROP tables
     "drop_all": """
 	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
@@ -1642,4 +1710,55 @@ SQL_TEMPLATES = {
     "drop_vdb_relation": """
 	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
        """,
+    "relationships": """
+    WITH relevant_chunks AS (
+        SELECT id as chunk_id
+        FROM LIGHTRAG_DOC_CHUNKS
+        WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
+    )
+    SELECT source_id as src_id, target_id as tgt_id
+    FROM (
+        SELECT r.id, r.source_id, r.target_id, 1 - (r.content_vector <=> '[{embedding_string}]'::vector) as distance
+        FROM LIGHTRAG_VDB_RELATION r
+        WHERE r.workspace=$1
+        AND r.chunk_id IN (SELECT chunk_id FROM relevant_chunks)
+    ) filtered
+    WHERE distance>$2
+    ORDER BY distance DESC
+    LIMIT $3
+    """,
+    "entities": """
+        WITH relevant_chunks AS (
+            SELECT id as chunk_id
+            FROM LIGHTRAG_DOC_CHUNKS
+            WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
+        )
+        SELECT entity_name FROM
+            (
+                SELECT id, entity_name, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
+                FROM LIGHTRAG_VDB_ENTITY
+                where workspace=$1
+                AND chunk_id IN (SELECT chunk_id FROM relevant_chunks)
+            )
+        WHERE distance>$2
+        ORDER BY distance DESC
+        LIMIT $3
+    """,
+    "chunks": """
+        WITH relevant_chunks AS (
+            SELECT id as chunk_id
+            FROM LIGHTRAG_DOC_CHUNKS
+            WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
+        )
+        SELECT id FROM
+            (
+                SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
+                FROM LIGHTRAG_DOC_CHUNKS
+                where workspace=$1
+                AND id IN (SELECT chunk_id FROM relevant_chunks)
+            )
+            WHERE distance>$2
+            ORDER BY distance DESC
+            LIMIT $3
+    """,
 }

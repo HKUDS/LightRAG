@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import configparser
 import os
+import csv
 import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, AsyncIterator, Callable, Iterator, cast, final
+from typing import Any, AsyncIterator, Callable, Iterator, cast, final, Literal
+import pandas as pd
+
 
 from lightrag.kg import (
     STORAGE_ENV_REQUIREMENTS,
@@ -30,11 +33,10 @@ from .namespace import NameSpace, make_namespace
 from .operate import (
     chunking_by_token_size,
     extract_entities,
-    extract_keywords_only,
     kg_query,
-    kg_query_with_keywords,
     mix_kg_vector_query,
     naive_query,
+    query_with_keywords,
 )
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 from .utils import (
@@ -45,6 +47,9 @@ from .utils import (
     encode_string_by_tiktoken,
     lazy_external_import,
     limit_async_func_call,
+    get_content_summary,
+    clean_text,
+    check_storage_env_vars,
     logger,
 )
 from .types import KnowledgeGraph
@@ -309,7 +314,7 @@ class LightRAG:
             # Verify storage implementation compatibility
             verify_storage_implementation(storage_type, storage_name)
             # Check environment variables
-            # self.check_storage_env_vars(storage_name)
+            check_storage_env_vars(storage_name)
 
         # Ensure vector_db_storage_cls_kwargs has required fields
         self.vector_db_storage_cls_kwargs = {
@@ -354,6 +359,9 @@ class LightRAG:
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
             ),
+            global_config=asdict(
+                self
+            ),  # Add global_config to ensure cache works properly
             embedding_func=self.embedding_func,
         )
 
@@ -404,18 +412,8 @@ class LightRAG:
             embedding_func=None,
         )
 
-        if self.llm_response_cache and hasattr(
-            self.llm_response_cache, "global_config"
-        ):
-            hashing_kv = self.llm_response_cache
-        else:
-            hashing_kv = self.key_string_value_json_storage_cls(  # type: ignore
-                namespace=make_namespace(
-                    self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                ),
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-            )
+        # Directly use llm_response_cache, don't create a new object
+        hashing_kv = self.llm_response_cache
 
         self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
             partial(
@@ -543,11 +541,6 @@ class LightRAG:
         storage_class = lazy_external_import(import_path, storage_name)
         return storage_class
 
-    @staticmethod
-    def clean_text(text: str) -> str:
-        """Clean text by removing null bytes (0x00) and whitespace"""
-        return text.strip().replace("\x00", "")
-
     def insert(
         self,
         input: str | list[str],
@@ -590,6 +583,7 @@ class LightRAG:
             split_by_character, split_by_character_only
         )
 
+    # TODO: deprecated, use insert instead
     def insert_custom_chunks(
         self,
         full_text: str,
@@ -601,14 +595,15 @@ class LightRAG:
             self.ainsert_custom_chunks(full_text, text_chunks, doc_id)
         )
 
+    # TODO: deprecated, use ainsert instead
     async def ainsert_custom_chunks(
         self, full_text: str, text_chunks: list[str], doc_id: str | None = None
     ) -> None:
         update_storage = False
         try:
             # Clean input texts
-            full_text = self.clean_text(full_text)
-            text_chunks = [self.clean_text(chunk) for chunk in text_chunks]
+            full_text = clean_text(full_text)
+            text_chunks = [clean_text(chunk) for chunk in text_chunks]
 
             # Process cleaned texts
             if doc_id is None:
@@ -687,7 +682,7 @@ class LightRAG:
             contents = {id_: doc for id_, doc in zip(ids, input)}
         else:
             # Clean input text and remove duplicates
-            input = list(set(self.clean_text(doc) for doc in input))
+            input = list(set(clean_text(doc) for doc in input))
             # Generate contents dict of MD5 hash IDs and documents
             contents = {compute_mdhash_id(doc, prefix="doc-"): doc for doc in input}
 
@@ -703,7 +698,7 @@ class LightRAG:
         new_docs: dict[str, Any] = {
             id_: {
                 "content": content,
-                "content_summary": self._get_content_summary(content),
+                "content_summary": get_content_summary(content),
                 "content_length": len(content),
                 "status": DocStatus.PENDING,
                 "created_at": datetime.now().isoformat(),
@@ -892,7 +887,9 @@ class LightRAG:
                                 self.chunks_vdb.upsert(chunks)
                             )
                             entity_relation_task = asyncio.create_task(
-                                self._process_entity_relation_graph(chunks)
+                                self._process_entity_relation_graph(
+                                    chunks, pipeline_status, pipeline_status_lock
+                                )
                             )
                             full_docs_task = asyncio.create_task(
                                 self.full_docs.upsert(
@@ -1007,21 +1004,27 @@ class LightRAG:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
-    async def _process_entity_relation_graph(self, chunk: dict[str, Any]) -> None:
+    async def _process_entity_relation_graph(
+        self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
         try:
             await extract_entities(
                 chunk,
                 knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
                 relationships_vdb=self.relationships_vdb,
-                llm_response_cache=self.llm_response_cache,
                 global_config=asdict(self),
+                pipeline_status=pipeline_status,
+                pipeline_status_lock=pipeline_status_lock,
+                llm_response_cache=self.llm_response_cache,
             )
         except Exception as e:
             logger.error("Failed to extract entities and relationships")
             raise e
 
-    async def _insert_done(self) -> None:
+    async def _insert_done(
+        self, pipeline_status=None, pipeline_status_lock=None
+    ) -> None:
         tasks = [
             cast(StorageNameSpace, storage_inst).index_done_callback()
             for storage_inst in [  # type: ignore
@@ -1040,12 +1043,10 @@ class LightRAG:
         log_message = "All Insert done"
         logger.info(log_message)
 
-        # 获取 pipeline_status 并更新 latest_message 和 history_messages
-        from lightrag.kg.shared_storage import get_namespace_data
-
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status["latest_message"] = log_message
-        pipeline_status["history_messages"].append(log_message)
+        if pipeline_status is not None and pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
     def insert_custom_kg(
         self, custom_kg: dict[str, Any], full_doc_id: str = None
@@ -1062,7 +1063,7 @@ class LightRAG:
             all_chunks_data: dict[str, dict[str, str]] = {}
             chunk_to_source_map: dict[str, str] = {}
             for chunk_data in custom_kg.get("chunks", []):
-                chunk_content = self.clean_text(chunk_data["content"])
+                chunk_content = clean_text(chunk_data["content"])
                 source_id = chunk_data["source_id"]
                 tokens = len(
                     encode_string_by_tiktoken(
@@ -1113,6 +1114,7 @@ class LightRAG:
 
                 # Prepare node data
                 node_data: dict[str, str] = {
+                    "entity_id": entity_name,
                     "entity_type": entity_type,
                     "description": description,
                     "source_id": source_id,
@@ -1150,6 +1152,7 @@ class LightRAG:
                         await self.chunk_entity_relation_graph.upsert_node(
                             need_insert_id,
                             node_data={
+                                "entity_id": need_insert_id,
                                 "source_id": source_id,
                                 "description": "UNKNOWN",
                                 "entity_type": "UNKNOWN",
@@ -1260,16 +1263,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         elif param.mode == "naive":
@@ -1279,16 +1273,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         elif param.mode == "mix":
@@ -1301,16 +1286,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
+                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
         else:
@@ -1322,8 +1298,17 @@ class LightRAG:
         self, query: str, prompt: str, param: QueryParam = QueryParam()
     ):
         """
-        1. Extract keywords from the 'query' using new function in operate.py.
-        2. Then run the standard aquery() flow with the final prompt (formatted_question).
+        Query with separate keyword extraction step.
+
+        This method extracts keywords from the query first, then uses them for the query.
+
+        Args:
+            query: User query
+            prompt: Additional prompt for the query
+            param: Query parameters
+
+        Returns:
+            Query response
         """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
@@ -1334,99 +1319,28 @@ class LightRAG:
         self, query: str, prompt: str, param: QueryParam = QueryParam()
     ) -> str | AsyncIterator[str]:
         """
-        1. Calls extract_keywords_only to get HL/LL keywords from 'query'.
-        2. Then calls kg_query(...) or naive_query(...), etc. as the main query, while also injecting the newly extracted keywords if needed.
+        Async version of query_with_separate_keyword_extraction.
+
+        Args:
+            query: User query
+            prompt: Additional prompt for the query
+            param: Query parameters
+
+        Returns:
+            Query response or async iterator
         """
-        # ---------------------
-        # STEP 1: Keyword Extraction
-        # ---------------------
-        hl_keywords, ll_keywords = await extract_keywords_only(
-            text=query,
+        response = await query_with_keywords(
+            query=query,
+            prompt=prompt,
             param=param,
+            knowledge_graph_inst=self.chunk_entity_relation_graph,
+            entities_vdb=self.entities_vdb,
+            relationships_vdb=self.relationships_vdb,
+            chunks_vdb=self.chunks_vdb,
+            text_chunks_db=self.text_chunks,
             global_config=asdict(self),
-            hashing_kv=self.llm_response_cache
-            or self.key_string_value_json_storage_cls(
-                namespace=make_namespace(
-                    self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                ),
-                global_config=asdict(self),
-                embedding_func=self.embedding_func,
-            ),
+            hashing_kv=self.llm_response_cache,
         )
-
-        param.hl_keywords = hl_keywords
-        param.ll_keywords = ll_keywords
-
-        # ---------------------
-        # STEP 2: Final Query Logic
-        # ---------------------
-
-        # Create a new string with the prompt and the keywords
-        ll_keywords_str = ", ".join(ll_keywords)
-        hl_keywords_str = ", ".join(hl_keywords)
-        formatted_question = f"{prompt}\n\n### Keywords:\nHigh-level: {hl_keywords_str}\nLow-level: {ll_keywords_str}\n\n### Query:\n{query}"
-
-        if param.mode in ["local", "global", "hybrid"]:
-            response = await kg_query_with_keywords(
-                formatted_question,
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
-            )
-        elif param.mode == "naive":
-            response = await naive_query(
-                formatted_question,
-                self.chunks_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
-            )
-        elif param.mode == "mix":
-            response = await mix_kg_vector_query(
-                formatted_question,
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.chunks_vdb,
-                self.text_chunks,
-                param,
-                asdict(self),
-                hashing_kv=self.llm_response_cache
-                if self.llm_response_cache
-                and hasattr(self.llm_response_cache, "global_config")
-                else self.key_string_value_json_storage_cls(
-                    namespace=make_namespace(
-                        self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-                    ),
-                    global_config=asdict(self),
-                    embedding_func=self.embedding_func,
-                ),
-            )
-        else:
-            raise ValueError(f"Unknown mode {param.mode}")
 
         await self._query_done()
         return response
@@ -1524,21 +1438,6 @@ class LightRAG:
                 ]
             ]
         )
-
-    def _get_content_summary(self, content: str, max_length: int = 100) -> str:
-        """Get summary of document content
-
-        Args:
-            content: Original document content
-            max_length: Maximum length of summary
-
-        Returns:
-            Truncated content with ellipsis if needed
-        """
-        content = content.strip()
-        if len(content) <= max_length:
-            return content
-        return content[:max_length] + "..."
 
     async def get_processing_status(self) -> dict[str, int]:
         """Get current document processing status counts
@@ -1816,19 +1715,7 @@ class LightRAG:
     async def get_entity_info(
         self, entity_name: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
-        """Get detailed information of an entity
-
-        Args:
-            entity_name: Entity name (no need for quotes)
-            include_vector_data: Whether to include data from the vector database
-
-        Returns:
-            dict: A dictionary containing entity information, including:
-                - entity_name: Entity name
-                - source_id: Source document ID
-                - graph_data: Complete node data from the graph database
-                - vector_data: (optional) Data from the vector database
-        """
+        """Get detailed information of an entity"""
 
         # Get information from the graph
         node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
@@ -1843,29 +1730,15 @@ class LightRAG:
         # Optional: Get vector database information
         if include_vector_data:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            vector_data = self.entities_vdb._client.get([entity_id])
-            result["vector_data"] = vector_data[0] if vector_data else None
+            vector_data = await self.entities_vdb.get_by_id(entity_id)
+            result["vector_data"] = vector_data
 
         return result
 
     async def get_relation_info(
         self, src_entity: str, tgt_entity: str, include_vector_data: bool = False
     ) -> dict[str, str | None | dict[str, str]]:
-        """Get detailed information of a relationship
-
-        Args:
-            src_entity: Source entity name (no need for quotes)
-            tgt_entity: Target entity name (no need for quotes)
-            include_vector_data: Whether to include data from the vector database
-
-        Returns:
-            dict: A dictionary containing relationship information, including:
-                - src_entity: Source entity name
-                - tgt_entity: Target entity name
-                - source_id: Source document ID
-                - graph_data: Complete edge data from the graph database
-                - vector_data: (optional) Data from the vector database
-        """
+        """Get detailed information of a relationship"""
 
         # Get information from the graph
         edge_data = await self.chunk_entity_relation_graph.get_edge(
@@ -1883,8 +1756,8 @@ class LightRAG:
         # Optional: Get vector database information
         if include_vector_data:
             rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
-            vector_data = self.relationships_vdb._client.get([rel_id])
-            result["vector_data"] = vector_data[0] if vector_data else None
+            vector_data = await self.relationships_vdb.get_by_id(rel_id)
+            result["vector_data"] = vector_data
 
         return result
 
@@ -2289,6 +2162,7 @@ class LightRAG:
 
             # Prepare node data with defaults if missing
             node_data = {
+                "entity_id": entity_name,
                 "entity_type": entity_data.get("entity_type", "UNKNOWN"),
                 "description": entity_data.get("description", ""),
                 "source_id": entity_data.get("source_id", "manual"),
@@ -2682,6 +2556,12 @@ class LightRAG:
 
             # 9. Delete source entities
             for entity_name in source_entities:
+                if entity_name == target_entity:
+                    logger.info(
+                        f"Skipping deletion of '{entity_name}' as it's also the target entity"
+                    )
+                    continue
+
                 # Delete entity node from knowledge graph
                 await self.chunk_entity_relation_graph.delete_node(entity_name)
 
@@ -2717,6 +2597,322 @@ class LightRAG:
         except Exception as e:
             logger.error(f"Error merging entities: {e}")
             raise
+
+    async def aexport_data(
+        self,
+        output_path: str,
+        file_format: Literal["csv", "excel", "md", "txt"] = "csv",
+        include_vector_data: bool = False,
+    ) -> None:
+        """
+        Asynchronously exports all entities, relations, and relationships to various formats.
+        Args:
+            output_path: The path to the output file (including extension).
+            file_format: Output format - "csv", "excel", "md", "txt".
+                - csv: Comma-separated values file
+                - excel: Microsoft Excel file with multiple sheets
+                - md: Markdown tables
+                - txt: Plain text formatted output
+                - table: Print formatted tables to console
+            include_vector_data: Whether to include data from the vector database.
+        """
+        # Collect data
+        entities_data = []
+        relations_data = []
+        relationships_data = []
+
+        # --- Entities ---
+        all_entities = await self.chunk_entity_relation_graph.get_all_labels()
+        for entity_name in all_entities:
+            entity_info = await self.get_entity_info(
+                entity_name, include_vector_data=include_vector_data
+            )
+            entity_row = {
+                "entity_name": entity_name,
+                "source_id": entity_info["source_id"],
+                "graph_data": str(
+                    entity_info["graph_data"]
+                ),  # Convert to string to ensure compatibility
+            }
+            if include_vector_data and "vector_data" in entity_info:
+                entity_row["vector_data"] = str(entity_info["vector_data"])
+            entities_data.append(entity_row)
+
+        # --- Relations ---
+        for src_entity in all_entities:
+            for tgt_entity in all_entities:
+                if src_entity == tgt_entity:
+                    continue
+
+                edge_exists = await self.chunk_entity_relation_graph.has_edge(
+                    src_entity, tgt_entity
+                )
+                if edge_exists:
+                    relation_info = await self.get_relation_info(
+                        src_entity, tgt_entity, include_vector_data=include_vector_data
+                    )
+                    relation_row = {
+                        "src_entity": src_entity,
+                        "tgt_entity": tgt_entity,
+                        "source_id": relation_info["source_id"],
+                        "graph_data": str(
+                            relation_info["graph_data"]
+                        ),  # Convert to string
+                    }
+                    if include_vector_data and "vector_data" in relation_info:
+                        relation_row["vector_data"] = str(relation_info["vector_data"])
+                    relations_data.append(relation_row)
+
+        # --- Relationships (from VectorDB) ---
+        all_relationships = await self.relationships_vdb.client_storage
+        for rel in all_relationships["data"]:
+            relationships_data.append(
+                {
+                    "relationship_id": rel["__id__"],
+                    "data": str(rel),  # Convert to string for compatibility
+                }
+            )
+
+        # Export based on format
+        if file_format == "csv":
+            # CSV export
+            with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
+                # Entities
+                if entities_data:
+                    csvfile.write("# ENTITIES\n")
+                    writer = csv.DictWriter(csvfile, fieldnames=entities_data[0].keys())
+                    writer.writeheader()
+                    writer.writerows(entities_data)
+                    csvfile.write("\n\n")
+
+                # Relations
+                if relations_data:
+                    csvfile.write("# RELATIONS\n")
+                    writer = csv.DictWriter(
+                        csvfile, fieldnames=relations_data[0].keys()
+                    )
+                    writer.writeheader()
+                    writer.writerows(relations_data)
+                    csvfile.write("\n\n")
+
+                # Relationships
+                if relationships_data:
+                    csvfile.write("# RELATIONSHIPS\n")
+                    writer = csv.DictWriter(
+                        csvfile, fieldnames=relationships_data[0].keys()
+                    )
+                    writer.writeheader()
+                    writer.writerows(relationships_data)
+
+        elif file_format == "excel":
+            # Excel export
+            entities_df = (
+                pd.DataFrame(entities_data) if entities_data else pd.DataFrame()
+            )
+            relations_df = (
+                pd.DataFrame(relations_data) if relations_data else pd.DataFrame()
+            )
+            relationships_df = (
+                pd.DataFrame(relationships_data)
+                if relationships_data
+                else pd.DataFrame()
+            )
+
+            with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
+                if not entities_df.empty:
+                    entities_df.to_excel(writer, sheet_name="Entities", index=False)
+                if not relations_df.empty:
+                    relations_df.to_excel(writer, sheet_name="Relations", index=False)
+                if not relationships_df.empty:
+                    relationships_df.to_excel(
+                        writer, sheet_name="Relationships", index=False
+                    )
+
+        elif file_format == "md":
+            # Markdown export
+            with open(output_path, "w", encoding="utf-8") as mdfile:
+                mdfile.write("# LightRAG Data Export\n\n")
+
+                # Entities
+                mdfile.write("## Entities\n\n")
+                if entities_data:
+                    # Write header
+                    mdfile.write("| " + " | ".join(entities_data[0].keys()) + " |\n")
+                    mdfile.write(
+                        "| "
+                        + " | ".join(["---"] * len(entities_data[0].keys()))
+                        + " |\n"
+                    )
+
+                    # Write rows
+                    for entity in entities_data:
+                        mdfile.write(
+                            "| " + " | ".join(str(v) for v in entity.values()) + " |\n"
+                        )
+                    mdfile.write("\n\n")
+                else:
+                    mdfile.write("*No entity data available*\n\n")
+
+                # Relations
+                mdfile.write("## Relations\n\n")
+                if relations_data:
+                    # Write header
+                    mdfile.write("| " + " | ".join(relations_data[0].keys()) + " |\n")
+                    mdfile.write(
+                        "| "
+                        + " | ".join(["---"] * len(relations_data[0].keys()))
+                        + " |\n"
+                    )
+
+                    # Write rows
+                    for relation in relations_data:
+                        mdfile.write(
+                            "| "
+                            + " | ".join(str(v) for v in relation.values())
+                            + " |\n"
+                        )
+                    mdfile.write("\n\n")
+                else:
+                    mdfile.write("*No relation data available*\n\n")
+
+                # Relationships
+                mdfile.write("## Relationships\n\n")
+                if relationships_data:
+                    # Write header
+                    mdfile.write(
+                        "| " + " | ".join(relationships_data[0].keys()) + " |\n"
+                    )
+                    mdfile.write(
+                        "| "
+                        + " | ".join(["---"] * len(relationships_data[0].keys()))
+                        + " |\n"
+                    )
+
+                    # Write rows
+                    for relationship in relationships_data:
+                        mdfile.write(
+                            "| "
+                            + " | ".join(str(v) for v in relationship.values())
+                            + " |\n"
+                        )
+                else:
+                    mdfile.write("*No relationship data available*\n\n")
+
+        elif file_format == "txt":
+            # Plain text export
+            with open(output_path, "w", encoding="utf-8") as txtfile:
+                txtfile.write("LIGHTRAG DATA EXPORT\n")
+                txtfile.write("=" * 80 + "\n\n")
+
+                # Entities
+                txtfile.write("ENTITIES\n")
+                txtfile.write("-" * 80 + "\n")
+                if entities_data:
+                    # Create fixed width columns
+                    col_widths = {
+                        k: max(len(k), max(len(str(e[k])) for e in entities_data))
+                        for k in entities_data[0]
+                    }
+                    header = "  ".join(k.ljust(col_widths[k]) for k in entities_data[0])
+                    txtfile.write(header + "\n")
+                    txtfile.write("-" * len(header) + "\n")
+
+                    # Write rows
+                    for entity in entities_data:
+                        row = "  ".join(
+                            str(v).ljust(col_widths[k]) for k, v in entity.items()
+                        )
+                        txtfile.write(row + "\n")
+                    txtfile.write("\n\n")
+                else:
+                    txtfile.write("No entity data available\n\n")
+
+                # Relations
+                txtfile.write("RELATIONS\n")
+                txtfile.write("-" * 80 + "\n")
+                if relations_data:
+                    # Create fixed width columns
+                    col_widths = {
+                        k: max(len(k), max(len(str(r[k])) for r in relations_data))
+                        for k in relations_data[0]
+                    }
+                    header = "  ".join(
+                        k.ljust(col_widths[k]) for k in relations_data[0]
+                    )
+                    txtfile.write(header + "\n")
+                    txtfile.write("-" * len(header) + "\n")
+
+                    # Write rows
+                    for relation in relations_data:
+                        row = "  ".join(
+                            str(v).ljust(col_widths[k]) for k, v in relation.items()
+                        )
+                        txtfile.write(row + "\n")
+                    txtfile.write("\n\n")
+                else:
+                    txtfile.write("No relation data available\n\n")
+
+                # Relationships
+                txtfile.write("RELATIONSHIPS\n")
+                txtfile.write("-" * 80 + "\n")
+                if relationships_data:
+                    # Create fixed width columns
+                    col_widths = {
+                        k: max(len(k), max(len(str(r[k])) for r in relationships_data))
+                        for k in relationships_data[0]
+                    }
+                    header = "  ".join(
+                        k.ljust(col_widths[k]) for k in relationships_data[0]
+                    )
+                    txtfile.write(header + "\n")
+                    txtfile.write("-" * len(header) + "\n")
+
+                    # Write rows
+                    for relationship in relationships_data:
+                        row = "  ".join(
+                            str(v).ljust(col_widths[k]) for k, v in relationship.items()
+                        )
+                        txtfile.write(row + "\n")
+                else:
+                    txtfile.write("No relationship data available\n\n")
+
+        else:
+            raise ValueError(
+                f"Unsupported file format: {file_format}. "
+                f"Choose from: csv, excel, md, txt"
+            )
+        if file_format is not None:
+            print(f"Data exported to: {output_path} with format: {file_format}")
+        else:
+            print("Data displayed as table format")
+
+    def export_data(
+        self,
+        output_path: str,
+        file_format: Literal["csv", "excel", "md", "txt"] = "csv",
+        include_vector_data: bool = False,
+    ) -> None:
+        """
+        Synchronously exports all entities, relations, and relationships to various formats.
+        Args:
+            output_path: The path to the output file (including extension).
+            file_format: Output format - "csv", "excel", "md", "txt".
+                - csv: Comma-separated values file
+                - excel: Microsoft Excel file with multiple sheets
+                - md: Markdown tables
+                - txt: Plain text formatted output
+                - table: Print formatted tables to console
+            include_vector_data: Whether to include data from the vector database.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        loop.run_until_complete(
+            self.aexport_data(output_path, file_format, include_vector_data)
+        )
 
     def merge_entities(
         self,
