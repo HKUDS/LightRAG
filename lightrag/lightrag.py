@@ -2398,10 +2398,10 @@ class LightRAG:
             target_exists = await self.chunk_entity_relation_graph.has_node(
                 target_entity
             )
-            target_entity_data = {}
+            existing_target_entity_data = {}
             if target_exists:
-                target_entity_data = await self.chunk_entity_relation_graph.get_node(
-                    target_entity
+                existing_target_entity_data = (
+                    await self.chunk_entity_relation_graph.get_node(target_entity)
                 )
                 logger.info(
                     f"Target entity '{target_entity}' already exists, will merge data"
@@ -2410,7 +2410,7 @@ class LightRAG:
             # 3. Merge entity data
             merged_entity_data = self._merge_entity_attributes(
                 list(source_entities_data.values())
-                + ([target_entity_data] if target_exists else []),
+                + ([existing_target_entity_data] if target_exists else []),
                 merge_strategy,
             )
 
