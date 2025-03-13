@@ -42,11 +42,13 @@ const TabsContent = React.forwardRef<
   <TabsPrimitive.Content
     ref={ref}
     className={cn(
-      'ring-offset-background focus-visible:ring-ring mt-2 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
+      'ring-offset-background focus-visible:ring-ring focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none',
+      'data-[state=inactive]:invisible data-[state=active]:visible',
+      'h-full w-full',
       className
     )}
-    // We no longer force mounting of inactive tabs
-    // This prevents the Graph component from being mounted when it's not the active tab
+    // Force mounting of inactive tabs to preserve WebGL contexts
+    forceMount
     {...props}
   />
 ))
