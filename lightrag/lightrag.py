@@ -1114,6 +1114,7 @@ class LightRAG:
 
                 # Prepare node data
                 node_data: dict[str, str] = {
+                    "entity_id": entity_name,
                     "entity_type": entity_type,
                     "description": description,
                     "source_id": source_id,
@@ -1151,6 +1152,7 @@ class LightRAG:
                         await self.chunk_entity_relation_graph.upsert_node(
                             need_insert_id,
                             node_data={
+                                "entity_id": need_insert_id,
                                 "source_id": source_id,
                                 "description": "UNKNOWN",
                                 "entity_type": "UNKNOWN",
@@ -2160,6 +2162,7 @@ class LightRAG:
 
             # Prepare node data with defaults if missing
             node_data = {
+                "entity_id": entity_name,
                 "entity_type": entity_data.get("entity_type", "UNKNOWN"),
                 "description": entity_data.get("description", ""),
                 "source_id": entity_data.get("source_id", "manual"),
