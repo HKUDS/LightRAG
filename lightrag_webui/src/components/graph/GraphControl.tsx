@@ -36,6 +36,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const hideUnselectedEdges = useSettingsStore.use.enableHideUnselectedEdges()
   const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
   const renderEdgeLabels = useSettingsStore.use.showEdgeLabel()
+  const renderLabels = useSettingsStore.use.showNodeLabel()
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const selectedEdge = useGraphStore.use.selectedEdge()
@@ -117,11 +118,12 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     const labelColor = isDarkTheme ? Constants.labelColorDarkTheme : undefined
     const edgeColor = isDarkTheme ? Constants.edgeColorDarkTheme : undefined
 
-    // Update edge-related settings directly without recreating the sigma container
+    // Update all dynamic settings directly without recreating the sigma container
     setSettings({
-      // Update edge-specific settings
+      // Update display settings
       enableEdgeEvents,
       renderEdgeLabels,
+      renderLabels,
 
       // Node reducer for node appearance
       nodeReducer: (node, data) => {
@@ -207,7 +209,8 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     theme,
     hideUnselectedEdges,
     enableEdgeEvents,
-    renderEdgeLabels
+    renderEdgeLabels,
+    renderLabels
   ])
 
   return null
