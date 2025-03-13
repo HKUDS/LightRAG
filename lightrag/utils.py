@@ -76,6 +76,7 @@ class LightragPathFilter(logging.Filter):
         super().__init__()
         # Define paths to be filtered
         self.filtered_paths = ["/documents", "/health", "/webui/"]
+        # self.filtered_paths = ["/health", "/webui/"]
 
     def filter(self, record):
         try:
