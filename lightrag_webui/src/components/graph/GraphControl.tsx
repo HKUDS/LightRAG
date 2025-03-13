@@ -64,7 +64,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     // Define event types
     type NodeEvent = { node: string; event: { original: MouseEvent | TouchEvent } }
     type EdgeEvent = { edge: string; event: { original: MouseEvent | TouchEvent } }
-    
+
     // Register all events, but edge events will only be processed if enableEdgeEvents is true
     const events: Record<string, any> = {
       enterNode: (event: NodeEvent) => {
@@ -83,20 +83,20 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       },
       clickStage: () => clearSelection()
     }
-    
+
     // Only add edge event handlers if enableEdgeEvents is true
     if (enableEdgeEvents) {
       events.clickEdge = (event: EdgeEvent) => {
         setSelectedEdge(event.edge)
         setSelectedNode(null)
       }
-      
+
       events.enterEdge = (event: EdgeEvent) => {
         if (!isButtonPressed(event.event.original)) {
           setFocusedEdge(event.edge)
         }
       }
-      
+
       events.leaveEdge = (event: EdgeEvent) => {
         if (!isButtonPressed(event.event.original)) {
           setFocusedEdge(null)
@@ -122,7 +122,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       // Update edge-specific settings
       enableEdgeEvents,
       renderEdgeLabels,
-      
+
       // Node reducer for node appearance
       nodeReducer: (node, data) => {
         const graph = sigma.getGraph()
@@ -162,7 +162,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         }
         return newData
       },
-      
+
       // Edge reducer for edge appearance
       edgeReducer: (edge, data) => {
         const graph = sigma.getGraph()
