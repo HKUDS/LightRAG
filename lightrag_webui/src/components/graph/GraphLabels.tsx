@@ -103,6 +103,22 @@ const GraphLabels = () => {
         if (newLabel === '...') {
           newLabel = '*'
         }
+        
+        // Reset the fetch attempted flag to force a new data fetch
+        useGraphStore.getState().setGraphDataFetchAttempted(false)
+        
+        // Clear current graph data to ensure complete reload when label changes
+        if (newLabel !== currentLabel) {
+          const graphStore = useGraphStore.getState();
+          graphStore.clearSelection();
+          
+          // Reset the graph state but preserve the instance
+          if (graphStore.sigmaGraph) {
+            const nodes = Array.from(graphStore.sigmaGraph.nodes());
+            nodes.forEach(node => graphStore.sigmaGraph?.dropNode(node));
+          }
+        }
+        
         if (newLabel === currentLabel && newLabel !== '*') {
           // 选择相同标签时切换到'*'
           useSettingsStore.getState().setQueryLabel('*')
