@@ -100,6 +100,7 @@ const GraphLabels = () => {
       onChange={(newLabel) => {
         const currentLabel = useSettingsStore.getState().queryLabel
 
+        // select the last item means query all
         if (newLabel === '...') {
           newLabel = '*'
         }
@@ -120,7 +121,7 @@ const GraphLabels = () => {
         }
 
         if (newLabel === currentLabel && newLabel !== '*') {
-          // 选择相同标签时切换到'*'
+          // reselect the same itme means qery all
           useSettingsStore.getState().setQueryLabel('*')
         } else {
           useSettingsStore.getState().setQueryLabel(newLabel)
