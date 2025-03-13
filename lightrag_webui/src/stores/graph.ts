@@ -144,25 +144,38 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       selectedEdge: null,
       focusedEdge: null
     }),
-  reset: () =>
+  reset: () => {
+    // Get the existing graph
+    const existingGraph = get().sigmaGraph;
+    
+    // If we have an existing graph, clear it by removing all nodes
+    if (existingGraph) {
+      const nodes = Array.from(existingGraph.nodes());
+      nodes.forEach(node => existingGraph.dropNode(node));
+    }
+    
     set({
       selectedNode: null,
       focusedNode: null,
       selectedEdge: null,
       focusedEdge: null,
       rawGraph: null,
-      sigmaGraph: null,
+      // Keep the existing graph instance but with cleared data
       graphLabels: ['*'],
       moveToSelectedNode: false,
       shouldRender: false
-    }),
+    });
+  },
 
   setRawGraph: (rawGraph: RawGraph | null) =>
     set({
       rawGraph
     }),
 
-  setSigmaGraph: (sigmaGraph: DirectedGraph | null) => set({ sigmaGraph }),
+  setSigmaGraph: (sigmaGraph: DirectedGraph | null) => {
+    // 直接替换图形实例，不尝试保留WebGL上下文
+    set({ sigmaGraph });
+  },
 
   setGraphLabels: (labels: string[]) => set({ graphLabels: labels }),
 

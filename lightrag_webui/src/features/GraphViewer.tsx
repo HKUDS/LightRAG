@@ -128,12 +128,21 @@ const GraphViewer = () => {
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
   const renderEdgeLabels = useSettingsStore.use.showEdgeLabel()
 
-  // Ensure rendering is enabled when tab becomes visible
+  // Handle component mount/unmount and tab visibility
   useEffect(() => {
+    // When component mounts or tab becomes visible
     if (isGraphTabVisible && !shouldRender && !isFetching && !initAttemptedRef.current) {
       // If tab is visible but graph is not rendering, try to enable rendering
       useGraphStore.getState().setShouldRender(true)
       initAttemptedRef.current = true
+      console.log('Graph viewer initialized')
+    }
+    
+    // Cleanup function when component unmounts
+    return () => {
+      // If we're navigating away from the graph tab completely (not just switching tabs)
+      // we would clean up here, but for now we want to preserve the WebGL context
+      console.log('Graph viewer cleanup')
     }
   }, [isGraphTabVisible, shouldRender, isFetching])
 
@@ -165,67 +174,72 @@ const GraphViewer = () => {
     [selectedNode]
   )
 
-  // If we shouldn't render, show loading state or empty state
-  if (!shouldRender) {
-    return (
-      <div className="flex h-full w-full items-center justify-center bg-background">
-        {isFetching ? (
-          <div className="text-center">
-            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
-            <p>Reloading Graph Data...</p>
-          </div>
-        ) : (
-          <div className="text-center text-muted-foreground">
-            {/* Empty or hint message */}
-          </div>
-        )}
-      </div>
-    )
-  }
-
+  // Only render the SigmaContainer when the tab is visible
   return (
-    <SigmaContainer
-      settings={sigmaSettings}
-      className="!bg-background !size-full overflow-hidden"
-      ref={sigmaRef}
-    >
-      <GraphControl />
+    <div className="relative h-full w-full">
+      {isGraphTabVisible ? (
+        // Only render SigmaContainer when tab is visible
+        <SigmaContainer
+          settings={sigmaSettings}
+          className="!bg-background !size-full overflow-hidden"
+          ref={sigmaRef}
+        >
+          <GraphControl />
 
-      {enableNodeDrag && <GraphEvents />}
+          {enableNodeDrag && <GraphEvents />}
 
-      <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
+          <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-      <div className="absolute top-2 left-2 flex items-start gap-2">
-        <GraphLabels />
-        {showNodeSearchBar && (
-          <GraphSearch
-            value={searchInitSelectedNode}
-            onFocus={onSearchFocus}
-            onChange={onSearchSelect}
-          />
-        )}
-      </div>
+          <div className="absolute top-2 left-2 flex items-start gap-2">
+            <GraphLabels />
+            {showNodeSearchBar && (
+              <GraphSearch
+                value={searchInitSelectedNode}
+                onFocus={onSearchFocus}
+                onChange={onSearchSelect}
+              />
+            )}
+          </div>
 
-      <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
-        <Settings />
-        <ZoomControl />
-        <LayoutsControl />
-        <FullScreenControl />
-        {/* <ThemeToggle /> */}
-      </div>
+          <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
+            <Settings />
+            <ZoomControl />
+            <LayoutsControl />
+            <FullScreenControl />
+            {/* <ThemeToggle /> */}
+          </div>
 
-      {showPropertyPanel && (
-        <div className="absolute top-2 right-2">
-          <PropertiesView />
+          {showPropertyPanel && (
+            <div className="absolute top-2 right-2">
+              <PropertiesView />
+            </div>
+          )}
+
+          {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
+            <MiniMap width="100px" height="100px" />
+          </div> */}
+
+          <SettingsDisplay />
+        </SigmaContainer>
+      ) : (
+        // Placeholder when tab is not visible
+        <div className="flex h-full w-full items-center justify-center">
+          <div className="text-center text-muted-foreground">
+            {/* Placeholder content */}
+          </div>
         </div>
       )}
 
-      {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
-        <MiniMap width="100px" height="100px" />
-      </div> */}
-
-      <SettingsDisplay />
-    </SigmaContainer>
+      {/* Loading overlay - shown when data is loading */}
+      {isFetching && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+          <div className="text-center">
+            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
+            <p>Loading Graph Data...</p>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
