@@ -140,8 +140,8 @@ const GraphViewer = () => {
     
     // Cleanup function when component unmounts
     return () => {
-      // If we're navigating away from the graph tab completely (not just switching tabs)
-      // we would clean up here, but for now we want to preserve the WebGL context
+      // Only log cleanup, don't actually clean up the WebGL context
+      // This allows the WebGL context to persist across tab switches
       console.log('Graph viewer cleanup')
     }
   }, [isGraphTabVisible, shouldRender, isFetching])
@@ -174,11 +174,12 @@ const GraphViewer = () => {
     [selectedNode]
   )
 
-  // Only render the SigmaContainer when the tab is visible
+  // Since TabsContent now forces mounting of all tabs, we need to conditionally render
+  // the SigmaContainer based on visibility to avoid unnecessary rendering
   return (
     <div className="relative h-full w-full">
+      {/* Only render the SigmaContainer when the tab is visible */}
       {isGraphTabVisible ? (
-        // Only render SigmaContainer when tab is visible
         <SigmaContainer
           settings={sigmaSettings}
           className="!bg-background !size-full overflow-hidden"
