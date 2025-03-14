@@ -66,11 +66,15 @@ interface GraphState {
 
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
-  graphLabels: string[]
   allDatabaseLabels: string[]
 
   moveToSelectedNode: boolean
   isFetching: boolean
+  shouldRender: boolean
+
+  // Global flags to track data fetching attempts
+  graphDataFetchAttempted: boolean
+  labelsFetchAttempted: boolean
 
   refreshLayout: () => void
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
@@ -84,10 +88,14 @@ interface GraphState {
 
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
-  setGraphLabels: (labels: string[]) => void
   setAllDatabaseLabels: (labels: string[]) => void
   fetchAllDatabaseLabels: () => Promise<void>
   setIsFetching: (isFetching: boolean) => void
+  setShouldRender: (shouldRender: boolean) => void
+
+  // Methods to set global flags
+  setGraphDataFetchAttempted: (attempted: boolean) => void
+  setLabelsFetchAttempted: (attempted: boolean) => void
 }
 
 const useGraphStoreBase = create<GraphState>()((set, get) => ({
@@ -98,10 +106,14 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   moveToSelectedNode: false,
   isFetching: false,
+  shouldRender: false,
+
+  // Initialize global flags
+  graphDataFetchAttempted: false,
+  labelsFetchAttempted: false,
 
   rawGraph: null,
   sigmaGraph: null,
-  graphLabels: ['*'],
   allDatabaseLabels: ['*'],
 
   refreshLayout: () => {
@@ -116,6 +128,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   },
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
+  setShouldRender: (shouldRender: boolean) => set({ shouldRender }),
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
   setFocusedNode: (nodeId: string | null) => set({ focusedNode: nodeId }),
@@ -128,40 +141,58 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       selectedEdge: null,
       focusedEdge: null
     }),
-  reset: () =>
+  reset: () => {
+    // Get the existing graph
+    const existingGraph = get().sigmaGraph;
+
+    // If we have an existing graph, clear it by removing all nodes
+    if (existingGraph) {
+      const nodes = Array.from(existingGraph.nodes());
+      nodes.forEach(node => existingGraph.dropNode(node));
+    }
+
     set({
       selectedNode: null,
       focusedNode: null,
       selectedEdge: null,
       focusedEdge: null,
       rawGraph: null,
-      sigmaGraph: null,
-      graphLabels: ['*'],
-      moveToSelectedNode: false
-    }),
+      // Keep the existing graph instance but with cleared data
+      moveToSelectedNode: false,
+      shouldRender: false
+    });
+  },
 
   setRawGraph: (rawGraph: RawGraph | null) =>
     set({
       rawGraph
     }),
 
-  setSigmaGraph: (sigmaGraph: DirectedGraph | null) => set({ sigmaGraph }),
-
-  setGraphLabels: (labels: string[]) => set({ graphLabels: labels }),
+  setSigmaGraph: (sigmaGraph: DirectedGraph | null) => {
+    // Replace graph instance, no need to keep WebGL context
+    set({ sigmaGraph });
+  },
 
   setAllDatabaseLabels: (labels: string[]) => set({ allDatabaseLabels: labels }),
 
   fetchAllDatabaseLabels: async () => {
     try {
+      console.log('Fetching all database labels...');
       const labels = await getGraphLabels();
       set({ allDatabaseLabels: ['*', ...labels] });
+      return;
     } catch (error) {
       console.error('Failed to fetch all database labels:', error);
       set({ allDatabaseLabels: ['*'] });
+      throw error;
     }
   },
 
-  setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode })
+  setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
+
+  // Methods to set global flags
+  setGraphDataFetchAttempted: (attempted: boolean) => set({ graphDataFetchAttempted: attempted }),
+  setLabelsFetchAttempted: (attempted: boolean) => set({ labelsFetchAttempted: attempted })
 }))
 
 const useGraphStore = createSelectors(useGraphStoreBase)
