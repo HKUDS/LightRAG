@@ -14,7 +14,7 @@ const FocusOnNode = ({ node, move }: { node: string | null; move?: boolean }) =>
    */
   useEffect(() => {
     const graph = sigma.getGraph();
-    
+
     if (move) {
       if (node && graph.hasNode(node)) {
         try {

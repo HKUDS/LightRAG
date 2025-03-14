@@ -101,7 +101,7 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
 
       // 获取所有边
       const edges = state.sigmaGraph.edges(node.id)
-      
+
       // 处理每条边
       for (const edgeId of edges) {
         // 检查边是否还存在

@@ -446,7 +446,7 @@ const useLightrangeGraph = () => {
         for (const edge of processedEdges) {
           const sourceExists = existingNodeIds.has(edge.source) || nodesToAdd.has(edge.source);
           const targetExists = existingNodeIds.has(edge.target) || nodesToAdd.has(edge.target);
-          
+
           if (sourceExists && targetExists) {
             edgesToAdd.add(edge.id);
           } else {
@@ -462,14 +462,14 @@ const useLightrangeGraph = () => {
 
         // STEP 2: Calculate node degrees and sizes
         const nodeDegrees = new Map<string, number>();
-        
+
         // Calculate degrees from kept edges
         for (const edgeId of edgesToAdd) {
           const edge = processedEdges.find(e => e.id === edgeId)!;
           nodeDegrees.set(edge.source, (nodeDegrees.get(edge.source) || 0) + 1);
           nodeDegrees.set(edge.target, (nodeDegrees.get(edge.target) || 0) + 1);
         }
-        
+
         // Add +1 to degree for nodes that had edges discarded
         for (const nodeId of nodesWithDiscardedEdges) {
           nodeDegrees.set(nodeId, (nodeDegrees.get(nodeId) || 0) + 1);
@@ -482,7 +482,7 @@ const useLightrangeGraph = () => {
           const degree = sigmaGraph.degree(node);
           maxDegree = Math.max(maxDegree, degree);
         });
-        
+
         // Update maxDegree with new node degrees
         for (const [, degree] of nodeDegrees.entries()) {
           maxDegree = Math.max(maxDegree, degree);
@@ -497,30 +497,30 @@ const useLightrangeGraph = () => {
         for (const nodeId of nodesToAdd) {
           const newNode = processedNodes.find(n => n.id === nodeId)!;
           const nodeDegree = nodeDegrees.get(nodeId) || 0;
-          
+
           // Calculate node size
           const nodeSize = Math.round(
             Constants.minNodeSize + scale * Math.pow((nodeDegree - minDegree) / range, 0.5)
           );
-          
+
           // Get camera ratio from sigma instance for scale adjustment
           const cameraRatio = useGraphStore.getState().sigmaInstance?.getCamera().ratio || 1;
-          
+
           // Calculate spread factor based on node size and number of nodes
           const spreadFactor = Math.max(
             nodeToExpand.size * 4, // Base on node size
             Math.sqrt(nodesToAdd.size) * 10 // Scale with number of nodes
           ) / cameraRatio; // Adjust for zoom level
-          
+
           // Calculate angle for polar coordinates
           const angle = 2 * Math.PI * (Array.from(nodesToAdd).indexOf(nodeId) / nodesToAdd.size);
-          
+
           // Calculate final position
-          const x = nodePositions[nodeId]?.x || 
+          const x = nodePositions[nodeId]?.x ||
                     (nodePositions[nodeToExpand.id].x + Math.cos(angle) * spreadFactor);
-          const y = nodePositions[nodeId]?.y || 
+          const y = nodePositions[nodeId]?.y ||
                     (nodePositions[nodeToExpand.id].y + Math.sin(angle) * spreadFactor);
-          
+
           // Add the new node to the sigma graph with calculated position
           sigmaGraph.addNode(nodeId, {
             label: newNode.labels.join(', '),
@@ -539,7 +539,7 @@ const useLightrangeGraph = () => {
             newNode.x = x;
             newNode.y = y;
             newNode.degree = nodeDegree;
-            
+
             // Add to nodes array
             rawGraph.nodes.push(newNode);
             // Update nodeIdMap
@@ -550,7 +550,7 @@ const useLightrangeGraph = () => {
         // Add new edges
         for (const edgeId of edgesToAdd) {
           const newEdge = processedEdges.find(e => e.id === edgeId)!;
-          
+
           // Skip if edge already exists
           if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
             continue;
@@ -579,7 +579,7 @@ const useLightrangeGraph = () => {
         if (sigmaGraph.hasNode(nodeId)) {
           // Get the new degree of the expanded node
           let expandedNodeDegree = sigmaGraph.degree(nodeId);
-          
+
           // Check if the expanded node had any discarded edges
           if (nodesWithDiscardedEdges.has(nodeId)) {
             expandedNodeDegree += 1; // Add +1 for discarded edges
