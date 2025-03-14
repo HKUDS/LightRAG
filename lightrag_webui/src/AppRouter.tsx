@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { HashRouter as Router, Routes, Route } from 'react-router-dom'
 // import { useAuthStore } from '@/stores/state'
 import { Toaster } from 'sonner'
 import App from './App'
@@ -22,7 +22,7 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
 const AppRouter = () => {
   return (
     <ThemeProvider>
-      <BrowserRouter>
+      <Router>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route
@@ -35,7 +35,7 @@ const AppRouter = () => {
           />
         </Routes>
         <Toaster position="top-center" />
-      </BrowserRouter>
+      </Router>
     </ThemeProvider>
   )
 }
