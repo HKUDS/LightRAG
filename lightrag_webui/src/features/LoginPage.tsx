@@ -9,8 +9,7 @@ import { Card, CardContent, CardHeader } from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { ZapIcon } from 'lucide-react'
-import ThemeToggle from '@/components/ThemeToggle'
-import LanguageToggle from '@/components/LanguageToggle'
+import AppSettings from '@/components/AppSettings'
 
 const LoginPage = () => {
   const navigate = useNavigate()
@@ -44,8 +43,7 @@ const LoginPage = () => {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800">
       <div className="absolute top-4 right-4 flex items-center gap-2">
-        <LanguageToggle />
-        <ThemeToggle />
+        <AppSettings className="bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm rounded-md" />
       </div>
       <Card className="w-full max-w-[480px] shadow-lg mx-4">
         <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
