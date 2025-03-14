@@ -98,7 +98,9 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
           relationships.push({
             type: 'Neighbour',
             id: neighbourId,
-            label: neighbour.properties['entity_id'] ? neighbour.properties['entity_id'] : neighbour.labels.join(', ')
+            label: neighbour.properties['entity_id']
+              ? neighbour.properties['entity_id']
+              : neighbour.labels.join(', ')
           })
         }
       }
@@ -151,7 +153,9 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
   const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-md pl-1 font-bold tracking-wide text-sky-300">{t('graphPanel.propertiesView.node.title')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-sky-300">
+        {t('graphPanel.propertiesView.node.title')}
+      </label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={t('graphPanel.propertiesView.node.id')} value={node.id} />
         <PropertyRow
@@ -163,7 +167,9 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
         />
         <PropertyRow name={t('graphPanel.propertiesView.node.degree')} value={node.degree} />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">{t('graphPanel.propertiesView.node.properties')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">
+        {t('graphPanel.propertiesView.node.properties')}
+      </label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(node.properties)
           .sort()
@@ -174,7 +180,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
       {node.relationships.length > 0 && (
         <>
           <label className="text-md pl-1 font-bold tracking-wide text-teal-600/90">
-          {t('graphPanel.propertiesView.node.relationships')}
+            {t('graphPanel.propertiesView.node.relationships')}
           </label>
           <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
             {node.relationships.map(({ type, id, label }) => {
@@ -200,10 +206,14 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
   const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-md pl-1 font-bold tracking-wide text-teal-600">{t('graphPanel.propertiesView.edge.title')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-teal-600">
+        {t('graphPanel.propertiesView.edge.title')}
+      </label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={t('graphPanel.propertiesView.edge.id')} value={edge.id} />
-        {edge.type && <PropertyRow name={t('graphPanel.propertiesView.edge.type')} value={edge.type} />}
+        {edge.type && (
+          <PropertyRow name={t('graphPanel.propertiesView.edge.type')} value={edge.type} />
+        )}
         <PropertyRow
           name={t('graphPanel.propertiesView.edge.source')}
           value={edge.sourceNode ? edge.sourceNode.labels.join(', ') : edge.source}
@@ -219,7 +229,9 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
           }}
         />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">{t('graphPanel.propertiesView.edge.properties')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">
+        {t('graphPanel.propertiesView.edge.properties')}
+      </label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(edge.properties)
           .sort()

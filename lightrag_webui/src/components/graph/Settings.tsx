@@ -10,7 +10,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
 
 import { SettingsIcon } from 'lucide-react'
-import { useTranslation } from "react-i18next";
+import { useTranslation } from 'react-i18next';
 
 /**
  * Component that displays a checkbox with a label.
@@ -210,7 +210,7 @@ export default function Settings() {
   return (
     <Popover open={opened} onOpenChange={setOpened}>
       <PopoverTrigger asChild>
-        <Button variant={controlButtonVariant} tooltip={t("graphPanel.sideBar.settings.settings")} size="icon">
+        <Button variant={controlButtonVariant} tooltip={t('graphPanel.sideBar.settings.settings')} size="icon">
           <SettingsIcon />
         </Button>
       </PopoverTrigger>
@@ -224,7 +224,7 @@ export default function Settings() {
           <LabeledCheckBox
             checked={enableHealthCheck}
             onCheckedChange={setEnableHealthCheck}
-            label={t("graphPanel.sideBar.settings.healthCheck")}
+            label={t('graphPanel.sideBar.settings.healthCheck')}
           />
 
           <Separator />
@@ -232,12 +232,12 @@ export default function Settings() {
           <LabeledCheckBox
             checked={showPropertyPanel}
             onCheckedChange={setShowPropertyPanel}
-            label={t("graphPanel.sideBar.settings.showPropertyPanel")}
+            label={t('graphPanel.sideBar.settings.showPropertyPanel')}
           />
           <LabeledCheckBox
             checked={showNodeSearchBar}
             onCheckedChange={setShowNodeSearchBar}
-            label={t("graphPanel.sideBar.settings.showSearchBar")}
+            label={t('graphPanel.sideBar.settings.showSearchBar')}
           />
 
           <Separator />
@@ -245,12 +245,12 @@ export default function Settings() {
           <LabeledCheckBox
             checked={showNodeLabel}
             onCheckedChange={setShowNodeLabel}
-            label={t("graphPanel.sideBar.settings.showNodeLabel")}
+            label={t('graphPanel.sideBar.settings.showNodeLabel')}
           />
           <LabeledCheckBox
             checked={enableNodeDrag}
             onCheckedChange={setEnableNodeDrag}
-            label={t("graphPanel.sideBar.settings.nodeDraggable")}
+            label={t('graphPanel.sideBar.settings.nodeDraggable')}
           />
 
           <Separator />
@@ -258,34 +258,34 @@ export default function Settings() {
           <LabeledCheckBox
             checked={showEdgeLabel}
             onCheckedChange={setShowEdgeLabel}
-            label={t("graphPanel.sideBar.settings.showEdgeLabel")}
+            label={t('graphPanel.sideBar.settings.showEdgeLabel')}
           />
           <LabeledCheckBox
             checked={enableHideUnselectedEdges}
             onCheckedChange={setEnableHideUnselectedEdges}
-            label={t("graphPanel.sideBar.settings.hideUnselectedEdges")}
+            label={t('graphPanel.sideBar.settings.hideUnselectedEdges')}
           />
           <LabeledCheckBox
             checked={enableEdgeEvents}
             onCheckedChange={setEnableEdgeEvents}
-            label={t("graphPanel.sideBar.settings.edgeEvents")}
+            label={t('graphPanel.sideBar.settings.edgeEvents')}
           />
 
           <Separator />
           <LabeledNumberInput
-            label={t("graphPanel.sideBar.settings.maxQueryDepth")}
+            label={t('graphPanel.sideBar.settings.maxQueryDepth')}
             min={1}
             value={graphQueryMaxDepth}
             onEditFinished={setGraphQueryMaxDepth}
           />
           <LabeledNumberInput
-            label={t("graphPanel.sideBar.settings.minDegree")}
+            label={t('graphPanel.sideBar.settings.minDegree')}
             min={0}
             value={graphMinDegree}
             onEditFinished={setGraphMinDegree}
           />
           <LabeledNumberInput
-            label={t("graphPanel.sideBar.settings.maxLayoutIterations")}
+            label={t('graphPanel.sideBar.settings.maxLayoutIterations')}
             min={1}
             max={20}
             value={graphLayoutMaxIterations}
@@ -294,14 +294,14 @@ export default function Settings() {
           <Separator />
 
           <div className="flex flex-col gap-2">
-            <label className="text-sm font-medium">{t("graphPanel.sideBar.settings.apiKey")}</label>
+            <label className="text-sm font-medium">{t('graphPanel.sideBar.settings.apiKey')}</label>
             <form className="flex h-6 gap-2" onSubmit={(e) => e.preventDefault()}>
               <div className="w-0 flex-1">
                 <Input
                   type="password"
                   value={tempApiKey}
                   onChange={handleTempApiKeyChange}
-                  placeholder={t("graphPanel.sideBar.settings.enterYourAPIkey")}
+                  placeholder={t('graphPanel.sideBar.settings.enterYourAPIkey')}
                   className="max-h-full w-full min-w-0"
                   autoComplete="off"
                 />
@@ -312,7 +312,7 @@ export default function Settings() {
                 size="sm"
                 className="max-h-full shrink-0"
               >
-                {t("graphPanel.sideBar.settings.save")}
+                {t('graphPanel.sideBar.settings.save')}
               </Button>
             </form>
           </div>
