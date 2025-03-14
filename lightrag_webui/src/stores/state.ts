@@ -16,6 +16,14 @@ interface BackendState {
   setErrorMessage: (message: string, messageTitle: string) => void
 }
 
+interface AuthState {
+  isAuthenticated: boolean;
+  showLoginModal: boolean;
+  login: (token: string) => void;
+  logout: () => void;
+  setShowLoginModal: (show: boolean) => void;
+}
+
 const useBackendStateStoreBase = create<BackendState>()((set) => ({
   health: true,
   message: null,
@@ -57,3 +65,17 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
 const useBackendState = createSelectors(useBackendStateStoreBase)
 
 export { useBackendState }
+
+export const useAuthStore = create<AuthState>(set => ({
+  isAuthenticated: !!localStorage.getItem('LIGHTRAG-API-TOKEN'),
+  showLoginModal: false,
+  login: (token) => {
+    localStorage.setItem('LIGHTRAG-API-TOKEN', token);
+    set({ isAuthenticated: true, showLoginModal: false });
+  },
+  logout: () => {
+    localStorage.removeItem('LIGHTRAG-API-TOKEN');
+    set({ isAuthenticated: false });
+  },
+  setShowLoginModal: (show) => set({ showLoginModal: show })
+}));

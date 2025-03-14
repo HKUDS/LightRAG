@@ -1,4 +1,4 @@
-import { FC, useCallback, useMemo } from 'react'
+import { FC, useCallback, useEffect, useMemo } from 'react'
 import {
   EdgeById,
   NodeById,
@@ -28,6 +28,7 @@ function OptionComponent(item: OptionItem) {
 }
 
 const messageId = '__message_item'
+// Reset this cache when graph changes to ensure fresh search results
 const lastGraph: any = {
   graph: null,
   searchEngine: null
@@ -47,6 +48,15 @@ export const GraphSearchInput = ({
 }) => {
   const { t } = useTranslation()
   const graph = useGraphStore.use.sigmaGraph()
+
+  // Force reset the cache when graph changes
+  useEffect(() => {
+    if (graph) {
+      // Reset cache to ensure fresh search results with new graph data
+      lastGraph.graph = null;
+      lastGraph.searchEngine = null;
+    }
+  }, [graph]);
 
   const searchEngine = useMemo(() => {
     if (lastGraph.graph == graph) {
@@ -85,8 +95,19 @@ export const GraphSearchInput = ({
   const loadOptions = useCallback(
     async (query?: string): Promise<OptionItem[]> => {
       if (onFocus) onFocus(null)
-      if (!query || !searchEngine) return []
-      const result: OptionItem[] = searchEngine.search(query).map((r) => ({
+      if (!graph || !searchEngine) return []
+
+      // If no query, return first searchResultLimit nodes
+      if (!query) {
+        const nodeIds = graph.nodes().slice(0, searchResultLimit)
+        return nodeIds.map(id => ({
+          id,
+          type: 'nodes'
+        }))
+      }
+
+      // If has query, search nodes
+      const result: OptionItem[] = searchEngine.search(query).map((r: { id: string }) => ({
         id: r.id,
         type: 'nodes'
       }))
@@ -103,7 +124,7 @@ export const GraphSearchInput = ({
           }
         ]
     },
-    [searchEngine, onFocus]
+    [graph, searchEngine, onFocus, t]
   )
 
   return (

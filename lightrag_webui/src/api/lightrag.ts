@@ -1,7 +1,8 @@
 import axios, { AxiosError } from 'axios'
-import { backendBaseUrl } from '@/lib/constants'
+import { backendBaseUrl, webuiPrefix } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/state'
 
 // Types
 export type LightragNodeType = {
@@ -125,6 +126,11 @@ export type DocsStatusesResponse = {
   statuses: Record<DocStatus, DocStatusResponse[]>
 }
 
+export type LoginResponse = {
+  access_token: string
+  token_type: string
+}
+
 export const InvalidApiKeyError = 'Invalid API Key'
 export const RequireApiKeError = 'API Key required'
 
@@ -139,8 +145,12 @@ const axiosInstance = axios.create({
 // Interceptor：add api key
 axiosInstance.interceptors.request.use((config) => {
   const apiKey = useSettingsStore.getState().apiKey
+  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
+  }
+  if (token) {
+    config.headers['Authorization'] = `Bearer ${token}`
   }
   return config
 })
@@ -150,6 +160,21 @@ axiosInstance.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
     if (error.response) {
+      interface ErrorResponse {
+        detail: string;
+      }
+
+      if (error.response?.status === 401) {
+        localStorage.removeItem('LIGHTRAG-API-TOKEN');
+        sessionStorage.clear();
+        useAuthStore.getState().logout();
+
+        if (window.location.pathname !== `${webuiPrefix}/#/login`) {
+          window.location.href = `${webuiPrefix}/#/login`;
+        }
+
+        return Promise.reject(error);
+      }
       throw new Error(
         `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
           error.response.data
@@ -323,4 +348,18 @@ export const batchUploadDocuments = async (
 export const clearDocuments = async (): Promise<DocActionResponse> => {
   const response = await axiosInstance.delete('/documents')
   return response.data
+}
+
+export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {
+  const formData = new FormData();
+  formData.append('username', username);
+  formData.append('password', password);
+
+  const response = await axiosInstance.post('/login', formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  });
+
+  return response.data;
 }

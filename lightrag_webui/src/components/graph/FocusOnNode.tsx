@@ -13,15 +13,24 @@ const FocusOnNode = ({ node, move }: { node: string | null; move?: boolean }) =>
    * When the selected item changes, highlighted the node and center the camera on it.
    */
   useEffect(() => {
-    if (!node) return
-    sigma.getGraph().setNodeAttribute(node, 'highlighted', true)
     if (move) {
-      gotoNode(node)
+      if (node) {
+        sigma.getGraph().setNodeAttribute(node, 'highlighted', true)
+        gotoNode(node)
+      } else {
+        // If no node is selected but move is true, reset to default view
+        sigma.setCustomBBox(null)
+        sigma.getCamera().animate({ x: 0.5, y: 0.5, ratio: 1 }, { duration: 0 })
+      }
       useGraphStore.getState().setMoveToSelectedNode(false)
+    } else if (node) {
+      sigma.getGraph().setNodeAttribute(node, 'highlighted', true)
     }
 
     return () => {
-      sigma.getGraph().setNodeAttribute(node, 'highlighted', false)
+      if (node) {
+        sigma.getGraph().setNodeAttribute(node, 'highlighted', false)
+      }
     }
   }, [node, move, sigma, gotoNode])
 

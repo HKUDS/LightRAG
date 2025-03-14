@@ -341,7 +341,7 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")
 
-    @app.post("/login")
+    @app.post("/login", dependencies=[Depends(optional_api_key)])
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         username = os.getenv("AUTH_USERNAME")
         password = os.getenv("AUTH_PASSWORD")
@@ -391,12 +391,24 @@ def create_app(args):
             "update_status": update_status,
         }
 
+    # Custom StaticFiles class to prevent caching of HTML files
+    class NoCacheStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope):
+            response = await super().get_response(path, scope)
+            if path.endswith(".html"):
+                response.headers["Cache-Control"] = (
+                    "no-cache, no-store, must-revalidate"
+                )
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+            return response
+
     # Webui mount webui/index.html
     static_dir = Path(__file__).parent / "webui"
     static_dir.mkdir(exist_ok=True)
     app.mount(
         "/webui",
-        StaticFiles(directory=static_dir, html=True, check_dir=True),
+        NoCacheStaticFiles(directory=static_dir, html=True, check_dir=True),
         name="webui",
     )
 

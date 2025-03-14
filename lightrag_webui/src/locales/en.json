@@ -1,14 +1,34 @@
 {
+  "settings": {
+    "language": "Language",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
   "header": {
     "documents": "Documents",
     "knowledgeGraph": "Knowledge Graph",
     "retrieval": "Retrieval",
     "api": "API",
     "projectRepository": "Project Repository",
+    "logout": "Logout",
     "themeToggle": {
       "switchToLight": "Switch to light theme",
       "switchToDark": "Switch to dark theme"
     }
+  },
+  "login": {
+    "description": "Please enter your account and password to log in to the system",
+    "username": "Username",
+    "usernamePlaceholder": "Please input a username",
+    "password": "Password",
+    "passwordPlaceholder": "Please input a password",
+    "loginButton": "Login",
+    "loggingIn": "Logging in...",
+    "successMessage": "Login succeeded",
+    "errorEmptyFields": "Please enter your username and password",
+    "errorInvalidCredentials": "Login failed, please check username and password"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -79,9 +99,12 @@
         "maxQueryDepth": "Max Query Depth",
         "minDegree": "Minimum Degree",
         "maxLayoutIterations": "Max Layout Iterations",
+        "depth": "Depth",
+        "degree": "Degree",
         "apiKey": "API Key",
         "enterYourAPIkey": "Enter your API key",
-        "save": "Save"
+        "save": "Save",
+        "refreshLayout": "Refresh Layout"
       },
 
       "zoomControl": {
@@ -140,7 +163,14 @@
         "labels": "Labels",
         "degree": "Degree",
         "properties": "Properties",
-        "relationships": "Relationships"
+        "relationships": "Relationships",
+        "propertyNames": {
+          "description": "Description",
+          "entity_id": "Name",
+          "entity_type": "Type",
+          "source_id": "SrcID",
+          "Neighbour": "Neigh"
+        }
       },
       "edge": {
         "title": "Relationship",
@@ -230,5 +260,8 @@
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses"
     }
+  },
+  "apiSite": {
+    "loading": "Loading API Documentation..."
   }
 }
