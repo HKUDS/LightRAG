@@ -1,5 +1,5 @@
 import axios, { AxiosError } from 'axios'
-import { backendBaseUrl } from '@/lib/constants'
+import { backendBaseUrl, webuiPrefix } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
@@ -169,8 +169,8 @@ axiosInstance.interceptors.response.use(
         sessionStorage.clear();
         useAuthStore.getState().logout();
 
-        if (window.location.pathname !== '/login') {
-          window.location.href = '/login';
+        if (window.location.pathname !== `${webuiPrefix}/#/login`) {
+          window.location.href = `${webuiPrefix}/#/login`;
         }
 
         return Promise.reject(error);
