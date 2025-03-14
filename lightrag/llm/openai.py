@@ -123,7 +123,7 @@ async def openai_complete_if_cache(
 
         async def inner():
             try:
-                _content = ''
+                _content = ""
                 async for chunk in response:
                     content = chunk.choices[0].delta.content
                     if content is None:
