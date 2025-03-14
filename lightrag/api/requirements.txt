@@ -18,3 +18,4 @@ pytz
 tenacity
 tiktoken
 uvicorn
+graspologic>=3.4.1
