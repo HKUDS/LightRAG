@@ -503,13 +503,25 @@ const useLightrangeGraph = () => {
             Constants.minNodeSize + scale * Math.pow((nodeDegree - minDegree) / range, 0.5)
           );
           
-          // Calculate position relative to expanded node
-          const x = nodePositions[nodeId]?.x || 
-                    (nodePositions[nodeToExpand.id].x + (Math.random() - 0.5) * 0.5);
-          const y = nodePositions[nodeId]?.y || 
-                    (nodePositions[nodeToExpand.id].y + (Math.random() - 0.5) * 0.5);
+          // Get camera ratio from sigma instance for scale adjustment
+          const cameraRatio = useGraphStore.getState().sigmaInstance?.getCamera().ratio || 1;
           
-          // Add the new node to the sigma graph
+          // Calculate spread factor based on node size and number of nodes
+          const spreadFactor = Math.max(
+            nodeToExpand.size * 4, // Base on node size
+            Math.sqrt(nodesToAdd.size) * 10 // Scale with number of nodes
+          ) / cameraRatio; // Adjust for zoom level
+          
+          // Calculate angle for polar coordinates
+          const angle = 2 * Math.PI * (Array.from(nodesToAdd).indexOf(nodeId) / nodesToAdd.size);
+          
+          // Calculate final position
+          const x = nodePositions[nodeId]?.x || 
+                    (nodePositions[nodeToExpand.id].x + Math.cos(angle) * spreadFactor);
+          const y = nodePositions[nodeId]?.y || 
+                    (nodePositions[nodeToExpand.id].y + Math.sin(angle) * spreadFactor);
+          
+          // Add the new node to the sigma graph with calculated position
           sigmaGraph.addNode(nodeId, {
             label: newNode.labels.join(', '),
             color: newNode.color,
