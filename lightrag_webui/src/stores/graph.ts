@@ -189,7 +189,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   },
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
-  
+
   setSigmaInstance: (instance: any) => set({ sigmaInstance: instance }),
 
   // Methods to set global flags
@@ -447,7 +447,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
         // Rebuild the dynamic edge map
         state.rawGraph.buildDynamicMap();
       }
-      
+
       // 图形更新后会自动触发重新布局
 
     } catch (error) {

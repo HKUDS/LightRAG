@@ -62,13 +62,13 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       } catch (error) {
         console.error('Error setting graph on sigma instance:', error);
       }
-      
+
       // 应用布局
       assignLayout();
       console.log('Layout applied to graph');
     }
   }, [sigma, sigmaGraph, assignLayout, maxIterations])
-  
+
   /**
    * Ensure the sigma instance is set in the store
    * This provides a backup in case the instance wasn't set in GraphViewer
@@ -224,7 +224,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
           } else {
             const _selectedEdge = selectedEdge && graph.hasEdge(selectedEdge) ? selectedEdge : null;
             const _focusedEdge = focusedEdge && graph.hasEdge(focusedEdge) ? focusedEdge : null;
-            
+
             if (_selectedEdge || _focusedEdge) {
               if (edge === _selectedEdge) {
                 newData.color = Constants.edgeColorSelected

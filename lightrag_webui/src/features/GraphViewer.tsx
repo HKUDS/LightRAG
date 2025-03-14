@@ -147,7 +147,7 @@ const GraphViewer = () => {
   useEffect(() => {
     setSigmaSettings(defaultSigmaSettings)
   }, [])
-  
+
   // Clean up sigma instance when component unmounts
   useEffect(() => {
     return () => {
@@ -156,20 +156,20 @@ const GraphViewer = () => {
       console.log('Cleared sigma instance on unmount');
     };
   }, []);
-  
+
   // Get the sigmaGraph from the store
   const sigmaGraph = useGraphStore.use.sigmaGraph();
-  
+
   // Set the sigma instance in the graph store when it's available
   // Using useLayoutEffect to ensure this runs before child components need the instance
   useLayoutEffect(() => {
     if (sigmaRef.current?.sigma) {
       const instance = sigmaRef.current.sigma;
-      
+
       // Get the sigma instance from the ref and store it
       console.log('Setting sigma instance in graph store (layout effect)');
       useGraphStore.getState().setSigmaInstance(instance);
-      
+
       // If we also have a graph, bind it to the sigma instance
       if (sigmaGraph) {
         try {
