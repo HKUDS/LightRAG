@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import configparser
 import os
+import csv
 import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, AsyncIterator, Callable, Iterator, cast, final
+from typing import Any, AsyncIterator, Callable, Iterator, cast, final, Literal
+import pandas as pd
+
 
 from lightrag.kg import (
     STORAGE_ENV_REQUIREMENTS,
@@ -1111,6 +1114,7 @@ class LightRAG:
 
                 # Prepare node data
                 node_data: dict[str, str] = {
+                    "entity_id": entity_name,
                     "entity_type": entity_type,
                     "description": description,
                     "source_id": source_id,
@@ -1148,6 +1152,7 @@ class LightRAG:
                         await self.chunk_entity_relation_graph.upsert_node(
                             need_insert_id,
                             node_data={
+                                "entity_id": need_insert_id,
                                 "source_id": source_id,
                                 "description": "UNKNOWN",
                                 "entity_type": "UNKNOWN",
@@ -1838,9 +1843,10 @@ class LightRAG:
         """
         try:
             # 1. Get current entity information
-            node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
-            if not node_data:
+            node_exists = await self.chunk_entity_relation_graph.has_node(entity_name)
+            if not node_exists:
                 raise ValueError(f"Entity '{entity_name}' does not exist")
+            node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
 
             # Check if entity is being renamed
             new_entity_name = updated_data.get("entity_name", entity_name)
@@ -1853,7 +1859,7 @@ class LightRAG:
                         "Entity renaming is not allowed. Set allow_rename=True to enable this feature"
                     )
 
-                existing_node = await self.chunk_entity_relation_graph.get_node(
+                existing_node = await self.chunk_entity_relation_graph.has_node(
                     new_entity_name
                 )
                 if existing_node:
@@ -2035,14 +2041,16 @@ class LightRAG:
         """
         try:
             # 1. Get current relation information
-            edge_data = await self.chunk_entity_relation_graph.get_edge(
+            edge_exists = await self.chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
             )
-            if not edge_data:
+            if not edge_exists:
                 raise ValueError(
                     f"Relation from '{source_entity}' to '{target_entity}' does not exist"
                 )
-
+            edge_data = await self.chunk_entity_relation_graph.get_edge(
+                source_entity, target_entity
+            )
             # Important: First delete the old relation record from the vector database
             old_relation_id = compute_mdhash_id(
                 source_entity + target_entity, prefix="rel-"
@@ -2151,12 +2159,13 @@ class LightRAG:
         """
         try:
             # Check if entity already exists
-            existing_node = await self.chunk_entity_relation_graph.get_node(entity_name)
+            existing_node = await self.chunk_entity_relation_graph.has_node(entity_name)
             if existing_node:
                 raise ValueError(f"Entity '{entity_name}' already exists")
 
             # Prepare node data with defaults if missing
             node_data = {
+                "entity_id": entity_name,
                 "entity_type": entity_data.get("entity_type", "UNKNOWN"),
                 "description": entity_data.get("description", ""),
                 "source_id": entity_data.get("source_id", "manual"),
@@ -2244,7 +2253,7 @@ class LightRAG:
                 raise ValueError(f"Target entity '{target_entity}' does not exist")
 
             # Check if relation already exists
-            existing_edge = await self.chunk_entity_relation_graph.get_edge(
+            existing_edge = await self.chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
             )
             if existing_edge:
@@ -2377,19 +2386,22 @@ class LightRAG:
             # 1. Check if all source entities exist
             source_entities_data = {}
             for entity_name in source_entities:
-                node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
-                if not node_data:
+                node_exists = await self.chunk_entity_relation_graph.has_node(
+                    entity_name
+                )
+                if not node_exists:
                     raise ValueError(f"Source entity '{entity_name}' does not exist")
+                node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
                 source_entities_data[entity_name] = node_data
 
             # 2. Check if target entity exists and get its data if it does
             target_exists = await self.chunk_entity_relation_graph.has_node(
                 target_entity
             )
-            target_entity_data = {}
+            existing_target_entity_data = {}
             if target_exists:
-                target_entity_data = await self.chunk_entity_relation_graph.get_node(
-                    target_entity
+                existing_target_entity_data = (
+                    await self.chunk_entity_relation_graph.get_node(target_entity)
                 )
                 logger.info(
                     f"Target entity '{target_entity}' already exists, will merge data"
@@ -2398,7 +2410,7 @@ class LightRAG:
             # 3. Merge entity data
             merged_entity_data = self._merge_entity_attributes(
                 list(source_entities_data.values())
-                + ([target_entity_data] if target_exists else []),
+                + ([existing_target_entity_data] if target_exists else []),
                 merge_strategy,
             )
 
@@ -2591,6 +2603,322 @@ class LightRAG:
         except Exception as e:
             logger.error(f"Error merging entities: {e}")
             raise
+
+    async def aexport_data(
+        self,
+        output_path: str,
+        file_format: Literal["csv", "excel", "md", "txt"] = "csv",
+        include_vector_data: bool = False,
+    ) -> None:
+        """
+        Asynchronously exports all entities, relations, and relationships to various formats.
+        Args:
+            output_path: The path to the output file (including extension).
+            file_format: Output format - "csv", "excel", "md", "txt".
+                - csv: Comma-separated values file
+                - excel: Microsoft Excel file with multiple sheets
+                - md: Markdown tables
+                - txt: Plain text formatted output
+                - table: Print formatted tables to console
+            include_vector_data: Whether to include data from the vector database.
+        """
+        # Collect data
+        entities_data = []
+        relations_data = []
+        relationships_data = []
+
+        # --- Entities ---
+        all_entities = await self.chunk_entity_relation_graph.get_all_labels()
+        for entity_name in all_entities:
+            entity_info = await self.get_entity_info(
+                entity_name, include_vector_data=include_vector_data
+            )
+            entity_row = {
+                "entity_name": entity_name,
+                "source_id": entity_info["source_id"],
+                "graph_data": str(
+                    entity_info["graph_data"]
+                ),  # Convert to string to ensure compatibility
+            }
+            if include_vector_data and "vector_data" in entity_info:
+                entity_row["vector_data"] = str(entity_info["vector_data"])
+            entities_data.append(entity_row)
+
+        # --- Relations ---
+        for src_entity in all_entities:
+            for tgt_entity in all_entities:
+                if src_entity == tgt_entity:
+                    continue
+
+                edge_exists = await self.chunk_entity_relation_graph.has_edge(
+                    src_entity, tgt_entity
+                )
+                if edge_exists:
+                    relation_info = await self.get_relation_info(
+                        src_entity, tgt_entity, include_vector_data=include_vector_data
+                    )
+                    relation_row = {
+                        "src_entity": src_entity,
+                        "tgt_entity": tgt_entity,
+                        "source_id": relation_info["source_id"],
+                        "graph_data": str(
+                            relation_info["graph_data"]
+                        ),  # Convert to string
+                    }
+                    if include_vector_data and "vector_data" in relation_info:
+                        relation_row["vector_data"] = str(relation_info["vector_data"])
+                    relations_data.append(relation_row)
+
+        # --- Relationships (from VectorDB) ---
+        all_relationships = await self.relationships_vdb.client_storage
+        for rel in all_relationships["data"]:
+            relationships_data.append(
+                {
+                    "relationship_id": rel["__id__"],
+                    "data": str(rel),  # Convert to string for compatibility
+                }
+            )
+
+        # Export based on format
+        if file_format == "csv":
+            # CSV export
+            with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
+                # Entities
+                if entities_data:
+                    csvfile.write("# ENTITIES\n")
+                    writer = csv.DictWriter(csvfile, fieldnames=entities_data[0].keys())
+                    writer.writeheader()
+                    writer.writerows(entities_data)
+                    csvfile.write("\n\n")
+
+                # Relations
+                if relations_data:
+                    csvfile.write("# RELATIONS\n")
+                    writer = csv.DictWriter(
+                        csvfile, fieldnames=relations_data[0].keys()
+                    )
+                    writer.writeheader()
+                    writer.writerows(relations_data)
+                    csvfile.write("\n\n")
+
+                # Relationships
+                if relationships_data:
+                    csvfile.write("# RELATIONSHIPS\n")
+                    writer = csv.DictWriter(
+                        csvfile, fieldnames=relationships_data[0].keys()
+                    )
+                    writer.writeheader()
+                    writer.writerows(relationships_data)
+
+        elif file_format == "excel":
+            # Excel export
+            entities_df = (
+                pd.DataFrame(entities_data) if entities_data else pd.DataFrame()
+            )
+            relations_df = (
+                pd.DataFrame(relations_data) if relations_data else pd.DataFrame()
+            )
+            relationships_df = (
+                pd.DataFrame(relationships_data)
+                if relationships_data
+                else pd.DataFrame()
+            )
+
+            with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
+                if not entities_df.empty:
+                    entities_df.to_excel(writer, sheet_name="Entities", index=False)
+                if not relations_df.empty:
+                    relations_df.to_excel(writer, sheet_name="Relations", index=False)
+                if not relationships_df.empty:
+                    relationships_df.to_excel(
+                        writer, sheet_name="Relationships", index=False
+                    )
+
+        elif file_format == "md":
+            # Markdown export
+            with open(output_path, "w", encoding="utf-8") as mdfile:
+                mdfile.write("# LightRAG Data Export\n\n")
+
+                # Entities
+                mdfile.write("## Entities\n\n")
+                if entities_data:
+                    # Write header
+                    mdfile.write("| " + " | ".join(entities_data[0].keys()) + " |\n")
+                    mdfile.write(
+                        "| "
+                        + " | ".join(["---"] * len(entities_data[0].keys()))
+                        + " |\n"
+                    )
+
+                    # Write rows
+                    for entity in entities_data:
+                        mdfile.write(
+                            "| " + " | ".join(str(v) for v in entity.values()) + " |\n"
+                        )
+                    mdfile.write("\n\n")
+                else:
+                    mdfile.write("*No entity data available*\n\n")
+
+                # Relations
+                mdfile.write("## Relations\n\n")
+                if relations_data:
+                    # Write header
+                    mdfile.write("| " + " | ".join(relations_data[0].keys()) + " |\n")
+                    mdfile.write(
+                        "| "
+                        + " | ".join(["---"] * len(relations_data[0].keys()))
+                        + " |\n"
+                    )
+
+                    # Write rows
+                    for relation in relations_data:
+                        mdfile.write(
+                            "| "
+                            + " | ".join(str(v) for v in relation.values())
+                            + " |\n"
+                        )
+                    mdfile.write("\n\n")
+                else:
+                    mdfile.write("*No relation data available*\n\n")
+
+                # Relationships
+                mdfile.write("## Relationships\n\n")
+                if relationships_data:
+                    # Write header
+                    mdfile.write(
+                        "| " + " | ".join(relationships_data[0].keys()) + " |\n"
+                    )
+                    mdfile.write(
+                        "| "
+                        + " | ".join(["---"] * len(relationships_data[0].keys()))
+                        + " |\n"
+                    )
+
+                    # Write rows
+                    for relationship in relationships_data:
+                        mdfile.write(
+                            "| "
+                            + " | ".join(str(v) for v in relationship.values())
+                            + " |\n"
+                        )
+                else:
+                    mdfile.write("*No relationship data available*\n\n")
+
+        elif file_format == "txt":
+            # Plain text export
+            with open(output_path, "w", encoding="utf-8") as txtfile:
+                txtfile.write("LIGHTRAG DATA EXPORT\n")
+                txtfile.write("=" * 80 + "\n\n")
+
+                # Entities
+                txtfile.write("ENTITIES\n")
+                txtfile.write("-" * 80 + "\n")
+                if entities_data:
+                    # Create fixed width columns
+                    col_widths = {
+                        k: max(len(k), max(len(str(e[k])) for e in entities_data))
+                        for k in entities_data[0]
+                    }
+                    header = "  ".join(k.ljust(col_widths[k]) for k in entities_data[0])
+                    txtfile.write(header + "\n")
+                    txtfile.write("-" * len(header) + "\n")
+
+                    # Write rows
+                    for entity in entities_data:
+                        row = "  ".join(
+                            str(v).ljust(col_widths[k]) for k, v in entity.items()
+                        )
+                        txtfile.write(row + "\n")
+                    txtfile.write("\n\n")
+                else:
+                    txtfile.write("No entity data available\n\n")
+
+                # Relations
+                txtfile.write("RELATIONS\n")
+                txtfile.write("-" * 80 + "\n")
+                if relations_data:
+                    # Create fixed width columns
+                    col_widths = {
+                        k: max(len(k), max(len(str(r[k])) for r in relations_data))
+                        for k in relations_data[0]
+                    }
+                    header = "  ".join(
+                        k.ljust(col_widths[k]) for k in relations_data[0]
+                    )
+                    txtfile.write(header + "\n")
+                    txtfile.write("-" * len(header) + "\n")
+
+                    # Write rows
+                    for relation in relations_data:
+                        row = "  ".join(
+                            str(v).ljust(col_widths[k]) for k, v in relation.items()
+                        )
+                        txtfile.write(row + "\n")
+                    txtfile.write("\n\n")
+                else:
+                    txtfile.write("No relation data available\n\n")
+
+                # Relationships
+                txtfile.write("RELATIONSHIPS\n")
+                txtfile.write("-" * 80 + "\n")
+                if relationships_data:
+                    # Create fixed width columns
+                    col_widths = {
+                        k: max(len(k), max(len(str(r[k])) for r in relationships_data))
+                        for k in relationships_data[0]
+                    }
+                    header = "  ".join(
+                        k.ljust(col_widths[k]) for k in relationships_data[0]
+                    )
+                    txtfile.write(header + "\n")
+                    txtfile.write("-" * len(header) + "\n")
+
+                    # Write rows
+                    for relationship in relationships_data:
+                        row = "  ".join(
+                            str(v).ljust(col_widths[k]) for k, v in relationship.items()
+                        )
+                        txtfile.write(row + "\n")
+                else:
+                    txtfile.write("No relationship data available\n\n")
+
+        else:
+            raise ValueError(
+                f"Unsupported file format: {file_format}. "
+                f"Choose from: csv, excel, md, txt"
+            )
+        if file_format is not None:
+            print(f"Data exported to: {output_path} with format: {file_format}")
+        else:
+            print("Data displayed as table format")
+
+    def export_data(
+        self,
+        output_path: str,
+        file_format: Literal["csv", "excel", "md", "txt"] = "csv",
+        include_vector_data: bool = False,
+    ) -> None:
+        """
+        Synchronously exports all entities, relations, and relationships to various formats.
+        Args:
+            output_path: The path to the output file (including extension).
+            file_format: Output format - "csv", "excel", "md", "txt".
+                - csv: Comma-separated values file
+                - excel: Microsoft Excel file with multiple sheets
+                - md: Markdown tables
+                - txt: Plain text formatted output
+                - table: Print formatted tables to console
+            include_vector_data: Whether to include data from the vector database.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        loop.run_until_complete(
+            self.aexport_data(output_path, file_format, include_vector_data)
+        )
 
     def merge_entities(
         self,
