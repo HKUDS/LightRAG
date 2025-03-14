@@ -3,6 +3,7 @@ ascii_colors
 asyncpg
 distro
 fastapi
+graspologic>=3.4.1
 httpcore
 httpx
 jiter
@@ -18,4 +19,3 @@ pytz
 tenacity
 tiktoken
 uvicorn
-graspologic>=3.4.1
