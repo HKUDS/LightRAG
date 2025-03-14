@@ -370,21 +370,19 @@ const useLightrangeGraph = () => {
         const processedNodes: RawNodeType[] = [];
         for (const node of extendedGraph.nodes) {
           // Generate random color values
-          const r = Math.floor(Math.random() * 256);
-          const g = Math.floor(Math.random() * 256);
-          const b = Math.floor(Math.random() * 256);
-          const color = `rgb(${r}, ${g}, ${b})`;
+          seedrandom(node.id, { global: true });
+          const color = randomColor();
 
           // Create a properly typed RawNodeType
           processedNodes.push({
             id: node.id,
             labels: node.labels,
             properties: node.properties,
-            size: 10, // Default size
-            x: Math.random(), // Random position
-            y: Math.random(), // Random position
+            size: 10, // Default size, will be calculated later
+            x: Math.random(), // Random position, will be adjusted later
+            y: Math.random(), // Random position, will be adjusted later
             color: color, // Random color
-            degree: 0 // Initial degree
+            degree: 0 // Initial degree, will be calculated later
           });
         }
 
@@ -414,136 +412,168 @@ const useLightrangeGraph = () => {
         // Get existing node IDs
         const existingNodeIds = new Set(sigmaGraph.nodes());
 
-        // Check if there are any new nodes that can be connected to the selected node
-        let hasConnectableNewNodes = false;
-        for (const newNode of processedNodes) {
+        // STEP 1: Identify nodes and edges to keep
+        const nodesToAdd = new Set<string>();
+        const edgesToAdd = new Set<string>();
+        const nodesWithDiscardedEdges = new Set<string>();
+
+        // First identify connectable nodes (nodes connected to the expanded node)
+        for (const node of processedNodes) {
           // Skip if node already exists
-          if (existingNodeIds.has(newNode.id)) {
+          if (existingNodeIds.has(node.id)) {
             continue;
           }
 
           // Check if this node is connected to the selected node
           const isConnected = processedEdges.some(
-            edge => (edge.source === nodeId && edge.target === newNode.id) ||
-                   (edge.target === nodeId && edge.source === newNode.id)
+            edge => (edge.source === nodeId && edge.target === node.id) ||
+                   (edge.target === nodeId && edge.source === node.id)
           );
 
           if (isConnected) {
-            hasConnectableNewNodes = true;
-            break;
+            nodesToAdd.add(node.id);
           }
         }
 
         // If no new connectable nodes found, show toast and return
-        if (!hasConnectableNewNodes) {
+        if (nodesToAdd.size === 0) {
           toast.info(t('graphPanel.propertiesView.node.noNewNodes'));
           useGraphStore.getState().setIsFetching(false);
           return;
         }
 
+        // Then identify valid edges (edges where both nodes exist in the graph)
+        for (const edge of processedEdges) {
+          const sourceExists = existingNodeIds.has(edge.source) || nodesToAdd.has(edge.source);
+          const targetExists = existingNodeIds.has(edge.target) || nodesToAdd.has(edge.target);
+          
+          if (sourceExists && targetExists) {
+            edgesToAdd.add(edge.id);
+          } else {
+            // Mark nodes that had edges discarded
+            if (nodesToAdd.has(edge.source)) {
+              nodesWithDiscardedEdges.add(edge.source);
+            }
+            if (nodesToAdd.has(edge.target)) {
+              nodesWithDiscardedEdges.add(edge.target);
+            }
+          }
+        }
+
+        // STEP 2: Calculate node degrees and sizes
+        const nodeDegrees = new Map<string, number>();
+        
+        // Calculate degrees from kept edges
+        for (const edgeId of edgesToAdd) {
+          const edge = processedEdges.find(e => e.id === edgeId)!;
+          nodeDegrees.set(edge.source, (nodeDegrees.get(edge.source) || 0) + 1);
+          nodeDegrees.set(edge.target, (nodeDegrees.get(edge.target) || 0) + 1);
+        }
+        
+        // Add +1 to degree for nodes that had edges discarded
+        for (const nodeId of nodesWithDiscardedEdges) {
+          nodeDegrees.set(nodeId, (nodeDegrees.get(nodeId) || 0) + 1);
+        }
+
         // Get degree range from existing graph for size calculations
-        let minDegree = Number.MAX_SAFE_INTEGER;
+        const minDegree = 1;
         let maxDegree = 0;
         sigmaGraph.forEachNode(node => {
           const degree = sigmaGraph.degree(node);
-          minDegree = Math.min(minDegree, degree);
           maxDegree = Math.max(maxDegree, degree);
         });
+        
+        // Update maxDegree with new node degrees
+        for (const [, degree] of nodeDegrees.entries()) {
+          maxDegree = Math.max(maxDegree, degree);
+        }
 
         // Calculate size formula parameters
         const range = maxDegree - minDegree || 1; // Avoid division by zero
         const scale = Constants.maxNodeSize - Constants.minNodeSize;
 
-        // Add new nodes from the processed nodes
-        for (const newNode of processedNodes) {
-          // Skip if node already exists
-          if (existingNodeIds.has(newNode.id)) {
-            continue;
-          }
-
-          // Check if this node is connected to the selected node
-          const isConnected = processedEdges.some(
-            edge => (edge.source === nodeId && edge.target === newNode.id) ||
-                   (edge.target === nodeId && edge.source === newNode.id)
+        // STEP 3: Add nodes and edges to the graph
+        // Add new nodes
+        for (const nodeId of nodesToAdd) {
+          const newNode = processedNodes.find(n => n.id === nodeId)!;
+          const nodeDegree = nodeDegrees.get(nodeId) || 0;
+          
+          // Calculate node size
+          const nodeSize = Math.round(
+            Constants.minNodeSize + scale * Math.pow((nodeDegree - minDegree) / range, 0.5)
           );
+          
+          // Calculate position relative to expanded node
+          const x = nodePositions[nodeId]?.x || 
+                    (nodePositions[nodeToExpand.id].x + (Math.random() - 0.5) * 0.5);
+          const y = nodePositions[nodeId]?.y || 
+                    (nodePositions[nodeToExpand.id].y + (Math.random() - 0.5) * 0.5);
+          
+          // Add the new node to the sigma graph
+          sigmaGraph.addNode(nodeId, {
+            label: newNode.labels.join(', '),
+            color: newNode.color,
+            x: x,
+            y: y,
+            size: nodeSize,
+            borderColor: Constants.nodeBorderColor,
+            borderSize: 0.2
+          });
 
-          if (isConnected) {
-            // Calculate node degree (number of connected edges)
-            const nodeDegree = processedEdges.filter(edge =>
-              edge.source === newNode.id || edge.target === newNode.id
-            ).length;
-
-            // Calculate node size using the same formula as in fetchGraph
-            const nodeSize = Math.round(
-              Constants.minNodeSize + scale * Math.pow((nodeDegree - minDegree) / range, 0.5)
-            );
-
-            // Add the new node to the graph with calculated size
-            sigmaGraph.addNode(newNode.id, {
-              label: newNode.labels.join(', '),
-              color: newNode.color,
-              x: nodePositions[nodeId].x + (Math.random() - 0.5) * 0.5,
-              y: nodePositions[nodeId].y + (Math.random() - 0.5) * 0.5,
-              size: nodeSize,
-              borderColor: '#000',
-              borderSize: 0.2
-            });
-
-            // Add the node to the raw graph
-            if (!rawGraph.getNode(newNode.id)) {
-              // Update the node size to match the calculated size
-              newNode.size = nodeSize;
-              // Add to nodes array
-              rawGraph.nodes.push(newNode);
-              // Update nodeIdMap
-              rawGraph.nodeIdMap[newNode.id] = rawGraph.nodes.length - 1;
-            }
+          // Add the node to the raw graph
+          if (!rawGraph.getNode(nodeId)) {
+            // Update node properties
+            newNode.size = nodeSize;
+            newNode.x = x;
+            newNode.y = y;
+            newNode.degree = nodeDegree;
+            
+            // Add to nodes array
+            rawGraph.nodes.push(newNode);
+            // Update nodeIdMap
+            rawGraph.nodeIdMap[nodeId] = rawGraph.nodes.length - 1;
           }
         }
 
         // Add new edges
-        for (const newEdge of processedEdges) {
-          // Only add edges where both source and target exist in the graph
-          if (sigmaGraph.hasNode(newEdge.source) && sigmaGraph.hasNode(newEdge.target)) {
-            // Skip if edge already exists
-            if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
-              continue;
-            }
+        for (const edgeId of edgesToAdd) {
+          const newEdge = processedEdges.find(e => e.id === edgeId)!;
+          
+          // Skip if edge already exists
+          if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
+            continue;
+          }
 
-            // Add the edge to the sigma graph
-            newEdge.dynamicId = sigmaGraph.addDirectedEdge(newEdge.source, newEdge.target, {
-              label: newEdge.type || undefined
-            });
+          // Add the edge to the sigma graph
+          newEdge.dynamicId = sigmaGraph.addDirectedEdge(newEdge.source, newEdge.target, {
+            label: newEdge.type || undefined
+          });
 
-            // Add the edge to the raw graph
-            if (!rawGraph.getEdge(newEdge.id, false)) {
-              // Add to edges array
-              rawGraph.edges.push(newEdge);
-              // Update edgeIdMap
-              rawGraph.edgeIdMap[newEdge.id] = rawGraph.edges.length - 1;
-              // Update dynamic edge map
-              rawGraph.edgeDynamicIdMap[newEdge.dynamicId] = rawGraph.edges.length - 1;
-            }
+          // Add the edge to the raw graph
+          if (!rawGraph.getEdge(newEdge.id, false)) {
+            // Add to edges array
+            rawGraph.edges.push(newEdge);
+            // Update edgeIdMap
+            rawGraph.edgeIdMap[newEdge.id] = rawGraph.edges.length - 1;
+            // Update dynamic edge map
+            rawGraph.edgeDynamicIdMap[newEdge.dynamicId] = rawGraph.edges.length - 1;
           }
         }
 
         // Update the dynamic edge map
         rawGraph.buildDynamicMap();
 
-        // Restore positions for existing nodes
-        Object.entries(nodePositions).forEach(([id, position]) => {
-          if (sigmaGraph.hasNode(id)) {
-            sigmaGraph.setNodeAttribute(id, 'x', position.x);
-            sigmaGraph.setNodeAttribute(id, 'y', position.y);
-          }
-        });
-
-        // Update the size of the expanded node based on its new edge count
+        // STEP 4: Update the expanded node's size
         if (sigmaGraph.hasNode(nodeId)) {
           // Get the new degree of the expanded node
-          const expandedNodeDegree = sigmaGraph.degree(nodeId);
+          let expandedNodeDegree = sigmaGraph.degree(nodeId);
+          
+          // Check if the expanded node had any discarded edges
+          if (nodesWithDiscardedEdges.has(nodeId)) {
+            expandedNodeDegree += 1; // Add +1 for discarded edges
+          }
 
-          // Calculate new size for the expanded node using the same parameters
+          // Calculate new size for the expanded node
           const newSize = Math.round(
             Constants.minNodeSize + scale * Math.pow((expandedNodeDegree - minDegree) / range, 0.5)
           );
@@ -555,24 +585,17 @@ const useLightrangeGraph = () => {
           const expandedNodeIndex = rawGraph.nodeIdMap[nodeId];
           if (expandedNodeIndex !== undefined) {
             rawGraph.nodes[expandedNodeIndex].size = newSize;
+            rawGraph.nodes[expandedNodeIndex].degree = expandedNodeDegree;
           }
         }
 
-        // Refresh the layout and store the node ID to reselect after refresh
-        const nodeIdToSelect = nodeId;
+        // Refresh the layout
         useGraphStore.getState().refreshLayout();
-
-        // Use setTimeout to reselect the node after the layout refresh is complete
-        setTimeout(() => {
-          if (nodeIdToSelect) {
-            useGraphStore.getState().setSelectedNode(nodeIdToSelect, true);
-          }
-        }, 2000); // Wait a bit longer than the refreshLayout timeout (which is 10ms)
 
       } catch (error) {
         console.error('Error expanding node:', error);
       } finally {
-        // Reset fetching state and node to expand
+        // Reset fetching state
         useGraphStore.getState().setIsFetching(false);
       }
     };
@@ -585,7 +608,7 @@ const useLightrangeGraph = () => {
         useGraphStore.getState().triggerNodeExpand(null);
       }, 0);
     }
-  }, [nodeToExpand, sigmaGraph, rawGraph]);
+  }, [nodeToExpand, sigmaGraph, rawGraph, t]);
 
   // Helper function to get all nodes that will be deleted
   const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: DirectedGraph) => {
