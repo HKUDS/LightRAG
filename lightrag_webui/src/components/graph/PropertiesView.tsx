@@ -159,33 +159,33 @@ const PropertyRow = ({
 
 const NodePropertiesView = ({ node }: { node: NodeType }) => {
   const { t } = useTranslation()
-  
+
   const handleExpandNode = () => {
     useGraphStore.getState().triggerNodeExpand(node.id)
   }
-  
+
   const handlePruneNode = () => {
     useGraphStore.getState().triggerNodePrune(node.id)
   }
-  
+
   return (
     <div className="flex flex-col gap-2">
       <div className="flex justify-between items-center">
         <label className="text-md pl-1 font-bold tracking-wide text-sky-300">{t('graphPanel.propertiesView.node.title')}</label>
         <div className="flex gap-1">
-          <Button 
-            size="icon" 
-            variant="ghost" 
-            className="h-6 w-6" 
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-6 w-6"
             onClick={handleExpandNode}
             tooltip={t('graphPanel.propertiesView.node.expandNode')}
           >
             <GitBranchPlus className="h-4 w-4" />
           </Button>
-          <Button 
-            size="icon" 
-            variant="ghost" 
-            className="h-6 w-6" 
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-6 w-6"
             onClick={handlePruneNode}
             tooltip={t('graphPanel.propertiesView.node.pruneNode')}
           >
