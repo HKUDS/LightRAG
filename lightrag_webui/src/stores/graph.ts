@@ -77,7 +77,6 @@ interface GraphState {
   graphDataFetchAttempted: boolean
   labelsFetchAttempted: boolean
 
-  refreshLayout: () => void
   setSigmaInstance: (instance: any) => void
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
   setFocusedNode: (nodeId: string | null) => void
@@ -127,43 +126,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   sigmaInstance: null,
   allDatabaseLabels: ['*'],
 
-  refreshLayout: () => {
-    const { sigmaInstance, sigmaGraph } = get();
-    
-    // Debug information to help diagnose issues
-    console.log('refreshLayout called with:', { 
-      hasSigmaInstance: !!sigmaInstance, 
-      hasSigmaGraph: !!sigmaGraph,
-      sigmaInstanceType: sigmaInstance ? typeof sigmaInstance : 'null',
-      sigmaGraphNodeCount: sigmaGraph ? sigmaGraph.order : 0
-    });
-    
-    if (sigmaInstance && sigmaGraph) {
-      try {
-        // 先尝试直接刷新
-        if (typeof sigmaInstance.refresh === 'function') {
-          sigmaInstance.refresh();
-          console.log('Graph refreshed using sigma.refresh()');
-          return;
-        }
-        
-        // 如果没有refresh方法,尝试重新绑定graph
-        if (typeof sigmaInstance.setGraph === 'function') {
-          sigmaInstance.setGraph(sigmaGraph);
-          console.log('Rebound graph to sigma instance');
-        } else {
-          // 如果setGraph方法不存在，尝试直接设置graph属性
-          (sigmaInstance as any).graph = sigmaGraph;
-          console.log('Set graph property directly on sigma instance');
-        }
-      } catch (error) {
-        console.error('Error during refresh:', error);
-      }
-    }
-    
-    // 通知UI需要重新渲染
-    set(state => ({ ...state }));
-  },
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
   setShouldRender: (shouldRender: boolean) => set({ shouldRender }),
@@ -412,9 +374,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
         }
       });
 
-      // Refresh the layout
-      state.refreshLayout();
-
     } catch (error) {
       console.error('Error expanding node:', error);
     } finally {
@@ -489,8 +448,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
         state.rawGraph.buildDynamicMap();
       }
       
-      // Refresh the layout to update the visualization
-      state.refreshLayout();
+      // 图形更新后会自动触发重新布局
 
     } catch (error) {
       console.error('Error pruning node:', error);
