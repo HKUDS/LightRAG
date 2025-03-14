@@ -27,7 +27,9 @@ export default defineConfig({
             target: import.meta.env.VITE_BACKEND_URL || 'http://localhost:9621',
             changeOrigin: true,
             rewrite: endpoint === '/api' ?
-              (path) => path.replace(/^\/api/, '') : undefined
+              (path) => path.replace(/^\/api/, '') :
+              endpoint === '/docs' || endpoint === '/openapi.json' ?
+                (path) => path : undefined
           }
         ])
       ) : {}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
 
@@ -193,7 +193,7 @@ export function AsyncSearch<T>({
             </div>
           )}
         </div>
-        <CommandList hidden={!open || debouncedSearchTerm.length === 0}>
+        <CommandList hidden={!open}>
           {error && <div className="text-destructive p-4 text-center">{error}</div>}
           {loading && options.length === 0 && (loadingSkeleton || <DefaultLoadingSkeleton />)}
           {!loading &&
@@ -204,7 +204,7 @@ export function AsyncSearch<T>({
             ))}
           <CommandGroup>
             {options.map((option, idx) => (
-              <>
+              <React.Fragment key={getOptionValue(option) + `-fragment-${idx}`}>
                 <CommandItem
                   key={getOptionValue(option) + `${idx}`}
                   value={getOptionValue(option)}
@@ -215,9 +215,9 @@ export function AsyncSearch<T>({
                   {renderOption(option)}
                 </CommandItem>
                 {idx !== options.length - 1 && (
-                  <div key={idx} className="bg-foreground/10 h-[1px]" />
+                  <div key={`divider-${idx}`} className="bg-foreground/10 h-[1px]" />
                 )}
-              </>
+              </React.Fragment>
             ))}
           </CommandGroup>
         </CommandList>

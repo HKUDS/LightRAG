@@ -1,6 +1,6 @@
 import Button from '@/components/ui/Button'
 import { SiteInfo } from '@/lib/constants'
-import ThemeToggle from '@/components/ThemeToggle'
+import AppSettings from '@/components/AppSettings'
 import LanguageToggle from '@/components/LanguageToggle'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
@@ -77,23 +77,15 @@ export default function SiteHeader() {
         <TabsNavigation />
       </div>
 
-      <nav className="flex items-center gap-2">
-        <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
-          <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
-            <GithubIcon className="size-4" aria-hidden="true" />
-          </a>
-        </Button>
-        <LanguageToggle />
-        <ThemeToggle />
-        <Button
-          variant="ghost"
-          size="icon"
-          side="bottom"
-          tooltip="Log Out"
-          onClick={handleLogout}
-        >
-          <LogOutIcon className="size-4" aria-hidden="true" />
-        </Button>
+      <nav className="flex items-center">
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
+            <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
+              <GithubIcon className="size-4" aria-hidden="true" />
+            </a>
+          </Button>
+          <AppSettings />
+        </div>
       </nav>
     </header>
   )

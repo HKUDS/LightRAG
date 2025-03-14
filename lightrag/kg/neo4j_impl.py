@@ -565,18 +565,6 @@ class Neo4JStorage(BaseGraphStorage):
             )
         ),
     )
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=4, max=10),
-        retry=retry_if_exception_type(
-            (
-                neo4jExceptions.ServiceUnavailable,
-                neo4jExceptions.TransientError,
-                neo4jExceptions.WriteServiceUnavailable,
-                neo4jExceptions.ClientError,
-            )
-        ),
-    )
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
@@ -666,14 +654,14 @@ class Neo4JStorage(BaseGraphStorage):
                     main_query = """
                     MATCH (n)
                     OPTIONAL MATCH (n)-[r]-()
-                    WITH n, count(r) AS degree
+                    WITH n, COALESCE(count(r), 0) AS degree
                     WHERE degree >= $min_degree
                     ORDER BY degree DESC
                     LIMIT $max_nodes
                     WITH collect({node: n}) AS filtered_nodes
                     UNWIND filtered_nodes AS node_info
                     WITH collect(node_info.node) AS kept_nodes, filtered_nodes
-                    MATCH (a)-[r]-(b)
+                    OPTIONAL MATCH (a)-[r]-(b)
                     WHERE a IN kept_nodes AND b IN kept_nodes
                     RETURN filtered_nodes AS node_info,
                            collect(DISTINCT r) AS relationships
@@ -703,7 +691,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH start, nodes, relationships
                     UNWIND nodes AS node
                     OPTIONAL MATCH (node)-[r]-()
-                    WITH node, count(r) AS degree, start, nodes, relationships
+                    WITH node, COALESCE(count(r), 0) AS degree, start, nodes, relationships
                     WHERE node = start OR EXISTS((start)--(node)) OR degree >= $min_degree
                     ORDER BY
                         CASE
@@ -716,7 +704,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH collect({node: node}) AS filtered_nodes
                     UNWIND filtered_nodes AS node_info
                     WITH collect(node_info.node) AS kept_nodes, filtered_nodes
-                    MATCH (a)-[r]-(b)
+                    OPTIONAL MATCH (a)-[r]-(b)
                     WHERE a IN kept_nodes AND b IN kept_nodes
                     RETURN filtered_nodes AS node_info,
                            collect(DISTINCT r) AS relationships
@@ -744,11 +732,7 @@ class Neo4JStorage(BaseGraphStorage):
                                 result.nodes.append(
                                     KnowledgeGraphNode(
                                         id=f"{node_id}",
-                                        labels=[
-                                            label
-                                            for label in node.labels
-                                            if label != "base"
-                                        ],
+                                        labels=[node.get("entity_id")],
                                         properties=dict(node),
                                     )
                                 )
@@ -865,9 +849,7 @@ class Neo4JStorage(BaseGraphStorage):
                             # Create KnowledgeGraphNode for target
                             target_node = KnowledgeGraphNode(
                                 id=f"{target_id}",
-                                labels=[
-                                    label for label in b_node.labels if label != "base"
-                                ],
+                                labels=list(f"{target_id}"),
                                 properties=dict(b_node.properties),
                             )
 
@@ -907,9 +889,7 @@ class Neo4JStorage(BaseGraphStorage):
                 # Create initial KnowledgeGraphNode
                 start_node = KnowledgeGraphNode(
                     id=f"{node_record['n'].get('entity_id')}",
-                    labels=[
-                        label for label in node_record["n"].labels if label != "base"
-                    ],
+                    labels=list(f"{node_record['n'].get('entity_id')}"),
                     properties=dict(node_record["n"].properties),
                 )
             finally:
