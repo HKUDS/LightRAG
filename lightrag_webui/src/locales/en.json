@@ -150,7 +150,14 @@
         "labels": "Labels",
         "degree": "Degree",
         "properties": "Properties",
-        "relationships": "Relationships"
+        "relationships": "Relationships",
+        "propertyNames": {
+          "description": "Description",
+          "entity_id": "Name",
+          "entity_type": "Type",
+          "source_id": "SrcID",
+          "Neighbour": "Neigh"
+        }
       },
       "edge": {
         "title": "Relationship",
@@ -240,5 +247,8 @@
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses"
     }
+  },
+  "apiSite": {
+    "loading": "Loading API Documentation..."
   }
 }
