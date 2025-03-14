@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useGraphStore, RawNodeType, RawEdgeType } from '@/stores/graph'
 import Text from '@/components/ui/Text'
+import Button from '@/components/ui/Button'
 import useLightragGraph from '@/hooks/useLightragGraph'
 import { useTranslation } from 'react-i18next'
+import { GitBranchPlus, Scissors } from 'lucide-react'
 
 /**
  * Component that view properties of elements in graph.
@@ -157,9 +159,40 @@ const PropertyRow = ({
 
 const NodePropertiesView = ({ node }: { node: NodeType }) => {
   const { t } = useTranslation()
+  
+  const handleExpandNode = () => {
+    useGraphStore.getState().triggerNodeExpand(node.id)
+  }
+  
+  const handlePruneNode = () => {
+    useGraphStore.getState().triggerNodePrune(node.id)
+  }
+  
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-md pl-1 font-bold tracking-wide text-sky-300">{t('graphPanel.propertiesView.node.title')}</label>
+      <div className="flex justify-between items-center">
+        <label className="text-md pl-1 font-bold tracking-wide text-sky-300">{t('graphPanel.propertiesView.node.title')}</label>
+        <div className="flex gap-1">
+          <Button 
+            size="icon" 
+            variant="ghost" 
+            className="h-6 w-6" 
+            onClick={handleExpandNode}
+            tooltip={t('graphPanel.propertiesView.node.expandNode')}
+          >
+            <GitBranchPlus className="h-4 w-4" />
+          </Button>
+          <Button 
+            size="icon" 
+            variant="ghost" 
+            className="h-6 w-6" 
+            onClick={handlePruneNode}
+            tooltip={t('graphPanel.propertiesView.node.pruneNode')}
+          >
+            <Scissors className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={t('graphPanel.propertiesView.node.id')} value={node.id} />
         <PropertyRow

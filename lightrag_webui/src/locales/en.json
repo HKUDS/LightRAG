@@ -151,6 +151,11 @@
         "degree": "Degree",
         "properties": "Properties",
         "relationships": "Relationships",
+        "expandNode": "Expand Node",
+        "pruneNode": "Prune Node",
+        "deleteAllNodesError": "Refuse to delete all nodes in the graph",
+        "nodesRemoved": "{{count}} nodes removed, including orphan nodes",
+        "noNewNodes": "No expandable nodes found",
         "propertyNames": {
           "description": "Description",
           "entity_id": "Name",
