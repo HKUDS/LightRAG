@@ -60,7 +60,38 @@
       "errors": {
         "loadFailed": "加载文档失败\n{{error}}",
         "scanFailed": "扫描文档失败\n{{error}}",
-        "scanProgressFailed": "获取扫描进度失败\n{{error}}"
+        "scanProgressFailed": "获取扫描进度失败\n{{error}}",
+        "pipelineStatusFailed": "获取流水线状态失败\n{{error}}",
+        "refreshFailed": "刷新数据失败\n{{error}}"
+      },
+      "tabs": {
+        "documents": "文档",
+        "pipeline": "流水线"
+      },
+      "pipeline": {
+        "pipelineTitle": "流水线状态",
+        "pipelineDescription": "处理文档的流水线状态。",
+        "pipelineEmptyTitle": "无任务",
+        "pipelineEmptyDescription": "暂无流水线任务。",
+        "status": "状态",
+        "busy": "运行中",
+        "idle": "空闲",
+        "currentJob": "当前任务",
+        "started": "开始于",
+        "noCurrentJob": "无当前任务",
+        "progress": "进度",
+        "batch": "批次",
+        "documents": "文档",
+        "noProgress": "暂无进度信息",
+        "latestMessage": "最新消息",
+        "noMessages": "暂无消息",
+        "historyMessages": "历史消息",
+        "autoScan": "自动扫描",
+        "autoScanExecuted": "已执行",
+        "autoScanNotExecuted": "未执行",
+        "requestStatus": "请求状态",
+        "pendingRequests": "请求等待中",
+        "noPendingRequests": "无等待请求"
       }
     }
   },

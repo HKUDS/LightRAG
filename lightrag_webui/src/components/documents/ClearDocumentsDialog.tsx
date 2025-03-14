@@ -46,7 +46,7 @@ export default function ClearDocumentsDialog() {
           <DialogDescription>{t('documentPanel.clearDocuments.confirm')}</DialogDescription>
         </DialogHeader>
         <Button variant="destructive" onClick={handleClear}>
-        {t('documentPanel.clearDocuments.confirmButton')}
+          {t('documentPanel.clearDocuments.confirmButton')}
         </Button>
       </DialogContent>
     </Dialog>

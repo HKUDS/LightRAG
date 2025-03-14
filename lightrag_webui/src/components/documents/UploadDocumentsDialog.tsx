@@ -31,7 +31,12 @@ export default function UploadDocumentsDialog() {
           filesToUpload.map(async (file) => {
             try {
               const result = await uploadDocument(file, (percentCompleted: number) => {
-                console.debug(t('documentPanel.uploadDocuments.uploading', { name: file.name, percent: percentCompleted }))
+                console.debug(
+                  t('documentPanel.uploadDocuments.uploading', {
+                    name: file.name,
+                    percent: percentCompleted
+                  })
+                )
                 setProgresses((pre) => ({
                   ...pre,
                   [file.name]: percentCompleted
@@ -40,10 +45,20 @@ export default function UploadDocumentsDialog() {
               if (result.status === 'success') {
                 toast.success(t('documentPanel.uploadDocuments.success', { name: file.name }))
               } else {
-                toast.error(t('documentPanel.uploadDocuments.failed', { name: file.name, message: result.message }))
+                toast.error(
+                  t('documentPanel.uploadDocuments.failed', {
+                    name: file.name,
+                    message: result.message
+                  })
+                )
               }
             } catch (err) {
-              toast.error(t('documentPanel.uploadDocuments.error', { name: file.name, error: errorMessage(err) }))
+              toast.error(
+                t('documentPanel.uploadDocuments.error', {
+                  name: file.name,
+                  error: errorMessage(err)
+                })
+              )
             }
           })
         )
@@ -68,16 +83,19 @@ export default function UploadDocumentsDialog() {
       }}
     >
       <DialogTrigger asChild>
-        <Button variant="default" side="bottom" tooltip={t('documentPanel.uploadDocuments.tooltip')} size="sm">
+        <Button
+          variant="default"
+          side="bottom"
+          tooltip={t('documentPanel.uploadDocuments.tooltip')}
+          size="sm"
+        >
           <UploadIcon /> {t('documentPanel.uploadDocuments.button')}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-xl" onCloseAutoFocus={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{t('documentPanel.uploadDocuments.title')}</DialogTitle>
-          <DialogDescription>
-            {t('documentPanel.uploadDocuments.description')}
-          </DialogDescription>
+          <DialogDescription>{t('documentPanel.uploadDocuments.description')}</DialogDescription>
         </DialogHeader>
         <FileUploader
           maxFileCount={Infinity}
