@@ -589,10 +589,6 @@ const useLightrangeGraph = () => {
           }
         }
 
-        // We need to keep the refreshLayout call because Sigma doesn't automatically detect 
-        // changes to the DirectedGraph object. This is necessary to trigger a re-render.
-        useGraphStore.getState().refreshLayout();
-
       } catch (error) {
         console.error('Error expanding node:', error);
       } finally {
@@ -713,9 +709,6 @@ const useLightrangeGraph = () => {
           toast.info(t('graphPanel.propertiesView.node.nodesRemoved', { count: nodesToDelete.size }));
         }
 
-        // We need to keep the refreshLayout call because Sigma doesn't automatically detect 
-        // changes to the DirectedGraph object. This is necessary to trigger a re-render.
-        useGraphStore.getState().refreshLayout();
 
       } catch (error) {
         console.error('Error pruning node:', error);
