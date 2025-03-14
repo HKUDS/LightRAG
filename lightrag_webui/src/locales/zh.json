@@ -148,6 +148,11 @@
         "degree": "度数",
         "properties": "属性",
         "relationships": "关系",
+        "expandNode": "扩展节点",
+        "pruneNode": "修剪节点",
+        "deleteAllNodesError": "拒绝删除图中的所有节点",
+        "nodesRemoved": "已删除 {{count}} 个节点，包括孤立节点",
+        "noNewNodes": "没有发现可以扩展的节点",
         "propertyNames": {
           "description": "描述",
           "entity_id": "名称",
