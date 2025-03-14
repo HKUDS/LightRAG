@@ -72,6 +72,7 @@
     "@types/node": "^22.13.5",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
+    "@types/react-i18next": "^8.1.0",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@types/seedrandom": "^3.0.8",
     "@vitejs/plugin-react-swc": "^3.8.0",

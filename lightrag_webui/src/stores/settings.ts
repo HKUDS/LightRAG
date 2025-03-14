@@ -5,6 +5,7 @@ import { defaultQueryLabel } from '@/lib/constants'
 import { Message, QueryRequest } from '@/api/lightrag'
 
 type Theme = 'dark' | 'light' | 'system'
+type Language = 'en' | 'zh'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
 type Language = 'en' | 'zh'
 
@@ -48,7 +49,7 @@ interface SettingsState {
   setTheme: (theme: Theme) => void
 
   language: Language
-  setLanguage: (language: Language) => void
+  setLanguage: (lang: Language) => void
 
   enableHealthCheck: boolean
   setEnableHealthCheck: (enable: boolean) => void
@@ -62,7 +63,6 @@ const useSettingsStoreBase = create<SettingsState>()(
     (set) => ({
       theme: 'system',
       language: 'en',
-
       showPropertyPanel: true,
       showNodeSearchBar: true,
 
@@ -75,7 +75,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       graphQueryMaxDepth: 3,
       graphMinDegree: 0,
-      graphLayoutMaxIterations: 10,
+      graphLayoutMaxIterations: 15,
 
       queryLabel: defaultQueryLabel,
 
@@ -104,7 +104,15 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setTheme: (theme: Theme) => set({ theme }),
 
-      setLanguage: (language: Language) => set({ language }),
+      setLanguage: (language: Language) => {
+        set({ language })
+        // Update i18n after state is updated
+        import('i18next').then(({ default: i18n }) => {
+          if (i18n.language !== language) {
+            i18n.changeLanguage(language)
+          }
+        })
+      },
 
       setGraphLayoutMaxIterations: (iterations: number) =>
         set({
@@ -136,7 +144,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 7,
+      version: 8,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -173,7 +181,11 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 7) {
           state.graphQueryMaxDepth = 3
-          state.graphLayoutMaxIterations = 10
+          state.graphLayoutMaxIterations = 15
+        }
+        if (version < 8) {
+          state.graphMinDegree = 0
+          state.language = 'en'
         }
         return state
       }

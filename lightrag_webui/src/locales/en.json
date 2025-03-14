@@ -1,4 +1,11 @@
 {
+  "settings": {
+    "language": "Language",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
   "header": {
     "documents": "Documents",
     "knowledgeGraph": "Knowledge Graph",
@@ -91,9 +98,12 @@
         "maxQueryDepth": "Max Query Depth",
         "minDegree": "Minimum Degree",
         "maxLayoutIterations": "Max Layout Iterations",
+        "depth": "Depth",
+        "degree": "Degree",
         "apiKey": "API Key",
         "enterYourAPIkey": "Enter your API key",
-        "save": "Save"
+        "save": "Save",
+        "refreshLayout": "Refresh Layout"
       },
 
       "zoomControl": {
@@ -152,7 +162,14 @@
         "labels": "Labels",
         "degree": "Degree",
         "properties": "Properties",
-        "relationships": "Relationships"
+        "relationships": "Relationships",
+        "propertyNames": {
+          "description": "Description",
+          "entity_id": "Name",
+          "entity_type": "Type",
+          "source_id": "SrcID",
+          "Neighbour": "Neigh"
+        }
       },
       "edge": {
         "title": "Relationship",
@@ -242,5 +259,8 @@
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses"
     }
+  },
+  "apiSite": {
+    "loading": "Loading API Documentation..."
   }
 }

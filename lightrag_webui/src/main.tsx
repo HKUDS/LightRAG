@@ -5,6 +5,7 @@ import AppRouter from './AppRouter'
 import "./i18n";
 
 
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <AppRouter />
