@@ -1556,7 +1556,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_id VARCHAR(255) NULL,
+                    chunk_id TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -1570,7 +1570,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_id VARCHAR(255) NULL,
+                    chunk_id TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     )"""
     },
