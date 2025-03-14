@@ -1,5 +1,5 @@
-import { useLoadGraph, useRegisterEvents, useSetSettings, useSigma } from '@react-sigma/core'
-import Graph from 'graphology'
+import { useRegisterEvents, useSetSettings, useSigma } from '@react-sigma/core'
+import { AbstractGraph } from 'graphology-types'
 // import { useLayoutCircular } from '@react-sigma/layout-circular'
 import { useLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
 import { useEffect } from 'react'
@@ -25,7 +25,6 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const sigma = useSigma<NodeType, EdgeType>()
   const registerEvents = useRegisterEvents<NodeType, EdgeType>()
   const setSettings = useSetSettings<NodeType, EdgeType>()
-  const loadGraph = useLoadGraph<NodeType, EdgeType>()
 
   const maxIterations = useSettingsStore.use.graphLayoutMaxIterations()
   const { assign: assignLayout } = useLayoutForceAtlas2({
@@ -45,14 +44,45 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
   /**
    * When component mount or maxIterations changes
-   * => load the graph and apply layout
+   * => ensure graph reference and apply layout
    */
   useEffect(() => {
-    if (sigmaGraph) {
-      loadGraph(sigmaGraph as unknown as Graph<NodeType, EdgeType>)
-      assignLayout()
+    if (sigmaGraph && sigma) {
+      // 确保 sigma 实例内部的 graph 引用被更新
+      try {
+        // 尝试直接设置 sigma 实例的 graph 引用
+        if (typeof sigma.setGraph === 'function') {
+          sigma.setGraph(sigmaGraph as unknown as AbstractGraph<NodeType, EdgeType>);
+          console.log('Directly set graph on sigma instance');
+        } else {
+          // 如果 setGraph 方法不存在，尝试直接设置 graph 属性
+          (sigma as any).graph = sigmaGraph;
+          console.log('Set graph property on sigma instance');
+        }
+      } catch (error) {
+        console.error('Error setting graph on sigma instance:', error);
+      }
+      
+      // 应用布局
+      assignLayout();
+      console.log('Layout applied to graph');
     }
-  }, [assignLayout, loadGraph, sigmaGraph, maxIterations])
+  }, [sigma, sigmaGraph, assignLayout, maxIterations])
+  
+  /**
+   * Ensure the sigma instance is set in the store
+   * This provides a backup in case the instance wasn't set in GraphViewer
+   */
+  useEffect(() => {
+    if (sigma) {
+      // Double-check that the store has the sigma instance
+      const currentInstance = useGraphStore.getState().sigmaInstance;
+      if (!currentInstance) {
+        console.log('Setting sigma instance from GraphControl (backup)');
+        useGraphStore.getState().setSigmaInstance(sigma);
+      }
+    }
+  }, [sigma]);
 
   /**
    * When component mount
@@ -138,14 +168,18 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
           const _focusedNode = focusedNode || selectedNode
           const _focusedEdge = focusedEdge || selectedEdge
 
-          if (_focusedNode) {
-            if (node === _focusedNode || graph.neighbors(_focusedNode).includes(node)) {
-              newData.highlighted = true
-              if (node === selectedNode) {
-                newData.borderColor = Constants.nodeBorderColorSelected
+          if (_focusedNode && graph.hasNode(_focusedNode)) {
+            try {
+              if (node === _focusedNode || graph.neighbors(_focusedNode).includes(node)) {
+                newData.highlighted = true
+                if (node === selectedNode) {
+                  newData.borderColor = Constants.nodeBorderColorSelected
+                }
               }
+            } catch (error) {
+              console.error('Error in nodeReducer:', error);
             }
-          } else if (_focusedEdge) {
+          } else if (_focusedEdge && graph.hasEdge(_focusedEdge)) {
             if (graph.extremities(_focusedEdge).includes(node)) {
               newData.highlighted = true
               newData.size = 3
@@ -173,21 +207,28 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         if (!disableHoverEffect) {
           const _focusedNode = focusedNode || selectedNode
 
-          if (_focusedNode) {
-            if (hideUnselectedEdges) {
-              if (!graph.extremities(edge).includes(_focusedNode)) {
-                newData.hidden = true
+          if (_focusedNode && graph.hasNode(_focusedNode)) {
+            try {
+              if (hideUnselectedEdges) {
+                if (!graph.extremities(edge).includes(_focusedNode)) {
+                  newData.hidden = true
+                }
+              } else {
+                if (graph.extremities(edge).includes(_focusedNode)) {
+                  newData.color = Constants.edgeColorHighlighted
+                }
               }
-            } else {
-              if (graph.extremities(edge).includes(_focusedNode)) {
-                newData.color = Constants.edgeColorHighlighted
-              }
+            } catch (error) {
+              console.error('Error in edgeReducer:', error);
             }
           } else {
-            if (focusedEdge || selectedEdge) {
-              if (edge === selectedEdge) {
+            const _selectedEdge = selectedEdge && graph.hasEdge(selectedEdge) ? selectedEdge : null;
+            const _focusedEdge = focusedEdge && graph.hasEdge(focusedEdge) ? focusedEdge : null;
+            
+            if (_selectedEdge || _focusedEdge) {
+              if (edge === _selectedEdge) {
                 newData.color = Constants.edgeColorSelected
-              } else if (edge === focusedEdge) {
+              } else if (edge === _focusedEdge) {
                 newData.color = Constants.edgeColorHighlighted
               } else if (hideUnselectedEdges) {
                 newData.hidden = true

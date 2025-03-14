@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useTabVisibility } from '@/contexts/useTabVisibility'
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
@@ -147,6 +147,49 @@ const GraphViewer = () => {
   useEffect(() => {
     setSigmaSettings(defaultSigmaSettings)
   }, [])
+  
+  // Clean up sigma instance when component unmounts
+  useEffect(() => {
+    return () => {
+      // Clear the sigma instance when component unmounts
+      useGraphStore.getState().setSigmaInstance(null);
+      console.log('Cleared sigma instance on unmount');
+    };
+  }, []);
+  
+  // Get the sigmaGraph from the store
+  const sigmaGraph = useGraphStore.use.sigmaGraph();
+  
+  // Set the sigma instance in the graph store when it's available
+  // Using useLayoutEffect to ensure this runs before child components need the instance
+  useLayoutEffect(() => {
+    if (sigmaRef.current?.sigma) {
+      const instance = sigmaRef.current.sigma;
+      
+      // Get the sigma instance from the ref and store it
+      console.log('Setting sigma instance in graph store (layout effect)');
+      useGraphStore.getState().setSigmaInstance(instance);
+      
+      // If we also have a graph, bind it to the sigma instance
+      if (sigmaGraph) {
+        try {
+          // Try to set the graph on the sigma instance
+          if (typeof instance.setGraph === 'function') {
+            instance.setGraph(sigmaGraph);
+            console.log('Directly set graph on sigma instance in GraphViewer');
+          } else {
+            // If setGraph method doesn't exist, try to set the graph property directly
+            (instance as any).graph = sigmaGraph;
+            console.log('Set graph property on sigma instance in GraphViewer');
+          }
+        } catch (error) {
+          console.error('Error setting graph on sigma instance in GraphViewer:', error);
+        }
+      }
+    }
+    // We want this to run when either the ref or the graph changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sigmaRef.current, sigmaGraph]);
 
   const onSearchFocus = useCallback((value: GraphSearchOption | null) => {
     if (value === null) useGraphStore.getState().setFocusedNode(null)
@@ -167,62 +210,51 @@ const GraphViewer = () => {
     [selectedNode]
   )
 
-  // Since TabsContent now forces mounting of all tabs, we need to conditionally render
-  // the SigmaContainer based on visibility to avoid unnecessary rendering
+  // Always render SigmaContainer but control its visibility with CSS
   return (
     <div className="relative h-full w-full">
-      {/* Only render the SigmaContainer when the tab is visible */}
-      {isGraphTabVisible ? (
-        <SigmaContainer
-          settings={sigmaSettings}
-          className="!bg-background !size-full overflow-hidden"
-          ref={sigmaRef}
-        >
-          <GraphControl />
+      <SigmaContainer
+        settings={sigmaSettings}
+        className="!bg-background !size-full overflow-hidden"
+        ref={sigmaRef}
+      >
+        <GraphControl />
 
-          {enableNodeDrag && <GraphEvents />}
+        {enableNodeDrag && <GraphEvents />}
 
-          <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
+        <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-          <div className="absolute top-2 left-2 flex items-start gap-2">
-            <GraphLabels />
-            {showNodeSearchBar && (
-              <GraphSearch
-                value={searchInitSelectedNode}
-                onFocus={onSearchFocus}
-                onChange={onSearchSelect}
-              />
-            )}
-          </div>
-
-          <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
-            <Settings />
-            <ZoomControl />
-            <LayoutsControl />
-            <FullScreenControl />
-            {/* <ThemeToggle /> */}
-          </div>
-
-          {showPropertyPanel && (
-            <div className="absolute top-2 right-2">
-              <PropertiesView />
-            </div>
+        <div className="absolute top-2 left-2 flex items-start gap-2">
+          <GraphLabels />
+          {showNodeSearchBar && (
+            <GraphSearch
+              value={searchInitSelectedNode}
+              onFocus={onSearchFocus}
+              onChange={onSearchSelect}
+            />
           )}
-
-          {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
-            <MiniMap width="100px" height="100px" />
-          </div> */}
-
-          <SettingsDisplay />
-        </SigmaContainer>
-      ) : (
-        // Placeholder when tab is not visible
-        <div className="flex h-full w-full items-center justify-center">
-          <div className="text-center text-muted-foreground">
-            {/* Placeholder content */}
-          </div>
         </div>
-      )}
+
+        <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
+          <Settings />
+          <ZoomControl />
+          <LayoutsControl />
+          <FullScreenControl />
+          {/* <ThemeToggle /> */}
+        </div>
+
+        {showPropertyPanel && (
+          <div className="absolute top-2 right-2">
+            <PropertiesView />
+          </div>
+        )}
+
+        {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
+          <MiniMap width="100px" height="100px" />
+        </div> */}
+
+        <SettingsDisplay />
+      </SigmaContainer>
 
       {/* Loading overlay - shown when data is loading */}
       {isFetching && (

@@ -589,7 +589,8 @@ const useLightrangeGraph = () => {
           }
         }
 
-        // Refresh the layout
+        // We need to keep the refreshLayout call because Sigma doesn't automatically detect 
+        // changes to the DirectedGraph object. This is necessary to trigger a re-render.
         useGraphStore.getState().refreshLayout();
 
       } catch (error) {
@@ -637,28 +638,27 @@ const useLightrangeGraph = () => {
       if (!nodeId || !sigmaGraph || !rawGraph) return;
 
       try {
-        // Check if the node exists
+        const state = useGraphStore.getState();
+
+        // 1. 检查节点是否存在
         if (!sigmaGraph.hasNode(nodeId)) {
           console.error('Node not found:', nodeId);
           return;
         }
 
-        // Get all nodes that will be deleted (including isolated nodes)
+        // 2. 获取要删除的节点
         const nodesToDelete = getNodesThatWillBeDeleted(nodeId, sigmaGraph);
 
-        // Check if we would delete all nodes in the graph
+        // 3. 检查是否会删除所有节点
         if (nodesToDelete.size === sigmaGraph.nodes().length) {
           toast.error(t('graphPanel.propertiesView.node.deleteAllNodesError'));
           return;
         }
 
-        // If the node is selected or focused, clear selection
-        const state = useGraphStore.getState();
-        if (state.selectedNode === nodeId || state.focusedNode === nodeId) {
-          state.clearSelection();
-        }
+        // 4. 清除选中状态 - 这会导致PropertiesView立即关闭
+        state.clearSelection();
 
-        // Process all nodes that need to be deleted
+        // 5. 删除节点和相关边
         for (const nodeToDelete of nodesToDelete) {
           // Remove the node from the sigma graph (this will also remove connected edges)
           sigmaGraph.dropNode(nodeToDelete);
@@ -713,7 +713,8 @@ const useLightrangeGraph = () => {
           toast.info(t('graphPanel.propertiesView.node.nodesRemoved', { count: nodesToDelete.size }));
         }
 
-        // Force a refresh of the graph layout
+        // We need to keep the refreshLayout call because Sigma doesn't automatically detect 
+        // changes to the DirectedGraph object. This is necessary to trigger a re-render.
         useGraphStore.getState().refreshLayout();
 
       } catch (error) {

@@ -90,22 +90,46 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
   const relationships = []
 
   if (state.sigmaGraph && state.rawGraph) {
-    for (const edgeId of state.sigmaGraph.edges(node.id)) {
-      const edge = state.rawGraph.getEdge(edgeId, true)
-      if (edge) {
-        const isTarget = node.id === edge.source
-        const neighbourId = isTarget ? edge.target : edge.source
-        const neighbour = state.rawGraph.getNode(neighbourId)
-        if (neighbour) {
-          relationships.push({
-            type: 'Neighbour',
-            id: neighbourId,
-            label: neighbour.properties['entity_id'] ? neighbour.properties['entity_id'] : neighbour.labels.join(', ')
-          })
+    try {
+      // 检查节点是否还存在
+      if (!state.sigmaGraph.hasNode(node.id)) {
+        return {
+          ...node,
+          relationships: []
         }
       }
+
+      // 获取所有边
+      const edges = state.sigmaGraph.edges(node.id)
+      
+      // 处理每条边
+      for (const edgeId of edges) {
+        // 检查边是否还存在
+        if (!state.sigmaGraph.hasEdge(edgeId)) continue;
+
+        const edge = state.rawGraph.getEdge(edgeId, true)
+        if (edge) {
+          const isTarget = node.id === edge.source
+          const neighbourId = isTarget ? edge.target : edge.source
+
+          // 检查邻居节点是否存在
+          if (!state.sigmaGraph.hasNode(neighbourId)) continue;
+
+          const neighbour = state.rawGraph.getNode(neighbourId)
+          if (neighbour) {
+            relationships.push({
+              type: 'Neighbour',
+              id: neighbourId,
+              label: neighbour.properties['entity_id'] ? neighbour.properties['entity_id'] : neighbour.labels.join(', ')
+            })
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error refining node properties:', error)
     }
   }
+
   return {
     ...node,
     relationships
@@ -114,8 +138,34 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
 
 const refineEdgeProperties = (edge: RawEdgeType): EdgeType => {
   const state = useGraphStore.getState()
-  const sourceNode = state.rawGraph?.getNode(edge.source)
-  const targetNode = state.rawGraph?.getNode(edge.target)
+  let sourceNode: RawNodeType | undefined = undefined
+  let targetNode: RawNodeType | undefined = undefined
+
+  if (state.sigmaGraph && state.rawGraph) {
+    try {
+      // 检查边是否还存在
+      if (!state.sigmaGraph.hasEdge(edge.id)) {
+        return {
+          ...edge,
+          sourceNode: undefined,
+          targetNode: undefined
+        }
+      }
+
+      // 检查源节点是否存在
+      if (state.sigmaGraph.hasNode(edge.source)) {
+        sourceNode = state.rawGraph.getNode(edge.source)
+      }
+
+      // 检查目标节点是否存在
+      if (state.sigmaGraph.hasNode(edge.target)) {
+        targetNode = state.rawGraph.getNode(edge.target)
+      }
+    } catch (error) {
+      console.error('Error refining edge properties:', error)
+    }
+  }
+
   return {
     ...edge,
     sourceNode,
