@@ -15,16 +15,22 @@ export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ ch
   // Get current tab from settings store
   const currentTab = useSettingsStore.use.currentTab();
 
-  // Initialize visibility state with current tab as visible
+  // Initialize visibility state with all tabs visible
   const [visibleTabs, setVisibleTabs] = useState<Record<string, boolean>>(() => ({
-    [currentTab]: true
+    'documents': true,
+    'knowledge-graph': true,
+    'retrieval': true,
+    'api': true
   }));
 
-  // Update visibility when current tab changes
+  // Keep all tabs visible when current tab changes
   useEffect(() => {
     setVisibleTabs((prev) => ({
       ...prev,
-      [currentTab]: true
+      'documents': true,
+      'knowledge-graph': true,
+      'retrieval': true,
+      'api': true
     }));
   }, [currentTab]);
 

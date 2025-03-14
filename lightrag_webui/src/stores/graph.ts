@@ -66,6 +66,7 @@ interface GraphState {
 
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
+  sigmaInstance: any | null
   allDatabaseLabels: string[]
 
   moveToSelectedNode: boolean
@@ -77,6 +78,7 @@ interface GraphState {
   labelsFetchAttempted: boolean
 
   refreshLayout: () => void
+  setSigmaInstance: (instance: any) => void
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
   setFocusedNode: (nodeId: string | null) => void
   setSelectedEdge: (edgeId: string | null) => void
@@ -122,17 +124,45 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   rawGraph: null,
   sigmaGraph: null,
+  sigmaInstance: null,
   allDatabaseLabels: ['*'],
 
   refreshLayout: () => {
-    const currentGraph = get().sigmaGraph;
-    if (currentGraph) {
-      get().clearSelection();
-      get().setSigmaGraph(null);
-      setTimeout(() => {
-        get().setSigmaGraph(currentGraph);
-      }, 10);
+    const { sigmaInstance, sigmaGraph } = get();
+    
+    // Debug information to help diagnose issues
+    console.log('refreshLayout called with:', { 
+      hasSigmaInstance: !!sigmaInstance, 
+      hasSigmaGraph: !!sigmaGraph,
+      sigmaInstanceType: sigmaInstance ? typeof sigmaInstance : 'null',
+      sigmaGraphNodeCount: sigmaGraph ? sigmaGraph.order : 0
+    });
+    
+    if (sigmaInstance && sigmaGraph) {
+      try {
+        // 先尝试直接刷新
+        if (typeof sigmaInstance.refresh === 'function') {
+          sigmaInstance.refresh();
+          console.log('Graph refreshed using sigma.refresh()');
+          return;
+        }
+        
+        // 如果没有refresh方法,尝试重新绑定graph
+        if (typeof sigmaInstance.setGraph === 'function') {
+          sigmaInstance.setGraph(sigmaGraph);
+          console.log('Rebound graph to sigma instance');
+        } else {
+          // 如果setGraph方法不存在，尝试直接设置graph属性
+          (sigmaInstance as any).graph = sigmaGraph;
+          console.log('Set graph property directly on sigma instance');
+        }
+      } catch (error) {
+        console.error('Error during refresh:', error);
+      }
     }
+    
+    // 通知UI需要重新渲染
+    set(state => ({ ...state }));
   },
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
@@ -197,6 +227,8 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   },
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
+  
+  setSigmaInstance: (instance: any) => set({ sigmaInstance: instance }),
 
   // Methods to set global flags
   setGraphDataFetchAttempted: (attempted: boolean) => set({ graphDataFetchAttempted: attempted }),
@@ -456,6 +488,9 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
         // Rebuild the dynamic edge map
         state.rawGraph.buildDynamicMap();
       }
+      
+      // Refresh the layout to update the visualization
+      state.refreshLayout();
 
     } catch (error) {
       console.error('Error pruning node:', error);
