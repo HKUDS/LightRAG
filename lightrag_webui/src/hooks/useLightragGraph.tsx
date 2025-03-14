@@ -336,11 +336,11 @@ const useLightrangeGraph = () => {
   useEffect(() => {
     const handleNodeExpand = async (nodeId: string | null) => {
       if (!nodeId || !sigmaGraph || !rawGraph) return;
-      
+
       try {
         // Set fetching state
         useGraphStore.getState().setIsFetching(true);
-        
+
         // Get the node to expand
         const nodeToExpand = rawGraph.getNode(nodeId);
         if (!nodeToExpand) {
@@ -348,7 +348,7 @@ const useLightrangeGraph = () => {
           useGraphStore.getState().setIsFetching(false);
           return;
         }
-        
+
         // Get the label of the node to expand
         const label = nodeToExpand.labels[0];
         if (!label) {
@@ -356,16 +356,16 @@ const useLightrangeGraph = () => {
           useGraphStore.getState().setIsFetching(false);
           return;
         }
-        
+
         // Fetch the extended subgraph with depth 2
         const extendedGraph = await queryGraphs(label, 2, 0);
-        
+
         if (!extendedGraph || !extendedGraph.nodes || !extendedGraph.edges) {
           console.error('Failed to fetch extended graph');
           useGraphStore.getState().setIsFetching(false);
           return;
         }
-        
+
         // Process nodes to add required properties for RawNodeType
         const processedNodes: RawNodeType[] = [];
         for (const node of extendedGraph.nodes) {
@@ -374,7 +374,7 @@ const useLightrangeGraph = () => {
           const g = Math.floor(Math.random() * 256);
           const b = Math.floor(Math.random() * 256);
           const color = `rgb(${r}, ${g}, ${b})`;
-          
+
           // Create a properly typed RawNodeType
           processedNodes.push({
             id: node.id,
@@ -387,7 +387,7 @@ const useLightrangeGraph = () => {
             degree: 0 // Initial degree
           });
         }
-        
+
         // Process edges to add required properties for RawEdgeType
         const processedEdges: RawEdgeType[] = [];
         for (const edge of extendedGraph.edges) {
@@ -401,7 +401,7 @@ const useLightrangeGraph = () => {
             dynamicId: '' // Will be set when adding to sigma graph
           });
         }
-        
+
         // Store current node positions
         const nodePositions: Record<string, {x: number, y: number}> = {};
         sigmaGraph.forEachNode((node) => {
@@ -410,10 +410,10 @@ const useLightrangeGraph = () => {
             y: sigmaGraph.getNodeAttribute(node, 'y')
           };
         });
-        
+
         // Get existing node IDs
         const existingNodeIds = new Set(sigmaGraph.nodes());
-        
+
         // Check if there are any new nodes that can be connected to the selected node
         let hasConnectableNewNodes = false;
         for (const newNode of processedNodes) {
@@ -421,26 +421,26 @@ const useLightrangeGraph = () => {
           if (existingNodeIds.has(newNode.id)) {
             continue;
           }
-          
+
           // Check if this node is connected to the selected node
           const isConnected = processedEdges.some(
-            edge => (edge.source === nodeId && edge.target === newNode.id) || 
+            edge => (edge.source === nodeId && edge.target === newNode.id) ||
                    (edge.target === nodeId && edge.source === newNode.id)
           );
-          
+
           if (isConnected) {
             hasConnectableNewNodes = true;
             break;
           }
         }
-        
+
         // If no new connectable nodes found, show toast and return
         if (!hasConnectableNewNodes) {
           toast.info(t('graphPanel.propertiesView.node.noNewNodes'));
           useGraphStore.getState().setIsFetching(false);
           return;
         }
-        
+
         // Get degree range from existing graph for size calculations
         let minDegree = Number.MAX_SAFE_INTEGER;
         let maxDegree = 0;
@@ -449,35 +449,35 @@ const useLightrangeGraph = () => {
           minDegree = Math.min(minDegree, degree);
           maxDegree = Math.max(maxDegree, degree);
         });
-        
+
         // Calculate size formula parameters
         const range = maxDegree - minDegree || 1; // Avoid division by zero
         const scale = Constants.maxNodeSize - Constants.minNodeSize;
-        
+
         // Add new nodes from the processed nodes
         for (const newNode of processedNodes) {
           // Skip if node already exists
           if (existingNodeIds.has(newNode.id)) {
             continue;
           }
-          
+
           // Check if this node is connected to the selected node
           const isConnected = processedEdges.some(
-            edge => (edge.source === nodeId && edge.target === newNode.id) || 
+            edge => (edge.source === nodeId && edge.target === newNode.id) ||
                    (edge.target === nodeId && edge.source === newNode.id)
           );
-          
+
           if (isConnected) {
             // Calculate node degree (number of connected edges)
-            const nodeDegree = processedEdges.filter(edge => 
+            const nodeDegree = processedEdges.filter(edge =>
               edge.source === newNode.id || edge.target === newNode.id
             ).length;
-            
+
             // Calculate node size using the same formula as in fetchGraph
             const nodeSize = Math.round(
               Constants.minNodeSize + scale * Math.pow((nodeDegree - minDegree) / range, 0.5)
             );
-            
+
             // Add the new node to the graph with calculated size
             sigmaGraph.addNode(newNode.id, {
               label: newNode.labels.join(', '),
@@ -488,7 +488,7 @@ const useLightrangeGraph = () => {
               borderColor: '#000',
               borderSize: 0.2
             });
-            
+
             // Add the node to the raw graph
             if (!rawGraph.getNode(newNode.id)) {
               // Update the node size to match the calculated size
@@ -500,7 +500,7 @@ const useLightrangeGraph = () => {
             }
           }
         }
-        
+
         // Add new edges
         for (const newEdge of processedEdges) {
           // Only add edges where both source and target exist in the graph
@@ -509,12 +509,12 @@ const useLightrangeGraph = () => {
             if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
               continue;
             }
-            
+
             // Add the edge to the sigma graph
             newEdge.dynamicId = sigmaGraph.addDirectedEdge(newEdge.source, newEdge.target, {
               label: newEdge.type || undefined
             });
-            
+
             // Add the edge to the raw graph
             if (!rawGraph.getEdge(newEdge.id, false)) {
               // Add to edges array
@@ -526,10 +526,10 @@ const useLightrangeGraph = () => {
             }
           }
         }
-        
+
         // Update the dynamic edge map
         rawGraph.buildDynamicMap();
-        
+
         // Restore positions for existing nodes
         Object.entries(nodePositions).forEach(([id, position]) => {
           if (sigmaGraph.hasNode(id)) {
@@ -537,38 +537,38 @@ const useLightrangeGraph = () => {
             sigmaGraph.setNodeAttribute(id, 'y', position.y);
           }
         });
-        
+
         // Update the size of the expanded node based on its new edge count
         if (sigmaGraph.hasNode(nodeId)) {
           // Get the new degree of the expanded node
           const expandedNodeDegree = sigmaGraph.degree(nodeId);
-          
+
           // Calculate new size for the expanded node using the same parameters
           const newSize = Math.round(
             Constants.minNodeSize + scale * Math.pow((expandedNodeDegree - minDegree) / range, 0.5)
           );
-          
+
           // Update the size in sigma graph
           sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
-          
+
           // Update the size in raw graph
           const expandedNodeIndex = rawGraph.nodeIdMap[nodeId];
           if (expandedNodeIndex !== undefined) {
             rawGraph.nodes[expandedNodeIndex].size = newSize;
           }
         }
-        
+
         // Refresh the layout and store the node ID to reselect after refresh
         const nodeIdToSelect = nodeId;
         useGraphStore.getState().refreshLayout();
-        
+
         // Use setTimeout to reselect the node after the layout refresh is complete
         setTimeout(() => {
           if (nodeIdToSelect) {
             useGraphStore.getState().setSelectedNode(nodeIdToSelect, true);
           }
         }, 2000); // Wait a bit longer than the refreshLayout timeout (which is 10ms)
-        
+
       } catch (error) {
         console.error('Error expanding node:', error);
       } finally {
@@ -576,7 +576,7 @@ const useLightrangeGraph = () => {
         useGraphStore.getState().setIsFetching(false);
       }
     };
-    
+
     // If there's a node to expand, handle it
     if (nodeToExpand) {
       handleNodeExpand(nodeToExpand);
@@ -586,25 +586,25 @@ const useLightrangeGraph = () => {
       }, 0);
     }
   }, [nodeToExpand, sigmaGraph, rawGraph]);
-  
+
   // Helper function to get all nodes that will be deleted
   const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: DirectedGraph) => {
     const nodesToDelete = new Set<string>([nodeId]);
-    
+
     // Find all nodes that would become isolated after deletion
     graph.forEachNode((node) => {
       if (node === nodeId) return; // Skip the node being deleted
-      
+
       // Get all neighbors of this node
       const neighbors = graph.neighbors(node);
-      
+
       // If this node has only one neighbor and that neighbor is the node being deleted,
       // this node will become isolated, so we should delete it too
       if (neighbors.length === 1 && neighbors[0] === nodeId) {
         nodesToDelete.add(node);
       }
     });
-    
+
     return nodesToDelete;
   }, []);
 
@@ -612,34 +612,34 @@ const useLightrangeGraph = () => {
   useEffect(() => {
     const handleNodePrune = (nodeId: string | null) => {
       if (!nodeId || !sigmaGraph || !rawGraph) return;
-      
+
       try {
         // Check if the node exists
         if (!sigmaGraph.hasNode(nodeId)) {
           console.error('Node not found:', nodeId);
           return;
         }
-        
+
         // Get all nodes that will be deleted (including isolated nodes)
         const nodesToDelete = getNodesThatWillBeDeleted(nodeId, sigmaGraph);
-        
+
         // Check if we would delete all nodes in the graph
         if (nodesToDelete.size === sigmaGraph.nodes().length) {
           toast.error(t('graphPanel.propertiesView.node.deleteAllNodesError'));
           return;
         }
-        
+
         // If the node is selected or focused, clear selection
         const state = useGraphStore.getState();
         if (state.selectedNode === nodeId || state.focusedNode === nodeId) {
           state.clearSelection();
         }
-        
+
         // Process all nodes that need to be deleted
         for (const nodeToDelete of nodesToDelete) {
           // Remove the node from the sigma graph (this will also remove connected edges)
           sigmaGraph.dropNode(nodeToDelete);
-          
+
           // Remove the node from the raw graph
           const nodeIndex = rawGraph.nodeIdMap[nodeToDelete];
           if (nodeIndex !== undefined) {
@@ -647,7 +647,7 @@ const useLightrangeGraph = () => {
             const edgesToRemove = rawGraph.edges.filter(
               edge => edge.source === nodeToDelete || edge.target === nodeToDelete
             );
-            
+
             // Remove edges from raw graph
             for (const edge of edgesToRemove) {
               const edgeIndex = rawGraph.edgeIdMap[edge.id];
@@ -666,38 +666,38 @@ const useLightrangeGraph = () => {
                 delete rawGraph.edgeDynamicIdMap[edge.dynamicId];
               }
             }
-            
+
             // Remove node from nodes array
             rawGraph.nodes.splice(nodeIndex, 1);
-            
+
             // Update nodeIdMap for all nodes after this one
             for (const [id, idx] of Object.entries(rawGraph.nodeIdMap)) {
               if (idx > nodeIndex) {
                 rawGraph.nodeIdMap[id] = idx - 1;
               }
             }
-            
+
             // Remove from nodeIdMap
             delete rawGraph.nodeIdMap[nodeToDelete];
           }
         }
-        
+
         // Rebuild the dynamic edge map
         rawGraph.buildDynamicMap();
-        
+
         // Show notification if we deleted more than just the selected node
         if (nodesToDelete.size > 1) {
           toast.info(t('graphPanel.propertiesView.node.nodesRemoved', { count: nodesToDelete.size }));
         }
-        
+
         // Force a refresh of the graph layout
         useGraphStore.getState().refreshLayout();
-        
+
       } catch (error) {
         console.error('Error pruning node:', error);
       }
     };
-    
+
     // If there's a node to prune, handle it
     if (nodeToPrune) {
       handleNodePrune(nodeToPrune);
