@@ -67,34 +67,34 @@ export type Message = {
 
 export type QueryRequest = {
   query: string
-  /** Specifies the retrieval mode. */
+  // Specifies the retrieval mode.
   mode: QueryMode
-  /** If True, only returns the retrieved context without generating a response. */
+  // If True, only returns the retrieved context without generating a response.
   only_need_context?: boolean
-  /** If True, only returns the generated prompt without producing a response. */
+  // If True, only returns the generated prompt without producing a response.
   only_need_prompt?: boolean
-  /** Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'. */
+  // Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'.
   response_type?: string
-  /** If True, enables streaming output for real-time responses. */
+  // If True, enables streaming output for real-time responses.
   stream?: boolean
-  /** Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode. */
+  // Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode.
   top_k?: number
-  /** Maximum number of tokens allowed for each retrieved text chunk. */
+  // Maximum number of tokens allowed for each retrieved text chunk.
   max_token_for_text_unit?: number
-  /** Maximum number of tokens allocated for relationship descriptions in global retrieval. */
+  // Maximum number of tokens allocated for relationship descriptions in global retrieval.
   max_token_for_global_context?: number
-  /** Maximum number of tokens allocated for entity descriptions in local retrieval. */
+  // Maximum number of tokens allocated for entity descriptions in local retrieval.
   max_token_for_local_context?: number
-  /** List of high-level keywords to prioritize in retrieval. */
+  // List of high-level keywords to prioritize in retrieval.
   hl_keywords?: string[]
-  /** List of low-level keywords to refine retrieval focus. */
+  // List of low-level keywords to refine retrieval focus.
   ll_keywords?: string[]
   /**
    * Stores past conversation history to maintain context.
    * Format: [{"role": "user/assistant", "content": "message"}].
    */
   conversation_history?: Message[]
-  /** Number of complete conversation turns (user-assistant pairs) to consider in the response context. */
+  // Number of complete conversation turns (user-assistant pairs) to consider in the response context.
   history_turns?: number
 }
 
@@ -123,6 +123,29 @@ export type DocStatusResponse = {
 
 export type DocsStatusesResponse = {
   statuses: Record<DocStatus, DocStatusResponse[]>
+}
+
+export type PipelineStatusResponse = {
+  // Whether auto-scan has started.
+  autoscanned: boolean
+  // Whether the pipeline is currently busy.
+  busy: boolean
+  // Current job name (e.g., indexing files/indexing texts).
+  job_name: string
+  // Job start time as ISO format string (optional).
+  job_start?: string
+  // Total number of documents to be indexed.
+  docs: number
+  // Number of batches for processing documents.
+  batchs: number
+  // Current processing batch.
+  cur_batch: number
+  // Flag for pending request for processing.
+  request_pending: boolean
+  // Latest message from pipeline processing.
+  latest_message: string
+  // List of history messages.
+  history_messages?: string[]
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -166,7 +189,9 @@ export const queryGraphs = async (
   maxDepth: number,
   minDegree: number
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&min_degree=${minDegree}`)
+  const response = await axiosInstance.get(
+    `/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&min_degree=${minDegree}`
+  )
   return response.data
 }
 
@@ -322,5 +347,10 @@ export const batchUploadDocuments = async (
 
 export const clearDocuments = async (): Promise<DocActionResponse> => {
   const response = await axiosInstance.delete('/documents')
+  return response.data
+}
+
+export const pipelineStatus = async (): Promise<PipelineStatusResponse> => {
+  const response = await axiosInstance.get('/documents/pipeline_status')
   return response.data
 }

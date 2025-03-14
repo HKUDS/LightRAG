@@ -60,7 +60,38 @@
       "errors": {
         "loadFailed": "Failed to load documents\n{{error}}",
         "scanFailed": "Failed to scan documents\n{{error}}",
-        "scanProgressFailed": "Failed to get scan progress\n{{error}}"
+        "scanProgressFailed": "Failed to get scan progress\n{{error}}",
+        "pipelineStatusFailed": "Failed to get pipeline status\n{{error}}",
+        "refreshFailed": "Failed to refresh data\n{{error}}"
+      },
+      "tabs": {
+        "documents": "Documents",
+        "pipeline": "Pipeline"
+      },
+      "pipeline": {
+        "pipelineTitle": "Pipeline Status",
+        "pipelineDescription": "Status of the pipeline processing documents.",
+        "pipelineEmptyTitle": "No Jobs",
+        "pipelineEmptyDescription": "There are no pipeline jobs yet.",
+        "status": "Status",
+        "busy": "Busy",
+        "idle": "Idle",
+        "currentJob": "Current Job",
+        "started": "Started At",
+        "noCurrentJob": "No Current Job",
+        "progress": "Progress",
+        "batch": "Batch",
+        "documents": "Documents",
+        "noProgress": "No Progress",
+        "latestMessage": "Latest Message",
+        "noMessages": "No Messages",
+        "historyMessages": "History Messages",
+        "autoScan": "Auto Scan",
+        "autoScanExecuted": "Executed",
+        "autoScanNotExecuted": "Not Executed",
+        "requestStatus": "Request Status",
+        "pendingRequests": "Pending Requests",
+        "noPendingRequests": "No Pending Requests"
       }
     }
   },

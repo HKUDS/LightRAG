@@ -19,7 +19,7 @@ function NavigationTab({ value, currentTab, children }: NavigationTabProps) {
     <TabsTrigger
       value={value}
       className={cn(
-        'cursor-pointer px-2 py-1 transition-all',
+        'pointer-events-auto cursor-pointer px-2 py-1 transition-all',
         currentTab === value ? '!bg-emerald-400 !text-zinc-50' : 'hover:bg-background/60'
       )}
     >
@@ -55,16 +55,18 @@ function TabsNavigation() {
 export default function SiteHeader() {
   const { t } = useTranslation()
   return (
-    <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
+    <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 relative sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
       <a href="/" className="mr-6 flex items-center gap-2">
         <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
         {/* <img src='/logo.png' className="size-4" /> */}
         <span className="font-bold md:inline-block">{SiteInfo.name}</span>
       </a>
 
-      <div className="flex h-10 flex-1 justify-center">
+      <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex h-10 justify-center">
         <TabsNavigation />
       </div>
+
+      <div className="flex-grow" />
 
       <nav className="flex items-center">
         <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
