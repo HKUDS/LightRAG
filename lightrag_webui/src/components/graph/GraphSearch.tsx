@@ -1,4 +1,4 @@
-import { FC, useCallback, useEffect, useMemo } from 'react'
+import { FC, useCallback, useEffect } from 'react'
 import {
   EdgeById,
   NodeById,
@@ -11,7 +11,9 @@ import { useGraphStore } from '@/stores/graph'
 import MiniSearch from 'minisearch'
 import { useTranslation } from 'react-i18next'
 import { OptionItem } from './graphSearchTypes'
-import { messageId, searchCache } from './graphSearchUtils'
+
+// Message item identifier for search results
+export const messageId = '__message_item'
 
 const NodeOption = ({ id }: { id: string }) => {
   const graph = useGraphStore.use.sigmaGraph()
@@ -46,25 +48,24 @@ export const GraphSearchInput = ({
 }) => {
   const { t } = useTranslation()
   const graph = useGraphStore.use.sigmaGraph()
+  const searchEngine = useGraphStore.use.searchEngine()
 
-  // Force reset the cache when graph changes
+  // Reset search engine when graph changes
   useEffect(() => {
     if (graph) {
-      // Reset cache to ensure fresh search results with new graph data
-      searchCache.graph = null;
-      searchCache.searchEngine = null;
+      useGraphStore.getState().resetSearchEngine()
     }
   }, [graph]);
 
-  const searchEngine = useMemo(() => {
-    if (searchCache.graph == graph) {
-      return searchCache.searchEngine
+  // Create search engine when needed
+  useEffect(() => {
+    // Skip if no graph, empty graph, or search engine already exists
+    if (!graph || graph.nodes().length === 0 || searchEngine) {
+      return
     }
-    if (!graph || graph.nodes().length == 0) return
 
-    searchCache.graph = graph
-
-    const searchEngine = new MiniSearch({
+    // Create new search engine
+    const newSearchEngine = new MiniSearch({
       idField: 'id',
       fields: ['label'],
       searchOptions: {
@@ -76,16 +77,16 @@ export const GraphSearchInput = ({
       }
     })
 
-    // Add documents
+    // Add nodes to search engine
     const documents = graph.nodes().map((id: string) => ({
       id: id,
       label: graph.getNodeAttribute(id, 'label')
     }))
-    searchEngine.addAll(documents)
+    newSearchEngine.addAll(documents)
 
-    searchCache.searchEngine = searchEngine
-    return searchEngine
-  }, [graph])
+    // Update search engine in store
+    useGraphStore.getState().setSearchEngine(newSearchEngine)
+  }, [graph, searchEngine])
 
   /**
    * Loading the options while the user is typing.
@@ -96,9 +97,6 @@ export const GraphSearchInput = ({
 
       // Safety checks to prevent crashes
       if (!graph || !searchEngine) {
-        // Reset cache to ensure fresh search engine initialization on next render
-        searchCache.graph = null
-        searchCache.searchEngine = null
         return []
       }
 
@@ -107,7 +105,7 @@ export const GraphSearchInput = ({
         return []
       }
 
-      // If no query, return first searchResultLimit nodes that exist
+      // If no query, return some nodes for user to select
       if (!query) {
         const nodeIds = graph.nodes()
           .filter(id => graph.hasNode(id))

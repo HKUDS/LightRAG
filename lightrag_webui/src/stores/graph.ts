@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { DirectedGraph } from 'graphology'
 import { getGraphLabels } from '@/api/lightrag'
+import MiniSearch from 'minisearch'
 
 export type RawNodeType = {
   id: string
@@ -69,6 +70,9 @@ interface GraphState {
   sigmaInstance: any | null
   allDatabaseLabels: string[]
 
+  // 搜索引擎状态
+  searchEngine: MiniSearch | null
+
   moveToSelectedNode: boolean
   isFetching: boolean
   shouldRender: boolean
@@ -93,6 +97,10 @@ interface GraphState {
   fetchAllDatabaseLabels: () => Promise<void>
   setIsFetching: (isFetching: boolean) => void
   setShouldRender: (shouldRender: boolean) => void
+
+  // 搜索引擎方法
+  setSearchEngine: (engine: MiniSearch | null) => void
+  resetSearchEngine: () => void
 
   // Methods to set global flags
   setGraphDataFetchAttempted: (attempted: boolean) => void
@@ -126,6 +134,8 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   sigmaInstance: null,
   allDatabaseLabels: ['*'],
 
+  searchEngine: null,
+
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
   setShouldRender: (shouldRender: boolean) => set({ shouldRender }),
@@ -149,6 +159,7 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       focusedEdge: null,
       rawGraph: null,
       sigmaGraph: null,  // to avoid other components from acccessing graph objects
+      searchEngine: null, // 重置搜索引擎
       moveToSelectedNode: false,
       shouldRender: false
     });
@@ -182,6 +193,9 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
 
   setSigmaInstance: (instance: any) => set({ sigmaInstance: instance }),
+
+  setSearchEngine: (engine: MiniSearch | null) => set({ searchEngine: engine }),
+  resetSearchEngine: () => set({ searchEngine: null }),
 
   // Methods to set global flags
   setGraphDataFetchAttempted: (attempted: boolean) => set({ graphDataFetchAttempted: attempted }),
