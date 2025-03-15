@@ -15,8 +15,8 @@ export const edgeColorDarkTheme = '#969696'
 export const edgeColorSelected = '#F57F17'
 export const edgeColorHighlighted = '#B2EBF2'
 
-export const searchResultLimit = 20
-export const labelListLimit = 40
+export const searchResultLimit = 50
+export const labelListLimit = 100
 
 export const minNodeSize = 4
 export const maxNodeSize = 20
