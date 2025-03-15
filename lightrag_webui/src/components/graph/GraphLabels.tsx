@@ -111,7 +111,7 @@ const GraphLabels = () => {
         // Clear current graph data to ensure complete reload when label changes
         if (newLabel !== currentLabel) {
           const graphStore = useGraphStore.getState();
-          // 完全重置图形状态
+          // Reset the all graph objects and status
           graphStore.reset();
         }
 
