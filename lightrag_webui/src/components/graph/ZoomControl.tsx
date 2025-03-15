@@ -27,7 +27,8 @@ const ZoomControl = () => {
       const graph = sigma.getGraph()
 
       // Check if graph has nodes before accessing them
-      if (!graph || graph.nodes().length === 0) {
+      if (!graph?.order || graph.nodes().length === 0) {
+        // Use reset() for empty graph case
         reset()
         return
       }
@@ -73,6 +74,8 @@ const ZoomControl = () => {
       )
     } catch (error) {
       console.error('Error resetting zoom:', error)
+      // Use reset() as fallback on error
+      reset()
     }
   }, [sigma, reset])
 
