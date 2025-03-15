@@ -11,7 +11,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useTabVisibility } from '@/contexts/useTabVisibility'
 
 import seedrandom from 'seedrandom'
-import { searchCache, updateSearchEngine, removeFromSearchEngine } from '@/components/graph/graphSearchUtils'
+import { searchCache } from '@/components/graph/graphSearchUtils'
 
 const validateGraph = (graph: RawGraph) => {
   if (!graph) {
@@ -538,8 +538,6 @@ const useLightrangeGraph = () => {
             rawGraph.nodes.push(newNode);
             // Update nodeIdMap
             rawGraph.nodeIdMap[nodeId] = rawGraph.nodes.length - 1;
-            // Update search engine with new node
-            updateSearchEngine(nodeId, sigmaGraph);
           }
         }
 
@@ -707,8 +705,6 @@ const useLightrangeGraph = () => {
 
             // Remove from nodeIdMap
             delete rawGraph.nodeIdMap[nodeToDelete];
-            // Remove from search engine
-            removeFromSearchEngine(nodeToDelete);
           }
         }
 
