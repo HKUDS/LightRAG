@@ -33,19 +33,6 @@ const ZoomControl = () => {
         return
       }
 
-      // Get container dimensions for aspect ratio
-      const container = sigma.getContainer()
-      const containerWidth = container.offsetWidth
-      const containerHeight = container.offsetHeight
-      const containerPadding = 30
-      console.log('Container W:', containerWidth, 'H:', containerHeight)
-
-      if (containerWidth < 100|| containerHeight < 100) {
-        // Use reset() for zero size case
-        reset()
-        return
-      }
-
       sigma.getCamera().animate(
         { x: 0.5, y: 0.5, ratio: 1.1 },
         { duration: 1000 }
@@ -59,12 +46,6 @@ const ZoomControl = () => {
 
   return (
     <>
-      <Button variant={controlButtonVariant} onClick={handleZoomIn} tooltip={t('graphPanel.sideBar.zoomControl.zoomIn')} size="icon">
-        <ZoomInIcon />
-      </Button>
-      <Button variant={controlButtonVariant} onClick={handleZoomOut} tooltip={t('graphPanel.sideBar.zoomControl.zoomOut')} size="icon">
-        <ZoomOutIcon />
-      </Button>
       <Button
         variant={controlButtonVariant}
         onClick={handleResetZoom}
@@ -72,6 +53,12 @@ const ZoomControl = () => {
         size="icon"
       >
         <FullscreenIcon />
+      </Button>
+      <Button variant={controlButtonVariant} onClick={handleZoomIn} tooltip={t('graphPanel.sideBar.zoomControl.zoomIn')} size="icon">
+        <ZoomInIcon />
+      </Button>
+      <Button variant={controlButtonVariant} onClick={handleZoomOut} tooltip={t('graphPanel.sideBar.zoomControl.zoomOut')} size="icon">
+        <ZoomOutIcon />
       </Button>
     </>
   )

@@ -236,10 +236,10 @@ const GraphViewer = () => {
         </div>
 
         <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
-          <Settings />
-          <ZoomControl />
           <LayoutsControl />
+          <ZoomControl />
           <FullScreenControl />
+          <Settings />
           {/* <ThemeToggle /> */}
         </div>
 
