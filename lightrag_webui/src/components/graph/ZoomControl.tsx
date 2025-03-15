@@ -46,37 +46,8 @@ const ZoomControl = () => {
         return
       }
 
-      // Get all node positions
-      const nodePositions = graph.nodes().map(node => ({
-        x: graph.getNodeAttribute(node, 'x'),
-        y: graph.getNodeAttribute(node, 'y')
-      }))
-
-      // Calculate bounding box
-      const minX = Math.min(...nodePositions.map(pos => pos.x))
-      const maxX = Math.max(...nodePositions.map(pos => pos.x))
-      const minY = Math.min(...nodePositions.map(pos => pos.y))
-      const maxY = Math.max(...nodePositions.map(pos => pos.y))
-
-      // Calculate graph dimensions with minimal padding
-      const width = maxX - minX
-      const height = maxY - minY
-      // const padding = Math.max(width, height) * 0.05
-      console.log('Graph W:', Math.round(width*100)/100, 'H:', Math.round(height*100)/100)
-
-      // Calculate base scale
-      const scale = Math.min(
-        (containerWidth - containerPadding * 2) / width,
-        (containerHeight - containerPadding * 2) / height
-      )
-      // Apply scaling factor (just don't know why)
-      const ratio = (1 / scale) * 10
-
-      console.log('scale:', Math.round(scale*100)/100, 'ratio:', Math.round(ratio*100)/100)
-
-      // Animate to center with calculated ratio
       sigma.getCamera().animate(
-        { x: 0.5, y: 0.5, ratio },
+        { x: 0.5, y: 0.5, ratio: 1.1 },
         { duration: 1000 }
       )
     } catch (error) {
