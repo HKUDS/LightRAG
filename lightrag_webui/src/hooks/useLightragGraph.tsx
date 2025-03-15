@@ -339,14 +339,10 @@ const useLightrangeGraph = () => {
       if (!nodeId || !sigmaGraph || !rawGraph) return;
 
       try {
-        // Set fetching state
-        useGraphStore.getState().setIsFetching(true);
-
         // Get the node to expand
         const nodeToExpand = rawGraph.getNode(nodeId);
         if (!nodeToExpand) {
           console.error('Node not found:', nodeId);
-          useGraphStore.getState().setIsFetching(false);
           return;
         }
 
@@ -354,7 +350,6 @@ const useLightrangeGraph = () => {
         const label = nodeToExpand.labels[0];
         if (!label) {
           console.error('Node has no label:', nodeId);
-          useGraphStore.getState().setIsFetching(false);
           return;
         }
 
@@ -363,7 +358,6 @@ const useLightrangeGraph = () => {
 
         if (!extendedGraph || !extendedGraph.nodes || !extendedGraph.edges) {
           console.error('Failed to fetch extended graph');
-          useGraphStore.getState().setIsFetching(false);
           return;
         }
 
@@ -439,7 +433,6 @@ const useLightrangeGraph = () => {
         // If no new connectable nodes found, show toast and return
         if (nodesToAdd.size === 0) {
           toast.info(t('graphPanel.propertiesView.node.noNewNodes'));
-          useGraphStore.getState().setIsFetching(false);
           return;
         }
 
@@ -610,9 +603,6 @@ const useLightrangeGraph = () => {
 
       } catch (error) {
         console.error('Error expanding node:', error);
-      } finally {
-        // Reset fetching state
-        useGraphStore.getState().setIsFetching(false);
       }
     };
 
