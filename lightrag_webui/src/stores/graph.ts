@@ -70,7 +70,6 @@ interface GraphState {
   sigmaInstance: any | null
   allDatabaseLabels: string[]
 
-  // 搜索引擎状态
   searchEngine: MiniSearch | null
 
   moveToSelectedNode: boolean
@@ -159,7 +158,7 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       focusedEdge: null,
       rawGraph: null,
       sigmaGraph: null,  // to avoid other components from acccessing graph objects
-      searchEngine: null, // 重置搜索引擎
+      searchEngine: null,
       moveToSelectedNode: false,
       shouldRender: false
     });

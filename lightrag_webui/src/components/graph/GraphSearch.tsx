@@ -10,10 +10,16 @@ import { searchResultLimit } from '@/lib/constants'
 import { useGraphStore } from '@/stores/graph'
 import MiniSearch from 'minisearch'
 import { useTranslation } from 'react-i18next'
-import { OptionItem } from './graphSearchTypes'
 
 // Message item identifier for search results
 export const messageId = '__message_item'
+
+// Search result option item interface
+export interface OptionItem {
+  id: string
+  type: 'nodes' | 'edges' | 'message'
+  message?: string
+}
 
 const NodeOption = ({ id }: { id: string }) => {
   const graph = useGraphStore.use.sigmaGraph()
