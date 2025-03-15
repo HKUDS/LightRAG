@@ -10,29 +10,27 @@ import { searchResultLimit } from '@/lib/constants'
 import { useGraphStore } from '@/stores/graph'
 import MiniSearch from 'minisearch'
 import { useTranslation } from 'react-i18next'
+import { OptionItem } from './graphSearchTypes'
+import { messageId, searchCache } from './graphSearchUtils'
 
-interface OptionItem {
-  id: string
-  type: 'nodes' | 'edges' | 'message'
-  message?: string
+const NodeOption = ({ id }: { id: string }) => {
+  const graph = useGraphStore.use.sigmaGraph()
+  if (!graph?.hasNode(id)) {
+    return null
+  }
+  return <NodeById id={id} />
 }
 
 function OptionComponent(item: OptionItem) {
   return (
     <div>
-      {item.type === 'nodes' && <NodeById id={item.id} />}
+      {item.type === 'nodes' && <NodeOption id={item.id} />}
       {item.type === 'edges' && <EdgeById id={item.id} />}
       {item.type === 'message' && <div>{item.message}</div>}
     </div>
   )
 }
 
-const messageId = '__message_item'
-// Reset this cache when graph changes to ensure fresh search results
-const lastGraph: any = {
-  graph: null,
-  searchEngine: null
-}
 
 /**
  * Component thats display the search input.
@@ -53,18 +51,18 @@ export const GraphSearchInput = ({
   useEffect(() => {
     if (graph) {
       // Reset cache to ensure fresh search results with new graph data
-      lastGraph.graph = null;
-      lastGraph.searchEngine = null;
+      searchCache.graph = null;
+      searchCache.searchEngine = null;
     }
   }, [graph]);
 
   const searchEngine = useMemo(() => {
-    if (lastGraph.graph == graph) {
-      return lastGraph.searchEngine
+    if (searchCache.graph == graph) {
+      return searchCache.searchEngine
     }
     if (!graph || graph.nodes().length == 0) return
 
-    lastGraph.graph = graph
+    searchCache.graph = graph
 
     const searchEngine = new MiniSearch({
       idField: 'id',
@@ -85,7 +83,7 @@ export const GraphSearchInput = ({
     }))
     searchEngine.addAll(documents)
 
-    lastGraph.searchEngine = searchEngine
+    searchCache.searchEngine = searchEngine
     return searchEngine
   }, [graph])
 
@@ -95,22 +93,38 @@ export const GraphSearchInput = ({
   const loadOptions = useCallback(
     async (query?: string): Promise<OptionItem[]> => {
       if (onFocus) onFocus(null)
-      if (!graph || !searchEngine) return []
+      
+      // Safety checks to prevent crashes
+      if (!graph || !searchEngine) {
+        // Reset cache to ensure fresh search engine initialization on next render
+        searchCache.graph = null
+        searchCache.searchEngine = null
+        return []
+      }
 
-      // If no query, return first searchResultLimit nodes
+      // Verify graph has nodes before proceeding
+      if (graph.nodes().length === 0) {
+        return []
+      }
+
+      // If no query, return first searchResultLimit nodes that exist
       if (!query) {
-        const nodeIds = graph.nodes().slice(0, searchResultLimit)
+        const nodeIds = graph.nodes()
+          .filter(id => graph.hasNode(id))
+          .slice(0, searchResultLimit)
         return nodeIds.map(id => ({
           id,
           type: 'nodes'
         }))
       }
 
-      // If has query, search nodes
-      const result: OptionItem[] = searchEngine.search(query).map((r: { id: string }) => ({
-        id: r.id,
-        type: 'nodes'
-      }))
+      // If has query, search nodes and verify they still exist
+      const result: OptionItem[] = searchEngine.search(query)
+        .filter((r: { id: string }) => graph.hasNode(r.id))
+        .map((r: { id: string }) => ({
+          id: r.id,
+          type: 'nodes'
+        }))
 
       // prettier-ignore
       return result.length <= searchResultLimit
