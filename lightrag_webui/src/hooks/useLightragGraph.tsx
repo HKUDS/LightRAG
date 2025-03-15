@@ -11,7 +11,6 @@ import { useSettingsStore } from '@/stores/settings'
 import { useTabVisibility } from '@/contexts/useTabVisibility'
 
 import seedrandom from 'seedrandom'
-import { searchCache } from '@/components/graph/graphSearchUtils'
 
 const validateGraph = (graph: RawGraph) => {
   if (!graph) {
@@ -599,9 +598,8 @@ const useLightrangeGraph = () => {
         // Update the dynamic edge map and invalidate search cache
         rawGraph.buildDynamicMap();
 
-        // Force search engine rebuild by invalidating cache
-        searchCache.graph = null;
-        searchCache.searchEngine = null;
+        // Reset search engine to force rebuild
+        useGraphStore.getState().resetSearchEngine();
 
         // Update sizes for all nodes with discarded edges
         updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, range, scale);
@@ -718,9 +716,8 @@ const useLightrangeGraph = () => {
         // Rebuild the dynamic edge map and invalidate search cache
         rawGraph.buildDynamicMap();
 
-        // Force search engine rebuild by invalidating cache
-        searchCache.graph = null;
-        searchCache.searchEngine = null;
+        // Reset search engine to force rebuild
+        useGraphStore.getState().resetSearchEngine();
 
         // Show notification if we deleted more than just the selected node
         if (nodesToDelete.size > 1) {
