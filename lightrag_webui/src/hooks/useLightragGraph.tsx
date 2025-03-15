@@ -475,8 +475,35 @@ const useLightrangeGraph = () => {
           }
         }
 
+        // Helper function to update node sizes
+        const updateNodeSizes = (
+          sigmaGraph: DirectedGraph,
+          nodesWithDiscardedEdges: Set<string>,
+          minDegree: number,
+          range: number,
+          scale: number
+        ) => {
+          for (const nodeId of nodesWithDiscardedEdges) {
+            if (sigmaGraph.hasNode(nodeId)) {
+              let newDegree = sigmaGraph.degree(nodeId);
+              newDegree += 1; // Add +1 for discarded edges
+
+              const newSize = Math.round(
+                Constants.minNodeSize + scale * Math.pow((newDegree - minDegree) / range, 0.5)
+              );
+
+              const currentSize = sigmaGraph.getNodeAttribute(nodeId, 'size');
+
+              if (newSize > currentSize) {
+                sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
+              }
+            }
+          }
+        };
+
         // If no new connectable nodes found, show toast and return
         if (nodesToAdd.size === 0) {
+          updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, range, scale);
           toast.info(t('graphPanel.propertiesView.node.noNewNodes'));
           return;
         }
@@ -577,26 +604,7 @@ const useLightrangeGraph = () => {
         searchCache.searchEngine = null;
 
         // Update sizes for all nodes with discarded edges
-        for (const nodeId of nodesWithDiscardedEdges) {
-          if (sigmaGraph.hasNode(nodeId)) {
-            // Get the new degree of the node
-            let newDegree = sigmaGraph.degree(nodeId);
-            newDegree += 1; // Add +1 for discarded edges
-
-            // Calculate new size for the node
-            const newSize = Math.round(
-              Constants.minNodeSize + scale * Math.pow((newDegree - minDegree) / range, 0.5)
-            );
-
-            // Get current size
-            const currentSize = sigmaGraph.getNodeAttribute(nodeId, 'size');
-
-            // Only update if new size is larger
-            if (newSize > currentSize) {
-              sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
-            }
-          }
-        }
+        updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, range, scale);
 
       } catch (error) {
         console.error('Error expanding node:', error);
