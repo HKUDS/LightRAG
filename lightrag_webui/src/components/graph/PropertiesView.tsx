@@ -91,7 +91,6 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
 
   if (state.sigmaGraph && state.rawGraph) {
     try {
-      // 检查节点是否还存在
       if (!state.sigmaGraph.hasNode(node.id)) {
         return {
           ...node,
@@ -99,12 +98,9 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
         }
       }
 
-      // 获取所有边
       const edges = state.sigmaGraph.edges(node.id)
 
-      // 处理每条边
       for (const edgeId of edges) {
-        // 检查边是否还存在
         if (!state.sigmaGraph.hasEdge(edgeId)) continue;
 
         const edge = state.rawGraph.getEdge(edgeId, true)
@@ -112,7 +108,6 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
           const isTarget = node.id === edge.source
           const neighbourId = isTarget ? edge.target : edge.source
 
-          // 检查邻居节点是否存在
           if (!state.sigmaGraph.hasNode(neighbourId)) continue;
 
           const neighbour = state.rawGraph.getNode(neighbourId)
@@ -143,7 +138,6 @@ const refineEdgeProperties = (edge: RawEdgeType): EdgeType => {
 
   if (state.sigmaGraph && state.rawGraph) {
     try {
-      // 检查边是否还存在
       if (!state.sigmaGraph.hasEdge(edge.id)) {
         return {
           ...edge,
@@ -152,12 +146,10 @@ const refineEdgeProperties = (edge: RawEdgeType): EdgeType => {
         }
       }
 
-      // 检查源节点是否存在
       if (state.sigmaGraph.hasNode(edge.source)) {
         sourceNode = state.rawGraph.getNode(edge.source)
       }
 
-      // 检查目标节点是否存在
       if (state.sigmaGraph.hasNode(edge.target)) {
         targetNode = state.rawGraph.getNode(edge.target)
       }
