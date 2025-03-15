@@ -4,7 +4,6 @@ import Button from '@/components/ui/Button'
 import { ZoomInIcon, ZoomOutIcon, FullscreenIcon } from 'lucide-react'
 import { controlButtonVariant } from '@/lib/constants'
 import { useTranslation } from 'react-i18next';
-import { combine } from 'zustand/middleware'
 
 /**
  * Component that provides zoom controls for the graph viewer.
@@ -67,8 +66,8 @@ const ZoomControl = () => {
 
       // Calculate base scale
       const scale = Math.min(
-        (containerWidth - containerPadding) / width,
-        (containerHeight - containerPadding) / height
+        (containerWidth - containerPadding * 2) / width,
+        (containerHeight - containerPadding * 2) / height
       )
       // Apply scaling factor (just don't know why)
       const ratio = (1 / scale) * 10
