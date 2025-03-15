@@ -77,7 +77,7 @@ const ZoomControl = () => {
       // Animate to center with calculated ratio
       sigma.getCamera().animate(
         { x: 0.5, y: 0.5, ratio },
-        { duration: 500 }
+        { duration: 1000 }
       )
     } catch (error) {
       console.error('Error resetting zoom:', error)
