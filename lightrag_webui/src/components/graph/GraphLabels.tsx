@@ -111,13 +111,8 @@ const GraphLabels = () => {
         // Clear current graph data to ensure complete reload when label changes
         if (newLabel !== currentLabel) {
           const graphStore = useGraphStore.getState();
-          graphStore.clearSelection();
-
-          // Reset the graph state but preserve the instance
-          if (graphStore.sigmaGraph) {
-            const nodes = Array.from(graphStore.sigmaGraph.nodes());
-            nodes.forEach(node => graphStore.sigmaGraph?.dropNode(node));
-          }
+          // 完全重置图形状态
+          graphStore.reset();
         }
 
         if (newLabel === currentLabel && newLabel !== '*') {
