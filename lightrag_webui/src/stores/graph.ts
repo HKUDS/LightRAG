@@ -142,22 +142,13 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       focusedEdge: null
     }),
   reset: () => {
-    // Get the existing graph
-    const existingGraph = get().sigmaGraph;
-
-    // If we have an existing graph, clear it by removing all nodes
-    if (existingGraph) {
-      const nodes = Array.from(existingGraph.nodes());
-      nodes.forEach(node => existingGraph.dropNode(node));
-    }
-
     set({
       selectedNode: null,
       focusedNode: null,
       selectedEdge: null,
       focusedEdge: null,
       rawGraph: null,
-      // Keep the existing graph instance but with cleared data
+      sigmaGraph: null,  // 完全清除图形实例
       moveToSelectedNode: false,
       shouldRender: false
     });
