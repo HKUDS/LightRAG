@@ -22,10 +22,10 @@ const ZoomControl = () => {
       // First clear any custom bounding box and refresh
       sigma.setCustomBBox(null)
       sigma.refresh()
-      
+
       // Get graph after refresh
       const graph = sigma.getGraph()
-      
+
       // Check if graph has nodes before accessing them
       if (!graph || graph.nodes().length === 0) {
         reset()
@@ -35,7 +35,7 @@ const ZoomControl = () => {
       // Get container dimensions for aspect ratio
       const container = sigma.getContainer()
       const containerWidth = container.offsetWidth
-      const containerHeight = container.offsetHeight      
+      const containerHeight = container.offsetHeight
       console.log('Container W:', containerWidth, 'H:', containerHeight)
 
       // Get all node positions
@@ -43,24 +43,24 @@ const ZoomControl = () => {
         x: graph.getNodeAttribute(node, 'x'),
         y: graph.getNodeAttribute(node, 'y')
       }))
-      
+
       // Calculate bounding box
       const minX = Math.min(...nodePositions.map(pos => pos.x))
       const maxX = Math.max(...nodePositions.map(pos => pos.x))
       const minY = Math.min(...nodePositions.map(pos => pos.y))
       const maxY = Math.max(...nodePositions.map(pos => pos.y))
-      
+
       // Calculate graph dimensions with minimal padding
       const width = maxX - minX
       const height = maxY - minY
       const padding = Math.max(width, height) * 0.05
       console.log('Graph W:', Math.round(width*100)/100, 'H:', Math.round(height*100)/100)
-      
+
       // Calculate base scale
       const scale = Math.min(
         containerWidth / (width + padding * 2),
         containerHeight / (height + padding * 2)
-      )      
+      )
       // Apply scaling factor (just don't know why)
       const ratio = (1 / scale) * 10
 

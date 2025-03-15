@@ -48,24 +48,21 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
    */
   useEffect(() => {
     if (sigmaGraph && sigma) {
-      // 确保 sigma 实例内部的 graph 引用被更新
+      // Ensure sigma binding to sigmaGraph
       try {
-        // 尝试直接设置 sigma 实例的 graph 引用
         if (typeof sigma.setGraph === 'function') {
           sigma.setGraph(sigmaGraph as unknown as AbstractGraph<NodeType, EdgeType>);
-          console.log('Directly set graph on sigma instance');
+          console.log('Binding graph to sigma instance');
         } else {
-          // 如果 setGraph 方法不存在，尝试直接设置 graph 属性
           (sigma as any).graph = sigmaGraph;
-          console.log('Set graph property on sigma instance');
+          console.warn('Simgma missing setGraph function, set graph property directly');
         }
       } catch (error) {
         console.error('Error setting graph on sigma instance:', error);
       }
 
-      // 应用布局
       assignLayout();
-      console.log('Layout applied to graph');
+      console.log('Initial layout applied to graph');
     }
   }, [sigma, sigmaGraph, assignLayout, maxIterations])
 

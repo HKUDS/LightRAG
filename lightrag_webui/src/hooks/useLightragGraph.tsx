@@ -577,7 +577,7 @@ const useLightrangeGraph = () => {
 
         // Update the dynamic edge map and invalidate search cache
         rawGraph.buildDynamicMap();
-        
+
         // Force search engine rebuild by invalidating cache
         searchCache.graph = null;
         searchCache.searchEngine = null;
@@ -724,7 +724,7 @@ const useLightrangeGraph = () => {
 
         // Rebuild the dynamic edge map and invalidate search cache
         rawGraph.buildDynamicMap();
-        
+
         // Force search engine rebuild by invalidating cache
         searchCache.graph = null;
         searchCache.searchEngine = null;

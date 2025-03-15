@@ -93,7 +93,7 @@ export const GraphSearchInput = ({
   const loadOptions = useCallback(
     async (query?: string): Promise<OptionItem[]> => {
       if (onFocus) onFocus(null)
-      
+
       // Safety checks to prevent crashes
       if (!graph || !searchEngine) {
         // Reset cache to ensure fresh search engine initialization on next render
