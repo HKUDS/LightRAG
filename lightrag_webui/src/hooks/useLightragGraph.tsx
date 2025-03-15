@@ -487,6 +487,17 @@ const useLightrangeGraph = () => {
         const scale = Constants.maxNodeSize - Constants.minNodeSize;
 
         // STEP 3: Add nodes and edges to the graph
+        // Calculate camera ratio and spread factor once before the loop
+        const cameraRatio = useGraphStore.getState().sigmaInstance?.getCamera().ratio || 1;
+        const spreadFactor = Math.max(
+          Math.sqrt(nodeToExpand.size) * 4, // Base on node size
+          Math.sqrt(nodesToAdd.size) * 3 // Scale with number of nodes
+        ) / cameraRatio; // Adjust for zoom level
+        const randomAngle = Math.random() * 2 * Math.PI
+
+        console.log('nodeSize:', nodeToExpand.size, 'nodesToAdd:', nodesToAdd.size);
+        console.log('cameraRatio:', Math.round(cameraRatio*100)/100, 'spreadFactor:', Math.round(spreadFactor*100)/100);
+
         // Add new nodes
         for (const nodeId of nodesToAdd) {
           const newNode = processedNodes.find(n => n.id === nodeId)!;
@@ -497,23 +508,14 @@ const useLightrangeGraph = () => {
             Constants.minNodeSize + scale * Math.pow((nodeDegree - minDegree) / range, 0.5)
           );
 
-          // Get camera ratio from sigma instance for scale adjustment
-          const cameraRatio = useGraphStore.getState().sigmaInstance?.getCamera().ratio || 1;
-
-          // Calculate spread factor based on node size and number of nodes
-          const spreadFactor = Math.max(
-            nodeToExpand.size * 4, // Base on node size
-            Math.sqrt(nodesToAdd.size) * 10 // Scale with number of nodes
-          ) / cameraRatio; // Adjust for zoom level
-
           // Calculate angle for polar coordinates
           const angle = 2 * Math.PI * (Array.from(nodesToAdd).indexOf(nodeId) / nodesToAdd.size);
 
           // Calculate final position
           const x = nodePositions[nodeId]?.x ||
-                    (nodePositions[nodeToExpand.id].x + Math.cos(angle) * spreadFactor);
+                    (nodePositions[nodeToExpand.id].x + Math.cos(randomAngle + angle) * spreadFactor);
           const y = nodePositions[nodeId]?.y ||
-                    (nodePositions[nodeToExpand.id].y + Math.sin(angle) * spreadFactor);
+                    (nodePositions[nodeToExpand.id].y + Math.sin(randomAngle + angle) * spreadFactor);
 
           // Add the new node to the sigma graph with calculated position
           sigmaGraph.addNode(nodeId, {
