@@ -407,10 +407,21 @@ const useLightrangeGraph = () => {
         // Get existing node IDs
         const existingNodeIds = new Set(sigmaGraph.nodes());
 
-        // STEP 1: Identify nodes and edges to keep
+        // Identify nodes and edges to keep
         const nodesToAdd = new Set<string>();
         const edgesToAdd = new Set<string>();
-        const nodesWithDiscardedEdges = new Set<string>();
+
+        // Get degree range from existing graph for size calculations
+        const minDegree = 1;
+        let maxDegree = 0;
+        sigmaGraph.forEachNode(node => {
+          const degree = sigmaGraph.degree(node);
+          maxDegree = Math.max(maxDegree, degree);
+        });
+
+        // Calculate size formula parameters
+        const range = maxDegree - minDegree || 1; // Avoid division by zero
+        const scale = Constants.maxNodeSize - Constants.minNodeSize;
 
         // First identify connectable nodes (nodes connected to the expanded node)
         for (const node of processedNodes) {
@@ -430,69 +441,59 @@ const useLightrangeGraph = () => {
           }
         }
 
-        // If no new connectable nodes found, show toast and return
-        if (nodesToAdd.size === 0) {
-          toast.info(t('graphPanel.propertiesView.node.noNewNodes'));
-          return;
-        }
+        // Calculate node degrees and track discarded edges in one pass
+        const nodeDegrees = new Map<string, number>();
+        const nodesWithDiscardedEdges = new Set<string>();
 
-        // Then identify valid edges (edges where both nodes exist in the graph)
         for (const edge of processedEdges) {
           const sourceExists = existingNodeIds.has(edge.source) || nodesToAdd.has(edge.source);
           const targetExists = existingNodeIds.has(edge.target) || nodesToAdd.has(edge.target);
 
           if (sourceExists && targetExists) {
             edgesToAdd.add(edge.id);
-          } else {
-            // Mark nodes that had edges discarded
+            // Add degrees for valid edges
             if (nodesToAdd.has(edge.source)) {
-              nodesWithDiscardedEdges.add(edge.source);
+              nodeDegrees.set(edge.source, (nodeDegrees.get(edge.source) || 0) + 1);
             }
             if (nodesToAdd.has(edge.target)) {
+              nodeDegrees.set(edge.target, (nodeDegrees.get(edge.target) || 0) + 1);
+            }
+          } else {
+            // Track discarded edges for both new and existing nodes
+            if (sigmaGraph.hasNode(edge.source)) {
+              nodesWithDiscardedEdges.add(edge.source);
+            } else if (nodesToAdd.has(edge.source)) {
+              nodesWithDiscardedEdges.add(edge.source);
+              nodeDegrees.set(edge.source, (nodeDegrees.get(edge.source) || 0) + 1); // +1 for discarded edge
+            }
+            if (sigmaGraph.hasNode(edge.target)) {
               nodesWithDiscardedEdges.add(edge.target);
+            } else if (nodesToAdd.has(edge.target)) {
+              nodesWithDiscardedEdges.add(edge.target);
+              nodeDegrees.set(edge.target, (nodeDegrees.get(edge.target) || 0) + 1); // +1 for discarded edge
             }
           }
         }
 
-        // STEP 2: Calculate node degrees and sizes
-        const nodeDegrees = new Map<string, number>();
-
-        // Calculate degrees from kept edges
-        for (const edgeId of edgesToAdd) {
-          const edge = processedEdges.find(e => e.id === edgeId)!;
-          nodeDegrees.set(edge.source, (nodeDegrees.get(edge.source) || 0) + 1);
-          nodeDegrees.set(edge.target, (nodeDegrees.get(edge.target) || 0) + 1);
+        // If no new connectable nodes found, show toast and return
+        if (nodesToAdd.size === 0) {
+          toast.info(t('graphPanel.propertiesView.node.noNewNodes'));
+          return;
         }
-
-        // Add +1 to degree for nodes that had edges discarded
-        for (const nodeId of nodesWithDiscardedEdges) {
-          nodeDegrees.set(nodeId, (nodeDegrees.get(nodeId) || 0) + 1);
-        }
-
-        // Get degree range from existing graph for size calculations
-        const minDegree = 1;
-        let maxDegree = 0;
-        sigmaGraph.forEachNode(node => {
-          const degree = sigmaGraph.degree(node);
-          maxDegree = Math.max(maxDegree, degree);
-        });
 
         // Update maxDegree with new node degrees
         for (const [, degree] of nodeDegrees.entries()) {
           maxDegree = Math.max(maxDegree, degree);
         }
 
-        // Calculate size formula parameters
-        const range = maxDegree - minDegree || 1; // Avoid division by zero
-        const scale = Constants.maxNodeSize - Constants.minNodeSize;
-
-        // STEP 3: Add nodes and edges to the graph
+        // SAdd nodes and edges to the graph
         // Calculate camera ratio and spread factor once before the loop
         const cameraRatio = useGraphStore.getState().sigmaInstance?.getCamera().ratio || 1;
         const spreadFactor = Math.max(
           Math.sqrt(nodeToExpand.size) * 4, // Base on node size
           Math.sqrt(nodesToAdd.size) * 3 // Scale with number of nodes
         ) / cameraRatio; // Adjust for zoom level
+        seedrandom(Date.now().toString(), { global: true });
         const randomAngle = Math.random() * 2 * Math.PI
 
         console.log('nodeSize:', nodeToExpand.size, 'nodesToAdd:', nodesToAdd.size);
@@ -575,29 +576,25 @@ const useLightrangeGraph = () => {
         searchCache.graph = null;
         searchCache.searchEngine = null;
 
-        // STEP 4: Update the expanded node's size
-        if (sigmaGraph.hasNode(nodeId)) {
-          // Get the new degree of the expanded node
-          let expandedNodeDegree = sigmaGraph.degree(nodeId);
+        // Update sizes for all nodes with discarded edges
+        for (const nodeId of nodesWithDiscardedEdges) {
+          if (sigmaGraph.hasNode(nodeId)) {
+            // Get the new degree of the node
+            let newDegree = sigmaGraph.degree(nodeId);
+            newDegree += 1; // Add +1 for discarded edges
 
-          // Check if the expanded node had any discarded edges
-          if (nodesWithDiscardedEdges.has(nodeId)) {
-            expandedNodeDegree += 1; // Add +1 for discarded edges
-          }
+            // Calculate new size for the node
+            const newSize = Math.round(
+              Constants.minNodeSize + scale * Math.pow((newDegree - minDegree) / range, 0.5)
+            );
 
-          // Calculate new size for the expanded node
-          const newSize = Math.round(
-            Constants.minNodeSize + scale * Math.pow((expandedNodeDegree - minDegree) / range, 0.5)
-          );
+            // Get current size
+            const currentSize = sigmaGraph.getNodeAttribute(nodeId, 'size');
 
-          // Update the size in sigma graph
-          sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
-
-          // Update the size in raw graph
-          const expandedNodeIndex = rawGraph.nodeIdMap[nodeId];
-          if (expandedNodeIndex !== undefined) {
-            rawGraph.nodes[expandedNodeIndex].size = newSize;
-            rawGraph.nodes[expandedNodeIndex].degree = expandedNodeDegree;
+            // Only update if new size is larger
+            if (newSize > currentSize) {
+              sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
+            }
           }
         }
 
