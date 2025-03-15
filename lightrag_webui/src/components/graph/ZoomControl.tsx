@@ -4,6 +4,7 @@ import Button from '@/components/ui/Button'
 import { ZoomInIcon, ZoomOutIcon, FullscreenIcon } from 'lucide-react'
 import { controlButtonVariant } from '@/lib/constants'
 import { useTranslation } from 'react-i18next';
+import { combine } from 'zustand/middleware'
 
 /**
  * Component that provides zoom controls for the graph viewer.
@@ -37,7 +38,14 @@ const ZoomControl = () => {
       const container = sigma.getContainer()
       const containerWidth = container.offsetWidth
       const containerHeight = container.offsetHeight
+      const containerPadding = 30
       console.log('Container W:', containerWidth, 'H:', containerHeight)
+
+      if (containerWidth < 100|| containerHeight < 100) {
+        // Use reset() for zero size case
+        reset()
+        return
+      }
 
       // Get all node positions
       const nodePositions = graph.nodes().map(node => ({
@@ -54,13 +62,13 @@ const ZoomControl = () => {
       // Calculate graph dimensions with minimal padding
       const width = maxX - minX
       const height = maxY - minY
-      const padding = Math.max(width, height) * 0.05
+      // const padding = Math.max(width, height) * 0.05
       console.log('Graph W:', Math.round(width*100)/100, 'H:', Math.round(height*100)/100)
 
       // Calculate base scale
       const scale = Math.min(
-        containerWidth / (width + padding * 2),
-        containerHeight / (height + padding * 2)
+        (containerWidth - containerPadding) / width,
+        (containerHeight - containerPadding) / height
       )
       // Apply scaling factor (just don't know why)
       const ratio = (1 / scale) * 10
