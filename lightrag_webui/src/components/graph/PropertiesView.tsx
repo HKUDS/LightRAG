@@ -221,25 +221,25 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex justify-between items-center">
-        <label className="text-md pl-1 font-bold tracking-wide text-sky-300">{t('graphPanel.propertiesView.node.title')}</label>
-        <div className="flex gap-1">
+        <label className="text-md pl-1 font-bold tracking-wide text-blue-700">{t('graphPanel.propertiesView.node.title')}</label>
+        <div className="flex gap-3">
           <Button
             size="icon"
             variant="ghost"
-            className="h-6 w-6"
+            className="h-7 w-7 border border-gray-400 hover:bg-gray-200"
             onClick={handleExpandNode}
             tooltip={t('graphPanel.propertiesView.node.expandNode')}
           >
-            <GitBranchPlus className="h-4 w-4" />
+            <GitBranchPlus className="h-4 w-4 text-gray-700" />
           </Button>
           <Button
             size="icon"
             variant="ghost"
-            className="h-6 w-6"
+            className="h-7 w-7 border border-gray-400 hover:bg-gray-200"
             onClick={handlePruneNode}
             tooltip={t('graphPanel.propertiesView.node.pruneNode')}
           >
-            <Scissors className="h-4 w-4" />
+            <Scissors className="h-4 w-4 text-gray-900" />
           </Button>
         </div>
       </div>
@@ -254,7 +254,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
         />
         <PropertyRow name={t('graphPanel.propertiesView.node.degree')} value={node.degree} />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">{t('graphPanel.propertiesView.node.properties')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.node.properties')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(node.properties)
           .sort()
@@ -264,7 +264,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
       </div>
       {node.relationships.length > 0 && (
         <>
-          <label className="text-md pl-1 font-bold tracking-wide text-teal-600/90">
+          <label className="text-md pl-1 font-bold tracking-wide text-emerald-700">
             {t('graphPanel.propertiesView.node.relationships')}
           </label>
           <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
@@ -291,7 +291,7 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
   const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-md pl-1 font-bold tracking-wide text-teal-600">{t('graphPanel.propertiesView.edge.title')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-violet-700">{t('graphPanel.propertiesView.edge.title')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={t('graphPanel.propertiesView.edge.id')} value={edge.id} />
         {edge.type && <PropertyRow name={t('graphPanel.propertiesView.edge.type')} value={edge.type} />}
@@ -310,7 +310,7 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
           }}
         />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">{t('graphPanel.propertiesView.edge.properties')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.edge.properties')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(edge.properties)
           .sort()
