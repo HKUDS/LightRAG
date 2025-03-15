@@ -8,11 +8,8 @@ import Input from '@/components/ui/Input'
 import { controlButtonVariant } from '@/lib/constants'
 import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
-import { useSigma } from '@react-sigma/core'
-import { useLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
-import { animateNodes } from 'sigma/utils'
 
-import { SettingsIcon, RefreshCwIcon } from 'lucide-react'
+import { SettingsIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next';
 
 /**
@@ -117,16 +114,6 @@ const LabeledNumberInput = ({
 export default function Settings() {
   const [opened, setOpened] = useState<boolean>(false)
   const [tempApiKey, setTempApiKey] = useState<string>('')
-  const sigma = useSigma()
-  const maxIterations = useSettingsStore.use.graphLayoutMaxIterations()
-  const layout = useLayoutForceAtlas2({ iterations: maxIterations })
-
-  const refreshLayout = useCallback(() => {
-    if (!sigma) return
-    const graph = sigma.getGraph()
-    const positions = layout.positions()
-    animateNodes(graph, positions, { duration: 500 })
-  }, [sigma, layout])
 
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
@@ -222,14 +209,6 @@ export default function Settings() {
 
   return (
     <>
-      <Button
-        variant={controlButtonVariant}
-        tooltip={t('graphPanel.sideBar.settings.refreshLayout')}
-        size="icon"
-        onClick={refreshLayout}
-      >
-        <RefreshCwIcon />
-      </Button>
       <Popover open={opened} onOpenChange={setOpened}>
         <PopoverTrigger asChild>
           <Button variant={controlButtonVariant} tooltip={t('graphPanel.sideBar.settings.settings')} size="icon">
