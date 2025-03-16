@@ -364,7 +364,7 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
 
     # Inject LLM cache configuration
     args.enable_llm_cache_for_extract = get_env_value(
-        "ENABLE_LLM_CACHE_FOR_EXTRACT", False, bool
+        "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
     )
 
     # Select Document loading tool (DOCLING, DEFAULT)
