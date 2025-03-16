@@ -769,7 +769,6 @@ class LightRAG:
         async with pipeline_status_lock:
             # Ensure only one worker is processing documents
             if not pipeline_status.get("busy", False):
-
                 processing_docs, failed_docs, pending_docs = await asyncio.gather(
                     self.doc_status.get_docs_by_status(DocStatus.PROCESSING),
                     self.doc_status.get_docs_by_status(DocStatus.FAILED),
@@ -833,12 +832,12 @@ class LightRAG:
                 pipeline_status["history_messages"].append(log_message)
 
                 async def process_document(
-                    doc_id: str, 
+                    doc_id: str,
                     status_doc: DocProcessingStatus,
                     split_by_character: str | None,
                     split_by_character_only: bool,
                     pipeline_status: dict,
-                    pipeline_status_lock: asyncio.Lock
+                    pipeline_status_lock: asyncio.Lock,
                 ) -> None:
                     """Process single document"""
                     try:
@@ -912,9 +911,7 @@ class LightRAG:
                         )
                     except Exception as e:
                         # Log error and update pipeline status
-                        error_msg = (
-                            f"Failed to process document {doc_id}: {str(e)}"
-                        )
+                        error_msg = f"Failed to process document {doc_id}: {str(e)}"
                         logger.error(error_msg)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = error_msg
@@ -945,38 +942,38 @@ class LightRAG:
                         )
 
                 # 3. iterate over batches
-                total_batches = len(docs_batches)                
+                total_batches = len(docs_batches)
                 for batch_idx, docs_batch in enumerate(docs_batches):
-
-                    current_batch = batch_idx + 1                    
-                    log_message = f"Start processing batch {current_batch} of {total_batches}."
+                    current_batch = batch_idx + 1
+                    log_message = (
+                        f"Start processing batch {current_batch} of {total_batches}."
+                    )
                     logger.info(log_message)
                     pipeline_status["cur_batch"] = current_batch
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    
+
                     doc_tasks = []
                     for doc_id, status_doc in docs_batch:
                         doc_tasks.append(
                             process_document(
-                                doc_id, 
+                                doc_id,
                                 status_doc,
                                 split_by_character,
                                 split_by_character_only,
                                 pipeline_status,
-                                pipeline_status_lock
+                                pipeline_status_lock,
                             )
                         )
-                    
+
                     # Process documents in one batch parallelly
                     await asyncio.gather(*doc_tasks)
                     await self._insert_done()
-                    
+
                     log_message = f"Completed batch {current_batch} of {total_batches}."
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
                     pipeline_status["history_messages"].append(log_message)
-                    
 
                 # Check if there's a pending request to process more documents (with lock)
                 has_pending_request = False
