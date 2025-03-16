@@ -1843,9 +1843,10 @@ class LightRAG:
         """
         try:
             # 1. Get current entity information
-            node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
-            if not node_data:
+            node_exists = await self.chunk_entity_relation_graph.has_node(entity_name)
+            if not node_exists:
                 raise ValueError(f"Entity '{entity_name}' does not exist")
+            node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
 
             # Check if entity is being renamed
             new_entity_name = updated_data.get("entity_name", entity_name)
@@ -1858,7 +1859,7 @@ class LightRAG:
                         "Entity renaming is not allowed. Set allow_rename=True to enable this feature"
                     )
 
-                existing_node = await self.chunk_entity_relation_graph.get_node(
+                existing_node = await self.chunk_entity_relation_graph.has_node(
                     new_entity_name
                 )
                 if existing_node:
@@ -2040,14 +2041,16 @@ class LightRAG:
         """
         try:
             # 1. Get current relation information
-            edge_data = await self.chunk_entity_relation_graph.get_edge(
+            edge_exists = await self.chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
             )
-            if not edge_data:
+            if not edge_exists:
                 raise ValueError(
                     f"Relation from '{source_entity}' to '{target_entity}' does not exist"
                 )
-
+            edge_data = await self.chunk_entity_relation_graph.get_edge(
+                source_entity, target_entity
+            )
             # Important: First delete the old relation record from the vector database
             old_relation_id = compute_mdhash_id(
                 source_entity + target_entity, prefix="rel-"
@@ -2156,7 +2159,7 @@ class LightRAG:
         """
         try:
             # Check if entity already exists
-            existing_node = await self.chunk_entity_relation_graph.get_node(entity_name)
+            existing_node = await self.chunk_entity_relation_graph.has_node(entity_name)
             if existing_node:
                 raise ValueError(f"Entity '{entity_name}' already exists")
 
@@ -2250,7 +2253,7 @@ class LightRAG:
                 raise ValueError(f"Target entity '{target_entity}' does not exist")
 
             # Check if relation already exists
-            existing_edge = await self.chunk_entity_relation_graph.get_edge(
+            existing_edge = await self.chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
             )
             if existing_edge:
@@ -2383,19 +2386,22 @@ class LightRAG:
             # 1. Check if all source entities exist
             source_entities_data = {}
             for entity_name in source_entities:
-                node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
-                if not node_data:
+                node_exists = await self.chunk_entity_relation_graph.has_node(
+                    entity_name
+                )
+                if not node_exists:
                     raise ValueError(f"Source entity '{entity_name}' does not exist")
+                node_data = await self.chunk_entity_relation_graph.get_node(entity_name)
                 source_entities_data[entity_name] = node_data
 
             # 2. Check if target entity exists and get its data if it does
             target_exists = await self.chunk_entity_relation_graph.has_node(
                 target_entity
             )
-            target_entity_data = {}
+            existing_target_entity_data = {}
             if target_exists:
-                target_entity_data = await self.chunk_entity_relation_graph.get_node(
-                    target_entity
+                existing_target_entity_data = (
+                    await self.chunk_entity_relation_graph.get_node(target_entity)
                 )
                 logger.info(
                     f"Target entity '{target_entity}' already exists, will merge data"
@@ -2404,7 +2410,7 @@ class LightRAG:
             # 3. Merge entity data
             merged_entity_data = self._merge_entity_attributes(
                 list(source_entities_data.values())
-                + ([target_entity_data] if target_exists else []),
+                + ([existing_target_entity_data] if target_exists else []),
                 merge_strategy,
             )
 
