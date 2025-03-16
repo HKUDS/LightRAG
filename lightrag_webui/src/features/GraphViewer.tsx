@@ -182,7 +182,7 @@ const GraphViewer = () => {
 
   // Always render SigmaContainer but control its visibility with CSS
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full overflow-hidden">
       <SigmaContainer
         settings={sigmaSettings}
         className="!bg-background !size-full overflow-hidden"
