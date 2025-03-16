@@ -1048,7 +1048,7 @@ class LightRAG:
         ]
         await asyncio.gather(*tasks)
 
-        log_message = "All data persist to disk"
+        log_message = "In memory DB persist to disk"
         logger.info(log_message)
 
         if pipeline_status is not None and pipeline_status_lock is not None:
