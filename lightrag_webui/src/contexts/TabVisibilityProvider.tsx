@@ -23,7 +23,7 @@ export const TabVisibilityProvider: React.FC<TabVisibilityProviderProps> = ({ ch
     'api': true
   }));
 
-  // Keep all tabs visible when current tab changes
+  // Keep all tabs visible because we use CSS to control TAB visibility instead of React
   useEffect(() => {
     setVisibleTabs((prev) => ({
       ...prev,
