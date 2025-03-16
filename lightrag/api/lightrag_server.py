@@ -391,12 +391,24 @@ def create_app(args):
             "update_status": update_status,
         }
 
+    # Custom StaticFiles class to prevent caching of HTML files
+    class NoCacheStaticFiles(StaticFiles):
+        async def get_response(self, path: str, scope):
+            response = await super().get_response(path, scope)
+            if path.endswith(".html"):
+                response.headers["Cache-Control"] = (
+                    "no-cache, no-store, must-revalidate"
+                )
+                response.headers["Pragma"] = "no-cache"
+                response.headers["Expires"] = "0"
+            return response
+
     # Webui mount webui/index.html
     static_dir = Path(__file__).parent / "webui"
     static_dir.mkdir(exist_ok=True)
     app.mount(
         "/webui",
-        StaticFiles(directory=static_dir, html=True, check_dir=True),
+        NoCacheStaticFiles(directory=static_dir, html=True, check_dir=True),
         name="webui",
     )
 
