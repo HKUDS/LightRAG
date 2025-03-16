@@ -214,7 +214,7 @@ class LightRAG:
     llm_model_max_token_size: int = field(default=int(os.getenv("MAX_TOKENS", 32768)))
     """Maximum number of tokens allowed per LLM response."""
 
-    llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 16)))
+    llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 4)))
     """Maximum number of concurrent LLM calls."""
 
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
@@ -238,7 +238,7 @@ class LightRAG:
     # Extensions
     # ---
 
-    max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 20)))
+    max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 2)))
     """Maximum number of parallel insert operations."""
 
     addon_params: dict[str, Any] = field(
