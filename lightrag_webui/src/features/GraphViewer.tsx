@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { useTabVisibility } from '@/contexts/useTabVisibility'
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
@@ -157,39 +157,9 @@ const GraphViewer = () => {
     };
   }, []);
 
-  // Get the sigmaGraph from the store
-  const sigmaGraph = useGraphStore.use.sigmaGraph();
-
-  // Set the sigma instance in the graph store when it's available
-  // Using useLayoutEffect to ensure this runs before child components need the instance
-  useLayoutEffect(() => {
-    if (sigmaRef.current?.sigma) {
-      const instance = sigmaRef.current.sigma;
-
-      // Get the sigma instance from the ref and store it
-      console.log('Setting sigma instance in graph store (layout effect)');
-      useGraphStore.getState().setSigmaInstance(instance);
-
-      // If we also have a graph, bind it to the sigma instance
-      if (sigmaGraph) {
-        try {
-          // Try to set the graph on the sigma instance
-          if (typeof instance.setGraph === 'function') {
-            instance.setGraph(sigmaGraph);
-            console.log('Directly set graph on sigma instance in GraphViewer');
-          } else {
-            // If setGraph method doesn't exist, try to set the graph property directly
-            (instance as any).graph = sigmaGraph;
-            console.log('Set graph property on sigma instance in GraphViewer');
-          }
-        } catch (error) {
-          console.error('Error setting graph on sigma instance in GraphViewer:', error);
-        }
-      }
-    }
-    // We want this to run when either the ref or the graph changes
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sigmaRef.current, sigmaGraph]);
+  // Note: There was a useLayoutEffect hook here to set up the sigma instance and graph data,
+  // but testing showed it wasn't executing or having any effect, while the backup mechanism
+  // in GraphControl was sufficient. This code was removed to simplify implementation
 
   const onSearchFocus = useCallback((value: GraphSearchOption | null) => {
     if (value === null) useGraphStore.getState().setFocusedNode(null)
