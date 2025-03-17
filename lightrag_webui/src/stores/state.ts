@@ -73,10 +73,10 @@ const isGuestToken = (token: string): boolean => {
     // JWT tokens are in the format: header.payload.signature
     const parts = token.split('.');
     if (parts.length !== 3) return false;
-    
+
     // Decode the payload (second part)
     const payload = JSON.parse(atob(parts[1]));
-    
+
     // Check if the token has a role field with value "guest"
     return payload.role === 'guest';
   } catch (e) {
@@ -91,9 +91,9 @@ const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean } => 
   if (!token) {
     return { isAuthenticated: false, isGuestMode: false };
   }
-  
-  return { 
-    isAuthenticated: true, 
+
+  return {
+    isAuthenticated: true,
     isGuestMode: isGuestToken(token)
   };
 };
@@ -101,29 +101,29 @@ const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean } => 
 export const useAuthStore = create<AuthState>(set => {
   // Get initial state from localStorage
   const initialState = initAuthState();
-  
+
   return {
     isAuthenticated: initialState.isAuthenticated,
     showLoginModal: false,
     isGuestMode: initialState.isGuestMode,
-    
+
     login: (token, isGuest = false) => {
       localStorage.setItem('LIGHTRAG-API-TOKEN', token);
-      set({ 
-        isAuthenticated: true, 
+      set({
+        isAuthenticated: true,
         showLoginModal: false,
         isGuestMode: isGuest
       });
     },
-    
+
     logout: () => {
       localStorage.removeItem('LIGHTRAG-API-TOKEN');
-      set({ 
+      set({
         isAuthenticated: false,
         isGuestMode: false
       });
     },
-    
+
     setShowLoginModal: (show) => set({ showLoginModal: show })
   };
 });

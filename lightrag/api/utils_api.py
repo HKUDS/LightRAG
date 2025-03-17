@@ -46,8 +46,10 @@ def get_auth_dependency():
             return
 
         # Check if authentication is configured
-        auth_configured = bool(os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD"))
-        
+        auth_configured = bool(
+            os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD")
+        )
+
         # If authentication is not configured, accept any token including guest tokens
         if not auth_configured:
             if token:  # If token is provided, still validate it
@@ -62,22 +64,22 @@ def get_auth_dependency():
                     # Ignore validation errors but log them
                     print(f"Token validation error (ignored): {str(e)}")
             return
-        
+
         # If authentication is configured, validate the token and reject guest tokens
         if not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Token required"
             )
-            
+
         token_info = auth_handler.validate_token(token)
-        
+
         # Reject guest tokens when authentication is configured
         if token_info.get("role") == "guest":
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, 
-                detail="Authentication required. Guest access not allowed when authentication is configured."
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required. Guest access not allowed when authentication is configured.",
             )
-            
+
         # At this point, we have a valid non-guest token
         return
 
