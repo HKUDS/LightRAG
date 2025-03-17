@@ -677,12 +677,10 @@ async def extract_entities(
                 "entity_type": dp["entity_type"],
                 "content": f"{dp['entity_name']}\n{dp['description']}",
                 "source_id": dp["source_id"],
-                "file_path": dp.get("metadata", {}).get("file_path", "unknown_source"),
+                "file_path": dp.get("file_path", "unknown_source"),
                 "metadata": {
-                    "created_at": dp.get("metadata", {}).get("created_at", time.time()),
-                    "file_path": dp.get("metadata", {}).get(
-                        "file_path", "unknown_source"
-                    ),
+                    "created_at": dp.get("created_at", time.time()),
+                    "file_path": dp.get("file_path", "unknown_source"),
                 },
             }
             for dp in all_entities_data
@@ -697,12 +695,10 @@ async def extract_entities(
                 "keywords": dp["keywords"],
                 "content": f"{dp['src_id']}\t{dp['tgt_id']}\n{dp['keywords']}\n{dp['description']}",
                 "source_id": dp["source_id"],
-                "file_path": dp.get("metadata", {}).get("file_path", "unknown_source"),
+                "file_path": dp.get("file_path", "unknown_source"),
                 "metadata": {
-                    "created_at": dp.get("metadata", {}).get("created_at", time.time()),
-                    "file_path": dp.get("metadata", {}).get(
-                        "file_path", "unknown_source"
-                    ),
+                    "created_at": dp.get("created_at", time.time()),
+                    "file_path": dp.get("file_path", "unknown_source"),
                 },
             }
             for dp in all_relationships_data
