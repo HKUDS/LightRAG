@@ -404,7 +404,7 @@ async def extract_entities(
         language=language,
     )
 
-    continue_prompt = PROMPTS["entity_continue_extraction"]
+    continue_prompt = PROMPTS["entity_continue_extraction"].format(**context_base)
     if_loop_prompt = PROMPTS["entity_if_loop_extraction"]
 
     processed_chunks = 0
