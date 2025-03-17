@@ -53,7 +53,7 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
 
       // Animate nodes to new positions
       // console.log('Updating node positions with layout algorithm')
-      animateNodes(graph, positions, { duration: 400 }) // Increase duration for smoother transitions
+      animateNodes(graph, positions, { duration: 300 }) // Reduced duration for more frequent updates
     } catch (error) {
       console.error('Error updating positions:', error)
       // Stop animation if there's an error
@@ -99,14 +99,14 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
       // Set up interval for continuous updates
       animationTimerRef.current = window.setInterval(() => {
         updatePositions()
-      }, 400) // Match interval with animation duration for smoother transitions
+      }, 200) // Reduced interval to create overlapping animations for smoother transitions
 
       setIsRunning(true)
 
-      // Set a timeout to automatically stop the animation after 2 seconds
+      // Set a timeout to automatically stop the animation after 3 seconds
       setTimeout(() => {
         if (animationTimerRef.current) {
-          console.log('Auto-stopping layout animation after 2 seconds')
+          console.log('Auto-stopping layout animation after 3 seconds')
           window.clearInterval(animationTimerRef.current)
           animationTimerRef.current = null
           setIsRunning(false)
@@ -122,7 +122,7 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
             console.error('Error stopping layout algorithm:', error)
           }
         }
-      }, 2000)
+      }, 3000)
     }
   }, [isRunning, layout, updatePositions])
 
@@ -146,7 +146,7 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
       // Set up interval for continuous updates
       animationTimerRef.current = window.setInterval(() => {
         updatePositions()
-      }, 400) // Match interval with animation duration for smoother transitions
+      }, 200) // Reduced interval to create overlapping animations for smoother transitions
 
       setIsRunning(true)
 
@@ -270,7 +270,7 @@ const LayoutsControl = () => {
 
         const pos = positions()
         console.log('Positions calculated, animating nodes')
-        animateNodes(graph, pos, { duration: 500 })
+        animateNodes(graph, pos, { duration: 400 })
         setLayout(newLayout)
       } catch (error) {
         console.error('Error running layout:', error)
