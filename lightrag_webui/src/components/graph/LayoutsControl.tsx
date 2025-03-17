@@ -203,10 +203,19 @@ const LayoutsControl = () => {
   const layoutCircular = useLayoutCircular()
   const layoutCirclepack = useLayoutCirclepack()
   const layoutRandom = useLayoutRandom()
-  const layoutNoverlap = useLayoutNoverlap({ settings: { margin: 1 } })
+  const layoutNoverlap = useLayoutNoverlap({
+    maxIterations: maxIterations,
+    settings: {
+      margin: 2,
+      expansion: 1.1,
+      gridSize: 5,
+      ratio: 1,
+      speed: 3,
+    }
+  })
   // Add parameters for Force Directed layout to improve convergence
   const layoutForce = useLayoutForce({
-    maxIterations: maxIterations * 3, // Triple the iterations for better convergence
+    maxIterations: maxIterations,
     settings: {
       attraction: 0.0003,  // Lower attraction force to reduce oscillation
       repulsion: 0.05,     // Lower repulsion force to reduce oscillation
