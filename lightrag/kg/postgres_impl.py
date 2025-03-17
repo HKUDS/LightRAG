@@ -1739,7 +1739,7 @@ SQL_TEMPLATES = {
                 FROM LIGHTRAG_VDB_ENTITY
                 where workspace=$1
                 AND chunk_id IN (SELECT chunk_id FROM relevant_chunks)
-            )
+            ) as chunk_distances
         WHERE distance>$2
         ORDER BY distance DESC
         LIMIT $3
@@ -1756,7 +1756,7 @@ SQL_TEMPLATES = {
                 FROM LIGHTRAG_DOC_CHUNKS
                 where workspace=$1
                 AND id IN (SELECT chunk_id FROM relevant_chunks)
-            )
+            ) as chunk_distances
             WHERE distance>$2
             ORDER BY distance DESC
             LIMIT $3
