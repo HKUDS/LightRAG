@@ -101,8 +101,8 @@
       },
 
       "layoutsControl": {
-        "startAnimation": "Start the layout animation",
-        "stopAnimation": "Stop the layout animation",
+        "startAnimation": "Continue layout animation",
+        "stopAnimation": "Stop layout animation",
         "layoutGraph": "Layout Graph",
         "layouts": {
           "Circular": "Circular",

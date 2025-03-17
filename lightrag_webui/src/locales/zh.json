@@ -99,7 +99,7 @@
         "resetZoom": "重置缩放"
       },
       "layoutsControl": {
-        "startAnimation": "开始布局动画",
+        "startAnimation": "继续布局动画",
         "stopAnimation": "停止布局动画",
         "layoutGraph": "图布局",
         "layouts": {
@@ -108,7 +108,7 @@
           "Random": "随机",
           "Noverlaps": "无重叠",
           "Force Directed": "力导向",
-          "Force Atlas": "力图"
+          "Force Atlas": "力地图"
         }
       },
       "fullScreenControl": {
