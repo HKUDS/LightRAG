@@ -142,10 +142,20 @@ const axiosInstance = axios.create({
   }
 })
 
-// Interceptor：add api key
+// Interceptor: add api key and check authentication
 axiosInstance.interceptors.request.use((config) => {
   const apiKey = useSettingsStore.getState().apiKey
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+
+  // Check authentication status for paths that require authentication
+  const authRequiredPaths = ['/documents', '/graphs', '/query', '/health']; // Add all paths that require authentication
+  const isAuthRequired = authRequiredPaths.some(path => config.url?.includes(path));
+
+  if (isAuthRequired && !token && config.url !== '/login') {
+    // Cancel the request and return a rejected Promise
+    return Promise.reject(new Error('Authentication required'));
+  }
+
   if (apiKey) {
     config.headers['X-API-Key'] = apiKey
   }
@@ -160,10 +170,6 @@ axiosInstance.interceptors.response.use(
   (response) => response,
   (error: AxiosError) => {
     if (error.response) {
-      interface ErrorResponse {
-        detail: string;
-      }
-
       if (error.response?.status === 401) {
         localStorage.removeItem('LIGHTRAG-API-TOKEN');
         sessionStorage.clear();

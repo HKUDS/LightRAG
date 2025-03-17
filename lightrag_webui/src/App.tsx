@@ -5,7 +5,7 @@ import MessageAlert from '@/components/MessageAlert'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/graph/StatusIndicator'
 import { healthCheckInterval } from '@/lib/constants'
-import { useBackendState } from '@/stores/state'
+import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { useEffect } from 'react'
 import SiteHeader from '@/features/SiteHeader'
@@ -26,7 +26,8 @@ function App() {
 
   // Health check
   useEffect(() => {
-    if (!enableHealthCheck) return
+    const { isAuthenticated } = useAuthStore.getState();
+    if (!enableHealthCheck || !isAuthenticated) return
 
     // Check immediately
     useBackendState.getState().check()
