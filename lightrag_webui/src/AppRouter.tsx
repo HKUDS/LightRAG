@@ -1,5 +1,6 @@
-import { HashRouter as Router, Routes, Route } from 'react-router-dom'
-// import { useAuthStore } from '@/stores/state'
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect } from 'react'
+import { useAuthStore } from '@/stores/state'
 import { Toaster } from 'sonner'
 import App from './App'
 import LoginPage from '@/features/LoginPage'
@@ -10,16 +11,24 @@ interface ProtectedRouteProps {
 }
 
 const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
-  // const { isAuthenticated } = useAuthStore()
+  const { isAuthenticated } = useAuthStore()
 
-  // if (!isAuthenticated) {
-  //   return <Navigate to="/login" replace />
-  // }
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />
+  }
 
   return <>{children}</>
 }
 
 const AppRouter = () => {
+  // Check login at befor startup
+  useEffect(() => {
+    const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+    if (!token) {
+      useAuthStore.getState().logout();
+    }
+  }, []);
+
   return (
     <ThemeProvider>
       <Router>
