@@ -1054,6 +1054,10 @@ class LightRAG:
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
+                # BEL: history_messages is missing
+                history_messages_available = pipeline_status.get('history_messages', False)
+                if not history_messages_available:
+                    pipeline_status['history_messages'] = ['BEL: initial history entry']
                 pipeline_status["history_messages"].append(log_message)
 
     def insert_custom_kg(
