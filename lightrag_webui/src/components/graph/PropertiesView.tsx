@@ -132,14 +132,22 @@ const PropertyRow = ({
   onClick?: () => void
   tooltip?: string
 }) => {
+  const { t } = useTranslation()
+
+  const getPropertyNameTranslation = (name: string) => {
+    const translationKey = `graphPanel.propertiesView.node.propertyNames.${name}`
+    const translation = t(translationKey)
+    return translation === translationKey ? name : translation
+  }
+
   return (
     <div className="flex items-center gap-2">
-      <label className="text-primary/60 tracking-wide">{name}</label>:
+      <label className="text-primary/60 tracking-wide whitespace-nowrap">{getPropertyNameTranslation(name)}</label>:
       <Text
-        className="hover:bg-primary/20 rounded p-1 text-ellipsis"
+        className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
         tooltipClassName="max-w-80"
         text={value}
-        tooltip={tooltip || value}
+        tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
         side="left"
         onClick={onClick}
       />
@@ -174,7 +182,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
       {node.relationships.length > 0 && (
         <>
           <label className="text-md pl-1 font-bold tracking-wide text-teal-600/90">
-          {t('graphPanel.propertiesView.node.relationships')}
+            {t('graphPanel.propertiesView.node.relationships')}
           </label>
           <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
             {node.relationships.map(({ type, id, label }) => {

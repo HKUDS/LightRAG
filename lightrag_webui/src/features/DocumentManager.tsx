@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useTabVisibility } from '@/contexts/useTabVisibility'
 import Button from '@/components/ui/Button'
 import {
   Table,
@@ -26,6 +27,9 @@ export default function DocumentManager() {
   const { t } = useTranslation()
   const health = useBackendState.use.health()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
+  const { isTabVisible } = useTabVisibility()
+  const isDocumentsTabVisible = isTabVisible('documents')
+  const initialLoadRef = useRef(false)
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -48,11 +52,15 @@ export default function DocumentManager() {
     } catch (err) {
       toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
     }
-  }, [setDocs])
+  }, [setDocs, t])
 
+  // Only fetch documents when the tab becomes visible for the first time
   useEffect(() => {
-    fetchDocuments()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    if (isDocumentsTabVisible && !initialLoadRef.current) {
+      fetchDocuments()
+      initialLoadRef.current = true
+    }
+  }, [isDocumentsTabVisible, fetchDocuments])
 
   const scanDocuments = useCallback(async () => {
     try {
@@ -61,21 +69,24 @@ export default function DocumentManager() {
     } catch (err) {
       toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }))
     }
-  }, [])
+  }, [t])
 
+  // Only set up polling when the tab is visible and health is good
   useEffect(() => {
+    if (!isDocumentsTabVisible || !health) {
+      return
+    }
+
     const interval = setInterval(async () => {
-      if (!health) {
-        return
-      }
       try {
         await fetchDocuments()
       } catch (err) {
         toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
       }
     }, 5000)
+
     return () => clearInterval(interval)
-  }, [health, fetchDocuments])
+  }, [health, fetchDocuments, t, isDocumentsTabVisible])
 
   return (
     <Card className="!size-full !rounded-none !border-none">

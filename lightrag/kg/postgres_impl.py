@@ -767,7 +767,7 @@ class PGDocStatusStorage(DocStatusStorage):
         result = await self.db.query(sql, params, True)
         docs_by_status = {
             element["id"]: DocProcessingStatus(
-                content=result[0]["content"],
+                content=element["content"],
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
@@ -1572,7 +1572,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_ids VARCHAR(255)[] NULL,
+                    chunk_id TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -1586,7 +1586,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_ids VARCHAR(255)[] NULL,
+                    chunk_id TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     )"""
     },

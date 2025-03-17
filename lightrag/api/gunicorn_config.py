@@ -59,7 +59,7 @@ logconfig_dict = {
     },
     "filters": {
         "path_filter": {
-            "()": "lightrag.api.lightrag_server.LightragPathFilter",
+            "()": "lightrag.utils.LightragPathFilter",
         },
     },
     "loggers": {

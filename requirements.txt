@@ -4,6 +4,12 @@ future
 
 # Basic modules
 gensim
+
+# Additional Packages for export Functionality
+pandas>=2.0.0
+
+# Extra libraries are installed when needed using pipmaster
+
 pipmaster
 pydantic
 python-dotenv
@@ -13,5 +19,4 @@ tenacity
 
 # LLM packages
 tiktoken
-
-# Extra libraries are installed when needed using pipmaster
+xlsxwriter>=3.1.0
