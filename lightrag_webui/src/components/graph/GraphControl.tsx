@@ -1,10 +1,11 @@
 import { useLoadGraph, useRegisterEvents, useSetSettings, useSigma } from '@react-sigma/core'
+import Graph from 'graphology'
 // import { useLayoutCircular } from '@react-sigma/layout-circular'
 import { useLayoutForceAtlas2 } from '@react-sigma/layout-forceatlas2'
 import { useEffect } from 'react'
 
 // import useRandomGraph, { EdgeType, NodeType } from '@/hooks/useRandomGraph'
-import useLightragGraph, { EdgeType, NodeType } from '@/hooks/useLightragGraph'
+import { EdgeType, NodeType } from '@/hooks/useLightragGraph'
 import useTheme from '@/hooks/useTheme'
 import * as Constants from '@/lib/constants'
 
@@ -21,7 +22,6 @@ const isButtonPressed = (ev: MouseEvent | TouchEvent) => {
 }
 
 const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) => {
-  const { lightrageGraph } = useLightragGraph()
   const sigma = useSigma<NodeType, EdgeType>()
   const registerEvents = useRegisterEvents<NodeType, EdgeType>()
   const setSettings = useSetSettings<NodeType, EdgeType>()
@@ -34,21 +34,25 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
 
   const { theme } = useTheme()
   const hideUnselectedEdges = useSettingsStore.use.enableHideUnselectedEdges()
+  const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
+  const renderEdgeLabels = useSettingsStore.use.showEdgeLabel()
+  const renderLabels = useSettingsStore.use.showNodeLabel()
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
+  const sigmaGraph = useGraphStore.use.sigmaGraph()
 
   /**
    * When component mount or maxIterations changes
    * => load the graph and apply layout
    */
   useEffect(() => {
-    // Create & load the graph
-    const graph = lightrageGraph()
-    loadGraph(graph)
-    assignLayout()
-  }, [assignLayout, loadGraph, lightrageGraph, maxIterations])
+    if (sigmaGraph) {
+      loadGraph(sigmaGraph as unknown as Graph<NodeType, EdgeType>)
+      assignLayout()
+    }
+  }, [assignLayout, loadGraph, sigmaGraph, maxIterations])
 
   /**
    * When component mount
@@ -58,39 +62,52 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     const { setFocusedNode, setSelectedNode, setFocusedEdge, setSelectedEdge, clearSelection } =
       useGraphStore.getState()
 
-    // Register the events
-    registerEvents({
-      enterNode: (event) => {
+    // Define event types
+    type NodeEvent = { node: string; event: { original: MouseEvent | TouchEvent } }
+    type EdgeEvent = { edge: string; event: { original: MouseEvent | TouchEvent } }
+
+    // Register all events, but edge events will only be processed if enableEdgeEvents is true
+    const events: Record<string, any> = {
+      enterNode: (event: NodeEvent) => {
         if (!isButtonPressed(event.event.original)) {
           setFocusedNode(event.node)
         }
       },
-      leaveNode: (event) => {
+      leaveNode: (event: NodeEvent) => {
         if (!isButtonPressed(event.event.original)) {
           setFocusedNode(null)
         }
       },
-      clickNode: (event) => {
+      clickNode: (event: NodeEvent) => {
         setSelectedNode(event.node)
         setSelectedEdge(null)
       },
-      clickEdge: (event) => {
+      clickStage: () => clearSelection()
+    }
+
+    // Only add edge event handlers if enableEdgeEvents is true
+    if (enableEdgeEvents) {
+      events.clickEdge = (event: EdgeEvent) => {
         setSelectedEdge(event.edge)
         setSelectedNode(null)
-      },
-      enterEdge: (event) => {
+      }
+
+      events.enterEdge = (event: EdgeEvent) => {
         if (!isButtonPressed(event.event.original)) {
           setFocusedEdge(event.edge)
         }
-      },
-      leaveEdge: (event) => {
+      }
+
+      events.leaveEdge = (event: EdgeEvent) => {
         if (!isButtonPressed(event.event.original)) {
           setFocusedEdge(null)
         }
-      },
-      clickStage: () => clearSelection()
-    })
-  }, [registerEvents])
+      }
+    }
+
+    // Register the events
+    registerEvents(events)
+  }, [registerEvents, enableEdgeEvents])
 
   /**
    * When component mount or hovered node change
@@ -101,7 +118,14 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     const labelColor = isDarkTheme ? Constants.labelColorDarkTheme : undefined
     const edgeColor = isDarkTheme ? Constants.edgeColorDarkTheme : undefined
 
+    // Update all dynamic settings directly without recreating the sigma container
     setSettings({
+      // Update display settings
+      enableEdgeEvents,
+      renderEdgeLabels,
+      renderLabels,
+
+      // Node reducer for node appearance
       nodeReducer: (node, data) => {
         const graph = sigma.getGraph()
         const newData: NodeType & {
@@ -140,6 +164,8 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         }
         return newData
       },
+
+      // Edge reducer for edge appearance
       edgeReducer: (edge, data) => {
         const graph = sigma.getGraph()
         const newData = { ...data, hidden: false, labelColor, color: edgeColor }
@@ -181,7 +207,10 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     sigma,
     disableHoverEffect,
     theme,
-    hideUnselectedEdges
+    hideUnselectedEdges,
+    enableEdgeEvents,
+    renderEdgeLabels,
+    renderLabels
   ])
 
   return null
