@@ -29,8 +29,8 @@
     "successMessage": "登录成功",
     "errorEmptyFields": "请输入您的用户名和密码",
     "errorInvalidCredentials": "登录失败，请检查用户名和密码",
-    "authDisabled": "认证已禁用，使用访客访问模式。",
-    "guestMode": "访客模式"
+    "authDisabled": "认证已禁用，使用无需登陆模式。",
+    "guestMode": "无需登陆"
   },
   "documentPanel": {
     "clearDocuments": {

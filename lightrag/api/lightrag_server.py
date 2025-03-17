@@ -350,22 +350,17 @@ def create_app(args):
         if not (username and password):
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
-                username="guest",
-                role="guest",
-                metadata={"auth_mode": "disabled"}
+                username="guest", role="guest", metadata={"auth_mode": "disabled"}
             )
             return {
                 "auth_configured": False,
                 "access_token": guest_token,
                 "token_type": "bearer",
                 "auth_mode": "disabled",
-                "message": "Authentication is disabled. Using guest access."
+                "message": "Authentication is disabled. Using guest access.",
             }
-        
-        return {
-            "auth_configured": True,
-            "auth_mode": "enabled"
-        }
+
+        return {"auth_configured": True, "auth_mode": "enabled"}
 
     @app.post("/login", dependencies=[Depends(optional_api_key)])
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
@@ -375,15 +370,13 @@ def create_app(args):
         if not (username and password):
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
-                username="guest",
-                role="guest",
-                metadata={"auth_mode": "disabled"}
+                username="guest", role="guest", metadata={"auth_mode": "disabled"}
             )
             return {
                 "access_token": guest_token,
                 "token_type": "bearer",
                 "auth_mode": "disabled",
-                "message": "Authentication is disabled. Using guest access."
+                "message": "Authentication is disabled. Using guest access.",
             }
 
         if form_data.username != username or form_data.password != password:
@@ -393,14 +386,12 @@ def create_app(args):
 
         # Regular user login
         user_token = auth_handler.create_token(
-            username=username,
-            role="user",
-            metadata={"auth_mode": "enabled"}
+            username=username, role="user", metadata={"auth_mode": "enabled"}
         )
         return {
             "access_token": user_token,
             "token_type": "bearer",
-            "auth_mode": "enabled"
+            "auth_mode": "enabled",
         }
 
     @app.get("/health", dependencies=[Depends(optional_api_key)])

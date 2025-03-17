@@ -23,7 +23,7 @@ const LoginPage = () => {
   // Check if authentication is configured
   useEffect(() => {
     let isMounted = true; // Flag to prevent state updates after unmount
-    
+
     const checkAuthConfig = async () => {
       try {
         // If already authenticated, redirect to home
@@ -34,10 +34,10 @@ const LoginPage = () => {
 
         // Check auth status
         const status = await getAuthStatus()
-        
+
         // Only proceed if component is still mounted
         if (!isMounted) return;
-        
+
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token and redirect
           login(status.access_token, true)
@@ -59,7 +59,7 @@ const LoginPage = () => {
 
     // Execute immediately
     checkAuthConfig()
-    
+
     // Cleanup function to prevent state updates after unmount
     return () => {
       isMounted = false;
@@ -81,18 +81,18 @@ const LoginPage = () => {
     try {
       setLoading(true)
       const response = await loginToServer(username, password)
-      
+
       // Check authentication mode
       const isGuestMode = response.auth_mode === 'disabled'
       login(response.access_token, isGuestMode)
-      
+
       if (isGuestMode) {
         // Show authentication disabled notification
         toast.info(response.message || t('login.authDisabled', 'Authentication is disabled. Using guest access.'))
       } else {
         toast.success(t('login.successMessage'))
       }
-      
+
       navigate('/')
     } catch (error) {
       console.error('Login failed...', error)

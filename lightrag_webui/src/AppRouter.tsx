@@ -18,7 +18,7 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
 
   useEffect(() => {
     let isMounted = true; // Flag to prevent state updates after unmount
-    
+
     // This effect will run when the component mounts
     // and will check if authentication is required
     const checkAuthStatus = async () => {
@@ -28,12 +28,12 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
           if (isMounted) setIsChecking(false);
           return;
         }
-        
+
         const status = await getAuthStatus()
-        
+
         // Only proceed if component is still mounted
         if (!isMounted) return;
-        
+
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token
           useAuthStore.getState().login(status.access_token, true)
@@ -53,7 +53,7 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
 
     // Execute immediately
     checkAuthStatus()
-    
+
     // Cleanup function to prevent state updates after unmount
     return () => {
       isMounted = false;
@@ -80,23 +80,23 @@ const AppRouter = () => {
   // Check token validity and auth configuration on app initialization
   useEffect(() => {
     let isMounted = true; // Flag to prevent state updates after unmount
-    
+
     const checkAuth = async () => {
       try {
         const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
-        
+
         // If we have a token, we're already authenticated
         if (token && isAuthenticated) {
           if (isMounted) setInitializing(false);
           return;
         }
-        
+
         // If no token or not authenticated, check if auth is configured
         const status = await getAuthStatus()
-        
+
         // Only proceed if component is still mounted
         if (!isMounted) return;
-        
+
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token
           useAuthStore.getState().login(status.access_token, true)
@@ -122,7 +122,7 @@ const AppRouter = () => {
 
     // Execute immediately
     checkAuth()
-    
+
     // Cleanup function to prevent state updates after unmount
     return () => {
       isMounted = false;
