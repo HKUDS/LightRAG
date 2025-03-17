@@ -578,6 +578,9 @@ const useLightrangeGraph = () => {
           if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
             continue;
           }
+          if (sigmaGraph.hasEdge(newEdge.target, newEdge.source)) {
+            continue;
+          }
 
           // Add the edge to the sigma graph
           newEdge.dynamicId = sigmaGraph.addDirectedEdge(newEdge.source, newEdge.target, {
