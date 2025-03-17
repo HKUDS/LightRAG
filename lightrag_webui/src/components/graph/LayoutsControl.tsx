@@ -15,7 +15,7 @@ import { Command, CommandGroup, CommandItem, CommandList } from '@/components/ui
 import { controlButtonVariant } from '@/lib/constants'
 import { useSettingsStore } from '@/stores/settings'
 
-import { GripIcon, PlayIcon, PauseIcon, RefreshCwIcon } from 'lucide-react'
+import { GripIcon, PlayIcon, PauseIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 type LayoutName =
@@ -279,23 +279,8 @@ const LayoutsControl = () => {
     [layouts, sigma]
   )
 
-  const refreshLayout = useCallback(() => {
-    if (!sigma) return
-    const graph = sigma.getGraph()
-    const positions = layoutForceAtlas2.positions()
-    animateNodes(graph, positions, { duration: 500 })
-  }, [sigma, layoutForceAtlas2])
-
   return (
     <>
-      <Button
-        variant={controlButtonVariant}
-        tooltip={t('graphPanel.sideBar.settings.refreshLayout')}
-        size="icon"
-        onClick={refreshLayout}
-      >
-        <RefreshCwIcon />
-      </Button>
       <div>
         {layouts[layout] && 'worker' in layouts[layout] && (
           <WorkerLayoutControl
