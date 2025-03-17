@@ -1,11 +1,12 @@
 import Graph, { DirectedGraph } from 'graphology'
-import { useCallback, useEffect } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { randomColor, errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
 import { useGraphStore, RawGraph } from '@/stores/graph'
 import { queryGraphs } from '@/api/lightrag'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
+import { useTabVisibility } from '@/contexts/useTabVisibility'
 
 import seedrandom from 'seedrandom'
 
@@ -136,15 +137,23 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
   return rawGraph
 }
 
+// Create a new graph instance with the raw graph data
 const createSigmaGraph = (rawGraph: RawGraph | null) => {
+  // Always create a new graph instance
   const graph = new DirectedGraph()
 
+  // Add nodes from raw graph data
   for (const rawNode of rawGraph?.nodes ?? []) {
+    // Ensure we have fresh random positions for nodes
+    seedrandom(rawNode.id + Date.now().toString(), { global: true })
+    const x = Math.random()
+    const y = Math.random()
+
     graph.addNode(rawNode.id, {
       label: rawNode.labels.join(', '),
       color: rawNode.color,
-      x: rawNode.x,
-      y: rawNode.y,
+      x: x,
+      y: y,
       size: rawNode.size,
       // for node-border
       borderColor: Constants.nodeBorderColor,
@@ -152,6 +161,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
     })
   }
 
+  // Add edges from raw graph data
   for (const rawEdge of rawGraph?.edges ?? []) {
     rawEdge.dynamicId = graph.addDirectedEdge(rawEdge.source, rawEdge.target, {
       label: rawEdge.type || undefined
@@ -161,14 +171,30 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   return graph
 }
 
-const lastQueryLabel = { label: '', maxQueryDepth: 0, minDegree: 0 }
-
 const useLightrangeGraph = () => {
   const queryLabel = useSettingsStore.use.queryLabel()
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
   const minDegree = useSettingsStore.use.graphMinDegree()
+  const isFetching = useGraphStore.use.isFetching()
+
+  // Get tab visibility
+  const { isTabVisible } = useTabVisibility()
+  const isGraphTabVisible = isTabVisible('knowledge-graph')
+
+  // Track previous parameters to detect actual changes
+  const prevParamsRef = useRef({ queryLabel, maxQueryDepth, minDegree })
+
+  // Use ref to track if data has been loaded and initial load
+  const dataLoadedRef = useRef(false)
+  const initialLoadRef = useRef(false)
+
+  // Check if parameters have changed
+  const paramsChanged =
+    prevParamsRef.current.queryLabel !== queryLabel ||
+    prevParamsRef.current.maxQueryDepth !== maxQueryDepth ||
+    prevParamsRef.current.minDegree !== minDegree
 
   const getNode = useCallback(
     (nodeId: string) => {
@@ -184,35 +210,131 @@ const useLightrangeGraph = () => {
     [rawGraph]
   )
 
-  useEffect(() => {
-    if (queryLabel) {
-      if (lastQueryLabel.label !== queryLabel ||
-          lastQueryLabel.maxQueryDepth !== maxQueryDepth ||
-          lastQueryLabel.minDegree !== minDegree) {
-        lastQueryLabel.label = queryLabel
-        lastQueryLabel.maxQueryDepth = maxQueryDepth
-        lastQueryLabel.minDegree = minDegree
+  // Track if a fetch is in progress to prevent multiple simultaneous fetches
+  const fetchInProgressRef = useRef(false)
 
+  // Data fetching logic - simplified but preserving TAB visibility check
+  useEffect(() => {
+    // Skip if fetch is already in progress
+    if (fetchInProgressRef.current) {
+      return
+    }
+
+    // If there's no query label, reset the graph
+    if (!queryLabel) {
+      if (rawGraph !== null || sigmaGraph !== null) {
         const state = useGraphStore.getState()
         state.reset()
-        fetchGraph(queryLabel, maxQueryDepth, minDegree).then((data) => {
-          // console.debug('Query label: ' + queryLabel)
-          state.setSigmaGraph(createSigmaGraph(data))
-          data?.buildDynamicMap()
-          state.setRawGraph(data)
+        state.setGraphDataFetchAttempted(false)
+        state.setLabelsFetchAttempted(false)
+      }
+      dataLoadedRef.current = false
+      initialLoadRef.current = false
+      return
+    }
+
+    // Check if parameters have changed
+    if (!isFetching && !fetchInProgressRef.current &&
+        (paramsChanged || !useGraphStore.getState().graphDataFetchAttempted)) {
+
+      // Only fetch data if the Graph tab is visible
+      if (!isGraphTabVisible) {
+        console.log('Graph tab not visible, skipping data fetch');
+        return;
+      }
+
+      // Set flags
+      fetchInProgressRef.current = true
+      useGraphStore.getState().setGraphDataFetchAttempted(true)
+
+      const state = useGraphStore.getState()
+      state.setIsFetching(true)
+      state.setShouldRender(false) // Disable rendering during data loading
+
+      // Clear selection and highlighted nodes before fetching new graph
+      state.clearSelection()
+      if (state.sigmaGraph) {
+        state.sigmaGraph.forEachNode((node) => {
+          state.sigmaGraph?.setNodeAttribute(node, 'highlighted', false)
         })
       }
-    } else {
-      const state = useGraphStore.getState()
-      state.reset()
-      state.setSigmaGraph(new DirectedGraph())
+
+      // Update parameter reference
+      prevParamsRef.current = { queryLabel, maxQueryDepth, minDegree }
+
+      console.log('Fetching graph data...')
+
+      // Use a local copy of the parameters
+      const currentQueryLabel = queryLabel
+      const currentMaxQueryDepth = maxQueryDepth
+      const currentMinDegree = minDegree
+
+      // Fetch graph data
+      fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMinDegree).then((data) => {
+        const state = useGraphStore.getState()
+
+        // Reset state
+        state.reset()
+
+        // Create and set new graph directly
+        const newSigmaGraph = createSigmaGraph(data)
+        data?.buildDynamicMap()
+
+        // Set new graph data
+        state.setSigmaGraph(newSigmaGraph)
+        state.setRawGraph(data)
+
+        // No longer need to extract labels from graph data
+
+        // Update flags
+        dataLoadedRef.current = true
+        initialLoadRef.current = true
+        fetchInProgressRef.current = false
+
+        // Reset camera view
+        state.setMoveToSelectedNode(true)
+
+        // Enable rendering if the tab is visible
+        state.setShouldRender(isGraphTabVisible)
+        state.setIsFetching(false)
+      }).catch((error) => {
+        console.error('Error fetching graph data:', error)
+
+        // Reset state on error
+        const state = useGraphStore.getState()
+        state.setIsFetching(false)
+        state.setShouldRender(isGraphTabVisible)
+        dataLoadedRef.current = false
+        fetchInProgressRef.current = false
+        state.setGraphDataFetchAttempted(false)
+      })
     }
-  }, [queryLabel, maxQueryDepth, minDegree])
+  }, [queryLabel, maxQueryDepth, minDegree, isFetching, paramsChanged, isGraphTabVisible, rawGraph, sigmaGraph])
+
+  // Update rendering state and handle tab visibility changes
+  useEffect(() => {
+    // When tab becomes visible
+    if (isGraphTabVisible) {
+      // If we have data, enable rendering
+      if (rawGraph) {
+        useGraphStore.getState().setShouldRender(true)
+      }
+
+      // We no longer reset the fetch attempted flag here to prevent continuous API calls
+    } else {
+      // When tab becomes invisible, disable rendering
+      useGraphStore.getState().setShouldRender(false)
+    }
+  }, [isGraphTabVisible, rawGraph])
 
   const lightrageGraph = useCallback(() => {
+    // If we already have a graph instance, return it
     if (sigmaGraph) {
       return sigmaGraph as Graph<NodeType, EdgeType>
     }
+
+    // If no graph exists yet, create a new one and store it
+    console.log('Creating new Sigma graph instance')
     const graph = new DirectedGraph()
     useGraphStore.getState().setSigmaGraph(graph)
     return graph as Graph<NodeType, EdgeType>
