@@ -1,9 +1,10 @@
 import Button from '@/components/ui/Button'
 import { SiteInfo } from '@/lib/constants'
-import ThemeToggle from '@/components/ThemeToggle'
+import AppSettings from '@/components/AppSettings'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
 import { cn } from '@/lib/utils'
+import { useTranslation } from 'react-i18next'
 
 import { ZapIcon, GithubIcon } from 'lucide-react'
 
@@ -29,21 +30,22 @@ function NavigationTab({ value, currentTab, children }: NavigationTabProps) {
 
 function TabsNavigation() {
   const currentTab = useSettingsStore.use.currentTab()
+  const { t } = useTranslation()
 
   return (
     <div className="flex h-8 self-center">
       <TabsList className="h-full gap-2">
         <NavigationTab value="documents" currentTab={currentTab}>
-          Documents
+          {t('header.documents')}
         </NavigationTab>
         <NavigationTab value="knowledge-graph" currentTab={currentTab}>
-          Knowledge Graph
+          {t('header.knowledgeGraph')}
         </NavigationTab>
         <NavigationTab value="retrieval" currentTab={currentTab}>
-          Retrieval
+          {t('header.retrieval')}
         </NavigationTab>
         <NavigationTab value="api" currentTab={currentTab}>
-          API
+          {t('header.api')}
         </NavigationTab>
       </TabsList>
     </div>
@@ -51,6 +53,7 @@ function TabsNavigation() {
 }
 
 export default function SiteHeader() {
+  const { t } = useTranslation()
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
       <a href="/" className="mr-6 flex items-center gap-2">
@@ -64,12 +67,14 @@ export default function SiteHeader() {
       </div>
 
       <nav className="flex items-center">
-        <Button variant="ghost" size="icon" side="bottom" tooltip="Project Repository">
-          <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
-            <GithubIcon className="size-4" aria-hidden="true" />
-          </a>
-        </Button>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
+            <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
+              <GithubIcon className="size-4" aria-hidden="true" />
+            </a>
+          </Button>
+          <AppSettings />
+        </div>
       </nav>
     </header>
   )

@@ -64,3 +64,6 @@ gui/
 
 # unit-test files
 test_*
+
+# Cline files
+memory-bank/

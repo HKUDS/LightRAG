@@ -8,8 +8,10 @@ import { useDebounce } from '@/hooks/useDebounce'
 import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
 import { EraserIcon, SendIcon } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 
 export default function RetrievalTesting() {
+  const { t } = useTranslation()
   const [messages, setMessages] = useState<MessageWithError[]>(
     () => useSettingsStore.getState().retrievalHistory || []
   )
@@ -89,7 +91,7 @@ export default function RetrievalTesting() {
         }
       } catch (err) {
         // Handle error
-        updateAssistantMessage(`Error: Failed to get response\n${errorMessage(err)}`, true)
+        updateAssistantMessage(`${t('retrievePanel.retrieval.error')}\n${errorMessage(err)}`, true)
       } finally {
         // Clear loading and add messages to state
         setIsLoading(false)
@@ -98,7 +100,7 @@ export default function RetrievalTesting() {
           .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
       }
     },
-    [inputValue, isLoading, messages, setMessages]
+    [inputValue, isLoading, messages, setMessages, t]
   )
 
   const debouncedMessages = useDebounce(messages, 100)
@@ -117,7 +119,7 @@ export default function RetrievalTesting() {
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               {messages.length === 0 ? (
                 <div className="text-muted-foreground flex h-full items-center justify-center text-lg">
-                  Start a retrieval by typing your query below
+                  {t('retrievePanel.retrieval.startPrompt')}
                 </div>
               ) : (
                 messages.map((message, idx) => (
@@ -143,18 +145,18 @@ export default function RetrievalTesting() {
             size="sm"
           >
             <EraserIcon />
-            Clear
+            {t('retrievePanel.retrieval.clear')}
           </Button>
           <Input
             className="flex-1"
             value={inputValue}
             onChange={(e) => setInputValue(e.target.value)}
-            placeholder="Type your query..."
+            placeholder={t('retrievePanel.retrieval.placeholder')}
             disabled={isLoading}
           />
           <Button type="submit" variant="default" disabled={isLoading} size="sm">
             <SendIcon />
-            Send
+            {t('retrievePanel.retrieval.send')}
           </Button>
         </form>
       </div>

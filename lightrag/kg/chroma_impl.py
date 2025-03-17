@@ -156,7 +156,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error during ChromaDB upsert: {str(e)}")
             raise
 
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         try:
             embedding = await self.embedding_func([query])
 
@@ -269,3 +271,67 @@ class ChromaVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error during prefix search in ChromaDB: {str(e)}")
             raise
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        try:
+            # Query the collection for a single vector by ID
+            result = self._collection.get(
+                ids=[id], include=["metadatas", "embeddings", "documents"]
+            )
+
+            if not result or not result["ids"] or len(result["ids"]) == 0:
+                return None
+
+            # Format the result to match the expected structure
+            return {
+                "id": result["ids"][0],
+                "vector": result["embeddings"][0],
+                "content": result["documents"][0],
+                **result["metadatas"][0],
+            }
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        try:
+            # Query the collection for multiple vectors by IDs
+            result = self._collection.get(
+                ids=ids, include=["metadatas", "embeddings", "documents"]
+            )
+
+            if not result or not result["ids"] or len(result["ids"]) == 0:
+                return []
+
+            # Format the results to match the expected structure
+            return [
+                {
+                    "id": result["ids"][i],
+                    "vector": result["embeddings"][i],
+                    "content": result["documents"][i],
+                    **result["metadatas"][i],
+                }
+                for i in range(len(result["ids"]))
+            ]
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
+            return []

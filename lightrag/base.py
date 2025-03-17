@@ -81,6 +81,9 @@ class QueryParam:
     history_turns: int = 3
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
+    ids: list[str] | None = None
+    """List of ids to filter the results."""
+
 
 @dataclass
 class StorageNameSpace(ABC):
@@ -107,7 +110,9 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     meta_fields: set[str] = field(default_factory=set)
 
     @abstractmethod
-    async def query(self, query: str, top_k: int) -> list[dict[str, Any]]:
+    async def query(
+        self, query: str, top_k: int, ids: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Query the vector storage and retrieve top_k results."""
 
     @abstractmethod
@@ -121,6 +126,30 @@ class BaseVectorStorage(StorageNameSpace, ABC):
     @abstractmethod
     async def delete_entity_relation(self, entity_name: str) -> None:
         """Delete relations for a given entity."""
+
+    @abstractmethod
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        pass
 
 
 @dataclass

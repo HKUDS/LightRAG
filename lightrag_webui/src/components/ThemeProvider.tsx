@@ -1,4 +1,4 @@
-import { createContext, useEffect, useState } from 'react'
+import { createContext, useEffect } from 'react'
 import { Theme, useSettingsStore } from '@/stores/settings'
 
 type ThemeProviderProps = {
@@ -21,30 +21,32 @@ const ThemeProviderContext = createContext<ThemeProviderState>(initialState)
  * Component that provides the theme state and setter function to its children.
  */
 export default function ThemeProvider({ children, ...props }: ThemeProviderProps) {
-  const [theme, setTheme] = useState<Theme>(useSettingsStore.getState().theme)
+  const theme = useSettingsStore.use.theme()
+  const setTheme = useSettingsStore.use.setTheme()
 
   useEffect(() => {
     const root = window.document.documentElement
     root.classList.remove('light', 'dark')
 
     if (theme === 'system') {
-      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches
-        ? 'dark'
-        : 'light'
-      root.classList.add(systemTheme)
-      setTheme(systemTheme)
-      return
-    }
+      const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)')
+      const handleChange = (e: MediaQueryListEvent) => {
+        root.classList.remove('light', 'dark')
+        root.classList.add(e.matches ? 'dark' : 'light')
+      }
 
-    root.classList.add(theme)
+      root.classList.add(mediaQuery.matches ? 'dark' : 'light')
+      mediaQuery.addEventListener('change', handleChange)
+
+      return () => mediaQuery.removeEventListener('change', handleChange)
+    } else {
+      root.classList.add(theme)
+    }
   }, [theme])
 
   const value = {
     theme,
-    setTheme: (theme: Theme) => {
-      useSettingsStore.getState().setTheme(theme)
-      setTheme(theme)
-    }
+    setTheme
   }
 
   return (

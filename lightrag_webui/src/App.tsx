@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import ThemeProvider from '@/components/ThemeProvider'
+import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
 import MessageAlert from '@/components/MessageAlert'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/graph/StatusIndicator'
@@ -21,7 +22,7 @@ import { Tabs, TabsContent } from '@/components/ui/Tabs'
 function App() {
   const message = useBackendState.use.message()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
-  const [currentTab] = useState(() => useSettingsStore.getState().currentTab)
+  const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyInvalid, setApiKeyInvalid] = useState(false)
 
   // Health check
@@ -54,33 +55,35 @@ function App() {
 
   return (
     <ThemeProvider>
-      <main className="flex h-screen w-screen overflow-x-hidden">
-        <Tabs
-          defaultValue={currentTab}
-          className="!m-0 flex grow flex-col !p-0"
-          onValueChange={handleTabChange}
-        >
-          <SiteHeader />
-          <div className="relative grow">
-            <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0">
-              <DocumentManager />
-            </TabsContent>
-            <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0">
-              <GraphViewer />
-            </TabsContent>
-            <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0">
-              <RetrievalTesting />
-            </TabsContent>
-            <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0">
-              <ApiSite />
-            </TabsContent>
-          </div>
-        </Tabs>
-        {enableHealthCheck && <StatusIndicator />}
-        {message !== null && !apiKeyInvalid && <MessageAlert />}
-        {apiKeyInvalid && <ApiKeyAlert />}
-        <Toaster />
-      </main>
+      <TabVisibilityProvider>
+        <main className="flex h-screen w-screen overflow-x-hidden">
+          <Tabs
+            defaultValue={currentTab}
+            className="!m-0 flex grow flex-col !p-0"
+            onValueChange={handleTabChange}
+          >
+            <SiteHeader />
+            <div className="relative grow">
+              <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0">
+                <DocumentManager />
+              </TabsContent>
+              <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0">
+                <GraphViewer />
+              </TabsContent>
+              <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0">
+                <RetrievalTesting />
+              </TabsContent>
+              <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0">
+                <ApiSite />
+              </TabsContent>
+            </div>
+          </Tabs>
+          {enableHealthCheck && <StatusIndicator />}
+          {message !== null && !apiKeyInvalid && <MessageAlert />}
+          {apiKeyInvalid && <ApiKeyAlert />}
+          <Toaster />
+        </main>
+      </TabVisibilityProvider>
     </ThemeProvider>
   )
 }
