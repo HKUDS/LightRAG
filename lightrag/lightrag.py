@@ -563,7 +563,9 @@ class LightRAG:
         """
         loop = always_get_an_event_loop()
         loop.run_until_complete(
-            self.ainsert(input, split_by_character, split_by_character_only, ids, file_paths)
+            self.ainsert(
+                input, split_by_character, split_by_character_only, ids, file_paths
+            )
         )
 
     async def ainsert(
@@ -659,7 +661,10 @@ class LightRAG:
                 await self._insert_done()
 
     async def apipeline_enqueue_documents(
-        self, input: str | list[str], ids: list[str] | None = None, file_paths: str | list[str] | None = None
+        self,
+        input: str | list[str],
+        ids: list[str] | None = None,
+        file_paths: str | list[str] | None = None,
     ) -> None:
         """
         Pipeline for Processing Documents
@@ -669,7 +674,7 @@ class LightRAG:
         3. Generate document initial status
         4. Filter out already processed documents
         5. Enqueue document in status
-        
+
         Args:
             input: Single document string or list of document strings
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
@@ -681,13 +686,15 @@ class LightRAG:
             ids = [ids]
         if isinstance(file_paths, str):
             file_paths = [file_paths]
-        
+
         # If file_paths is provided, ensure it matches the number of documents
         if file_paths is not None:
             if isinstance(file_paths, str):
                 file_paths = [file_paths]
             if len(file_paths) != len(input):
-                raise ValueError("Number of file paths must match the number of documents")
+                raise ValueError(
+                    "Number of file paths must match the number of documents"
+                )
         else:
             # If no file paths provided, use placeholder
             file_paths = ["unknown_source"] * len(input)
@@ -703,22 +710,30 @@ class LightRAG:
                 raise ValueError("IDs must be unique")
 
             # Generate contents dict of IDs provided by user and documents
-            contents = {id_: {"content": doc, "file_path": path} 
-                       for id_, doc, path in zip(ids, input, file_paths)}
+            contents = {
+                id_: {"content": doc, "file_path": path}
+                for id_, doc, path in zip(ids, input, file_paths)
+            }
         else:
             # Clean input text and remove duplicates
-            cleaned_input = [(clean_text(doc), path) for doc, path in zip(input, file_paths)]
+            cleaned_input = [
+                (clean_text(doc), path) for doc, path in zip(input, file_paths)
+            ]
             unique_content_with_paths = {}
-            
+
             # Keep track of unique content and their paths
             for content, path in cleaned_input:
                 if content not in unique_content_with_paths:
                     unique_content_with_paths[content] = path
-            
+
             # Generate contents dict of MD5 hash IDs and documents with paths
-            contents = {compute_mdhash_id(content, prefix="doc-"): 
-                       {"content": content, "file_path": path} 
-                       for content, path in unique_content_with_paths.items()}
+            contents = {
+                compute_mdhash_id(content, prefix="doc-"): {
+                    "content": content,
+                    "file_path": path,
+                }
+                for content, path in unique_content_with_paths.items()
+            }
 
         # 2. Remove duplicate contents
         unique_contents = {}
@@ -727,10 +742,12 @@ class LightRAG:
             file_path = content_data["file_path"]
             if content not in unique_contents:
                 unique_contents[content] = (id_, file_path)
-        
+
         # Reconstruct contents with unique content
-        contents = {id_: {"content": content, "file_path": file_path} 
-                   for content, (id_, file_path) in unique_contents.items()}
+        contents = {
+            id_: {"content": content, "file_path": file_path}
+            for content, (id_, file_path) in unique_contents.items()
+        }
 
         # 3. Generate document initial status
         new_docs: dict[str, Any] = {
@@ -741,7 +758,9 @@ class LightRAG:
                 "content_length": len(content_data["content"]),
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
-                "file_path": content_data["file_path"],  # Store file path in document status
+                "file_path": content_data[
+                    "file_path"
+                ],  # Store file path in document status
             }
             for id_, content_data in contents.items()
         }
@@ -880,7 +899,7 @@ class LightRAG:
                     try:
                         # Get file path from status document
                         file_path = getattr(status_doc, "file_path", "unknown_source")
-                        
+
                         # Generate chunks from document
                         chunks: dict[str, Any] = {
                             compute_mdhash_id(dp["content"], prefix="chunk-"): {
@@ -897,7 +916,7 @@ class LightRAG:
                                 self.tiktoken_model_name,
                             )
                         }
-                        
+
                         # Process document (text chunks and full docs) in parallel
                         # Create tasks with references for potential cancellation
                         doc_status_task = asyncio.create_task(
@@ -1109,7 +1128,10 @@ class LightRAG:
         loop.run_until_complete(self.ainsert_custom_kg(custom_kg, full_doc_id))
 
     async def ainsert_custom_kg(
-        self, custom_kg: dict[str, Any], full_doc_id: str = None, file_path: str = "custom_kg"
+        self,
+        custom_kg: dict[str, Any],
+        full_doc_id: str = None,
+        file_path: str = "custom_kg",
     ) -> None:
         update_storage = False
         try:
@@ -3125,4 +3147,3 @@ class LightRAG:
                 ]
             ]
         )
-

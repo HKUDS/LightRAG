@@ -224,7 +224,9 @@ async def _merge_nodes_then_upsert(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
         already_file_paths.extend(
-            split_string_by_multi_markers(already_node["metadata"]["file_path"], [GRAPH_FIELD_SEP])
+            split_string_by_multi_markers(
+                already_node["metadata"]["file_path"], [GRAPH_FIELD_SEP]
+            )
         )
         already_description.append(already_node["description"])
 
@@ -290,7 +292,7 @@ async def _merge_edges_then_upsert(
                         already_edge["source_id"], [GRAPH_FIELD_SEP]
                     )
                 )
-            
+
             # Get file_path with empty string default if missing or None
             if already_edge.get("file_path") is not None:
                 already_file_paths.extend(
@@ -336,7 +338,14 @@ async def _merge_edges_then_upsert(
         )
     )
     file_path = GRAPH_FIELD_SEP.join(
-        set([dp["metadata"]["file_path"] for dp in edges_data if dp.get("metadata", {}).get("file_path")] + already_file_paths)
+        set(
+            [
+                dp["metadata"]["file_path"]
+                for dp in edges_data
+                if dp.get("metadata", {}).get("file_path")
+            ]
+            + already_file_paths
+        )
     )
 
     for need_insert_id in [src_id, tgt_id]:
@@ -482,7 +491,9 @@ async def extract_entities(
         else:
             return await use_llm_func(input_text)
 
-    async def _process_extraction_result(result: str, chunk_key: str, file_path: str = "unknown_source"):
+    async def _process_extraction_result(
+        result: str, chunk_key: str, file_path: str = "unknown_source"
+    ):
         """Process a single extraction result (either initial or gleaning)
         Args:
             result (str): The extraction result to process
@@ -623,7 +634,7 @@ async def extract_entities(
                 for k, v in maybe_edges.items()
             ]
         )
-    
+
     if not (all_entities_data or all_relationships_data):
         log_message = "Didn't extract any entities and relationships."
         logger.info(log_message)
@@ -669,7 +680,9 @@ async def extract_entities(
                 "file_path": dp.get("metadata", {}).get("file_path", "unknown_source"),
                 "metadata": {
                     "created_at": dp.get("metadata", {}).get("created_at", time.time()),
-                    "file_path": dp.get("metadata", {}).get("file_path", "unknown_source"),
+                    "file_path": dp.get("metadata", {}).get(
+                        "file_path", "unknown_source"
+                    ),
                 },
             }
             for dp in all_entities_data
@@ -687,7 +700,9 @@ async def extract_entities(
                 "file_path": dp.get("metadata", {}).get("file_path", "unknown_source"),
                 "metadata": {
                     "created_at": dp.get("metadata", {}).get("created_at", time.time()),
-                    "file_path": dp.get("metadata", {}).get("file_path", "unknown_source"),
+                    "file_path": dp.get("metadata", {}).get(
+                        "file_path", "unknown_source"
+                    ),
                 },
             }
             for dp in all_relationships_data
@@ -1272,13 +1287,13 @@ async def _get_node_data(
         created_at = n.get("created_at", "UNKNOWN")
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
-        
+
         # Get file path from metadata or directly from node data
         file_path = n.get("file_path", "unknown_source")
         if not file_path or file_path == "unknown_source":
             # Try to get from metadata
             file_path = n.get("metadata", {}).get("file_path", "unknown_source")
-        
+
         entites_section_list.append(
             [
                 i,
@@ -1310,13 +1325,13 @@ async def _get_node_data(
         # Convert timestamp to readable format
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
-        
+
         # Get file path from metadata or directly from edge data
         file_path = e.get("file_path", "unknown_source")
         if not file_path or file_path == "unknown_source":
             # Try to get from metadata
             file_path = e.get("metadata", {}).get("file_path", "unknown_source")
-            
+
         relations_section_list.append(
             [
                 i,
@@ -1551,13 +1566,13 @@ async def _get_edge_data(
         # Convert timestamp to readable format
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
-        
+
         # Get file path from metadata or directly from edge data
         file_path = e.get("file_path", "unknown_source")
         if not file_path or file_path == "unknown_source":
             # Try to get from metadata
             file_path = e.get("metadata", {}).get("file_path", "unknown_source")
-            
+
         relations_section_list.append(
             [
                 i,
@@ -1574,28 +1589,20 @@ async def _get_edge_data(
     relations_context = list_of_list_to_csv(relations_section_list)
 
     entites_section_list = [
-        [
-            "id", 
-            "entity", 
-            "type", 
-            "description", 
-            "rank", 
-            "created_at", 
-            "file_path"
-        ]
+        ["id", "entity", "type", "description", "rank", "created_at", "file_path"]
     ]
     for i, n in enumerate(use_entities):
         created_at = n.get("created_at", "Unknown")
         # Convert timestamp to readable format
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
-        
+
         # Get file path from metadata or directly from node data
         file_path = n.get("file_path", "unknown_source")
         if not file_path or file_path == "unknown_source":
             # Try to get from metadata
             file_path = n.get("metadata", {}).get("file_path", "unknown_source")
-            
+
         entites_section_list.append(
             [
                 i,
