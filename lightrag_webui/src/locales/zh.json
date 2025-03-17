@@ -179,7 +179,8 @@
       "noLabels": "未找到标签",
       "label": "标签",
       "placeholder": "搜索标签...",
-      "andOthers": "还有 {count} 个"
+      "andOthers": "还有 {count} 个",
+      "refreshTooltip": "重新加载图形数据"
     }
   },
   "retrievePanel": {
