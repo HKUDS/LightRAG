@@ -28,7 +28,9 @@
     "loggingIn": "Logging in...",
     "successMessage": "Login succeeded",
     "errorEmptyFields": "Please enter your username and password",
-    "errorInvalidCredentials": "Login failed, please check username and password"
+    "errorInvalidCredentials": "Login failed, please check username and password",
+    "authDisabled": "Authentication is disabled. Using guest access.",
+    "guestMode": "Guest Mode"
   },
   "documentPanel": {
     "clearDocuments": {
