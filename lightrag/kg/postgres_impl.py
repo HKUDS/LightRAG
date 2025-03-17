@@ -432,19 +432,31 @@ class PGVectorStorage(BaseVectorStorage):
 
     def _upsert_entities(self, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         upsert_sql = SQL_TEMPLATES["upsert_entity"]
+        source_id = item["source_id"]
+        if isinstance(source_id, str) and "<SEP>" in source_id:
+            chunk_ids = source_id.split("<SEP>")
+        else:
+            chunk_ids = [source_id]
+            
         data: dict[str, Any] = {
             "workspace": self.db.workspace,
             "id": item["__id__"],
             "entity_name": item["entity_name"],
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
-            "chunk_id": item["source_id"],
+            "chunk_ids": chunk_ids,
             # TODO: add document_id
         }
         return upsert_sql, data
 
     def _upsert_relationships(self, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         upsert_sql = SQL_TEMPLATES["upsert_relationship"]
+        source_id = item["source_id"]
+        if isinstance(source_id, str) and "<SEP>" in source_id:
+            chunk_ids = source_id.split("<SEP>")
+        else:
+            chunk_ids = [source_id]
+            
         data: dict[str, Any] = {
             "workspace": self.db.workspace,
             "id": item["__id__"],
@@ -452,7 +464,7 @@ class PGVectorStorage(BaseVectorStorage):
             "target_id": item["tgt_id"],
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
-            "chunk_id": item["source_id"],
+            "chunk_ids": chunk_ids,
             # TODO: add document_id
         }
         return upsert_sql, data
@@ -950,10 +962,14 @@ class PGGraphStorage(BaseGraphStorage):
                             vertices.get(edge["end_id"], {}),
                         )
             else:
-                if v is None or (v.count("{") < 1 and v.count("[") < 1):
+                if v is None:
                     d[k] = v
+                elif isinstance(v, str) and (v.count("{") < 1 and v.count("[") < 1):
+                    d[k] = v
+                elif isinstance(v, str):
+                    d[k] = json.loads(v)
                 else:
-                    d[k] = json.loads(v) if isinstance(v, str) else v
+                    d[k] = v
 
         return d
 
@@ -1654,22 +1670,25 @@ SQL_TEMPLATES = {
                       update_time = CURRENT_TIMESTAMP
                      """,
     "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
-                      content_vector, chunk_id)
-                      VALUES ($1, $2, $3, $4, $5, $6)
+                      content_vector, chunk_ids)
+                      VALUES ($1, $2, $3, $4, $5, $6::varchar[])
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET entity_name=EXCLUDED.entity_name,
                       content=EXCLUDED.content,
                       content_vector=EXCLUDED.content_vector,
+                      chunk_ids=EXCLUDED.chunk_ids,
                       update_time=CURRENT_TIMESTAMP
                      """,
     "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
-                      target_id, content, content_vector, chunk_id)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7)
+                      target_id, content, content_vector, chunk_ids)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[])
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET source_id=EXCLUDED.source_id,
                       target_id=EXCLUDED.target_id,
                       content=EXCLUDED.content,
-                      content_vector=EXCLUDED.content_vector, update_time = CURRENT_TIMESTAMP
+                      content_vector=EXCLUDED.content_vector,
+                      chunk_ids=EXCLUDED.chunk_ids,
+                      update_time = CURRENT_TIMESTAMP
                      """,
     # SQL for VectorStorage
     # "entities": """SELECT entity_name FROM
@@ -1720,8 +1739,8 @@ SQL_TEMPLATES = {
     FROM (
         SELECT r.id, r.source_id, r.target_id, 1 - (r.content_vector <=> '[{embedding_string}]'::vector) as distance
         FROM LIGHTRAG_VDB_RELATION r
+        JOIN relevant_chunks c ON c.chunk_id = ANY(r.chunk_ids)
         WHERE r.workspace=$1
-        AND r.chunk_id IN (SELECT chunk_id FROM relevant_chunks)
     ) filtered
     WHERE distance>$2
     ORDER BY distance DESC
@@ -1735,10 +1754,10 @@ SQL_TEMPLATES = {
         )
         SELECT entity_name FROM
             (
-                SELECT id, entity_name, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-                FROM LIGHTRAG_VDB_ENTITY
-                where workspace=$1
-                AND chunk_id IN (SELECT chunk_id FROM relevant_chunks)
+                SELECT e.id, e.entity_name, 1 - (e.content_vector <=> '[{embedding_string}]'::vector) as distance
+                FROM LIGHTRAG_VDB_ENTITY e
+                JOIN relevant_chunks c ON c.chunk_id = ANY(e.chunk_ids)
+                WHERE e.workspace=$1
             )
         WHERE distance>$2
         ORDER BY distance DESC
