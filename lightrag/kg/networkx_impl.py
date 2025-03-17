@@ -373,6 +373,9 @@ class NetworkXStorage(BaseGraphStorage):
         # Add edges to result
         for edge in subgraph.edges():
             source, target = edge
+            # Esure unique edge_id for undirect graph
+            if source > target:
+                source, target = target, source
             edge_id = f"{source}-{target}"
             if edge_id in seen_edges:
                 continue
