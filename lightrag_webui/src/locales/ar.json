@@ -1,0 +1,239 @@
+{
+  "settings": {
+    "language": "اللغة",
+    "theme": "السمة",
+    "light": "فاتح",
+    "dark": "داكن",
+    "system": "النظام"
+  },
+  "header": {
+    "documents": "المستندات",
+    "knowledgeGraph": "شبكة المعرفة",
+    "retrieval": "الاسترجاع",
+    "api": "واجهة برمجة التطبيقات",
+    "projectRepository": "مستودع المشروع",
+    "themeToggle": {
+      "switchToLight": "التحويل إلى السمة الفاتحة",
+      "switchToDark": "التحويل إلى السمة الداكنة"
+    }
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "مسح",
+      "tooltip": "مسح المستندات",
+      "title": "مسح المستندات",
+      "confirm": "هل تريد حقًا مسح جميع المستندات؟",
+      "confirmButton": "نعم",
+      "success": "تم مسح المستندات بنجاح",
+      "failed": "فشل مسح المستندات:\n{{message}}",
+      "error": "فشل مسح المستندات:\n{{error}}"
+    },
+    "uploadDocuments": {
+      "button": "رفع",
+      "tooltip": "رفع المستندات",
+      "title": "رفع المستندات",
+      "description": "اسحب وأفلت مستنداتك هنا أو انقر للتصفح.",
+      "uploading": "جارٍ الرفع {{name}}: {{percent}}%",
+      "success": "نجاح الرفع:\nتم رفع {{name}} بنجاح",
+      "failed": "فشل الرفع:\n{{name}}\n{{message}}",
+      "error": "فشل الرفع:\n{{name}}\n{{error}}",
+      "generalError": "فشل الرفع\n{{error}}",
+      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS"
+    },
+    "documentManager": {
+      "title": "إدارة المستندات",
+      "scanButton": "مسح ضوئي",
+      "scanTooltip": "مسح المستندات ضوئيًا",
+      "uploadedTitle": "المستندات المرفوعة",
+      "uploadedDescription": "قائمة المستندات المرفوعة وحالاتها.",
+      "emptyTitle": "لا توجد مستندات",
+      "emptyDescription": "لا توجد مستندات مرفوعة بعد.",
+      "columns": {
+        "id": "المعرف",
+        "summary": "الملخص",
+        "status": "الحالة",
+        "length": "الطول",
+        "chunks": "الأجزاء",
+        "created": "تم الإنشاء",
+        "updated": "تم التحديث",
+        "metadata": "البيانات الوصفية"
+      },
+      "status": {
+        "completed": "مكتمل",
+        "processing": "قيد المعالجة",
+        "pending": "معلق",
+        "failed": "فشل"
+      },
+      "errors": {
+        "loadFailed": "فشل تحميل المستندات\n{{error}}",
+        "scanFailed": "فشل المسح الضوئي للمستندات\n{{error}}",
+        "scanProgressFailed": "فشل الحصول على تقدم المسح الضوئي\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "sideBar": {
+      "settings": {
+        "settings": "الإعدادات",
+        "healthCheck": "فحص الحالة",
+        "showPropertyPanel": "إظهار لوحة الخصائص",
+        "showSearchBar": "إظهار شريط البحث",
+        "showNodeLabel": "إظهار تسمية العقدة",
+        "nodeDraggable": "العقدة قابلة للسحب",
+        "showEdgeLabel": "إظهار تسمية الحافة",
+        "hideUnselectedEdges": "إخفاء الحواف غير المحددة",
+        "edgeEvents": "أحداث الحافة",
+        "maxQueryDepth": "أقصى عمق للاستعلام",
+        "minDegree": "الدرجة الدنيا",
+        "maxLayoutIterations": "أقصى تكرارات التخطيط",
+        "depth": "العمق",
+        "degree": "الدرجة",
+        "apiKey": "مفتاح واجهة برمجة التطبيقات",
+        "enterYourAPIkey": "أدخل مفتاح واجهة برمجة التطبيقات الخاص بك",
+        "save": "حفظ",
+        "refreshLayout": "تحديث التخطيط"
+      },
+      "zoomControl": {
+        "zoomIn": "تكبير",
+        "zoomOut": "تصغير",
+        "resetZoom": "إعادة تعيين التكبير"
+      },
+      "layoutsControl": {
+        "startAnimation": "بدء حركة التخطيط",
+        "stopAnimation": "إيقاف حركة التخطيط",
+        "layoutGraph": "تخطيط الرسم البياني",
+        "layouts": {
+          "Circular": "دائري",
+          "Circlepack": "حزمة دائرية",
+          "Random": "عشوائي",
+          "Noverlaps": "بدون تداخل",
+          "Force Directed": "موجه بالقوة",
+          "Force Atlas": "أطلس القوة"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "شاشة كاملة",
+        "windowed": "نوافذ"
+      }
+    },
+    "statusIndicator": {
+      "connected": "متصل",
+      "disconnected": "غير متصل"
+    },
+    "statusCard": {
+      "unavailable": "معلومات الحالة غير متوفرة",
+      "storageInfo": "معلومات التخزين",
+      "workingDirectory": "دليل العمل",
+      "inputDirectory": "دليل الإدخال",
+      "llmConfig": "تكوين نموذج اللغة الكبير",
+      "llmBinding": "ربط نموذج اللغة الكبير",
+      "llmBindingHost": "مضيف ربط نموذج اللغة الكبير",
+      "llmModel": "نموذج اللغة الكبير",
+      "maxTokens": "أقصى عدد من الرموز",
+      "embeddingConfig": "تكوين التضمين",
+      "embeddingBinding": "ربط التضمين",
+      "embeddingBindingHost": "مضيف ربط التضمين",
+      "embeddingModel": "نموذج التضمين",
+      "storageConfig": "تكوين التخزين",
+      "kvStorage": "تخزين المفتاح-القيمة",
+      "docStatusStorage": "تخزين حالة المستند",
+      "graphStorage": "تخزين الرسم البياني",
+      "vectorStorage": "تخزين المتجهات"
+    },
+    "propertiesView": {
+      "node": {
+        "title": "عقدة",
+        "id": "المعرف",
+        "labels": "التسميات",
+        "degree": "الدرجة",
+        "properties": "الخصائص",
+        "relationships": "العلاقات",
+        "propertyNames": {
+          "description": "الوصف",
+          "entity_id": "الاسم",
+          "entity_type": "النوع",
+          "source_id": "معرف المصدر",
+          "Neighbour": "الجار"
+        }
+      },
+      "edge": {
+        "title": "علاقة",
+        "id": "المعرف",
+        "type": "النوع",
+        "source": "المصدر",
+        "target": "الهدف",
+        "properties": "الخصائص"
+      }
+    },
+    "search": {
+      "placeholder": "ابحث في العقد...",
+      "message": "و {{count}} آخرون"
+    },
+    "graphLabels": {
+      "selectTooltip": "حدد تسمية الاستعلام",
+      "noLabels": "لم يتم العثور على تسميات",
+      "label": "التسمية",
+      "placeholder": "ابحث في التسميات...",
+      "andOthers": "و {{count}} آخرون"
+    }
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "نسخ إلى الحافظة",
+      "copyError": "فشل نسخ النص إلى الحافظة"
+    },
+    "retrieval": {
+      "startPrompt": "ابدأ الاسترجاع بكتابة استفسارك أدناه",
+      "clear": "مسح",
+      "send": "إرسال",
+      "placeholder": "اكتب استفسارك...",
+      "error": "خطأ: فشل الحصول على الرد"
+    },
+    "querySettings": {
+      "parametersTitle": "المعلمات",
+      "parametersDescription": "تكوين معلمات الاستعلام الخاص بك",
+      "queryMode": "وضع الاستعلام",
+      "queryModeTooltip": "حدد استراتيجية الاسترجاع:\n• ساذج: بحث أساسي بدون تقنيات متقدمة\n• محلي: استرجاع معلومات يعتمد على السياق\n• عالمي: يستخدم قاعدة المعرفة العالمية\n• مختلط: يجمع بين الاسترجاع المحلي والعالمي\n• مزيج: يدمج شبكة المعرفة مع الاسترجاع المتجهي",
+      "queryModeOptions": {
+        "naive": "ساذج",
+        "local": "محلي",
+        "global": "عالمي",
+        "hybrid": "مختلط",
+        "mix": "مزيج"
+      },
+      "responseFormat": "تنسيق الرد",
+      "responseFormatTooltip": "يحدد تنسيق الرد. أمثلة:\n• فقرات متعددة\n• فقرة واحدة\n• نقاط نقطية",
+      "responseFormatOptions": {
+        "multipleParagraphs": "فقرات متعددة",
+        "singleParagraph": "فقرة واحدة",
+        "bulletPoints": "نقاط نقطية"
+      },
+      "topK": "أعلى K نتائج",
+      "topKTooltip": "عدد العناصر العلوية للاسترجاع. يمثل الكيانات في وضع 'محلي' والعلاقات في وضع 'عالمي'",
+      "topKPlaceholder": "عدد النتائج",
+      "maxTokensTextUnit": "أقصى عدد من الرموز لوحدة النص",
+      "maxTokensTextUnitTooltip": "الحد الأقصى لعدد الرموز المسموح به لكل جزء نصي مسترجع",
+      "maxTokensGlobalContext": "أقصى عدد من الرموز للسياق العالمي",
+      "maxTokensGlobalContextTooltip": "الحد الأقصى لعدد الرموز المخصص لأوصاف العلاقات في الاسترجاع العالمي",
+      "maxTokensLocalContext": "أقصى عدد من الرموز للسياق المحلي",
+      "maxTokensLocalContextTooltip": "الحد الأقصى لعدد الرموز المخصص لأوصاف الكيانات في الاسترجاع المحلي",
+      "historyTurns": "دورات التاريخ",
+      "historyTurnsTooltip": "عدد الدورات الكاملة للمحادثة (أزواج المستخدم-المساعد) التي يجب مراعاتها في سياق الرد",
+      "historyTurnsPlaceholder": "عدد دورات التاريخ",
+      "hlKeywords": "الكلمات المفتاحية عالية المستوى",
+      "hlKeywordsTooltip": "قائمة الكلمات المفتاحية عالية المستوى لإعطائها الأولوية في الاسترجاع. افصل بينها بفواصل",
+      "hlkeywordsPlaceHolder": "أدخل الكلمات المفتاحية",
+      "llKeywords": "الكلمات المفتاحية منخفضة المستوى",
+      "llKeywordsTooltip": "قائمة الكلمات المفتاحية منخفضة المستوى لتحسين تركيز الاسترجاع. افصل بينها بفواصل",
+      "onlyNeedContext": "تحتاج فقط إلى السياق",
+      "onlyNeedContextTooltip": "إذا كان صحيحًا، يتم إرجاع السياق المسترجع فقط دون إنشاء رد",
+      "onlyNeedPrompt": "تحتاج فقط إلى المطالبة",
+      "onlyNeedPromptTooltip": "إذا كان صحيحًا، يتم إرجاع المطالبة المولدة فقط دون إنتاج رد",
+      "streamResponse": "تدفق الرد",
+      "streamResponseTooltip": "إذا كان صحيحًا، يتيح إخراج التدفق للردود في الوقت الفعلي"
+    }
+  },
+  "apiSite": {
+    "loading": "جارٍ تحميل وثائق واجهة برمجة التطبيقات..."
+  }
+}
