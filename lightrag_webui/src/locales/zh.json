@@ -12,10 +12,23 @@
     "retrieval": "检索",
     "api": "API",
     "projectRepository": "项目仓库",
+    "logout": "退出登录",
     "themeToggle": {
       "switchToLight": "切换到浅色主题",
       "switchToDark": "切换到深色主题"
     }
+  },
+  "login": {
+    "description": "请输入您的账号和密码登录系统",
+    "username": "用户名",
+    "usernamePlaceholder": "请输入用户名",
+    "password": "密码",
+    "passwordPlaceholder": "请输入密码",
+    "loginButton": "登录",
+    "loggingIn": "登录中...",
+    "successMessage": "登录成功",
+    "errorEmptyFields": "请输入您的用户名和密码",
+    "errorInvalidCredentials": "登录失败，请检查用户名和密码"
   },
   "documentPanel": {
     "clearDocuments": {

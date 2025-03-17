@@ -7,6 +7,7 @@ import { Message, QueryRequest } from '@/api/lightrag'
 type Theme = 'dark' | 'light' | 'system'
 type Language = 'en' | 'zh'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
+type Language = 'en' | 'zh'
 
 interface SettingsState {
   // Graph viewer settings

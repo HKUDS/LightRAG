@@ -1,12 +1,14 @@
 import Button from '@/components/ui/Button'
-import { SiteInfo } from '@/lib/constants'
+import { SiteInfo, webuiPrefix } from '@/lib/constants'
 import AppSettings from '@/components/AppSettings'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
 
-import { ZapIcon, GithubIcon } from 'lucide-react'
+import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
 
 interface NavigationTabProps {
   value: string
@@ -54,9 +56,17 @@ function TabsNavigation() {
 
 export default function SiteHeader() {
   const { t } = useTranslation()
+  const navigate = useNavigate()
+  const { logout } = useAuthStore()
+
+  const handleLogout = () => {
+    logout()
+    navigate('/login')
+  }
+
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
-      <a href="/" className="mr-6 flex items-center gap-2">
+      <a href={webuiPrefix} className="mr-6 flex items-center gap-2">
         <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
         {/* <img src='/logo.png' className="size-4" /> */}
         <span className="font-bold md:inline-block">{SiteInfo.name}</span>
@@ -74,6 +84,9 @@ export default function SiteHeader() {
             </a>
           </Button>
           <AppSettings />
+          <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.logout')} onClick={handleLogout}>
+            <LogOutIcon className="size-4" aria-hidden="true" />
+          </Button>
         </div>
       </nav>
     </header>
