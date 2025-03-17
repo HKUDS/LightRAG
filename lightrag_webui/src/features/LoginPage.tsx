@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
-import { loginToServer } from '@/api/lightrag'
+import { loginToServer, getAuthStatus } from '@/api/lightrag'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
 
@@ -13,11 +13,63 @@ import AppSettings from '@/components/AppSettings'
 
 const LoginPage = () => {
   const navigate = useNavigate()
-  const { login } = useAuthStore()
+  const { login, isAuthenticated } = useAuthStore()
   const { t } = useTranslation()
   const [loading, setLoading] = useState(false)
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [checkingAuth, setCheckingAuth] = useState(true)
+
+  // Check if authentication is configured
+  useEffect(() => {
+    let isMounted = true; // Flag to prevent state updates after unmount
+    
+    const checkAuthConfig = async () => {
+      try {
+        // If already authenticated, redirect to home
+        if (isAuthenticated) {
+          navigate('/')
+          return
+        }
+
+        // Check auth status
+        const status = await getAuthStatus()
+        
+        // Only proceed if component is still mounted
+        if (!isMounted) return;
+        
+        if (!status.auth_configured && status.access_token) {
+          // If auth is not configured, use the guest token and redirect
+          login(status.access_token, true)
+          if (status.message) {
+            toast.info(status.message)
+          }
+          navigate('/')
+          return; // Exit early, no need to set checkingAuth to false
+        }
+      } catch (error) {
+        console.error('Failed to check auth configuration:', error)
+      } finally {
+        // Only update state if component is still mounted
+        if (isMounted) {
+          setCheckingAuth(false)
+        }
+      }
+    }
+
+    // Execute immediately
+    checkAuthConfig()
+    
+    // Cleanup function to prevent state updates after unmount
+    return () => {
+      isMounted = false;
+    }
+  }, [isAuthenticated, login, navigate])
+
+  // Don't render anything while checking auth
+  if (checkingAuth) {
+    return null
+  }
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -29,9 +81,19 @@ const LoginPage = () => {
     try {
       setLoading(true)
       const response = await loginToServer(username, password)
-      login(response.access_token)
+      
+      // Check authentication mode
+      const isGuestMode = response.auth_mode === 'disabled'
+      login(response.access_token, isGuestMode)
+      
+      if (isGuestMode) {
+        // Show authentication disabled notification
+        toast.info(response.message || t('login.authDisabled', 'Authentication is disabled. Using guest access.'))
+      } else {
+        toast.success(t('login.successMessage'))
+      }
+      
       navigate('/')
-      toast.success(t('login.successMessage'))
     } catch (error) {
       console.error('Login failed...', error)
       toast.error(t('login.errorInvalidCredentials'))

@@ -9,7 +9,7 @@ import sys
 import logging
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
-from fastapi import HTTPException, Security, Depends, Request
+from fastapi import HTTPException, Security, Depends, Request, status
 from dotenv import load_dotenv
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
@@ -35,7 +35,8 @@ ollama_server_infos = OllamaServerInfos()
 
 
 def get_auth_dependency():
-    whitelist = os.getenv("WHITELIST_PATHS", "").split(",")
+    # Set default whitelist paths
+    whitelist = os.getenv("WHITELIST_PATHS", "/login,/health").split(",")
 
     async def dependency(
         request: Request,
@@ -44,10 +45,41 @@ def get_auth_dependency():
         if request.url.path in whitelist:
             return
 
-        if not (os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD")):
+        # Check if authentication is configured
+        auth_configured = bool(os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD"))
+        
+        # If authentication is not configured, accept any token including guest tokens
+        if not auth_configured:
+            if token:  # If token is provided, still validate it
+                try:
+                    # Validate token but don't raise exception
+                    token_info = auth_handler.validate_token(token)
+                    # Check if it's a guest token
+                    if token_info.get("role") != "guest":
+                        # Non-guest tokens are not valid when auth is not configured
+                        pass
+                except Exception as e:
+                    # Ignore validation errors but log them
+                    print(f"Token validation error (ignored): {str(e)}")
             return
-
-        auth_handler.validate_token(token)
+        
+        # If authentication is configured, validate the token and reject guest tokens
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token required"
+            )
+            
+        token_info = auth_handler.validate_token(token)
+        
+        # Reject guest tokens when authentication is configured
+        if token_info.get("role") == "guest":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                detail="Authentication required. Guest access not allowed when authentication is configured."
+            )
+            
+        # At this point, we have a valid non-guest token
+        return
 
     return dependency
 
