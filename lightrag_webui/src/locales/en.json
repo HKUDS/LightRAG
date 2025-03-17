@@ -182,7 +182,8 @@
       "noLabels": "No labels found",
       "label": "Label",
       "placeholder": "Search labels...",
-      "andOthers": "And {count} others"
+      "andOthers": "And {count} others",
+      "refreshTooltip": "Reload graph data"
     }
   },
   "retrievePanel": {
