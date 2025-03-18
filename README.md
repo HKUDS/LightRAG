@@ -675,7 +675,7 @@ rag.insert(text_content.decode('utf-8'))
 </details>
 
 <details>
-  <summary><b>Citation Functionalityt</b></summary>
+  <summary><b>Citation Functionality</b></summary>
 
 By providing file paths, the system ensures that sources can be traced back to their original documents.
 
