@@ -4,6 +4,7 @@ import { useAuthStore } from '@/stores/state'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
 import { toast } from 'sonner'
 import { useTranslation } from 'react-i18next'
+import { navigationService } from '@/services/navigation'
 
 import { Card, CardContent, CardHeader } from '@/components/ui/Card'
 import Input from '@/components/ui/Input'
@@ -19,6 +20,11 @@ const LoginPage = () => {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [checkingAuth, setCheckingAuth] = useState(true)
+
+  // Reset application state on first mount
+  useEffect(() => {
+    navigationService.resetAllApplicationState();
+  }, []); // Empty dependency array means this runs only once on mount
 
   // Check if authentication is configured
   useEffect(() => {
