@@ -794,12 +794,9 @@ class LightRAG:
                         "cur_batch": 0,
                         "request_pending": False,  # Clear any previous request
                         "latest_message": "",
-                        "history_messages": [],  # Initialize empty history_messages list
                     }
                 )
-                # Cleaning history_messages without breaking it as a shared list object
-                if "history_messages" in pipeline_status:
-                    del pipeline_status["history_messages"][:]
+                del pipeline_status["history_messages"][:]
             else:
                 # Another process is busy, just set request flag and return
                 pipeline_status["request_pending"] = True
