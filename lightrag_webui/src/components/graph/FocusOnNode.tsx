@@ -13,23 +13,37 @@ const FocusOnNode = ({ node, move }: { node: string | null; move?: boolean }) =>
    * When the selected item changes, highlighted the node and center the camera on it.
    */
   useEffect(() => {
+    const graph = sigma.getGraph();
+
     if (move) {
-      if (node) {
-        sigma.getGraph().setNodeAttribute(node, 'highlighted', true)
-        gotoNode(node)
+      if (node && graph.hasNode(node)) {
+        try {
+          graph.setNodeAttribute(node, 'highlighted', true);
+          gotoNode(node);
+        } catch (error) {
+          console.error('Error focusing on node:', error);
+        }
       } else {
         // If no node is selected but move is true, reset to default view
-        sigma.setCustomBBox(null)
-        sigma.getCamera().animate({ x: 0.5, y: 0.5, ratio: 1 }, { duration: 0 })
+        sigma.setCustomBBox(null);
+        sigma.getCamera().animate({ x: 0.5, y: 0.5, ratio: 1 }, { duration: 0 });
       }
-      useGraphStore.getState().setMoveToSelectedNode(false)
-    } else if (node) {
-      sigma.getGraph().setNodeAttribute(node, 'highlighted', true)
+      useGraphStore.getState().setMoveToSelectedNode(false);
+    } else if (node && graph.hasNode(node)) {
+      try {
+        graph.setNodeAttribute(node, 'highlighted', true);
+      } catch (error) {
+        console.error('Error highlighting node:', error);
+      }
     }
 
     return () => {
-      if (node) {
-        sigma.getGraph().setNodeAttribute(node, 'highlighted', false)
+      if (node && graph.hasNode(node)) {
+        try {
+          graph.setNodeAttribute(node, 'highlighted', false);
+        } catch (error) {
+          console.error('Error cleaning up node highlight:', error);
+        }
       }
     }
   }, [node, move, sigma, gotoNode])

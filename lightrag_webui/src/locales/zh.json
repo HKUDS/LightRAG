@@ -12,10 +12,25 @@
     "retrieval": "检索",
     "api": "API",
     "projectRepository": "项目仓库",
+    "logout": "退出登录",
     "themeToggle": {
       "switchToLight": "切换到浅色主题",
       "switchToDark": "切换到深色主题"
     }
+  },
+  "login": {
+    "description": "请输入您的账号和密码登录系统",
+    "username": "用户名",
+    "usernamePlaceholder": "请输入用户名",
+    "password": "密码",
+    "passwordPlaceholder": "请输入密码",
+    "loginButton": "登录",
+    "loggingIn": "登录中...",
+    "successMessage": "登录成功",
+    "errorEmptyFields": "请输入您的用户名和密码",
+    "errorInvalidCredentials": "登录失败，请检查用户名和密码",
+    "authDisabled": "认证已禁用，使用无需登陆模式。",
+    "guestMode": "无需登陆"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -96,10 +111,12 @@
       "zoomControl": {
         "zoomIn": "放大",
         "zoomOut": "缩小",
-        "resetZoom": "重置缩放"
+        "resetZoom": "重置缩放",
+        "rotateCamera": "顺时针旋转图形",
+        "rotateCameraCounterClockwise": "逆时针旋转图形"
       },
       "layoutsControl": {
-        "startAnimation": "开始布局动画",
+        "startAnimation": "继续布局动画",
         "stopAnimation": "停止布局动画",
         "layoutGraph": "图布局",
         "layouts": {
@@ -108,7 +125,7 @@
           "Random": "随机",
           "Noverlaps": "无重叠",
           "Force Directed": "力导向",
-          "Force Atlas": "力图"
+          "Force Atlas": "力地图"
         }
       },
       "fullScreenControl": {
@@ -148,6 +165,11 @@
         "degree": "度数",
         "properties": "属性",
         "relationships": "关系",
+        "expandNode": "扩展节点",
+        "pruneNode": "修剪节点",
+        "deleteAllNodesError": "拒绝删除图中的所有节点",
+        "nodesRemoved": "已删除 {{count}} 个节点，包括孤立节点",
+        "noNewNodes": "没有发现可以扩展的节点",
         "propertyNames": {
           "description": "描述",
           "entity_id": "名称",
@@ -174,7 +196,8 @@
       "noLabels": "未找到标签",
       "label": "标签",
       "placeholder": "搜索标签...",
-      "andOthers": "还有 {count} 个"
+      "andOthers": "还有 {count} 个",
+      "refreshTooltip": "重新加载图形数据"
     }
   },
   "retrievePanel": {

@@ -148,6 +148,19 @@ const GraphViewer = () => {
     setSigmaSettings(defaultSigmaSettings)
   }, [])
 
+  // Clean up sigma instance when component unmounts
+  useEffect(() => {
+    return () => {
+      // Clear the sigma instance when component unmounts
+      useGraphStore.getState().setSigmaInstance(null);
+      console.log('Cleared sigma instance on unmount');
+    };
+  }, []);
+
+  // Note: There was a useLayoutEffect hook here to set up the sigma instance and graph data,
+  // but testing showed it wasn't executing or having any effect, while the backup mechanism
+  // in GraphControl was sufficient. This code was removed to simplify implementation
+
   const onSearchFocus = useCallback((value: GraphSearchOption | null) => {
     if (value === null) useGraphStore.getState().setFocusedNode(null)
     else if (value.type === 'nodes') useGraphStore.getState().setFocusedNode(value.id)
@@ -167,62 +180,51 @@ const GraphViewer = () => {
     [selectedNode]
   )
 
-  // Since TabsContent now forces mounting of all tabs, we need to conditionally render
-  // the SigmaContainer based on visibility to avoid unnecessary rendering
+  // Always render SigmaContainer but control its visibility with CSS
   return (
-    <div className="relative h-full w-full">
-      {/* Only render the SigmaContainer when the tab is visible */}
-      {isGraphTabVisible ? (
-        <SigmaContainer
-          settings={sigmaSettings}
-          className="!bg-background !size-full overflow-hidden"
-          ref={sigmaRef}
-        >
-          <GraphControl />
+    <div className="relative h-full w-full overflow-hidden">
+      <SigmaContainer
+        settings={sigmaSettings}
+        className="!bg-background !size-full overflow-hidden"
+        ref={sigmaRef}
+      >
+        <GraphControl />
 
-          {enableNodeDrag && <GraphEvents />}
+        {enableNodeDrag && <GraphEvents />}
 
-          <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
+        <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-          <div className="absolute top-2 left-2 flex items-start gap-2">
-            <GraphLabels />
-            {showNodeSearchBar && (
-              <GraphSearch
-                value={searchInitSelectedNode}
-                onFocus={onSearchFocus}
-                onChange={onSearchSelect}
-              />
-            )}
-          </div>
-
-          <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
-            <Settings />
-            <ZoomControl />
-            <LayoutsControl />
-            <FullScreenControl />
-            {/* <ThemeToggle /> */}
-          </div>
-
-          {showPropertyPanel && (
-            <div className="absolute top-2 right-2">
-              <PropertiesView />
-            </div>
+        <div className="absolute top-2 left-2 flex items-start gap-2">
+          <GraphLabels />
+          {showNodeSearchBar && (
+            <GraphSearch
+              value={searchInitSelectedNode}
+              onFocus={onSearchFocus}
+              onChange={onSearchSelect}
+            />
           )}
-
-          {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
-            <MiniMap width="100px" height="100px" />
-          </div> */}
-
-          <SettingsDisplay />
-        </SigmaContainer>
-      ) : (
-        // Placeholder when tab is not visible
-        <div className="flex h-full w-full items-center justify-center">
-          <div className="text-center text-muted-foreground">
-            {/* Placeholder content */}
-          </div>
         </div>
-      )}
+
+        <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
+          <LayoutsControl />
+          <ZoomControl />
+          <FullScreenControl />
+          <Settings />
+          {/* <ThemeToggle /> */}
+        </div>
+
+        {showPropertyPanel && (
+          <div className="absolute top-2 right-2">
+            <PropertiesView />
+          </div>
+        )}
+
+        {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
+          <MiniMap width="100px" height="100px" />
+        </div> */}
+
+        <SettingsDisplay />
+      </SigmaContainer>
 
       {/* Loading overlay - shown when data is loading */}
       {isFetching && (

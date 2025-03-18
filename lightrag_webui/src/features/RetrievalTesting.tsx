@@ -112,7 +112,7 @@ export default function RetrievalTesting() {
   }, [setMessages])
 
   return (
-    <div className="flex size-full gap-2 px-2 pb-12">
+    <div className="flex size-full gap-2 px-2 pb-12 overflow-hidden">
       <div className="flex grow flex-col gap-4">
         <div className="relative grow">
           <div className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2">
