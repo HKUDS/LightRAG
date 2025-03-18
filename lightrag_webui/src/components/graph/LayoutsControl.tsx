@@ -206,9 +206,9 @@ const LayoutsControl = () => {
   const layoutNoverlap = useLayoutNoverlap({
     maxIterations: maxIterations,
     settings: {
-      margin: 2,
+      margin: 5,
       expansion: 1.1,
-      gridSize: 5,
+      gridSize: 1,
       ratio: 1,
       speed: 3,
     }
