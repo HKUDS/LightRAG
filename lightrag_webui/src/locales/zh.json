@@ -111,7 +111,9 @@
       "zoomControl": {
         "zoomIn": "放大",
         "zoomOut": "缩小",
-        "resetZoom": "重置缩放"
+        "resetZoom": "重置缩放",
+        "rotateCamera": "顺时针旋转图形",
+        "rotateCameraCounterClockwise": "逆时针旋转图形"
       },
       "layoutsControl": {
         "startAnimation": "继续布局动画",

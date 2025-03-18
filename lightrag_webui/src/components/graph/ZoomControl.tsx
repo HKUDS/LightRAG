@@ -1,7 +1,7 @@
 import { useCamera, useSigma } from '@react-sigma/core'
 import { useCallback } from 'react'
 import Button from '@/components/ui/Button'
-import { ZoomInIcon, ZoomOutIcon, FullscreenIcon } from 'lucide-react'
+import { ZoomInIcon, ZoomOutIcon, FullscreenIcon, RotateCwIcon, RotateCcwIcon } from 'lucide-react'
 import { controlButtonVariant } from '@/lib/constants'
 import { useTranslation } from 'react-i18next';
 
@@ -44,8 +44,50 @@ const ZoomControl = () => {
     }
   }, [sigma, reset])
 
+  const handleRotate = useCallback(() => {
+    if (!sigma) return
+
+    const camera = sigma.getCamera()
+    const currentAngle = camera.angle
+    const newAngle = currentAngle + Math.PI / 8
+
+    camera.animate(
+      { angle: newAngle },
+      { duration: 200 }
+    )
+  }, [sigma])
+
+  const handleRotateCounterClockwise = useCallback(() => {
+    if (!sigma) return
+
+    const camera = sigma.getCamera()
+    const currentAngle = camera.angle
+    const newAngle = currentAngle - Math.PI / 8
+
+    camera.animate(
+      { angle: newAngle },
+      { duration: 200 }
+    )
+  }, [sigma])
+
   return (
     <>
+      <Button
+        variant={controlButtonVariant}
+        onClick={handleRotateCounterClockwise}
+        tooltip={t('graphPanel.sideBar.zoomControl.rotateCameraCounterClockwise')}
+        size="icon"
+      >
+        <RotateCcwIcon />
+      </Button>
+      <Button
+        variant={controlButtonVariant}
+        onClick={handleRotate}
+        tooltip={t('graphPanel.sideBar.zoomControl.rotateCamera')}
+        size="icon"
+      >
+        <RotateCwIcon />
+      </Button>
       <Button
         variant={controlButtonVariant}
         onClick={handleResetZoom}
