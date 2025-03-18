@@ -112,7 +112,9 @@
       "zoomControl": {
         "zoomIn": "Zoom In",
         "zoomOut": "Zoom Out",
-        "resetZoom": "Reset Zoom"
+        "resetZoom": "Reset Zoom",
+        "rotateCamera": "Clockwise Rotate",
+        "rotateCameraCounterClockwise": "Counter-Clockwise Rotate"
       },
 
       "layoutsControl": {

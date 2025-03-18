@@ -257,6 +257,8 @@ class DocProcessingStatus:
     """First 100 chars of document content, used for preview"""
     content_length: int
     """Total length of document"""
+    file_path: str
+    """File path of the document"""
     status: DocStatus
     """Current processing status"""
     created_at: str

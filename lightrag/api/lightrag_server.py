@@ -10,6 +10,7 @@ import logging.config
 import uvicorn
 import pipmaster as pm
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from pathlib import Path
 import configparser
 from ascii_colors import ASCIIColors
@@ -340,6 +341,11 @@ def create_app(args):
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")
+
+    @app.get("/")
+    async def redirect_to_webui():
+        """Redirect root path to /webui"""
+        return RedirectResponse(url="/webui")
 
     @app.get("/auth-status", dependencies=[Depends(optional_api_key)])
     async def get_auth_status():

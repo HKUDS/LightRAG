@@ -45,7 +45,6 @@ export default function DocumentManager() {
         } else {
           setDocs(null)
         }
-        // console.log(docs)
       } else {
         setDocs(null)
       }
