@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { DirectedGraph } from 'graphology'
 import { getGraphLabels } from '@/api/lightrag'
+import MiniSearch from 'minisearch'
 
 export type RawNodeType = {
   id: string
@@ -66,7 +67,10 @@ interface GraphState {
 
   rawGraph: RawGraph | null
   sigmaGraph: DirectedGraph | null
+  sigmaInstance: any | null
   allDatabaseLabels: string[]
+
+  searchEngine: MiniSearch | null
 
   moveToSelectedNode: boolean
   isFetching: boolean
@@ -76,7 +80,7 @@ interface GraphState {
   graphDataFetchAttempted: boolean
   labelsFetchAttempted: boolean
 
-  refreshLayout: () => void
+  setSigmaInstance: (instance: any) => void
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) => void
   setFocusedNode: (nodeId: string | null) => void
   setSelectedEdge: (edgeId: string | null) => void
@@ -93,12 +97,24 @@ interface GraphState {
   setIsFetching: (isFetching: boolean) => void
   setShouldRender: (shouldRender: boolean) => void
 
+  // 搜索引擎方法
+  setSearchEngine: (engine: MiniSearch | null) => void
+  resetSearchEngine: () => void
+
   // Methods to set global flags
   setGraphDataFetchAttempted: (attempted: boolean) => void
   setLabelsFetchAttempted: (attempted: boolean) => void
+
+  // Event trigger methods for node operations
+  triggerNodeExpand: (nodeId: string | null) => void
+  triggerNodePrune: (nodeId: string | null) => void
+
+  // Node operation state
+  nodeToExpand: string | null
+  nodeToPrune: string | null
 }
 
-const useGraphStoreBase = create<GraphState>()((set, get) => ({
+const useGraphStoreBase = create<GraphState>()((set) => ({
   selectedNode: null,
   focusedNode: null,
   selectedEdge: null,
@@ -114,18 +130,11 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   rawGraph: null,
   sigmaGraph: null,
+  sigmaInstance: null,
   allDatabaseLabels: ['*'],
 
-  refreshLayout: () => {
-    const currentGraph = get().sigmaGraph;
-    if (currentGraph) {
-      get().clearSelection();
-      get().setSigmaGraph(null);
-      setTimeout(() => {
-        get().setSigmaGraph(currentGraph);
-      }, 10);
-    }
-  },
+  searchEngine: null,
+
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
   setShouldRender: (shouldRender: boolean) => set({ shouldRender }),
@@ -142,22 +151,14 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       focusedEdge: null
     }),
   reset: () => {
-    // Get the existing graph
-    const existingGraph = get().sigmaGraph;
-
-    // If we have an existing graph, clear it by removing all nodes
-    if (existingGraph) {
-      const nodes = Array.from(existingGraph.nodes());
-      nodes.forEach(node => existingGraph.dropNode(node));
-    }
-
     set({
       selectedNode: null,
       focusedNode: null,
       selectedEdge: null,
       focusedEdge: null,
       rawGraph: null,
-      // Keep the existing graph instance but with cleared data
+      sigmaGraph: null,  // to avoid other components from acccessing graph objects
+      searchEngine: null,
       moveToSelectedNode: false,
       shouldRender: false
     });
@@ -190,9 +191,23 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
 
+  setSigmaInstance: (instance: any) => set({ sigmaInstance: instance }),
+
+  setSearchEngine: (engine: MiniSearch | null) => set({ searchEngine: engine }),
+  resetSearchEngine: () => set({ searchEngine: null }),
+
   // Methods to set global flags
   setGraphDataFetchAttempted: (attempted: boolean) => set({ graphDataFetchAttempted: attempted }),
-  setLabelsFetchAttempted: (attempted: boolean) => set({ labelsFetchAttempted: attempted })
+  setLabelsFetchAttempted: (attempted: boolean) => set({ labelsFetchAttempted: attempted }),
+
+  // Node operation state
+  nodeToExpand: null,
+  nodeToPrune: null,
+
+  // Event trigger methods for node operations
+  triggerNodeExpand: (nodeId: string | null) => set({ nodeToExpand: nodeId }),
+  triggerNodePrune: (nodeId: string | null) => set({ nodeToPrune: nodeId }),
+
 }))
 
 const useGraphStore = createSelectors(useGraphStoreBase)

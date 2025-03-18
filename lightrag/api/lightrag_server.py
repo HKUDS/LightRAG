@@ -10,6 +10,7 @@ import logging.config
 import uvicorn
 import pipmaster as pm
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import RedirectResponse
 from pathlib import Path
 import configparser
 from ascii_colors import ASCIIColors
@@ -341,25 +342,62 @@ def create_app(args):
     ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")
 
-    @app.post("/login")
+    @app.get("/")
+    async def redirect_to_webui():
+        """Redirect root path to /webui"""
+        return RedirectResponse(url="/webui")
+
+    @app.get("/auth-status", dependencies=[Depends(optional_api_key)])
+    async def get_auth_status():
+        """Get authentication status and guest token if auth is not configured"""
+        username = os.getenv("AUTH_USERNAME")
+        password = os.getenv("AUTH_PASSWORD")
+
+        if not (username and password):
+            # Authentication not configured, return guest token
+            guest_token = auth_handler.create_token(
+                username="guest", role="guest", metadata={"auth_mode": "disabled"}
+            )
+            return {
+                "auth_configured": False,
+                "access_token": guest_token,
+                "token_type": "bearer",
+                "auth_mode": "disabled",
+                "message": "Authentication is disabled. Using guest access.",
+            }
+
+        return {"auth_configured": True, "auth_mode": "enabled"}
+
+    @app.post("/login", dependencies=[Depends(optional_api_key)])
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
         username = os.getenv("AUTH_USERNAME")
         password = os.getenv("AUTH_PASSWORD")
 
         if not (username and password):
-            raise HTTPException(
-                status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail="Authentication not configured",
+            # Authentication not configured, return guest token
+            guest_token = auth_handler.create_token(
+                username="guest", role="guest", metadata={"auth_mode": "disabled"}
             )
+            return {
+                "access_token": guest_token,
+                "token_type": "bearer",
+                "auth_mode": "disabled",
+                "message": "Authentication is disabled. Using guest access.",
+            }
 
         if form_data.username != username or form_data.password != password:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
             )
 
+        # Regular user login
+        user_token = auth_handler.create_token(
+            username=username, role="user", metadata={"auth_mode": "enabled"}
+        )
         return {
-            "access_token": auth_handler.create_token(username),
+            "access_token": user_token,
             "token_type": "bearer",
+            "auth_mode": "enabled",
         }
 
     @app.get("/health", dependencies=[Depends(optional_api_key)])
