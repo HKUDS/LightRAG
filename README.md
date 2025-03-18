@@ -45,6 +45,7 @@ This repository hosts the code of LightRAG. The structure of this code is based 
     🎉 News
   </summary>
 
+- [X] [2025.03.18]🎯📢LightRAG now supports citation functionality.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
 - [X] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
 - [X] [2025.01.06]🎯📢You can now [use PostgreSQL for Storage](#using-postgresql-for-storage).
@@ -669,6 +670,22 @@ file_path = 'TEXT.pdf'
 text_content = textract.process(file_path)
 
 rag.insert(text_content.decode('utf-8'))
+```
+
+</details>
+
+<details>
+  <summary><b>Citation Functionality</b></summary>
+
+By providing file paths, the system ensures that sources can be traced back to their original documents.
+
+```python
+# Define documents and their file paths
+documents = ["Document content 1", "Document content 2"]
+file_paths = ["path/to/doc1.txt", "path/to/doc2.txt"]
+
+# Insert documents with file paths
+rag.insert(documents, file_paths=file_paths)
 ```
 
 </details>
