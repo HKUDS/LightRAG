@@ -19,21 +19,21 @@ class NavigationService {
    */
   resetAllApplicationState() {
     console.log('Resetting all application state...');
-    
+
     // Clear authentication state
     localStorage.removeItem('LIGHTRAG-API-TOKEN');
     sessionStorage.clear();
     useAuthStore.getState().logout();
-    
+
     // Reset graph state
     const graphStore = useGraphStore.getState();
     graphStore.reset();
     graphStore.setGraphDataFetchAttempted(false);
     graphStore.setLabelsFetchAttempted(false);
-    
+
     // Reset backend state
     useBackendState.getState().clear();
-    
+
     // Reset retrieval history while preserving other user preferences
     useSettingsStore.getState().setRetrievalHistory([]);
   }
@@ -45,7 +45,7 @@ class NavigationService {
   navigateToLogin() {
     // Reset state before navigation
     this.resetAllApplicationState();
-    
+
     if (this.navigate) {
       this.navigate('/login');
     }

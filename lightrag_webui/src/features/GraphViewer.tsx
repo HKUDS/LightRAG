@@ -151,9 +151,17 @@ const GraphViewer = () => {
   // Clean up sigma instance when component unmounts
   useEffect(() => {
     return () => {
-      // Clear the sigma instance when component unmounts
-      useGraphStore.getState().setSigmaInstance(null);
-      console.log('Cleared sigma instance on unmount');
+      const sigma = useGraphStore.getState().sigmaInstance;
+      if (sigma) {
+        try {
+          // 销毁sigma实例，这会自动清理WebGL上下文
+          sigma.kill();
+          useGraphStore.getState().setSigmaInstance(null);
+          console.log('Cleared sigma instance on unmount');
+        } catch (error) {
+          console.error('Error cleaning up sigma instance:', error);
+        }
+      }
     };
   }, []);
 
