@@ -341,7 +341,7 @@ def create_app(args):
     # Add Ollama API routes
     ollama_api = OllamaAPI(rag, top_k=args.top_k)
     app.include_router(ollama_api.router, prefix="/api")
-    
+
     @app.get("/")
     async def redirect_to_webui():
         """Redirect root path to /webui"""
