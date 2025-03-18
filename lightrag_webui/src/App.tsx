@@ -8,6 +8,8 @@ import { healthCheckInterval } from '@/lib/constants'
 import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { navigationService } from '@/services/navigation'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 
@@ -19,7 +21,13 @@ import ApiSite from '@/features/ApiSite'
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
 function App() {
+  const navigate = useNavigate();
   const message = useBackendState.use.message()
+
+  // Initialize navigation service
+  useEffect(() => {
+    navigationService.setNavigate(navigate);
+  }, [navigate]);
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyInvalid, setApiKeyInvalid] = useState(false)
