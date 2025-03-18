@@ -27,6 +27,11 @@ class QueryRequest(BaseModel):
         description="Query mode",
     )
 
+    json_response: Optional[bool] = Field(
+        default=None,
+        description="If True, the response will be in JSON format.",
+    )
+
     only_need_context: Optional[bool] = Field(
         default=None,
         description="If True, only returns the retrieved context without generating a response.",

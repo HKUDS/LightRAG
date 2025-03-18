@@ -1333,6 +1333,9 @@ class LightRAG:
         Returns:
             str: The result of the query execution.
         """
+
+        logger.info(f"Using json response: {param.json_response}")
+
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query(
                 query.strip(),

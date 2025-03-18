@@ -767,7 +767,10 @@ async def kg_query(
     )
 
     if query_param.only_need_context:
-        return context
+        if query_param.json_response:
+            return json.dumps({"kg_context": json.loads(context)},ensure_ascii=False)
+        else:
+            return context
     if context is None:
         return PROMPTS["fail_response"]
 
@@ -1024,6 +1027,8 @@ async def mix_kg_vector_query(
                     chunk_with_time = {
                         "content": chunk["content"],
                         "created_at": result.get("created_at", None),
+                        "source_id": result.get("id", None),
+                        "full_doc_id": chunk.get("full_doc_id", None),
                     }
                     valid_chunks.append(chunk_with_time)
 
@@ -1038,19 +1043,38 @@ async def mix_kg_vector_query(
 
             if not maybe_trun_chunks:
                 return None
-
+            
             # Include time information in content
             formatted_chunks = []
-            for c in maybe_trun_chunks:
-                chunk_text = c["content"]
-                if c["created_at"]:
-                    chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
-                formatted_chunks.append(chunk_text)
 
-            logger.debug(
-                f"Truncate chunks from {len(chunks)} to {len(formatted_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
-            )
-            return "\n--New Chunk--\n".join(formatted_chunks)
+            if query_param.json_response:
+                for i, c in enumerate(maybe_trun_chunks):
+                    chunk_text = c["content"]
+                    if c["created_at"]:
+                        chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
+                    formatted_chunks.append({
+                        "id": i+1,
+                        "content": chunk_text,
+                        "source_id": c["source_id"],
+                        "full_doc_id": c["full_doc_id"]
+                    })
+
+                logger.debug(
+                    f"Truncate chunks from {len(chunks)} to {len(formatted_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+                )
+
+                return json.dumps(formatted_chunks)
+            else:
+                for c in maybe_trun_chunks:
+                    chunk_text = c["content"]
+                    if c["created_at"]:
+                        chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
+                    formatted_chunks.append(chunk_text)
+
+                logger.debug(
+                    f"Truncate chunks from {len(chunks)} to {len(formatted_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+                )
+                return "\n--New Chunk--\n".join(formatted_chunks)
         except Exception as e:
             logger.error(f"Error in get_vector_context: {e}")
             return None
@@ -1065,7 +1089,10 @@ async def mix_kg_vector_query(
         return PROMPTS["fail_response"]
 
     if query_param.only_need_context:
-        return {"kg_context": kg_context, "vector_context": vector_context}
+        if query_param.json_response:
+            return json.dumps({"kg_context": json.loads(kg_context), "vector_context": json.loads(vector_context)},ensure_ascii=False)
+        else:
+            return {"kg_context": kg_context, "vector_context": vector_context}
 
     # 5. Construct hybrid prompt
     sys_prompt = (
@@ -1182,29 +1209,42 @@ async def _build_query_context(
             hl_text_units_context,
         ) = hl_data
 
-        entities_context, relations_context, text_units_context = combine_contexts(
-            [hl_entities_context, ll_entities_context],
-            [hl_relations_context, ll_relations_context],
-            [hl_text_units_context, ll_text_units_context],
-        )
+
+        if query_param.json_response:
+            entities_context = json.dumps(json.loads(hl_entities_context) + json.loads(ll_entities_context),ensure_ascii=False)
+            relations_context = json.dumps(json.loads(hl_relations_context) + json.loads(ll_relations_context),ensure_ascii=False)
+            text_units_context = json.dumps(json.loads(hl_text_units_context) + json.loads(ll_text_units_context),ensure_ascii=False)
+
+        else:
+            entities_context, relations_context, text_units_context = combine_contexts(
+                [hl_entities_context, ll_entities_context],
+                [hl_relations_context, ll_relations_context],
+                [hl_text_units_context, ll_text_units_context],
+            )
+
     # not necessary to use LLM to generate a response
     if not entities_context.strip() and not relations_context.strip():
         return None
+    
 
-    result = f"""
-    -----Entities-----
-    ```csv
-    {entities_context}
-    ```
-    -----Relationships-----
-    ```csv
-    {relations_context}
-    ```
-    -----Sources-----
-    ```csv
-    {text_units_context}
-    ```
-    """.strip()
+    if query_param.json_response:
+        return text_units_context
+    else:
+        result = f"""
+        -----Entities-----
+        ```csv
+        {entities_context}
+        ```
+        -----Relationships-----
+        ```csv
+        {relations_context}
+        ```
+        -----Sources-----
+        ```csv
+        {text_units_context}
+        ```
+        """.strip()
+
     return result
 
 
@@ -1276,6 +1316,7 @@ async def _get_node_data(
             "type",
             "description",
             "rank",
+            "source_id",
             "created_at",
             "file_path",
         ]
@@ -1298,11 +1339,17 @@ async def _get_node_data(
                 n.get("entity_type", "UNKNOWN"),
                 n.get("description", "UNKNOWN"),
                 n["rank"],
+                n["source_id"],
                 created_at,
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
+
+    if query_param.json_response:
+        keys = entites_section_list[0]
+        entities_context = json.dumps([dict(zip(keys, row)) for row in entites_section_list[1:]],ensure_ascii=False)
+    else:
+        entities_context = list_of_list_to_csv(entites_section_list)
 
     relations_section_list = [
         [
@@ -1313,6 +1360,7 @@ async def _get_node_data(
             "keywords",
             "weight",
             "rank",
+            "source_id",
             "created_at",
             "file_path",
         ]
@@ -1338,16 +1386,28 @@ async def _get_node_data(
                 e["keywords"],
                 e["weight"],
                 e["rank"],
+                e["source_id"],
                 created_at,
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    if query_param.json_response:
+        keys = relations_section_list[0]
+        relations_context =  json.dumps([dict(zip(keys, row)) for row in relations_section_list[1:]],ensure_ascii=False)
+    else:
+        relations_context = list_of_list_to_csv(relations_section_list)
+
+    text_units_section_list = [["id", "content", "source_id", "full_doc_id"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
-    text_units_context = list_of_list_to_csv(text_units_section_list)
+        text_units_section_list.append([i, t["content"], t["id"], t["full_doc_id"]])
+
+    if query_param.json_response:
+        keys = text_units_section_list[0]
+        text_units_context =  json.dumps([dict(zip(keys, row)) for row in text_units_section_list[1:]],ensure_ascii=False)
+    else:
+        text_units_context = list_of_list_to_csv(text_units_section_list)
+
     return entities_context, relations_context, text_units_context
 
 
@@ -1554,6 +1614,7 @@ async def _get_edge_data(
             "keywords",
             "weight",
             "rank",
+            "source_id",
             "created_at",
             "file_path",
         ]
@@ -1579,11 +1640,17 @@ async def _get_edge_data(
                 e["keywords"],
                 e["weight"],
                 e["rank"],
+                e["source_id"],
                 created_at,
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
+
+    if query_param.json_response:
+        keys = relations_section_list[0]
+        relations_context = json.dumps([dict(zip(keys, row)) for row in relations_section_list[1:]],ensure_ascii=False)
+    else:
+        relations_context = list_of_list_to_csv(relations_section_list)
 
     entites_section_list = [
         ["id", "entity", "type", "description", "rank", "created_at", "file_path"]
@@ -1607,18 +1674,29 @@ async def _get_edge_data(
                 n.get("entity_type", "UNKNOWN"),
                 n.get("description", "UNKNOWN"),
                 n["rank"],
+                n["source_id"],
                 created_at,
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
 
-    text_units_section_list = [["id", "content"]]
+    if query_param.json_response:
+        keys = entites_section_list[0]
+        entities_context = json.dumps([dict(zip(keys, row)) for row in entites_section_list[1:]],ensure_ascii=False)
+    else:
+        entities_context = list_of_list_to_csv(entites_section_list)
+
+    text_units_section_list = [["id", "content", "source_id", "full_doc_id"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"]])
-    text_units_context = list_of_list_to_csv(text_units_section_list)
-    return entities_context, relations_context, text_units_context
+        text_units_section_list.append([i, t["content"], t["id"], t["full_doc_id"]])
 
+    if query_param.json_response:
+        keys = text_units_section_list[0]
+        text_units_context = json.dumps([dict(zip(keys, row)) for row in text_units_section_list[1:]],ensure_ascii=False)
+    else:
+        text_units_context = list_of_list_to_csv(text_units_section_list)
+
+    return entities_context, relations_context, text_units_context
 
 async def _find_most_related_entities_from_relationships(
     edge_datas: list[dict],
@@ -1775,9 +1853,17 @@ async def naive_query(
     chunks = await text_chunks_db.get_by_ids(chunks_ids)
 
     # Filter out invalid chunks
-    valid_chunks = [
-        chunk for chunk in chunks if chunk is not None and "content" in chunk
-    ]
+    valid_chunks = []
+    for chunk, result in zip(chunks, results):
+        if chunk is not None and "content" in chunk:
+            # Merge chunk content and time metadata
+            chunk_with_time = {
+                "content": chunk["content"],
+                "created_at": result.get("created_at", None),
+                "source_id": result.get("id", None),
+                "full_doc_id": chunk.get("full_doc_id", None),
+            }
+            valid_chunks.append(chunk_with_time)
 
     if not valid_chunks:
         logger.warning("No valid chunks found after filtering")
@@ -1797,10 +1883,28 @@ async def naive_query(
         f"Truncate chunks from {len(chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
     )
 
-    section = "\n--New Chunk--\n".join([c["content"] for c in maybe_trun_chunks])
+    if query_param.json_response:
+        formatted_chunks = []
+        for i, c in enumerate(maybe_trun_chunks):
+            chunk_text = c["content"]
+            if c["created_at"]:
+                chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
+            formatted_chunks.append({
+                "id": i+1,
+                "content": chunk_text,
+                "source_id": c["source_id"],
+                "full_doc_id": c["full_doc_id"]
+            })
+
+        section = json.dumps(formatted_chunks, ensure_ascii=False)
+    else:
+        section = "\n--New Chunk--\n".join([c["content"] for c in maybe_trun_chunks])
 
     if query_param.only_need_context:
-        return section
+        if query_param.json_response:
+            return json.dumps({"vector_context": json.loads(section)},ensure_ascii=False)
+        else:
+            return section
 
     # Process conversation history
     history_context = ""

@@ -50,6 +50,9 @@ class QueryParam:
     response_type: str = "Multiple Paragraphs"
     """Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'."""
 
+    json_response: bool = False
+    """If True, the response will be in JSON format."""
+
     stream: bool = False
     """If True, enables streaming output for real-time responses."""
 

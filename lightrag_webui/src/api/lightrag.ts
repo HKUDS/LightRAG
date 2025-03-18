@@ -72,6 +72,8 @@ export type QueryRequest = {
   /** Specifies the retrieval mode. */
   mode: QueryMode
   /** If True, only returns the retrieved context without generating a response. */
+  json_response?: boolean
+  /** If True, parses the response as json and not csv. */
   only_need_context?: boolean
   /** If True, only returns the generated prompt without producing a response. */
   only_need_prompt?: boolean

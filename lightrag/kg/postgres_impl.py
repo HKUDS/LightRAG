@@ -898,15 +898,21 @@ class PGGraphStorage(BaseGraphStorage):
                     if "::vertex" not in v:
                         continue
                     v = v.replace("::vertex", "")
-                    vertexes = json.loads(v)
-                    for vertex in vertexes:
-                        vertices[vertex["id"]] = vertex.get("properties")
+                    try:
+                        vertexes = json.loads(v)
+                        for vertex in vertexes:
+                            vertices[vertex["id"]] = vertex.get("properties")
+                    except json.JSONDecodeError as e:
+                        logger.error(f"Failed to parse vertexes: {v}. Error: {e}")
                 else:
                     dtype = v.split("::")[-1]
                     v = v.split("::")[0]
                     if dtype == "vertex":
-                        vertex = json.loads(v)
-                        vertices[vertex["id"]] = vertex.get("properties")
+                        try:
+                            vertex = json.loads(v)
+                            vertices[vertex["id"]] = vertex.get("properties")
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse vertex: {v}. Error: {e}")
 
         # iterate returned fields and parse appropriately
         for k in record.keys():
@@ -915,31 +921,37 @@ class PGGraphStorage(BaseGraphStorage):
                 if v.startswith("[") and v.endswith("]"):
                     if "::vertex" in v:
                         v = v.replace("::vertex", "")
-                        vertexes = json.loads(v)
-                        dl = []
-                        for vertex in vertexes:
-                            prop = vertex.get("properties")
-                            if not prop:
-                                prop = {}
-                            prop["label"] = PGGraphStorage._decode_graph_label(
-                                prop["node_id"]
-                            )
-                            dl.append(prop)
-                        d[k] = dl
+                        try:
+                            vertexes = json.loads(v)
+                            dl = []
+                            for vertex in vertexes:
+                                prop = vertex.get("properties")
+                                if not prop:
+                                    prop = {}
+                                prop["label"] = PGGraphStorage._decode_graph_label(
+                                    prop["node_id"]
+                                )
+                                dl.append(prop)
+                            d[k] = dl
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse vertexes: {v}. Error: {e}")
 
                     elif "::edge" in v:
                         v = v.replace("::edge", "")
-                        edges = json.loads(v)
-                        dl = []
-                        for edge in edges:
-                            dl.append(
-                                (
-                                    vertices[edge["start_id"]],
-                                    edge["label"],
-                                    vertices[edge["end_id"]],
+                        try:
+                            edges = json.loads(v)
+                            dl = []
+                            for edge in edges:
+                                dl.append(
+                                    (
+                                        vertices[edge["start_id"]],
+                                        edge["label"],
+                                        vertices[edge["end_id"]],
+                                    )
                                 )
-                            )
-                        d[k] = dl
+                            d[k] = dl
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse edges: {v}. Error: {e}")
                     else:
                         print("WARNING: unsupported type")
                         continue
@@ -948,26 +960,32 @@ class PGGraphStorage(BaseGraphStorage):
                     dtype = v.split("::")[-1]
                     v = v.split("::")[0]
                     if dtype == "vertex":
-                        vertex = json.loads(v)
-                        field = vertex.get("properties")
-                        if not field:
-                            field = {}
-                        field["label"] = PGGraphStorage._decode_graph_label(
-                            field["node_id"]
-                        )
-                        d[k] = field
+                        try:
+                            vertex = json.loads(v)
+                            field = vertex.get("properties")
+                            if not field:
+                                field = {}
+                            field["label"] = PGGraphStorage._decode_graph_label(
+                                field["node_id"]
+                            )
+                            d[k] = field
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse vertex: {v}. Error: {e}")
                     # convert edge from id-label->id by replacing id with node information
                     # we only do this if the vertex was also returned in the query
                     # this is an attempt to be consistent with neo4j implementation
                     elif dtype == "edge":
-                        edge = json.loads(v)
-                        d[k] = (
-                            vertices.get(edge["start_id"], {}),
-                            edge[
-                                "label"
-                            ],  # we don't use decode_graph_label(), since edge label is always "DIRECTED"
-                            vertices.get(edge["end_id"], {}),
-                        )
+                        try:
+                            edge = json.loads(v)
+                            d[k] = (
+                                vertices.get(edge["start_id"], {}),
+                                edge[
+                                    "label"
+                                ],  # we don't use decode_graph_label(), since edge label is always "DIRECTED"
+                                vertices.get(edge["end_id"], {}),
+                            )
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse edge: {v}. Error: {e}")
             else:
                 d[k] = (
                     json.loads(v)
@@ -975,6 +993,15 @@ class PGGraphStorage(BaseGraphStorage):
                     else v
                 )
 
+                if isinstance(v, str):
+                    if v.count("{") < 1 and v.count("[") < 1:
+                        d[k] = v
+                    else:
+                        try:
+                            d[k] = json.loads(v)
+                        except json.JSONDecodeError as e:
+                            logger.error(f"Failed to parse string: {v}. Error: {e}")
+        
         return d
 
     @staticmethod
