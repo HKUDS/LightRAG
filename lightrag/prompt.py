@@ -61,7 +61,7 @@ Text:
 ```
 while Alex clenched his jaw, the buzz of frustration dull against the backdrop of Taylor's authoritarian certainty. It was this competitive undercurrent that kept him alert, the sense that his and Jordan's shared commitment to discovery was an unspoken rebellion against Cruz's narrowing vision of control and order.
 
-Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. “If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us.”
+Then Taylor did something unexpected. They paused beside Jordan and, for a moment, observed the device with something akin to reverence. "If this tech can be understood..." Taylor said, their voice quieter, "It could change the game for us. For all of us."
 
 The underlying dismissal earlier seemed to falter, replaced by a glimpse of reluctant respect for the gravity of what lay in their hands. Jordan looked up, and for a fleeting heartbeat, their eyes locked with Taylor's, a wordless clash of wills softening into an uneasy truce.
 
@@ -92,7 +92,7 @@ Among the hardest hit, Nexon Technologies saw its stock plummet by 7.8% after re
 
 Meanwhile, commodity markets reflected a mixed sentiment. Gold futures rose by 1.5%, reaching $2,080 per ounce, as investors sought safe-haven assets. Crude oil prices continued their rally, climbing to $87.60 per barrel, supported by supply constraints and strong demand.
 
-Financial experts are closely watching the Federal Reserve’s next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
+Financial experts are closely watching the Federal Reserve's next move, as speculation grows over potential rate hikes. The upcoming policy announcement is expected to influence investor confidence and overall market stability.
 ```
 
 Output:
@@ -222,6 +222,7 @@ When handling relationships with timestamps:
 - Use markdown formatting with appropriate section headings
 - Please respond in the same language as the user's question.
 - Ensure the response maintains continuity with the conversation history.
+- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path if available, in the following format: [KG/DC] Source content (File: file_path)
 - If you don't know the answer, just say so.
 - Do not make anything up. Do not include information not provided by the Knowledge Base."""
 
@@ -319,6 +320,7 @@ When handling content with timestamps:
 - Use markdown formatting with appropriate section headings
 - Please respond in the same language as the user's question.
 - Ensure the response maintains continuity with the conversation history.
+- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path if available, in the following format: [KG/DC] Source content (File: file_path)
 - If you don't know the answer, just say so.
 - Do not include information not provided by the Document Chunks."""
 
@@ -378,8 +380,8 @@ When handling information with timestamps:
 - Use markdown formatting with appropriate section headings
 - Please respond in the same language as the user's question.
 - Ensure the response maintains continuity with the conversation history.
-- Organize answer in sesctions focusing on one main point or aspect of the answer
+- Organize answer in sections focusing on one main point or aspect of the answer
 - Use clear and descriptive section titles that reflect the content
-- List up to 5 most important reference sources at the end under "References" sesction. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), in the following format: [KG/DC] Source content
+- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path if available, in the following format: [KG/DC] Source content (File: file_path)
 - If you don't know the answer, just say so. Do not make anything up.
 - Do not include information not provided by the Data Sources."""

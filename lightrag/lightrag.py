@@ -389,20 +389,21 @@ class LightRAG:
                 self.namespace_prefix, NameSpace.VECTOR_STORE_ENTITIES
             ),
             embedding_func=self.embedding_func,
-            meta_fields={"entity_name", "source_id", "content"},
+            meta_fields={"entity_name", "source_id", "content", "file_path"},
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.VECTOR_STORE_RELATIONSHIPS
             ),
             embedding_func=self.embedding_func,
-            meta_fields={"src_id", "tgt_id", "source_id", "content"},
+            meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path"},
         )
         self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS
             ),
             embedding_func=self.embedding_func,
+            meta_fields={"full_doc_id", "content", "file_path"},
         )
 
         # Initialize document status storage
@@ -547,6 +548,7 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
+        file_paths: str | list[str] | None = None,
     ) -> None:
         """Sync Insert documents with checkpoint support
 
@@ -557,10 +559,13 @@ class LightRAG:
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
+            file_paths: single string of the file path or list of file paths, used for citation
         """
         loop = always_get_an_event_loop()
         loop.run_until_complete(
-            self.ainsert(input, split_by_character, split_by_character_only, ids)
+            self.ainsert(
+                input, split_by_character, split_by_character_only, ids, file_paths
+            )
         )
 
     async def ainsert(
@@ -569,6 +574,7 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
+        file_paths: str | list[str] | None = None,
     ) -> None:
         """Async Insert documents with checkpoint support
 
@@ -579,8 +585,9 @@ class LightRAG:
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
             split_by_character is None, this parameter is ignored.
             ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
+            file_paths: list of file paths corresponding to each document, used for citation
         """
-        await self.apipeline_enqueue_documents(input, ids)
+        await self.apipeline_enqueue_documents(input, ids, file_paths)
         await self.apipeline_process_enqueue_documents(
             split_by_character, split_by_character_only
         )
@@ -654,7 +661,10 @@ class LightRAG:
                 await self._insert_done()
 
     async def apipeline_enqueue_documents(
-        self, input: str | list[str], ids: list[str] | None = None
+        self,
+        input: str | list[str],
+        ids: list[str] | None = None,
+        file_paths: str | list[str] | None = None,
     ) -> None:
         """
         Pipeline for Processing Documents
@@ -664,11 +674,30 @@ class LightRAG:
         3. Generate document initial status
         4. Filter out already processed documents
         5. Enqueue document in status
+
+        Args:
+            input: Single document string or list of document strings
+            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
+            file_paths: list of file paths corresponding to each document, used for citation
         """
         if isinstance(input, str):
             input = [input]
         if isinstance(ids, str):
             ids = [ids]
+        if isinstance(file_paths, str):
+            file_paths = [file_paths]
+
+        # If file_paths is provided, ensure it matches the number of documents
+        if file_paths is not None:
+            if isinstance(file_paths, str):
+                file_paths = [file_paths]
+            if len(file_paths) != len(input):
+                raise ValueError(
+                    "Number of file paths must match the number of documents"
+                )
+        else:
+            # If no file paths provided, use placeholder
+            file_paths = ["unknown_source"] * len(input)
 
         # 1. Validate ids if provided or generate MD5 hash IDs
         if ids is not None:
@@ -681,32 +710,59 @@ class LightRAG:
                 raise ValueError("IDs must be unique")
 
             # Generate contents dict of IDs provided by user and documents
-            contents = {id_: doc for id_, doc in zip(ids, input)}
+            contents = {
+                id_: {"content": doc, "file_path": path}
+                for id_, doc, path in zip(ids, input, file_paths)
+            }
         else:
             # Clean input text and remove duplicates
-            input = list(set(clean_text(doc) for doc in input))
-            # Generate contents dict of MD5 hash IDs and documents
-            contents = {compute_mdhash_id(doc, prefix="doc-"): doc for doc in input}
+            cleaned_input = [
+                (clean_text(doc), path) for doc, path in zip(input, file_paths)
+            ]
+            unique_content_with_paths = {}
+
+            # Keep track of unique content and their paths
+            for content, path in cleaned_input:
+                if content not in unique_content_with_paths:
+                    unique_content_with_paths[content] = path
+
+            # Generate contents dict of MD5 hash IDs and documents with paths
+            contents = {
+                compute_mdhash_id(content, prefix="doc-"): {
+                    "content": content,
+                    "file_path": path,
+                }
+                for content, path in unique_content_with_paths.items()
+            }
 
         # 2. Remove duplicate contents
-        unique_contents = {
-            id_: content
-            for content, id_ in {
-                content: id_ for id_, content in contents.items()
-            }.items()
+        unique_contents = {}
+        for id_, content_data in contents.items():
+            content = content_data["content"]
+            file_path = content_data["file_path"]
+            if content not in unique_contents:
+                unique_contents[content] = (id_, file_path)
+
+        # Reconstruct contents with unique content
+        contents = {
+            id_: {"content": content, "file_path": file_path}
+            for content, (id_, file_path) in unique_contents.items()
         }
 
         # 3. Generate document initial status
         new_docs: dict[str, Any] = {
             id_: {
-                "content": content,
-                "content_summary": get_content_summary(content),
-                "content_length": len(content),
                 "status": DocStatus.PENDING,
+                "content": content_data["content"],
+                "content_summary": get_content_summary(content_data["content"]),
+                "content_length": len(content_data["content"]),
                 "created_at": datetime.now().isoformat(),
                 "updated_at": datetime.now().isoformat(),
+                "file_path": content_data[
+                    "file_path"
+                ],  # Store file path in document status
             }
-            for id_, content in unique_contents.items()
+            for id_, content_data in contents.items()
         }
 
         # 4. Filter out already processed documents
@@ -841,11 +897,15 @@ class LightRAG:
                 ) -> None:
                     """Process single document"""
                     try:
+                        # Get file path from status document
+                        file_path = getattr(status_doc, "file_path", "unknown_source")
+
                         # Generate chunks from document
                         chunks: dict[str, Any] = {
                             compute_mdhash_id(dp["content"], prefix="chunk-"): {
                                 **dp,
                                 "full_doc_id": doc_id,
+                                "file_path": file_path,  # Add file path to each chunk
                             }
                             for dp in self.chunking_func(
                                 status_doc.content,
@@ -856,6 +916,7 @@ class LightRAG:
                                 self.tiktoken_model_name,
                             )
                         }
+
                         # Process document (text chunks and full docs) in parallel
                         # Create tasks with references for potential cancellation
                         doc_status_task = asyncio.create_task(
@@ -863,11 +924,13 @@ class LightRAG:
                                 {
                                     doc_id: {
                                         "status": DocStatus.PROCESSING,
-                                        "updated_at": datetime.now().isoformat(),
+                                        "chunks_count": len(chunks),
                                         "content": status_doc.content,
                                         "content_summary": status_doc.content_summary,
                                         "content_length": status_doc.content_length,
                                         "created_at": status_doc.created_at,
+                                        "updated_at": datetime.now().isoformat(),
+                                        "file_path": file_path,
                                     }
                                 }
                             )
@@ -906,6 +969,7 @@ class LightRAG:
                                     "content_length": status_doc.content_length,
                                     "created_at": status_doc.created_at,
                                     "updated_at": datetime.now().isoformat(),
+                                    "file_path": file_path,
                                 }
                             }
                         )
@@ -937,6 +1001,7 @@ class LightRAG:
                                     "content_length": status_doc.content_length,
                                     "created_at": status_doc.created_at,
                                     "updated_at": datetime.now().isoformat(),
+                                    "file_path": file_path,
                                 }
                             }
                         )
@@ -1063,7 +1128,10 @@ class LightRAG:
         loop.run_until_complete(self.ainsert_custom_kg(custom_kg, full_doc_id))
 
     async def ainsert_custom_kg(
-        self, custom_kg: dict[str, Any], full_doc_id: str = None
+        self,
+        custom_kg: dict[str, Any],
+        full_doc_id: str = None,
+        file_path: str = "custom_kg",
     ) -> None:
         update_storage = False
         try:
@@ -1093,6 +1161,7 @@ class LightRAG:
                     "full_doc_id": full_doc_id
                     if full_doc_id is not None
                     else source_id,
+                    "file_path": file_path,  # Add file path
                     "status": DocStatus.PROCESSED,
                 }
                 all_chunks_data[chunk_id] = chunk_entry
@@ -1197,6 +1266,7 @@ class LightRAG:
                     "source_id": dp["source_id"],
                     "description": dp["description"],
                     "entity_type": dp["entity_type"],
+                    "file_path": file_path,  # Add file path
                 }
                 for dp in all_entities_data
             }
@@ -1212,6 +1282,7 @@ class LightRAG:
                     "keywords": dp["keywords"],
                     "description": dp["description"],
                     "weight": dp["weight"],
+                    "file_path": file_path,  # Add file path
                 }
                 for dp in all_relationships_data
             }
@@ -2220,7 +2291,6 @@ class LightRAG:
         """Synchronously create a new entity.
 
         Creates a new entity in the knowledge graph and adds it to the vector database.
-
         Args:
             entity_name: Name of the new entity
             entity_data: Dictionary containing entity attributes, e.g. {"description": "description", "entity_type": "type"}
