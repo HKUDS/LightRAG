@@ -595,6 +595,8 @@ const useLightrangeGraph = () => {
             rawGraph.edgeIdMap[newEdge.id] = rawGraph.edges.length - 1;
             // Update dynamic edge map
             rawGraph.edgeDynamicIdMap[newEdge.dynamicId] = rawGraph.edges.length - 1;
+          } else {
+            console.error('Edge already exists in rawGraph:', newEdge.id);
           }
         }
 
