@@ -1473,8 +1473,7 @@ class LightRAG:
         """
         try:
             # 1. Get the document status and related data
-            doc_status = await self.doc_status.get_by_id(doc_id)
-            if not doc_status:
+            if not await self.doc_status.get_by_id(doc_id):
                 logger.warning(f"Document {doc_id} not found")
                 return
 
