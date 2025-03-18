@@ -246,7 +246,8 @@ async def _merge_nodes_then_upsert(
     file_path = GRAPH_FIELD_SEP.join(
         set([dp["metadata"]["file_path"] for dp in nodes_data] + already_file_paths)
     )
-    print(f"file_path: {file_path}")
+
+    logger.debug(f"file_path: {file_path}")
     description = await _handle_entity_relation_summary(
         entity_name, description, global_config
     )

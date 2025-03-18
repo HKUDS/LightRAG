@@ -141,7 +141,13 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
 
 // Create a new graph instance with the raw graph data
 const createSigmaGraph = (rawGraph: RawGraph | null) => {
-  // Always create a new graph instance
+  // Skip graph creation if no data or empty nodes
+  if (!rawGraph || !rawGraph.nodes.length) {
+    console.log('No graph data available, skipping sigma graph creation');
+    return null;
+  }
+
+  // Create new graph instance
   const graph = new DirectedGraph()
 
   // Add nodes from raw graph data
@@ -242,7 +248,7 @@ const useLightrangeGraph = () => {
     if (!isFetching && !fetchInProgressRef.current &&
         (paramsChanged || !useGraphStore.getState().graphDataFetchAttempted)) {
 
-      // Only fetch data if the Graph tab is visible
+      // Only fetch data if the Graph tab is visible and we haven't attempted a fetch yet
       if (!isGraphTabVisible) {
         console.log('Graph tab not visible, skipping data fetch');
         return;
