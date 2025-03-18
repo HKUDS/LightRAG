@@ -735,7 +735,7 @@ class PGDocStatusStorage(DocStatusStorage):
         if result is None or result == []:
             return None
         else:
-            return DocProcessingStatus(
+            return dict(
                 content=result[0]["content"],
                 content_length=result[0]["content_length"],
                 content_summary=result[0]["content_summary"],
@@ -1065,7 +1065,6 @@ class PGGraphStorage(BaseGraphStorage):
 
         Args:
             query (str): a cypher query to be executed
-            params (dict): parameters for the query
 
         Returns:
             list[dict[str, Any]]: a list of dictionaries containing the result set
