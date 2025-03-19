@@ -747,8 +747,30 @@ class PGDocStatusStorage(DocStatusStorage):
             )
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get doc_chunks data by id"""
-        raise NotImplementedError
+        """Get doc_chunks data by multiple IDs."""
+        if not ids:
+            return []
+
+        sql = "SELECT * FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id = ANY($2)"
+        params = {"workspace": self.db.workspace, "ids": ids}
+
+        results = await self.db.query(sql, params, True)
+
+        if not results:
+            return []
+        return [
+            {
+                "content": row["content"],
+                "content_length": row["content_length"],
+                "content_summary": row["content_summary"],
+                "status": row["status"],
+                "chunks_count": row["chunks_count"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "file_path": row["file_path"],
+            }
+            for row in results
+        ]
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
