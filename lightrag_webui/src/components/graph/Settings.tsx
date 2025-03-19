@@ -199,17 +199,15 @@ export default function Settings() {
   const { t } = useTranslation();
 
   const saveSettings = () => setOpened(false);
-  const toggleSettings = () => setOpened(!opened);
 
   return (
     <>
-      <Popover open={opened}>
+      <Popover open={opened} onOpenChange={setOpened}>
         <PopoverTrigger asChild>
           <Button
             variant={controlButtonVariant}
             tooltip={t('graphPanel.sideBar.settings.settings')}
             size="icon"
-            onClick={toggleSettings}
           >
             <SettingsIcon />
           </Button>
