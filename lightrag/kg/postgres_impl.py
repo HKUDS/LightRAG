@@ -8,7 +8,7 @@ import numpy as np
 import configparser
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from prompt import GRAPH_FIELD_SEP
+from lightrag.prompt import GRAPH_FIELD_SEP
 
 import sys
 from tenacity import (
