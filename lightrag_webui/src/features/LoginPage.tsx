@@ -95,15 +95,15 @@ const LoginPage = () => {
       } else {
         toast.success(t('login.successMessage'))
       }
-      
+
       // Navigate to home page after successful login
       navigate('/')
     } catch (error) {
       console.error('Login failed...', error)
       toast.error(t('login.errorInvalidCredentials'))
-      
+
       // Clear any existing auth state
-      useAuthStore.getState().logout()      
+      useAuthStore.getState().logout()
       // Clear local storage
       localStorage.removeItem('LIGHTRAG-API-TOKEN')
     } finally {
