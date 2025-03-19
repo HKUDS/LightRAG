@@ -1,6 +1,7 @@
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { useAuthStore } from '@/stores/state'
+import { navigationService } from '@/services/navigation'
 import { getAuthStatus } from '@/api/lightrag'
 import { toast } from 'sonner'
 import { Toaster } from 'sonner'
@@ -65,9 +66,26 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
     return null
   }
 
-  // After checking, if still not authenticated, redirect to login
+  // After checking, if still not authenticated
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace />
+    // Get current path and check if it's a direct access
+    const currentPath = window.location.hash.slice(1); // Remove the '#' from hash
+    const isLoginPage = currentPath === '/login';
+    const isDirectAccess = !document.referrer;
+
+    // Handle direct access to root path
+    if (isDirectAccess && currentPath === '/') {
+      navigationService.resetAllApplicationState();
+    }
+
+    // Skip redirect if already on login page
+    if (isLoginPage) {
+      return null;
+    }
+
+    // Use React Router's Navigate for redirection
+    console.log('Not authenticated, redirecting to login');
+    return <Navigate to="/login" replace />;
   }
 
   return <>{children}</>
