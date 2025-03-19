@@ -46,7 +46,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
     >
       <pre className="relative break-words whitespace-pre-wrap">
         <ReactMarkdown
-          className="dark:prose-invert max-w-none text-base text-sm"
+          className="dark:prose-invert max-w-none text-base"
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeReact]}
           skipHtml={false}
