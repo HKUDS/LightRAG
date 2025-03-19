@@ -229,7 +229,7 @@ const useLightrangeGraph = () => {
       return
     }
 
-    // Only fetch data when graphDataFetchAttempted is false
+    // Only fetch data when graphDataFetchAttempted is false (avoids re-fetching on vite dev mode)
     if (!isFetching && !useGraphStore.getState().graphDataFetchAttempted) {
       // Set flags
       fetchInProgressRef.current = true

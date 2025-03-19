@@ -93,9 +93,25 @@ const GraphLabels = () => {
   )
 
   const handleRefresh = useCallback(() => {
-    // Re-set the same label to trigger a refresh through useEffect
-    const currentLabel = useSettingsStore.getState().queryLabel
-    useSettingsStore.getState().setQueryLabel(currentLabel)
+    // Reset labels fetch status to allow fetching labels again
+    useGraphStore.getState().setLabelsFetchAttempted(false)
+    
+    // Reset graph data fetch status directly, not depending on allDatabaseLabels changes
+    useGraphStore.getState().setGraphDataFetchAttempted(false)
+    
+    // Fetch all labels again
+    useGraphStore.getState().fetchAllDatabaseLabels()
+      .then(() => {
+        // Trigger a graph data reload by changing the query label back and forth
+        const currentLabel = useSettingsStore.getState().queryLabel
+        useSettingsStore.getState().setQueryLabel('')
+        setTimeout(() => {
+          useSettingsStore.getState().setQueryLabel(currentLabel)
+        }, 0)
+      })
+      .catch((error) => {
+        console.error('Failed to refresh labels:', error)
+      })
   }, [])
 
   return (
