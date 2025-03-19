@@ -14,7 +14,7 @@ import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
 import RetrievalTesting from '@/features/RetrievalTesting'
 import ApiSite from '@/features/ApiSite'
-import { initializeI18n } from '@/i18n'
+
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
@@ -23,14 +23,6 @@ function App() {
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyInvalid, setApiKeyInvalid] = useState(false)
-  const [isI18nInitialized, setIsI18nInitialized] = useState(false)
-
-  useEffect(() => {
-    // Initialize i18n immediately with persisted language
-    initializeI18n().then(() => {
-      setIsI18nInitialized(true)
-    })
-  }, [])
 
   // Health check
   useEffect(() => {
@@ -57,10 +49,6 @@ function App() {
     }
     setApiKeyInvalid(false)
   }, [message, setApiKeyInvalid])
-
-  if (!isI18nInitialized) {
-    return null // or a loading spinner
-  }
 
   return (
     <ThemeProvider>
