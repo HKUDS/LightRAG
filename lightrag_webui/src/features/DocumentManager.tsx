@@ -196,7 +196,7 @@ export default function DocumentManager() {
                                 tooltipClassName="max-w-none overflow-visible block"
                               />
                             </TableCell>
-                            <TableCell>
+                            <TableCell className='truncate'>
                               {status === 'processed' && (
                                 <span className="text-green-600">
                                   {t('documentPanel.documentManager.status.completed')}
