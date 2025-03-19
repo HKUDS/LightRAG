@@ -95,10 +95,10 @@ const GraphLabels = () => {
   const handleRefresh = useCallback(() => {
     // Reset labels fetch status to allow fetching labels again
     useGraphStore.getState().setLabelsFetchAttempted(false)
-    
+
     // Reset graph data fetch status directly, not depending on allDatabaseLabels changes
     useGraphStore.getState().setGraphDataFetchAttempted(false)
-    
+
     // Fetch all labels again
     useGraphStore.getState().fetchAllDatabaseLabels()
       .then(() => {
