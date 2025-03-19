@@ -458,4 +458,3 @@ export const pipelineStatus = async (): Promise<PipelineStatusResponse> => {
   const response = await axiosInstance.get('/documents/pipeline_status')
   return response.data
 }
-

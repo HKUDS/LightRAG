@@ -23,7 +23,7 @@ export default function ApiSite() {
           style={{ width: '100%', height: '100%', border: 'none' }}
           // Use key to ensure iframe doesn't reload
           key="api-docs-iframe"
-        /> 
+        />
       ) : (
         <div className="flex h-full w-full items-center justify-center bg-background">
           <div className="text-center">
