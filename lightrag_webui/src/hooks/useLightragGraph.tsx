@@ -8,7 +8,6 @@ import { toast } from 'sonner'
 import { queryGraphs } from '@/api/lightrag'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
-import { useTabVisibility } from '@/contexts/useTabVisibility'
 
 import seedrandom from 'seedrandom'
 
@@ -189,11 +188,7 @@ const useLightrangeGraph = () => {
   const isFetching = useGraphStore.use.isFetching()
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
-
-  // Get tab visibility
-  const { isTabVisible } = useTabVisibility()
-  const isGraphTabVisible = isTabVisible('knowledge-graph')
-
+  
   // Track previous parameters to detect actual changes
   const prevParamsRef = useRef({ queryLabel, maxQueryDepth, minDegree })
 
@@ -247,12 +242,6 @@ const useLightrangeGraph = () => {
     // Check if parameters have changed
     if (!isFetching && !fetchInProgressRef.current &&
         (paramsChanged || !useGraphStore.getState().graphDataFetchAttempted)) {
-
-      // Only fetch data if the Graph tab is visible and we haven't attempted a fetch yet
-      if (!isGraphTabVisible) {
-        console.log('Graph tab not visible, skipping data fetch');
-        return;
-      }
 
       // Set flags
       fetchInProgressRef.current = true
@@ -316,15 +305,7 @@ const useLightrangeGraph = () => {
         state.setGraphDataFetchAttempted(false)
       })
     }
-  }, [queryLabel, maxQueryDepth, minDegree, isFetching, paramsChanged, isGraphTabVisible, rawGraph, sigmaGraph])
-
-  // Update rendering state and handle tab visibility changes
-  useEffect(() => {
-    // When tab becomes visible
-    if (isGraphTabVisible) {
-      // We no longer reset the fetch attempted flag here to prevent continuous API calls
-    }
-  }, [isGraphTabVisible, rawGraph])
+  }, [queryLabel, maxQueryDepth, minDegree, isFetching, paramsChanged, rawGraph, sigmaGraph])
 
   // Handle node expansion
   useEffect(() => {

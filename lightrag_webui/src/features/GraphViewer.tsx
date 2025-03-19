@@ -1,5 +1,4 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { useTabVisibility } from '@/contexts/useTabVisibility'
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
 import { Settings as SigmaSettings } from 'sigma/settings'
@@ -114,27 +113,15 @@ const GraphViewer = () => {
   const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
   const isFetching = useGraphStore.use.isFetching()
 
-  // Get tab visibility
-  const { isTabVisible } = useTabVisibility()
-  const isGraphTabVisible = isTabVisible('knowledge-graph')
-
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
-
-  // Handle component mount/unmount and tab visibility
-  useEffect(() => {
-    return () => {
-      // Only log, keep everything untouched
-      // This allows the WebGL context to persist across tab switches
-      console.log('GraphViewer is invisible, WebGL context is persisting')
-    }
-  }, [isGraphTabVisible])
 
   // Initialize sigma settings once on component mount
   // All dynamic settings will be updated in GraphControl using useSetSettings
   useEffect(() => {
     setSigmaSettings(defaultSigmaSettings)
+    console.log('Initialized sigma settings') 
   }, [])
 
   // Clean up sigma instance when component unmounts
