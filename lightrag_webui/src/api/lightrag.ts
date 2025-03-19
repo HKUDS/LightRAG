@@ -173,9 +173,12 @@ axiosInstance.interceptors.response.use(
   (error: AxiosError) => {
     if (error.response) {
       if (error.response?.status === 401) {
-        // Use navigation service to handle redirection
+        // For login API, throw error directly
+        if (error.config?.url?.includes('/login')) {
+          throw error;
+        }
+        // For other APIs, navigate to login page
         navigationService.navigateToLogin();
-
         // Return a never-resolving promise to prevent further execution
         return new Promise(() => {});
       }

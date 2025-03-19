@@ -61,13 +61,28 @@ class NavigationService {
    * @param skipReset whether to skip state reset (used for direct access scenario where reset is already handled)
    */
   navigateToLogin() {
-
-    this.resetAllApplicationState();
-    useAuthStore.getState().logout();
-
-    if (this.navigate) {
-      this.navigate('/login');
+    if (!this.navigate) {
+      console.error('Navigation function not set');
+      return;
     }
+
+    // First navigate to login page
+    this.navigate('/login');
+
+    // Then reset state after navigation
+    setTimeout(() => {
+      this.resetAllApplicationState();
+      useAuthStore.getState().logout();
+    }, 0);
+  }
+
+  navigateToHome() {
+    if (!this.navigate) {
+      console.error('Navigation function not set');
+      return;
+    }
+
+    this.navigate('/');
   }
 }
 
