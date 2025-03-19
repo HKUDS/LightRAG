@@ -260,7 +260,6 @@ const useLightrangeGraph = () => {
 
       const state = useGraphStore.getState()
       state.setIsFetching(true)
-      state.setShouldRender(false) // Disable rendering during data loading
 
       // Clear selection and highlighted nodes before fetching new graph
       state.clearSelection()
@@ -305,8 +304,6 @@ const useLightrangeGraph = () => {
         // Reset camera view
         state.setMoveToSelectedNode(true)
 
-        // Enable rendering if the tab is visible
-        state.setShouldRender(isGraphTabVisible)
         state.setIsFetching(false)
       }).catch((error) => {
         console.error('Error fetching graph data:', error)
@@ -314,7 +311,6 @@ const useLightrangeGraph = () => {
         // Reset state on error
         const state = useGraphStore.getState()
         state.setIsFetching(false)
-        state.setShouldRender(isGraphTabVisible)
         dataLoadedRef.current = false
         fetchInProgressRef.current = false
         state.setGraphDataFetchAttempted(false)
@@ -326,15 +322,7 @@ const useLightrangeGraph = () => {
   useEffect(() => {
     // When tab becomes visible
     if (isGraphTabVisible) {
-      // If we have data, enable rendering
-      if (rawGraph) {
-        useGraphStore.getState().setShouldRender(true)
-      }
-
       // We no longer reset the fetch attempted flag here to prevent continuous API calls
-    } else {
-      // When tab becomes invisible, disable rendering
-      useGraphStore.getState().setShouldRender(false)
     }
   }, [isGraphTabVisible, rawGraph])
 
