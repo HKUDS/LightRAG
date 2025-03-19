@@ -51,6 +51,13 @@ from .auth import auth_handler
 # This update allows the user to put a different.env file for each lightrag folder
 load_dotenv(".env", override=True)
 
+# Import all the embedding models that might be used
+from lightrag.llm.lollms import lollms_model_complete, lollms_embed
+from lightrag.llm.ollama import ollama_model_complete, ollama_embed, async_ollama_embed
+from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.llm.azure_openai import azure_openai_complete_if_cache, azure_openai_embed
+from lightrag.llm.infinity import infinity_embed
+
 # Initialize config parser
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -71,7 +78,7 @@ def create_app(args):
     ]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
+    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai", "infinity"]:
         raise Exception("embedding binding not supported")
 
     # Set default hosts if not provided
@@ -256,6 +263,12 @@ def create_app(args):
             api_key=args.embedding_binding_api_key,
         )
         if args.embedding_binding == "azure_openai"
+        else infinity_embed(
+            texts,
+            model_name=args.embedding_model,
+            is_query=kwargs.get("is_query", False),
+        )
+        if args.embedding_binding == "infinity"
         else openai_embed(
             texts,
             model=args.embedding_model,
@@ -287,6 +300,16 @@ def create_app(args):
             if args.llm_binding == "lollms" or args.llm_binding == "ollama"
             else {},
             embedding_func=embedding_func,
+            # Add query_embedding_func if using infinity with Snowflake models
+            query_embedding_func=EmbeddingFunc(
+                embedding_dim=args.embedding_dim,
+                max_token_size=args.max_embed_tokens,
+                func=lambda texts: infinity_embed(
+                    texts,
+                    model_name=args.embedding_model,
+                    is_query=True,  # Force is_query=True for query embedding function
+                )
+            ) if args.embedding_binding == "infinity" and args.embedding_model.startswith("Snowflake/") else None,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
@@ -316,6 +339,16 @@ def create_app(args):
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
             embedding_func=embedding_func,
+            # Add query_embedding_func if using infinity with Snowflake models
+            query_embedding_func=EmbeddingFunc(
+                embedding_dim=args.embedding_dim,
+                max_token_size=args.max_embed_tokens,
+                func=lambda texts: infinity_embed(
+                    texts,
+                    model_name=args.embedding_model,
+                    is_query=True,  # Force is_query=True for query embedding function
+                )
+            ) if args.embedding_binding == "infinity" and args.embedding_model.startswith("Snowflake/") else None,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,

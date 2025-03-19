@@ -129,6 +129,7 @@ def get_default_host(binding_type: str) -> str:
         "lollms": os.getenv("LLM_BINDING_HOST", "http://localhost:9600"),
         "azure_openai": os.getenv("AZURE_OPENAI_ENDPOINT", "https://api.openai.com/v1"),
         "openai": os.getenv("LLM_BINDING_HOST", "https://api.openai.com/v1"),
+        "infinity": None,  # No host needed for local infinity embeddings
     }
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
@@ -332,7 +333,7 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
         "--embedding-binding",
         type=str,
         default=get_env_value("EMBEDDING_BINDING", "ollama"),
-        choices=["lollms", "ollama", "openai", "azure_openai"],
+        choices=["lollms", "ollama", "openai", "azure_openai", "infinity"],
         help="Embedding binding type (default: from env or ollama)",
     )
 
