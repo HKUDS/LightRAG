@@ -125,7 +125,7 @@ export default function Settings() {
   const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
-  
+
   const setEnableNodeDrag = useCallback(
     () => useSettingsStore.setState((pre) => ({ enableNodeDrag: !pre.enableNodeDrag })),
     []
@@ -197,7 +197,7 @@ export default function Settings() {
   }, [])
 
   const { t } = useTranslation();
-  
+
   const saveSettings = () => setOpened(false);
   const toggleSettings = () => setOpened(!opened);
 
@@ -205,9 +205,9 @@ export default function Settings() {
     <>
       <Popover open={opened}>
         <PopoverTrigger asChild>
-          <Button 
-            variant={controlButtonVariant} 
-            tooltip={t('graphPanel.sideBar.settings.settings')} 
+          <Button
+            variant={controlButtonVariant}
+            tooltip={t('graphPanel.sideBar.settings.settings')}
             size="icon"
             onClick={toggleSettings}
           >
