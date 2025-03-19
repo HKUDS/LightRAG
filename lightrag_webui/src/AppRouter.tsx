@@ -77,7 +77,7 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
     // Get current path and check if it's a direct access
     const currentPath = window.location.hash.slice(1); // Remove the '#' from hash
     const isLoginPage = currentPath === '/login';
-    
+
     // Skip redirect if already on login page
     if (isLoginPage) {
       return null;
