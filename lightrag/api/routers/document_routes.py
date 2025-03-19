@@ -76,6 +76,7 @@ class DocStatusResponse(BaseModel):
         id: Document identifier
         content_summary: Summary of document content
         content_length: Length of document content
+        file_path: File path of the document
         status: Current processing status
         created_at: Creation timestamp (ISO format string)
         updated_at: Last update timestamp (ISO format string)
@@ -87,6 +88,7 @@ class DocStatusResponse(BaseModel):
     id: str
     content_summary: str
     content_length: int
+    file_path: str
     status: DocStatus
     created_at: str
     updated_at: str
@@ -838,6 +840,7 @@ def create_document_routes(
                             id=doc_id,
                             content_summary=doc_status.content_summary,
                             content_length=doc_status.content_length,
+                            file_path=doc_status.file_path,
                             status=doc_status.status,
                             created_at=DocStatusResponse.format_datetime(
                                 doc_status.created_at

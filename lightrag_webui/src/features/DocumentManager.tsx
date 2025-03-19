@@ -167,6 +167,7 @@ export default function DocumentManager() {
                     <TableHeader>
                       <TableRow>
                         <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
+                        <TableHead>{t('documentPanel.documentManager.columns.filepath')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
@@ -181,6 +182,13 @@ export default function DocumentManager() {
                         documents.map((doc) => (
                           <TableRow key={doc.id}>
                             <TableCell className="truncate font-mono">{doc.id}</TableCell>
+                            <TableCell className="max-w-xs min-w-24 truncate">
+                              <Text
+                                text={doc.file_path}
+                                tooltip={doc.file_path}
+                                tooltipClassName="max-w-none overflow-visible block"
+                              />
+                            </TableCell>
                             <TableCell className="max-w-xs min-w-24 truncate">
                               <Text
                                 text={doc.content_summary}

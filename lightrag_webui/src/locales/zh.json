@@ -65,6 +65,7 @@
       "emptyDescription": "还没有上传任何文档",
       "columns": {
         "id": "ID",
+        "filepath": "文件路径",
         "summary": "摘要",
         "status": "状态",
         "length": "长度",

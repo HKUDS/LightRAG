@@ -114,6 +114,7 @@ export type DocStatusResponse = {
   id: string
   content_summary: string
   content_length: number
+  file_path: string
   status: DocStatus
   created_at: string
   updated_at: string

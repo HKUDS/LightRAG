@@ -65,6 +65,7 @@
       "emptyDescription": "There are no uploaded documents yet.",
       "columns": {
         "id": "ID",
+        "filepath": "Filepath",
         "summary": "Summary",
         "status": "Status",
         "length": "Length",
