@@ -64,7 +64,7 @@ class NavigationService {
 
     this.resetAllApplicationState();
     useAuthStore.getState().logout();
-    
+
     if (this.navigate) {
       this.navigate('/login');
     }

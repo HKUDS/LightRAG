@@ -188,7 +188,7 @@ const useLightrangeGraph = () => {
   const isFetching = useGraphStore.use.isFetching()
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
-  
+
   // Track previous parameters to detect actual changes
   const prevParamsRef = useRef({ queryLabel, maxQueryDepth, minDegree })
 
