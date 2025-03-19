@@ -69,7 +69,7 @@ export default function UploadDocumentsDialog() {
         // setOpen(false)
       }
     },
-    [setIsUploading, setProgresses]
+    [t, setIsUploading, setProgresses]
   )
 
   return (

@@ -31,7 +31,7 @@ export default function ClearDocumentsDialog() {
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
     }
-  }, [setOpen])
+  }, [t, setOpen])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>

@@ -32,7 +32,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
         console.error(t('chat.copyError'), err)
       }
     }
-  }, [message])
+  }, [t, message])
 
   return (
     <div
