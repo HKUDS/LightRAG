@@ -108,7 +108,6 @@ const GraphEvents = () => {
 const GraphViewer = () => {
   const [sigmaSettings, setSigmaSettings] = useState(defaultSigmaSettings)
   const sigmaRef = useRef<any>(null)
-  const initAttemptedRef = useRef(false)
 
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
@@ -125,20 +124,12 @@ const GraphViewer = () => {
 
   // Handle component mount/unmount and tab visibility
   useEffect(() => {
-    // When component mounts or tab becomes visible
-    if (isGraphTabVisible && !isFetching && !initAttemptedRef.current) {
-      initAttemptedRef.current = true
-      console.log('GraphViewer is visible')
-    }
-
     return () => {
-      if (!isGraphTabVisible) {
-        // Only log cleanup, don't actually clean up the WebGL context
-        // This allows the WebGL context to persist across tab switches
-        console.log('GraphViewer is invisible, WebGL context is persisting')
-      }
+      // Only log, keep everything untouched
+      // This allows the WebGL context to persist across tab switches
+      console.log('GraphViewer is invisible, WebGL context is persisting')
     }
-  }, [isGraphTabVisible, isFetching])
+  }, [isGraphTabVisible])
 
   // Initialize sigma settings once on component mount
   // All dynamic settings will be updated in GraphControl using useSetSettings
