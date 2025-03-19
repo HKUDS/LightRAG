@@ -29,8 +29,6 @@ const GraphLabels = () => {
       // Set global flag to indicate we've attempted to fetch in this session
       useGraphStore.getState().setLabelsFetchAttempted(true)
 
-      console.log('Fetching graph labels (once per session)...')
-
       useGraphStore.getState().fetchAllDatabaseLabels()
         .then(() => {
           labelsLoadedRef.current = true
