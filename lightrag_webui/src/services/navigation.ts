@@ -20,32 +20,51 @@ class NavigationService {
   resetAllApplicationState() {
     console.log('Resetting all application state...');
 
-    // Clear authentication state
-    localStorage.removeItem('LIGHTRAG-API-TOKEN');
-    sessionStorage.clear();
-    useAuthStore.getState().logout();
-
     // Reset graph state
     const graphStore = useGraphStore.getState();
+    const sigma = graphStore.sigmaInstance;
     graphStore.reset();
     graphStore.setGraphDataFetchAttempted(false);
     graphStore.setLabelsFetchAttempted(false);
+    graphStore.setSigmaInstance(null);
 
     // Reset backend state
     useBackendState.getState().clear();
 
     // Reset retrieval history while preserving other user preferences
     useSettingsStore.getState().setRetrievalHistory([]);
+
+    // Clear authentication state
+    sessionStorage.clear();
+
+    if (sigma) {
+      sigma.getGraph().clear();
+      sigma.kill();
+      useGraphStore.getState().setSigmaInstance(null);
+    }
   }
 
   /**
-   * Navigate to login page after resetting application state
-   * to ensure a clean environment for the next session
+   * Handle direct access to login page
+   * @returns true if it's a direct access, false if navigated from another page
+   */
+  handleDirectLoginAccess() {
+    const isDirectAccess = !document.referrer;
+    if (isDirectAccess) {
+      this.resetAllApplicationState();
+    }
+    return isDirectAccess;
+  }
+
+  /**
+   * Navigate to login page and reset application state
+   * @param skipReset whether to skip state reset (used for direct access scenario where reset is already handled)
    */
   navigateToLogin() {
-    // Reset state before navigation
-    this.resetAllApplicationState();
 
+    this.resetAllApplicationState();
+    useAuthStore.getState().logout();
+    
     if (this.navigate) {
       this.navigate('/login');
     }
