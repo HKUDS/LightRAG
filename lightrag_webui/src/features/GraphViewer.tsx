@@ -121,7 +121,7 @@ const GraphViewer = () => {
   // All dynamic settings will be updated in GraphControl using useSetSettings
   useEffect(() => {
     setSigmaSettings(defaultSigmaSettings)
-    console.log('Initialized sigma settings') 
+    console.log('Initialized sigma settings')
   }, [])
 
   // Clean up sigma instance when component unmounts
