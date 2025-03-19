@@ -114,7 +114,6 @@ const GraphViewer = () => {
   const focusedNode = useGraphStore.use.focusedNode()
   const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
   const isFetching = useGraphStore.use.isFetching()
-  const shouldRender = useGraphStore.use.shouldRender() // Rendering control state
 
   // Get tab visibility
   const { isTabVisible } = useTabVisibility()
@@ -127,20 +126,19 @@ const GraphViewer = () => {
   // Handle component mount/unmount and tab visibility
   useEffect(() => {
     // When component mounts or tab becomes visible
-    if (isGraphTabVisible && !shouldRender && !isFetching && !initAttemptedRef.current) {
-      // If tab is visible but graph is not rendering, try to enable rendering
-      useGraphStore.getState().setShouldRender(true)
+    if (isGraphTabVisible && !isFetching && !initAttemptedRef.current) {
       initAttemptedRef.current = true
-      console.log('Graph viewer initialized')
+      console.log('GraphViewer is visible')
     }
 
-    // Cleanup function when component unmounts
     return () => {
-      // Only log cleanup, don't actually clean up the WebGL context
-      // This allows the WebGL context to persist across tab switches
-      console.log('Graph viewer cleanup')
+      if (!isGraphTabVisible) {
+        // Only log cleanup, don't actually clean up the WebGL context
+        // This allows the WebGL context to persist across tab switches
+        console.log('GraphViewer is invisible, WebGL context is persisting')
+      }
     }
-  }, [isGraphTabVisible, shouldRender, isFetching])
+  }, [isGraphTabVisible, isFetching])
 
   // Initialize sigma settings once on component mount
   // All dynamic settings will be updated in GraphControl using useSetSettings
@@ -151,13 +149,15 @@ const GraphViewer = () => {
   // Clean up sigma instance when component unmounts
   useEffect(() => {
     return () => {
+      // TAB is mount twice in vite dev mode, this is a workaround
+
       const sigma = useGraphStore.getState().sigmaInstance;
       if (sigma) {
         try {
-          // 销毁sigma实例，这会自动清理WebGL上下文
+          // Destroy sigma，and clear WebGL context
           sigma.kill();
           useGraphStore.getState().setSigmaInstance(null);
-          console.log('Cleared sigma instance on unmount');
+          console.log('Cleared sigma instance on Graphviewer unmount');
         } catch (error) {
           console.error('Error cleaning up sigma instance:', error);
         }
