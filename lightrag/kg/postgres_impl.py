@@ -8,6 +8,7 @@ import numpy as np
 import configparser
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+from prompt import GRAPH_FIELD_SEP
 
 import sys
 from tenacity import (
@@ -434,8 +435,8 @@ class PGVectorStorage(BaseVectorStorage):
     def _upsert_entities(self, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         upsert_sql = SQL_TEMPLATES["upsert_entity"]
         source_id = item["source_id"]
-        if isinstance(source_id, str) and "<SEP>" in source_id:
-            chunk_ids = source_id.split("<SEP>")
+        if isinstance(source_id, str) and GRAPH_FIELD_SEP in source_id:
+            chunk_ids = source_id.split(GRAPH_FIELD_SEP)
         else:
             chunk_ids = [source_id]
 
@@ -454,8 +455,8 @@ class PGVectorStorage(BaseVectorStorage):
     def _upsert_relationships(self, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         upsert_sql = SQL_TEMPLATES["upsert_relationship"]
         source_id = item["source_id"]
-        if isinstance(source_id, str) and "<SEP>" in source_id:
-            chunk_ids = source_id.split("<SEP>")
+        if isinstance(source_id, str) and GRAPH_FIELD_SEP in source_id:
+            chunk_ids = source_id.split(GRAPH_FIELD_SEP)
         else:
             chunk_ids = [source_id]
 
@@ -1570,7 +1571,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_id TEXT NULL,
+                    chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     )"""
@@ -1585,7 +1586,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_id TEXT NULL,
+                    chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     )"""
@@ -1672,28 +1673,28 @@ SQL_TEMPLATES = {
                       update_time = CURRENT_TIMESTAMP
                      """,
     "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
-                      content_vector, chunk_ids, file_path)
-                      VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7::varchar[])
-                      ON CONFLICT (workspace,id) DO UPDATE
-                      SET entity_name=EXCLUDED.entity_name,
-                      content=EXCLUDED.content,
-                      content_vector=EXCLUDED.content_vector,
-                      chunk_ids=EXCLUDED.chunk_ids,
-                      file_path=EXCLUDED.file_path,
-                      update_time=CURRENT_TIMESTAMP
-                     """,
+                  content_vector, chunk_ids, file_path, update_time)
+                  VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7, CURRENT_TIMESTAMP)
+                  ON CONFLICT (workspace,id) DO UPDATE
+                  SET entity_name=EXCLUDED.entity_name,
+                  content=EXCLUDED.content,
+                  content_vector=EXCLUDED.content_vector,
+                  chunk_ids=EXCLUDED.chunk_ids,
+                  file_path=EXCLUDED.file_path,
+                  update_time=CURRENT_TIMESTAMP
+                 """,
     "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
-                      target_id, content, content_vector, chunk_ids, file_path)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8::varchar[])
-                      ON CONFLICT (workspace,id) DO UPDATE
-                      SET source_id=EXCLUDED.source_id,
-                      target_id=EXCLUDED.target_id,
-                      content=EXCLUDED.content,
-                      content_vector=EXCLUDED.content_vector,
-                      chunk_ids=EXCLUDED.chunk_ids,
-                      file_path=EXCLUDED.file_path,
-                      update_time = CURRENT_TIMESTAMP
-                     """,
+                  target_id, content, content_vector, chunk_ids, file_path, update_time)
+                  VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8, CURRENT_TIMESTAMP)
+                  ON CONFLICT (workspace,id) DO UPDATE
+                  SET source_id=EXCLUDED.source_id,
+                  target_id=EXCLUDED.target_id,
+                  content=EXCLUDED.content,
+                  content_vector=EXCLUDED.content_vector,
+                  chunk_ids=EXCLUDED.chunk_ids,
+                  file_path=EXCLUDED.file_path,
+                  update_time=CURRENT_TIMESTAMP
+                 """,
     # SQL for VectorStorage
     # "entities": """SELECT entity_name FROM
     #     (SELECT id, entity_name, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
