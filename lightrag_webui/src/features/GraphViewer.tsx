@@ -93,7 +93,7 @@ const GraphEvents = () => {
       // Disable the autoscale at the first down interaction
       mousedown: (e) => {
         // Only set custom BBox if it's a drag operation (mouse button is pressed)
-        const mouseEvent = e.original as MouseEvent;
+        const mouseEvent = e.original as MouseEvent
         if (mouseEvent.buttons !== 0 && !sigma.getCustomBBox()) {
           sigma.setCustomBBox(sigma.getBBox())
         }
@@ -129,19 +129,19 @@ const GraphViewer = () => {
     return () => {
       // TAB is mount twice in vite dev mode, this is a workaround
 
-      const sigma = useGraphStore.getState().sigmaInstance;
+      const sigma = useGraphStore.getState().sigmaInstance
       if (sigma) {
         try {
           // Destroy sigma，and clear WebGL context
-          sigma.kill();
-          useGraphStore.getState().setSigmaInstance(null);
-          console.log('Cleared sigma instance on Graphviewer unmount');
+          sigma.kill()
+          useGraphStore.getState().setSigmaInstance(null)
+          console.log('Cleared sigma instance on Graphviewer unmount')
         } catch (error) {
-          console.error('Error cleaning up sigma instance:', error);
+          console.error('Error cleaning up sigma instance:', error)
         }
       }
-    };
-  }, []);
+    }
+  }, [])
 
   // Note: There was a useLayoutEffect hook here to set up the sigma instance and graph data,
   // but testing showed it wasn't executing or having any effect, while the backup mechanism
@@ -214,9 +214,9 @@ const GraphViewer = () => {
 
       {/* Loading overlay - shown when data is loading */}
       {isFetching && (
-        <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+        <div className="bg-background/80 absolute inset-0 z-10 flex items-center justify-center">
           <div className="text-center">
-            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
+            <div className="border-primary mb-2 h-8 w-8 animate-spin rounded-full border-4 border-t-transparent"></div>
             <p>Loading Graph Data...</p>
           </div>
         </div>

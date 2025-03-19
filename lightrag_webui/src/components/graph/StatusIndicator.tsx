@@ -35,7 +35,9 @@ const StatusIndicator = () => {
               )}
             />
             <span className="text-muted-foreground text-xs">
-              {health ? t('graphPanel.statusIndicator.connected') : t('graphPanel.statusIndicator.disconnected')}
+              {health
+                ? t('graphPanel.statusIndicator.connected')
+                : t('graphPanel.statusIndicator.disconnected')}
             </span>
           </div>
         </PopoverTrigger>

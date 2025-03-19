@@ -25,7 +25,7 @@ export default function QuerySettings() {
   }, [])
 
   return (
-    <Card className="flex shrink-0 flex-col min-w-[180px]">
+    <Card className="flex min-w-[180px] shrink-0 flex-col">
       <CardHeader className="px-4 pt-4 pb-2">
         <CardTitle>{t('retrievePanel.querySettings.parametersTitle')}</CardTitle>
         <CardDescription>{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
@@ -50,11 +50,21 @@ export default function QuerySettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value="naive">{t('retrievePanel.querySettings.queryModeOptions.naive')}</SelectItem>
-                    <SelectItem value="local">{t('retrievePanel.querySettings.queryModeOptions.local')}</SelectItem>
-                    <SelectItem value="global">{t('retrievePanel.querySettings.queryModeOptions.global')}</SelectItem>
-                    <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
-                    <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
+                    <SelectItem value="naive">
+                      {t('retrievePanel.querySettings.queryModeOptions.naive')}
+                    </SelectItem>
+                    <SelectItem value="local">
+                      {t('retrievePanel.querySettings.queryModeOptions.local')}
+                    </SelectItem>
+                    <SelectItem value="global">
+                      {t('retrievePanel.querySettings.queryModeOptions.global')}
+                    </SelectItem>
+                    <SelectItem value="hybrid">
+                      {t('retrievePanel.querySettings.queryModeOptions.hybrid')}
+                    </SelectItem>
+                    <SelectItem value="mix">
+                      {t('retrievePanel.querySettings.queryModeOptions.mix')}
+                    </SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -77,9 +87,15 @@ export default function QuerySettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value="Multiple Paragraphs">{t('retrievePanel.querySettings.responseFormatOptions.multipleParagraphs')}</SelectItem>
-                    <SelectItem value="Single Paragraph">{t('retrievePanel.querySettings.responseFormatOptions.singleParagraph')}</SelectItem>
-                    <SelectItem value="Bullet Points">{t('retrievePanel.querySettings.responseFormatOptions.bulletPoints')}</SelectItem>
+                    <SelectItem value="Multiple Paragraphs">
+                      {t('retrievePanel.querySettings.responseFormatOptions.multipleParagraphs')}
+                    </SelectItem>
+                    <SelectItem value="Single Paragraph">
+                      {t('retrievePanel.querySettings.responseFormatOptions.singleParagraph')}
+                    </SelectItem>
+                    <SelectItem value="Bullet Points">
+                      {t('retrievePanel.querySettings.responseFormatOptions.bulletPoints')}
+                    </SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>

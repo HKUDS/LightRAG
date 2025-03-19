@@ -132,7 +132,6 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   searchEngine: null,
 
-
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
@@ -153,10 +152,10 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       selectedEdge: null,
       focusedEdge: null,
       rawGraph: null,
-      sigmaGraph: null,  // to avoid other components from acccessing graph objects
+      sigmaGraph: null, // to avoid other components from acccessing graph objects
       searchEngine: null,
       moveToSelectedNode: false
-    });
+    })
   },
 
   setRawGraph: (rawGraph: RawGraph | null) =>
@@ -166,21 +165,21 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => {
     // Replace graph instance, no need to keep WebGL context
-    set({ sigmaGraph });
+    set({ sigmaGraph })
   },
 
   setAllDatabaseLabels: (labels: string[]) => set({ allDatabaseLabels: labels }),
 
   fetchAllDatabaseLabels: async () => {
     try {
-      console.log('Fetching all database labels...');
-      const labels = await getGraphLabels();
-      set({ allDatabaseLabels: ['*', ...labels] });
-      return;
+      console.log('Fetching all database labels...')
+      const labels = await getGraphLabels()
+      set({ allDatabaseLabels: ['*', ...labels] })
+      return
     } catch (error) {
-      console.error('Failed to fetch all database labels:', error);
-      set({ allDatabaseLabels: ['*'] });
-      throw error;
+      console.error('Failed to fetch all database labels:', error)
+      set({ allDatabaseLabels: ['*'] })
+      throw error
     }
   },
 
@@ -201,8 +200,7 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   // Event trigger methods for node operations
   triggerNodeExpand: (nodeId: string | null) => set({ nodeToExpand: nodeId }),
-  triggerNodePrune: (nodeId: string | null) => set({ nodeToPrune: nodeId }),
-
+  triggerNodePrune: (nodeId: string | null) => set({ nodeToPrune: nodeId })
 }))
 
 const useGraphStore = createSelectors(useGraphStoreBase)

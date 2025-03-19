@@ -138,8 +138,8 @@ export type AuthStatusResponse = {
 export type LoginResponse = {
   access_token: string
   token_type: string
-  auth_mode?: 'enabled' | 'disabled'  // Authentication mode identifier
-  message?: string                    // Optional message
+  auth_mode?: 'enabled' | 'disabled' // Authentication mode identifier
+  message?: string // Optional message
 }
 
 export type PipelineStatusResponse = {
@@ -179,7 +179,7 @@ const axiosInstance = axios.create({
 // Interceptor: add api key and check authentication
 axiosInstance.interceptors.request.use((config) => {
   const apiKey = useSettingsStore.getState().apiKey
-  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
 
   // Always include token if it exists, regardless of path
   if (token) {
@@ -199,12 +199,12 @@ axiosInstance.interceptors.response.use(
       if (error.response?.status === 401) {
         // For login API, throw error directly
         if (error.config?.url?.includes('/login')) {
-          throw error;
+          throw error
         }
         // For other APIs, navigate to login page
-        navigationService.navigateToLogin();
+        navigationService.navigateToLogin()
         // Return a never-resolving promise to prevent further execution
-        return new Promise(() => {});
+        return new Promise(() => {})
       }
       throw new Error(
         `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
@@ -389,69 +389,70 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
     const response = await axiosInstance.get('/auth-status', {
       timeout: 5000, // 5 second timeout
       headers: {
-        'Accept': 'application/json' // Explicitly request JSON
+        Accept: 'application/json' // Explicitly request JSON
       }
-    });
+    })
 
     // Check if response is HTML (which indicates a redirect or wrong endpoint)
-    const contentType = response.headers['content-type'] || '';
+    const contentType = response.headers['content-type'] || ''
     if (contentType.includes('text/html')) {
-      console.warn('Received HTML response instead of JSON for auth-status endpoint');
+      console.warn('Received HTML response instead of JSON for auth-status endpoint')
       return {
         auth_configured: true,
         auth_mode: 'enabled'
-      };
+      }
     }
 
     // Strict validation of the response data
-    if (response.data &&
-        typeof response.data === 'object' &&
-        'auth_configured' in response.data &&
-        typeof response.data.auth_configured === 'boolean') {
-
+    if (
+      response.data &&
+      typeof response.data === 'object' &&
+      'auth_configured' in response.data &&
+      typeof response.data.auth_configured === 'boolean'
+    ) {
       // For unconfigured auth, ensure we have an access token
       if (!response.data.auth_configured) {
         if (response.data.access_token && typeof response.data.access_token === 'string') {
-          return response.data;
+          return response.data
         } else {
-          console.warn('Auth not configured but no valid access token provided');
+          console.warn('Auth not configured but no valid access token provided')
         }
       } else {
         // For configured auth, just return the data
-        return response.data;
+        return response.data
       }
     }
 
     // If response data is invalid but we got a response, log it
-    console.warn('Received invalid auth status response:', response.data);
+    console.warn('Received invalid auth status response:', response.data)
 
     // Default to auth configured if response is invalid
     return {
       auth_configured: true,
       auth_mode: 'enabled'
-    };
+    }
   } catch (error) {
     // If the request fails, assume authentication is configured
-    console.error('Failed to get auth status:', errorMessage(error));
+    console.error('Failed to get auth status:', errorMessage(error))
     return {
       auth_configured: true,
       auth_mode: 'enabled'
-    };
+    }
   }
 }
 
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {
-  const formData = new FormData();
-  formData.append('username', username);
-  formData.append('password', password);
+  const formData = new FormData()
+  formData.append('username', username)
+  formData.append('password', password)
 
   const response = await axiosInstance.post('/login', formData, {
     headers: {
       'Content-Type': 'multipart/form-data'
     }
-  });
+  })
 
-  return response.data;
+  return response.data
 }
 
 export const pipelineStatus = async (): Promise<PipelineStatusResponse> => {

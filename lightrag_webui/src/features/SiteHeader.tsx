@@ -58,7 +58,7 @@ export default function SiteHeader() {
   const { isGuestMode } = useAuthStore()
 
   const handleLogout = () => {
-    navigationService.navigateToLogin();
+    navigationService.navigateToLogin()
   }
 
   return (
@@ -72,7 +72,7 @@ export default function SiteHeader() {
       <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex h-10 justify-center">
         <TabsNavigation />
         {isGuestMode && (
-          <div className="ml-2 self-center px-2 py-1 text-xs bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 rounded-md">
+          <div className="ml-2 self-center rounded-md bg-amber-100 px-2 py-1 text-xs text-amber-800 dark:bg-amber-900 dark:text-amber-200">
             {t('login.guestMode', 'Guest Mode')}
           </div>
         )}
@@ -88,7 +88,13 @@ export default function SiteHeader() {
             </a>
           </Button>
           <AppSettings />
-          <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.logout')} onClick={handleLogout}>
+          <Button
+            variant="ghost"
+            size="icon"
+            side="bottom"
+            tooltip={t('header.logout')}
+            onClick={handleLogout}
+          >
             <LogOutIcon className="size-4" aria-hidden="true" />
           </Button>
         </div>

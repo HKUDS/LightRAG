@@ -4,7 +4,9 @@ import { useTranslation } from 'react-i18next'
 const StatusCard = ({ status }: { status: LightragStatus | null }) => {
   const { t } = useTranslation()
   if (!status) {
-    return <div className="text-muted-foreground text-sm">{t('graphPanel.statusCard.unavailable')}</div>
+    return (
+      <div className="text-muted-foreground text-sm">{t('graphPanel.statusCard.unavailable')}</div>
+    )
   }
 
   return (

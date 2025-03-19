@@ -10,7 +10,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useBackendState } from '@/stores/state'
 
 import { SettingsIcon } from 'lucide-react'
-import { useTranslation } from 'react-i18next';
+import { useTranslation } from 'react-i18next'
 
 /**
  * Component that displays a checkbox with a label.
@@ -205,13 +205,17 @@ export default function Settings() {
     [setTempApiKey]
   )
 
-  const { t } = useTranslation();
+  const { t } = useTranslation()
 
   return (
     <>
       <Popover open={opened} onOpenChange={setOpened}>
         <PopoverTrigger asChild>
-          <Button variant={controlButtonVariant} tooltip={t('graphPanel.sideBar.settings.settings')} size="icon">
+          <Button
+            variant={controlButtonVariant}
+            tooltip={t('graphPanel.sideBar.settings.settings')}
+            size="icon"
+          >
             <SettingsIcon />
           </Button>
         </PopoverTrigger>
@@ -295,7 +299,9 @@ export default function Settings() {
             <Separator />
 
             <div className="flex flex-col gap-2">
-              <label className="text-sm font-medium">{t('graphPanel.sideBar.settings.apiKey')}</label>
+              <label className="text-sm font-medium">
+                {t('graphPanel.sideBar.settings.apiKey')}
+              </label>
               <form className="flex h-6 gap-2" onSubmit={(e) => e.preventDefault()}>
                 <div className="w-0 flex-1">
                   <Input

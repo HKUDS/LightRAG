@@ -101,21 +101,23 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
       const edges = state.sigmaGraph.edges(node.id)
 
       for (const edgeId of edges) {
-        if (!state.sigmaGraph.hasEdge(edgeId)) continue;
+        if (!state.sigmaGraph.hasEdge(edgeId)) continue
 
         const edge = state.rawGraph.getEdge(edgeId, true)
         if (edge) {
           const isTarget = node.id === edge.source
           const neighbourId = isTarget ? edge.target : edge.source
 
-          if (!state.sigmaGraph.hasNode(neighbourId)) continue;
+          if (!state.sigmaGraph.hasNode(neighbourId)) continue
 
           const neighbour = state.rawGraph.getNode(neighbourId)
           if (neighbour) {
             relationships.push({
               type: 'Neighbour',
               id: neighbourId,
-              label: neighbour.properties['entity_id'] ? neighbour.properties['entity_id'] : neighbour.labels.join(', ')
+              label: neighbour.properties['entity_id']
+                ? neighbour.properties['entity_id']
+                : neighbour.labels.join(', ')
             })
           }
         }
@@ -186,9 +188,12 @@ const PropertyRow = ({
 
   return (
     <div className="flex items-center gap-2">
-      <label className="text-primary/60 tracking-wide whitespace-nowrap">{getPropertyNameTranslation(name)}</label>:
+      <label className="text-primary/60 tracking-wide whitespace-nowrap">
+        {getPropertyNameTranslation(name)}
+      </label>
+      :
       <Text
-        className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
+        className="hover:bg-primary/20 overflow-hidden rounded p-1 text-ellipsis"
         tooltipClassName="max-w-80"
         text={value}
         tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
@@ -212,8 +217,10 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex justify-between items-center">
-        <label className="text-md pl-1 font-bold tracking-wide text-blue-700">{t('graphPanel.propertiesView.node.title')}</label>
+      <div className="flex items-center justify-between">
+        <label className="text-md pl-1 font-bold tracking-wide text-blue-700">
+          {t('graphPanel.propertiesView.node.title')}
+        </label>
         <div className="flex gap-3">
           <Button
             size="icon"
@@ -246,7 +253,9 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
         />
         <PropertyRow name={t('graphPanel.propertiesView.node.degree')} value={node.degree} />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.node.properties')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-amber-700">
+        {t('graphPanel.propertiesView.node.properties')}
+      </label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(node.properties)
           .sort()
@@ -283,7 +292,9 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
   const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-md pl-1 font-bold tracking-wide text-violet-700">{t('graphPanel.propertiesView.edge.title')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-violet-700">
+        {t('graphPanel.propertiesView.edge.title')}
+      </label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={t('graphPanel.propertiesView.edge.id')} value={edge.id} />
         {edge.type && (
@@ -304,7 +315,9 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
           }}
         />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.edge.properties')}</label>
+      <label className="text-md pl-1 font-bold tracking-wide text-amber-700">
+        {t('graphPanel.propertiesView.edge.properties')}
+      </label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(edge.properties)
           .sort()

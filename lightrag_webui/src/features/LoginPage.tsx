@@ -21,11 +21,11 @@ const LoginPage = () => {
 
   useEffect(() => {
     console.log('LoginPage mounted')
-  }, []);
+  }, [])
 
   // Check if authentication is configured, skip login if not
   useEffect(() => {
-    let isMounted = true; // Flag to prevent state updates after unmount
+    let isMounted = true // Flag to prevent state updates after unmount
 
     const checkAuthConfig = async () => {
       try {
@@ -39,7 +39,7 @@ const LoginPage = () => {
         const status = await getAuthStatus()
 
         // Only proceed if component is still mounted
-        if (!isMounted) return;
+        if (!isMounted) return
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token and redirect
@@ -65,7 +65,7 @@ const LoginPage = () => {
 
     // Cleanup function to prevent state updates after unmount
     return () => {
-      isMounted = false;
+      isMounted = false
     }
   }, [isAuthenticated, login, navigate])
 
@@ -91,7 +91,10 @@ const LoginPage = () => {
 
       if (isGuestMode) {
         // Show authentication disabled notification
-        toast.info(response.message || t('login.authDisabled', 'Authentication is disabled. Using guest access.'))
+        toast.info(
+          response.message ||
+            t('login.authDisabled', 'Authentication is disabled. Using guest access.')
+        )
       } else {
         toast.success(t('login.successMessage'))
       }
@@ -114,27 +117,25 @@ const LoginPage = () => {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800">
       <div className="absolute top-4 right-4 flex items-center gap-2">
-        <AppSettings className="bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm rounded-md" />
+        <AppSettings className="rounded-md bg-white/30 backdrop-blur-sm dark:bg-gray-800/30" />
       </div>
-      <Card className="w-full max-w-[480px] shadow-lg mx-4">
-        <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
+      <Card className="mx-4 w-full max-w-[480px] shadow-lg">
+        <CardHeader className="flex items-center justify-center space-y-2 pt-6 pb-8">
           <div className="flex flex-col items-center space-y-4">
             <div className="flex items-center gap-3">
               <img src="logo.png" alt="LightRAG Logo" className="h-12 w-12" />
               <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
             </div>
-            <div className="text-center space-y-2">
+            <div className="space-y-2 text-center">
               <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
-              <p className="text-muted-foreground text-sm">
-                {t('login.description')}
-              </p>
+              <p className="text-muted-foreground text-sm">{t('login.description')}</p>
             </div>
           </div>
         </CardHeader>
         <CardContent className="px-8 pb-8">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="flex items-center gap-4">
-              <label htmlFor="username" className="text-sm font-medium w-16 shrink-0">
+              <label htmlFor="username" className="w-16 shrink-0 text-sm font-medium">
                 {t('login.username')}
               </label>
               <Input
@@ -147,7 +148,7 @@ const LoginPage = () => {
               />
             </div>
             <div className="flex items-center gap-4">
-              <label htmlFor="password" className="text-sm font-medium w-16 shrink-0">
+              <label htmlFor="password" className="w-16 shrink-0 text-sm font-medium">
                 {t('login.password')}
               </label>
               <Input
@@ -162,7 +163,7 @@ const LoginPage = () => {
             </div>
             <Button
               type="submit"
-              className="w-full h-11 text-base font-medium mt-2"
+              className="mt-2 h-11 w-full text-base font-medium"
               disabled={loading}
             >
               {loading ? t('login.loggingIn') : t('login.loginButton')}
