@@ -7,7 +7,6 @@ import { healthCheckInterval } from '@/lib/constants'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { useEffect } from 'react'
-import { Toaster } from 'sonner'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 
@@ -15,19 +14,26 @@ import GraphViewer from '@/features/GraphViewer'
 import DocumentManager from '@/features/DocumentManager'
 import RetrievalTesting from '@/features/RetrievalTesting'
 import ApiSite from '@/features/ApiSite'
+import { initializeI18n } from '@/i18n'
 
 import { Tabs, TabsContent } from '@/components/ui/Tabs'
 
 function App() {
   const message = useBackendState.use.message()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
-  const [currentTab] = useState(() => useSettingsStore.getState().currentTab)
+  const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyInvalid, setApiKeyInvalid] = useState(false)
+  const [isI18nInitialized, setIsI18nInitialized] = useState(false)
+
+  useEffect(() => {
+    // Initialize i18n immediately with persisted language
+    initializeI18n().then(() => {
+      setIsI18nInitialized(true)
+    })
+  }, [])
 
   // Health check
   useEffect(() => {
-    if (!enableHealthCheck) return
-
     // Check immediately
     useBackendState.getState().check()
 
@@ -52,26 +58,42 @@ function App() {
     setApiKeyInvalid(false)
   }, [message, setApiKeyInvalid])
 
+  if (!isI18nInitialized) {
+    return null // or a loading spinner
+  }
+
   return (
     <ThemeProvider>
-      <main className="flex h-screen w-screen overflow-x-hidden">
+      <main className="flex h-screen w-screen overflow-hidden">
         <Tabs
           defaultValue={currentTab}
-          className="!m-0 flex grow flex-col !p-0"
+          className="!m-0 flex grow flex-col overflow-hidden !p-0"
           onValueChange={handleTabChange}
         >
           <SiteHeader />
           <div className="relative grow">
-            <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0">
+            <TabsContent
+              value="documents"
+              className="absolute top-0 right-0 bottom-0 left-0 overflow-auto"
+            >
               <DocumentManager />
             </TabsContent>
-            <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0">
+            <TabsContent
+              value="knowledge-graph"
+              className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
+            >
               <GraphViewer />
             </TabsContent>
-            <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0">
+            <TabsContent
+              value="retrieval"
+              className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
+            >
               <RetrievalTesting />
             </TabsContent>
-            <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0">
+            <TabsContent
+              value="api"
+              className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
+            >
               <ApiSite />
             </TabsContent>
           </div>
@@ -79,7 +101,6 @@ function App() {
         {enableHealthCheck && <StatusIndicator />}
         {message !== null && !apiKeyInvalid && <MessageAlert />}
         {apiKeyInvalid && <ApiKeyAlert />}
-        <Toaster />
       </main>
     </ThemeProvider>
   )

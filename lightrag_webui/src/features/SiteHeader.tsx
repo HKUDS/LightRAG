@@ -1,12 +1,13 @@
 import Button from '@/components/ui/Button'
-import { SiteInfo } from '@/lib/constants'
-import ThemeToggle from '@/components/ThemeToggle'
+import { SiteInfo, webuiPrefix } from '@/lib/constants'
+import AppSettings from '@/components/AppSettings'
 import { TabsList, TabsTrigger } from '@/components/ui/Tabs'
 import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
-
-import { ZapIcon, GithubIcon } from 'lucide-react'
+import { navigationService } from '@/services/navigation'
+import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
 
 interface NavigationTabProps {
   value: string
@@ -54,9 +55,15 @@ function TabsNavigation() {
 
 export default function SiteHeader() {
   const { t } = useTranslation()
+  const { isGuestMode } = useAuthStore()
+
+  const handleLogout = () => {
+    navigationService.navigateToLogin();
+  }
+
   return (
-    <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 relative sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
-      <a href="/" className="mr-6 flex items-center gap-2">
+    <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur relative">
+      <a href={webuiPrefix} className="mr-6 flex items-center gap-2">
         <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
         {/* <img src='/logo.png' className="size-4" /> */}
         <span className="font-bold md:inline-block">{SiteInfo.name}</span>
@@ -64,17 +71,27 @@ export default function SiteHeader() {
 
       <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex h-10 justify-center">
         <TabsNavigation />
+        {isGuestMode && (
+          <div className="ml-2 self-center px-2 py-1 text-xs bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 rounded-md">
+            {t('login.guestMode', 'Guest Mode')}
+          </div>
+        )}
       </div>
 
       <div className="flex-grow" />
 
       <nav className="flex items-center">
-        <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
-          <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
-            <GithubIcon className="size-4" aria-hidden="true" />
-          </a>
-        </Button>
-        <ThemeToggle />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
+            <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
+              <GithubIcon className="size-4" aria-hidden="true" />
+            </a>
+          </Button>
+          <AppSettings />
+          <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.logout')} onClick={handleLogout}>
+            <LogOutIcon className="size-4" aria-hidden="true" />
+          </Button>
+        </div>
       </nav>
     </header>
   )

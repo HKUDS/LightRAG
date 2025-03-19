@@ -50,7 +50,6 @@ export default function DocumentManager() {
         } else {
           setDocs(null)
         }
-        // console.log(docs)
       } else {
         setDocs(null)
       }
@@ -59,7 +58,7 @@ export default function DocumentManager() {
         t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) })
       )
     }
-  }, [setDocs])
+  }, [setDocs, t])
 
   const fetchPipelineStatus = useCallback(async () => {
     try {
@@ -70,12 +69,7 @@ export default function DocumentManager() {
         t('documentPanel.documentManager.errors.pipelineStatusFailed', { error: errorMessage(err) })
       )
     }
-  }, [])
-
-  useEffect(() => {
-    fetchDocuments()
-    fetchPipelineStatus()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [t, setPipeline])
 
   const scanDocuments = useCallback(async () => {
     try {
@@ -86,17 +80,22 @@ export default function DocumentManager() {
         t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) })
       )
     }
-  }, [])
+  }, [t])
 
   const refreshData = useCallback(async () => {
-    await Promise.all([fetchDocuments(), fetchPipelineStatus()])
-  }, [fetchDocuments, fetchPipelineStatus])
+    if (activeTab === 'documents') {
+      await fetchDocuments()
+    } else {
+      await fetchPipelineStatus()
+    }
+  }, [fetchDocuments, fetchPipelineStatus, activeTab])
 
+  // Set up polling when the documents tab is active and health is good
   useEffect(() => {
+    // Fetch documents when the tab becomes visible
+    refreshData()
+
     const interval = setInterval(async () => {
-      if (!health) {
-        return
-      }
       try {
         await refreshData()
       } catch (err) {
@@ -105,8 +104,9 @@ export default function DocumentManager() {
         )
       }
     }, 5000)
+
     return () => clearInterval(interval)
-  }, [health, refreshData])
+  }, [t, health, refreshData])
 
   return (
     <Card className="!size-full !rounded-none !border-none">

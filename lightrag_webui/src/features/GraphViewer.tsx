@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
 import { Settings as SigmaSettings } from 'sigma/settings'
@@ -17,6 +17,7 @@ import Settings from '@/components/graph/Settings'
 import GraphSearch from '@/components/graph/GraphSearch'
 import GraphLabels from '@/components/graph/GraphLabels'
 import PropertiesView from '@/components/graph/PropertiesView'
+import SettingsDisplay from '@/components/graph/SettingsDisplay'
 
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -90,8 +91,12 @@ const GraphEvents = () => {
         }
       },
       // Disable the autoscale at the first down interaction
-      mousedown: () => {
-        if (!sigma.getCustomBBox()) sigma.setCustomBBox(sigma.getBBox())
+      mousedown: (e) => {
+        // Only set custom BBox if it's a drag operation (mouse button is pressed)
+        const mouseEvent = e.original as MouseEvent;
+        if (mouseEvent.buttons !== 0 && !sigma.getCustomBBox()) {
+          sigma.setCustomBBox(sigma.getBBox())
+        }
       }
     })
   }, [registerEvents, sigma, draggedNode])
@@ -101,27 +106,46 @@ const GraphEvents = () => {
 
 const GraphViewer = () => {
   const [sigmaSettings, setSigmaSettings] = useState(defaultSigmaSettings)
+  const sigmaRef = useRef<any>(null)
 
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
+  const isFetching = useGraphStore.use.isFetching()
 
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
-  const renderLabels = useSettingsStore.use.showNodeLabel()
-
-  const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
-  const renderEdgeLabels = useSettingsStore.use.showEdgeLabel()
 
+  // Initialize sigma settings once on component mount
+  // All dynamic settings will be updated in GraphControl using useSetSettings
   useEffect(() => {
-    setSigmaSettings({
-      ...defaultSigmaSettings,
-      enableEdgeEvents,
-      renderEdgeLabels,
-      renderLabels
-    })
-  }, [renderLabels, enableEdgeEvents, renderEdgeLabels])
+    setSigmaSettings(defaultSigmaSettings)
+    console.log('Initialized sigma settings')
+  }, [])
+
+  // Clean up sigma instance when component unmounts
+  useEffect(() => {
+    return () => {
+      // TAB is mount twice in vite dev mode, this is a workaround
+
+      const sigma = useGraphStore.getState().sigmaInstance;
+      if (sigma) {
+        try {
+          // Destroy sigma，and clear WebGL context
+          sigma.kill();
+          useGraphStore.getState().setSigmaInstance(null);
+          console.log('Cleared sigma instance on Graphviewer unmount');
+        } catch (error) {
+          console.error('Error cleaning up sigma instance:', error);
+        }
+      }
+    };
+  }, []);
+
+  // Note: There was a useLayoutEffect hook here to set up the sigma instance and graph data,
+  // but testing showed it wasn't executing or having any effect, while the backup mechanism
+  // in GraphControl was sufficient. This code was removed to simplify implementation
 
   const onSearchFocus = useCallback((value: GraphSearchOption | null) => {
     if (value === null) useGraphStore.getState().setFocusedNode(null)
@@ -142,43 +166,62 @@ const GraphViewer = () => {
     [selectedNode]
   )
 
+  // Always render SigmaContainer but control its visibility with CSS
   return (
-    <SigmaContainer settings={sigmaSettings} className="!bg-background !size-full overflow-hidden">
-      <GraphControl />
+    <div className="relative h-full w-full overflow-hidden">
+      <SigmaContainer
+        settings={sigmaSettings}
+        className="!bg-background !size-full overflow-hidden"
+        ref={sigmaRef}
+      >
+        <GraphControl />
 
-      {enableNodeDrag && <GraphEvents />}
+        {enableNodeDrag && <GraphEvents />}
 
-      <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
+        <FocusOnNode node={autoFocusedNode} move={moveToSelectedNode} />
 
-      <div className="absolute top-2 left-2 flex items-start gap-2">
-        <GraphLabels />
-        {showNodeSearchBar && (
-          <GraphSearch
-            value={searchInitSelectedNode}
-            onFocus={onSearchFocus}
-            onChange={onSearchSelect}
-          />
+        <div className="absolute top-2 left-2 flex items-start gap-2">
+          <GraphLabels />
+          {showNodeSearchBar && (
+            <GraphSearch
+              value={searchInitSelectedNode}
+              onFocus={onSearchFocus}
+              onChange={onSearchSelect}
+            />
+          )}
+        </div>
+
+        <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
+          <LayoutsControl />
+          <ZoomControl />
+          <FullScreenControl />
+          <Settings />
+          {/* <ThemeToggle /> */}
+        </div>
+
+        {showPropertyPanel && (
+          <div className="absolute top-2 right-2">
+            <PropertiesView />
+          </div>
         )}
-      </div>
 
-      <div className="bg-background/60 absolute bottom-2 left-2 flex flex-col rounded-xl border-2 backdrop-blur-lg">
-        <Settings />
-        <ZoomControl />
-        <LayoutsControl />
-        <FullScreenControl />
-        {/* <ThemeToggle /> */}
-      </div>
+        {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
+          <MiniMap width="100px" height="100px" />
+        </div> */}
 
-      {showPropertyPanel && (
-        <div className="absolute top-2 right-2">
-          <PropertiesView />
+        <SettingsDisplay />
+      </SigmaContainer>
+
+      {/* Loading overlay - shown when data is loading */}
+      {isFetching && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-10">
+          <div className="text-center">
+            <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
+            <p>Loading Graph Data...</p>
+          </div>
         </div>
       )}
-
-      {/* <div className="absolute bottom-2 right-2 flex flex-col rounded-xl border-2">
-        <MiniMap width="100px" height="100px" />
-      </div> */}
-    </SigmaContainer>
+    </div>
   )
 }
 

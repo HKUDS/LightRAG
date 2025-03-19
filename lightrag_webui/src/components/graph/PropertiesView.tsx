@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useGraphStore, RawNodeType, RawEdgeType } from '@/stores/graph'
 import Text from '@/components/ui/Text'
+import Button from '@/components/ui/Button'
 import useLightragGraph from '@/hooks/useLightragGraph'
 import { useTranslation } from 'react-i18next'
+import { GitBranchPlus, Scissors } from 'lucide-react'
 
 /**
  * Component that view properties of elements in graph.
@@ -88,24 +90,41 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
   const relationships = []
 
   if (state.sigmaGraph && state.rawGraph) {
-    for (const edgeId of state.sigmaGraph.edges(node.id)) {
-      const edge = state.rawGraph.getEdge(edgeId, true)
-      if (edge) {
-        const isTarget = node.id === edge.source
-        const neighbourId = isTarget ? edge.target : edge.source
-        const neighbour = state.rawGraph.getNode(neighbourId)
-        if (neighbour) {
-          relationships.push({
-            type: 'Neighbour',
-            id: neighbourId,
-            label: neighbour.properties['entity_id']
-              ? neighbour.properties['entity_id']
-              : neighbour.labels.join(', ')
-          })
+    try {
+      if (!state.sigmaGraph.hasNode(node.id)) {
+        return {
+          ...node,
+          relationships: []
         }
       }
+
+      const edges = state.sigmaGraph.edges(node.id)
+
+      for (const edgeId of edges) {
+        if (!state.sigmaGraph.hasEdge(edgeId)) continue;
+
+        const edge = state.rawGraph.getEdge(edgeId, true)
+        if (edge) {
+          const isTarget = node.id === edge.source
+          const neighbourId = isTarget ? edge.target : edge.source
+
+          if (!state.sigmaGraph.hasNode(neighbourId)) continue;
+
+          const neighbour = state.rawGraph.getNode(neighbourId)
+          if (neighbour) {
+            relationships.push({
+              type: 'Neighbour',
+              id: neighbourId,
+              label: neighbour.properties['entity_id'] ? neighbour.properties['entity_id'] : neighbour.labels.join(', ')
+            })
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error refining node properties:', error)
     }
   }
+
   return {
     ...node,
     relationships
@@ -114,8 +133,31 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
 
 const refineEdgeProperties = (edge: RawEdgeType): EdgeType => {
   const state = useGraphStore.getState()
-  const sourceNode = state.rawGraph?.getNode(edge.source)
-  const targetNode = state.rawGraph?.getNode(edge.target)
+  let sourceNode: RawNodeType | undefined = undefined
+  let targetNode: RawNodeType | undefined = undefined
+
+  if (state.sigmaGraph && state.rawGraph) {
+    try {
+      if (!state.sigmaGraph.hasEdge(edge.id)) {
+        return {
+          ...edge,
+          sourceNode: undefined,
+          targetNode: undefined
+        }
+      }
+
+      if (state.sigmaGraph.hasNode(edge.source)) {
+        sourceNode = state.rawGraph.getNode(edge.source)
+      }
+
+      if (state.sigmaGraph.hasNode(edge.target)) {
+        targetNode = state.rawGraph.getNode(edge.target)
+      }
+    } catch (error) {
+      console.error('Error refining edge properties:', error)
+    }
+  }
+
   return {
     ...edge,
     sourceNode,
@@ -134,14 +176,22 @@ const PropertyRow = ({
   onClick?: () => void
   tooltip?: string
 }) => {
+  const { t } = useTranslation()
+
+  const getPropertyNameTranslation = (name: string) => {
+    const translationKey = `graphPanel.propertiesView.node.propertyNames.${name}`
+    const translation = t(translationKey)
+    return translation === translationKey ? name : translation
+  }
+
   return (
     <div className="flex items-center gap-2">
-      <label className="text-primary/60 tracking-wide">{name}</label>:
+      <label className="text-primary/60 tracking-wide whitespace-nowrap">{getPropertyNameTranslation(name)}</label>:
       <Text
-        className="hover:bg-primary/20 rounded p-1 text-ellipsis"
+        className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
         tooltipClassName="max-w-80"
         text={value}
-        tooltip={tooltip || value}
+        tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
         side="left"
         onClick={onClick}
       />
@@ -151,11 +201,40 @@ const PropertyRow = ({
 
 const NodePropertiesView = ({ node }: { node: NodeType }) => {
   const { t } = useTranslation()
+
+  const handleExpandNode = () => {
+    useGraphStore.getState().triggerNodeExpand(node.id)
+  }
+
+  const handlePruneNode = () => {
+    useGraphStore.getState().triggerNodePrune(node.id)
+  }
+
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-md pl-1 font-bold tracking-wide text-sky-300">
-        {t('graphPanel.propertiesView.node.title')}
-      </label>
+      <div className="flex justify-between items-center">
+        <label className="text-md pl-1 font-bold tracking-wide text-blue-700">{t('graphPanel.propertiesView.node.title')}</label>
+        <div className="flex gap-3">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 border border-gray-400 hover:bg-gray-200"
+            onClick={handleExpandNode}
+            tooltip={t('graphPanel.propertiesView.node.expandNode')}
+          >
+            <GitBranchPlus className="h-4 w-4 text-gray-700" />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7 border border-gray-400 hover:bg-gray-200"
+            onClick={handlePruneNode}
+            tooltip={t('graphPanel.propertiesView.node.pruneNode')}
+          >
+            <Scissors className="h-4 w-4 text-gray-900" />
+          </Button>
+        </div>
+      </div>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={t('graphPanel.propertiesView.node.id')} value={node.id} />
         <PropertyRow
@@ -167,9 +246,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
         />
         <PropertyRow name={t('graphPanel.propertiesView.node.degree')} value={node.degree} />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">
-        {t('graphPanel.propertiesView.node.properties')}
-      </label>
+      <label className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.node.properties')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(node.properties)
           .sort()
@@ -179,7 +256,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
       </div>
       {node.relationships.length > 0 && (
         <>
-          <label className="text-md pl-1 font-bold tracking-wide text-teal-600/90">
+          <label className="text-md pl-1 font-bold tracking-wide text-emerald-700">
             {t('graphPanel.propertiesView.node.relationships')}
           </label>
           <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
@@ -206,9 +283,7 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
   const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
-      <label className="text-md pl-1 font-bold tracking-wide text-teal-600">
-        {t('graphPanel.propertiesView.edge.title')}
-      </label>
+      <label className="text-md pl-1 font-bold tracking-wide text-violet-700">{t('graphPanel.propertiesView.edge.title')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={t('graphPanel.propertiesView.edge.id')} value={edge.id} />
         {edge.type && (
@@ -229,9 +304,7 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
           }}
         />
       </div>
-      <label className="text-md pl-1 font-bold tracking-wide text-yellow-400/90">
-        {t('graphPanel.propertiesView.edge.properties')}
-      </label>
+      <label className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.edge.properties')}</label>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(edge.properties)
           .sort()

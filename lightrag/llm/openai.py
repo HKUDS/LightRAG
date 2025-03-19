@@ -123,21 +123,18 @@ async def openai_complete_if_cache(
 
         async def inner():
             try:
-                _content = ""
                 async for chunk in response:
                     content = chunk.choices[0].delta.content
                     if content is None:
                         continue
                     if r"\u" in content:
                         content = safe_unicode_decode(content.encode("utf-8"))
-                    _content += content
-                return _content
+                    yield content
             except Exception as e:
                 logger.error(f"Error in stream response: {str(e)}")
                 raise
 
-        response_content = await inner()
-        return response_content
+        return inner()
 
     else:
         if (

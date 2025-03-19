@@ -1,14 +1,36 @@
 {
+  "settings": {
+    "language": "Language",
+    "theme": "Theme",
+    "light": "Light",
+    "dark": "Dark",
+    "system": "System"
+  },
   "header": {
     "documents": "Documents",
     "knowledgeGraph": "Knowledge Graph",
     "retrieval": "Retrieval",
     "api": "API",
     "projectRepository": "Project Repository",
+    "logout": "Logout",
     "themeToggle": {
       "switchToLight": "Switch to light theme",
       "switchToDark": "Switch to dark theme"
     }
+  },
+  "login": {
+    "description": "Please enter your account and password to log in to the system",
+    "username": "Username",
+    "usernamePlaceholder": "Please input a username",
+    "password": "Password",
+    "passwordPlaceholder": "Please input a password",
+    "loginButton": "Login",
+    "loggingIn": "Logging in...",
+    "successMessage": "Login succeeded",
+    "errorEmptyFields": "Please enter your username and password",
+    "errorInvalidCredentials": "Login failed, please check username and password",
+    "authDisabled": "Authentication is disabled. Using login free mode.",
+    "guestMode": "Login Free"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -110,20 +132,25 @@
         "maxQueryDepth": "Max Query Depth",
         "minDegree": "Minimum Degree",
         "maxLayoutIterations": "Max Layout Iterations",
+        "depth": "Depth",
+        "degree": "Degree",
         "apiKey": "API Key",
         "enterYourAPIkey": "Enter your API key",
-        "save": "Save"
+        "save": "Save",
+        "refreshLayout": "Refresh Layout"
       },
 
       "zoomControl": {
         "zoomIn": "Zoom In",
         "zoomOut": "Zoom Out",
-        "resetZoom": "Reset Zoom"
+        "resetZoom": "Reset Zoom",
+        "rotateCamera": "Clockwise Rotate",
+        "rotateCameraCounterClockwise": "Counter-Clockwise Rotate"
       },
 
       "layoutsControl": {
-        "startAnimation": "Start the layout animation",
-        "stopAnimation": "Stop the layout animation",
+        "startAnimation": "Continue layout animation",
+        "stopAnimation": "Stop layout animation",
         "layoutGraph": "Layout Graph",
         "layouts": {
           "Circular": "Circular",
@@ -171,7 +198,19 @@
         "labels": "Labels",
         "degree": "Degree",
         "properties": "Properties",
-        "relationships": "Relationships"
+        "relationships": "Relationships",
+        "expandNode": "Expand Node",
+        "pruneNode": "Prune Node",
+        "deleteAllNodesError": "Refuse to delete all nodes in the graph",
+        "nodesRemoved": "{{count}} nodes removed, including orphan nodes",
+        "noNewNodes": "No expandable nodes found",
+        "propertyNames": {
+          "description": "Description",
+          "entity_id": "Name",
+          "entity_type": "Type",
+          "source_id": "SrcID",
+          "Neighbour": "Neigh"
+        }
       },
       "edge": {
         "title": "Relationship",
@@ -191,7 +230,8 @@
       "noLabels": "No labels found",
       "label": "Label",
       "placeholder": "Search labels...",
-      "andOthers": "And {count} others"
+      "andOthers": "And {count} others",
+      "refreshTooltip": "Reload graph data"
     }
   },
   "retrievePanel": {
@@ -261,5 +301,8 @@
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses"
     }
+  },
+  "apiSite": {
+    "loading": "Loading API Documentation..."
   }
 }
