@@ -18,5 +18,6 @@ setuptools
 tenacity
 
 # LLM packages
+infinity-embed
 tiktoken
 xlsxwriter>=3.1.0
