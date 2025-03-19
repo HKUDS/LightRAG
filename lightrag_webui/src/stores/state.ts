@@ -18,11 +18,9 @@ interface BackendState {
 
 interface AuthState {
   isAuthenticated: boolean;
-  showLoginModal: boolean;
   isGuestMode: boolean;  // Add guest mode flag
   login: (token: string, isGuest?: boolean) => void;
   logout: () => void;
-  setShowLoginModal: (show: boolean) => void;
 }
 
 const useBackendStateStoreBase = create<BackendState>()((set) => ({
@@ -104,14 +102,12 @@ export const useAuthStore = create<AuthState>(set => {
 
   return {
     isAuthenticated: initialState.isAuthenticated,
-    showLoginModal: false,
     isGuestMode: initialState.isGuestMode,
 
     login: (token, isGuest = false) => {
       localStorage.setItem('LIGHTRAG-API-TOKEN', token);
       set({
         isAuthenticated: true,
-        showLoginModal: false,
         isGuestMode: isGuest
       });
     },
@@ -122,8 +118,6 @@ export const useAuthStore = create<AuthState>(set => {
         isAuthenticated: false,
         isGuestMode: false
       });
-    },
-
-    setShowLoginModal: (show) => set({ showLoginModal: show })
+    }
   };
 });

@@ -74,7 +74,6 @@ interface GraphState {
 
   moveToSelectedNode: boolean
   isFetching: boolean
-  shouldRender: boolean
 
   // Global flags to track data fetching attempts
   graphDataFetchAttempted: boolean
@@ -95,7 +94,6 @@ interface GraphState {
   setAllDatabaseLabels: (labels: string[]) => void
   fetchAllDatabaseLabels: () => Promise<void>
   setIsFetching: (isFetching: boolean) => void
-  setShouldRender: (shouldRender: boolean) => void
 
   // 搜索引擎方法
   setSearchEngine: (engine: MiniSearch | null) => void
@@ -122,7 +120,6 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   moveToSelectedNode: false,
   isFetching: false,
-  shouldRender: false,
 
   // Initialize global flags
   graphDataFetchAttempted: false,
@@ -137,7 +134,6 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
-  setShouldRender: (shouldRender: boolean) => set({ shouldRender }),
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
   setFocusedNode: (nodeId: string | null) => set({ focusedNode: nodeId }),
@@ -159,8 +155,7 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       rawGraph: null,
       sigmaGraph: null,  // to avoid other components from acccessing graph objects
       searchEngine: null,
-      moveToSelectedNode: false,
-      shouldRender: false
+      moveToSelectedNode: false
     });
   },
 

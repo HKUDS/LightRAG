@@ -32,7 +32,7 @@ export default function AppSettings({ className }: AppSettingsProps) {
   return (
     <Popover open={opened} onOpenChange={setOpened}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="icon" className={cn("h-9 w-9", className)}>
+        <Button variant="ghost" size="icon" className={cn('h-9 w-9', className)}>
           <PaletteIcon className="h-5 w-5" />
         </Button>
       </PopoverTrigger>
