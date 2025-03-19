@@ -18,7 +18,7 @@ const GraphLabels = () => {
   // Track if a fetch is in progress to prevent multiple simultaneous fetches
   const fetchInProgressRef = useRef(false)
 
-  // Fetch labels once on component mount, using global flag to prevent duplicates
+  // Fetch labels and trigger initial data load
   useEffect(() => {
     // Check if we've already attempted to fetch labels in this session
     const labelsFetchAttempted = useGraphStore.getState().labelsFetchAttempted
@@ -42,6 +42,14 @@ const GraphLabels = () => {
         })
     }
   }, []) // Empty dependency array ensures this only runs once on mount
+
+  // Trigger data load when labels are loaded
+  useEffect(() => {
+    if (labelsLoadedRef.current) {
+      // Reset the fetch attempted flag to force a new data fetch
+      useGraphStore.getState().setGraphDataFetchAttempted(false)
+    }
+  }, [label])
 
   const getSearchEngine = useCallback(() => {
     // Create search engine
@@ -85,12 +93,8 @@ const GraphLabels = () => {
   )
 
   const handleRefresh = useCallback(() => {
+    // Re-set the same label to trigger a refresh through useEffect
     const currentLabel = useSettingsStore.getState().queryLabel
-
-    useGraphStore.getState().setGraphDataFetchAttempted(false)
-
-    useGraphStore.getState().reset()
-
     useSettingsStore.getState().setQueryLabel(currentLabel)
   }, [])
 
@@ -128,22 +132,13 @@ const GraphLabels = () => {
             newLabel = '*'
           }
 
-          // Reset the fetch attempted flag to force a new data fetch
-          useGraphStore.getState().setGraphDataFetchAttempted(false)
-
-          // Clear current graph data to ensure complete reload when label changes
-          if (newLabel !== currentLabel) {
-            const graphStore = useGraphStore.getState();
-            // Reset the all graph objects and status
-            graphStore.reset();
-          }
-
+          // Handle reselecting the same label
           if (newLabel === currentLabel && newLabel !== '*') {
-            // reselect the same itme means qery all
-            useSettingsStore.getState().setQueryLabel('*')
-          } else {
-            useSettingsStore.getState().setQueryLabel(newLabel)
+            newLabel = '*'
           }
+
+          // Update the label, which will trigger the useEffect to handle data loading
+          useSettingsStore.getState().setQueryLabel(newLabel)
         }}
         clearable={false}  // Prevent clearing value on reselect
       />
