@@ -1592,7 +1592,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_id TEXT NULL,
+                    chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     )"""
@@ -1607,7 +1607,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_id TEXT NULL,
+                    chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     )"""
@@ -1695,7 +1695,7 @@ SQL_TEMPLATES = {
                      """,
     "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
                       content_vector, chunk_ids, file_path)
-                      VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7::varchar[])
+                      VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET entity_name=EXCLUDED.entity_name,
                       content=EXCLUDED.content,
@@ -1706,7 +1706,7 @@ SQL_TEMPLATES = {
                      """,
     "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
                       target_id, content, content_vector, chunk_ids, file_path)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8::varchar[])
+                      VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET source_id=EXCLUDED.source_id,
                       target_id=EXCLUDED.target_id,
