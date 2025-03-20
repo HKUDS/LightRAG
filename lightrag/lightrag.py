@@ -2589,6 +2589,12 @@ class LightRAG:
                     f"Created or updated relationship: {rel_data['src']} -> {rel_data['tgt']}"
                 )
 
+                # Delete relationships records from vector database
+                await self.relationships_vdb.delete(relations_to_delete)
+                logger.info(
+                    f"Deleted {len(relations_to_delete)} relation records for entity '{entity_name}' from vector database"
+                )
+
             # 7. Update entity vector representation
             description = merged_entity_data.get("description", "")
             source_id = merged_entity_data.get("source_id", "")
@@ -2650,12 +2656,6 @@ class LightRAG:
                 # Delete entity record from vector database
                 entity_id = compute_mdhash_id(entity_name, prefix="ent-")
                 await self.entities_vdb.delete([entity_id])
-
-                # Delete relationships records from vector database
-                await self.relationships_vdb.delete(relations_to_delete)
-                logger.info(
-                    f"Deleted {len(relations_to_delete)} relation records for entity '{entity_name}' from vector database"
-                )
 
                 logger.info(
                     f"Deleted source entity '{entity_name}' and its vector embedding from database"
