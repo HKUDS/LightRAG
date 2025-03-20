@@ -27,6 +27,7 @@ class NavigationService {
     graphStore.setGraphDataFetchAttempted(false);
     graphStore.setLabelsFetchAttempted(false);
     graphStore.setSigmaInstance(null);
+    graphStore.setIsFetching(false); // Reset isFetching state to prevent data loading issues
 
     // Reset backend state
     useBackendState.getState().clear();
