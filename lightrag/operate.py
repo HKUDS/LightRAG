@@ -967,11 +967,8 @@ async def mix_kg_vector_query(
                 query, query_param, global_config, hashing_kv
             )
 
-            logger.debug(f"get_kg_context - High-level keywords: {hl_keywords}")
-            logger.debug(f"get_kg_context - Low-level keywords: {ll_keywords}")
-
             if not hl_keywords and not ll_keywords:
-                logger.warning("get_kg_context - Both high-level and low-level keywords are empty")
+                logger.warning("Both high-level and low-level keywords are empty")
                 return None
 
             # Convert keyword lists to strings
@@ -980,42 +977,29 @@ async def mix_kg_vector_query(
 
             # Set query mode based on available keywords
             if not ll_keywords_str and not hl_keywords_str:
-                logger.warning("get_kg_context - Both keyword strings are empty")
                 return None
             elif not ll_keywords_str:
-                logger.debug("get_kg_context - Using global mode due to missing low-level keywords")
                 query_param.mode = "global"
             elif not hl_keywords_str:
-                logger.debug("get_kg_context - Using local mode due to missing high-level keywords")
                 query_param.mode = "local"
             else:
-                logger.debug("get_kg_context - Using hybrid mode with both keyword types")
                 query_param.mode = "hybrid"
 
             # Build knowledge graph context
-            try:
-                logger.debug(f"get_kg_context - Building query context with mode: {query_param.mode}")
-                context = await _build_query_context(
-                    ll_keywords_str,
-                    hl_keywords_str,
-                    knowledge_graph_inst,
-                    entities_vdb,
-                    relationships_vdb,
-                    text_chunks_db,
-                    query_param,
-                )
-                logger.debug(f"get_kg_context - Context built successfully: {context is not None}")
-                return context
-            except Exception as e:
-                logger.error(f"get_kg_context - Error in _build_query_context: {str(e)}")
-                import traceback
-                logger.debug(f"get_kg_context - Full traceback for _build_query_context error: {traceback.format_exc()}")
-                return None
+            context = await _build_query_context(
+                ll_keywords_str,
+                hl_keywords_str,
+                knowledge_graph_inst,
+                entities_vdb,
+                relationships_vdb,
+                text_chunks_db,
+                query_param,
+            )
+
+            return context
 
         except Exception as e:
             logger.error(f"Error in get_kg_context: {str(e)}")
-            import traceback
-            logger.debug(f"Full traceback for get_kg_context error: {traceback.format_exc()}")
             return None
 
     async def get_vector_context():
@@ -1033,9 +1017,6 @@ async def mix_kg_vector_query(
             )
             if not results:
                 return None
-
-            logger.info(f"DEBUG: Found {len(results)} results from vector search")
-            logger.info(f"DEBUG: Results[0]: {results[0]}")
 
             chunks_ids = [r["id"] for r in results]
             chunks = await text_chunks_db.get_by_ids(chunks_ids)
@@ -1140,8 +1121,8 @@ async def mix_kg_vector_query(
             .replace("user", "")
             .replace("model", "")
             .replace(query, "")
-            .replace("<s>", "")
-            .replace("</s>", "")
+            .replace("<system>", "")
+            .replace("</system>", "")
             .strip()
         )
 
@@ -1172,116 +1153,90 @@ async def _build_query_context(
     text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
 ):
-    logger.info(f"Process {os.getpid()} building query context...")
-    try:
-        if query_param.mode == "local":
-            entities_context, relations_context, text_units_context = await _get_node_data(
+    logger.info(f"Process {os.getpid()} buidling query context...")
+    if query_param.mode == "local":
+        entities_context, relations_context, text_units_context = await _get_node_data(
+            ll_keywords,
+            knowledge_graph_inst,
+            entities_vdb,
+            text_chunks_db,
+            query_param,
+        )
+    elif query_param.mode == "global":
+        entities_context, relations_context, text_units_context = await _get_edge_data(
+            hl_keywords,
+            knowledge_graph_inst,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
+        )
+    else:  # hybrid mode
+        ll_data, hl_data = await asyncio.gather(
+            _get_node_data(
                 ll_keywords,
                 knowledge_graph_inst,
                 entities_vdb,
                 text_chunks_db,
                 query_param,
-            )
-        elif query_param.mode == "global":
-            entities_context, relations_context, text_units_context = await _get_edge_data(
+            ),
+            _get_edge_data(
                 hl_keywords,
                 knowledge_graph_inst,
                 relationships_vdb,
                 text_chunks_db,
                 query_param,
-            )
-        else:  # hybrid mode
-            try:
-                ll_data, hl_data = await asyncio.gather(
-                    _get_node_data(
-                        ll_keywords,
-                        knowledge_graph_inst,
-                        entities_vdb,
-                        text_chunks_db,
-                        query_param,
-                    ),
-                    _get_edge_data(
-                        hl_keywords,
-                        knowledge_graph_inst,
-                        relationships_vdb,
-                        text_chunks_db,
-                        query_param,
-                    ),
-                )
+            ),
+        )
 
-                (
-                    ll_entities_context,
-                    ll_relations_context,
-                    ll_text_units_context,
-                ) = ll_data
+        (
+            ll_entities_context,
+            ll_relations_context,
+            ll_text_units_context,
+        ) = ll_data
 
-                (
-                    hl_entities_context,
-                    hl_relations_context,
-                    hl_text_units_context,
-                ) = hl_data
+        (
+            hl_entities_context,
+            hl_relations_context,
+            hl_text_units_context,
+        ) = hl_data
 
-                if query_param.json_response:
-                    try:
-                        entities_context = json.dumps(json.loads(hl_entities_context) + json.loads(ll_entities_context), ensure_ascii=False)
-                        relations_context = json.dumps(json.loads(hl_relations_context) + json.loads(ll_relations_context), ensure_ascii=False)
-                        text_units_context = json.dumps(json.loads(hl_text_units_context) + json.loads(ll_text_units_context), ensure_ascii=False)
-                    except json.JSONDecodeError as e:
-                        logger.error(f"JSON decode error in hybrid mode: {e}")
-                        logger.debug(f"hl_entities_context: {hl_entities_context}")
-                        logger.debug(f"ll_entities_context: {ll_entities_context}")
-                        # Fall back to empty context
-                        entities_context = json.dumps([], ensure_ascii=False)
-                        relations_context = json.dumps([], ensure_ascii=False)
-                        text_units_context = json.dumps([], ensure_ascii=False)
-                else:
-                    entities_context, relations_context, text_units_context = combine_contexts(
-                        [hl_entities_context, ll_entities_context],
-                        [hl_relations_context, ll_relations_context],
-                        [hl_text_units_context, ll_text_units_context],
-                    )
-            except Exception as e:
-                logger.error(f"Error in hybrid mode context building: {str(e)}")
-                import traceback
-                logger.debug(f"Hybrid mode error traceback: {traceback.format_exc()}")
-                # Fall back to empty context
-                if query_param.json_response:
-                    entities_context = json.dumps([], ensure_ascii=False)
-                    relations_context = json.dumps([], ensure_ascii=False)
-                    text_units_context = json.dumps([], ensure_ascii=False)
-                else:
-                    entities_context = ""
-                    relations_context = ""
-                    text_units_context = ""
-
-        # not necessary to use LLM to generate a response
-        if not entities_context.strip() and not relations_context.strip():
-            return None
 
         if query_param.json_response:
-            return text_units_context
-        else:
-            result = f"""
-            -----Entities-----
-            ```csv
-            {entities_context}
-            ```
-            -----Relationships-----
-            ```csv
-            {relations_context}
-            ```
-            -----Sources-----
-            ```csv
-            {text_units_context}
-            ```
-            """.strip()
+            entities_context = json.dumps(json.loads(hl_entities_context) + json.loads(ll_entities_context),ensure_ascii=False)
+            relations_context = json.dumps(json.loads(hl_relations_context) + json.loads(ll_relations_context),ensure_ascii=False)
+            text_units_context = json.dumps(json.loads(hl_text_units_context) + json.loads(ll_text_units_context),ensure_ascii=False)
 
-        return result
-    except Exception as e:
-        logger.error(f"Error in _build_query_context: {str(e)}")
-        import traceback
-        logger.debug(f"_build_query_context error traceback: {traceback.format_exc()}")
+        else:
+            entities_context, relations_context, text_units_context = combine_contexts(
+                [hl_entities_context, ll_entities_context],
+                [hl_relations_context, ll_relations_context],
+                [hl_text_units_context, ll_text_units_context],
+            )
+
+    # not necessary to use LLM to generate a response
+    if not entities_context.strip() and not relations_context.strip():
         return None
+
+
+    if query_param.json_response:
+        return text_units_context
+    else:
+        result = f"""
+        -----Entities-----
+        ```csv
+        {entities_context}
+        ```
+        -----Relationships-----
+        ```csv
+        {relations_context}
+        ```
+        -----Sources-----
+        ```csv
+        {text_units_context}
+        ```
+        """.strip()
+
+    return result
 
 
 async def _get_node_data(
@@ -1931,7 +1886,6 @@ async def _find_related_text_unit_from_relationships(
         f"Truncate chunks from {len(valid_text_units)} to {len(truncated_text_units)} (max tokens:{query_param.max_token_for_text_unit})"
     )
 
-    # Fix: Include the id field from the lookup when constructing the final list
     all_text_units: list[TextChunkSchema] = [{"id": t["id"], **t["data"]} for t in truncated_text_units]
 
     return all_text_units
