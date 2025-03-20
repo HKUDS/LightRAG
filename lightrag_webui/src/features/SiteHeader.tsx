@@ -6,8 +6,7 @@ import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/state'
 import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
-import { useNavigate } from 'react-router-dom'
-
+import { navigationService } from '@/services/navigation'
 import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
 
 interface NavigationTabProps {
@@ -56,12 +55,10 @@ function TabsNavigation() {
 
 export default function SiteHeader() {
   const { t } = useTranslation()
-  const navigate = useNavigate()
-  const { logout, isGuestMode } = useAuthStore()
+  const { isGuestMode } = useAuthStore()
 
   const handleLogout = () => {
-    logout()
-    navigate('/login')
+    navigationService.navigateToLogin();
   }
 
   return (

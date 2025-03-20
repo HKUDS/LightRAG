@@ -1,6 +1,7 @@
-import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
+import { HashRouter as Router, Routes, Route, useNavigate } from 'react-router-dom'
 import { useEffect, useState } from 'react'
 import { useAuthStore } from '@/stores/state'
+import { navigationService } from '@/services/navigation'
 import { getAuthStatus } from '@/api/lightrag'
 import { toast } from 'sonner'
 import { Toaster } from 'sonner'
@@ -15,6 +16,12 @@ interface ProtectedRouteProps {
 const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
   const { isAuthenticated } = useAuthStore()
   const [isChecking, setIsChecking] = useState(true)
+  const navigate = useNavigate()
+
+  // Set navigate function for navigation service
+  useEffect(() => {
+    navigationService.setNavigate(navigate)
+  }, [navigate])
 
   useEffect(() => {
     let isMounted = true; // Flag to prevent state updates after unmount
@@ -60,22 +67,42 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
     }
   }, [isAuthenticated])
 
-  // Show nothing while checking auth status
-  if (isChecking) {
-    return null
+  // Handle navigation when authentication status changes
+  useEffect(() => {
+    if (!isChecking && !isAuthenticated) {
+      const currentPath = window.location.hash.slice(1); // Remove the '#' from hash
+      const isLoginPage = currentPath === '/login';
+
+      if (!isLoginPage) {
+        // Use navigation service for redirection
+        console.log('Not authenticated, redirecting to login');
+        navigationService.navigateToLogin();
+      }
+    }
+  }, [isChecking, isAuthenticated]);
+
+  // Show nothing while checking auth status or when not authenticated on login page
+  if (isChecking || (!isAuthenticated && window.location.hash.slice(1) === '/login')) {
+    return null;
   }
 
-  // After checking, if still not authenticated, redirect to login
+  // Show children only when authenticated
   if (!isAuthenticated) {
-    return <Navigate to="/login" replace />
+    return null;
   }
 
-  return <>{children}</>
+  return <>{children}</>;
 }
 
-const AppRouter = () => {
+const AppContent = () => {
   const [initializing, setInitializing] = useState(true)
   const { isAuthenticated } = useAuthStore()
+  const navigate = useNavigate()
+
+  // Set navigate function for navigation service
+  useEffect(() => {
+    navigationService.setNavigate(navigate)
+  }, [navigate])
 
   // Check token validity and auth configuration on app initialization
   useEffect(() => {
@@ -135,20 +162,26 @@ const AppRouter = () => {
   }
 
   return (
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route
+        path="/*"
+        element={
+          <ProtectedRoute>
+            <App />
+          </ProtectedRoute>
+        }
+      />
+    </Routes>
+  )
+}
+
+const AppRouter = () => {
+  return (
     <ThemeProvider>
       <Router>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route
-            path="/*"
-            element={
-              <ProtectedRoute>
-                <App />
-              </ProtectedRoute>
-            }
-          />
-        </Routes>
-        <Toaster position="top-center" />
+        <AppContent />
+        <Toaster position="bottom-center" />
       </Router>
     </ThemeProvider>
   )

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback} from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
@@ -7,7 +7,6 @@ import Input from '@/components/ui/Input'
 
 import { controlButtonVariant } from '@/lib/constants'
 import { useSettingsStore } from '@/stores/settings'
-import { useBackendState } from '@/stores/state'
 
 import { SettingsIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next';
@@ -113,7 +112,6 @@ const LabeledNumberInput = ({
  */
 export default function Settings() {
   const [opened, setOpened] = useState<boolean>(false)
-  const [tempApiKey, setTempApiKey] = useState<string>('')
 
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
@@ -127,11 +125,6 @@ export default function Settings() {
   const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
-  const apiKey = useSettingsStore.use.apiKey()
-
-  useEffect(() => {
-    setTempApiKey(apiKey || '')
-  }, [apiKey, opened])
 
   const setEnableNodeDrag = useCallback(
     () => useSettingsStore.setState((pre) => ({ enableNodeDrag: !pre.enableNodeDrag })),
@@ -180,11 +173,22 @@ export default function Settings() {
   const setGraphQueryMaxDepth = useCallback((depth: number) => {
     if (depth < 1) return
     useSettingsStore.setState({ graphQueryMaxDepth: depth })
+    const currentLabel = useSettingsStore.getState().queryLabel
+    useSettingsStore.getState().setQueryLabel('')
+    setTimeout(() => {
+      useSettingsStore.getState().setQueryLabel(currentLabel)
+    }, 300)
   }, [])
 
   const setGraphMinDegree = useCallback((degree: number) => {
     if (degree < 0) return
     useSettingsStore.setState({ graphMinDegree: degree })
+    const currentLabel = useSettingsStore.getState().queryLabel
+    useSettingsStore.getState().setQueryLabel('')
+    setTimeout(() => {
+      useSettingsStore.getState().setQueryLabel(currentLabel)
+    }, 300)
+
   }, [])
 
   const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
@@ -192,26 +196,19 @@ export default function Settings() {
     useSettingsStore.setState({ graphLayoutMaxIterations: iterations })
   }, [])
 
-  const setApiKey = useCallback(async () => {
-    useSettingsStore.setState({ apiKey: tempApiKey || null })
-    await useBackendState.getState().check()
-    setOpened(false)
-  }, [tempApiKey])
-
-  const handleTempApiKeyChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      setTempApiKey(e.target.value)
-    },
-    [setTempApiKey]
-  )
-
   const { t } = useTranslation();
+
+  const saveSettings = () => setOpened(false);
 
   return (
     <>
       <Popover open={opened} onOpenChange={setOpened}>
         <PopoverTrigger asChild>
-          <Button variant={controlButtonVariant} tooltip={t('graphPanel.sideBar.settings.settings')} size="icon">
+          <Button
+            variant={controlButtonVariant}
+            tooltip={t('graphPanel.sideBar.settings.settings')}
+            size="icon"
+          >
             <SettingsIcon />
           </Button>
         </PopoverTrigger>
@@ -293,30 +290,15 @@ export default function Settings() {
               onEditFinished={setGraphLayoutMaxIterations}
             />
             <Separator />
+            <Button
+              onClick={saveSettings}
+              variant="outline"
+              size="sm"
+              className="ml-auto px-4"
+            >
+              {t('graphPanel.sideBar.settings.save')}
+            </Button>
 
-            <div className="flex flex-col gap-2">
-              <label className="text-sm font-medium">{t('graphPanel.sideBar.settings.apiKey')}</label>
-              <form className="flex h-6 gap-2" onSubmit={(e) => e.preventDefault()}>
-                <div className="w-0 flex-1">
-                  <Input
-                    type="password"
-                    value={tempApiKey}
-                    onChange={handleTempApiKeyChange}
-                    placeholder={t('graphPanel.sideBar.settings.enterYourAPIkey')}
-                    className="max-h-full w-full min-w-0"
-                    autoComplete="off"
-                  />
-                </div>
-                <Button
-                  onClick={setApiKey}
-                  variant="outline"
-                  size="sm"
-                  className="max-h-full shrink-0"
-                >
-                  {t('graphPanel.sideBar.settings.save')}
-                </Button>
-              </form>
-            </div>
           </div>
         </PopoverContent>
       </Popover>

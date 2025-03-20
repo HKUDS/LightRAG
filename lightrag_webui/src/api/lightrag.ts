@@ -2,7 +2,6 @@ import axios, { AxiosError } from 'axios'
 import { backendBaseUrl } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
-import { useAuthStore } from '@/stores/state'
 import { navigationService } from '@/services/navigation'
 
 // Types
@@ -174,13 +173,12 @@ axiosInstance.interceptors.response.use(
   (error: AxiosError) => {
     if (error.response) {
       if (error.response?.status === 401) {
-        localStorage.removeItem('LIGHTRAG-API-TOKEN');
-        sessionStorage.clear();
-        useAuthStore.getState().logout();
-
-        // Use navigation service to handle redirection
+        // For login API, throw error directly
+        if (error.config?.url?.includes('/login')) {
+          throw error;
+        }
+        // For other APIs, navigate to login page
         navigationService.navigateToLogin();
-
         // Return a never-resolving promise to prevent further execution
         return new Promise(() => {});
       }

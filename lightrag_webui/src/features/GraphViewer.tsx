@@ -1,5 +1,4 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { useTabVisibility } from '@/contexts/useTabVisibility'
 // import { MiniMap } from '@react-sigma/minimap'
 import { SigmaContainer, useRegisterEvents, useSigma } from '@react-sigma/core'
 import { Settings as SigmaSettings } from 'sigma/settings'
@@ -108,52 +107,39 @@ const GraphEvents = () => {
 const GraphViewer = () => {
   const [sigmaSettings, setSigmaSettings] = useState(defaultSigmaSettings)
   const sigmaRef = useRef<any>(null)
-  const initAttemptedRef = useRef(false)
 
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const moveToSelectedNode = useGraphStore.use.moveToSelectedNode()
   const isFetching = useGraphStore.use.isFetching()
-  const shouldRender = useGraphStore.use.shouldRender() // Rendering control state
-
-  // Get tab visibility
-  const { isTabVisible } = useTabVisibility()
-  const isGraphTabVisible = isTabVisible('knowledge-graph')
 
   const showPropertyPanel = useSettingsStore.use.showPropertyPanel()
   const showNodeSearchBar = useSettingsStore.use.showNodeSearchBar()
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
 
-  // Handle component mount/unmount and tab visibility
-  useEffect(() => {
-    // When component mounts or tab becomes visible
-    if (isGraphTabVisible && !shouldRender && !isFetching && !initAttemptedRef.current) {
-      // If tab is visible but graph is not rendering, try to enable rendering
-      useGraphStore.getState().setShouldRender(true)
-      initAttemptedRef.current = true
-      console.log('Graph viewer initialized')
-    }
-
-    // Cleanup function when component unmounts
-    return () => {
-      // Only log cleanup, don't actually clean up the WebGL context
-      // This allows the WebGL context to persist across tab switches
-      console.log('Graph viewer cleanup')
-    }
-  }, [isGraphTabVisible, shouldRender, isFetching])
-
   // Initialize sigma settings once on component mount
   // All dynamic settings will be updated in GraphControl using useSetSettings
   useEffect(() => {
     setSigmaSettings(defaultSigmaSettings)
+    console.log('Initialized sigma settings')
   }, [])
 
   // Clean up sigma instance when component unmounts
   useEffect(() => {
     return () => {
-      // Clear the sigma instance when component unmounts
-      useGraphStore.getState().setSigmaInstance(null);
-      console.log('Cleared sigma instance on unmount');
+      // TAB is mount twice in vite dev mode, this is a workaround
+
+      const sigma = useGraphStore.getState().sigmaInstance;
+      if (sigma) {
+        try {
+          // Destroy sigma，and clear WebGL context
+          sigma.kill();
+          useGraphStore.getState().setSigmaInstance(null);
+          console.log('Cleared sigma instance on Graphviewer unmount');
+        } catch (error) {
+          console.error('Error cleaning up sigma instance:', error);
+        }
+      }
     };
   }, []);
 

@@ -218,20 +218,20 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
           <Button
             size="icon"
             variant="ghost"
-            className="h-7 w-7 border border-gray-400 hover:bg-gray-200"
+            className="h-7 w-7 border border-gray-400 hover:bg-gray-200 dark:border-gray-600 dark:hover:bg-gray-700"
             onClick={handleExpandNode}
             tooltip={t('graphPanel.propertiesView.node.expandNode')}
           >
-            <GitBranchPlus className="h-4 w-4 text-gray-700" />
+            <GitBranchPlus className="h-4 w-4 text-gray-700 dark:text-gray-300" />
           </Button>
           <Button
             size="icon"
             variant="ghost"
-            className="h-7 w-7 border border-gray-400 hover:bg-gray-200"
+            className="h-7 w-7 border border-gray-400 hover:bg-gray-200 dark:border-gray-600 dark:hover:bg-gray-700"
             onClick={handlePruneNode}
             tooltip={t('graphPanel.propertiesView.node.pruneNode')}
           >
-            <Scissors className="h-4 w-4 text-gray-900" />
+            <Scissors className="h-4 w-4 text-gray-900 dark:text-gray-300" />
           </Button>
         </div>
       </div>
