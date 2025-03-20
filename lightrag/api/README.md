@@ -80,6 +80,7 @@ openai: LLM default type
 ollama: Embedding defult type
 lollms:
 azure_openai:
+infinity: Local embedding models from huggingface via infinity-emb
 openai-ollama: select openai for LLM and ollama for embedding(only valid for --llm-binding)
 ```
 
@@ -95,6 +96,9 @@ LLM_BINDING_API_KEY=your_api_key Light_server --llm-binding openai --embedding-b
 
 # start with ollama llm and ollama embedding (no apikey is needed)
 light-server --llm-binding ollama --embedding-binding ollama
+
+# start with openai llm and infinity embedding (local models)
+LLM_BINDING_API_KEY=your_api_key lightrag-server --llm-binding openai --embedding-binding infinity --embedding-model "Snowflake/snowflake-arctic-embed-l-v2.0"
 ```
 
 ### Starting API Server with Gunicorn (Production)
@@ -159,6 +163,38 @@ AZURE_OPENAI_API_VERSION=2024-08-01-preview  # optional, defaults to latest vers
 EMBEDDING_BINDING=azure_openai  # if using Azure OpenAI for embeddings
 EMBEDDING_MODEL=your-embedding-deployment-name
 
+```
+
+### For Infinity Embeddings Backend
+
+Infinity Embeddings allow you to use local embedding models from Hugging Face via the `infinity-emb` package. This is useful when you want to:
+
+1. Use embedding models offline without API calls
+2. Reduce embedding costs
+3. Have full control over the embedding process
+4. Use specialized embedding models like Snowflake models
+
+To use Infinity embeddings with LightRAG, set the following environment variables:
+
+```
+# Infinity Embeddings Configuration in .env
+EMBEDDING_BINDING=infinity
+EMBEDDING_MODEL=Snowflake/snowflake-arctic-embed-l-v2.0  # or any other HF model
+EMBEDDING_DIM=1024  # Dimension depends on the model
+```
+
+When using Snowflake models from Hugging Face (which use asymmetric retrieval), LightRAG automatically configures separate embedding functions for documents and queries.
+
+The `infinity-emb` package will be automatically installed when needed. You can also install it manually:
+
+```bash
+pip install "infinity-emb[all]"
+```
+
+Example command to start LightRAG with OpenAI LLM and local Infinity embeddings:
+
+```bash
+OPENAI_API_KEY=your_api_key lightrag-server --llm-binding openai --embedding-binding infinity --embedding-model "Snowflake/snowflake-arctic-embed-l-v2.0"
 ```
 
 ### Install Lightrag as a Linux Service
@@ -318,7 +354,7 @@ You can not change storage implementation selection after you add documents to L
 | --top-k | 50 | Number of top-k items to retrieve; corresponds to entities in "local" mode and relationships in "global" mode. |
 | --cosine-threshold | 0.4 | The cossine threshold for nodes and relations retrieval, works with top-k to control the retrieval of nodes and relations. |
 | --llm-binding | ollama | LLM binding type (lollms, ollama, openai, openai-ollama, azure_openai) |
-| --embedding-binding | ollama | Embedding binding type (lollms, ollama, openai, azure_openai) |
+| --embedding-binding | ollama | Embedding binding type (lollms, ollama, openai, azure_openai, infinity) |
 | auto-scan-at-startup | - | Scan input directory for new files and start indexing |
 
 ### Example Usage
@@ -374,6 +410,22 @@ lightrag-server
 
 # Using an authentication key
 lightrag-server --key my-key
+```
+
+#### Running a Lightrag server with Infinity embeddings (local models)
+
+```bash
+# Run lightrag with openai for LLM and local Infinity embeddings
+# Configure in .env or config.ini:
+# LLM_BINDING=openai
+# LLM_MODEL=gpt-4o-mini
+# EMBEDDING_BINDING=infinity
+# EMBEDDING_MODEL=Snowflake/snowflake-arctic-embed-l-v2.0
+# EMBEDDING_DIM=1024
+lightrag-server
+
+# Or using command line arguments:
+OPENAI_API_KEY=your_api_key lightrag-server --llm-binding openai --embedding-binding infinity --embedding-model "Snowflake/snowflake-arctic-embed-l-v2.0"
 ```
 
 **Important Notes:**

@@ -56,7 +56,7 @@ from lightrag.llm.lollms import lollms_model_complete, lollms_embed
 from lightrag.llm.ollama import ollama_model_complete, ollama_embed, async_ollama_embed
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.llm.azure_openai import azure_openai_complete_if_cache, azure_openai_embed
-from lightrag.llm.infinity import infinity_embed
+from lightrag.llm.infinity import infinity_embed, cleanup_infinity_models
 
 # Initialize config parser
 config = configparser.ConfigParser()
@@ -141,6 +141,14 @@ def create_app(args):
         finally:
             # Clean up database connections
             await rag.finalize_storages()
+
+            # Clean up infinity models if they were used
+            if args.embedding_binding == "infinity":
+                try:
+                    await cleanup_infinity_models()
+                    logger.info("Infinity embedding models cleaned up")
+                except Exception as e:
+                    logger.error(f"Error cleaning up infinity models: {e}")
 
     # Initialize FastAPI
     app = FastAPI(
@@ -579,6 +587,10 @@ def check_and_install_dependencies():
         "fastapi",
         # Add other required packages here
     ]
+
+    # Add infinity-emb package if it's needed
+    if os.getenv("EMBEDDING_BINDING") == "infinity":
+        required_packages.append("infinity-emb[all]")
 
     for package in required_packages:
         if not pm.is_installed(package):
