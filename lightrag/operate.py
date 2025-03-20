@@ -172,7 +172,7 @@ async def _handle_single_entity_extraction(
         entity_type=entity_type,
         description=entity_description,
         source_id=chunk_key,
-        metadata={"created_at": time.time(), "file_path": file_path},
+        file_path=file_path,
     )
 
 
@@ -201,7 +201,7 @@ async def _handle_single_relationship_extraction(
         description=edge_description,
         keywords=edge_keywords,
         source_id=edge_source_id,
-        metadata={"created_at": time.time(), "file_path": file_path},
+        file_path=file_path,
     )
 
 
@@ -224,9 +224,7 @@ async def _merge_nodes_then_upsert(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
         already_file_paths.extend(
-            split_string_by_multi_markers(
-                already_node["metadata"]["file_path"], [GRAPH_FIELD_SEP]
-            )
+            split_string_by_multi_markers(already_node["file_path"], [GRAPH_FIELD_SEP])
         )
         already_description.append(already_node["description"])
 
@@ -244,7 +242,7 @@ async def _merge_nodes_then_upsert(
         set([dp["source_id"] for dp in nodes_data] + already_source_ids)
     )
     file_path = GRAPH_FIELD_SEP.join(
-        set([dp["metadata"]["file_path"] for dp in nodes_data] + already_file_paths)
+        set([dp["file_path"] for dp in nodes_data] + already_file_paths)
     )
 
     logger.debug(f"file_path: {file_path}")
@@ -298,7 +296,7 @@ async def _merge_edges_then_upsert(
             if already_edge.get("file_path") is not None:
                 already_file_paths.extend(
                     split_string_by_multi_markers(
-                        already_edge["metadata"]["file_path"], [GRAPH_FIELD_SEP]
+                        already_edge["file_path"], [GRAPH_FIELD_SEP]
                     )
                 )
 
@@ -340,11 +338,7 @@ async def _merge_edges_then_upsert(
     )
     file_path = GRAPH_FIELD_SEP.join(
         set(
-            [
-                dp["metadata"]["file_path"]
-                for dp in edges_data
-                if dp.get("metadata", {}).get("file_path")
-            ]
+            [dp["file_path"] for dp in edges_data if dp.get("file_path")]
             + already_file_paths
         )
     )
@@ -679,10 +673,6 @@ async def extract_entities(
                 "content": f"{dp['entity_name']}\n{dp['description']}",
                 "source_id": dp["source_id"],
                 "file_path": dp.get("file_path", "unknown_source"),
-                "metadata": {
-                    "created_at": dp.get("created_at", time.time()),
-                    "file_path": dp.get("file_path", "unknown_source"),
-                },
             }
             for dp in all_entities_data
         }
@@ -697,10 +687,6 @@ async def extract_entities(
                 "content": f"{dp['src_id']}\t{dp['tgt_id']}\n{dp['keywords']}\n{dp['description']}",
                 "source_id": dp["source_id"],
                 "file_path": dp.get("file_path", "unknown_source"),
-                "metadata": {
-                    "created_at": dp.get("created_at", time.time()),
-                    "file_path": dp.get("file_path", "unknown_source"),
-                },
             }
             for dp in all_relationships_data
         }
@@ -1285,11 +1271,8 @@ async def _get_node_data(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from metadata or directly from node data
+        # Get file path from node data
         file_path = n.get("file_path", "unknown_source")
-        if not file_path or file_path == "unknown_source":
-            # Try to get from metadata
-            file_path = n.get("metadata", {}).get("file_path", "unknown_source")
 
         entites_section_list.append(
             [
@@ -1323,11 +1306,8 @@ async def _get_node_data(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from metadata or directly from edge data
+        # Get file path from edge data
         file_path = e.get("file_path", "unknown_source")
-        if not file_path or file_path == "unknown_source":
-            # Try to get from metadata
-            file_path = e.get("metadata", {}).get("file_path", "unknown_source")
 
         relations_section_list.append(
             [
@@ -1564,11 +1544,8 @@ async def _get_edge_data(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from metadata or directly from edge data
+        # Get file path from edge data
         file_path = e.get("file_path", "unknown_source")
-        if not file_path or file_path == "unknown_source":
-            # Try to get from metadata
-            file_path = e.get("metadata", {}).get("file_path", "unknown_source")
 
         relations_section_list.append(
             [
@@ -1594,11 +1571,8 @@ async def _get_edge_data(
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
 
-        # Get file path from metadata or directly from node data
+        # Get file path from node data
         file_path = n.get("file_path", "unknown_source")
-        if not file_path or file_path == "unknown_source":
-            # Try to get from metadata
-            file_path = n.get("metadata", {}).get("file_path", "unknown_source")
 
         entites_section_list.append(
             [
