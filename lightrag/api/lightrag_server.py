@@ -52,10 +52,6 @@ from .auth import auth_handler
 load_dotenv(".env", override=True)
 
 # Import all the embedding models that might be used
-from lightrag.llm.lollms import lollms_model_complete, lollms_embed
-from lightrag.llm.ollama import ollama_model_complete, ollama_embed, async_ollama_embed
-from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.llm.azure_openai import azure_openai_complete_if_cache, azure_openai_embed
 from lightrag.llm.infinity import infinity_embed, cleanup_infinity_models
 
 # Initialize config parser
@@ -78,7 +74,13 @@ def create_app(args):
     ]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai", "infinity"]:
+    if args.embedding_binding not in [
+        "lollms",
+        "ollama",
+        "openai",
+        "azure_openai",
+        "infinity",
+    ]:
         raise Exception("embedding binding not supported")
 
     # Set default hosts if not provided
@@ -273,7 +275,9 @@ def create_app(args):
         if args.embedding_binding == "azure_openai"
         else infinity_embed(
             texts,
-            model_name=args.embedding_model
+            model_name=args.embedding_model,
+            engine=os.environ.get("INFINITY_ENGINE", "torch"),
+            device=os.environ.get("INFINITY_DEVICE", None),
         )
         if args.embedding_binding == "infinity"
         else openai_embed(
@@ -313,9 +317,14 @@ def create_app(args):
                 max_token_size=args.max_embed_tokens,
                 func=lambda texts: infinity_embed(
                     texts,
-                    model_name=args.embedding_model
-                )
-            ) if args.embedding_binding == "infinity" and args.embedding_model.startswith("Snowflake/") else None,
+                    model_name=args.embedding_model,
+                    engine=os.environ.get("INFINITY_ENGINE", "torch"),
+                    device=os.environ.get("INFINITY_DEVICE", None),
+                ),
+            )
+            if args.embedding_binding == "infinity"
+            and args.embedding_model.startswith("Snowflake/")
+            else None,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,
@@ -351,9 +360,14 @@ def create_app(args):
                 max_token_size=args.max_embed_tokens,
                 func=lambda texts: infinity_embed(
                     texts,
-                    model_name=args.embedding_model
-                )
-            ) if args.embedding_binding == "infinity" and args.embedding_model.startswith("Snowflake/") else None,
+                    model_name=args.embedding_model,
+                    engine=os.environ.get("INFINITY_ENGINE", "torch"),
+                    device=os.environ.get("INFINITY_DEVICE", None),
+                ),
+            )
+            if args.embedding_binding == "infinity"
+            and args.embedding_model.startswith("Snowflake/")
+            else None,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
             vector_storage=args.vector_storage,

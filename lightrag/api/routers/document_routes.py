@@ -437,7 +437,9 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_texts(rag: LightRAG, texts: List[str], ids: Optional[List[str]] = None):
+async def pipeline_index_texts(
+    rag: LightRAG, texts: List[str], ids: Optional[List[str]] = None
+):
     """Index a list of texts
 
     Args:
@@ -578,7 +580,9 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, [request.text], [request.id])
+            background_tasks.add_task(
+                pipeline_index_texts, rag, [request.text], [request.id]
+            )
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
@@ -613,7 +617,9 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, request.texts, request.ids)
+            background_tasks.add_task(
+                pipeline_index_texts, rag, request.texts, request.ids
+            )
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",

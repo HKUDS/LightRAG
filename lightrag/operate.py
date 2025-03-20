@@ -769,7 +769,7 @@ async def kg_query(
 
     if query_param.only_need_context:
         if query_param.json_response:
-            return json.dumps({"kg_context": json.loads(context)},ensure_ascii=False)
+            return json.dumps({"kg_context": json.loads(context)}, ensure_ascii=False)
         else:
             return context
     if context is None:
@@ -1072,16 +1072,29 @@ async def mix_kg_vector_query(
             try:
                 # Add error handling to handle None values
                 kg_json = json.loads(kg_context) if kg_context is not None else None
-                vector_json = json.loads(vector_context) if vector_context is not None else None
+                vector_json = (
+                    json.loads(vector_context) if vector_context is not None else None
+                )
 
                 # Deduplicate kg_json entries if it's a list (using source_id as the key)
                 if kg_json and isinstance(kg_json, list):
                     kg_json = deduplicate_entries_by_source_id(kg_json)
 
-                return json.dumps({"kg_context": kg_json, "vector_context": vector_json}, ensure_ascii=False)
+                return json.dumps(
+                    {"kg_context": kg_json, "vector_context": vector_json},
+                    ensure_ascii=False,
+                )
             except Exception as e:
                 logger.error(f"Error in JSON processing for context: {str(e)}")
-                return json.dumps({"kg_context": None, "vector_context": vector_json if vector_context is not None else None}, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "kg_context": None,
+                        "vector_context": vector_json
+                        if vector_context is not None
+                        else None,
+                    },
+                    ensure_ascii=False,
+                )
         else:
             return {"kg_context": kg_context, "vector_context": vector_context}
 
@@ -1200,11 +1213,19 @@ async def _build_query_context(
             hl_text_units_context,
         ) = hl_data
 
-
         if query_param.json_response:
-            entities_context = json.dumps(json.loads(hl_entities_context) + json.loads(ll_entities_context),ensure_ascii=False)
-            relations_context = json.dumps(json.loads(hl_relations_context) + json.loads(ll_relations_context),ensure_ascii=False)
-            text_units_context = json.dumps(json.loads(hl_text_units_context) + json.loads(ll_text_units_context),ensure_ascii=False)
+            entities_context = json.dumps(
+                json.loads(hl_entities_context) + json.loads(ll_entities_context),
+                ensure_ascii=False,
+            )
+            relations_context = json.dumps(
+                json.loads(hl_relations_context) + json.loads(ll_relations_context),
+                ensure_ascii=False,
+            )
+            text_units_context = json.dumps(
+                json.loads(hl_text_units_context) + json.loads(ll_text_units_context),
+                ensure_ascii=False,
+            )
 
         else:
             entities_context, relations_context, text_units_context = combine_contexts(
@@ -1216,7 +1237,6 @@ async def _build_query_context(
     # not necessary to use LLM to generate a response
     if not entities_context.strip() and not relations_context.strip():
         return None
-
 
     if query_param.json_response:
         return text_units_context
@@ -1277,7 +1297,7 @@ async def _get_node_data(
             "entity_name": k["entity_name"],
             "rank": d,
             # Ensure source_id exists (could be missing)
-            "source_id": n.get("source_id", f"unknown_source_{i}")
+            "source_id": n.get("source_id", f"unknown_source_{i}"),
         }
         for i, (k, n, d) in enumerate(zip(results, node_datas, node_degrees))
         if n is not None
@@ -1351,7 +1371,10 @@ async def _get_node_data(
 
     if query_param.json_response:
         keys = entites_section_list[0]
-        entities_context = json.dumps([dict(zip(keys, row)) for row in entites_section_list[1:]],ensure_ascii=False)
+        entities_context = json.dumps(
+            [dict(zip(keys, row)) for row in entites_section_list[1:]],
+            ensure_ascii=False,
+        )
     else:
         entities_context = list_of_list_to_csv(entites_section_list)
 
@@ -1398,7 +1421,10 @@ async def _get_node_data(
 
     if query_param.json_response:
         keys = relations_section_list[0]
-        relations_context = json.dumps([dict(zip(keys, row)) for row in relations_section_list[1:]],ensure_ascii=False)
+        relations_context = json.dumps(
+            [dict(zip(keys, row)) for row in relations_section_list[1:]],
+            ensure_ascii=False,
+        )
     else:
         relations_context = list_of_list_to_csv(relations_section_list)
 
@@ -1408,7 +1434,10 @@ async def _get_node_data(
 
     if query_param.json_response:
         keys = text_units_section_list[0]
-        text_units_context = json.dumps([dict(zip(keys, row)) for row in text_units_section_list[1:]],ensure_ascii=False)
+        text_units_context = json.dumps(
+            [dict(zip(keys, row)) for row in text_units_section_list[1:]],
+            ensure_ascii=False,
+        )
     else:
         text_units_context = list_of_list_to_csv(text_units_section_list)
 
@@ -1438,23 +1467,29 @@ async def _find_most_related_text_unit_from_entities(
     # Limit input size for very large inputs
     MAX_ENTITIES = 200  # Adjust based on database capacity
     if len(node_datas) > MAX_ENTITIES:
-        logger.warning(f"Limiting entity processing from {len(node_datas)} to {MAX_ENTITIES}")
+        logger.warning(
+            f"Limiting entity processing from {len(node_datas)} to {MAX_ENTITIES}"
+        )
         node_datas = node_datas[:MAX_ENTITIES]
 
     # Get edges using the standard get_node_edges method
     # AGEStorage doesn't implement batch retrieval, so we use asyncio.gather for parallel execution
-    entity_names = [node.get("entity_name") for node in node_datas if node.get("entity_name")]
+    entity_names = [
+        node.get("entity_name") for node in node_datas if node.get("entity_name")
+    ]
 
     # Process edges in smaller chunks to avoid overwhelming the database
     edges = []
     BATCH_SIZE = 50
 
     for i in range(0, len(entity_names), BATCH_SIZE):
-        batch = entity_names[i:i+BATCH_SIZE]
+        batch = entity_names[i : i + BATCH_SIZE]
         edge_tasks = [knowledge_graph_inst.get_node_edges(name) for name in batch]
         batch_edges = await asyncio.gather(*edge_tasks, return_exceptions=True)
         # Handle exceptions and None values
-        batch_edges = [[] if isinstance(e, Exception) else (e or []) for e in batch_edges]
+        batch_edges = [
+            [] if isinstance(e, Exception) else (e or []) for e in batch_edges
+        ]
         edges.extend(batch_edges)
         # Add a small delay to avoid overwhelming the database
         if i + BATCH_SIZE < len(entity_names):
@@ -1465,7 +1500,9 @@ async def _find_most_related_text_unit_from_entities(
     for node in node_datas:
         if source_id := node.get("source_id"):
             try:
-                text_units.append(split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP]))
+                text_units.append(
+                    split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP])
+                )
             except Exception:
                 text_units.append([])
         else:
@@ -1475,7 +1512,9 @@ async def _find_most_related_text_unit_from_entities(
     MAX_ONE_HOP = 500  # Adjust based on database capacity
     one_hop_nodes = {e[1] for edge_list in edges if edge_list for e in edge_list}
     if len(one_hop_nodes) > MAX_ONE_HOP:
-        logger.warning(f"Limiting one-hop nodes from {len(one_hop_nodes)} to {MAX_ONE_HOP}")
+        logger.warning(
+            f"Limiting one-hop nodes from {len(one_hop_nodes)} to {MAX_ONE_HOP}"
+        )
         one_hop_nodes = set(list(one_hop_nodes)[:MAX_ONE_HOP])
 
     # Process one-hop nodes in batches to avoid excessive memory usage and DB load
@@ -1483,19 +1522,25 @@ async def _find_most_related_text_unit_from_entities(
     BATCH_SIZE = 50  # Smaller batch size for node retrieval
 
     for i in range(0, len(one_hop_nodes), BATCH_SIZE):
-        batch = list(one_hop_nodes)[i:i+BATCH_SIZE]
+        batch = list(one_hop_nodes)[i : i + BATCH_SIZE]
         results = await asyncio.gather(
             *[knowledge_graph_inst.get_node(node) for node in batch],
-            return_exceptions=True
+            return_exceptions=True,
         )
 
         for node_name, node_data in zip(batch, results):
-            if isinstance(node_data, Exception) or not node_data or "source_id" not in node_data:
+            if (
+                isinstance(node_data, Exception)
+                or not node_data
+                or "source_id" not in node_data
+            ):
                 continue
 
             try:
                 one_hop_text_units_map[node_name] = set(
-                    split_string_by_multi_markers(node_data["source_id"], [GRAPH_FIELD_SEP])
+                    split_string_by_multi_markers(
+                        node_data["source_id"], [GRAPH_FIELD_SEP]
+                    )
                 )
             except Exception:
                 continue
@@ -1509,10 +1554,7 @@ async def _find_most_related_text_unit_from_entities(
     for index, (chunk_ids, node_edges) in enumerate(zip(text_units, edges)):
         for chunk_id in chunk_ids:
             if chunk_id and chunk_id not in chunk_metadata:
-                chunk_metadata[chunk_id] = {
-                    "order": index,
-                    "edges": node_edges
-                }
+                chunk_metadata[chunk_id] = {"order": index, "edges": node_edges}
 
     if not chunk_metadata:
         return []
@@ -1531,7 +1573,7 @@ async def _find_most_related_text_unit_from_entities(
     BATCH_SIZE = 50  # Smaller batch size for better handling of large content
 
     for i in range(0, len(chunk_ids), BATCH_SIZE):
-        batch_ids = chunk_ids[i:i+BATCH_SIZE]
+        batch_ids = chunk_ids[i : i + BATCH_SIZE]
         # text_chunks_db.get_by_ids is more efficient than multiple get_by_id calls
         batch_contents = await text_chunks_db.get_by_ids(batch_ids)
 
@@ -1540,16 +1582,21 @@ async def _find_most_related_text_unit_from_entities(
                 continue
 
             metadata = chunk_metadata[chunk_id]
-            relation_count = sum(1 for edge in metadata["edges"]
-                              if edge[1] in one_hop_text_units_map and
-                              chunk_id in one_hop_text_units_map[edge[1]])
+            relation_count = sum(
+                1
+                for edge in metadata["edges"]
+                if edge[1] in one_hop_text_units_map
+                and chunk_id in one_hop_text_units_map[edge[1]]
+            )
 
-            processed_chunks.append({
-                "id": chunk_id,
-                "data": chunk_data,
-                "order": metadata["order"],
-                "relation_counts": relation_count
-            })
+            processed_chunks.append(
+                {
+                    "id": chunk_id,
+                    "data": chunk_data,
+                    "order": metadata["order"],
+                    "relation_counts": relation_count,
+                }
+            )
 
         # Add a small delay between batches if processing large amounts of data
         if i + BATCH_SIZE < len(chunk_ids) and len(chunk_ids) > 500:
@@ -1559,7 +1606,9 @@ async def _find_most_related_text_unit_from_entities(
     if not processed_chunks:
         return []
 
-    sorted_chunks = sorted(processed_chunks, key=lambda x: (x["order"], -x["relation_counts"]))
+    sorted_chunks = sorted(
+        processed_chunks, key=lambda x: (x["order"], -x["relation_counts"])
+    )
     truncated_chunks = truncate_list_by_token_size(
         sorted_chunks,
         key=lambda x: x["data"]["content"],
@@ -1576,10 +1625,7 @@ async def _find_most_related_text_unit_from_entities(
             continue
 
         processed_ids.add(chunk_id)
-        final_chunks.append({
-            "id": chunk_id,
-            **chunk["data"]
-        })
+        final_chunks.append({"id": chunk_id, **chunk["data"]})
 
     return final_chunks
 
@@ -1733,7 +1779,10 @@ async def _get_edge_data(
 
     if query_param.json_response:
         keys = relations_section_list[0]
-        relations_context = json.dumps([dict(zip(keys, row)) for row in relations_section_list[1:]],ensure_ascii=False)
+        relations_context = json.dumps(
+            [dict(zip(keys, row)) for row in relations_section_list[1:]],
+            ensure_ascii=False,
+        )
     else:
         relations_context = list_of_list_to_csv(relations_section_list)
 
@@ -1767,7 +1816,10 @@ async def _get_edge_data(
 
     if query_param.json_response:
         keys = entites_section_list[0]
-        entities_context = json.dumps([dict(zip(keys, row)) for row in entites_section_list[1:]],ensure_ascii=False)
+        entities_context = json.dumps(
+            [dict(zip(keys, row)) for row in entites_section_list[1:]],
+            ensure_ascii=False,
+        )
     else:
         entities_context = list_of_list_to_csv(entites_section_list)
 
@@ -1777,11 +1829,15 @@ async def _get_edge_data(
 
     if query_param.json_response:
         keys = text_units_section_list[0]
-        text_units_context = json.dumps([dict(zip(keys, row)) for row in text_units_section_list[1:]],ensure_ascii=False)
+        text_units_context = json.dumps(
+            [dict(zip(keys, row)) for row in text_units_section_list[1:]],
+            ensure_ascii=False,
+        )
     else:
         text_units_context = list_of_list_to_csv(text_units_section_list)
 
     return entities_context, relations_context, text_units_context
+
 
 async def _find_most_related_entities_from_relationships(
     edge_datas: list[dict],
@@ -1886,7 +1942,9 @@ async def _find_related_text_unit_from_relationships(
         f"Truncate chunks from {len(valid_text_units)} to {len(truncated_text_units)} (max tokens:{query_param.max_token_for_text_unit})"
     )
 
-    all_text_units: list[TextChunkSchema] = [{"id": t["id"], **t["data"]} for t in truncated_text_units]
+    all_text_units: list[TextChunkSchema] = [
+        {"id": t["id"], **t["data"]} for t in truncated_text_units
+    ]
 
     return all_text_units
 
@@ -1969,14 +2027,15 @@ async def naive_query(
     )
 
     if query_param.json_response:
-
         section = json.dumps(maybe_truncate_chunks, ensure_ascii=False)
     else:
         section = "\n".join([c["content"] for c in maybe_truncate_chunks])
 
     if query_param.only_need_context:
         if query_param.json_response:
-            return json.dumps({"vector_context": json.loads(section)},ensure_ascii=False)
+            return json.dumps(
+                {"vector_context": json.loads(section)}, ensure_ascii=False
+            )
         else:
             return section
 

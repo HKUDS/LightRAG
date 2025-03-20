@@ -1,4 +1,3 @@
-import os
 import numpy as np
 from tenacity import (
     retry,
@@ -12,12 +11,15 @@ from lightrag.utils import wrap_embedding_func_with_attrs
 _ENGINE_ARRAY_CACHE = None
 _MODELS_INITIALIZED = set()
 
-async def load_infinity_model(model_name):
+
+async def load_infinity_model(model_name, engine="torch", device=None):
     """
     Load Infinity model from Hugging Face using AsyncEngineArray.
 
     Args:
         model_name: Name of the model to load from Hugging Face
+        engine: Engine to use for model loading (e.g., "torch", "optimum")
+        device: Device to run the model on (e.g., "cuda", "cpu"). If None, uses default.
 
     Returns:
         AsyncEmbeddingEngine instance for the model
@@ -25,13 +27,15 @@ async def load_infinity_model(model_name):
     global _ENGINE_ARRAY_CACHE, _MODELS_INITIALIZED
 
     try:
-        from infinity_emb import AsyncEngineArray, EngineArgs, AsyncEmbeddingEngine
+        from infinity_emb import AsyncEngineArray, EngineArgs
 
         # Initialize engine array if not already initialized
         if _ENGINE_ARRAY_CACHE is None:
             engine_args = EngineArgs(
                 model_name_or_path=model_name,
-                engine="torch"  # Could be configurable in the future
+                engine=engine,
+                device=device,
+                trust_remote_code=True,
             )
             _ENGINE_ARRAY_CACHE = AsyncEngineArray.from_args([engine_args])
 
@@ -51,6 +55,7 @@ async def load_infinity_model(model_name):
     except Exception as e:
         raise ValueError(f"Failed to load Infinity model {model_name}: {str(e)}") from e
 
+
 @wrap_embedding_func_with_attrs(embedding_dim=1024, max_token_size=8192)
 @retry(
     stop=stop_after_attempt(3),
@@ -60,7 +65,9 @@ async def load_infinity_model(model_name):
 async def infinity_embed(
     texts: list[str],
     model_name: str = "Snowflake/snowflake-arctic-embed-l-v2.0",
-    **kwargs
+    engine: str = "torch",
+    device: str = None,
+    **kwargs,
 ) -> np.ndarray:
     """
     Generate embeddings using a local Infinity model.
@@ -68,6 +75,8 @@ async def infinity_embed(
     Args:
         texts: List of texts to embed
         model_name: Name of the model to load from Hugging Face
+        engine: Engine to use ("torch" or "optimum" for CPU with OpenVINO)
+        device: Device to run on ("cuda" or "cpu"). If None, uses default.
         **kwargs: Additional arguments to pass to the Infinity model
 
     Returns:
@@ -76,7 +85,7 @@ async def infinity_embed(
     if not texts:
         return np.array([])
 
-    engine = await load_infinity_model(model_name)
+    engine_obj = await load_infinity_model(model_name, engine=engine, device=device)
 
     # Get embedding dimension and max tokens from the model if available
     # The wrapped function will use these values if provided
@@ -86,12 +95,13 @@ async def infinity_embed(
     max_tokens = kwargs.get("max_token_size", 8192)
     infinity_embed.max_token_size = max_tokens
 
-    embeddings, _ = await engine.embed(sentences=texts)
+    embeddings, _ = await engine_obj.embed(sentences=texts)
 
     # Convert to numpy array
     if isinstance(embeddings, list):
         return np.array(embeddings)
     return embeddings
+
 
 async def cleanup_infinity_models():
     """

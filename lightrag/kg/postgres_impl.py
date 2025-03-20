@@ -1001,7 +1001,7 @@ class PGGraphStorage(BaseGraphStorage):
                             d[k] = json.loads(v)
                         except json.JSONDecodeError as e:
                             logger.error(f"Failed to parse string: {v}. Error: {e}")
-        
+
         return d
 
     @staticmethod
