@@ -8,7 +8,6 @@ import { toast } from 'sonner'
 import { queryGraphs } from '@/api/lightrag'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
-import { useTabVisibility } from '@/contexts/useTabVisibility'
 
 import seedrandom from 'seedrandom'
 
@@ -190,22 +189,9 @@ const useLightrangeGraph = () => {
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
 
-  // Get tab visibility
-  const { isTabVisible } = useTabVisibility()
-  const isGraphTabVisible = isTabVisible('knowledge-graph')
-
-  // Track previous parameters to detect actual changes
-  const prevParamsRef = useRef({ queryLabel, maxQueryDepth, minDegree })
-
   // Use ref to track if data has been loaded and initial load
   const dataLoadedRef = useRef(false)
   const initialLoadRef = useRef(false)
-
-  // Check if parameters have changed
-  const paramsChanged =
-    prevParamsRef.current.queryLabel !== queryLabel ||
-    prevParamsRef.current.maxQueryDepth !== maxQueryDepth ||
-    prevParamsRef.current.minDegree !== minDegree
 
   const getNode = useCallback(
     (nodeId: string) => {
@@ -224,43 +210,33 @@ const useLightrangeGraph = () => {
   // Track if a fetch is in progress to prevent multiple simultaneous fetches
   const fetchInProgressRef = useRef(false)
 
-  // Data fetching logic - simplified but preserving TAB visibility check
+  // Reset graph when query label is cleared
   useEffect(() => {
-    // Skip if fetch is already in progress
-    if (fetchInProgressRef.current) {
-      return
-    }
-
-    // If there's no query label, reset the graph
-    if (!queryLabel) {
-      if (rawGraph !== null || sigmaGraph !== null) {
-        const state = useGraphStore.getState()
-        state.reset()
-        state.setGraphDataFetchAttempted(false)
-        state.setLabelsFetchAttempted(false)
-      }
+    if (!queryLabel && (rawGraph !== null || sigmaGraph !== null)) {
+      const state = useGraphStore.getState()
+      state.reset()
+      state.setGraphDataFetchAttempted(false)
+      state.setLabelsFetchAttempted(false)
       dataLoadedRef.current = false
       initialLoadRef.current = false
+    }
+  }, [queryLabel, rawGraph, sigmaGraph])
+
+  // Data fetching logic
+  useEffect(() => {
+    // Skip if fetch is already in progress or no query label
+    if (fetchInProgressRef.current || !queryLabel) {
       return
     }
 
-    // Check if parameters have changed
-    if (!isFetching && !fetchInProgressRef.current &&
-        (paramsChanged || !useGraphStore.getState().graphDataFetchAttempted)) {
-
-      // Only fetch data if the Graph tab is visible and we haven't attempted a fetch yet
-      if (!isGraphTabVisible) {
-        console.log('Graph tab not visible, skipping data fetch');
-        return;
-      }
-
+    // Only fetch data when graphDataFetchAttempted is false (avoids re-fetching on vite dev mode)
+    if (!isFetching && !useGraphStore.getState().graphDataFetchAttempted) {
       // Set flags
       fetchInProgressRef.current = true
       useGraphStore.getState().setGraphDataFetchAttempted(true)
 
       const state = useGraphStore.getState()
       state.setIsFetching(true)
-      state.setShouldRender(false) // Disable rendering during data loading
 
       // Clear selection and highlighted nodes before fetching new graph
       state.clearSelection()
@@ -269,9 +245,6 @@ const useLightrangeGraph = () => {
           state.sigmaGraph?.setNodeAttribute(node, 'highlighted', false)
         })
       }
-
-      // Update parameter reference
-      prevParamsRef.current = { queryLabel, maxQueryDepth, minDegree }
 
       console.log('Fetching graph data...')
 
@@ -295,8 +268,6 @@ const useLightrangeGraph = () => {
         state.setSigmaGraph(newSigmaGraph)
         state.setRawGraph(data)
 
-        // No longer need to extract labels from graph data
-
         // Update flags
         dataLoadedRef.current = true
         initialLoadRef.current = true
@@ -305,8 +276,6 @@ const useLightrangeGraph = () => {
         // Reset camera view
         state.setMoveToSelectedNode(true)
 
-        // Enable rendering if the tab is visible
-        state.setShouldRender(isGraphTabVisible)
         state.setIsFetching(false)
       }).catch((error) => {
         console.error('Error fetching graph data:', error)
@@ -314,29 +283,12 @@ const useLightrangeGraph = () => {
         // Reset state on error
         const state = useGraphStore.getState()
         state.setIsFetching(false)
-        state.setShouldRender(isGraphTabVisible)
         dataLoadedRef.current = false
         fetchInProgressRef.current = false
         state.setGraphDataFetchAttempted(false)
       })
     }
-  }, [queryLabel, maxQueryDepth, minDegree, isFetching, paramsChanged, isGraphTabVisible, rawGraph, sigmaGraph])
-
-  // Update rendering state and handle tab visibility changes
-  useEffect(() => {
-    // When tab becomes visible
-    if (isGraphTabVisible) {
-      // If we have data, enable rendering
-      if (rawGraph) {
-        useGraphStore.getState().setShouldRender(true)
-      }
-
-      // We no longer reset the fetch attempted flag here to prevent continuous API calls
-    } else {
-      // When tab becomes invisible, disable rendering
-      useGraphStore.getState().setShouldRender(false)
-    }
-  }, [isGraphTabVisible, rawGraph])
+  }, [queryLabel, maxQueryDepth, minDegree, isFetching])
 
   // Handle node expansion
   useEffect(() => {
