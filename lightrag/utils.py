@@ -940,3 +940,24 @@ def check_storage_env_vars(storage_name: str) -> None:
             f"Storage implementation '{storage_name}' requires the following "
             f"environment variables: {', '.join(missing_vars)}"
         )
+
+def deduplicate_entries_by_source_id(entries):
+    seen_source_ids = {}
+    result = []
+
+    for entry in entries:
+        if isinstance(entry, dict):
+            # Get source_id with fallback to id (we don't use full_doc_id as multiple chunks can have the same full_doc_id)
+            source_id = entry.get("source_id") or entry.get("id")
+
+            if source_id and source_id not in seen_source_ids:
+                seen_source_ids[source_id] = True
+                result.append(entry)
+            elif not source_id:
+                # Keep entries without source_id to avoid data loss
+                result.append(entry)
+        else:
+            # Keep non-dict entries
+            result.append(entry)
+
+    return result

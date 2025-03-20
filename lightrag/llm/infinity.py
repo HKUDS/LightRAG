@@ -8,32 +8,45 @@ from tenacity import (
 )
 from lightrag.utils import wrap_embedding_func_with_attrs
 
-# Model cache to prevent reloading for each embedding call
-_MODEL_CACHE = {}
+# Engine array cache to prevent reloading for each embedding call
+_ENGINE_ARRAY_CACHE = None
+_MODELS_INITIALIZED = set()
 
 async def load_infinity_model(model_name):
     """
-    Load Infinity model from Hugging Face.
+    Load Infinity model from Hugging Face using AsyncEngineArray.
 
     Args:
         model_name: Name of the model to load from Hugging Face
 
     Returns:
-        Loaded infinity model
+        AsyncEmbeddingEngine instance for the model
     """
-    # Check if model is already in cache
-    if model_name in _MODEL_CACHE:
-        return _MODEL_CACHE[model_name]
+    global _ENGINE_ARRAY_CACHE, _MODELS_INITIALIZED
 
     try:
-        from infinity import InfinityEmbedding
-        model = InfinityEmbedding(model_name)
-        # Cache the model for future use
-        _MODEL_CACHE[model_name] = model
-        return model
+        from infinity_emb import AsyncEngineArray, EngineArgs, AsyncEmbeddingEngine
+
+        # Initialize engine array if not already initialized
+        if _ENGINE_ARRAY_CACHE is None:
+            engine_args = EngineArgs(
+                model_name_or_path=model_name,
+                engine="torch"  # Could be configurable in the future
+            )
+            _ENGINE_ARRAY_CACHE = AsyncEngineArray.from_args([engine_args])
+
+        # Get the engine for this model
+        engine = _ENGINE_ARRAY_CACHE[model_name]
+
+        # Start the engine if not already started
+        if model_name not in _MODELS_INITIALIZED:
+            await engine.astart()
+            _MODELS_INITIALIZED.add(model_name)
+
+        return engine
     except ImportError as e:
         raise ImportError(
-            "Please install infinity-embed package: pip install infinity-embed"
+            "Please install infinity-emb package: pip install infinity-emb[all]"
         ) from e
     except Exception as e:
         raise ValueError(f"Failed to load Infinity model {model_name}: {str(e)}") from e
@@ -63,7 +76,7 @@ async def infinity_embed(
     if not texts:
         return np.array([])
 
-    model = await load_infinity_model(model_name)
+    engine = await load_infinity_model(model_name)
 
     # Get embedding dimension and max tokens from the model if available
     # The wrapped function will use these values if provided
@@ -73,16 +86,26 @@ async def infinity_embed(
     max_tokens = kwargs.get("max_token_size", 8192)
     infinity_embed.max_token_size = max_tokens
 
-    # Check if this is a query embedding - if so add the prefix for Snowflake models
-    if model_name.startswith("Snowflake/") and kwargs.get("is_query", False):
-        # Add query prefix for Snowflake models
-        prefixed_texts = ["query: " + text for text in texts]
-        embeddings = model.embed(prefixed_texts)
-    else:
-        # Generate embeddings
-        embeddings = model.embed(texts)
+    embeddings, _ = await engine.embed(sentences=texts)
 
     # Convert to numpy array
     if isinstance(embeddings, list):
         return np.array(embeddings)
     return embeddings
+
+async def cleanup_infinity_models():
+    """
+    Cleanup function to stop all infinity engines properly.
+    Should be called when the application is shutting down.
+    """
+    global _ENGINE_ARRAY_CACHE, _MODELS_INITIALIZED
+
+    if _ENGINE_ARRAY_CACHE is not None:
+        for model_name in _MODELS_INITIALIZED:
+            try:
+                engine = _ENGINE_ARRAY_CACHE[model_name]
+                await engine.astop()
+            except Exception:
+                pass
+        _MODELS_INITIALIZED.clear()
+        _ENGINE_ARRAY_CACHE = None

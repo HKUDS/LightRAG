@@ -265,8 +265,7 @@ def create_app(args):
         if args.embedding_binding == "azure_openai"
         else infinity_embed(
             texts,
-            model_name=args.embedding_model,
-            is_query=kwargs.get("is_query", False),
+            model_name=args.embedding_model
         )
         if args.embedding_binding == "infinity"
         else openai_embed(
@@ -306,8 +305,7 @@ def create_app(args):
                 max_token_size=args.max_embed_tokens,
                 func=lambda texts: infinity_embed(
                     texts,
-                    model_name=args.embedding_model,
-                    is_query=True,  # Force is_query=True for query embedding function
+                    model_name=args.embedding_model
                 )
             ) if args.embedding_binding == "infinity" and args.embedding_model.startswith("Snowflake/") else None,
             kv_storage=args.kv_storage,
@@ -345,8 +343,7 @@ def create_app(args):
                 max_token_size=args.max_embed_tokens,
                 func=lambda texts: infinity_embed(
                     texts,
-                    model_name=args.embedding_model,
-                    is_query=True,  # Force is_query=True for query embedding function
+                    model_name=args.embedding_model
                 )
             ) if args.embedding_binding == "infinity" and args.embedding_model.startswith("Snowflake/") else None,
             kv_storage=args.kv_storage,
