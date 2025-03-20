@@ -67,32 +67,31 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
     }
   }, [isAuthenticated])
 
-  // Show nothing while checking auth status
-  if (isChecking) {
-    return null
+  // Handle navigation when authentication status changes
+  useEffect(() => {
+    if (!isChecking && !isAuthenticated) {
+      const currentPath = window.location.hash.slice(1); // Remove the '#' from hash
+      const isLoginPage = currentPath === '/login';
+
+      if (!isLoginPage) {
+        // Use navigation service for redirection
+        console.log('Not authenticated, redirecting to login');
+        navigationService.navigateToLogin();
+      }
+    }
+  }, [isChecking, isAuthenticated]);
+
+  // Show nothing while checking auth status or when not authenticated on login page
+  if (isChecking || (!isAuthenticated && window.location.hash.slice(1) === '/login')) {
+    return null;
   }
 
-  // After checking, if still not authenticated
+  // Show children only when authenticated
   if (!isAuthenticated) {
-    // Get current path and check if it's a direct access
-    const currentPath = window.location.hash.slice(1); // Remove the '#' from hash
-    const isLoginPage = currentPath === '/login';
-
-    // Skip redirect if already on login page
-    if (isLoginPage) {
-      return null;
-    }
-
-    // For non-login pages, handle state reset and navigation
-    if (!isLoginPage) {
-      // Use navigation service for redirection
-      console.log('Not authenticated, redirecting to login');
-      navigationService.navigateToLogin();
-      return null;
-    }
+    return null;
   }
 
-  return <>{children}</>
+  return <>{children}</>;
 }
 
 const AppContent = () => {
