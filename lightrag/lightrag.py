@@ -1947,6 +1947,8 @@ class LightRAG:
 
             # 2. Update entity information in the graph
             new_node_data = {**node_data, **updated_data}
+            new_node_data["entity_id"] = new_entity_name
+
             if "entity_name" in new_node_data:
                 del new_node_data[
                     "entity_name"
@@ -1963,7 +1965,7 @@ class LightRAG:
 
                 # Store relationships that need to be updated
                 relations_to_update = []
-
+                relations_to_delete = []
                 # Get all edges related to the original entity
                 edges = await self.chunk_entity_relation_graph.get_node_edges(
                     entity_name
@@ -1975,6 +1977,12 @@ class LightRAG:
                             source, target
                         )
                         if edge_data:
+                            relations_to_delete.append(
+                                compute_mdhash_id(source + target, prefix="rel-")
+                            )
+                            relations_to_delete.append(
+                                compute_mdhash_id(target + source, prefix="rel-")
+                            )
                             if source == entity_name:
                                 await self.chunk_entity_relation_graph.upsert_edge(
                                     new_entity_name, target, edge_data
@@ -1998,6 +2006,12 @@ class LightRAG:
                 await self.entities_vdb.delete([old_entity_id])
                 logger.info(
                     f"Deleted old entity '{entity_name}' and its vector embedding from database"
+                )
+
+                # Delete old relation records from vector database
+                await self.relationships_vdb.delete(relations_to_delete)
+                logger.info(
+                    f"Deleted {len(relations_to_delete)} relation records for entity '{entity_name}' from vector database"
                 )
 
                 # Update relationship vector representations
@@ -2498,39 +2512,21 @@ class LightRAG:
             # 4. Get all relationships of the source entities
             all_relations = []
             for entity_name in source_entities:
-                # Get all relationships where this entity is the source
-                outgoing_edges = await self.chunk_entity_relation_graph.get_node_edges(
+                # Get all relationships of the source entities
+                edges = await self.chunk_entity_relation_graph.get_node_edges(
                     entity_name
                 )
-                if outgoing_edges:
-                    for src, tgt in outgoing_edges:
+                if edges:
+                    for src, tgt in edges:
                         # Ensure src is the current entity
                         if src == entity_name:
                             edge_data = await self.chunk_entity_relation_graph.get_edge(
                                 src, tgt
                             )
-                            all_relations.append(("outgoing", src, tgt, edge_data))
-
-                # Get all relationships where this entity is the target
-                incoming_edges = []
-                all_labels = await self.chunk_entity_relation_graph.get_all_labels()
-                for label in all_labels:
-                    if label == entity_name:
-                        continue
-                    node_edges = await self.chunk_entity_relation_graph.get_node_edges(
-                        label
-                    )
-                    for src, tgt in node_edges or []:
-                        if tgt == entity_name:
-                            incoming_edges.append((src, tgt))
-
-                for src, tgt in incoming_edges:
-                    edge_data = await self.chunk_entity_relation_graph.get_edge(
-                        src, tgt
-                    )
-                    all_relations.append(("incoming", src, tgt, edge_data))
+                            all_relations.append((src, tgt, edge_data))
 
             # 5. Create or update the target entity
+            merged_entity_data["entity_id"] = target_entity
             if not target_exists:
                 await self.chunk_entity_relation_graph.upsert_node(
                     target_entity, merged_entity_data
@@ -2544,8 +2540,11 @@ class LightRAG:
 
             # 6. Recreate all relationships, pointing to the target entity
             relation_updates = {}  # Track relationships that need to be merged
+            relations_to_delete = []
 
-            for rel_type, src, tgt, edge_data in all_relations:
+            for src, tgt, edge_data in all_relations:
+                relations_to_delete.append(compute_mdhash_id(src + tgt, prefix="rel-"))
+                relations_to_delete.append(compute_mdhash_id(tgt + src, prefix="rel-"))
                 new_src = target_entity if src in source_entities else src
                 new_tgt = target_entity if tgt in source_entities else tgt
 
@@ -2652,18 +2651,11 @@ class LightRAG:
                 entity_id = compute_mdhash_id(entity_name, prefix="ent-")
                 await self.entities_vdb.delete([entity_id])
 
-                # Also ensure any relationships specific to this entity are deleted from vector DB
-                # This is a safety check, as these should have been transformed to the target entity already
-                entity_relation_prefix = compute_mdhash_id(entity_name, prefix="rel-")
-                relations_with_entity = await self.relationships_vdb.search_by_prefix(
-                    entity_relation_prefix
+                # Delete relationships records from vector database
+                await self.relationships_vdb.delete(relations_to_delete)
+                logger.info(
+                    f"Deleted {len(relations_to_delete)} relation records for entity '{entity_name}' from vector database"
                 )
-                if relations_with_entity:
-                    relation_ids = [r["id"] for r in relations_with_entity]
-                    await self.relationships_vdb.delete(relation_ids)
-                    logger.info(
-                        f"Deleted {len(relation_ids)} relation records for entity '{entity_name}' from vector database"
-                    )
 
                 logger.info(
                     f"Deleted source entity '{entity_name}' and its vector embedding from database"
