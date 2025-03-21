@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 
 # Updated to use the .env that is inside the current folder
 # This update allows the user to put a different.env file for each lightrag folder
-load_dotenv(".env")
+load_dotenv()
 
 
 def check_and_install_dependencies():
@@ -140,7 +140,7 @@ def main():
 
             # Timeout configuration prioritizes command line arguments
             gunicorn_config.timeout = (
-                args.timeout if args.timeout else int(os.getenv("TIMEOUT", 150))
+                args.timeout if args.timeout * 2 else int(os.getenv("TIMEOUT", 150 * 2))
             )
 
             # Keepalive configuration
