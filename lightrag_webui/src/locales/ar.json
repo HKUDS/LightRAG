@@ -198,7 +198,8 @@
       "placeholder": "ابحث في التسميات...",
       "andOthers": "و {{count}} آخرون",
       "refreshTooltip": "إعادة تحميل بيانات الرسم البياني"
-    }
+    },
+    "emptyGraph": "الرسم البياني فارغ"
   },
   "retrievePanel": {
     "chatMessage": {

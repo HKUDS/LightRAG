@@ -198,7 +198,8 @@
       "placeholder": "Rechercher des étiquettes...",
       "andOthers": "Et {{count}} autres",
       "refreshTooltip": "Recharger les données du graphe"
-    }
+    },
+    "emptyGraph": "Le graphe est vide"
   },
   "retrievePanel": {
     "chatMessage": {
