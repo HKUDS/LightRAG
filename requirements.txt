@@ -4,6 +4,7 @@ future
 
 # Basic modules
 gensim
+nano-vectordb
 
 # Additional Packages for export Functionality
 pandas>=2.0.0

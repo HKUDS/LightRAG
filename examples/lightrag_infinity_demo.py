@@ -27,11 +27,11 @@ LLM_MODEL = os.getenv("LLM_MODEL", "gpt-4o-mini")
 
 # Configure infinity-emb engine and device
 INFINITY_ENGINE = os.getenv(
-    "INFINITY_ENGINE", "torch"
-)  # Use "optimum" for CPU-only with OpenVINO
+    "INFINITY_ENGINE", "optimum"
+)
 INFINITY_DEVICE = os.getenv(
-    "INFINITY_DEVICE", None
-)  # Use "cpu" to explicitly target CPU
+    "INFINITY_DEVICE", "cpu"
+)
 
 # Ensure we're using the correct environment variable for OPENAI_API_KEY
 if "OPENAI_API_KEY" not in os.environ:
