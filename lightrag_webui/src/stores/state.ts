@@ -90,7 +90,7 @@ const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; core
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
   const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
   const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
-  
+
   if (!token) {
     return {
       isAuthenticated: false,
@@ -138,7 +138,7 @@ export const useAuthStore = create<AuthState>(set => {
 
     logout: () => {
       localStorage.removeItem('LIGHTRAG-API-TOKEN');
-      
+
       const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
       const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
 
