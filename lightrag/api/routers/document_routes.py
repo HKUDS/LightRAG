@@ -472,11 +472,30 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         total_files = len(new_files)
         logger.info(f"Found {total_files} new files to index.")
 
-        if new_files:
-            await pipeline_index_files(rag, new_files)
+        if not new_files:
+            return
+
+        # Get MAX_PARALLEL_INSERT from global_args
+        max_parallel = global_args["max_parallel_insert"]
+        # Calculate batch size as 2 * MAX_PARALLEL_INSERT
+        batch_size = 2 * max_parallel
+        
+        # Process files in batches
+        for i in range(0, total_files, batch_size):
+            batch_files = new_files[i:i+batch_size]
+            batch_num = i // batch_size + 1
+            total_batches = (total_files + batch_size - 1) // batch_size
+            
+            logger.info(f"Processing batch {batch_num}/{total_batches} with {len(batch_files)} files")
+            await pipeline_index_files(rag, batch_files)
+            
+            # Log progress
+            processed = min(i + batch_size, total_files)
+            logger.info(f"Processed {processed}/{total_files} files ({processed/total_files*100:.1f}%)")
 
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
+        logger.error(traceback.format_exc())
 
 
 def create_document_routes(

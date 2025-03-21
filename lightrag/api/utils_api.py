@@ -365,6 +365,9 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
 
+    # Get MAX_PARALLEL_INSERT from environment
+    global_args["max_parallel_insert"] = get_env_value("MAX_PARALLEL_INSERT", 2, int)
+
     # Handle openai-ollama special case
     if args.llm_binding == "openai-ollama":
         args.llm_binding = "openai"
