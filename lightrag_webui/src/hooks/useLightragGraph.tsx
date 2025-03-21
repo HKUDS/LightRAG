@@ -12,34 +12,52 @@ import { useSettingsStore } from '@/stores/settings'
 import seedrandom from 'seedrandom'
 
 const validateGraph = (graph: RawGraph) => {
+  // Check if graph exists
   if (!graph) {
-    return false
-  }
-  if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
-    return false
+    console.log('Graph validation failed: graph is null');
+    return false;
   }
 
+  // Check if nodes and edges are arrays
+  if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
+    console.log('Graph validation failed: nodes or edges is not an array');
+    return false;
+  }
+
+  // Check if nodes array is empty
+  if (graph.nodes.length === 0) {
+    console.log('Graph validation failed: nodes array is empty');
+    return false;
+  }
+
+  // Validate each node
   for (const node of graph.nodes) {
     if (!node.id || !node.labels || !node.properties) {
-      return false
+      console.log('Graph validation failed: invalid node structure');
+      return false;
     }
   }
 
+  // Validate each edge
   for (const edge of graph.edges) {
     if (!edge.id || !edge.source || !edge.target) {
-      return false
+      console.log('Graph validation failed: invalid edge structure');
+      return false;
     }
   }
 
+  // Validate edge connections
   for (const edge of graph.edges) {
-    const source = graph.getNode(edge.source)
-    const target = graph.getNode(edge.target)
+    const source = graph.getNode(edge.source);
+    const target = graph.getNode(edge.target);
     if (source == undefined || target == undefined) {
-      return false
+      console.log('Graph validation failed: edge references non-existent node');
+      return false;
     }
   }
 
-  return true
+  console.log('Graph validation passed');
+  return true;
 }
 
 export type NodeType = {
@@ -53,16 +71,32 @@ export type NodeType = {
 export type EdgeType = { label: string }
 
 const fetchGraph = async (label: string, maxDepth: number, minDegree: number) => {
-  let rawData: any = null
-
-  try {
-    rawData = await queryGraphs(label, maxDepth, minDegree)
-  } catch (e) {
-    useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!')
-    return null
+  let rawData: any = null;
+  
+  // Check if we need to fetch all database labels first
+  const lastSuccessfulQueryLabel = useGraphStore.getState().lastSuccessfulQueryLabel;
+  if (!lastSuccessfulQueryLabel) {
+    console.log('Last successful query label is empty, fetching all database labels first...');
+    try {
+      await useGraphStore.getState().fetchAllDatabaseLabels();
+    } catch (e) {
+      console.error('Failed to fetch all database labels:', e);
+      // Continue with graph fetch even if labels fetch fails
+    }
   }
 
-  let rawGraph = null
+  // If label is empty, use default label '*'
+  const queryLabel = label || '*';
+  
+  try {
+    console.log(`Fetching graph data with label: ${queryLabel}, maxDepth: ${maxDepth}, minDegree: ${minDegree}`);
+    rawData = await queryGraphs(queryLabel, maxDepth, minDegree);
+  } catch (e) {
+    useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
+    return null;
+  }
+
+  let rawGraph = null;
 
   if (rawData) {
     const nodeIdMap: Record<string, number> = {}
@@ -260,22 +294,48 @@ const useLightrangeGraph = () => {
         // Reset state
         state.reset()
 
-        // Create and set new graph directly
-        const newSigmaGraph = createSigmaGraph(data)
-        data?.buildDynamicMap()
+        // Check if data is empty or invalid
+        if (!data || !data.nodes || data.nodes.length === 0) {
+          // Create an empty graph
+          const emptyGraph = new DirectedGraph();
+          
+          // Set empty graph to store
+          state.setSigmaGraph(emptyGraph);
+          state.setRawGraph(null);
+          
+          // Show "Graph Is Empty" placeholder
+          state.setGraphIsEmpty(true);
+          
+          // Clear current label
+          useSettingsStore.getState().setQueryLabel('');
+          
+          // Clear last successful query label to ensure labels are fetched next time
+          state.setLastSuccessfulQueryLabel('');
+          
+          console.log('Graph data is empty or invalid, set empty graph');
+        } else {
+          // Create and set new graph
+          const newSigmaGraph = createSigmaGraph(data);
+          data.buildDynamicMap();
 
-        // Set new graph data
-        state.setSigmaGraph(newSigmaGraph)
-        state.setRawGraph(data)
+          // Set new graph data
+          state.setSigmaGraph(newSigmaGraph);
+          state.setRawGraph(data);
+          state.setGraphIsEmpty(false);
+          
+          // Update last successful query label
+          state.setLastSuccessfulQueryLabel(currentQueryLabel);
+
+          // Reset camera view
+          state.setMoveToSelectedNode(true);
+          
+          console.log('Graph data loaded successfully');
+        }
 
         // Update flags
         dataLoadedRef.current = true
         initialLoadRef.current = true
         fetchInProgressRef.current = false
-
-        // Reset camera view
-        state.setMoveToSelectedNode(true)
-
         state.setIsFetching(false)
       }).catch((error) => {
         console.error('Error fetching graph data:', error)
@@ -283,9 +343,10 @@ const useLightrangeGraph = () => {
         // Reset state on error
         const state = useGraphStore.getState()
         state.setIsFetching(false)
-        dataLoadedRef.current = false
+        dataLoadedRef.current = false;
         fetchInProgressRef.current = false
         state.setGraphDataFetchAttempted(false)
+        state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
   }, [queryLabel, maxQueryDepth, minDegree, isFetching])
