@@ -43,7 +43,7 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token
-          useAuthStore.getState().login(status.access_token, true)
+          useAuthStore.getState().login(status.access_token, true, status.core_version, status.api_version)
           if (status.message) {
             toast.info(status.message)
           }
@@ -126,7 +126,7 @@ const AppContent = () => {
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token
-          useAuthStore.getState().login(status.access_token, true)
+          useAuthStore.getState().login(status.access_token, true, status.core_version, status.api_version)
           if (status.message) {
             toast.info(status.message)
           }
