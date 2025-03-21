@@ -444,8 +444,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.log_level}")
     ASCIIColors.white("    ├─ Verbose Debug: ", end="")
     ASCIIColors.yellow(f"{args.verbose}")
-    ASCIIColors.white("    ├─ Timeout: ", end="")
-    ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
+    ASCIIColors.white("    ├─ History Turns: ", end="")
+    ASCIIColors.yellow(f"{args.history_turns}")
     ASCIIColors.white("    └─ API Key: ", end="")
     ASCIIColors.yellow("Set" if args.key else "Not Set")
 
@@ -462,8 +462,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.llm_binding}")
     ASCIIColors.white("    ├─ Host: ", end="")
     ASCIIColors.yellow(f"{args.llm_binding_host}")
-    ASCIIColors.white("    └─ Model: ", end="")
+    ASCIIColors.white("    ├─ Model: ", end="")
     ASCIIColors.yellow(f"{args.llm_model}")
+    ASCIIColors.white("    └─ Timeout: ", end="")
+    ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
 
     # Embedding Configuration
     ASCIIColors.magenta("\n📊 Embedding Configuration:")
@@ -478,8 +480,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
 
     # RAG Configuration
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
-    ASCIIColors.white("    ├─ Max Async Operations: ", end="")
+    ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
     ASCIIColors.yellow(f"{args.max_async}")
+    ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
+    ASCIIColors.yellow(f"{global_args['max_parallel_insert']}")
     ASCIIColors.white("    ├─ Max Tokens: ", end="")
     ASCIIColors.yellow(f"{args.max_tokens}")
     ASCIIColors.white("    ├─ Max Embed Tokens: ", end="")
@@ -488,8 +492,6 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.chunk_size}")
     ASCIIColors.white("    ├─ Chunk Overlap Size: ", end="")
     ASCIIColors.yellow(f"{args.chunk_overlap_size}")
-    ASCIIColors.white("    ├─ History Turns: ", end="")
-    ASCIIColors.yellow(f"{args.history_turns}")
     ASCIIColors.white("    ├─ Cosine Threshold: ", end="")
     ASCIIColors.yellow(f"{args.cosine_threshold}")
     ASCIIColors.white("    ├─ Top-K: ", end="")
