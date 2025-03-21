@@ -747,8 +747,30 @@ class PGDocStatusStorage(DocStatusStorage):
             )
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get doc_chunks data by id"""
-        raise NotImplementedError
+        """Get doc_chunks data by multiple IDs."""
+        if not ids:
+            return []
+
+        sql = "SELECT * FROM LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id = ANY($2)"
+        params = {"workspace": self.db.workspace, "ids": ids}
+
+        results = await self.db.query(sql, params, True)
+
+        if not results:
+            return []
+        return [
+            {
+                "content": row["content"],
+                "content_length": row["content_length"],
+                "content_summary": row["content_summary"],
+                "status": row["status"],
+                "chunks_count": row["chunks_count"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "file_path": row["file_path"],
+            }
+            for row in results
+        ]
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -1570,7 +1592,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_id TEXT NULL,
+                    chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     )"""
@@ -1585,7 +1607,7 @@ TABLES = {
                     content_vector VECTOR,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
-                    chunk_id TEXT NULL,
+                    chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     )"""
@@ -1673,7 +1695,7 @@ SQL_TEMPLATES = {
                      """,
     "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
                       content_vector, chunk_ids, file_path)
-                      VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7::varchar[])
+                      VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET entity_name=EXCLUDED.entity_name,
                       content=EXCLUDED.content,
@@ -1684,7 +1706,7 @@ SQL_TEMPLATES = {
                      """,
     "upsert_relationship": """INSERT INTO LIGHTRAG_VDB_RELATION (workspace, id, source_id,
                       target_id, content, content_vector, chunk_ids, file_path)
-                      VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8::varchar[])
+                      VALUES ($1, $2, $3, $4, $5, $6, $7::varchar[], $8)
                       ON CONFLICT (workspace,id) DO UPDATE
                       SET source_id=EXCLUDED.source_id,
                       target_id=EXCLUDED.target_id,
