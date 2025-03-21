@@ -201,7 +201,8 @@
       "placeholder": "Search labels...",
       "andOthers": "And {count} others",
       "refreshTooltip": "Reload graph data"
-    }
+    },
+    "emptyGraph": "Graph Is Empty"
   },
   "retrievePanel": {
     "chatMessage": {
