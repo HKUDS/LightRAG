@@ -23,7 +23,7 @@ def is_available():
     return importlib.util.find_spec("infinity_emb") is not None
 
 
-async def load_infinity_model(model_name, engine="torch", device=None):
+async def load_infinity_model(model_name, engine="optimum", device="cpu"):
     """
     Load Infinity model from Hugging Face using AsyncEngineArray.
 
@@ -85,8 +85,8 @@ async def load_infinity_model(model_name, engine="torch", device=None):
 async def infinity_embed(
     texts: list[str],
     model_name: str = "Snowflake/snowflake-arctic-embed-l-v2.0",
-    engine: str = "torch",
-    device: str = None,
+    engine: str = "optimum",
+    device: str = "cpu",
     **kwargs,
 ) -> np.ndarray:
     """

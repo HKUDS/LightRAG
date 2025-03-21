@@ -224,11 +224,12 @@ async def _merge_nodes_then_upsert(
         already_source_ids.extend(
             split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
         )
-        already_file_paths.extend(
-            split_string_by_multi_markers(
-                already_node["metadata"]["file_path"], [GRAPH_FIELD_SEP]
+        if "metadata" in already_node and "file_path" in already_node["metadata"]:
+            already_file_paths.extend(
+                split_string_by_multi_markers(
+                    already_node["metadata"]["file_path"], [GRAPH_FIELD_SEP]
+                )
             )
-        )
         already_description.append(already_node["description"])
 
     entity_type = sorted(
@@ -296,7 +297,7 @@ async def _merge_edges_then_upsert(
                 )
 
             # Get file_path with empty string default if missing or None
-            if already_edge.get("file_path") is not None:
+            if already_edge.get("file_path") is not None and "metadata" in already_edge:
                 already_file_paths.extend(
                     split_string_by_multi_markers(
                         already_edge["metadata"]["file_path"], [GRAPH_FIELD_SEP]

@@ -54,7 +54,6 @@ QUERIES = [
     "Which programming language is best for web development?",
 ]
 
-
 async def embedding_func(texts: list[str]) -> np.ndarray:
     return await infinity_embed(
         texts, model_name=MODEL_NAME, engine=INFINITY_ENGINE, device=INFINITY_DEVICE
