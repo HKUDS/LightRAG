@@ -185,7 +185,7 @@ EMBEDDING_DIM=1024  # Dimension depends on the model
 
 When using Snowflake models from Hugging Face (which use asymmetric retrieval), LightRAG automatically configures separate embedding functions for documents and queries.
 
-The `infinity-emb` package will be automatically installed when needed. You can also install it manually:
+The `infinity-emb` package will required, you can install it manually:
 
 ```bash
 pip install "infinity-emb[all]"

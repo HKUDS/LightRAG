@@ -1,4 +1,6 @@
+import os
 import numpy as np
+import importlib.util
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -10,6 +12,15 @@ from lightrag.utils import wrap_embedding_func_with_attrs
 # Engine array cache to prevent reloading for each embedding call
 _ENGINE_ARRAY_CACHE = None
 _MODELS_INITIALIZED = set()
+
+def is_available():
+    """
+    Check if infinity-emb package is available.
+
+    Returns:
+        bool: True if infinity-emb is installed, False otherwise
+    """
+    return importlib.util.find_spec("infinity_emb") is not None
 
 
 async def load_infinity_model(model_name, engine="torch", device=None):
@@ -23,7 +34,16 @@ async def load_infinity_model(model_name, engine="torch", device=None):
 
     Returns:
         AsyncEmbeddingEngine instance for the model
+
+    Raises:
+        ImportError: If infinity-emb package is not installed
+        ValueError: If there's an error loading the model
     """
+    if not is_available():
+        raise ImportError(
+            "Please install infinity-emb package: pip install infinity-emb[all]"
+        )
+
     global _ENGINE_ARRAY_CACHE, _MODELS_INITIALIZED
 
     try:
@@ -81,7 +101,16 @@ async def infinity_embed(
 
     Returns:
         NumPy array of embeddings
+
+    Raises:
+        ImportError: If infinity-emb package is not installed
+        ValueError: If there's an error generating embeddings
     """
+    if not is_available():
+        raise ImportError(
+            "Please install infinity-emb package: pip install infinity-emb[all]"
+        )
+
     if not texts:
         return np.array([])
 
@@ -107,7 +136,12 @@ async def cleanup_infinity_models():
     """
     Cleanup function to stop all infinity engines properly.
     Should be called when the application is shutting down.
+
+    Note: Does nothing if infinity-emb is not installed or no models were initialized.
     """
+    if not is_available():
+        return
+
     global _ENGINE_ARRAY_CACHE, _MODELS_INITIALIZED
 
     if _ENGINE_ARRAY_CACHE is not None:

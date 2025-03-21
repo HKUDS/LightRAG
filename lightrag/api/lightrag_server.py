@@ -52,7 +52,7 @@ from .auth import auth_handler
 load_dotenv(".env", override=True)
 
 # Import all the embedding models that might be used
-from lightrag.llm.infinity import infinity_embed, cleanup_infinity_models
+from lightrag.llm.infinity import infinity_embed, cleanup_infinity_models, infinity_is_available
 
 # Initialize config parser
 config = configparser.ConfigParser()
@@ -249,6 +249,12 @@ def create_app(args):
             api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
             **kwargs,
         )
+
+    # Check if infinity embeddings are selected but not available
+    if args.embedding_binding == "infinity" and not infinity_is_available():
+        logger.error("Infinity embeddings selected but infinity-emb package is not installed.")
+        logger.error("Please install it with 'pip install infinity-emb[all]'")
+        raise ImportError("infinity-emb package required but not installed")
 
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
