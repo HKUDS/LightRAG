@@ -226,6 +226,8 @@ const useLightrangeGraph = () => {
   // Use ref to track if data has been loaded and initial load
   const dataLoadedRef = useRef(false)
   const initialLoadRef = useRef(false)
+  // Use ref to track if empty data has been handled
+  const emptyDataHandledRef = useRef(false)
 
   const getNode = useCallback(
     (nodeId: string) => {
@@ -258,9 +260,14 @@ const useLightrangeGraph = () => {
 
   // Data fetching logic
   useEffect(() => {
-    // Skip if fetch is already in progress or no query label
-    if (fetchInProgressRef.current || !queryLabel) {
+    // Skip if fetch is already in progress
+    if (fetchInProgressRef.current) {
       return
+    }
+
+    // Empty queryLabel should be only handle once(avoid infinite loop)
+    if (!queryLabel && emptyDataHandledRef.current) {
+      return;
     }
 
     // Only fetch data when graphDataFetchAttempted is false (avoids re-fetching on vite dev mode)
@@ -280,15 +287,27 @@ const useLightrangeGraph = () => {
         })
       }
 
-      console.log('Fetching graph data...')
+      console.log('Preparing graph data...')
 
       // Use a local copy of the parameters
       const currentQueryLabel = queryLabel
       const currentMaxQueryDepth = maxQueryDepth
       const currentMinDegree = minDegree
 
-      // Fetch graph data
-      fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMinDegree).then((data) => {
+      // Declare a variable to store data promise
+      let dataPromise;
+
+      // 1. If query label is not empty, use fetchGraph
+      if (currentQueryLabel) {
+        dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMinDegree);
+      } else {
+        // 2. If query label is empty, set data to null
+        console.log('Query label is empty, show empty graph')
+        dataPromise = Promise.resolve(null);
+      }
+
+      // 3. Process data
+      dataPromise.then((data) => {
         const state = useGraphStore.getState()
 
         // Reset state
@@ -296,23 +315,36 @@ const useLightrangeGraph = () => {
 
         // Check if data is empty or invalid
         if (!data || !data.nodes || data.nodes.length === 0) {
-          // Create an empty graph
+          // Create a graph with a single "Graph Is Empty" node
           const emptyGraph = new DirectedGraph();
           
-          // Set empty graph to store
+          // Add a single node with "Graph Is Empty" label
+          emptyGraph.addNode('empty-graph-node', {
+            label: t('graphPanel.emptyGraph'),
+            color: '#cccccc', // gray color
+            x: 0.5,
+            y: 0.5,
+            size: 15, 
+            borderColor: Constants.nodeBorderColor,
+            borderSize: 0.2
+          });
+          
+          // Set graph to store
           state.setSigmaGraph(emptyGraph);
           state.setRawGraph(null);
           
-          // Show "Graph Is Empty" placeholder
+          // Still mark graph as empty for other logic
           state.setGraphIsEmpty(true);
           
-          // Clear current label
-          useSettingsStore.getState().setQueryLabel('');
+          // Only clear current label if it's not already empty
+          if (currentQueryLabel) {
+            useSettingsStore.getState().setQueryLabel('');
+          }
           
           // Clear last successful query label to ensure labels are fetched next time
           state.setLastSuccessfulQueryLabel('');
           
-          console.log('Graph data is empty or invalid, set empty graph');
+          console.log('Graph data is empty, created graph with empty graph node');
         } else {
           // Create and set new graph
           const newSigmaGraph = createSigmaGraph(data);
@@ -337,6 +369,11 @@ const useLightrangeGraph = () => {
         initialLoadRef.current = true
         fetchInProgressRef.current = false
         state.setIsFetching(false)
+        
+        // Mark empty data as handled if data is empty and query label is empty
+        if ((!data || !data.nodes || data.nodes.length === 0) && !currentQueryLabel) {
+          emptyDataHandledRef.current = true;
+        }
       }).catch((error) => {
         console.error('Error fetching graph data:', error)
 
