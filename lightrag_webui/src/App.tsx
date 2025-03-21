@@ -8,7 +8,6 @@ import { healthCheckInterval } from '@/lib/constants'
 import { useBackendState } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
 import { useEffect } from 'react'
-import { Toaster } from 'sonner'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 
@@ -27,8 +26,6 @@ function App() {
 
   // Health check
   useEffect(() => {
-    if (!enableHealthCheck) return
-
     // Check immediately
     useBackendState.getState().check()
 
@@ -56,24 +53,24 @@ function App() {
   return (
     <ThemeProvider>
       <TabVisibilityProvider>
-        <main className="flex h-screen w-screen overflow-x-hidden">
+        <main className="flex h-screen w-screen overflow-hidden">
           <Tabs
             defaultValue={currentTab}
-            className="!m-0 flex grow flex-col !p-0"
+            className="!m-0 flex grow flex-col !p-0 overflow-hidden"
             onValueChange={handleTabChange}
           >
             <SiteHeader />
             <div className="relative grow">
-              <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0">
+              <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
                 <DocumentManager />
               </TabsContent>
-              <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0">
+              <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                 <GraphViewer />
               </TabsContent>
-              <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0">
+              <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                 <RetrievalTesting />
               </TabsContent>
-              <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0">
+              <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
                 <ApiSite />
               </TabsContent>
             </div>
@@ -81,7 +78,6 @@ function App() {
           {enableHealthCheck && <StatusIndicator />}
           {message !== null && !apiKeyInvalid && <MessageAlert />}
           {apiKeyInvalid && <ApiKeyAlert />}
-          <Toaster />
         </main>
       </TabVisibilityProvider>
     </ThemeProvider>

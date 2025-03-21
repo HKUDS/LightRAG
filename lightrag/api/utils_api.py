@@ -9,7 +9,7 @@ import sys
 import logging
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
-from fastapi import HTTPException, Security, Depends, Request
+from fastapi import HTTPException, Security, Depends, Request, status
 from dotenv import load_dotenv
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
@@ -35,19 +35,46 @@ ollama_server_infos = OllamaServerInfos()
 
 
 def get_auth_dependency():
-    whitelist = os.getenv("WHITELIST_PATHS", "").split(",")
+    # Set default whitelist paths
+    whitelist = os.getenv("WHITELIST_PATHS", "/login,/health").split(",")
 
     async def dependency(
         request: Request,
         token: str = Depends(OAuth2PasswordBearer(tokenUrl="login", auto_error=False)),
     ):
+        # Check if authentication is configured
+        auth_configured = bool(
+            os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD")
+        )
+
+        # If authentication is not configured, skip all validation
+        if not auth_configured:
+            return
+
+        # For configured auth, allow whitelist paths without token
         if request.url.path in whitelist:
             return
 
-        if not (os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD")):
-            return
+        # Require token for all other paths when auth is configured
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token required"
+            )
 
-        auth_handler.validate_token(token)
+        try:
+            token_info = auth_handler.validate_token(token)
+            # Reject guest tokens when authentication is configured
+            if token_info.get("role") == "guest":
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Authentication required. Guest access not allowed when authentication is configured.",
+                )
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+            )
+
+        return
 
     return dependency
 

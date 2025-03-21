@@ -2,20 +2,23 @@ import { useCallback, useEffect, useRef } from 'react'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
-import { labelListLimit } from '@/lib/constants'
+import { labelListLimit, controlButtonVariant } from '@/lib/constants'
 import MiniSearch from 'minisearch'
 import { useTranslation } from 'react-i18next'
+import { RefreshCw } from 'lucide-react'
+import Button from '@/components/ui/Button'
 
 const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
   const allDatabaseLabels = useGraphStore.use.allDatabaseLabels()
+  const rawGraph = useGraphStore.use.rawGraph()
   const labelsLoadedRef = useRef(false)
 
   // Track if a fetch is in progress to prevent multiple simultaneous fetches
   const fetchInProgressRef = useRef(false)
 
-  // Fetch labels once on component mount, using global flag to prevent duplicates
+  // Fetch labels and trigger initial data load
   useEffect(() => {
     // Check if we've already attempted to fetch labels in this session
     const labelsFetchAttempted = useGraphStore.getState().labelsFetchAttempted
@@ -25,8 +28,6 @@ const GraphLabels = () => {
       fetchInProgressRef.current = true
       // Set global flag to indicate we've attempted to fetch in this session
       useGraphStore.getState().setLabelsFetchAttempted(true)
-
-      console.log('Fetching graph labels (once per session)...')
 
       useGraphStore.getState().fetchAllDatabaseLabels()
         .then(() => {
@@ -41,6 +42,14 @@ const GraphLabels = () => {
         })
     }
   }, []) // Empty dependency array ensures this only runs once on mount
+
+  // Trigger data load when labels are loaded
+  useEffect(() => {
+    if (labelsLoadedRef.current) {
+      // Reset the fetch attempted flag to force a new data fetch
+      useGraphStore.getState().setGraphDataFetchAttempted(false)
+    }
+  }, [label])
 
   const getSearchEngine = useCallback(() => {
     // Create search engine
@@ -83,52 +92,73 @@ const GraphLabels = () => {
     [getSearchEngine]
   )
 
-  return (
-    <AsyncSelect<string>
-      className="ml-2"
-      triggerClassName="max-h-8"
-      searchInputClassName="max-h-8"
-      triggerTooltip={t('graphPanel.graphLabels.selectTooltip')}
-      fetcher={fetchData}
-      renderOption={(item) => <div>{item}</div>}
-      getOptionValue={(item) => item}
-      getDisplayValue={(item) => <div>{item}</div>}
-      notFound={<div className="py-6 text-center text-sm">No labels found</div>}
-      label={t('graphPanel.graphLabels.label')}
-      placeholder={t('graphPanel.graphLabels.placeholder')}
-      value={label !== null ? label : '*'}
-      onChange={(newLabel) => {
+  const handleRefresh = useCallback(() => {
+    // Reset labels fetch status to allow fetching labels again
+    useGraphStore.getState().setLabelsFetchAttempted(false)
+
+    // Reset graph data fetch status directly, not depending on allDatabaseLabels changes
+    useGraphStore.getState().setGraphDataFetchAttempted(false)
+
+    // Fetch all labels again
+    useGraphStore.getState().fetchAllDatabaseLabels()
+      .then(() => {
+        // Trigger a graph data reload by changing the query label back and forth
         const currentLabel = useSettingsStore.getState().queryLabel
+        useSettingsStore.getState().setQueryLabel('')
+        setTimeout(() => {
+          useSettingsStore.getState().setQueryLabel(currentLabel)
+        }, 0)
+      })
+      .catch((error) => {
+        console.error('Failed to refresh labels:', error)
+      })
+  }, [])
 
-        // select the last item means query all
-        if (newLabel === '...') {
-          newLabel = '*'
-        }
+  return (
+    <div className="flex items-center">
+      {rawGraph && (
+        <Button
+          size="icon"
+          variant={controlButtonVariant}
+          onClick={handleRefresh}
+          tooltip={t('graphPanel.graphLabels.refreshTooltip')}
+          className="mr-1"
+        >
+          <RefreshCw className="h-4 w-4" />
+        </Button>
+      )}
+      <AsyncSelect<string>
+        className="ml-2"
+        triggerClassName="max-h-8"
+        searchInputClassName="max-h-8"
+        triggerTooltip={t('graphPanel.graphLabels.selectTooltip')}
+        fetcher={fetchData}
+        renderOption={(item) => <div>{item}</div>}
+        getOptionValue={(item) => item}
+        getDisplayValue={(item) => <div>{item}</div>}
+        notFound={<div className="py-6 text-center text-sm">No labels found</div>}
+        label={t('graphPanel.graphLabels.label')}
+        placeholder={t('graphPanel.graphLabels.placeholder')}
+        value={label !== null ? label : '*'}
+        onChange={(newLabel) => {
+          const currentLabel = useSettingsStore.getState().queryLabel
 
-        // Reset the fetch attempted flag to force a new data fetch
-        useGraphStore.getState().setGraphDataFetchAttempted(false)
-
-        // Clear current graph data to ensure complete reload when label changes
-        if (newLabel !== currentLabel) {
-          const graphStore = useGraphStore.getState();
-          graphStore.clearSelection();
-
-          // Reset the graph state but preserve the instance
-          if (graphStore.sigmaGraph) {
-            const nodes = Array.from(graphStore.sigmaGraph.nodes());
-            nodes.forEach(node => graphStore.sigmaGraph?.dropNode(node));
+          // select the last item means query all
+          if (newLabel === '...') {
+            newLabel = '*'
           }
-        }
 
-        if (newLabel === currentLabel && newLabel !== '*') {
-          // reselect the same itme means qery all
-          useSettingsStore.getState().setQueryLabel('*')
-        } else {
+          // Handle reselecting the same label
+          if (newLabel === currentLabel && newLabel !== '*') {
+            newLabel = '*'
+          }
+
+          // Update the label, which will trigger the useEffect to handle data loading
           useSettingsStore.getState().setQueryLabel(newLabel)
-        }
-      }}
-      clearable={false}  // Prevent clearing value on reselect
-    />
+        }}
+        clearable={false}  // Prevent clearing value on reselect
+      />
+    </div>
   )
 }
 
