@@ -186,7 +186,9 @@ class LightRAG:
     embedding_batch_num: int = field(default=int(os.getenv("EMBEDDING_BATCH_NUM", 32)))
     """Batch size for embedding computations."""
 
-    embedding_func_max_async: int = field(default=int(os.getenv("EMBEDDING_FUNC_MAX_ASYNC", 16)))
+    embedding_func_max_async: int = field(
+        default=int(os.getenv("EMBEDDING_FUNC_MAX_ASYNC", 16))
+    )
     """Maximum number of concurrent embedding function calls."""
 
     embedding_cache_config: dict[str, Any] = field(

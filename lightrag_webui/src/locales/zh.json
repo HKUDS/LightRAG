@@ -198,7 +198,8 @@
       "placeholder": "搜索标签...",
       "andOthers": "还有 {count} 个",
       "refreshTooltip": "重新加载图形数据"
-    }
+    },
+    "emptyGraph": "图谱数据为空"
   },
   "retrievePanel": {
     "chatMessage": {
