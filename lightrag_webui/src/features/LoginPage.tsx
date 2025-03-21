@@ -43,7 +43,7 @@ const LoginPage = () => {
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token and redirect
-          login(status.access_token, true)
+          login(status.access_token, true, status.core_version, status.api_version)
           if (status.message) {
             toast.info(status.message)
           }
@@ -87,7 +87,7 @@ const LoginPage = () => {
 
       // Check authentication mode
       const isGuestMode = response.auth_mode === 'disabled'
-      login(response.access_token, isGuestMode)
+      login(response.access_token, isGuestMode, response.core_version, response.api_version)
 
       if (isGuestMode) {
         // Show authentication disabled notification
