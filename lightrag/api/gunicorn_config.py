@@ -29,7 +29,9 @@ preload_app = True
 worker_class = "uvicorn.workers.UvicornWorker"
 
 # Other Gunicorn configurations
-timeout = int(os.getenv("TIMEOUT", 150 * 2))  # Default 150s *2 to match run_with_gunicorn.py
+timeout = int(
+    os.getenv("TIMEOUT", 150 * 2)
+)  # Default 150s *2 to match run_with_gunicorn.py
 keepalive = int(os.getenv("KEEPALIVE", 5))  # Default 5s
 
 # Logging configuration
