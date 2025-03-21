@@ -23,9 +23,9 @@ from lightrag.api.utils_api import (
     get_default_host,
     display_splash_screen,
 )
-from lightrag import LightRAG
-from lightrag.types import GPTKeywordExtractionFormat
+from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
+from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
 from lightrag.api.routers.document_routes import (
     DocumentManager,
@@ -364,9 +364,16 @@ def create_app(args):
                 "token_type": "bearer",
                 "auth_mode": "disabled",
                 "message": "Authentication is disabled. Using guest access.",
+                "core_version": core_version,
+                "api_version": __api_version__,
             }
 
-        return {"auth_configured": True, "auth_mode": "enabled"}
+        return {
+            "auth_configured": True,
+            "auth_mode": "enabled",
+            "core_version": core_version,
+            "api_version": __api_version__,
+        }
 
     @app.post("/login", dependencies=[Depends(optional_api_key)])
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
@@ -383,6 +390,8 @@ def create_app(args):
                 "token_type": "bearer",
                 "auth_mode": "disabled",
                 "message": "Authentication is disabled. Using guest access.",
+                "core_version": core_version,
+                "api_version": __api_version__,
             }
 
         if form_data.username != username or form_data.password != password:
@@ -398,6 +407,8 @@ def create_app(args):
             "access_token": user_token,
             "token_type": "bearer",
             "auth_mode": "enabled",
+            "core_version": core_version,
+            "api_version": __api_version__,
         }
 
     @app.get("/health", dependencies=[Depends(optional_api_key)])
