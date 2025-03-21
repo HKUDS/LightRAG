@@ -72,7 +72,7 @@ export type EdgeType = { label: string }
 
 const fetchGraph = async (label: string, maxDepth: number, minDegree: number) => {
   let rawData: any = null;
-  
+
   // Check if we need to fetch all database labels first
   const lastSuccessfulQueryLabel = useGraphStore.getState().lastSuccessfulQueryLabel;
   if (!lastSuccessfulQueryLabel) {
@@ -87,7 +87,7 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
 
   // If label is empty, use default label '*'
   const queryLabel = label || '*';
-  
+
   try {
     console.log(`Fetching graph data with label: ${queryLabel}, maxDepth: ${maxDepth}, minDegree: ${minDegree}`);
     rawData = await queryGraphs(queryLabel, maxDepth, minDegree);
@@ -317,33 +317,33 @@ const useLightrangeGraph = () => {
         if (!data || !data.nodes || data.nodes.length === 0) {
           // Create a graph with a single "Graph Is Empty" node
           const emptyGraph = new DirectedGraph();
-          
+
           // Add a single node with "Graph Is Empty" label
           emptyGraph.addNode('empty-graph-node', {
             label: t('graphPanel.emptyGraph'),
             color: '#cccccc', // gray color
             x: 0.5,
             y: 0.5,
-            size: 15, 
+            size: 15,
             borderColor: Constants.nodeBorderColor,
             borderSize: 0.2
           });
-          
+
           // Set graph to store
           state.setSigmaGraph(emptyGraph);
           state.setRawGraph(null);
-          
+
           // Still mark graph as empty for other logic
           state.setGraphIsEmpty(true);
-          
+
           // Only clear current label if it's not already empty
           if (currentQueryLabel) {
             useSettingsStore.getState().setQueryLabel('');
           }
-          
+
           // Clear last successful query label to ensure labels are fetched next time
           state.setLastSuccessfulQueryLabel('');
-          
+
           console.log('Graph data is empty, created graph with empty graph node');
         } else {
           // Create and set new graph
@@ -354,13 +354,13 @@ const useLightrangeGraph = () => {
           state.setSigmaGraph(newSigmaGraph);
           state.setRawGraph(data);
           state.setGraphIsEmpty(false);
-          
+
           // Update last successful query label
           state.setLastSuccessfulQueryLabel(currentQueryLabel);
 
           // Reset camera view
           state.setMoveToSelectedNode(true);
-          
+
           console.log('Graph data loaded successfully');
         }
 
@@ -369,7 +369,7 @@ const useLightrangeGraph = () => {
         initialLoadRef.current = true
         fetchInProgressRef.current = false
         state.setIsFetching(false)
-        
+
         // Mark empty data as handled if data is empty and query label is empty
         if ((!data || !data.nodes || data.nodes.length === 0) && !currentQueryLabel) {
           emptyDataHandledRef.current = true;
@@ -386,7 +386,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, minDegree, isFetching])
+  }, [queryLabel, maxQueryDepth, minDegree, isFetching, t])
 
   // Handle node expansion
   useEffect(() => {

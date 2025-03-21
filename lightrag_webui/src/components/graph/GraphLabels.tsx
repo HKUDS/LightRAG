@@ -60,13 +60,13 @@ const GraphLabels = () => {
     // Reset fetch status flags
     useGraphStore.getState().setLabelsFetchAttempted(false)
     useGraphStore.getState().setGraphDataFetchAttempted(false)
-    
+
     // Clear last successful query label to ensure labels are fetched
     useGraphStore.getState().setLastSuccessfulQueryLabel('')
-    
+
     // Get current label
     const currentLabel = useSettingsStore.getState().queryLabel
-    
+
     // If current label is empty, use default label '*'
     if (!currentLabel) {
       useSettingsStore.getState().setQueryLabel('*')
@@ -119,7 +119,7 @@ const GraphLabels = () => {
 
           // Reset graphDataFetchAttempted flag to ensure data fetch is triggered
           useGraphStore.getState().setGraphDataFetchAttempted(false);
-          
+
           // Update the label to trigger data loading
           useSettingsStore.getState().setQueryLabel(newLabel);
         }}
