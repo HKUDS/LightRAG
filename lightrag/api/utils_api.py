@@ -16,7 +16,7 @@ from starlette.status import HTTP_403_FORBIDDEN
 from .auth import auth_handler
 
 # Load environment variables
-load_dotenv(override=True)
+load_dotenv()
 
 global_args = {"main_args": None}
 
