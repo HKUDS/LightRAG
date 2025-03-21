@@ -3,7 +3,9 @@ from datetime import datetime, timedelta
 import jwt
 from fastapi import HTTPException, status
 from pydantic import BaseModel
+from dotenv import load_dotenv
 
+load_dotenv()
 
 class TokenPayload(BaseModel):
     sub: str  # Username
