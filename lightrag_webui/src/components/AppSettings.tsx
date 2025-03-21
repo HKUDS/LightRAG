@@ -1,11 +1,18 @@
 import { useState, useCallback } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Button from '@/components/ui/Button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/Select'
 import { useSettingsStore } from '@/stores/settings'
-import { PaletteIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { cn } from '@/lib/utils'
+
+import { SettingsIcon } from 'lucide-react'
 
 interface AppSettingsProps {
   className?: string
@@ -21,19 +28,25 @@ export default function AppSettings({ className }: AppSettingsProps) {
   const theme = useSettingsStore.use.theme()
   const setTheme = useSettingsStore.use.setTheme()
 
-  const handleLanguageChange = useCallback((value: string) => {
-    setLanguage(value as 'en' | 'zh')
-  }, [setLanguage])
+  const handleLanguageChange = useCallback(
+    (value: string) => {
+      setLanguage(value as 'en' | 'zh')
+    },
+    [setLanguage]
+  )
 
-  const handleThemeChange = useCallback((value: string) => {
-    setTheme(value as 'light' | 'dark' | 'system')
-  }, [setTheme])
+  const handleThemeChange = useCallback(
+    (value: string) => {
+      setTheme(value as 'light' | 'dark' | 'system')
+    },
+    [setTheme]
+  )
 
   return (
     <Popover open={opened} onOpenChange={setOpened}>
       <PopoverTrigger asChild>
         <Button variant="ghost" size="icon" className={cn('h-9 w-9', className)}>
-          <PaletteIcon className="h-5 w-5" />
+          <SettingsIcon className="size-5" />
         </Button>
       </PopoverTrigger>
       <PopoverContent side="bottom" align="end" className="w-56">
@@ -41,7 +54,7 @@ export default function AppSettings({ className }: AppSettingsProps) {
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium">{t('settings.language')}</label>
             <Select value={language} onValueChange={handleLanguageChange}>
-              <SelectTrigger>
+              <SelectTrigger className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -54,7 +67,7 @@ export default function AppSettings({ className }: AppSettingsProps) {
           <div className="flex flex-col gap-2">
             <label className="text-sm font-medium">{t('settings.theme')}</label>
             <Select value={theme} onValueChange={handleThemeChange}>
-              <SelectTrigger>
+              <SelectTrigger className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

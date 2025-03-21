@@ -31,13 +31,18 @@ export default function ClearDocumentsDialog() {
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
     }
-  }, [setOpen])
+  }, [t, setOpen])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" side="bottom" tooltip={t('documentPanel.clearDocuments.tooltip')} size="sm">
-          <EraserIcon/> {t('documentPanel.clearDocuments.button')}
+        <Button
+          variant="outline"
+          side="bottom"
+          tooltip={t('documentPanel.clearDocuments.tooltip')}
+          size="sm"
+        >
+          <EraserIcon /> {t('documentPanel.clearDocuments.button')}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-xl" onCloseAutoFocus={(e) => e.preventDefault()}>
@@ -46,7 +51,7 @@ export default function ClearDocumentsDialog() {
           <DialogDescription>{t('documentPanel.clearDocuments.confirm')}</DialogDescription>
         </DialogHeader>
         <Button variant="destructive" onClick={handleClear}>
-        {t('documentPanel.clearDocuments.confirmButton')}
+          {t('documentPanel.clearDocuments.confirmButton')}
         </Button>
       </DialogContent>
     </Dialog>

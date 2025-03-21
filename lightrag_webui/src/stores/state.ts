@@ -17,10 +17,10 @@ interface BackendState {
 }
 
 interface AuthState {
-  isAuthenticated: boolean;
-  isGuestMode: boolean;  // Add guest mode flag
-  login: (token: string, isGuest?: boolean) => void;
-  logout: () => void;
+  isAuthenticated: boolean
+  isGuestMode: boolean // Add guest mode flag
+  login: (token: string, isGuest?: boolean) => void
+  logout: () => void
 }
 
 const useBackendStateStoreBase = create<BackendState>()((set) => ({
@@ -69,55 +69,55 @@ export { useBackendState }
 const isGuestToken = (token: string): boolean => {
   try {
     // JWT tokens are in the format: header.payload.signature
-    const parts = token.split('.');
-    if (parts.length !== 3) return false;
+    const parts = token.split('.')
+    if (parts.length !== 3) return false
 
     // Decode the payload (second part)
-    const payload = JSON.parse(atob(parts[1]));
+    const payload = JSON.parse(atob(parts[1]))
 
     // Check if the token has a role field with value "guest"
-    return payload.role === 'guest';
+    return payload.role === 'guest'
   } catch (e) {
-    console.error('Error parsing token:', e);
-    return false;
+    console.error('Error parsing token:', e)
+    return false
   }
-};
+}
 
 // Initialize auth state from localStorage
 const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean } => {
-  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
   if (!token) {
-    return { isAuthenticated: false, isGuestMode: false };
+    return { isAuthenticated: false, isGuestMode: false }
   }
 
   return {
     isAuthenticated: true,
     isGuestMode: isGuestToken(token)
-  };
-};
+  }
+}
 
-export const useAuthStore = create<AuthState>(set => {
+export const useAuthStore = create<AuthState>((set) => {
   // Get initial state from localStorage
-  const initialState = initAuthState();
+  const initialState = initAuthState()
 
   return {
     isAuthenticated: initialState.isAuthenticated,
     isGuestMode: initialState.isGuestMode,
 
     login: (token, isGuest = false) => {
-      localStorage.setItem('LIGHTRAG-API-TOKEN', token);
+      localStorage.setItem('LIGHTRAG-API-TOKEN', token)
       set({
         isAuthenticated: true,
         isGuestMode: isGuest
-      });
+      })
     },
 
     logout: () => {
-      localStorage.removeItem('LIGHTRAG-API-TOKEN');
+      localStorage.removeItem('LIGHTRAG-API-TOKEN')
       set({
         isAuthenticated: false,
         isGuestMode: false
-      });
+      })
     }
-  };
-});
+  }
+})

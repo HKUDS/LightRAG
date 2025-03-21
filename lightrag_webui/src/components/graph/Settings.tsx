@@ -1,4 +1,4 @@
-import { useState, useCallback} from 'react'
+import { useState, useCallback } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
@@ -9,7 +9,7 @@ import { controlButtonVariant } from '@/lib/constants'
 import { useSettingsStore } from '@/stores/settings'
 
 import { SettingsIcon } from 'lucide-react'
-import { useTranslation } from 'react-i18next';
+import { useTranslation } from 'react-i18next'
 
 /**
  * Component that displays a checkbox with a label.
@@ -188,7 +188,6 @@ export default function Settings() {
     setTimeout(() => {
       useSettingsStore.getState().setQueryLabel(currentLabel)
     }, 300)
-
   }, [])
 
   const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
@@ -196,9 +195,9 @@ export default function Settings() {
     useSettingsStore.setState({ graphLayoutMaxIterations: iterations })
   }, [])
 
-  const { t } = useTranslation();
+  const { t } = useTranslation()
 
-  const saveSettings = () => setOpened(false);
+  const saveSettings = () => setOpened(false)
 
   return (
     <>
@@ -290,15 +289,9 @@ export default function Settings() {
               onEditFinished={setGraphLayoutMaxIterations}
             />
             <Separator />
-            <Button
-              onClick={saveSettings}
-              variant="outline"
-              size="sm"
-              className="ml-auto px-4"
-            >
+            <Button onClick={saveSettings} variant="outline" size="sm" className="px-4">
               {t('graphPanel.sideBar.settings.save')}
             </Button>
-
           </div>
         </PopoverContent>
       </Popover>

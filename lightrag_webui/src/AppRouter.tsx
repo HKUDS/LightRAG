@@ -8,6 +8,7 @@ import { Toaster } from 'sonner'
 import App from './App'
 import LoginPage from '@/features/LoginPage'
 import ThemeProvider from '@/components/ThemeProvider'
+import { initializeI18n } from '@/i18n'
 
 interface ProtectedRouteProps {
   children: React.ReactNode
@@ -24,7 +25,7 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
   }, [navigate])
 
   useEffect(() => {
-    let isMounted = true; // Flag to prevent state updates after unmount
+    let isMounted = true // Flag to prevent state updates after unmount
 
     // This effect will run when the component mounts
     // and will check if authentication is required
@@ -32,14 +33,14 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
       try {
         // Skip check if already authenticated
         if (isAuthenticated) {
-          if (isMounted) setIsChecking(false);
-          return;
+          if (isMounted) setIsChecking(false)
+          return
         }
 
         const status = await getAuthStatus()
 
         // Only proceed if component is still mounted
-        if (!isMounted) return;
+        if (!isMounted) return
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token
@@ -63,35 +64,35 @@ const ProtectedRoute = ({ children }: ProtectedRouteProps) => {
 
     // Cleanup function to prevent state updates after unmount
     return () => {
-      isMounted = false;
+      isMounted = false
     }
   }, [isAuthenticated])
 
   // Handle navigation when authentication status changes
   useEffect(() => {
     if (!isChecking && !isAuthenticated) {
-      const currentPath = window.location.hash.slice(1); // Remove the '#' from hash
-      const isLoginPage = currentPath === '/login';
+      const currentPath = window.location.hash.slice(1) // Remove the '#' from hash
+      const isLoginPage = currentPath === '/login'
 
       if (!isLoginPage) {
         // Use navigation service for redirection
-        console.log('Not authenticated, redirecting to login');
-        navigationService.navigateToLogin();
+        console.log('Not authenticated, redirecting to login')
+        navigationService.navigateToLogin()
       }
     }
-  }, [isChecking, isAuthenticated]);
+  }, [isChecking, isAuthenticated])
 
   // Show nothing while checking auth status or when not authenticated on login page
   if (isChecking || (!isAuthenticated && window.location.hash.slice(1) === '/login')) {
-    return null;
+    return null
   }
 
   // Show children only when authenticated
   if (!isAuthenticated) {
-    return null;
+    return null
   }
 
-  return <>{children}</>;
+  return <>{children}</>
 }
 
 const AppContent = () => {
@@ -106,7 +107,7 @@ const AppContent = () => {
 
   // Check token validity and auth configuration on app initialization
   useEffect(() => {
-    let isMounted = true; // Flag to prevent state updates after unmount
+    let isMounted = true // Flag to prevent state updates after unmount
 
     const checkAuth = async () => {
       try {
@@ -114,15 +115,15 @@ const AppContent = () => {
 
         // If we have a token, we're already authenticated
         if (token && isAuthenticated) {
-          if (isMounted) setInitializing(false);
-          return;
+          if (isMounted) setInitializing(false)
+          return
         }
 
         // If no token or not authenticated, check if auth is configured
         const status = await getAuthStatus()
 
         // Only proceed if component is still mounted
-        if (!isMounted) return;
+        if (!isMounted) return
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token
@@ -152,7 +153,7 @@ const AppContent = () => {
 
     // Cleanup function to prevent state updates after unmount
     return () => {
-      isMounted = false;
+      isMounted = false
     }
   }, [isAuthenticated])
 
@@ -177,6 +178,19 @@ const AppContent = () => {
 }
 
 const AppRouter = () => {
+  const [isI18nInitialized, setIsI18nInitialized] = useState(false)
+
+  useEffect(() => {
+    // Initialize i18n immediately with persisted language
+    initializeI18n().then(() => {
+      setIsI18nInitialized(true)
+    })
+  }, [])
+
+  if (!isI18nInitialized) {
+    return null // or a loading spinner
+  }
+
   return (
     <ThemeProvider>
       <Router>

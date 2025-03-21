@@ -29,7 +29,9 @@ const GraphLabels = () => {
       // Set global flag to indicate we've attempted to fetch in this session
       useGraphStore.getState().setLabelsFetchAttempted(true)
 
-      useGraphStore.getState().fetchAllDatabaseLabels()
+      useGraphStore
+        .getState()
+        .fetchAllDatabaseLabels()
         .then(() => {
           labelsLoadedRef.current = true
           fetchInProgressRef.current = false
@@ -85,9 +87,7 @@ const GraphLabels = () => {
         result = searchEngine.search(query).map((r: { id: number }) => labels[r.id])
       }
 
-      return result.length <= labelListLimit
-        ? result
-        : [...result.slice(0, labelListLimit), '...']
+      return result.length <= labelListLimit ? result : [...result.slice(0, labelListLimit), '...']
     },
     [getSearchEngine]
   )
@@ -100,7 +100,9 @@ const GraphLabels = () => {
     useGraphStore.getState().setGraphDataFetchAttempted(false)
 
     // Fetch all labels again
-    useGraphStore.getState().fetchAllDatabaseLabels()
+    useGraphStore
+      .getState()
+      .fetchAllDatabaseLabels()
       .then(() => {
         // Trigger a graph data reload by changing the query label back and forth
         const currentLabel = useSettingsStore.getState().queryLabel
@@ -156,7 +158,7 @@ const GraphLabels = () => {
           // Update the label, which will trigger the useEffect to handle data loading
           useSettingsStore.getState().setQueryLabel(newLabel)
         }}
-        clearable={false}  // Prevent clearing value on reselect
+        clearable={false} // Prevent clearing value on reselect
       />
     </div>
   )

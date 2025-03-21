@@ -39,7 +39,6 @@ function OptionComponent(item: OptionItem) {
   )
 }
 
-
 /**
  * Component thats display the search input.
  */
@@ -61,7 +60,7 @@ export const GraphSearchInput = ({
     if (graph) {
       useGraphStore.getState().resetSearchEngine()
     }
-  }, [graph]);
+  }, [graph])
 
   // Create search engine when needed
   useEffect(() => {
@@ -113,17 +112,19 @@ export const GraphSearchInput = ({
 
       // If no query, return some nodes for user to select
       if (!query) {
-        const nodeIds = graph.nodes()
-          .filter(id => graph.hasNode(id))
+        const nodeIds = graph
+          .nodes()
+          .filter((id) => graph.hasNode(id))
           .slice(0, searchResultLimit)
-        return nodeIds.map(id => ({
+        return nodeIds.map((id) => ({
           id,
           type: 'nodes'
         }))
       }
 
       // If has query, search nodes and verify they still exist
-      const result: OptionItem[] = searchEngine.search(query)
+      const result: OptionItem[] = searchEngine
+        .search(query)
         .filter((r: { id: string }) => graph.hasNode(r.id))
         .map((r: { id: string }) => ({
           id: r.id,

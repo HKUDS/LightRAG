@@ -1,13 +1,13 @@
-import { NavigateFunction } from 'react-router-dom';
-import { useAuthStore, useBackendState } from '@/stores/state';
-import { useGraphStore } from '@/stores/graph';
-import { useSettingsStore } from '@/stores/settings';
+import { NavigateFunction } from 'react-router-dom'
+import { useAuthStore, useBackendState } from '@/stores/state'
+import { useGraphStore } from '@/stores/graph'
+import { useSettingsStore } from '@/stores/settings'
 
 class NavigationService {
-  private navigate: NavigateFunction | null = null;
+  private navigate: NavigateFunction | null = null
 
   setNavigate(navigate: NavigateFunction) {
-    this.navigate = navigate;
+    this.navigate = navigate
   }
 
   /**
@@ -18,30 +18,30 @@ class NavigationService {
    * 3. Direct access to login page
    */
   resetAllApplicationState() {
-    console.log('Resetting all application state...');
+    console.log('Resetting all application state...')
 
     // Reset graph state
-    const graphStore = useGraphStore.getState();
-    const sigma = graphStore.sigmaInstance;
-    graphStore.reset();
-    graphStore.setGraphDataFetchAttempted(false);
-    graphStore.setLabelsFetchAttempted(false);
-    graphStore.setSigmaInstance(null);
-    graphStore.setIsFetching(false); // Reset isFetching state to prevent data loading issues
+    const graphStore = useGraphStore.getState()
+    const sigma = graphStore.sigmaInstance
+    graphStore.reset()
+    graphStore.setGraphDataFetchAttempted(false)
+    graphStore.setLabelsFetchAttempted(false)
+    graphStore.setSigmaInstance(null)
+    graphStore.setIsFetching(false) // Reset isFetching state to prevent data loading issues
 
     // Reset backend state
-    useBackendState.getState().clear();
+    useBackendState.getState().clear()
 
     // Reset retrieval history while preserving other user preferences
-    useSettingsStore.getState().setRetrievalHistory([]);
+    useSettingsStore.getState().setRetrievalHistory([])
 
     // Clear authentication state
-    sessionStorage.clear();
+    sessionStorage.clear()
 
     if (sigma) {
-      sigma.getGraph().clear();
-      sigma.kill();
-      useGraphStore.getState().setSigmaInstance(null);
+      sigma.getGraph().clear()
+      sigma.kill()
+      useGraphStore.getState().setSigmaInstance(null)
     }
   }
 
@@ -50,11 +50,11 @@ class NavigationService {
    * @returns true if it's a direct access, false if navigated from another page
    */
   handleDirectLoginAccess() {
-    const isDirectAccess = !document.referrer;
+    const isDirectAccess = !document.referrer
     if (isDirectAccess) {
-      this.resetAllApplicationState();
+      this.resetAllApplicationState()
     }
-    return isDirectAccess;
+    return isDirectAccess
   }
 
   /**
@@ -63,28 +63,28 @@ class NavigationService {
    */
   navigateToLogin() {
     if (!this.navigate) {
-      console.error('Navigation function not set');
-      return;
+      console.error('Navigation function not set')
+      return
     }
 
     // First navigate to login page
-    this.navigate('/login');
+    this.navigate('/login')
 
     // Then reset state after navigation
     setTimeout(() => {
-      this.resetAllApplicationState();
-      useAuthStore.getState().logout();
-    }, 0);
+      this.resetAllApplicationState()
+      useAuthStore.getState().logout()
+    }, 0)
   }
 
   navigateToHome() {
     if (!this.navigate) {
-      console.error('Navigation function not set');
-      return;
+      console.error('Navigation function not set')
+      return
     }
 
-    this.navigate('/');
+    this.navigate('/')
   }
 }
 
-export const navigationService = new NavigationService();
+export const navigationService = new NavigationService()

@@ -28,10 +28,14 @@ type LayoutName =
 
 // Extend WorkerLayoutControlProps to include mainLayout
 interface ExtendedWorkerLayoutControlProps extends WorkerLayoutControlProps {
-  mainLayout: LayoutHook;
+  mainLayout: LayoutHook
 }
 
-const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerLayoutControlProps) => {
+const WorkerLayoutControl = ({
+  layout,
+  autoRunFor,
+  mainLayout
+}: ExtendedWorkerLayoutControlProps) => {
   const sigma = useSigma()
   // Use local state to track animation running status
   const [isRunning, setIsRunning] = useState(false)
@@ -181,7 +185,11 @@ const WorkerLayoutControl = ({ layout, autoRunFor, mainLayout }: ExtendedWorkerL
     <Button
       size="icon"
       onClick={handleClick}
-      tooltip={isRunning ? t('graphPanel.sideBar.layoutsControl.stopAnimation') : t('graphPanel.sideBar.layoutsControl.startAnimation')}
+      tooltip={
+        isRunning
+          ? t('graphPanel.sideBar.layoutsControl.stopAnimation')
+          : t('graphPanel.sideBar.layoutsControl.startAnimation')
+      }
       variant={controlButtonVariant}
     >
       {isRunning ? <PauseIcon /> : <PlayIcon />}
@@ -210,18 +218,18 @@ const LayoutsControl = () => {
       expansion: 1.1,
       gridSize: 1,
       ratio: 1,
-      speed: 3,
+      speed: 3
     }
   })
   // Add parameters for Force Directed layout to improve convergence
   const layoutForce = useLayoutForce({
     maxIterations: maxIterations,
     settings: {
-      attraction: 0.0003,  // Lower attraction force to reduce oscillation
-      repulsion: 0.05,     // Lower repulsion force to reduce oscillation
-      gravity: 0.01,      // Increase gravity to make nodes converge to center faster
-      inertia: 0.4,        // Lower inertia to add damping effect
-      maxMove: 100         // Limit maximum movement per step to prevent large jumps
+      attraction: 0.0003, // Lower attraction force to reduce oscillation
+      repulsion: 0.05, // Lower repulsion force to reduce oscillation
+      gravity: 0.01, // Increase gravity to make nodes converge to center faster
+      inertia: 0.4, // Lower inertia to add damping effect
+      maxMove: 100 // Limit maximum movement per step to prevent large jumps
     }
   })
   const layoutForceAtlas2 = useLayoutForceAtlas2({ iterations: maxIterations })
