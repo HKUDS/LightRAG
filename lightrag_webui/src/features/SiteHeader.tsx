@@ -55,7 +55,11 @@ function TabsNavigation() {
 
 export default function SiteHeader() {
   const { t } = useTranslation()
-  const { isGuestMode } = useAuthStore()
+  const { isGuestMode, coreVersion, apiVersion } = useAuthStore()
+
+  const versionDisplay = (coreVersion && apiVersion)
+    ? `${coreVersion}/${apiVersion}`
+    : null;
 
   const handleLogout = () => {
     navigationService.navigateToLogin();
@@ -67,6 +71,11 @@ export default function SiteHeader() {
         <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
         {/* <img src='/logo.png' className="size-4" /> */}
         <span className="font-bold md:inline-block">{SiteInfo.name}</span>
+        {versionDisplay && (
+          <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
+            v{versionDisplay}
+          </span>
+        )}
       </a>
 
       <div className="flex h-10 flex-1 justify-center">
