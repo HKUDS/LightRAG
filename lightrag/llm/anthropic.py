@@ -38,10 +38,13 @@ from lightrag.utils import (
 )
 from lightrag.api import __api_version__
 
+
 # Custom exception for retry mechanism
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""
+
     pass
+
 
 # Core Anthropic completion function with retry
 @retry(
@@ -96,10 +99,7 @@ async def anthropic_complete_if_cache(
 
     try:
         response = await anthropic_async_client.messages.create(
-            model=model,
-            messages=messages,
-            stream=True,
-            **kwargs
+            model=model, messages=messages, stream=True, **kwargs
         )
     except APIConnectionError as e:
         logger.error(f"Anthropic API Connection Error: {e}")
@@ -119,7 +119,11 @@ async def anthropic_complete_if_cache(
     async def stream_response():
         try:
             async for event in response:
-                content = event.delta.text if hasattr(event, "delta") and event.delta.text else None
+                content = (
+                    event.delta.text
+                    if hasattr(event, "delta") and event.delta.text
+                    else None
+                )
                 if content is None:
                     continue
                 if r"\u" in content:
@@ -130,6 +134,7 @@ async def anthropic_complete_if_cache(
             raise
 
     return stream_response()
+
 
 # Generic Anthropic completion function
 async def anthropic_complete(
@@ -149,6 +154,7 @@ async def anthropic_complete(
         **kwargs,
     )
 
+
 # Claude 3 Opus specific completion
 async def claude_3_opus_complete(
     prompt: str,
@@ -165,6 +171,7 @@ async def claude_3_opus_complete(
         history_messages=history_messages,
         **kwargs,
     )
+
 
 # Claude 3 Sonnet specific completion
 async def claude_3_sonnet_complete(
@@ -183,6 +190,7 @@ async def claude_3_sonnet_complete(
         **kwargs,
     )
 
+
 # Claude 3 Haiku specific completion
 async def claude_3_haiku_complete(
     prompt: str,
@@ -200,6 +208,7 @@ async def claude_3_haiku_complete(
         **kwargs,
     )
 
+
 # Embedding function (placeholder, as Anthropic does not provide embeddings)
 @retry(
     stop=stop_after_attempt(3),
@@ -216,13 +225,13 @@ async def anthropic_embed(
 ) -> np.ndarray:
     """
     Generate embeddings using Voyage AI since Anthropic doesn't provide native embedding support.
-    
+
     Args:
         texts: List of text strings to embed
         model: Voyage AI model name (e.g., "voyage-3", "voyage-3-large", "voyage-code-3")
         base_url: Optional custom base URL (not used for Voyage AI)
         api_key: API key for Voyage AI (defaults to VOYAGE_API_KEY environment variable)
-    
+
     Returns:
         numpy array of shape (len(texts), embedding_dimension) containing the embeddings
     """
@@ -230,30 +239,33 @@ async def anthropic_embed(
         api_key = os.environ.get("VOYAGE_API_KEY")
         if not api_key:
             logger.error("VOYAGE_API_KEY environment variable not set")
-            raise ValueError("VOYAGE_API_KEY environment variable is required for embeddings")
+            raise ValueError(
+                "VOYAGE_API_KEY environment variable is required for embeddings"
+            )
 
     try:
         # Initialize Voyage AI client
         voyage_client = voyageai.Client(api_key=api_key)
-        
+
         # Get embeddings
         result = voyage_client.embed(
             texts,
             model=model,
-            input_type="document"  # Assuming document context; could be made configurable
+            input_type="document",  # Assuming document context; could be made configurable
         )
-        
+
         # Convert list of embeddings to numpy array
         embeddings = np.array(result.embeddings, dtype=np.float32)
-        
+
         logger.debug(f"Generated embeddings for {len(texts)} texts using {model}")
         verbose_debug(f"Embedding shape: {embeddings.shape}")
-        
+
         return embeddings
 
     except Exception as e:
         logger.error(f"Voyage AI embedding failed: {str(e)}")
         raise
+
 
 # Optional: a helper function to get available embedding models
 def get_available_embedding_models() -> dict[str, dict]:
@@ -261,11 +273,39 @@ def get_available_embedding_models() -> dict[str, dict]:
     Returns a dictionary of available Voyage AI embedding models and their properties.
     """
     return {
-        "voyage-3-large": {"context_length": 32000, "dimension": 1024, "description": "Best general-purpose and multilingual"},
-        "voyage-3": {"context_length": 32000, "dimension": 1024, "description": "General-purpose and multilingual"},
-        "voyage-3-lite": {"context_length": 32000, "dimension": 512, "description": "Optimized for latency and cost"},
-        "voyage-code-3": {"context_length": 32000, "dimension": 1024, "description": "Optimized for code"},
-        "voyage-finance-2": {"context_length": 32000, "dimension": 1024, "description": "Optimized for finance"},
-        "voyage-law-2": {"context_length": 16000, "dimension": 1024, "description": "Optimized for legal"},
-        "voyage-multimodal-3": {"context_length": 32000, "dimension": 1024, "description": "Multimodal text and images"},
+        "voyage-3-large": {
+            "context_length": 32000,
+            "dimension": 1024,
+            "description": "Best general-purpose and multilingual",
+        },
+        "voyage-3": {
+            "context_length": 32000,
+            "dimension": 1024,
+            "description": "General-purpose and multilingual",
+        },
+        "voyage-3-lite": {
+            "context_length": 32000,
+            "dimension": 512,
+            "description": "Optimized for latency and cost",
+        },
+        "voyage-code-3": {
+            "context_length": 32000,
+            "dimension": 1024,
+            "description": "Optimized for code",
+        },
+        "voyage-finance-2": {
+            "context_length": 32000,
+            "dimension": 1024,
+            "description": "Optimized for finance",
+        },
+        "voyage-law-2": {
+            "context_length": 16000,
+            "dimension": 1024,
+            "description": "Optimized for legal",
+        },
+        "voyage-multimodal-3": {
+            "context_length": 32000,
+            "dimension": 1024,
+            "description": "Multimodal text and images",
+        },
     }

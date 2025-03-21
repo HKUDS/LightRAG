@@ -12,10 +12,25 @@
     "retrieval": "الاسترجاع",
     "api": "واجهة برمجة التطبيقات",
     "projectRepository": "مستودع المشروع",
+    "logout": "تسجيل الخروج",
     "themeToggle": {
       "switchToLight": "التحويل إلى السمة الفاتحة",
       "switchToDark": "التحويل إلى السمة الداكنة"
     }
+  },
+  "login": {
+    "description": "الرجاء إدخال حسابك وكلمة المرور لتسجيل الدخول إلى النظام",
+    "username": "اسم المستخدم",
+    "usernamePlaceholder": "الرجاء إدخال اسم المستخدم",
+    "password": "كلمة المرور",
+    "passwordPlaceholder": "الرجاء إدخال كلمة المرور",
+    "loginButton": "تسجيل الدخول",
+    "loggingIn": "جاري تسجيل الدخول...",
+    "successMessage": "تم تسجيل الدخول بنجاح",
+    "errorEmptyFields": "الرجاء إدخال اسم المستخدم وكلمة المرور",
+    "errorInvalidCredentials": "فشل تسجيل الدخول، يرجى التحقق من اسم المستخدم وكلمة المرور",
+    "authDisabled": "تم تعطيل المصادقة. استخدام وضع بدون تسجيل دخول.",
+    "guestMode": "وضع بدون تسجيل دخول"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -96,7 +111,9 @@
       "zoomControl": {
         "zoomIn": "تكبير",
         "zoomOut": "تصغير",
-        "resetZoom": "إعادة تعيين التكبير"
+        "resetZoom": "إعادة تعيين التكبير",
+        "rotateCamera": "تدوير في اتجاه عقارب الساعة",
+        "rotateCameraCounterClockwise": "تدوير عكس اتجاه عقارب الساعة"
       },
       "layoutsControl": {
         "startAnimation": "بدء حركة التخطيط",
@@ -148,6 +165,11 @@
         "degree": "الدرجة",
         "properties": "الخصائص",
         "relationships": "العلاقات",
+        "expandNode": "توسيع العقدة",
+        "pruneNode": "تقليم العقدة",
+        "deleteAllNodesError": "رفض حذف جميع العقد في الرسم البياني",
+        "nodesRemoved": "تم إزالة {{count}} عقدة، بما في ذلك العقد اليتيمة",
+        "noNewNodes": "لم يتم العثور على عقد قابلة للتوسيع",
         "propertyNames": {
           "description": "الوصف",
           "entity_id": "الاسم",
@@ -174,8 +196,10 @@
       "noLabels": "لم يتم العثور على تسميات",
       "label": "التسمية",
       "placeholder": "ابحث في التسميات...",
-      "andOthers": "و {{count}} آخرون"
-    }
+      "andOthers": "و {{count}} آخرون",
+      "refreshTooltip": "إعادة تحميل بيانات الرسم البياني"
+    },
+    "emptyGraph": "الرسم البياني فارغ"
   },
   "retrievePanel": {
     "chatMessage": {

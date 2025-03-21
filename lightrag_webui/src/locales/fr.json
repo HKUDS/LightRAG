@@ -12,10 +12,25 @@
     "retrieval": "Récupération",
     "api": "API",
     "projectRepository": "Référentiel du projet",
+    "logout": "Déconnexion",
     "themeToggle": {
       "switchToLight": "Passer au thème clair",
       "switchToDark": "Passer au thème sombre"
     }
+  },
+  "login": {
+    "description": "Veuillez entrer votre compte et mot de passe pour vous connecter au système",
+    "username": "Nom d'utilisateur",
+    "usernamePlaceholder": "Veuillez saisir un nom d'utilisateur",
+    "password": "Mot de passe",
+    "passwordPlaceholder": "Veuillez saisir un mot de passe",
+    "loginButton": "Connexion",
+    "loggingIn": "Connexion en cours...",
+    "successMessage": "Connexion réussie",
+    "errorEmptyFields": "Veuillez saisir votre nom d'utilisateur et mot de passe",
+    "errorInvalidCredentials": "Échec de la connexion, veuillez vérifier le nom d'utilisateur et le mot de passe",
+    "authDisabled": "L'authentification est désactivée. Utilisation du mode sans connexion.",
+    "guestMode": "Mode sans connexion"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -96,7 +111,9 @@
       "zoomControl": {
         "zoomIn": "Zoom avant",
         "zoomOut": "Zoom arrière",
-        "resetZoom": "Réinitialiser le zoom"
+        "resetZoom": "Réinitialiser le zoom",
+        "rotateCamera": "Rotation horaire",
+        "rotateCameraCounterClockwise": "Rotation antihoraire"
       },
       "layoutsControl": {
         "startAnimation": "Démarrer l'animation de mise en page",
@@ -148,6 +165,11 @@
         "degree": "Degré",
         "properties": "Propriétés",
         "relationships": "Relations",
+        "expandNode": "Développer le nœud",
+        "pruneNode": "Élaguer le nœud",
+        "deleteAllNodesError": "Refus de supprimer tous les nœuds du graphe",
+        "nodesRemoved": "{{count}} nœuds supprimés, y compris les nœuds orphelins",
+        "noNewNodes": "Aucun nœud développable trouvé",
         "propertyNames": {
           "description": "Description",
           "entity_id": "Nom",
@@ -174,8 +196,10 @@
       "noLabels": "Aucune étiquette trouvée",
       "label": "Étiquette",
       "placeholder": "Rechercher des étiquettes...",
-      "andOthers": "Et {{count}} autres"
-    }
+      "andOthers": "Et {{count}} autres",
+      "refreshTooltip": "Recharger les données du graphe"
+    },
+    "emptyGraph": "Le graphe est vide"
   },
   "retrievePanel": {
     "chatMessage": {
