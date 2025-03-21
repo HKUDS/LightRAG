@@ -88,20 +88,23 @@ const isGuestToken = (token: string): boolean => {
 // Initialize auth state from localStorage
 const initAuthState = (): { isAuthenticated: boolean; isGuestMode: boolean; coreVersion: string | null; apiVersion: string | null } => {
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
+  const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
+
   if (!token) {
     return {
       isAuthenticated: false,
       isGuestMode: false,
-      coreVersion: null,
-      apiVersion: null
+      coreVersion: coreVersion,
+      apiVersion: apiVersion
     };
   }
 
   return {
     isAuthenticated: true,
     isGuestMode: isGuestToken(token),
-    coreVersion: localStorage.getItem('LIGHTRAG-CORE-VERSION'),
-    apiVersion: localStorage.getItem('LIGHTRAG-API-VERSION')
+    coreVersion: coreVersion,
+    apiVersion: apiVersion
   };
 };
 
@@ -118,7 +121,6 @@ export const useAuthStore = create<AuthState>(set => {
     login: (token, isGuest = false, coreVersion = null, apiVersion = null) => {
       localStorage.setItem('LIGHTRAG-API-TOKEN', token);
 
-      // 存储版本信息到 localStorage
       if (coreVersion) {
         localStorage.setItem('LIGHTRAG-CORE-VERSION', coreVersion);
       }
@@ -129,19 +131,22 @@ export const useAuthStore = create<AuthState>(set => {
       set({
         isAuthenticated: true,
         isGuestMode: isGuest,
-        coreVersion,
-        apiVersion
+        coreVersion: coreVersion,
+        apiVersion: apiVersion
       });
     },
 
     logout: () => {
       localStorage.removeItem('LIGHTRAG-API-TOKEN');
 
+      const coreVersion = localStorage.getItem('LIGHTRAG-CORE-VERSION');
+      const apiVersion = localStorage.getItem('LIGHTRAG-API-VERSION');
+
       set({
         isAuthenticated: false,
         isGuestMode: false,
-        coreVersion: null,
-        apiVersion: null
+        coreVersion: coreVersion,
+        apiVersion: apiVersion
       });
     }
   };
