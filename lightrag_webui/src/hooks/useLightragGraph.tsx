@@ -685,6 +685,17 @@ const useLightrangeGraph = () => {
         // Update sizes for all nodes with discarded edges
         updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, maxDegree);
 
+        if (sigmaGraph.hasNode(nodeId)) {
+          const finalDegree = sigmaGraph.degree(nodeId);          
+          const limitedDegree = Math.min(finalDegree, maxDegree + 1);
+          const newSize = Math.round(
+            Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
+          );          
+          sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
+          nodeToExpand.size = newSize;
+          nodeToExpand.degree = finalDegree;
+        }
+
       } catch (error) {
         console.error('Error expanding node:', error);
       }
