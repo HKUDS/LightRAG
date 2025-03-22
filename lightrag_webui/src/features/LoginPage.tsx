@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/state'
 import { loginToServer, getAuthStatus } from '@/api/lightrag'
@@ -18,6 +18,7 @@ const LoginPage = () => {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [checkingAuth, setCheckingAuth] = useState(true)
+  const authCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
 
   useEffect(() => {
     console.log('LoginPage mounted')
@@ -28,6 +29,13 @@ const LoginPage = () => {
     let isMounted = true; // Flag to prevent state updates after unmount
 
     const checkAuthConfig = async () => {
+      // Prevent duplicate calls in Vite dev mode
+      if (authCheckRef.current) {
+        if (isMounted) setCheckingAuth(false);
+        return;
+      }
+      authCheckRef.current = true;
+      
       try {
         // If already authenticated, redirect to home
         if (isAuthenticated) {
@@ -37,6 +45,17 @@ const LoginPage = () => {
 
         // Check auth status
         const status = await getAuthStatus()
+        
+        // Set checkingAuth to false immediately after getAuthStatus
+        // This allows the login page to render while other processing continues
+        if (isMounted) {
+          setCheckingAuth(false);
+        }
+        
+        // Set session flag for version check to avoid duplicate checks in App component
+        if (isMounted && (status.core_version || status.api_version)) {
+          sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+        }
 
         // Only proceed if component is still mounted
         if (!isMounted) return;
@@ -48,16 +67,16 @@ const LoginPage = () => {
             toast.info(status.message)
           }
           navigate('/')
-          return // Exit early, no need to set checkingAuth to false
+          return
         }
       } catch (error) {
         console.error('Failed to check auth configuration:', error)
-      } finally {
-        // Only update state if component is still mounted
+        // Also set checkingAuth to false in case of error
         if (isMounted) {
-          setCheckingAuth(false)
+          setCheckingAuth(false);
         }
       }
+      // Removed finally block as we're setting checkingAuth earlier
     }
 
     // Execute immediately
@@ -88,6 +107,11 @@ const LoginPage = () => {
       // Check authentication mode
       const isGuestMode = response.auth_mode === 'disabled'
       login(response.access_token, isGuestMode, response.core_version, response.api_version)
+      
+      // Set session flag for version check
+      if (response.core_version || response.api_version) {
+        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+      }
 
       if (isGuestMode) {
         // Show authentication disabled notification
