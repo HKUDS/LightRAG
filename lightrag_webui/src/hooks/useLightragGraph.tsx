@@ -464,17 +464,13 @@ const useLightrangeGraph = () => {
         const nodesToAdd = new Set<string>();
         const edgesToAdd = new Set<string>();
 
-        // Get degree range from existing graph for size calculations
+        // Get degree maxDegree from existing graph for size calculations
         const minDegree = 1;
         let maxDegree = 0;
         sigmaGraph.forEachNode(node => {
           const degree = sigmaGraph.degree(node);
           maxDegree = Math.max(maxDegree, degree);
         });
-
-        // Calculate size formula parameters
-        const range = maxDegree - minDegree || 1; // Avoid division by zero
-        const scale = Constants.maxNodeSize - Constants.minNodeSize;
 
         // First identify connectable nodes (nodes connected to the expanded node)
         for (const node of processedNodes) {
@@ -512,7 +508,7 @@ const useLightrangeGraph = () => {
               // Track degree increments for existing nodes
               existingNodeDegreeIncrements.set(edge.source, (existingNodeDegreeIncrements.get(edge.source) || 0) + 1);
             }
-            
+
             if (nodesToAdd.has(edge.target)) {
               nodeDegrees.set(edge.target, (nodeDegrees.get(edge.target) || 0) + 1);
             } else if (existingNodeIds.has(edge.target)) {
@@ -579,13 +575,16 @@ const useLightrangeGraph = () => {
         for (const [, degree] of nodeDegrees.entries()) {
           maxDegree = Math.max(maxDegree, degree);
         }
-        
+
         // 2. Consider degree increments for existing nodes
         for (const [nodeId, increment] of existingNodeDegreeIncrements.entries()) {
           const currentDegree = sigmaGraph.degree(nodeId);
           const projectedDegree = currentDegree + increment;
           maxDegree = Math.max(maxDegree, projectedDegree);
         }
+
+        const range = maxDegree - minDegree || 1; // Avoid division by zero
+        const scale = Constants.maxNodeSize - Constants.minNodeSize;
 
         // SAdd nodes and edges to the graph
         // Calculate camera ratio and spread factor once before the loop
