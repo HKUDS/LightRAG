@@ -218,7 +218,7 @@ const LayoutsControl = () => {
     maxIterations: maxIterations,
     settings: {
       attraction: 0.0003,  // Lower attraction force to reduce oscillation
-      repulsion: 0.05,     // Lower repulsion force to reduce oscillation
+      repulsion: 0.01,     // Lower repulsion force to reduce oscillation
       gravity: 0.01,      // Increase gravity to make nodes converge to center faster
       inertia: 0.4,        // Lower inertia to add damping effect
       maxMove: 100         // Limit maximum movement per step to prevent large jumps
