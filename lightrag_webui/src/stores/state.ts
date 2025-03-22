@@ -23,6 +23,7 @@ interface AuthState {
   apiVersion: string | null;
   login: (token: string, isGuest?: boolean, coreVersion?: string | null, apiVersion?: string | null) => void;
   logout: () => void;
+  setVersion: (coreVersion: string | null, apiVersion: string | null) => void;
 }
 
 const useBackendStateStoreBase = create<BackendState>()((set) => ({
@@ -35,6 +36,14 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
   check: async () => {
     const health = await checkHealth()
     if (health.status === 'healthy') {
+      // Update version information if health check returns it
+      if (health.core_version || health.api_version) {
+        useAuthStore.getState().setVersion(
+          health.core_version || null,
+          health.api_version || null
+        );
+      }
+      
       set({
         health: true,
         message: null,
@@ -145,6 +154,22 @@ export const useAuthStore = create<AuthState>(set => {
       set({
         isAuthenticated: false,
         isGuestMode: false,
+        coreVersion: coreVersion,
+        apiVersion: apiVersion
+      });
+    },
+
+    setVersion: (coreVersion, apiVersion) => {
+      // Update localStorage
+      if (coreVersion) {
+        localStorage.setItem('LIGHTRAG-CORE-VERSION', coreVersion);
+      }
+      if (apiVersion) {
+        localStorage.setItem('LIGHTRAG-API-VERSION', apiVersion);
+      }
+
+      // Update state
+      set({
         coreVersion: coreVersion,
         apiVersion: apiVersion
       });

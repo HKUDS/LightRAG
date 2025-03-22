@@ -41,6 +41,9 @@ export type LightragStatus = {
     graph_storage: string
     vector_storage: string
   }
+  update_status?: Record<string, any>
+  core_version?: string
+  api_version?: string
 }
 
 export type LightragDocumentsScanProgress = {
