@@ -19,14 +19,13 @@ const AppContent = () => {
 
   // Token validity check
   useEffect(() => {
-    let isMounted = true;
 
     const checkAuth = async () => {
       try {
         const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
 
         if (token && isAuthenticated) {
-          if (isMounted) setInitializing(false);
+          setInitializing(false);
           return;
         }
 
@@ -35,21 +34,17 @@ const AppContent = () => {
         }
       } catch (error) {
         console.error('Auth initialization error:', error)
-        if (isMounted && !isAuthenticated) {
+        if (!isAuthenticated) {
           useAuthStore.getState().logout()
         }
       } finally {
-        if (isMounted) {
-          setInitializing(false)
-        }
+        setInitializing(false)
       }
     }
 
     checkAuth()
 
     return () => {
-      isMounted = false;
-      setInitializing(false)
     }
   }, [isAuthenticated])
 

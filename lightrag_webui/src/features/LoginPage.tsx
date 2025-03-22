@@ -26,7 +26,6 @@ const LoginPage = () => {
 
   // Check if authentication is configured, skip login if not
   useEffect(() => {
-    let isMounted = true; // Flag to prevent state updates after unmount
 
     const checkAuthConfig = async () => {
       // Prevent duplicate calls in Vite dev mode
@@ -61,16 +60,12 @@ const LoginPage = () => {
         }
 
         // Only set checkingAuth to false if we need to show the login page
-        if (isMounted) {
-          setCheckingAuth(false);
-        }
+        setCheckingAuth(false);
 
       } catch (error) {
         console.error('Failed to check auth configuration:', error)
         // Also set checkingAuth to false in case of error
-        if (isMounted) {
-          setCheckingAuth(false);
-        }
+        setCheckingAuth(false);
       }
       // Removed finally block as we're setting checkingAuth earlier
     }
@@ -80,8 +75,6 @@ const LoginPage = () => {
 
     // Cleanup function to prevent state updates after unmount
     return () => {
-      isMounted = false;
-      setCheckingAuth(false);
     }
   }, [isAuthenticated, login, navigate])
 
