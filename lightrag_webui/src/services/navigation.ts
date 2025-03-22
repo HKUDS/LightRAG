@@ -67,14 +67,10 @@ class NavigationService {
       return;
     }
 
-    // First navigate to login page
-    this.navigate('/login');
+    this.resetAllApplicationState();
+    useAuthStore.getState().logout();
 
-    // Then reset state after navigation
-    setTimeout(() => {
-      this.resetAllApplicationState();
-      useAuthStore.getState().logout();
-    }, 0);
+    this.navigate('/login');
   }
 
   navigateToHome() {
