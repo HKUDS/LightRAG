@@ -533,16 +533,21 @@ const useLightrangeGraph = () => {
           sigmaGraph: DirectedGraph,
           nodesWithDiscardedEdges: Set<string>,
           minDegree: number,
-          range: number,
-          scale: number
+          maxDegree: number
         ) => {
+          // Calculate derived values inside the function
+          const range = maxDegree - minDegree || 1; // Avoid division by zero
+          const scale = Constants.maxNodeSize - Constants.minNodeSize;
+          
           for (const nodeId of nodesWithDiscardedEdges) {
             if (sigmaGraph.hasNode(nodeId)) {
               let newDegree = sigmaGraph.degree(nodeId);
               newDegree += 1; // Add +1 for discarded edges
+              // Limit newDegree to maxDegree + 1 to prevent nodes from being too large
+              const limitedDegree = Math.min(newDegree, maxDegree + 1);
 
               const newSize = Math.round(
-                Constants.minNodeSize + scale * Math.pow((newDegree - minDegree) / range, 0.5)
+                Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
               );
 
               const currentSize = sigmaGraph.getNodeAttribute(nodeId, 'size');
@@ -556,7 +561,7 @@ const useLightrangeGraph = () => {
 
         // If no new connectable nodes found, show toast and return
         if (nodesToAdd.size === 0) {
-          updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, range, scale);
+          updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, maxDegree);
           toast.info(t('graphPanel.propertiesView.node.noNewNodes'));
           return;
         }
@@ -585,8 +590,10 @@ const useLightrangeGraph = () => {
           const nodeDegree = nodeDegrees.get(nodeId) || 0;
 
           // Calculate node size
+          // Limit nodeDegree to maxDegree + 1 to prevent new nodes from being too large
+          const limitedDegree = Math.min(nodeDegree, maxDegree + 1);
           const nodeSize = Math.round(
-            Constants.minNodeSize + scale * Math.pow((nodeDegree - minDegree) / range, 0.5)
+            Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
           );
 
           // Calculate angle for polar coordinates
@@ -661,7 +668,7 @@ const useLightrangeGraph = () => {
         useGraphStore.getState().resetSearchEngine();
 
         // Update sizes for all nodes with discarded edges
-        updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, range, scale);
+        updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, maxDegree);
 
       } catch (error) {
         console.error('Error expanding node:', error);
