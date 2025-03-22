@@ -496,6 +496,7 @@ const useLightrangeGraph = () => {
 
         // Calculate node degrees and track discarded edges in one pass
         const nodeDegrees = new Map<string, number>();
+        const existingNodeDegreeIncrements = new Map<string, number>(); // Track degree increments for existing nodes
         const nodesWithDiscardedEdges = new Set<string>();
 
         for (const edge of processedEdges) {
@@ -504,12 +505,19 @@ const useLightrangeGraph = () => {
 
           if (sourceExists && targetExists) {
             edgesToAdd.add(edge.id);
-            // Add degrees for valid edges
+            // Add degrees for both new and existing nodes
             if (nodesToAdd.has(edge.source)) {
               nodeDegrees.set(edge.source, (nodeDegrees.get(edge.source) || 0) + 1);
+            } else if (existingNodeIds.has(edge.source)) {
+              // Track degree increments for existing nodes
+              existingNodeDegreeIncrements.set(edge.source, (existingNodeDegreeIncrements.get(edge.source) || 0) + 1);
             }
+            
             if (nodesToAdd.has(edge.target)) {
               nodeDegrees.set(edge.target, (nodeDegrees.get(edge.target) || 0) + 1);
+            } else if (existingNodeIds.has(edge.target)) {
+              // Track degree increments for existing nodes
+              existingNodeDegreeIncrements.set(edge.target, (existingNodeDegreeIncrements.get(edge.target) || 0) + 1);
             }
           } else {
             // Track discarded edges for both new and existing nodes
@@ -566,9 +574,17 @@ const useLightrangeGraph = () => {
           return;
         }
 
-        // Update maxDegree with new node degrees
+        // Update maxDegree considering all nodes (both new and existing)
+        // 1. Consider degrees of new nodes
         for (const [, degree] of nodeDegrees.entries()) {
           maxDegree = Math.max(maxDegree, degree);
+        }
+        
+        // 2. Consider degree increments for existing nodes
+        for (const [nodeId, increment] of existingNodeDegreeIncrements.entries()) {
+          const currentDegree = sigmaGraph.degree(nodeId);
+          const projectedDegree = currentDegree + increment;
+          maxDegree = Math.max(maxDegree, projectedDegree);
         }
 
         // SAdd nodes and edges to the graph
