@@ -76,7 +76,7 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
   // Check if we need to fetch all database labels first
   const lastSuccessfulQueryLabel = useGraphStore.getState().lastSuccessfulQueryLabel;
   if (!lastSuccessfulQueryLabel) {
-    console.log('Last successful query label is empty, fetching all database labels first...');
+    console.log('Last successful queryLabel is empty');
     try {
       await useGraphStore.getState().fetchAllDatabaseLabels();
     } catch (e) {
@@ -89,7 +89,7 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
   const queryLabel = label || '*';
 
   try {
-    console.log(`Fetching graph data with label: ${queryLabel}, maxDepth: ${maxDepth}, minDegree: ${minDegree}`);
+    console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, deg: ${minDegree}`);
     rawData = await queryGraphs(queryLabel, maxDepth, minDegree);
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
@@ -163,7 +163,7 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
 
     if (!validateGraph(rawGraph)) {
       rawGraph = null
-      console.error('Invalid graph data')
+      console.warn('Invalid graph data')
     }
     console.log('Graph data loaded')
   }
@@ -360,8 +360,6 @@ const useLightrangeGraph = () => {
 
           // Reset camera view
           state.setMoveToSelectedNode(true);
-
-          console.log('Graph data loaded successfully');
         }
 
         // Update flags
