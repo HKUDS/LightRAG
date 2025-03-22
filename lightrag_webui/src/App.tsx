@@ -29,15 +29,15 @@ function App() {
   useEffect(() => {
     // Only execute if health check is enabled
     if (!enableHealthCheck) return;
-    
+
     // Health check function
     const performHealthCheck = async () => {
       await useBackendState.getState().check();
     };
-    
+
     // Execute immediately
     performHealthCheck();
-    
+
     // Set interval for periodic execution
     const interval = setInterval(performHealthCheck, healthCheckInterval * 1000);
     return () => clearInterval(interval);
@@ -49,26 +49,26 @@ function App() {
       // Prevent duplicate calls in Vite dev mode
       if (versionCheckRef.current) return;
       versionCheckRef.current = true;
-      
+
       // Check if version info was already obtained in login page
       const versionCheckedFromLogin = sessionStorage.getItem('VERSION_CHECKED_FROM_LOGIN') === 'true';
       if (versionCheckedFromLogin) return;
-      
+
       // Get version info
       const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
       if (!token) return;
-      
+
       try {
         const status = await getAuthStatus();
         if (status.core_version || status.api_version) {
           // Update version info while maintaining login state
           useAuthStore.getState().login(
-            token, 
-            useAuthStore.getState().isGuestMode, 
-            status.core_version, 
+            token,
+            useAuthStore.getState().isGuestMode,
+            status.core_version,
             status.api_version
           );
-          
+
           // Set flag to indicate version info has been checked
           sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
         }
@@ -76,7 +76,7 @@ function App() {
         console.error('Failed to get version info:', error);
       }
     };
-    
+
     // Execute version check
     checkVersion();
   }, []); // Empty dependency array ensures it only runs once on mount

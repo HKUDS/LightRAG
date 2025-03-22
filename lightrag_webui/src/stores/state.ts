@@ -43,7 +43,7 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
           health.api_version || null
         );
       }
-      
+
       set({
         health: true,
         message: null,

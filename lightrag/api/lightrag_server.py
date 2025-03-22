@@ -439,7 +439,7 @@ def create_app(args):
             },
             "update_status": update_status,
             "core_version": core_version,
-            "api_version": __api_version__
+            "api_version": __api_version__,
         }
 
     # Custom StaticFiles class to prevent caching of HTML files
