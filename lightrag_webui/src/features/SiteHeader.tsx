@@ -95,9 +95,11 @@ export default function SiteHeader() {
             </a>
           </Button>
           <AppSettings />
-          <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.logout')} onClick={handleLogout}>
-            <LogOutIcon className="size-4" aria-hidden="true" />
-          </Button>
+          {!isGuestMode && (
+            <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.logout')} onClick={handleLogout}>
+              <LogOutIcon className="size-4" aria-hidden="true" />
+            </Button>
+          )}
         </div>
       </nav>
     </header>
