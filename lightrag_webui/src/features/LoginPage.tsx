@@ -31,7 +31,6 @@ const LoginPage = () => {
     const checkAuthConfig = async () => {
       // Prevent duplicate calls in Vite dev mode
       if (authCheckRef.current) {
-        if (isMounted) setCheckingAuth(false);
         return;
       }
       authCheckRef.current = true;
@@ -46,19 +45,10 @@ const LoginPage = () => {
         // Check auth status
         const status = await getAuthStatus()
 
-        // Set checkingAuth to false immediately after getAuthStatus
-        // This allows the login page to render while other processing continues
-        if (isMounted) {
-          setCheckingAuth(false);
-        }
-
         // Set session flag for version check to avoid duplicate checks in App component
-        if (isMounted && (status.core_version || status.api_version)) {
+        if (status.core_version || status.api_version) {
           sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
         }
-
-        // Only proceed if component is still mounted
-        if (!isMounted) return;
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token and redirect
@@ -69,6 +59,12 @@ const LoginPage = () => {
           navigate('/')
           return
         }
+
+        // Only set checkingAuth to false if we need to show the login page
+        if (isMounted) {
+          setCheckingAuth(false);
+        }
+
       } catch (error) {
         console.error('Failed to check auth configuration:', error)
         // Also set checkingAuth to false in case of error
@@ -85,6 +81,7 @@ const LoginPage = () => {
     // Cleanup function to prevent state updates after unmount
     return () => {
       isMounted = false;
+      setCheckingAuth(false);
     }
   }, [isAuthenticated, login, navigate])
 

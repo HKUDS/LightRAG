@@ -49,6 +49,7 @@ const AppContent = () => {
 
     return () => {
       isMounted = false;
+      setInitializing(false)
     }
   }, [isAuthenticated])
 
