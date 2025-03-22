@@ -538,7 +538,7 @@ const useLightrangeGraph = () => {
           // Calculate derived values inside the function
           const range = maxDegree - minDegree || 1; // Avoid division by zero
           const scale = Constants.maxNodeSize - Constants.minNodeSize;
-          
+
           for (const nodeId of nodesWithDiscardedEdges) {
             if (sigmaGraph.hasNode(nodeId)) {
               let newDegree = sigmaGraph.degree(nodeId);
