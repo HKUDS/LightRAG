@@ -164,7 +164,7 @@
         "labels": "Étiquettes",
         "degree": "Degré",
         "properties": "Propriétés",
-        "relationships": "Relations",
+        "relationships": "Relations(dans le sous-graphe)",
         "expandNode": "Développer le nœud",
         "pruneNode": "Élaguer le nœud",
         "deleteAllNodesError": "Refus de supprimer tous les nœuds du graphe",

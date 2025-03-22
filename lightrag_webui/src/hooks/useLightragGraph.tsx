@@ -76,7 +76,7 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
   // Check if we need to fetch all database labels first
   const lastSuccessfulQueryLabel = useGraphStore.getState().lastSuccessfulQueryLabel;
   if (!lastSuccessfulQueryLabel) {
-    console.log('Last successful query label is empty, fetching all database labels first...');
+    console.log('Last successful queryLabel is empty');
     try {
       await useGraphStore.getState().fetchAllDatabaseLabels();
     } catch (e) {
@@ -89,7 +89,7 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
   const queryLabel = label || '*';
 
   try {
-    console.log(`Fetching graph data with label: ${queryLabel}, maxDepth: ${maxDepth}, minDegree: ${minDegree}`);
+    console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, deg: ${minDegree}`);
     rawData = await queryGraphs(queryLabel, maxDepth, minDegree);
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
@@ -163,7 +163,7 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
 
     if (!validateGraph(rawGraph)) {
       rawGraph = null
-      console.error('Invalid graph data')
+      console.warn('Invalid graph data')
     }
     console.log('Graph data loaded')
   }
@@ -360,8 +360,6 @@ const useLightrangeGraph = () => {
 
           // Reset camera view
           state.setMoveToSelectedNode(true);
-
-          console.log('Graph data loaded successfully');
         }
 
         // Update flags
@@ -466,17 +464,13 @@ const useLightrangeGraph = () => {
         const nodesToAdd = new Set<string>();
         const edgesToAdd = new Set<string>();
 
-        // Get degree range from existing graph for size calculations
+        // Get degree maxDegree from existing graph for size calculations
         const minDegree = 1;
         let maxDegree = 0;
         sigmaGraph.forEachNode(node => {
           const degree = sigmaGraph.degree(node);
           maxDegree = Math.max(maxDegree, degree);
         });
-
-        // Calculate size formula parameters
-        const range = maxDegree - minDegree || 1; // Avoid division by zero
-        const scale = Constants.maxNodeSize - Constants.minNodeSize;
 
         // First identify connectable nodes (nodes connected to the expanded node)
         for (const node of processedNodes) {
@@ -498,6 +492,7 @@ const useLightrangeGraph = () => {
 
         // Calculate node degrees and track discarded edges in one pass
         const nodeDegrees = new Map<string, number>();
+        const existingNodeDegreeIncrements = new Map<string, number>(); // Track degree increments for existing nodes
         const nodesWithDiscardedEdges = new Set<string>();
 
         for (const edge of processedEdges) {
@@ -506,12 +501,19 @@ const useLightrangeGraph = () => {
 
           if (sourceExists && targetExists) {
             edgesToAdd.add(edge.id);
-            // Add degrees for valid edges
+            // Add degrees for both new and existing nodes
             if (nodesToAdd.has(edge.source)) {
               nodeDegrees.set(edge.source, (nodeDegrees.get(edge.source) || 0) + 1);
+            } else if (existingNodeIds.has(edge.source)) {
+              // Track degree increments for existing nodes
+              existingNodeDegreeIncrements.set(edge.source, (existingNodeDegreeIncrements.get(edge.source) || 0) + 1);
             }
+
             if (nodesToAdd.has(edge.target)) {
               nodeDegrees.set(edge.target, (nodeDegrees.get(edge.target) || 0) + 1);
+            } else if (existingNodeIds.has(edge.target)) {
+              // Track degree increments for existing nodes
+              existingNodeDegreeIncrements.set(edge.target, (existingNodeDegreeIncrements.get(edge.target) || 0) + 1);
             }
           } else {
             // Track discarded edges for both new and existing nodes
@@ -535,16 +537,21 @@ const useLightrangeGraph = () => {
           sigmaGraph: DirectedGraph,
           nodesWithDiscardedEdges: Set<string>,
           minDegree: number,
-          range: number,
-          scale: number
+          maxDegree: number
         ) => {
+          // Calculate derived values inside the function
+          const range = maxDegree - minDegree || 1; // Avoid division by zero
+          const scale = Constants.maxNodeSize - Constants.minNodeSize;
+
           for (const nodeId of nodesWithDiscardedEdges) {
             if (sigmaGraph.hasNode(nodeId)) {
               let newDegree = sigmaGraph.degree(nodeId);
               newDegree += 1; // Add +1 for discarded edges
+              // Limit newDegree to maxDegree + 1 to prevent nodes from being too large
+              const limitedDegree = Math.min(newDegree, maxDegree + 1);
 
               const newSize = Math.round(
-                Constants.minNodeSize + scale * Math.pow((newDegree - minDegree) / range, 0.5)
+                Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
               );
 
               const currentSize = sigmaGraph.getNodeAttribute(nodeId, 'size');
@@ -558,15 +565,26 @@ const useLightrangeGraph = () => {
 
         // If no new connectable nodes found, show toast and return
         if (nodesToAdd.size === 0) {
-          updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, range, scale);
+          updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, maxDegree);
           toast.info(t('graphPanel.propertiesView.node.noNewNodes'));
           return;
         }
 
-        // Update maxDegree with new node degrees
+        // Update maxDegree considering all nodes (both new and existing)
+        // 1. Consider degrees of new nodes
         for (const [, degree] of nodeDegrees.entries()) {
           maxDegree = Math.max(maxDegree, degree);
         }
+
+        // 2. Consider degree increments for existing nodes
+        for (const [nodeId, increment] of existingNodeDegreeIncrements.entries()) {
+          const currentDegree = sigmaGraph.degree(nodeId);
+          const projectedDegree = currentDegree + increment;
+          maxDegree = Math.max(maxDegree, projectedDegree);
+        }
+
+        const range = maxDegree - minDegree || 1; // Avoid division by zero
+        const scale = Constants.maxNodeSize - Constants.minNodeSize;
 
         // SAdd nodes and edges to the graph
         // Calculate camera ratio and spread factor once before the loop
@@ -587,8 +605,10 @@ const useLightrangeGraph = () => {
           const nodeDegree = nodeDegrees.get(nodeId) || 0;
 
           // Calculate node size
+          // Limit nodeDegree to maxDegree + 1 to prevent new nodes from being too large
+          const limitedDegree = Math.min(nodeDegree, maxDegree + 1);
           const nodeSize = Math.round(
-            Constants.minNodeSize + scale * Math.pow((nodeDegree - minDegree) / range, 0.5)
+            Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
           );
 
           // Calculate angle for polar coordinates
@@ -663,7 +683,18 @@ const useLightrangeGraph = () => {
         useGraphStore.getState().resetSearchEngine();
 
         // Update sizes for all nodes with discarded edges
-        updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, range, scale);
+        updateNodeSizes(sigmaGraph, nodesWithDiscardedEdges, minDegree, maxDegree);
+
+        if (sigmaGraph.hasNode(nodeId)) {
+          const finalDegree = sigmaGraph.degree(nodeId);
+          const limitedDegree = Math.min(finalDegree, maxDegree + 1);
+          const newSize = Math.round(
+            Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
+          );
+          sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
+          nodeToExpand.size = newSize;
+          nodeToExpand.degree = finalDegree;
+        }
 
       } catch (error) {
         console.error('Error expanding node:', error);

@@ -164,7 +164,7 @@
         "labels": "التسميات",
         "degree": "الدرجة",
         "properties": "الخصائص",
-        "relationships": "العلاقات",
+        "relationships": "العلاقات (داخل الرسم الفرعي)",
         "expandNode": "توسيع العقدة",
         "pruneNode": "تقليم العقدة",
         "deleteAllNodesError": "رفض حذف جميع العقد في الرسم البياني",
