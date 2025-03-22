@@ -871,6 +871,9 @@ class LightRAG:
                     log_message = "All documents have been processed or are duplicates"
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
+                    history_messages_available = pipeline_status.get('history_messages', False)
+                    if not history_messages_available:
+                        pipeline_status['history_messages'] = ['BEL: initial history entry']
                     pipeline_status["history_messages"].append(log_message)
                     break
 
@@ -887,6 +890,9 @@ class LightRAG:
                 pipeline_status["docs"] += len(to_process_docs)
                 pipeline_status["batchs"] += len(docs_batches)
                 pipeline_status["latest_message"] = log_message
+                history_messages_available = pipeline_status.get('history_messages', False)
+                if not history_messages_available:
+                    pipeline_status['history_messages'] = ['BEL: initial history entry']
                 pipeline_status["history_messages"].append(log_message)
 
                 async def process_document(
@@ -981,6 +987,9 @@ class LightRAG:
                         logger.error(error_msg)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = error_msg
+                            history_messages_available = pipeline_status.get('history_messages', False)
+                            if not history_messages_available:
+                                pipeline_status['history_messages'] = ['BEL: initial history entry']
                             pipeline_status["history_messages"].append(error_msg)
 
                             # Cancel other tasks as they are no longer meaningful
@@ -1018,6 +1027,9 @@ class LightRAG:
                     logger.info(log_message)
                     pipeline_status["cur_batch"] = current_batch
                     pipeline_status["latest_message"] = log_message
+                    history_messages_available = pipeline_status.get('history_messages', False)
+                    if not history_messages_available:
+                        pipeline_status['history_messages'] = ['BEL: initial history entry']
                     pipeline_status["history_messages"].append(log_message)
 
                     doc_tasks = []
@@ -1040,6 +1052,9 @@ class LightRAG:
                     log_message = f"Completed batch {current_batch} of {total_batches}."
                     logger.info(log_message)
                     pipeline_status["latest_message"] = log_message
+                    history_messages_available = pipeline_status.get('history_messages', False)
+                    if not history_messages_available:
+                        pipeline_status['history_messages'] = ['BEL: initial history entry']
                     pipeline_status["history_messages"].append(log_message)
 
                 # Check if there's a pending request to process more documents (with lock)
@@ -1056,6 +1071,9 @@ class LightRAG:
                 log_message = "Processing additional documents due to pending request"
                 logger.info(log_message)
                 pipeline_status["latest_message"] = log_message
+                history_messages_available = pipeline_status.get('history_messages', False)
+                if not history_messages_available:
+                    pipeline_status['history_messages'] = ['BEL: initial history entry']
                 pipeline_status["history_messages"].append(log_message)
 
                 # Check for pending documents again
@@ -1077,6 +1095,9 @@ class LightRAG:
             async with pipeline_status_lock:
                 pipeline_status["busy"] = False
                 pipeline_status["latest_message"] = log_message
+                history_messages_available = pipeline_status.get('history_messages', False)
+                if not history_messages_available:
+                    pipeline_status['history_messages'] = ['BEL: initial history entry']
                 pipeline_status["history_messages"].append(log_message)
 
     async def _process_entity_relation_graph(
@@ -1121,6 +1142,10 @@ class LightRAG:
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
+                # BEL: history_messages is missing
+                history_messages_available = pipeline_status.get('history_messages', False)
+                if not history_messages_available:
+                    pipeline_status['history_messages'] = ['BEL: initial history entry']
                 pipeline_status["history_messages"].append(log_message)
 
     def insert_custom_kg(
