@@ -35,7 +35,7 @@ const LoginPage = () => {
         return;
       }
       authCheckRef.current = true;
-      
+
       try {
         // If already authenticated, redirect to home
         if (isAuthenticated) {
@@ -45,13 +45,13 @@ const LoginPage = () => {
 
         // Check auth status
         const status = await getAuthStatus()
-        
+
         // Set checkingAuth to false immediately after getAuthStatus
         // This allows the login page to render while other processing continues
         if (isMounted) {
           setCheckingAuth(false);
         }
-        
+
         // Set session flag for version check to avoid duplicate checks in App component
         if (isMounted && (status.core_version || status.api_version)) {
           sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
@@ -107,7 +107,7 @@ const LoginPage = () => {
       // Check authentication mode
       const isGuestMode = response.auth_mode === 'disabled'
       login(response.access_token, isGuestMode, response.core_version, response.api_version)
-      
+
       // Set session flag for version check
       if (response.core_version || response.api_version) {
         sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
