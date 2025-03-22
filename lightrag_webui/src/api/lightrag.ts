@@ -44,6 +44,7 @@ export type LightragStatus = {
   update_status?: Record<string, any>
   core_version?: string
   api_version?: string
+  auth_mode?: 'enabled' | 'disabled'
 }
 
 export type LightragDocumentsScanProgress = {

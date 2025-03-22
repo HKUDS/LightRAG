@@ -61,10 +61,11 @@ function App() {
       try {
         const status = await getAuthStatus();
         if (status.core_version || status.api_version) {
+          const isGuestMode = status.auth_mode === 'disabled' || useAuthStore.getState().isGuestMode;
           // Update version info while maintaining login state
           useAuthStore.getState().login(
             token,
-            useAuthStore.getState().isGuestMode,
+            isGuestMode,
             status.core_version,
             status.api_version
           );

@@ -417,6 +417,13 @@ def create_app(args):
         # Get update flags status for all namespaces
         update_status = await get_all_update_flags_status()
 
+        username = os.getenv("AUTH_USERNAME")
+        password = os.getenv("AUTH_PASSWORD")
+        if not (username and password):
+            auth_mode = "disabled"
+        else:
+            auth_mode = "enabled"
+
         return {
             "status": "healthy",
             "working_directory": str(args.working_dir),
@@ -440,6 +447,7 @@ def create_app(args):
             "update_status": update_status,
             "core_version": core_version,
             "api_version": __api_version__,
+            "auth_mode": auth_mode,
         }
 
     # Custom StaticFiles class to prevent caching of HTML files
