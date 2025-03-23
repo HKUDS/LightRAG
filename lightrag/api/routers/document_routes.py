@@ -798,16 +798,19 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving pipeline status (500)
         """
         try:
-            from lightrag.kg.shared_storage import get_namespace_data, get_all_update_flags_status
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_all_update_flags_status,
+            )
 
             pipeline_status = await get_namespace_data("pipeline_status")
-            
+
             # Get update flags status for all namespaces
             update_status = await get_all_update_flags_status()
 
             # Convert to regular dict if it's a Manager.dict
             status_dict = dict(pipeline_status)
-            
+
             # Add update_status to the status dictionary
             status_dict["update_status"] = update_status
 
