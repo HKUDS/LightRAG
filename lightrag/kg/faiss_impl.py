@@ -343,18 +343,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
             self._id_to_meta = {}
 
     async def index_done_callback(self) -> None:
-        # Check if storage was updated by another process
-        if is_multiprocess and self.storage_updated.value:
-            # Storage was updated by another process, reload data instead of saving
-            logger.warning(
-                f"Storage for FAISS {self.namespace} was updated by another process, reloading..."
-            )
-            async with self._storage_lock:
-                self._index = faiss.IndexFlatIP(self._dim)
-                self._id_to_meta = {}
-                self._load_faiss_index()
-                self.storage_updated.value = False
-            return False  # Return error
+        async with self._storage_lock:
+            # Check if storage was updated by another process
+            if is_multiprocess and self.storage_updated.value:
+                # Storage was updated by another process, reload data instead of saving
+                logger.warning(
+                    f"Storage for FAISS {self.namespace} was updated by another process, reloading..."
+                )
+                async with self._storage_lock:
+                    self._index = faiss.IndexFlatIP(self._dim)
+                    self._id_to_meta = {}
+                    self._load_faiss_index()
+                    self.storage_updated.value = False
+                return False  # Return error
 
         # Acquire lock and perform persistence
         async with self._storage_lock:
