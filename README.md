@@ -77,7 +77,9 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 
 </details>
 
-## Install
+## Installation
+
+### Install  LightRAG Core
 
 * Install from source (Recommend)
 
@@ -91,6 +93,26 @@ pip install -e .
 ```bash
 pip install lightrag-hku
 ```
+
+### Install LightRAG Server
+
+The LightRAG Server is designed to provide Web UI and API support. The Web UI facilitates document indexing, knowledge graph exploration, and a simple RAG query interface. LightRAG Server also provide an Ollama compatible interfaces, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat bot, such as Open WebUI, to access LightRAG easily.
+
+* Install from PyPI
+
+```bash
+pip install "lightrag-hku[api]"
+```
+
+* Installation from Source
+
+```bash
+# create a Python virtual enviroment if neccesary
+# Install in editable mode with API support
+pip install -e ".[api]"
+```
+
+**For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
 
 ## Quick Start
 
