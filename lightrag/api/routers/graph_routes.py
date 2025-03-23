@@ -5,15 +5,15 @@ This module contains all graph-related routes for the LightRAG API.
 from typing import Optional
 from fastapi import APIRouter, Depends
 
-from ..utils_api import get_api_key_dependency, get_auth_dependency
+from ..utils_api import get_combined_auth_dependency
 
-router = APIRouter(tags=["graph"], dependencies=[Depends(get_auth_dependency())])
+router = APIRouter(tags=["graph"])
 
 
 def create_graph_routes(rag, api_key: Optional[str] = None):
-    optional_api_key = get_api_key_dependency(api_key)
+    combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.get("/graph/label/list", dependencies=[Depends(optional_api_key)])
+    @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
     async def get_graph_labels():
         """
         Get all graph labels
@@ -23,7 +23,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         """
         return await rag.get_graph_labels()
 
-    @router.get("/graphs", dependencies=[Depends(optional_api_key)])
+    @router.get("/graphs", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
         label: str, max_depth: int = 3, min_degree: int = 0, inclusive: bool = False
     ):

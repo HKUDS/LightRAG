@@ -4,7 +4,7 @@ Utility functions for the LightRAG API.
 
 import os
 import argparse
-from typing import Optional
+from typing import Optional, List, Tuple
 import sys
 import logging
 from ascii_colors import ASCIIColors
@@ -21,6 +21,29 @@ load_dotenv()
 
 global_args = {"main_args": None}
 
+# Get whitelist paths from environment variable, only once during initialization
+default_whitelist = "/health,/api/*"
+whitelist_paths = os.getenv("WHITELIST_PATHS", default_whitelist).split(",")
+
+# Pre-compile path matching patterns
+whitelist_patterns: List[Tuple[str, bool]] = []
+for path in whitelist_paths:
+    path = path.strip()
+    if path:
+        # If path ends with /*, match all paths with that prefix
+        if path.endswith("/*"):
+            prefix = path[:-2]
+            whitelist_patterns.append((prefix, True))  # (prefix, is_prefix_match)
+        else:
+            whitelist_patterns.append(
+                (path, False)
+            )  # (exact_path, is_prefix_match)
+
+# Global authentication configuration
+auth_username = os.getenv("AUTH_USERNAME")
+auth_password = os.getenv("AUTH_PASSWORD")
+auth_configured = bool(auth_username and auth_password)
+
 
 class OllamaServerInfos:
     # Constants for emulated Ollama model information
@@ -35,49 +58,69 @@ class OllamaServerInfos:
 ollama_server_infos = OllamaServerInfos()
 
 
-def get_auth_dependency():
-    # Set default whitelist paths
-    whitelist = os.getenv("WHITELIST_PATHS", "/login,/health").split(",")
+def get_combined_auth_dependency(api_key: Optional[str] = None):
+    """
+    Create a combined authentication dependency that implements OR logic (pass through any authentication method)
 
-    async def dependency(
+    Args:
+        api_key (Optional[str]): API key for validation
+
+    Returns:
+        Callable: A dependency function that implements OR authentication logic
+    """
+    # Use global whitelist_patterns and auth_configured variables
+    # whitelist_patterns and auth_configured are already initialized at module level
+    
+    # Only calculate api_key_configured as it depends on the function parameter
+    api_key_configured = bool(api_key)
+
+    async def combined_dependency(
         request: Request,
         token: str = Depends(OAuth2PasswordBearer(tokenUrl="login", auto_error=False)),
     ):
-        # Check if authentication is configured
-        auth_configured = bool(
-            os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD")
-        )
-
-        # If authentication is not configured, skip all validation
-        if not auth_configured:
+        # If both authentication methods are not configured, allow access
+        if not auth_configured and not api_key_configured:
             return
 
-        # For configured auth, allow whitelist paths without token
-        if request.url.path in whitelist:
-            return
+        # Check if request path is in whitelist
+        path = request.url.path
+        for pattern, is_prefix in whitelist_patterns:
+            if (is_prefix and path.startswith(pattern)) or (
+                not is_prefix and path == pattern
+            ):
+                return  # Whitelist path, allow access
 
-        # Require token for all other paths when auth is configured
-        if not token:
+        # Access with token
+        if token:
+            token_info = auth_handler.validate_token(token)
+            if auth_configured:
+                if token_info.get("role") != "guest" or not api_key_configured:
+                    return  # Password authentication successful
+            else:
+                if token_info.get("role") == "guest":
+                    return  # Guest authentication successful
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Token required"
             )
+        
+        # Try API key authentication (if configured)
+        if api_key_configured:
+            api_key_header = request.headers.get("X-API-Key")
+            if api_key_header and api_key_header == api_key:
+                return  # API key authentication successful
+            else:
+                if auth_configured:
+                    raise HTTPException(
+                        status_code=HTTP_403_FORBIDDEN,
+                        detail="API Key required or use password authentication.",
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=HTTP_403_FORBIDDEN,
+                        detail="API Key required or use guest authentication.",
+                    )
 
-        try:
-            token_info = auth_handler.validate_token(token)
-            # Reject guest tokens when authentication is configured
-            if token_info.get("role") == "guest":
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required. Guest access not allowed when authentication is configured.",
-                )
-        except Exception:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
-            )
-
-        return
-
-    return dependency
+    return combined_dependency
 
 
 def get_api_key_dependency(api_key: Optional[str]):
@@ -91,9 +134,15 @@ def get_api_key_dependency(api_key: Optional[str]):
     Returns:
         Callable: A dependency function that validates the API key.
     """
-    if not api_key:
+    # Use global whitelist_patterns and auth_configured variables
+    # whitelist_patterns and auth_configured are already initialized at module level
+    
+    # Only calculate api_key_configured as it depends on the function parameter
+    api_key_configured = bool(api_key)
+
+    if not api_key_configured:
         # If no API key is configured, return a dummy dependency that always succeeds
-        async def no_auth():
+        async def no_auth(request: Request = None, **kwargs):
             return None
 
         return no_auth
@@ -102,8 +151,18 @@ def get_api_key_dependency(api_key: Optional[str]):
     api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
     async def api_key_auth(
+        request: Request,
         api_key_header_value: Optional[str] = Security(api_key_header),
     ):
+        # Check if request path is in whitelist
+        path = request.url.path
+        for pattern, is_prefix in whitelist_patterns:
+            if (is_prefix and path.startswith(pattern)) or (
+                not is_prefix and path == pattern
+            ):
+                return  # Whitelist path, allow access
+
+        # Non-whitelist path, validate API key
         if not api_key_header_value:
             raise HTTPException(
                 status_code=HTTP_403_FORBIDDEN, detail="API Key required"

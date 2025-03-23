@@ -17,15 +17,13 @@ from pydantic import BaseModel, Field, field_validator
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.api.utils_api import (
-    get_api_key_dependency,
+    get_combined_auth_dependency,
     global_args,
-    get_auth_dependency,
 )
 
 router = APIRouter(
     prefix="/documents",
     tags=["documents"],
-    dependencies=[Depends(get_auth_dependency())],
 )
 
 # Temporary file prefix
@@ -505,9 +503,9 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
 def create_document_routes(
     rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
-    optional_api_key = get_api_key_dependency(api_key)
+    combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.post("/scan", dependencies=[Depends(optional_api_key)])
+    @router.post("/scan", dependencies=[Depends(combined_auth)])
     async def scan_for_new_documents(background_tasks: BackgroundTasks):
         """
         Trigger the scanning process for new documents.
@@ -523,7 +521,7 @@ def create_document_routes(
         background_tasks.add_task(run_scanning_process, rag, doc_manager)
         return {"status": "scanning_started"}
 
-    @router.post("/upload", dependencies=[Depends(optional_api_key)])
+    @router.post("/upload", dependencies=[Depends(combined_auth)])
     async def upload_to_input_dir(
         background_tasks: BackgroundTasks, file: UploadFile = File(...)
     ):
@@ -568,7 +566,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/text", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
+        "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def insert_text(
         request: InsertTextRequest, background_tasks: BackgroundTasks
@@ -603,7 +601,7 @@ def create_document_routes(
     @router.post(
         "/texts",
         response_model=InsertResponse,
-        dependencies=[Depends(optional_api_key)],
+        dependencies=[Depends(combined_auth)],
     )
     async def insert_texts(
         request: InsertTextsRequest, background_tasks: BackgroundTasks
@@ -636,7 +634,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/file", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
+        "/file", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def insert_file(
         background_tasks: BackgroundTasks, file: UploadFile = File(...)
@@ -681,7 +679,7 @@ def create_document_routes(
     @router.post(
         "/file_batch",
         response_model=InsertResponse,
-        dependencies=[Depends(optional_api_key)],
+        dependencies=[Depends(combined_auth)],
     )
     async def insert_batch(
         background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)
@@ -742,7 +740,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete(
-        "", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
+        "", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def clear_documents():
         """
@@ -771,7 +769,7 @@ def create_document_routes(
 
     @router.get(
         "/pipeline_status",
-        dependencies=[Depends(optional_api_key)],
+        dependencies=[Depends(combined_auth)],
         response_model=PipelineStatusResponse,
     )
     async def get_pipeline_status() -> PipelineStatusResponse:
@@ -819,7 +817,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.get("", dependencies=[Depends(optional_api_key)])
+    @router.get("", dependencies=[Depends(combined_auth)])
     async def documents() -> DocsStatusesResponse:
         """
         Get the status of all documents in the system.
