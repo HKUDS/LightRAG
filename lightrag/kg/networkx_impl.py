@@ -401,18 +401,19 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def index_done_callback(self) -> bool:
         """Save data to disk"""
-        # Check if storage was updated by another process
-        if is_multiprocess and self.storage_updated.value:
-            # Storage was updated by another process, reload data instead of saving
-            logger.warning(
-                f"Graph for {self.namespace} was updated by another process, reloading..."
-            )
-            self._graph = (
-                NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
-            )
-            # Reset update flag
-            self.storage_updated.value = False
-            return False  # Return error
+        async with self._storage_lock:
+            # Check if storage was updated by another process
+            if is_multiprocess and self.storage_updated.value:
+                # Storage was updated by another process, reload data instead of saving
+                logger.warning(
+                    f"Graph for {self.namespace} was updated by another process, reloading..."
+                )
+                self._graph = (
+                    NetworkXStorage.load_nx_graph(self._graphml_xml_file) or nx.Graph()
+                )
+                # Reset update flag
+                self.storage_updated.value = False
+                return False  # Return error
 
         # Acquire lock and perform persistence
         async with self._storage_lock:

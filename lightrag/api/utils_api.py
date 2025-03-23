@@ -365,7 +365,7 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
-    
+
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value("MAX_PARALLEL_INSERT", 2, int)
 
@@ -397,7 +397,7 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     args.enable_llm_cache_for_extract = get_env_value(
         "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
     )
-    
+
     # Inject LLM temperature configuration
     args.temperature = get_env_value("TEMPERATURE", 0.5, float)
 
