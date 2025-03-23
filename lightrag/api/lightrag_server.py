@@ -423,9 +423,6 @@ def create_app(args):
     @app.get("/health", dependencies=[Depends(optional_api_key_dependency)])
     async def get_status():
         """Get current system status"""
-        # Get update flags status for all namespaces
-        update_status = await get_all_update_flags_status()
-
         username = os.getenv("AUTH_USERNAME")
         password = os.getenv("AUTH_PASSWORD")
         if not (username and password):
@@ -453,11 +450,10 @@ def create_app(args):
                 "vector_storage": args.vector_storage,
                 "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
             },
-            "update_status": update_status,
             "core_version": core_version,
             "api_version": __api_version__,
             "auth_mode": auth_mode,
-        }
+            }
 
     # Custom StaticFiles class to prevent caching of HTML files
     class NoCacheStaticFiles(StaticFiles):

@@ -111,6 +111,7 @@ class PipelineStatusResponse(BaseModel):
         request_pending: Flag for pending request for processing
         latest_message: Latest message from pipeline processing
         history_messages: List of history messages
+        update_status: Status of update flags for all namespaces
     """
 
     autoscanned: bool = False
@@ -123,6 +124,7 @@ class PipelineStatusResponse(BaseModel):
     request_pending: bool = False
     latest_message: str = ""
     history_messages: Optional[List[str]] = None
+    update_status: Optional[dict] = None
 
     class Config:
         extra = "allow"  # Allow additional fields from the pipeline status
@@ -796,12 +798,18 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving pipeline status (500)
         """
         try:
-            from lightrag.kg.shared_storage import get_namespace_data
+            from lightrag.kg.shared_storage import get_namespace_data, get_all_update_flags_status
 
             pipeline_status = await get_namespace_data("pipeline_status")
+            
+            # Get update flags status for all namespaces
+            update_status = await get_all_update_flags_status()
 
             # Convert to regular dict if it's a Manager.dict
             status_dict = dict(pipeline_status)
+            
+            # Add update_status to the status dictionary
+            status_dict["update_status"] = update_status
 
             # Convert history_messages to a regular list if it's a Manager.list
             if "history_messages" in status_dict:
