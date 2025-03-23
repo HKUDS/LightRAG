@@ -1,14 +1,24 @@
-## Install LightRAG as an API Server
+# LightRAG Server and WebUI
 
-LightRAG provides optional API support through FastAPI servers that add RAG capabilities to existing LLM services. You can install LightRAG API Server in two ways:
+The LightRAG Server is designed to provide Web UI and API support. The Web UI facilitates document indexing, knowledge graph exploration, and a simple RAG query interface. LightRAG Server also provide an Ollama compatible interfaces, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat bot, such as Open WebUI, to access LightRAG easily.
 
-### Installation from PyPI
+![image-20250323122538997](./README.assets/image-20250323122538997.png)
+
+![image-20250323122754387](./README.assets/image-20250323122754387.png)
+
+![image-20250323123011220](./README.assets/image-20250323123011220.png)
+
+## Getting Start
+
+### Installation
+
+* Install from PyPI
 
 ```bash
 pip install "lightrag-hku[api]"
 ```
 
-### Installation from Source (Development)
+* Installation from Source
 
 ```bash
 # Clone the repository
@@ -22,143 +32,94 @@ cd lightrag
 pip install -e ".[api]"
 ```
 
-### Starting API Server with Default Settings
+### Before Starting LightRAG Server
 
-After installing LightRAG with API support, you can start LightRAG by this command: `lightrag-server`
-
-LightRAG requires both LLM and Embedding Model to work together to complete document indexing and querying tasks. LightRAG supports binding to various LLM/Embedding backends:
+LightRAG necessitates the integration of both an LLM (Large Language Model) and an Embedding Model to effectively execute document indexing and querying operations. Prior to the initial deployment of the LightRAG server, it is essential to configure the settings for both the LLM and the Embedding Model. LightRAG supports binding to various LLM/Embedding backends:
 
 * ollama
 * lollms
-* openai & openai compatible
+* openai or openai compatible
 * azure_openai
 
-Before running any of the servers, ensure you have the corresponding backend service running for both llm and embedding.
-The LightRAG API Server provides default parameters for LLM and Embedding, allowing users to easily start the service through command line. These default configurations are:
+It is recommended to use environment variables to configure the LightRAG Server. There is an example environment variable file named `env.example` in the root directory of the project. Please copy this file to the startup directory and rename it to `.env`. After that, you can modify the parameters related to the LLM and Embedding models in the `.env` file. It is important to note that the LightRAG Server will load the environment variables from `.env` into the system environment variables each time it starts. Since the LightRAG Server will prioritize the settings in the system environment variables, if you modify the `.env` file after starting the LightRAG Server via the command line, you need to execute `source .env` to make the new settings take effect.
 
-* Default endpoint of  LLM/Embeding backend(LLM_BINDING_HOST or EMBEDDING_BINDING_HOST)
+Here are some examples of common settings for LLM and Embedding models：
+
+* OpenAI LLM + Ollama Embedding
 
 ```
-# for lollms backend
-LLM_BINDING_HOST=http://localhost:11434
-EMBEDDING_BINDING_HOST=http://localhost:11434
-
-# for lollms backend
-LLM_BINDING_HOST=http://localhost:9600
-EMBEDDING_BINDING_HOST=http://localhost:9600
-
-# for openai, openai compatible or azure openai backend
+LLM_BINDING=openai
+LLM_MODEL=gpt-4o
 LLM_BINDING_HOST=https://api.openai.com/v1
-EMBEDDING_BINDING_HOST=http://localhost:9600
-```
+LLM_BINDING_API_KEY=your_api_key
+MAX_TOKENS=32768                # Max tokens send to LLM (less than model context size)
 
-* Default model config
-
-```
-LLM_MODEL=mistral-nemo:latest
-
+EMBEDDING_BINDING=ollama
+EMBEDDING_BINDING_HOST=http://localhost:11434
 EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
-MAX_EMBED_TOKENS=8192
+# EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
-* API keys for LLM/Embedding backend
-
-When connecting to backend require API KEY, corresponding environment variables must be provided:
+* Ollama LLM + Ollama Embedding
 
 ```
-LLM_BINDING_API_KEY=your_api_key
-EMBEDDING_BINDING_API_KEY=your_api_key
+LLM_BINDING=ollama
+LLM_MODEL=mistral-nemo:latest
+LLM_BINDING_HOST=http://localhost:11434
+# LLM_BINDING_API_KEY=your_api_key
+MAX_TOKENS=8192                  # Max tokens send to LLM (base on your Ollama Server capacity)
+
+EMBEDDING_BINDING=ollama
+EMBEDDING_BINDING_HOST=http://localhost:11434
+EMBEDDING_MODEL=bge-m3:latest
+EMBEDDING_DIM=1024
+# EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
-* Use command line arguments to choose LLM/Embeding backend
+### Starting LightRAG Server
 
-Use `--llm-binding` to select LLM backend type, and use `--embedding-binding` to select the embedding backend type. All the supported backend types are:
-
-```
-openai: LLM default type
-ollama: Embedding defult type
-lollms:
-azure_openai:
-openai-ollama: select openai for LLM and ollama for embedding(only valid for --llm-binding)
-```
-
-The LightRAG API Server allows you to mix different bindings for llm/embeddings. For example, you have the possibility to use ollama for the embedding and openai for the llm.With the above default parameters, you can start API Server with simple CLI arguments like these:
+The LightRAG Server supports two operational modes:
+* The simple and efficient Uvicorn mode
 
 ```
-# start with openai llm and ollama embedding
-LLM_BINDING_API_KEY=your_api_key Light_server
-LLM_BINDING_API_KEY=your_api_key Light_server --llm-binding openai-ollama
-
-# start with openai llm and openai embedding
-LLM_BINDING_API_KEY=your_api_key Light_server --llm-binding openai --embedding-binding openai
-
-# start with ollama llm and ollama embedding (no apikey is needed)
-light-server --llm-binding ollama --embedding-binding ollama
+lightrag-server
 ```
+* The multiprocess Gunicorn + Uvicorn mode (production mode, not supported on Windows environments)
 
-### Starting API Server with Gunicorn (Production)
-
-For production deployments, it's recommended to use Gunicorn as the WSGI server to handle concurrent requests efficiently. LightRAG provides a dedicated Gunicorn startup script that handles shared data initialization, process management, and other critical functionalities.
-
-```bash
-# Start with lightrag-gunicorn command
+```
 lightrag-gunicorn --workers 4
-
-# Alternatively, you can use the module directly
-python -m lightrag.api.run_with_gunicorn --workers 4
 ```
+The `.env` file must be placed in the startup directory. Upon launching, the LightRAG Server will create a documents directory (default is `./inputs`) and a data directory (default is `./rag_storage`). This allows you to initiate multiple instances of LightRAG Server from different directories, with each instance configured to listen on a distinct network port.
 
-The `--workers` parameter is crucial for performance:
-
-- Determines how many worker processes Gunicorn will spawn to handle requests
-- Each worker can handle concurrent requests using asyncio
-- Recommended value is (2 x number_of_cores) + 1
-- For example, on a 4-core machine, use 9 workers: (2 x 4) + 1 = 9
-- Consider your server's memory when setting this value, as each worker consumes memory
-
-Other important startup parameters:
+Here are some common used startup parameters:
 
 - `--host`: Server listening address (default: 0.0.0.0)
 - `--port`: Server listening port (default: 9621)
-- `--timeout`: Request handling timeout (default: 150 seconds)
+- `--timeout`: LLM request timeout (default: 150 seconds)
 - `--log-level`: Logging level (default: INFO)
-- `--ssl`: Enable HTTPS
-- `--ssl-certfile`: Path to SSL certificate file
-- `--ssl-keyfile`: Path to SSL private key file
+- --input-dir: specifying the directory to scan for documents (default: ./input)
 
-The command line parameters and enviroment variable run_with_gunicorn.py is exactly the same as `light-server`.
+### Auto scan on startup
 
-### For Azure OpenAI Backend
+When starting any of the servers with the `--auto-scan-at-startup` parameter, the system will automatically:
 
-Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
-```bash
-# Change the resource group name, location and OpenAI resource name as needed
-RESOURCE_GROUP_NAME=LightRAG
-LOCATION=swedencentral
-RESOURCE_NAME=LightRAG-OpenAI
+1. Scan for new files in the input directory
+2. Indexing new documents that aren't already in the database
+3. Make all content immediately available for RAG queries
 
-az login
-az group create --name $RESOURCE_GROUP_NAME --location $LOCATION
-az cognitiveservices account create --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME  --kind OpenAI --sku S0 --location swedencentral
-az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name gpt-4o --model-name gpt-4o --model-version "2024-08-06"  --sku-capacity 100 --sku-name "Standard"
-az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name text-embedding-3-large --model-name text-embedding-3-large --model-version "1"  --sku-capacity 80 --sku-name "Standard"
-az cognitiveservices account show --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME --query "properties.endpoint"
-az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_NAME
+> The `--input-dir` parameter specify the input directory to scan for. You can trigger input diretory scan from webui.
+
+### Multiple workers for Gunicorn + Uvicorn
+
+The LightRAG Server can operate in the `Gunicorn + Uvicorn` preload mode. Gunicorn's Multiple Worker (multiprocess) capability prevents document indexing tasks from blocking RAG queries.  Using CPU-exhaustive document extraction tools, such as docling, can lead to the entire system being blocked in pure Uvicorn mode.
+
+Though LightRAG Server uses one workers to process the document indexing pipeline, with aysnc task supporting of Uvicorn, multiple files can be processed in parallell. The bottleneck of document indexing speed mainly lies with the LLM. If your LLM supports high concurrency, you can accelerate document indexing by increasing the concurrency level of the LLM. Below are several environment variables related to concurrent processing, along with their default values:
 
 ```
-The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
-
-```
-# Azure OpenAI Configuration in .env
-LLM_BINDING=azure_openai
-LLM_BINDING_HOST=your-azure-endpoint
-LLM_MODEL=your-model-deployment-name
-LLM_BINDING_API_KEY=your-azure-api-key
-AZURE_OPENAI_API_VERSION=2024-08-01-preview  # optional, defaults to latest version
-EMBEDDING_BINDING=azure_openai  # if using Azure OpenAI for embeddings
-EMBEDDING_MODEL=your-embedding-deployment-name
-
+WORKERS=2                    # Num of worker processes, not greater then (2 x number_of_cores) + 1
+MAX_PARALLEL_INSERT=2        # Num of parallel files to process in one batch
+MAX_ASYNC=4                  # Max concurrency requests of LLM
 ```
 
 ### Install Lightrag as a Linux Service
@@ -192,17 +153,106 @@ sudo systemctl status lightrag.service
 sudo systemctl enable lightrag.service
 ```
 
-### Automatic Document Indexing
 
-When starting any of the servers with the `--auto-scan-at-startup` parameter, the system will automatically:
 
-1. Scan for new files in the input directory
-2. Indexing new documents that aren't already in the database
-3. Make all content immediately available for RAG queries
 
-> The `--input-dir` parameter specify the input directory to scan for.
 
-## API Server Configuration
+## Ollama Emulation
+
+We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily.
+
+### Connect Open WebUI to LightRAG
+
+After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named lightrag:latest will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You'd better install LightRAG as service for this use case.
+
+Open WebUI's use LLM to do the session title and session keyword generation task. So the Ollama chat chat completion API detects and forwards OpenWebUI session-related requests directly to underlying LLM. Screen shot from Open WebUI:
+
+![image-20250323194750379](./README.assets/image-20250323194750379.png)
+
+### Choose Query mode in chat
+
+A query prefix in the query string can determines which LightRAG query mode is used to generate the respond for the query. The supported prefixes include:
+
+```
+/local
+/global
+/hybrid
+/naive
+/mix
+/bypass
+```
+
+For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default。
+
+"/bypass" is not a LightRAG query mode, it will tell API Server to pass the query directly to the underlying LLM with chat history. So user can use LLM to answer question base on the chat history. If you are using Open WebUI as front end, you can just switch the model to a normal LLM instead of using /bypass prefix.
+
+
+
+## API-Key and Authentication
+
+By default, the LightRAG Server can be accessed without any authentication. We can configure the server with an API-Key or account credentials to secure it.
+
+* API-KEY
+
+```
+LIGHTRAG_API_KEY=your-secure-api-key-here
+```
+
+* Account credentials (the web UI requires login before access)
+
+LightRAG API Server implements JWT-based authentication using HS256 algorithm. To enable secure access control, the following environment variables are required:
+
+```bash
+# For jwt auth
+AUTH_USERNAME=admin      # login name
+AUTH_PASSWORD=admin123   # password
+TOKEN_SECRET=your-key    # JWT key
+TOKEN_EXPIRE_HOURS=4     # expire duration
+```
+
+> Currently, only the configuration of an administrator account and password is supported. A comprehensive account system is yet to be developed and implemented.
+
+If Account credentials are not configured, the web UI will access the system as a Guest. Therefore, even if only API-KEY is configured, all API can still be accessed through the Guest account, which remains insecure. Hence, to safeguard the API, it is necessary to configure both authentication methods simultaneously.
+
+
+
+## For Azure OpenAI Backend
+
+Azure OpenAI API can be created using the following commands in Azure CLI (you need to install Azure CLI first from [https://docs.microsoft.com/en-us/cli/azure/install-azure-cli](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli)):
+
+```bash
+# Change the resource group name, location and OpenAI resource name as needed
+RESOURCE_GROUP_NAME=LightRAG
+LOCATION=swedencentral
+RESOURCE_NAME=LightRAG-OpenAI
+
+az login
+az group create --name $RESOURCE_GROUP_NAME --location $LOCATION
+az cognitiveservices account create --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME  --kind OpenAI --sku S0 --location swedencentral
+az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name gpt-4o --model-name gpt-4o --model-version "2024-08-06"  --sku-capacity 100 --sku-name "Standard"
+az cognitiveservices account deployment create --resource-group $RESOURCE_GROUP_NAME  --model-format OpenAI --name $RESOURCE_NAME --deployment-name text-embedding-3-large --model-name text-embedding-3-large --model-version "1"  --sku-capacity 80 --sku-name "Standard"
+az cognitiveservices account show --name $RESOURCE_NAME --resource-group $RESOURCE_GROUP_NAME --query "properties.endpoint"
+az cognitiveservices account keys list --name $RESOURCE_NAME -g $RESOURCE_GROUP_NAME
+
+```
+
+The output of the last command will give you the endpoint and the key for the OpenAI API. You can use these values to set the environment variables in the `.env` file.
+
+```
+# Azure OpenAI Configuration in .env
+LLM_BINDING=azure_openai
+LLM_BINDING_HOST=your-azure-endpoint
+LLM_MODEL=your-model-deployment-name
+LLM_BINDING_API_KEY=your-azure-api-key
+AZURE_OPENAI_API_VERSION=2024-08-01-preview  # optional, defaults to latest version
+EMBEDDING_BINDING=azure_openai  # if using Azure OpenAI for embeddings
+EMBEDDING_MODEL=your-embedding-deployment-name
+
+```
+
+
+
+## LightRAG Server Configuration in Detail
 
 API Server can be config in three way (highest priority first):
 
@@ -392,19 +442,6 @@ Note: If you don't need the API functionality, you can install the base package 
 pip install lightrag-hku
 ```
 
-## Authentication Endpoints
-
-### JWT Authentication Mechanism
-LightRAG API Server implements JWT-based authentication using HS256 algorithm. To enable secure access control, the following environment variables are required:
-```bash
-# For jwt auth
-AUTH_USERNAME=admin      # login name
-AUTH_PASSWORD=admin123   # password
-TOKEN_SECRET=your-key # JWT key
-TOKEN_EXPIRE_HOURS=4     # expire duration
-WHITELIST_PATHS=/api1,/api2  # white list. /login,/health,/docs,/redoc,/openapi.json are whitelisted by default.
-```
-
 ## API Endpoints
 
 All servers (LoLLMs, Ollama, OpenAI and Azure OpenAI) provide the same REST API endpoints for RAG functionality. When API Server is running, visit:
@@ -528,30 +565,3 @@ Check server health and configuration.
 ```bash
 curl "http://localhost:9621/health"
 ```
-
-## Ollama Emulation
-
-We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily.
-
-### Connect Open WebUI to LightRAG
-
-After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named lightrag:latest will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You'd better install LightRAG as service for this use case.
-
-Open WebUI's use LLM to do the session title and session keyword generation task. So the Ollama chat chat completion API detects and forwards OpenWebUI session-related requests directly to underlying LLM.
-
-### Choose Query mode in chat
-
-A query prefix in the query string can determines which LightRAG query mode is used to generate the respond for the query. The supported prefixes include:
-
-```
-/local
-/global
-/hybrid
-/naive
-/mix
-/bypass
-```
-
-For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default。
-
-"/bypass" is not a LightRAG query mode, it will tell API Server to pass the query directly to the underlying LLM with chat history. So user can use LLM to answer question base on the chat history. If you are using Open WebUI as front end, you can just switch the model to a normal LLM instead of using /bypass prefix.
