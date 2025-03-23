@@ -200,6 +200,7 @@ def create_app(args):
             kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
+        kwargs["temperature"] = args.temperature
         return await openai_complete_if_cache(
             args.llm_model,
             prompt,
@@ -207,7 +208,6 @@ def create_app(args):
             history_messages=history_messages,
             base_url=args.llm_binding_host,
             api_key=args.llm_binding_api_key,
-            temperature=args.temperature,
             **kwargs,
         )
 
@@ -223,6 +223,7 @@ def create_app(args):
             kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
+        kwargs["temperature"] = args.temperature
         return await azure_openai_complete_if_cache(
             args.llm_model,
             prompt,
@@ -231,7 +232,6 @@ def create_app(args):
             base_url=args.llm_binding_host,
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
-            temperature=args.temperature,
             **kwargs,
         )
 
