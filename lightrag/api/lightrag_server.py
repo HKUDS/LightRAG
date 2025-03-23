@@ -41,7 +41,6 @@ from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_pipeline_status_lock,
     initialize_pipeline_status,
-    get_all_update_flags_status,
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from .auth import auth_handler
@@ -453,7 +452,7 @@ def create_app(args):
             "core_version": core_version,
             "api_version": __api_version__,
             "auth_mode": auth_mode,
-            }
+        }
 
     # Custom StaticFiles class to prevent caching of HTML files
     class NoCacheStaticFiles(StaticFiles):

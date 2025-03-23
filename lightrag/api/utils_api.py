@@ -35,9 +35,7 @@ for path in whitelist_paths:
             prefix = path[:-2]
             whitelist_patterns.append((prefix, True))  # (prefix, is_prefix_match)
         else:
-            whitelist_patterns.append(
-                (path, False)
-            )  # (exact_path, is_prefix_match)
+            whitelist_patterns.append((path, False))  # (exact_path, is_prefix_match)
 
 # Global authentication configuration
 auth_username = os.getenv("AUTH_USERNAME")
@@ -70,7 +68,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
     """
     # Use global whitelist_patterns and auth_configured variables
     # whitelist_patterns and auth_configured are already initialized at module level
-    
+
     # Only calculate api_key_configured as it depends on the function parameter
     api_key_configured = bool(api_key)
 
@@ -102,7 +100,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Token required"
             )
-        
+
         # Try API key authentication (if configured)
         if api_key_configured:
             api_key_header = request.headers.get("X-API-Key")
@@ -136,7 +134,7 @@ def get_api_key_dependency(api_key: Optional[str]):
     """
     # Use global whitelist_patterns and auth_configured variables
     # whitelist_patterns and auth_configured are already initialized at module level
-    
+
     # Only calculate api_key_configured as it depends on the function parameter
     api_key_configured = bool(api_key)
 
