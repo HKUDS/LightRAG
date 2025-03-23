@@ -475,8 +475,8 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         if not new_files:
             return
 
-        # Get MAX_PARALLEL_INSERT from global_args
-        max_parallel = global_args["max_parallel_insert"]
+        # Get MAX_PARALLEL_INSERT from global_args["main_args"]
+        max_parallel = global_args["main_args"].max_parallel_insert
         # Calculate batch size as 2 * MAX_PARALLEL_INSERT
         batch_size = 2 * max_parallel
 
