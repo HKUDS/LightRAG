@@ -1,10 +1,13 @@
 # Build stage
 FROM python:3.11-slim AS builder
-
 WORKDIR /app
 
-# Install Rust and required build dependencies
-RUN apt-get update && apt-get install -y \
+# 添加镜像源并安装依赖
+RUN mkdir -p /etc/apt && \
+    echo "deb https://mirrors.ustc.edu.cn/debian bullseye main contrib non-free" > /etc/apt/sources.list && \
+    echo "deb https://mirrors.ustc.edu.cn/debian-security bullseye-security main contrib non-free" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.ustc.edu.cn/debian bullseye-updates main contrib non-free" >> /etc/apt/sources.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
     curl \
     build-essential \
     pkg-config \

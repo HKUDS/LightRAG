@@ -41,6 +41,9 @@ _pipeline_status_lock: Optional[LockType] = None
 _graph_db_lock: Optional[LockType] = None
 _data_init_lock: Optional[LockType] = None
 
+# 控制图数据库锁日志记录
+_graph_db_lock_logging_enabled = True
+
 
 class UnifiedLock(Generic[T]):
     """Provide a unified lock interface type for asyncio.Lock and multiprocessing.Lock"""
@@ -181,11 +184,12 @@ def get_pipeline_status_lock(enable_logging: bool = False) -> UnifiedLock:
 
 def get_graph_db_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified graph database lock for ensuring atomic operations"""
+    global _graph_db_lock_logging_enabled
     return UnifiedLock(
         lock=_graph_db_lock,
         is_async=not is_multiprocess,
         name="graph_db_lock",
-        enable_logging=enable_logging,
+        enable_logging=enable_logging if enable_logging else _graph_db_lock_logging_enabled,
     )
 
 
@@ -197,6 +201,52 @@ def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
         name="data_init_lock",
         enable_logging=enable_logging,
     )
+
+
+def set_graph_db_lock(lock: LockType) -> None:
+    """Set the graph database lock for ensuring atomic operations
+    
+    Args:
+        lock: The lock to use
+    """
+    global _graph_db_lock
+    _graph_db_lock = lock
+
+
+def set_pipeline_status_lock(lock: LockType) -> None:
+    """Set the pipeline status lock for ensuring atomic operations
+    
+    Args:
+        lock: The lock to use
+    """
+    global _pipeline_status_lock
+    _pipeline_status_lock = lock
+
+
+def set_pipeline_status(namespace: str, status: Any) -> None:
+    """Set the pipeline status for a specific namespace
+    
+    Args:
+        namespace: The namespace to set the status for
+        status: The status to set
+    """
+    direct_log(f"Process {os.getpid()} setting pipeline status for {namespace}: {status}")
+    set_shared_data(namespace, "pipeline_status", status)
+
+
+def disable_graph_db_lock_logging() -> None:
+    """Disable logging for the graph database lock"""
+    global _graph_db_lock_logging_enabled
+    _graph_db_lock_logging_enabled = False
+
+
+def init_storages_status():
+    """Initialize storage status for all workers
+    
+    This function is called during application startup to ensure 
+    all storage statuses are properly initialized
+    """
+    direct_log(f"Process {os.getpid()} initializing storage statuses")
 
 
 def initialize_share_data(workers: int = 1):

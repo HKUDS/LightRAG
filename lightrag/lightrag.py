@@ -11,8 +11,7 @@ from functools import partial
 from typing import Any, AsyncIterator, Callable, Iterator, cast, final, Literal
 import pandas as pd
 
-
-from lightrag.kg import (
+from .kg  import (
     STORAGE_ENV_REQUIREMENTS,
     STORAGES,
     verify_storage_implementation,
@@ -28,16 +27,17 @@ from .base import (
     QueryParam,
     StorageNameSpace,
     StoragesStatus,
+    ChunkingMode,
 )
 from .namespace import NameSpace, make_namespace
 from .operate import (
-    chunking_by_token_size,
     extract_entities,
     kg_query,
     mix_kg_vector_query,
     naive_query,
     query_with_keywords,
 )
+from .chunking import get_chunking_function, chunking_by_token_size
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 from .utils import (
     EmbeddingFunc,
@@ -91,6 +91,12 @@ class LightRAG:
     doc_status_storage: str = field(default="JsonDocStatusStorage")
     """Storage type for tracking document processing statuses."""
 
+    # Domain
+    # ---
+    
+    domain: str = field(default="")
+    """Domain for the LightRAG instance, used for configuring prompts."""
+
     # Logging (Deprecated, use setup_logger in utils.py instead)
     # ---
     log_level: int | None = field(default=None)
@@ -117,40 +123,19 @@ class LightRAG:
     )
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
 
+    chunking_mode: ChunkingMode = field(default=ChunkingMode.TOKEN)
+    """文本分块模式，支持以下选项:
+    - TOKEN: 按token数量分块,超过chunk_token_size会被分割
+    - CHARACTER: 按指定字符分块,如换行符、句号等
+    - MARKDOWN: 按markdown标题层级分块
+    - HYBRID: 组合使用多种分块策略
+    - HIREARCHICAL: 层级式分块,保留文档的层次结构
+    默认使用TOKEN模式."""
+
     tiktoken_model_name: str = field(default="gpt-4o-mini")
     """Model name used for tokenization when chunking text."""
 
     """Maximum number of tokens used for summarizing extracted entities."""
-
-    chunking_func: Callable[
-        [
-            str,
-            str | None,
-            bool,
-            int,
-            int,
-            str,
-        ],
-        list[dict[str, Any]],
-    ] = field(default_factory=lambda: chunking_by_token_size)
-    """
-    Custom chunking function for splitting text into chunks before processing.
-
-    The function should take the following parameters:
-
-        - `content`: The text to be split into chunks.
-        - `split_by_character`: The character to split the text on. If None, the text is split into chunks of `chunk_token_size` tokens.
-        - `split_by_character_only`: If True, the text is split only on the specified character.
-        - `chunk_token_size`: The maximum number of tokens per chunk.
-        - `chunk_overlap_token_size`: The number of overlapping tokens between consecutive chunks.
-        - `tiktoken_model_name`: The name of the tiktoken model to use for tokenization.
-
-    The function should return a list of dictionaries, where each dictionary contains the following keys:
-        - `tokens`: The number of tokens in the chunk.
-        - `content`: The text content of the chunk.
-
-    Defaults to `chunking_by_token_size` if not specified.
-    """
 
     # Node embedding
     # ---
@@ -243,7 +228,8 @@ class LightRAG:
 
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {
-            "language": os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"])
+            "language": os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"]),
+            "domain": os.getenv("DOMAIN", "")
         }
     )
 
@@ -273,9 +259,24 @@ class LightRAG:
 
     def __post_init__(self):
         from lightrag.kg.shared_storage import (
+            set_graph_db_lock,
+            disable_graph_db_lock_logging,
+            init_storages_status,
+            set_pipeline_status_lock,
+            set_pipeline_status,
             initialize_share_data,
         )
-
+        from lightrag.prompt_factory import PromptFactory
+        from lightrag.prompt import PROMPTS
+        
+        # Initialize prompt factory
+        self.prompt_factory = PromptFactory(default_prompts=PROMPTS)
+        
+        # Set up domain in addon_params if specified
+        if self.domain:
+            if "domain" not in self.addon_params:
+                self.addon_params["domain"] = self.domain
+                
         # Handle deprecated parameters
         if self.log_level is not None:
             warnings.warn(
@@ -296,7 +297,9 @@ class LightRAG:
         if hasattr(self, "log_file_path"):
             delattr(self, "log_file_path")
 
-        initialize_share_data()
+        # 初始化共享数据
+        initialize_share_data(workers=1)
+        init_storages_status()
 
         if not os.path.exists(self.working_dir):
             logger.info(f"Creating working directory {self.working_dir}")
@@ -548,23 +551,28 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
-        file_paths: str | list[str] | None = None,
+        file_paths: str | list[str] | None = None
+        
     ) -> None:
         """Sync Insert documents with checkpoint support
 
         Args:
             input: Single document string or list of document strings
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
-            chunk_token_size, it will be split again by token size.
+                chunk_token_size, it will be split again by token size.
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
-            split_by_character is None, this parameter is ignored.
+                split_by_character is None, this parameter is ignored.
             ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
             file_paths: single string of the file path or list of file paths, used for citation
         """
         loop = always_get_an_event_loop()
         loop.run_until_complete(
             self.ainsert(
-                input, split_by_character, split_by_character_only, ids, file_paths
+                input, 
+                split_by_character, 
+                split_by_character_only, 
+                ids, 
+                file_paths
             )
         )
 
@@ -574,22 +582,23 @@ class LightRAG:
         split_by_character: str | None = None,
         split_by_character_only: bool = False,
         ids: str | list[str] | None = None,
-        file_paths: str | list[str] | None = None,
+        file_paths: str | list[str] | None = None
     ) -> None:
         """Async Insert documents with checkpoint support
 
         Args:
             input: Single document string or list of document strings
             split_by_character: if split_by_character is not None, split the string by character, if chunk longer than
-            chunk_token_size, it will be split again by token size.
+                chunk_token_size, it will be split again by token size.
             split_by_character_only: if split_by_character_only is True, split the string by character only, when
-            split_by_character is None, this parameter is ignored.
-            ids: list of unique document IDs, if not provided, MD5 hash IDs will be generated
-            file_paths: list of file paths corresponding to each document, used for citation
+                split_by_character is None, this parameter is ignored.
+            ids: single string of the document ID or list of unique document IDs, if not provided, MD5 hash IDs will be generated
+            file_paths: single string of the file path or list of file paths, used for citation
         """
         await self.apipeline_enqueue_documents(input, ids, file_paths)
         await self.apipeline_process_enqueue_documents(
-            split_by_character, split_by_character_only
+            split_by_character, 
+            split_by_character_only
         )
 
     # TODO: deprecated, use insert instead
@@ -807,10 +816,9 @@ class LightRAG:
         each chunk for entity and relation extraction, and updating the
         document status.
 
-        1. Get all pending, failed, and abnormally terminated processing documents.
-        2. Split document content into chunks
-        3. Process each chunk for entity and relation extraction
-        4. Update the document status
+        Args:
+            split_by_character: Character to split text on
+            split_by_character_only: Whether to only split on character
         """
         from lightrag.kg.shared_storage import (
             get_namespace_data,
@@ -900,6 +908,15 @@ class LightRAG:
                         # Get file path from status document
                         file_path = getattr(status_doc, "file_path", "unknown_source")
 
+                        # Get chunking function based on mode
+                        # 根据chunking_mode选择文本分块函数:
+                        # - ChunkingMode.TOKEN: 按token数量分块
+                        # - ChunkingMode.CHARACTER: 按指定字符分块
+                        # - ChunkingMode.MARKDOWN: 按markdown标题分块
+                        # - ChunkingMode.HYBRID: 组合多种分块策略
+                        # - ChunkingMode.HIREARCHICAL: 层级式分块策略
+                        chunking_func = get_chunking_function(self.chunking_mode)
+
                         # Generate chunks from document
                         chunks: dict[str, Any] = {
                             compute_mdhash_id(dp["content"], prefix="chunk-"): {
@@ -907,13 +924,13 @@ class LightRAG:
                                 "full_doc_id": doc_id,
                                 "file_path": file_path,  # Add file path to each chunk
                             }
-                            for dp in self.chunking_func(
+                            for dp in chunking_func(
                                 status_doc.content,
-                                split_by_character,
-                                split_by_character_only,
-                                self.chunk_overlap_token_size,
-                                self.chunk_token_size,
-                                self.tiktoken_model_name,
+                                split_by_character=split_by_character,
+                                split_by_character_only=split_by_character_only,
+                                overlap_token_size=self.chunk_overlap_token_size,
+                                max_token_size=self.chunk_token_size,
+                                tiktoken_model=self.tiktoken_model_name,
                             )
                         }
 
@@ -3137,4 +3154,58 @@ class LightRAG:
                     self.chunk_entity_relation_graph,
                 ]
             ]
+        )
+
+    # 在现有方法之后添加domain相关的方法
+    
+    def register_domain(self, domain_name: str, config: dict[str, Any]) -> None:
+        """
+        注册新的领域配置
+        
+        Args:
+            domain_name: 领域名称
+            config: 该领域的配置参数
+        """
+        self.prompt_factory.register_domain(domain_name, config)
+        # 更新当前domain到addon_params
+        if self.domain == domain_name:
+            self.addon_params["domain"] = domain_name
+            
+    def get_domain_config(self, domain_name: str) -> dict[str, Any]:
+        """
+        获取特定领域的配置
+        
+        Args:
+            domain_name: 领域名称
+            
+        Returns:
+            领域配置字典
+        """
+        return self.prompt_factory.get_domain_config(domain_name)
+    
+    def set_domain(self, domain_name: str) -> None:
+        """
+        设置当前使用的领域
+        
+        Args:
+            domain_name: 领域名称
+        """
+        self.domain = domain_name
+        self.addon_params["domain"] = domain_name
+        
+    def get_prompt(self, prompt_key: str, **kwargs) -> str:
+        """
+        获取指定key的提示，使用当前domain（如已设置）
+        
+        Args:
+            prompt_key: 提示模板的键名
+            **kwargs: 额外的格式化参数
+            
+        Returns:
+            格式化后的提示字符串
+        """
+        return self.prompt_factory.get_prompt(
+            prompt_key, 
+            domain=self.addon_params.get("domain", ""), 
+            **kwargs
         )

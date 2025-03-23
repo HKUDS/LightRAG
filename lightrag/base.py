@@ -287,7 +287,6 @@ class DocStatusStorage(BaseKVStorage, ABC):
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
 
-
 class StoragesStatus(str, Enum):
     """Storages status"""
 
@@ -295,3 +294,13 @@ class StoragesStatus(str, Enum):
     CREATED = "created"
     INITIALIZED = "initialized"
     FINALIZED = "finalized"
+
+
+class ChunkingMode(str, Enum):
+    """Text chunking modes."""
+    TOKEN = "token"  # Split by token size
+    CHARACTER = "character"  # Split by specific character
+    MARKDOWN = "markdown"  # Split by markdown headers
+    HYBRID = "hybrid"  # Combine multiple splitting strategies
+    HIREARCHIACL = "hirearchical" # parent-child splitting strategies
+

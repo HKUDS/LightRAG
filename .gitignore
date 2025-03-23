@@ -49,6 +49,7 @@ inputs/
 rag_storage/
 examples/input/
 examples/output/
+data/
 
 # Miscellaneous
 .DS_Store
