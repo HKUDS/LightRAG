@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from .auth import auth_handler
+from ..prompt import PROMPTS
 
 # Load environment variables
 load_dotenv()
@@ -364,9 +365,9 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     args.vector_storage = get_env_value(
         "LIGHTRAG_VECTOR_STORAGE", DefaultRAGStorageConfig.VECTOR_STORAGE
     )
-
+    
     # Get MAX_PARALLEL_INSERT from environment
-    global_args["max_parallel_insert"] = get_env_value("MAX_PARALLEL_INSERT", 2, int)
+    args.max_parallel_insert = get_env_value("MAX_PARALLEL_INSERT", 2, int)
 
     # Handle openai-ollama special case
     if args.llm_binding == "openai-ollama":
@@ -396,6 +397,9 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     args.enable_llm_cache_for_extract = get_env_value(
         "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
     )
+    
+    # Inject LLM temperature configuration
+    args.temperature = get_env_value("TEMPERATURE", 0.5, float)
 
     # Select Document loading tool (DOCLING, DEFAULT)
     args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
@@ -464,6 +468,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.llm_binding_host}")
     ASCIIColors.white("    ├─ Model: ", end="")
     ASCIIColors.yellow(f"{args.llm_model}")
+    ASCIIColors.white("    ├─ Temperature: ", end="")
+    ASCIIColors.yellow(f"{args.temperature}")
+    ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
+    ASCIIColors.yellow(f"{args.max_async}")
+    ASCIIColors.white("    ├─ Max Tokens: ", end="")
+    ASCIIColors.yellow(f"{args.max_tokens}")
     ASCIIColors.white("    └─ Timeout: ", end="")
     ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
 
@@ -479,13 +489,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.embedding_dim}")
 
     # RAG Configuration
+    summary_language = os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"])
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
-    ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
-    ASCIIColors.yellow(f"{args.max_async}")
+    ASCIIColors.white("    ├─ Summary Language: ", end="")
+    ASCIIColors.yellow(f"{summary_language}")
     ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
-    ASCIIColors.yellow(f"{global_args['max_parallel_insert']}")
-    ASCIIColors.white("    ├─ Max Tokens: ", end="")
-    ASCIIColors.yellow(f"{args.max_tokens}")
+    ASCIIColors.yellow(f"{args.max_parallel_insert}")
     ASCIIColors.white("    ├─ Max Embed Tokens: ", end="")
     ASCIIColors.yellow(f"{args.max_embed_tokens}")
     ASCIIColors.white("    ├─ Chunk Size: ", end="")

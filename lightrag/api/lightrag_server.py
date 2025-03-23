@@ -207,6 +207,7 @@ def create_app(args):
             history_messages=history_messages,
             base_url=args.llm_binding_host,
             api_key=args.llm_binding_api_key,
+            temperature=args.temperature,
             **kwargs,
         )
 
@@ -230,6 +231,7 @@ def create_app(args):
             base_url=args.llm_binding_host,
             api_key=os.getenv("AZURE_OPENAI_API_KEY"),
             api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
+            temperature=args.temperature,
             **kwargs,
         )
 
@@ -302,6 +304,7 @@ def create_app(args):
             },
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
+            max_parallel_insert=args.max_parallel_insert,
         )
     else:  # azure_openai
         rag = LightRAG(
@@ -331,6 +334,7 @@ def create_app(args):
             },
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
+            max_parallel_insert=args.max_parallel_insert,
         )
 
     # Add routes

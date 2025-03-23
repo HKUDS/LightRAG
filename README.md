@@ -630,11 +630,11 @@ rag.insert(["TEXT1", "TEXT2",...])
 rag = LightRAG(
     working_dir=WORKING_DIR,
     addon_params={
-        "insert_batch_size": 20  # Process 20 documents per batch
+        "insert_batch_size": 4  # Process 4 documents per batch
     }
 )
 
-rag.insert(["TEXT1", "TEXT2", "TEXT3", ...])  # Documents will be processed in batches of 20
+rag.insert(["TEXT1", "TEXT2", "TEXT3", ...])  # Documents will be processed in batches of 4
 ```
 
 The `insert_batch_size` parameter in `addon_params` controls how many documents are processed in each batch during insertion. This is useful for:
