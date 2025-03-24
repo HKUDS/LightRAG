@@ -105,7 +105,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         if is_special_endpoint and not api_key_configured:
             return  # Special endpoint and no API key configured, allow access
 
-        # 3. Validate API key
+        # 3. Validate API key if provided
         if (
             api_key_configured
             and api_key_header_value
@@ -113,7 +113,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         ):
             return  # API key validation successful
 
-        # Specail endpoint not accept token
+        # 4. /health and Ollama API only accept API key validation
         if api_key_configured and is_special_endpoint:
             # Special endpoint but API key validation failed, return 403 error
             if api_key_header_value:
@@ -127,7 +127,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                     detail="API Key required",
                 )
 
-        # 4. Validate token
+        # 5. Validate token if provided
         if token:
             try:
                 token_info = auth_handler.validate_token(token)
@@ -154,8 +154,12 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token. Please login again.",
             )
+        
+        # 5. Acept all if no API protection needed
+        if not auth_configured and not api_key_configured:
+            return
 
-        # 5. No token and API key validation failed, return 403 error
+        # 5. Otherwise: refuse access and return 403 error
         if api_key_configured:
             if api_key_header_value is None:
                 raise HTTPException(
