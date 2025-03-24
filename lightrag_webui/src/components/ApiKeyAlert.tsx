@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   AlertDialog,
   AlertDialogContent,
@@ -18,6 +19,7 @@ interface ApiKeyAlertProps {
 }
 
 const ApiKeyAlert = ({ open: opened, onOpenChange: setOpened }: ApiKeyAlertProps) => {
+  const { t } = useTranslation()
   const apiKey = useSettingsStore.use.apiKey()
   const [tempApiKey, setTempApiKey] = useState<string>('')
   const message = useBackendState.use.message()
@@ -50,9 +52,9 @@ const ApiKeyAlert = ({ open: opened, onOpenChange: setOpened }: ApiKeyAlertProps
     <AlertDialog open={opened} onOpenChange={setOpened}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>API Key is required</AlertDialogTitle>
+          <AlertDialogTitle>{t('apiKeyAlert.title')}</AlertDialogTitle>
           <AlertDialogDescription>
-            Please enter your API key to access the service
+            {t('apiKeyAlert.description')}
           </AlertDialogDescription>
         </AlertDialogHeader>
         <div className="flex flex-col gap-4">
@@ -61,13 +63,13 @@ const ApiKeyAlert = ({ open: opened, onOpenChange: setOpened }: ApiKeyAlertProps
               type="password"
               value={tempApiKey}
               onChange={handleTempApiKeyChange}
-              placeholder="Enter your API key"
+              placeholder={t('apiKeyAlert.placeholder')}
               className="max-h-full w-full min-w-0"
               autoComplete="off"
             />
 
             <Button onClick={setApiKey} variant="outline" size="sm">
-              Save
+              {t('apiKeyAlert.save')}
             </Button>
           </form>
           {message && (
