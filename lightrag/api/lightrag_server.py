@@ -350,10 +350,8 @@ def create_app(args):
     @app.get("/auth-status", dependencies=[Depends(optional_api_key)])
     async def get_auth_status():
         """Get authentication status and guest token if auth is not configured"""
-        username = os.getenv("AUTH_USERNAME")
-        password = os.getenv("AUTH_PASSWORD")
 
-        if not (username and password):
+        if not auth_handler.accounts:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
                 username="guest", role="guest", metadata={"auth_mode": "disabled"}
@@ -377,10 +375,7 @@ def create_app(args):
 
     @app.post("/login", dependencies=[Depends(optional_api_key)])
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-        username = os.getenv("AUTH_USERNAME")
-        password = os.getenv("AUTH_PASSWORD")
-
-        if not (username and password):
+        if not auth_handler.accounts:
             # Authentication not configured, return guest token
             guest_token = auth_handler.create_token(
                 username="guest", role="guest", metadata={"auth_mode": "disabled"}
@@ -393,8 +388,8 @@ def create_app(args):
                 "core_version": core_version,
                 "api_version": __api_version__,
             }
-
-        if form_data.username != username or form_data.password != password:
+        username = form_data.username
+        if auth_handler.accounts.get(username) != form_data.password:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect credentials"
             )
