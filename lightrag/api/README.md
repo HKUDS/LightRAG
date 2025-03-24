@@ -153,10 +153,6 @@ sudo systemctl status lightrag.service
 sudo systemctl enable lightrag.service
 ```
 
-
-
-
-
 ## Ollama Emulation
 
 We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat frontends supporting Ollama, such as Open WebUI, to access LightRAG easily.
@@ -196,7 +192,10 @@ By default, the LightRAG Server can be accessed without any authentication. We c
 
 ```
 LIGHTRAG_API_KEY=your-secure-api-key-here
+WHITELIST_PATHS=/health,/api/*
 ```
+
+> Health check and Ollama emuluation endpoins is exclude from API-KEY check by default.
 
 * Account credentials (the web UI requires login before access)
 
