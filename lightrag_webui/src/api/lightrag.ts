@@ -41,6 +41,10 @@ export type LightragStatus = {
     graph_storage: string
     vector_storage: string
   }
+  update_status?: Record<string, any>
+  core_version?: string
+  api_version?: string
+  auth_mode?: 'enabled' | 'disabled'
 }
 
 export type LightragDocumentsScanProgress = {
@@ -132,6 +136,8 @@ export type AuthStatusResponse = {
   token_type?: string
   auth_mode?: 'enabled' | 'disabled'
   message?: string
+  core_version?: string
+  api_version?: string
 }
 
 export type LoginResponse = {
@@ -139,6 +145,8 @@ export type LoginResponse = {
   token_type: string
   auth_mode?: 'enabled' | 'disabled'  // Authentication mode identifier
   message?: string                    // Optional message
+  core_version?: string
+  api_version?: string
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -179,8 +187,9 @@ axiosInstance.interceptors.response.use(
         }
         // For other APIs, navigate to login page
         navigationService.navigateToLogin();
-        // Return a never-resolving promise to prevent further execution
-        return new Promise(() => {});
+
+        // return a reject Promise
+        return Promise.reject(new Error('Authentication required'));
       }
       throw new Error(
         `${error.response.status} ${error.response.statusText}\n${JSON.stringify(
