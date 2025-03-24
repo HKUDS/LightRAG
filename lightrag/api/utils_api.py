@@ -113,6 +113,20 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         ):
             return  # API key validation successful
 
+        # Specail endpoint not accept token
+        if ( api_key_configured and is_special_endpoint ):
+            # Special endpoint but API key validation failed, return 403 error
+            if api_key_header_value:
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN,
+                    detail="Invalid API Key",
+                )
+            else:
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN,
+                    detail="API Key required",
+                )
+
         # 4. Validate token
         if token:
             try:
@@ -143,10 +157,16 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
 
         # 5. No token and API key validation failed, return 403 error
         if api_key_configured:
-            raise HTTPException(
-                status_code=HTTP_403_FORBIDDEN,
-                detail="API Key required or login authentication required.",
-            )
+            if (api_key_header_value is None):
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN,
+                    detail="API Key required or login authentication required.",
+                )
+            else:
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN,
+                    detail="Invalid API Key or login authentication required.",
+                )
         else:
             raise HTTPException(
                 status_code=HTTP_403_FORBIDDEN, detail="Login authentication required."
