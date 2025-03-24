@@ -259,5 +259,11 @@
   },
   "apiSite": {
     "loading": "正在加载 API 文档..."
+  },
+  "apiKeyAlert": {
+    "title": "需要 API Key",
+    "description": "请输入您的 API Key 以访问服务",
+    "placeholder": "请输入 API Key",
+    "save": "保存"
   }
 }
