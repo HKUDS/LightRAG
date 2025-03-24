@@ -807,12 +807,24 @@ def create_document_routes(
 
             # Get update flags status for all namespaces
             update_status = await get_all_update_flags_status()
+            
+            # Convert MutableBoolean objects to regular boolean values
+            processed_update_status = {}
+            for namespace, flags in update_status.items():
+                processed_flags = []
+                for flag in flags:
+                    # Handle both multiprocess and single process cases
+                    if hasattr(flag, 'value'):
+                        processed_flags.append(bool(flag.value))
+                    else:
+                        processed_flags.append(bool(flag))
+                processed_update_status[namespace] = processed_flags
 
             # Convert to regular dict if it's a Manager.dict
             status_dict = dict(pipeline_status)
 
-            # Add update_status to the status dictionary
-            status_dict["update_status"] = update_status
+            # Add processed update_status to the status dictionary
+            status_dict["update_status"] = processed_update_status
 
             # Convert history_messages to a regular list if it's a Manager.list
             if "history_messages" in status_dict:
