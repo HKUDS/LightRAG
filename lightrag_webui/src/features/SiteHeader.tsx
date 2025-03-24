@@ -55,7 +55,7 @@ function TabsNavigation() {
 
 export default function SiteHeader() {
   const { t } = useTranslation()
-  const { isGuestMode, coreVersion, apiVersion } = useAuthStore()
+  const { isGuestMode, coreVersion, apiVersion, username } = useAuthStore()
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -96,7 +96,13 @@ export default function SiteHeader() {
           </Button>
           <AppSettings />
           {!isGuestMode && (
-            <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.logout')} onClick={handleLogout}>
+            <Button
+              variant="ghost"
+              size="icon"
+              side="bottom"
+              tooltip={`${t('header.logout')} (${username})`}
+              onClick={handleLogout}
+            >
               <LogOutIcon className="size-4" aria-hidden="true" />
             </Button>
           )}
