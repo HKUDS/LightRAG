@@ -135,9 +135,7 @@ class OllamaAPI:
         # Create combined auth dependency for Ollama API routes
         combined_auth = get_combined_auth_dependency(self.api_key)
 
-        @self.router.get(
-            "/version", dependencies=[Depends(combined_auth)]
-        )
+        @self.router.get("/version", dependencies=[Depends(combined_auth)])
         async def get_version():
             """Get Ollama version information"""
             return OllamaVersionResponse(version="0.5.4")
@@ -165,9 +163,7 @@ class OllamaAPI:
                 ]
             )
 
-        @self.router.post(
-            "/generate", dependencies=[Depends(combined_auth)]
-        )
+        @self.router.post("/generate", dependencies=[Depends(combined_auth)])
         async def generate(raw_request: Request, request: OllamaGenerateRequest):
             """Handle generate completion requests acting as an Ollama model
             For compatibility purpose, the request is not processed by LightRAG,

@@ -9,7 +9,7 @@ import sys
 import logging
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
-from fastapi import HTTPException, Security, Depends, Request, status
+from fastapi import HTTPException, Security, Request, status
 from dotenv import load_dotenv
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
@@ -72,27 +72,25 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
 
     # Only calculate api_key_configured as it depends on the function parameter
     api_key_configured = bool(api_key)
-    
+
     # Create security dependencies with proper descriptions for Swagger UI
     oauth2_scheme = OAuth2PasswordBearer(
-        tokenUrl="login", 
-        auto_error=False,
-        description="OAuth2 Password Authentication"
+        tokenUrl="login", auto_error=False, description="OAuth2 Password Authentication"
     )
-    
+
     # If API key is configured, create an API key header security
     api_key_header = None
     if api_key_configured:
         api_key_header = APIKeyHeader(
-            name="X-API-Key", 
-            auto_error=False,
-            description="API Key Authentication"
+            name="X-API-Key", auto_error=False, description="API Key Authentication"
         )
 
     async def combined_dependency(
         request: Request,
         token: str = Security(oauth2_scheme),
-        api_key_header_value: Optional[str] = None if api_key_header is None else Security(api_key_header),
+        api_key_header_value: Optional[str] = None
+        if api_key_header is None
+        else Security(api_key_header),
     ):
         # 1. Check if path is in whitelist
         path = request.url.path
@@ -106,11 +104,15 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
         is_special_endpoint = path == "/health" or path.startswith("/api/")
         if is_special_endpoint and not api_key_configured:
             return  # Special endpoint and no API key configured, allow access
-        
+
         # 3. Validate API key
-        if api_key_configured and api_key_header_value and api_key_header_value == api_key:
+        if (
+            api_key_configured
+            and api_key_header_value
+            and api_key_header_value == api_key
+        ):
             return  # API key validation successful
-        
+
         # 4. Validate token
         if token:
             try:
@@ -121,34 +123,33 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                 # Accept non-guest token if auth is configured
                 if auth_configured and token_info.get("role") != "guest":
                     return
-                
+
                 # Token validation failed, immediately return 401 error
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid token. Please login again."
+                    detail="Invalid token. Please login again.",
                 )
             except HTTPException as e:
                 # If already a 401 error, re-raise it
                 if e.status_code == status.HTTP_401_UNAUTHORIZED:
                     raise
                 # For other exceptions, continue processing
-            
+
             # If token exists but validation failed (didn't return above), return 401
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token. Please login again."
+                detail="Invalid token. Please login again.",
             )
-        
+
         # 5. No token and API key validation failed, return 403 error
         if api_key_configured:
             raise HTTPException(
                 status_code=HTTP_403_FORBIDDEN,
-                detail="API Key required or login authentication required."
+                detail="API Key required or login authentication required.",
             )
         else:
             raise HTTPException(
-                status_code=HTTP_403_FORBIDDEN,
-                detail="Login authentication required."
+                status_code=HTTP_403_FORBIDDEN, detail="Login authentication required."
             )
 
     return combined_dependency
@@ -183,7 +184,9 @@ def get_api_key_dependency(api_key: Optional[str]):
 
     async def api_key_auth(
         request: Request,
-        api_key_header_value: Optional[str] = Security(api_key_header, description="API Key for authentication"),
+        api_key_header_value: Optional[str] = Security(
+            api_key_header, description="API Key for authentication"
+        ),
     ):
         # Check if request path is in whitelist
         path = request.url.path

@@ -2,7 +2,7 @@
 LightRAG FastAPI Server
 """
 
-from fastapi import FastAPI, Depends, HTTPException, status, Request
+from fastapi import FastAPI, Depends, HTTPException, status
 import asyncio
 import os
 import logging
@@ -18,7 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from lightrag.api.utils_api import (
-    get_api_key_dependency,
     get_combined_auth_dependency,
     parse_args,
     get_default_host,
@@ -149,14 +148,14 @@ def create_app(args):
         "openapi_tags": [{"name": "api"}],
         "lifespan": lifespan,
     }
-    
+
     # Configure Swagger UI parameters
     # Enable persistAuthorization and tryItOutEnabled for better user experience
     app_kwargs["swagger_ui_parameters"] = {
         "persistAuthorization": True,
         "tryItOutEnabled": True,
     }
-    
+
     app = FastAPI(**app_kwargs)
 
     def get_cors_origins():
