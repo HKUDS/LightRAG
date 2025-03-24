@@ -167,7 +167,7 @@
         "labels": "Labels",
         "degree": "Degree",
         "properties": "Properties",
-        "relationships": "Relationships",
+        "relationships": "Relations(within subgraph)",
         "expandNode": "Expand Node",
         "pruneNode": "Prune Node",
         "deleteAllNodesError": "Refuse to delete all nodes in the graph",
@@ -201,7 +201,8 @@
       "placeholder": "Search labels...",
       "andOthers": "And {count} others",
       "refreshTooltip": "Reload graph data"
-    }
+    },
+    "emptyGraph": "Graph Is Empty"
   },
   "retrievePanel": {
     "chatMessage": {

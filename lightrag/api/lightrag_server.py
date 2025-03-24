@@ -23,9 +23,9 @@ from lightrag.api.utils_api import (
     get_default_host,
     display_splash_screen,
 )
-from lightrag import LightRAG
-from lightrag.types import GPTKeywordExtractionFormat
+from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
+from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
 from lightrag.api.routers.document_routes import (
     DocumentManager,
@@ -49,7 +49,7 @@ from .auth import auth_handler
 # Load environment variables
 # Updated to use the .env that is inside the current folder
 # This update allows the user to put a different.env file for each lightrag folder
-load_dotenv(".env", override=True)
+load_dotenv()
 
 # Initialize config parser
 config = configparser.ConfigParser()
@@ -364,9 +364,16 @@ def create_app(args):
                 "token_type": "bearer",
                 "auth_mode": "disabled",
                 "message": "Authentication is disabled. Using guest access.",
+                "core_version": core_version,
+                "api_version": __api_version__,
             }
 
-        return {"auth_configured": True, "auth_mode": "enabled"}
+        return {
+            "auth_configured": True,
+            "auth_mode": "enabled",
+            "core_version": core_version,
+            "api_version": __api_version__,
+        }
 
     @app.post("/login", dependencies=[Depends(optional_api_key)])
     async def login(form_data: OAuth2PasswordRequestForm = Depends()):
@@ -383,6 +390,8 @@ def create_app(args):
                 "token_type": "bearer",
                 "auth_mode": "disabled",
                 "message": "Authentication is disabled. Using guest access.",
+                "core_version": core_version,
+                "api_version": __api_version__,
             }
 
         if form_data.username != username or form_data.password != password:
@@ -398,6 +407,8 @@ def create_app(args):
             "access_token": user_token,
             "token_type": "bearer",
             "auth_mode": "enabled",
+            "core_version": core_version,
+            "api_version": __api_version__,
         }
 
     @app.get("/health", dependencies=[Depends(optional_api_key)])
@@ -405,6 +416,13 @@ def create_app(args):
         """Get current system status"""
         # Get update flags status for all namespaces
         update_status = await get_all_update_flags_status()
+
+        username = os.getenv("AUTH_USERNAME")
+        password = os.getenv("AUTH_PASSWORD")
+        if not (username and password):
+            auth_mode = "disabled"
+        else:
+            auth_mode = "enabled"
 
         return {
             "status": "healthy",
@@ -427,6 +445,9 @@ def create_app(args):
                 "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
             },
             "update_status": update_status,
+            "core_version": core_version,
+            "api_version": __api_version__,
+            "auth_mode": auth_mode,
         }
 
     # Custom StaticFiles class to prevent caching of HTML files

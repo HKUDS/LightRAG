@@ -1,13 +1,13 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
 import MessageAlert from '@/components/MessageAlert'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
 import StatusIndicator from '@/components/graph/StatusIndicator'
 import { healthCheckInterval } from '@/lib/constants'
-import { useBackendState } from '@/stores/state'
+import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
-import { useEffect } from 'react'
+import { getAuthStatus } from '@/api/lightrag'
 import SiteHeader from '@/features/SiteHeader'
 import { InvalidApiKeyError, RequireApiKeError } from '@/api/lightrag'
 
@@ -23,17 +23,64 @@ function App() {
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyInvalid, setApiKeyInvalid] = useState(false)
+  const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
 
-  // Health check
+  // Health check - can be disabled
   useEffect(() => {
-    // Check immediately
-    useBackendState.getState().check()
+    // Only execute if health check is enabled
+    if (!enableHealthCheck) return;
 
-    const interval = setInterval(async () => {
-      await useBackendState.getState().check()
-    }, healthCheckInterval * 1000)
-    return () => clearInterval(interval)
-  }, [enableHealthCheck])
+    // Health check function
+    const performHealthCheck = async () => {
+      await useBackendState.getState().check();
+    };
+
+    // Execute immediately
+    performHealthCheck();
+
+    // Set interval for periodic execution
+    const interval = setInterval(performHealthCheck, healthCheckInterval * 1000);
+    return () => clearInterval(interval);
+  }, [enableHealthCheck]);
+
+  // Version check - independent and executed only once
+  useEffect(() => {
+    const checkVersion = async () => {
+      // Prevent duplicate calls in Vite dev mode
+      if (versionCheckRef.current) return;
+      versionCheckRef.current = true;
+
+      // Check if version info was already obtained in login page
+      const versionCheckedFromLogin = sessionStorage.getItem('VERSION_CHECKED_FROM_LOGIN') === 'true';
+      if (versionCheckedFromLogin) return;
+
+      // Get version info
+      const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+      if (!token) return;
+
+      try {
+        const status = await getAuthStatus();
+        if (status.core_version || status.api_version) {
+          const isGuestMode = status.auth_mode === 'disabled' || useAuthStore.getState().isGuestMode;
+          // Update version info while maintaining login state
+          useAuthStore.getState().login(
+            token,
+            isGuestMode,
+            status.core_version,
+            status.api_version
+          );
+
+          // Set flag to indicate version info has been checked
+          sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+        }
+      } catch (error) {
+        console.error('Failed to get version info:', error);
+      }
+    };
+
+    // Execute version check
+    checkVersion();
+  }, []); // Empty dependency array ensures it only runs once on mount
 
   const handleTabChange = useCallback(
     (tab: string) => useSettingsStore.getState().setCurrentTab(tab as any),
