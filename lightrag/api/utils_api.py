@@ -58,29 +58,43 @@ ollama_server_infos = OllamaServerInfos()
 
 def get_combined_auth_dependency(api_key: Optional[str] = None):
     """
-    Create a combined authentication dependency that implements OR logic (pass through any authentication method)
+    Create a combined authentication dependency that implements authentication logic
+    based on API key, OAuth2 token, and whitelist paths.
 
     Args:
         api_key (Optional[str]): API key for validation
 
     Returns:
-        Callable: A dependency function that implements OR authentication logic
+        Callable: A dependency function that implements the authentication logic
     """
     # Use global whitelist_patterns and auth_configured variables
     # whitelist_patterns and auth_configured are already initialized at module level
 
     # Only calculate api_key_configured as it depends on the function parameter
     api_key_configured = bool(api_key)
+    
+    # Create security dependencies with proper descriptions for Swagger UI
+    oauth2_scheme = OAuth2PasswordBearer(
+        tokenUrl="login", 
+        auto_error=False,
+        description="OAuth2 Password Authentication"
+    )
+    
+    # If API key is configured, create an API key header security
+    api_key_header = None
+    if api_key_configured:
+        api_key_header = APIKeyHeader(
+            name="X-API-Key", 
+            auto_error=False,
+            description="API Key Authentication"
+        )
 
     async def combined_dependency(
         request: Request,
-        token: str = Depends(OAuth2PasswordBearer(tokenUrl="login", auto_error=False)),
+        token: str = Security(oauth2_scheme),
+        api_key_header_value: Optional[str] = None if api_key_header is None else Security(api_key_header),
     ):
-        # If both authentication methods are not configured, allow access
-        if not auth_configured and not api_key_configured:
-            return
-
-        # Check if request path is in whitelist
+        # 1. Check if path is in whitelist
         path = request.url.path
         for pattern, is_prefix in whitelist_patterns:
             if (is_prefix and path.startswith(pattern)) or (
@@ -88,35 +102,54 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
             ):
                 return  # Whitelist path, allow access
 
-        # Access with token
+        # 2. Check for special endpoints (/health and Ollama API)
+        is_special_endpoint = path == "/health" or path.startswith("/api/")
+        if is_special_endpoint and not api_key_configured:
+            return  # Special endpoint and no API key configured, allow access
+        
+        # 3. Validate API key
+        if api_key_configured and api_key_header_value and api_key_header_value == api_key:
+            return  # API key validation successful
+        
+        # 4. Validate token
         if token:
-            token_info = auth_handler.validate_token(token)
-            if auth_configured:
-                if token_info.get("role") != "guest" or not api_key_configured:
-                    return  # Password authentication successful
-            else:
-                if token_info.get("role") == "guest":
-                    return  # Guest authentication successful
+            try:
+                token_info = auth_handler.validate_token(token)
+                # Accept guest token if no auth is configured
+                if not auth_configured and token_info.get("role") == "guest":
+                    return
+                # Accept non-guest token if auth is configured
+                if auth_configured and token_info.get("role") != "guest":
+                    return
+                
+                # Token validation failed, immediately return 401 error
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token. Please login again."
+                )
+            except HTTPException as e:
+                # If already a 401 error, re-raise it
+                if e.status_code == status.HTTP_401_UNAUTHORIZED:
+                    raise
+                # For other exceptions, continue processing
+            
+            # If token exists but validation failed (didn't return above), return 401
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token required"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token. Please login again."
             )
-
-        # Try API key authentication (if configured)
+        
+        # 5. No token and API key validation failed, return 403 error
         if api_key_configured:
-            api_key_header = request.headers.get("X-API-Key")
-            if api_key_header and api_key_header == api_key:
-                return  # API key authentication successful
-            else:
-                if auth_configured:
-                    raise HTTPException(
-                        status_code=HTTP_403_FORBIDDEN,
-                        detail="API Key required or use password authentication.",
-                    )
-                else:
-                    raise HTTPException(
-                        status_code=HTTP_403_FORBIDDEN,
-                        detail="API Key required or use guest authentication.",
-                    )
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN,
+                detail="API Key required or login authentication required."
+            )
+        else:
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN,
+                detail="Login authentication required."
+            )
 
     return combined_dependency
 
@@ -145,12 +178,12 @@ def get_api_key_dependency(api_key: Optional[str]):
 
         return no_auth
 
-    # If API key is configured, use proper authentication
+    # If API key is configured, use proper authentication with Security for Swagger UI
     api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
     async def api_key_auth(
         request: Request,
-        api_key_header_value: Optional[str] = Security(api_key_header),
+        api_key_header_value: Optional[str] = Security(api_key_header, description="API Key for authentication"),
     ):
         # Check if request path is in whitelist
         path = request.url.path
