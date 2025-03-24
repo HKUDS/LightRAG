@@ -221,6 +221,7 @@ class MongoDocStatusStorage(DocStatusStorage):
                 created_at=doc.get("created_at"),
                 updated_at=doc.get("updated_at"),
                 chunks_count=doc.get("chunks_count", -1),
+                file_path=doc.get("file_path", doc["_id"])
             )
             for doc in result
         }
