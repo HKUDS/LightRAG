@@ -43,9 +43,7 @@ def get_auth_dependency():
         token: str = Depends(OAuth2PasswordBearer(tokenUrl="login", auto_error=False)),
     ):
         # Check if authentication is configured
-        auth_configured = bool(
-            os.getenv("AUTH_USERNAME") and os.getenv("AUTH_PASSWORD")
-        )
+        auth_configured = bool(auth_handler.accounts)
 
         # If authentication is not configured, skip all validation
         if not auth_configured:
