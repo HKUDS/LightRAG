@@ -1054,7 +1054,6 @@ async def mix_kg_vector_query(
         return {"kg_context": kg_context, "vector_context": vector_context}
 
     # 5. Construct hybrid prompt
-    # Chọn template (system_prompt nếu có, ngược lại lấy từ PROMPTS) rồi format ngay
     sys_prompt = (
         system_prompt if system_prompt else PROMPTS["mix_rag_response"]
     ).format(
