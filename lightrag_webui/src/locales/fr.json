@@ -1,0 +1,263 @@
+{
+  "settings": {
+    "language": "Langue",
+    "theme": "Thème",
+    "light": "Clair",
+    "dark": "Sombre",
+    "system": "Système"
+  },
+  "header": {
+    "documents": "Documents",
+    "knowledgeGraph": "Graphe de connaissances",
+    "retrieval": "Récupération",
+    "api": "API",
+    "projectRepository": "Référentiel du projet",
+    "logout": "Déconnexion",
+    "themeToggle": {
+      "switchToLight": "Passer au thème clair",
+      "switchToDark": "Passer au thème sombre"
+    }
+  },
+  "login": {
+    "description": "Veuillez entrer votre compte et mot de passe pour vous connecter au système",
+    "username": "Nom d'utilisateur",
+    "usernamePlaceholder": "Veuillez saisir un nom d'utilisateur",
+    "password": "Mot de passe",
+    "passwordPlaceholder": "Veuillez saisir un mot de passe",
+    "loginButton": "Connexion",
+    "loggingIn": "Connexion en cours...",
+    "successMessage": "Connexion réussie",
+    "errorEmptyFields": "Veuillez saisir votre nom d'utilisateur et mot de passe",
+    "errorInvalidCredentials": "Échec de la connexion, veuillez vérifier le nom d'utilisateur et le mot de passe",
+    "authDisabled": "L'authentification est désactivée. Utilisation du mode sans connexion.",
+    "guestMode": "Mode sans connexion"
+  },
+  "documentPanel": {
+    "clearDocuments": {
+      "button": "Effacer",
+      "tooltip": "Effacer les documents",
+      "title": "Effacer les documents",
+      "confirm": "Voulez-vous vraiment effacer tous les documents ?",
+      "confirmButton": "OUI",
+      "success": "Documents effacés avec succès",
+      "failed": "Échec de l'effacement des documents :\n{{message}}",
+      "error": "Échec de l'effacement des documents :\n{{error}}"
+    },
+    "uploadDocuments": {
+      "button": "Télécharger",
+      "tooltip": "Télécharger des documents",
+      "title": "Télécharger des documents",
+      "description": "Glissez-déposez vos documents ici ou cliquez pour parcourir.",
+      "uploading": "Téléchargement de {{name}} : {{percent}}%",
+      "success": "Succès du téléchargement :\n{{name}} téléchargé avec succès",
+      "failed": "Échec du téléchargement :\n{{name}}\n{{message}}",
+      "error": "Échec du téléchargement :\n{{name}}\n{{error}}",
+      "generalError": "Échec du téléchargement\n{{error}}",
+      "fileTypes": "Types pris en charge : TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
+    },
+    "documentManager": {
+      "title": "Gestion des documents",
+      "scanButton": "Scanner",
+      "scanTooltip": "Scanner les documents",
+      "uploadedTitle": "Documents téléchargés",
+      "uploadedDescription": "Liste des documents téléchargés et leurs statuts.",
+      "emptyTitle": "Aucun document",
+      "emptyDescription": "Il n'y a pas encore de documents téléchargés.",
+      "columns": {
+        "id": "ID",
+        "summary": "Résumé",
+        "status": "Statut",
+        "length": "Longueur",
+        "chunks": "Fragments",
+        "created": "Créé",
+        "updated": "Mis à jour",
+        "metadata": "Métadonnées"
+      },
+      "status": {
+        "completed": "Terminé",
+        "processing": "En traitement",
+        "pending": "En attente",
+        "failed": "Échoué"
+      },
+      "errors": {
+        "loadFailed": "Échec du chargement des documents\n{{error}}",
+        "scanFailed": "Échec de la numérisation des documents\n{{error}}",
+        "scanProgressFailed": "Échec de l'obtention de la progression de la numérisation\n{{error}}"
+      }
+    }
+  },
+  "graphPanel": {
+    "sideBar": {
+      "settings": {
+        "settings": "Paramètres",
+        "healthCheck": "Vérification de l'état",
+        "showPropertyPanel": "Afficher le panneau des propriétés",
+        "showSearchBar": "Afficher la barre de recherche",
+        "showNodeLabel": "Afficher l'étiquette du nœud",
+        "nodeDraggable": "Nœud déplaçable",
+        "showEdgeLabel": "Afficher l'étiquette de l'arête",
+        "hideUnselectedEdges": "Masquer les arêtes non sélectionnées",
+        "edgeEvents": "Événements des arêtes",
+        "maxQueryDepth": "Profondeur maximale de la requête",
+        "minDegree": "Degré minimum",
+        "maxLayoutIterations": "Itérations maximales de mise en page",
+        "depth": "Profondeur",
+        "degree": "Degré",
+        "apiKey": "Clé API",
+        "enterYourAPIkey": "Entrez votre clé API",
+        "save": "Sauvegarder",
+        "refreshLayout": "Actualiser la mise en page"
+      },
+      "zoomControl": {
+        "zoomIn": "Zoom avant",
+        "zoomOut": "Zoom arrière",
+        "resetZoom": "Réinitialiser le zoom",
+        "rotateCamera": "Rotation horaire",
+        "rotateCameraCounterClockwise": "Rotation antihoraire"
+      },
+      "layoutsControl": {
+        "startAnimation": "Démarrer l'animation de mise en page",
+        "stopAnimation": "Arrêter l'animation de mise en page",
+        "layoutGraph": "Mettre en page le graphe",
+        "layouts": {
+          "Circular": "Circulaire",
+          "Circlepack": "Paquet circulaire",
+          "Random": "Aléatoire",
+          "Noverlaps": "Sans chevauchement",
+          "Force Directed": "Dirigé par la force",
+          "Force Atlas": "Atlas de force"
+        }
+      },
+      "fullScreenControl": {
+        "fullScreen": "Plein écran",
+        "windowed": "Fenêtré"
+      }
+    },
+    "statusIndicator": {
+      "connected": "Connecté",
+      "disconnected": "Déconnecté"
+    },
+    "statusCard": {
+      "unavailable": "Informations sur l'état indisponibles",
+      "storageInfo": "Informations de stockage",
+      "workingDirectory": "Répertoire de travail",
+      "inputDirectory": "Répertoire d'entrée",
+      "llmConfig": "Configuration du modèle de langage",
+      "llmBinding": "Liaison du modèle de langage",
+      "llmBindingHost": "Hôte de liaison du modèle de langage",
+      "llmModel": "Modèle de langage",
+      "maxTokens": "Nombre maximum de jetons",
+      "embeddingConfig": "Configuration d'incorporation",
+      "embeddingBinding": "Liaison d'incorporation",
+      "embeddingBindingHost": "Hôte de liaison d'incorporation",
+      "embeddingModel": "Modèle d'incorporation",
+      "storageConfig": "Configuration de stockage",
+      "kvStorage": "Stockage clé-valeur",
+      "docStatusStorage": "Stockage de l'état des documents",
+      "graphStorage": "Stockage du graphe",
+      "vectorStorage": "Stockage vectoriel"
+    },
+    "propertiesView": {
+      "node": {
+        "title": "Nœud",
+        "id": "ID",
+        "labels": "Étiquettes",
+        "degree": "Degré",
+        "properties": "Propriétés",
+        "relationships": "Relations(dans le sous-graphe)",
+        "expandNode": "Développer le nœud",
+        "pruneNode": "Élaguer le nœud",
+        "deleteAllNodesError": "Refus de supprimer tous les nœuds du graphe",
+        "nodesRemoved": "{{count}} nœuds supprimés, y compris les nœuds orphelins",
+        "noNewNodes": "Aucun nœud développable trouvé",
+        "propertyNames": {
+          "description": "Description",
+          "entity_id": "Nom",
+          "entity_type": "Type",
+          "source_id": "ID source",
+          "Neighbour": "Voisin"
+        }
+      },
+      "edge": {
+        "title": "Relation",
+        "id": "ID",
+        "type": "Type",
+        "source": "Source",
+        "target": "Cible",
+        "properties": "Propriétés"
+      }
+    },
+    "search": {
+      "placeholder": "Rechercher des nœuds...",
+      "message": "Et {{count}} autres"
+    },
+    "graphLabels": {
+      "selectTooltip": "Sélectionner l'étiquette de la requête",
+      "noLabels": "Aucune étiquette trouvée",
+      "label": "Étiquette",
+      "placeholder": "Rechercher des étiquettes...",
+      "andOthers": "Et {{count}} autres",
+      "refreshTooltip": "Recharger les données du graphe"
+    },
+    "emptyGraph": "Le graphe est vide"
+  },
+  "retrievePanel": {
+    "chatMessage": {
+      "copyTooltip": "Copier dans le presse-papiers",
+      "copyError": "Échec de la copie du texte dans le presse-papiers"
+    },
+    "retrieval": {
+      "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
+      "clear": "Effacer",
+      "send": "Envoyer",
+      "placeholder": "Tapez votre requête...",
+      "error": "Erreur : Échec de l'obtention de la réponse"
+    },
+    "querySettings": {
+      "parametersTitle": "Paramètres",
+      "parametersDescription": "Configurez vos paramètres de requête",
+      "queryMode": "Mode de requête",
+      "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Recherche de base sans techniques avancées\n• Local : Récupération d'informations dépendante du contexte\n• Global : Utilise une base de connaissances globale\n• Hybride : Combine récupération locale et globale\n• Mixte : Intègre le graphe de connaissances avec la récupération vectorielle",
+      "queryModeOptions": {
+        "naive": "Naïf",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybride",
+        "mix": "Mixte"
+      },
+      "responseFormat": "Format de réponse",
+      "responseFormatTooltip": "Définit le format de la réponse. Exemples :\n• Plusieurs paragraphes\n• Paragraphe unique\n• Points à puces",
+      "responseFormatOptions": {
+        "multipleParagraphs": "Plusieurs paragraphes",
+        "singleParagraph": "Paragraphe unique",
+        "bulletPoints": "Points à puces"
+      },
+      "topK": "Top K résultats",
+      "topKTooltip": "Nombre d'éléments supérieurs à récupérer. Représente les entités en mode 'local' et les relations en mode 'global'",
+      "topKPlaceholder": "Nombre de résultats",
+      "maxTokensTextUnit": "Nombre maximum de jetons pour l'unité de texte",
+      "maxTokensTextUnitTooltip": "Nombre maximum de jetons autorisés pour chaque fragment de texte récupéré",
+      "maxTokensGlobalContext": "Nombre maximum de jetons pour le contexte global",
+      "maxTokensGlobalContextTooltip": "Nombre maximum de jetons alloués pour les descriptions des relations dans la récupération globale",
+      "maxTokensLocalContext": "Nombre maximum de jetons pour le contexte local",
+      "maxTokensLocalContextTooltip": "Nombre maximum de jetons alloués pour les descriptions des entités dans la récupération locale",
+      "historyTurns": "Tours d'historique",
+      "historyTurnsTooltip": "Nombre de tours complets de conversation (paires utilisateur-assistant) à prendre en compte dans le contexte de la réponse",
+      "historyTurnsPlaceholder": "Nombre de tours d'historique",
+      "hlKeywords": "Mots-clés de haut niveau",
+      "hlKeywordsTooltip": "Liste de mots-clés de haut niveau à prioriser dans la récupération. Séparez par des virgules",
+      "hlkeywordsPlaceHolder": "Entrez les mots-clés",
+      "llKeywords": "Mots-clés de bas niveau",
+      "llKeywordsTooltip": "Liste de mots-clés de bas niveau pour affiner la focalisation de la récupération. Séparez par des virgules",
+      "onlyNeedContext": "Besoin uniquement du contexte",
+      "onlyNeedContextTooltip": "Si vrai, ne renvoie que le contexte récupéré sans générer de réponse",
+      "onlyNeedPrompt": "Besoin uniquement de l'invite",
+      "onlyNeedPromptTooltip": "Si vrai, ne renvoie que l'invite générée sans produire de réponse",
+      "streamResponse": "Réponse en flux",
+      "streamResponseTooltip": "Si vrai, active la sortie en flux pour des réponses en temps réel"
+    }
+  },
+  "apiSite": {
+    "loading": "Chargement de la documentation de l'API..."
+  }
+}

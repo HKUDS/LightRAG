@@ -164,7 +164,7 @@
         "labels": "标签",
         "degree": "度数",
         "properties": "属性",
-        "relationships": "关系",
+        "relationships": "关系(子图内)",
         "expandNode": "扩展节点",
         "pruneNode": "修剪节点",
         "deleteAllNodesError": "拒绝删除图中的所有节点",
@@ -198,7 +198,8 @@
       "placeholder": "搜索标签...",
       "andOthers": "还有 {count} 个",
       "refreshTooltip": "重新加载图形数据"
-    }
+    },
+    "emptyGraph": "图谱数据为空"
   },
   "retrievePanel": {
     "chatMessage": {

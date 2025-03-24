@@ -74,6 +74,8 @@ interface GraphState {
 
   moveToSelectedNode: boolean
   isFetching: boolean
+  graphIsEmpty: boolean
+  lastSuccessfulQueryLabel: string
 
   // Global flags to track data fetching attempts
   graphDataFetchAttempted: boolean
@@ -88,6 +90,8 @@ interface GraphState {
   reset: () => void
 
   setMoveToSelectedNode: (moveToSelectedNode: boolean) => void
+  setGraphIsEmpty: (isEmpty: boolean) => void
+  setLastSuccessfulQueryLabel: (label: string) => void
 
   setRawGraph: (rawGraph: RawGraph | null) => void
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => void
@@ -120,6 +124,8 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
 
   moveToSelectedNode: false,
   isFetching: false,
+  graphIsEmpty: false,
+  lastSuccessfulQueryLabel: '', // Initialize as empty to ensure fetchAllDatabaseLabels runs on first query
 
   // Initialize global flags
   graphDataFetchAttempted: false,
@@ -131,6 +137,9 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   allDatabaseLabels: ['*'],
 
   searchEngine: null,
+
+  setGraphIsEmpty: (isEmpty: boolean) => set({ graphIsEmpty: isEmpty }),
+  setLastSuccessfulQueryLabel: (label: string) => set({ lastSuccessfulQueryLabel: label }),
 
 
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
@@ -155,7 +164,9 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       rawGraph: null,
       sigmaGraph: null,  // to avoid other components from acccessing graph objects
       searchEngine: null,
-      moveToSelectedNode: false
+      moveToSelectedNode: false,
+      graphIsEmpty: false
+      // Do not reset lastSuccessfulQueryLabel here as it's used to track query history
     });
   },
 
