@@ -21,12 +21,12 @@ class AuthHandler:
         self.algorithm = "HS256"
         self.expire_hours = int(os.getenv("TOKEN_EXPIRE_HOURS", 4))
         self.guest_expire_hours = int(os.getenv("GUEST_TOKEN_EXPIRE_HOURS", 2))
-        
+
         self.accounts = {}
         auth_accounts = os.getenv("AUTH_ACCOUNTS")
         if auth_accounts:
-            for account in auth_accounts.split(','):
-                username, password = account.split(':', 1)
+            for account in auth_accounts.split(","):
+                username, password = account.split(":", 1)
                 self.accounts[username] = password
 
     def create_token(
