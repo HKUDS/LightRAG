@@ -1,0 +1,15 @@
+{
+    "domain": "technical_manual",
+    "config": {
+        "language": "中文",
+        "entity_types": ["部件", "故障原因", "故障现象", "维修步骤"],
+        "tuple_delimiter": "<|>",
+        "record_delimiter": "##",
+        "completion_delimiter": "<|COMPLETE|>"
+    },
+    "chunking": {
+        "heading_levels": 3,
+        "parent_level": 2,
+        "preprocess_attachments": false
+    }
+} 

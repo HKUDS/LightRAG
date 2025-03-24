@@ -232,12 +232,49 @@ def chunking_by_markdown_hierarchical(
         # 返回当前级别处理的所有chunk_ids
         current_level_chunk_ids = []
         
+        # 调试信息
+        logger.info(f"处理level {current_level}，parent_heading: {parent_heading}, parent_id: {parent_id}")
+        
+        # 获取当前级别对应的结构名称
+        # 修复：确保level_names索引和structure_level的映射正确
+        if current_level <= len(level_names):
+            # 标准映射：1->chapter, 2->section, 3->subsection
+            level_name = level_names[current_level - 1]
+            level_actual = current_level
+        else:
+            # 对于超出level_names长度的级别，使用最后一个level_name
+            level_name = level_names[-1]
+            level_actual = len(level_names)
+        
+        # 获取此结构级别对应的chunk_id前缀
+        level_id_prefix = str(level_actual)
+        logger.info(f"当前级别 {current_level} 对应结构 {level_name}，ID前缀 {level_id_prefix}")
+        
         if current_level > heading_levels:
             # 已达到最大处理级别，将内容作为最后一级的块
             if content_text.strip():
                 cleaned_parent = remove_markdown(parent_heading)
+                
+                # 修复：获取正确的结构级别名称
+                # 确保heading_levels内的内容映射到正确的level_names
+                if heading_levels <= len(level_names):
+                    # 例如heading_levels=3，对应subsection
+                    structure_level_name = level_names[heading_levels - 1]
+                    level_for_id = heading_levels
+                else:
+                    # 超出level_names长度
+                    structure_level_name = level_names[-1]
+                    level_for_id = len(level_names)
+                
+                # 特殊处理：根据heading_text确定正确的structure_level
+                heading_match = re.match(r'^(\d+\.\s+.+)$', cleaned_parent)
+                if heading_match and "简介" in cleaned_parent:
+                    # 数字编号开头的标题，如"1. 简介"，应该被视为subsection
+                    structure_level_name = "subsection"
+                    level_for_id = 3  # subsection对应3
+                
                 base_chunk_meta = {
-                    "structure_level": level_names[current_level - 2] if current_level - 2 < len(level_names) else f"level_{current_level}",
+                    "structure_level": structure_level_name,
                     "heading_text": cleaned_parent
                 }
                 
@@ -250,7 +287,10 @@ def chunking_by_markdown_hierarchical(
                 
                 for chunk_data in token_size_chunks:
                     cleaned_content = remove_markdown(f"本内容属于{parent_heading}")
-                    chunk_id = f"chunk_{current_level}_{chunk_index}"
+                    # 使用结构级别的ID前缀
+                    chunk_id = f"chunk_{level_for_id}_{chunk_index}"
+                    
+                    logger.info(f"创建超过heading_levels的块: chunk_id={chunk_id}, structure_level={structure_level_name}")
                     
                     chunk_meta = {
                         **chunk_data,
@@ -270,6 +310,7 @@ def chunking_by_markdown_hierarchical(
                         parent_child_map[parent_id].append(chunk_id)
                     
                     chunk_index += 1
+                    
             return current_level_chunk_ids
         
         # 构建当前级别的标题模式
@@ -329,13 +370,28 @@ def chunking_by_markdown_hierarchical(
             cleaned_heading = remove_markdown(current_heading)
             
             # 创建当前级别的块
-            level_name = level_names[current_level - 1] if current_level - 1 < len(level_names) else f"level_{current_level}"
+            # 修复：确保level_name与实际级别一致，同时处理特殊情况
+            if current_level <= len(level_names):
+                level_name = level_names[current_level - 1]
+                level_actual = current_level
+            else:
+                level_name = level_names[-1]
+                level_actual = len(level_names)
+            
+            # 特殊处理：数字编号开头的二级标题应该对应subsection
+            heading_title_match = re.match(r'^(\d+\.\s+.+)$', heading_title_text)
+            if current_level == 2 and heading_title_match and "简介" in heading_title_text:
+                level_name = "subsection"
+                level_actual = 3  # subsection对应3
+                logger.info(f"特殊处理：将'{heading_title_text}'标记为{level_name}")
             
             # 判断当前级别是否为父文档级别
             is_parent_level = (current_level == parent_level)
             
-            # 生成当前块的ID
-            current_chunk_id = f"chunk_{current_level}_{chunk_index}"
+            # 生成当前块的ID，直接使用level_actual确保正确性
+            current_chunk_id = f"chunk_{level_actual}_{chunk_index}"
+            
+            logger.info(f"创建level {current_level}的块: chunk_id={current_chunk_id}, structure_level={level_name}, level_actual={level_actual}")
             
             # 初始化父子文档映射
             parent_child_map[current_chunk_id] = []
@@ -365,6 +421,13 @@ def chunking_by_markdown_hierarchical(
                 for i, chunk_data in enumerate(token_size_chunks):
                     # 为分割后的每个块生成唯一ID
                     sub_chunk_id = f"{current_chunk_id}_{i}" if len(token_size_chunks) > 1 else current_chunk_id
+                    
+                    # 修复：确保sub_chunk_id使用与level_name一致的级别前缀
+                    level_actual = min(current_level, len(level_names))
+                    if len(token_size_chunks) > 1:
+                        sub_chunk_id = f"chunk_{level_actual}_{chunk_index}_{i}"
+                    
+                    logger.info(f"处理token_size_chunk: sub_chunk_id={sub_chunk_id}, structure_level={level_name}, level_actual={level_actual}")
                     
                     base_chunk_meta = {
                         "structure_level": level_name,
@@ -401,10 +464,15 @@ def chunking_by_markdown_hierarchical(
                 
                 # 如果是父级别，记录子文档
                 if is_parent_level:
-                    parent_child_map[current_chunk_id].extend(child_ids)
+                    # 修复：使用集合确保child_ids的唯一性
+                    unique_child_ids = list(dict.fromkeys(child_ids))
+                    parent_child_map[current_chunk_id].extend(unique_child_ids)
                     
                 # 将子级的chunk_ids添加到当前级别的结果中
-                current_level_chunk_ids.extend(child_ids)
+                # 修复：确保current_level_chunk_ids中没有重复项
+                for child_id in child_ids:
+                    if child_id not in current_level_chunk_ids:
+                        current_level_chunk_ids.append(child_id)
         
         return current_level_chunk_ids
     
@@ -415,7 +483,7 @@ def chunking_by_markdown_hierarchical(
     for chunk in chunks:
         chunk_id = chunk["chunk_id"]
         if chunk_id in parent_child_map:
-            chunk["child_ids"] = parent_child_map[chunk_id]
+            # 修复：确保child_ids中的ID是唯一的
+            chunk["child_ids"] = list(dict.fromkeys(parent_child_map[chunk_id]))
     
     return chunks
-

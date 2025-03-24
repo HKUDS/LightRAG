@@ -25,6 +25,7 @@ from lightrag.api.utils_api import (
 )
 from lightrag import LightRAG
 from lightrag.types import GPTKeywordExtractionFormat
+from lightrag.base import ChunkingMode
 from lightrag.api import __api_version__
 from lightrag.utils import EmbeddingFunc
 from lightrag.api.routers.document_routes import (
@@ -266,6 +267,12 @@ def create_app(args):
 
     # Initialize RAG
     if args.llm_binding in ["lollms", "ollama", "openai"]:
+        # 获取领域配置
+        domain = os.getenv("LIGHTRAG_DOMAIN", "")
+        domain_config_path = os.getenv("LIGHTRAG_DOMAIN_CONFIG_PATH", "")
+        chunking_mode = os.getenv("LIGHTRAG_CHUNKING_MODE", "TOKEN")
+
+        # 初始化 RAG 实例
         rag = LightRAG(
             working_dir=args.working_dir,
             llm_model_func=lollms_model_complete
@@ -302,7 +309,27 @@ def create_app(args):
             },
             namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
+            # 添加领域相关配置
+            domain=domain,
+            chunking_mode=ChunkingMode[chunking_mode] if chunking_mode in ChunkingMode.__members__ else ChunkingMode.TOKEN,
         )
+
+        # 如果提供了领域配置路径，则加载配置
+        if domain and domain_config_path and os.path.exists(domain_config_path):
+            import json
+            with open(domain_config_path, 'r', encoding='utf-8') as f:
+                domain_config = json.load(f)
+            rag.register_domain(domain, domain_config)
+            
+            # 如果是技术文档模式，设置分层分块配置
+            if domain == "technical_manual":
+                # 设置分层分块配置
+                rag.chunking_mode = ChunkingMode.HIERARCHICAL
+                rag.chunking_config = {
+                    "heading_levels": 3,        # 处理到 #### 级别标题
+                    "parent_level": 2,          # ### 级别标题作为父文档
+                    "preprocess_attachments": False  # 不预处理附件标题
+                }
     else:  # azure_openai
         rag = LightRAG(
             working_dir=args.working_dir,

@@ -10,6 +10,7 @@ from datetime import datetime
 from functools import partial
 from typing import Any, AsyncIterator, Callable, Iterator, cast, final, Literal
 import pandas as pd
+import json
 
 from .kg  import (
     STORAGE_ENV_REQUIREMENTS,
@@ -37,7 +38,7 @@ from .operate import (
     naive_query,
     query_with_keywords,
 )
-from .chunking import get_chunking_function, chunking_by_token_size
+from .chunking import get_chunking_function, chunking_by_token_size, set_hierarchical_chunking_config
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 from .utils import (
     EmbeddingFunc,
@@ -276,6 +277,14 @@ class LightRAG:
         if self.domain:
             if "domain" not in self.addon_params:
                 self.addon_params["domain"] = self.domain
+                
+            # 加载领域特定的配置文件
+            config_path = f"config/{self.domain}_config.json"
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    domain_config = json.load(f)
+                    if "chunking" in domain_config:
+                        self.set_chunking_config(domain_config["chunking"])
                 
         # Handle deprecated parameters
         if self.log_level is not None:
@@ -3192,6 +3201,19 @@ class LightRAG:
         """
         self.domain = domain_name
         self.addon_params["domain"] = domain_name
+        
+    def set_chunking_config(self, config: dict[str, Any]) -> None:
+        """
+        设置分块配置
+        
+        Args:
+            config: 分块配置字典，包含以下可选字段：
+                - heading_levels: 要处理的标题级别数量
+                - parent_level: 指定父文档的级别
+                - preprocess_headings: 是否预处理标题层级
+                - preprocess_attachments: 是否预处理附件标题
+        """
+        set_hierarchical_chunking_config(**config)
         
     def get_prompt(self, prompt_key: str, **kwargs) -> str:
         """

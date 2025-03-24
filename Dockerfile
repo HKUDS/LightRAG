@@ -39,7 +39,10 @@ RUN pip install .
 ENV PATH=/root/.local/bin:$PATH
 
 # Create necessary directories
-RUN mkdir -p /app/data/rag_storage /app/data/inputs
+RUN mkdir -p /app/data/rag_storage /app/data/inputs /app/config
+
+# Copy configuration files
+COPY config/technical_manual_config.json /app/config/
 
 # Docker data directories
 ENV WORKING_DIR=/app/data/rag_storage

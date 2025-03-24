@@ -232,7 +232,7 @@ def get_chunking_function(mode: ChunkingMode) -> Callable:
     elif mode == ChunkingMode.HYBRID:
         # Hybrid mode first splits by markdown headers, then ensures token size limits
         return lambda content, **kwargs: chunking_by_markdown(content, **kwargs)
-    elif mode == ChunkingMode.HIREARCHIACL:
+    elif mode == ChunkingMode.HIERARCHICAL:
         return lambda content, **kwargs: chunking_by_hierarchical(content, **kwargs)
     else:
         raise ValueError(f"Unsupported chunking mode: {mode}") 

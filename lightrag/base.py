@@ -302,5 +302,5 @@ class ChunkingMode(str, Enum):
     CHARACTER = "character"  # Split by specific character
     MARKDOWN = "markdown"  # Split by markdown headers
     HYBRID = "hybrid"  # Combine multiple splitting strategies
-    HIREARCHIACL = "hirearchical" # parent-child splitting strategies
+    HIERARCHICAL = "hierarchical" # parent-child splitting strategies
 
