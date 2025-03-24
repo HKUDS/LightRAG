@@ -154,7 +154,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token. Please login again.",
             )
-        
+
         # 5. Acept all if no API protection needed
         if not auth_configured and not api_key_configured:
             return
