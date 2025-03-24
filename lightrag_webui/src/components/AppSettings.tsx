@@ -5,8 +5,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useSettingsStore } from '@/stores/settings'
 import { PaletteIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import { cn } from '@/lib/utils'
 
-export default function AppSettings() {
+interface AppSettingsProps {
+  className?: string
+}
+
+export default function AppSettings({ className }: AppSettingsProps) {
   const [opened, setOpened] = useState<boolean>(false)
   const { t } = useTranslation()
 
@@ -17,7 +22,7 @@ export default function AppSettings() {
   const setTheme = useSettingsStore.use.setTheme()
 
   const handleLanguageChange = useCallback((value: string) => {
-    setLanguage(value as 'en' | 'zh')
+    setLanguage(value as 'en' | 'zh' | 'fr' | 'ar')
   }, [setLanguage])
 
   const handleThemeChange = useCallback((value: string) => {
@@ -27,7 +32,7 @@ export default function AppSettings() {
   return (
     <Popover open={opened} onOpenChange={setOpened}>
       <PopoverTrigger asChild>
-        <Button variant="outline" size="icon" className="h-9 w-9">
+        <Button variant="ghost" size="icon" className={cn('h-9 w-9', className)}>
           <PaletteIcon className="h-5 w-5" />
         </Button>
       </PopoverTrigger>
@@ -42,6 +47,8 @@ export default function AppSettings() {
               <SelectContent>
                 <SelectItem value="en">English</SelectItem>
                 <SelectItem value="zh">中文</SelectItem>
+                <SelectItem value="fr">Français</SelectItem>
+                <SelectItem value="ar">العربية</SelectItem>
               </SelectContent>
             </Select>
           </div>
