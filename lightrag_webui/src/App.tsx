@@ -1,9 +1,8 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import ThemeProvider from '@/components/ThemeProvider'
 import TabVisibilityProvider from '@/contexts/TabVisibilityProvider'
-import MessageAlert from '@/components/MessageAlert'
 import ApiKeyAlert from '@/components/ApiKeyAlert'
-import StatusIndicator from '@/components/graph/StatusIndicator'
+import StatusIndicator from '@/components/status/StatusIndicator'
 import { healthCheckInterval } from '@/lib/constants'
 import { useBackendState, useAuthStore } from '@/stores/state'
 import { useSettingsStore } from '@/stores/settings'
@@ -22,26 +21,30 @@ function App() {
   const message = useBackendState.use.message()
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
   const currentTab = useSettingsStore.use.currentTab()
-  const [apiKeyInvalid, setApiKeyInvalid] = useState(false)
+  const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
+
+  const handleApiKeyAlertOpenChange = useCallback((open: boolean) => {
+    setApiKeyAlertOpen(open)
+    if (!open) {
+      useBackendState.getState().clear()
+    }
+  }, [])
 
   // Health check - can be disabled
   useEffect(() => {
-    // Only execute if health check is enabled
-    if (!enableHealthCheck) return;
+    // Only execute if health check is enabled and ApiKeyAlert is closed
+    if (!enableHealthCheck || apiKeyAlertOpen) return;
 
     // Health check function
     const performHealthCheck = async () => {
       await useBackendState.getState().check();
     };
 
-    // Execute immediately
-    performHealthCheck();
-
     // Set interval for periodic execution
     const interval = setInterval(performHealthCheck, healthCheckInterval * 1000);
     return () => clearInterval(interval);
-  }, [enableHealthCheck]);
+  }, [enableHealthCheck, apiKeyAlertOpen]);
 
   // Version check - independent and executed only once
   useEffect(() => {
@@ -90,12 +93,10 @@ function App() {
   useEffect(() => {
     if (message) {
       if (message.includes(InvalidApiKeyError) || message.includes(RequireApiKeError)) {
-        setApiKeyInvalid(true)
-        return
+        setApiKeyAlertOpen(true)
       }
     }
-    setApiKeyInvalid(false)
-  }, [message, setApiKeyInvalid])
+  }, [message])
 
   return (
     <ThemeProvider>
@@ -123,8 +124,7 @@ function App() {
             </div>
           </Tabs>
           {enableHealthCheck && <StatusIndicator />}
-          {message !== null && !apiKeyInvalid && <MessageAlert />}
-          {apiKeyInvalid && <ApiKeyAlert />}
+          <ApiKeyAlert open={apiKeyAlertOpen} onOpenChange={handleApiKeyAlertOpenChange} />
         </main>
       </TabVisibilityProvider>
     </ThemeProvider>
