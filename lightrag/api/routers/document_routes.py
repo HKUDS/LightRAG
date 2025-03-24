@@ -505,6 +505,7 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
 def create_document_routes(
     rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
+    # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post("/scan", dependencies=[Depends(combined_auth)])
