@@ -62,12 +62,13 @@ load_dotenv(override=True)
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
-def update_history(pipeline_status: dict, log_message: str) -> None:
+def update_latest_and_history_msg(pipeline_status: dict, log_message: str) -> None:
     history_messages_available = pipeline_status.get('history_messages', False)
     if not history_messages_available:
         pipeline_status['history_messages'] = []
+    pipeline_status["latest_message"] = log_message
     pipeline_status["history_messages"].append(log_message)
-    return pipeline_status
+
 
 @final
 @dataclass
@@ -819,8 +820,7 @@ class LightRAG:
                 if not to_process_docs:
                     log_message = "All documents have been processed or are duplicates"
                     logger.info(log_message)
-                    pipeline_status["latest_message"] = log_message
-                    pipeline_status = update_history(pipeline_status, log_message)
+                    update_latest_and_history_msg(pipeline_status, log_message)
                     break
 
                 # 2. split docs into chunks, insert chunks, update doc status
@@ -835,8 +835,7 @@ class LightRAG:
                 # Update pipeline status with current batch information
                 pipeline_status["docs"] += len(to_process_docs)
                 pipeline_status["batchs"] += len(docs_batches)
-                pipeline_status["latest_message"] = log_message
-                pipeline_status = update_history(pipeline_status, log_message)
+                update_latest_and_history_msg(pipeline_status, log_message)
 
                 async def process_document(
                     doc_id: str,
@@ -921,8 +920,7 @@ class LightRAG:
                         error_msg = f"Failed to process document {doc_id}: {str(e)}"
                         logger.error(error_msg)
                         async with pipeline_status_lock:
-                            pipeline_status["latest_message"] = error_msg
-                            pipeline_status = update_history(pipeline_status, log_message)
+                            update_latest_and_history_msg(pipeline_status, log_message)
 
                             # Cancel other tasks as they are no longer meaningful
                             for task in [
@@ -957,8 +955,7 @@ class LightRAG:
                     )
                     logger.info(log_message)
                     pipeline_status["cur_batch"] = current_batch
-                    pipeline_status["latest_message"] = log_message
-                    pipeline_status = update_history(pipeline_status, log_message)
+                    update_latest_and_history_msg(pipeline_status, log_message)
 
                     doc_tasks = []
                     for doc_id, status_doc in docs_batch:
@@ -979,8 +976,7 @@ class LightRAG:
 
                     log_message = f"Completed batch {current_batch} of {total_batches}."
                     logger.info(log_message)
-                    pipeline_status["latest_message"] = log_message
-                    pipeline_status = update_history(pipeline_status, log_message)
+                    update_latest_and_history_msg(pipeline_status, log_message)
 
 
                 # Check if there's a pending request to process more documents (with lock)
@@ -996,8 +992,7 @@ class LightRAG:
 
                 log_message = "Processing additional documents due to pending request"
                 logger.info(log_message)
-                pipeline_status["latest_message"] = log_message
-                pipeline_status = update_history(pipeline_status, log_message)
+                update_latest_and_history_msg(pipeline_status, log_message)
 
 
                 # Check for pending documents again
@@ -1018,8 +1013,7 @@ class LightRAG:
             # Always reset busy status when done or if an exception occurs (with lock)
             async with pipeline_status_lock:
                 pipeline_status["busy"] = False
-                pipeline_status["latest_message"] = log_message
-                pipeline_status = update_history(pipeline_status, log_message)
+                update_latest_and_history_msg(pipeline_status, log_message)
 
     async def _process_entity_relation_graph(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
@@ -1062,8 +1056,7 @@ class LightRAG:
 
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status = update_history(pipeline_status, log_message)
+                update_latest_and_history_msg(pipeline_status, log_message)
 
 
     def insert_custom_kg(
