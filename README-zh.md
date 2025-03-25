@@ -164,6 +164,10 @@ class QueryParam:
     """本地检索中实体描述的最大令牌分配。"""
     ids: list[str] | None = None # 仅支持PG向量数据库
     """用于过滤RAG的ID列表。"""
+    model_func: Callable[..., object] | None = None
+    """查询使用的LLM模型函数。如果提供了此选项，它将代替LightRAG全局模型函数。
+    这允许为不同的查询模式使用不同的模型。
+    """
     ...
 ```
 
