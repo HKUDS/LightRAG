@@ -199,6 +199,10 @@ class QueryParam:
 
 > default value of Top_k can be change by environment  variables  TOP_K.
 
+### LLM and Embedding Injection
+
+LightRAG requires the utilization of LLM and Embedding models to accomplish document indexing and querying tasks. During the initialization phase, it is necessary to inject the invocation methods of the relevant models into LightRAG：
+
 <details>
 <summary> <b>Using Open AI-like APIs</b> </summary>
 
@@ -275,8 +279,7 @@ rag = LightRAG(
 
 <details>
 <summary> <b>Using Ollama Models</b> </summary>
-
-### Overview
+**Overview**
 
 If you want to use Ollama models, you need to pull model you plan to use and embedding model, for example `nomic-embed-text`.
 
@@ -300,11 +303,11 @@ rag = LightRAG(
 )
 ```
 
-### Increasing context size
+* **Increasing context size**
 
 In order for LightRAG to work context should be at least 32k tokens. By default Ollama models have context size of 8k. You can achieve this using one of two ways:
 
-#### Increasing the `num_ctx` parameter in Modelfile.
+* **Increasing the `num_ctx` parameter in Modelfile**
 
 1. Pull the model:
 
@@ -330,7 +333,7 @@ PARAMETER num_ctx 32768
 ollama create -f Modelfile qwen2m
 ```
 
-#### Setup `num_ctx` via Ollama API.
+* **Setup `num_ctx` via Ollama API**
 
 Tiy can use `llm_model_kwargs` param to configure ollama:
 
@@ -352,7 +355,7 @@ rag = LightRAG(
 )
 ```
 
-#### Low RAM GPUs
+* **Low RAM GPUs**
 
 In order to run this experiment on low RAM GPU you should select small model and tune context window (increasing context increase memory consumption). For example, running this ollama example on repurposed mining GPU with 6Gb of RAM required to set context size to 26k while using `gemma2:2b`. It was able to find 197 entities and 19 relations on `book.txt`.
 
@@ -360,13 +363,12 @@ In order to run this experiment on low RAM GPU you should select small model and
 <details>
 <summary> <b>LlamaIndex</b> </summary>
 
-LightRAG supports integration with LlamaIndex.
+LightRAG supports integration with LlamaIndex (`llm/llama_index_impl.py`):
 
-1. **LlamaIndex** (`llm/llama_index_impl.py`):
-   - Integrates with OpenAI and other providers through LlamaIndex
-   - See [LlamaIndex Documentation](lightrag/llm/Readme.md) for detailed setup and examples
+- Integrates with OpenAI and other providers through LlamaIndex
+- See [LlamaIndex Documentation](lightrag/llm/Readme.md) for detailed setup and examples
 
-### Example Usage
+**Example Usage**
 
 ```python
 # Using LlamaIndex with direct OpenAI access
@@ -428,15 +430,14 @@ if __name__ == "__main__":
     main()
 ```
 
-#### For detailed documentation and examples, see:
+**For detailed documentation and examples, see:**
 
 - [LlamaIndex Documentation](lightrag/llm/Readme.md)
 - [Direct OpenAI Example](examples/lightrag_llamaindex_direct_demo.py)
 - [LiteLLM Proxy Example](examples/lightrag_llamaindex_litellm_demo.py)
 
-</details>
-<details>
-<summary> <b>Conversation History Support</b> </summary>
+### Conversation History Support
+
 
 LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
 
@@ -462,10 +463,7 @@ response = rag.query(
 )
 ```
 
-</details>
-
-<details>
-<summary> <b>Custom Prompt Support</b> </summary>
+### Custom Prompt Support
 
 LightRAG now supports custom prompts for fine-tuned control over the system's behavior. Here's how to use it:
 
@@ -503,14 +501,11 @@ response_custom = rag.query(
 print(response_custom)
 ```
 
-</details>
-
-<details>
-<summary> <b>Separate Keyword Extraction</b> </summary>
+### Separate Keyword Extraction
 
 We've introduced a new function `query_with_separate_keyword_extraction` to enhance the keyword extraction capabilities. This function separates the keyword extraction process from the user's prompt, focusing solely on the query to improve the relevance of extracted keywords.
 
-##### How It Works?
+**How It Works?**
 
 The function operates by dividing the input into two parts:
 
@@ -519,7 +514,7 @@ The function operates by dividing the input into two parts:
 
 It then performs keyword extraction exclusively on the `user query`. This separation ensures that the extraction process is focused and relevant, unaffected by any additional language in the `prompt`. It also allows the `prompt` to serve purely for response formatting, maintaining the intent and clarity of the user's original question.
 
-##### Usage Example
+**Usage Example**
 
 This `example` shows how to tailor the function for educational content, focusing on detailed explanations for older students.
 
@@ -531,10 +526,7 @@ rag.query_with_separate_keyword_extraction(
 )
 ```
 
-</details>
-
-<details>
-<summary> <b>Insert Custom KG</b> </summary>
+### Insert Custom KG
 
 ```python
 custom_kg = {
@@ -599,12 +591,15 @@ rag.insert_custom_kg(custom_kg)
 
 ## Insert
 
-#### Basic Insert
+<details>
+  <summary> <b> Basic Insert </b></summary>
 
 ```python
 # Basic Insert
 rag.insert("Text")
 ```
+
+</details>
 
 <details>
   <summary> <b> Batch Insert </b></summary>
@@ -842,8 +837,7 @@ rag.delete_by_doc_id("doc_id")
 
 LightRAG now supports comprehensive knowledge graph management capabilities, allowing you to create, edit, and delete entities and relationships within your knowledge graph.
 
-<details>
-<summary> <b>Create Entities and Relations</b> </summary>
+### Create Entities and Relations
 
 ```python
 # Create new entity
@@ -866,10 +860,7 @@ relation = rag.create_relation("Google", "Gmail", {
 })
 ```
 
-</details>
-
-<details>
-<summary> <b>Edit Entities and Relations</b> </summary>
+### Edit Entities and Relations
 
 ```python
 # Edit an existing entity
@@ -892,8 +883,6 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 })
 ```
 
-</details>
-
 All operations are available in both synchronous and asynchronous versions. The asynchronous versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
 #### Entity Operations
@@ -910,13 +899,13 @@ These operations maintain data consistency across both the graph database and ve
 
 ## Data Export Functions
 
-## Overview
+### Overview
 
 LightRAG allows you to export your knowledge graph data in various formats for analysis, sharing, and backup purposes. The system supports exporting entities, relations, and relationship data.
 
-## Export Functions
+### Export Functions
 
-### Basic Usage
+#### Basic Usage
 
 ```python
 # Basic CSV export (default format)
@@ -926,7 +915,7 @@ rag.export_data("knowledge_graph.csv")
 rag.export_data("output.xlsx", file_format="excel")
 ```
 
-### Different File Formats supported
+#### Different File Formats supported
 
 ```python
 #Export data in CSV format
@@ -941,14 +930,14 @@ rag.export_data("graph_data.md", file_format="md")
 # Export data in Text
 rag.export_data("graph_data.txt", file_format="txt")
 ```
-## Additional Options
+#### Additional Options
 
 Include vector embeddings in the export (optional):
 
 ```python
 rag.export_data("complete_data.csv", include_vector_data=True)
 ```
-## Data Included in Export
+### Data Included in Export
 
 All exports include:
 
@@ -1111,11 +1100,9 @@ The API includes comprehensive error handling:
 
 </details>
 
-## API
+## LightRAG API
 
-LightRag can be installed with API support to serve a Fast api interface to perform data upload and indexing/Rag operations/Rescan of the input folder etc..
-
-[LightRag API](lightrag/api/README.md)
+The LightRAG Server is designed to provide Web UI and API support.  **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
 
 ## Graph Visualization
 
