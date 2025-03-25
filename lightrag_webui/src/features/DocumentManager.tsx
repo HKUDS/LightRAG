@@ -129,7 +129,6 @@ export default function DocumentManager() {
                     <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
                     <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
                     <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.metadata')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody className="text-sm">
@@ -166,9 +165,6 @@ export default function DocumentManager() {
                         </TableCell>
                         <TableCell className="truncate">
                           {new Date(doc.updated_at).toLocaleString()}
-                        </TableCell>
-                        <TableCell className="max-w-xs truncate">
-                          {doc.metadata ? JSON.stringify(doc.metadata) : '-'}
                         </TableCell>
                       </TableRow>
                     ))
