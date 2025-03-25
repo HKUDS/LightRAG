@@ -194,6 +194,11 @@ class QueryParam:
     """Maximum number of tokens allocated for entity descriptions in local retrieval."""
     ids: list[str] | None = None # ONLY SUPPORTED FOR PG VECTOR DBs
     """List of ids to filter the RAG."""
+    model_func: Callable[..., object] | None = None
+    """Optional override for the LLM model function to use for this specific query.
+    If provided, this will be used instead of the global model function.
+    This allows using different models for different query modes.
+    """
     ...
 ```
 
