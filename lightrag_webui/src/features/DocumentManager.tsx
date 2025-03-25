@@ -12,7 +12,6 @@ import {
 } from '@/components/ui/Table'
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
 import EmptyCard from '@/components/ui/EmptyCard'
-import Text from '@/components/ui/Text'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 
@@ -22,12 +21,36 @@ import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
 import { RefreshCwIcon } from 'lucide-react'
+import { DocStatusResponse } from '@/api/lightrag'
+
+const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
+  // Check if file_path exists and is a non-empty string
+  if (!doc.file_path || typeof doc.file_path !== 'string' || doc.file_path.trim() === '') {
+    return doc.id;
+  }
+
+  // Try to extract filename from path
+  const parts = doc.file_path.split('/');
+  const fileName = parts[parts.length - 1];
+
+  // Ensure extracted filename is valid
+  if (!fileName || fileName.trim() === '') {
+    return doc.id;
+  }
+
+  // If filename is longer than maxLength, truncate it and add ellipsis
+  return fileName.length > maxLength 
+    ? fileName.slice(0, maxLength) + '...' 
+    : fileName;
+};
 
 export default function DocumentManager() {
   const { t } = useTranslation()
   const health = useBackendState.use.health()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
   const currentTab = useSettingsStore.use.currentTab()
+  const showFileName = useSettingsStore.use.showFileName()
+  const setShowFileName = useSettingsStore.use.setShowFileName()
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -107,7 +130,23 @@ export default function DocumentManager() {
 
         <Card>
           <CardHeader>
-            <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
+            <div className="flex justify-between items-center">
+              <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-500">{t('documentPanel.documentManager.fileNameLabel')}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowFileName(!showFileName)}
+                  className="border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
+                >
+                  {showFileName 
+                    ? t('documentPanel.documentManager.hideButton')
+                    : t('documentPanel.documentManager.showButton')
+                  }
+                </Button>
+              </div>
+            </div>
             <CardDescription>{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
 
@@ -135,13 +174,39 @@ export default function DocumentManager() {
                   {Object.entries(docs.statuses).map(([status, documents]) =>
                     documents.map((doc) => (
                       <TableRow key={doc.id}>
-                        <TableCell className="truncate font-mono">{doc.id}</TableCell>
-                        <TableCell className="max-w-xs min-w-24 truncate">
-                          <Text
-                            text={doc.content_summary}
-                            tooltip={doc.content_summary}
-                            tooltipClassName="max-w-none overflow-visible block"
-                          />
+                        <TableCell className="truncate font-mono overflow-visible">
+                          {showFileName ? (
+                            <>
+                              <div className="group relative overflow-visible">
+                                <div className="truncate">
+                                  {getDisplayFileName(doc, 35)}
+                                </div>
+                                <div className="invisible group-hover:visible fixed z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                  {doc.file_path}
+                                </div>
+                              </div>
+                              <div className="text-xs text-gray-500">{doc.id}</div>
+                            </>
+                          ) : (
+                            <div className="group relative overflow-visible">
+                              <div className="truncate">
+                                {doc.id}
+                              </div>
+                              <div className="invisible group-hover:visible fixed z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                {doc.file_path}
+                              </div>
+                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="max-w-xs min-w-24 truncate overflow-visible">
+                          <div className="group relative overflow-visible">
+                            <div className="truncate">
+                              {doc.content_summary}
+                            </div>
+                            <div className="invisible group-hover:visible fixed z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                              {doc.content_summary}
+                            </div>
+                          </div>
                         </TableCell>
                         <TableCell>
                           {status === 'processed' && (
