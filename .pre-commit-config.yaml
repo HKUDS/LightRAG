@@ -16,7 +16,7 @@ repos:
       - id: ruff-format
         exclude: ^lightrag/api/webui/
       - id: ruff
-        args: [--fix, --ignore=E402]
+        args: [--fix, --ignore=E402 --show-diff-on-failure]
         exclude: ^lightrag/api/webui/
 
 
