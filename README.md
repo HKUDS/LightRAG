@@ -194,6 +194,11 @@ class QueryParam:
     """Maximum number of tokens allocated for entity descriptions in local retrieval."""
     ids: list[str] | None = None # ONLY SUPPORTED FOR PG VECTOR DBs
     """List of ids to filter the RAG."""
+    model_func: Callable[..., object] | None = None
+    """Optional override for the LLM model function to use for this specific query.
+    If provided, this will be used instead of the global model function.
+    This allows using different models for different query modes.
+    """
     ...
 ```
 
@@ -761,7 +766,7 @@ For production level scenarios you will most likely want to leverage an enterpri
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- drop if necessary
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;

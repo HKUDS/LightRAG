@@ -164,6 +164,10 @@ class QueryParam:
     """本地检索中实体描述的最大令牌分配。"""
     ids: list[str] | None = None # 仅支持PG向量数据库
     """用于过滤RAG的ID列表。"""
+    model_func: Callable[..., object] | None = None
+    """查询使用的LLM模型函数。如果提供了此选项，它将代替LightRAG全局模型函数。
+    这允许为不同的查询模式使用不同的模型。
+    """
     ...
 ```
 
@@ -764,7 +768,7 @@ rag = LightRAG(
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- 如有必要可以删除
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
