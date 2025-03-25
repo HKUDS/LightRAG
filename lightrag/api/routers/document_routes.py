@@ -370,7 +370,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
 
         # Insert into the RAG queue
         if content:
-            await rag.apipeline_enqueue_documents(content)
+            await rag.apipeline_enqueue_documents(content, file_paths=file_path.name)
             logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
         else:
