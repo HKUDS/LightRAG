@@ -83,7 +83,12 @@
         "loadFailed": "Failed to load documents\n{{error}}",
         "scanFailed": "Failed to scan documents\n{{error}}",
         "scanProgressFailed": "Failed to get scan progress\n{{error}}"
-      }
+      },
+      "fileNameLabel": "File Name",
+      "showButton": "Show",
+      "hideButton": "Hide",
+      "showFileNameTooltip": "Show file name",
+      "hideFileNameTooltip": "Hide file name"
     }
   },
   "graphPanel": {
