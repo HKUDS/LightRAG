@@ -316,7 +316,7 @@ OracleGraphStorage   Postgres
 
 ```
 NanoVectorDBStorage         NanoVector(default)
-MilvusVectorDBStorge        Milvus
+MilvusVectorDBStorage       Milvus
 ChromaVectorDBStorage       Chroma
 TiDBVectorDBStorage         TiDB
 PGVectorStorage             Postgres
