@@ -81,9 +81,14 @@
       },
       "errors": {
         "loadFailed": "فشل تحميل المستندات\n{{error}}",
-        "scanFailed": "فشل المسح الضوئي للمستندات\n{{error}}",
-        "scanProgressFailed": "فشل الحصول على تقدم المسح الضوئي\n{{error}}"
-      }
+        "scanFailed": "فشل مسح المستندات\n{{error}}",
+        "scanProgressFailed": "فشل الحصول على تقدم المسح\n{{error}}"
+      },
+      "fileNameLabel": "اسم الملف",
+      "showButton": "عرض",
+      "hideButton": "إخفاء",
+      "showFileNameTooltip": "عرض اسم الملف",
+      "hideFileNameTooltip": "إخفاء اسم الملف"
     }
   },
   "graphPanel": {

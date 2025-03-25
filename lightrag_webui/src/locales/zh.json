@@ -83,7 +83,12 @@
         "loadFailed": "加载文档失败\n{{error}}",
         "scanFailed": "扫描文档失败\n{{error}}",
         "scanProgressFailed": "获取扫描进度失败\n{{error}}"
-      }
+      },
+      "fileNameLabel": "文件名",
+      "showButton": "显示",
+      "hideButton": "隐藏",
+      "showFileNameTooltip": "显示文件名",
+      "hideFileNameTooltip": "隐藏文件名"
     }
   },
   "graphPanel": {
