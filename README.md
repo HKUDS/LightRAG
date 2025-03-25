@@ -28,8 +28,9 @@
 </tr>
 </table>
 
-
 <img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
+
+</div>
 
 ## 🎉 News
 
