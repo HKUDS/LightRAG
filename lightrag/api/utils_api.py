@@ -136,7 +136,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
 
         ### Authentication failed ####
 
-        # if password authentication is configured but not provided, ensure 401 error if auth_configured 
+        # if password authentication is configured but not provided, ensure 401 error if auth_configured
         if auth_configured and not token:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -149,7 +149,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                 status_code=HTTP_403_FORBIDDEN,
                 detail="Invalid API Key",
             )
-        
+
         # if api_key_configured but not provided
         if api_key_configured and not api_key_header_value:
             raise HTTPException(
