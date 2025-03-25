@@ -558,12 +558,15 @@ rag.insert_custom_kg(custom_kg)
 
 ## 插入
 
-#### 基本插入
+<details>
+  <summary> <b> 基本插入 </b></summary>
 
 ```python
 # 基本插入
 rag.insert("文本")
 ```
+
+</details>
 
 <details>
   <summary> <b> 批量插入 </b></summary>
@@ -761,7 +764,7 @@ rag = LightRAG(
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- 如有必要可以删除
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
@@ -783,6 +786,8 @@ rag = LightRAG(
   >
   > 您可以从源代码编译AGE来修复它。
   >
+
+</details>
 
 ## 删除
 
