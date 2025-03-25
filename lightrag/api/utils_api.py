@@ -38,9 +38,7 @@ for path in whitelist_paths:
             whitelist_patterns.append((path, False))  # (exact_path, is_prefix_match)
 
 # Global authentication configuration
-auth_username = os.getenv("AUTH_USERNAME")
-auth_password = os.getenv("AUTH_PASSWORD")
-auth_configured = bool(auth_username and auth_password)
+auth_configured = bool(auth_handler.accounts)
 
 
 class OllamaServerInfos:
