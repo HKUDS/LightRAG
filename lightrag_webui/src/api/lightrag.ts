@@ -124,6 +124,7 @@ export type DocStatusResponse = {
   chunks_count?: number
   error?: string
   metadata?: Record<string, any>
+  file_path: string
 }
 
 export type DocsStatusesResponse = {

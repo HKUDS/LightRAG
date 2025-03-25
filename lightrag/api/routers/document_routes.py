@@ -91,6 +91,7 @@ class DocStatusResponse(BaseModel):
     chunks_count: Optional[int] = None
     error: Optional[str] = None
     metadata: Optional[dict[str, Any]] = None
+    file_path: str
 
 
 class DocsStatusesResponse(BaseModel):
@@ -890,6 +891,7 @@ def create_document_routes(
                             chunks_count=doc_status.chunks_count,
                             error=doc_status.error,
                             metadata=doc_status.metadata,
+                            file_path=doc_status.file_path,
                         )
                     )
             return response
