@@ -368,9 +368,9 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                 )
                 return False
 
-        # Insert into the RAG queue
+        # Insert into the RAG queue with file path
         if content:
-            await rag.apipeline_enqueue_documents(content)
+            await rag.apipeline_enqueue_documents(content, file_paths=file_path.as_posix())
             logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
         else:
@@ -429,16 +429,17 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
+async def pipeline_index_texts(rag: LightRAG, texts: List[str], file_path: str = "api_upload"):
     """Index a list of texts
 
     Args:
         rag: LightRAG instance
         texts: The texts to index
+        file_path: The source of the texts, default to "api_upload"
     """
     if not texts:
         return
-    await rag.apipeline_enqueue_documents(texts)
+    await rag.apipeline_enqueue_documents(texts, file_paths=file_path)
     await rag.apipeline_process_enqueue_documents()
 
 
@@ -570,7 +571,7 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, [request.text])
+            background_tasks.add_task(pipeline_index_texts, rag, [request.text], "api_text_upload")
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
@@ -605,7 +606,7 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, request.texts)
+            background_tasks.add_task(pipeline_index_texts, rag, request.texts, "api_texts_upload")
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",

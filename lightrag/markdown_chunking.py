@@ -177,6 +177,7 @@ def chunking_by_markdown_hierarchical(
     parent_level: int = 1,  # 新增参数：指定父文档的级别，默认为1级标题
     preprocess_headings: bool = True,  # 新增参数：是否预处理标题层级
     preprocess_attachments: bool = True,  # 新增参数：是否预处理附件标题
+    file_path: str = "unknown_source",  # 新增参数：文件路径，用于引用
 ) -> List[Dict[str, Any]]:
     """
     Markdown 结构化分块函数，按照标题层次进行分块，并处理超长内容。
@@ -192,10 +193,11 @@ def chunking_by_markdown_hierarchical(
         parent_level: 指定父文档的级别，例如：1表示#级别为父文档，2表示##级别为父文档
         preprocess_headings: 是否预处理标题层级，确保文档只有一个一级标题
         preprocess_attachments: 是否预处理附件标题，确保附件标题为二级标题
+        file_path: 文件路径，用于引用和溯源
 
     Returns:
         分块结果列表，每个元素是一个字典，包含 "content", "tokens", "chunk_order_index", "structure_level", "heading_text", 
-        "chunk_id", "parent_id", "child_ids"
+        "chunk_id", "parent_id", "child_ids", "file_path"
     """
     # 设置日志记录器，替代print语句
     logger = logging.getLogger(__name__)
@@ -275,7 +277,8 @@ def chunking_by_markdown_hierarchical(
                 
                 base_chunk_meta = {
                     "structure_level": structure_level_name,
-                    "heading_text": cleaned_parent
+                    "heading_text": cleaned_parent,
+                    "file_path": file_path  # 添加文件路径
                 }
                 
                 token_size_chunks = chunking_by_token_size(
@@ -434,7 +437,8 @@ def chunking_by_markdown_hierarchical(
                         "heading_text": cleaned_heading,
                         "chunk_id": sub_chunk_id,
                         "parent_id": parent_id,
-                        "child_ids": []
+                        "child_ids": [],
+                        "file_path": file_path  # 添加文件路径
                     }
                     
                     # 如果是父级别，parent_id为None

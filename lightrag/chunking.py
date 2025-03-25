@@ -115,6 +115,7 @@ def chunking_by_hierarchical(
     tiktoken_model: str = "gpt-4o",
     heading_levels: int = None,  # 可以覆盖全局配置
     parent_level: int = None,  # 可以覆盖全局配置
+    file_path: str = "unknown_source",  # 新增参数：文件路径，用于引用
 ) -> List[Dict[str, Any]]:
     """
     层级分块函数的包装器，使用全局配置或调用时指定的参数。
@@ -128,6 +129,7 @@ def chunking_by_hierarchical(
         tiktoken_model: 用于 token 化的模型名称
         heading_levels: 要处理的标题级别数量，覆盖全局配置
         parent_level: 指定父文档的级别，覆盖全局配置
+        file_path: 文件路径，用于引用和溯源
     
     Returns:
         分块结果列表
@@ -152,7 +154,8 @@ def chunking_by_hierarchical(
         heading_levels=config["heading_levels"],
         parent_level=config["parent_level"],
         preprocess_headings=config["preprocess_headings"],
-        preprocess_attachments=config["preprocess_attachments"]
+        preprocess_attachments=config["preprocess_attachments"],
+        file_path=file_path  # 传递文件路径
     )
 
 def chunking_by_markdown(
@@ -228,11 +231,16 @@ def get_chunking_function(mode: ChunkingMode) -> Callable:
     elif mode == ChunkingMode.MARKDOWN:
         return chunking_by_markdown
     elif mode == ChunkingMode.CHARACTER:
-        return lambda content, **kwargs: chunking_by_token_size(content, split_by_character=kwargs.get('split_by_character', '\n'), **kwargs)
+        return lambda content, **kwargs: chunking_by_token_size(
+            content, 
+            split_by_character=kwargs.get('split_by_character', '\n'), 
+            **kwargs
+        )
     elif mode == ChunkingMode.HYBRID:
         # Hybrid mode first splits by markdown headers, then ensures token size limits
         return lambda content, **kwargs: chunking_by_markdown(content, **kwargs)
     elif mode == ChunkingMode.HIERARCHICAL:
+        # 确保file_path和其他参数正确传递
         return lambda content, **kwargs: chunking_by_hierarchical(content, **kwargs)
     else:
         raise ValueError(f"Unsupported chunking mode: {mode}") 
