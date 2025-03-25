@@ -901,7 +901,7 @@ def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any
     return import_class
 
 
-def get_content_summary(content: str, max_length: int = 100) -> str:
+def get_content_summary(content: str, max_length: int = 250) -> str:
     """Get summary of document content
 
     Args:
