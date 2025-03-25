@@ -19,7 +19,6 @@ from .shared_storage import (
     get_storage_lock,
     get_update_flag,
     set_all_update_flags,
-    is_multiprocess,
 )
 
 
@@ -73,9 +72,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         # Acquire lock to prevent concurrent read and write
         async with self._storage_lock:
             # Check if storage was updated by another process
-            if (is_multiprocess and self.storage_updated.value) or (
-                not is_multiprocess and self.storage_updated
-            ):
+            if self.storage_updated.value:
                 logger.info(
                     f"Process {os.getpid()} FAISS reloading {self.namespace} due to update by another process"
                 )
@@ -83,10 +80,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._index = faiss.IndexFlatIP(self._dim)
                 self._id_to_meta = {}
                 self._load_faiss_index()
-                if is_multiprocess:
-                    self.storage_updated.value = False
-                else:
-                    self.storage_updated = False
+                self.storage_updated.value = False
         return self._index
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
@@ -345,7 +339,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def index_done_callback(self) -> None:
         async with self._storage_lock:
             # Check if storage was updated by another process
-            if is_multiprocess and self.storage_updated.value:
+            if self.storage_updated.value:
                 # Storage was updated by another process, reload data instead of saving
                 logger.warning(
                     f"Storage for FAISS {self.namespace} was updated by another process, reloading..."
@@ -365,10 +359,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace)
                 # Reset own update flag to avoid self-reloading
-                if is_multiprocess:
-                    self.storage_updated.value = False
-                else:
-                    self.storage_updated = False
+                self.storage_updated.value = False
             except Exception as e:
                 logger.error(f"Error saving FAISS index for {self.namespace}: {e}")
                 return False  # Return error
