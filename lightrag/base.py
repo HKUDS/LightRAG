@@ -84,7 +84,7 @@ class QueryParam:
 
     ids: list[str] | None = None
     """List of ids to filter the results."""
-    
+
     model_func: Callable[..., object] | None = None
     """Optional override for the LLM model function to use for this specific query.
     If provided, this will be used instead of the global model function.

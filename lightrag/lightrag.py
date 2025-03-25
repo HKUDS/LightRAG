@@ -1338,7 +1338,7 @@ class LightRAG:
         """
         # If a custom model is provided in param, temporarily update global config
         global_config = asdict(self)
-        
+
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query(
                 query.strip(),

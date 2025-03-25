@@ -9,6 +9,7 @@ WORKING_DIR = "./lightrag_demo"
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -20,6 +21,7 @@ async def initialize_rag():
     await initialize_pipeline_status()
 
     return rag
+
 
 def main():
     # Initialize RAG instance
@@ -33,8 +35,7 @@ def main():
     print("--- NAIVE mode ---")
     print(
         rag.query(
-            "What are the main themes in this story?", 
-            param=QueryParam(mode="naive")
+            "What are the main themes in this story?", param=QueryParam(mode="naive")
         )
     )
 
@@ -42,8 +43,7 @@ def main():
     print("\n--- LOCAL mode ---")
     print(
         rag.query(
-            "What are the main themes in this story?", 
-            param=QueryParam(mode="local")
+            "What are the main themes in this story?", param=QueryParam(mode="local")
         )
     )
 
@@ -51,8 +51,7 @@ def main():
     print("\n--- GLOBAL mode ---")
     print(
         rag.query(
-            "What are the main themes in this story?", 
-            param=QueryParam(mode="global")
+            "What are the main themes in this story?", param=QueryParam(mode="global")
         )
     )
 
@@ -60,8 +59,7 @@ def main():
     print("\n--- HYBRID mode ---")
     print(
         rag.query(
-            "What are the main themes in this story?", 
-            param=QueryParam(mode="hybrid")
+            "What are the main themes in this story?", param=QueryParam(mode="hybrid")
         )
     )
 
@@ -69,8 +67,7 @@ def main():
     print("\n--- MIX mode ---")
     print(
         rag.query(
-            "What are the main themes in this story?", 
-            param=QueryParam(mode="mix")
+            "What are the main themes in this story?", param=QueryParam(mode="mix")
         )
     )
 
@@ -81,10 +78,11 @@ def main():
             "How does the character development reflect Victorian-era attitudes?",
             param=QueryParam(
                 mode="global",
-                model_func=gpt_4o_complete  # Override default model with more capable one
-            )
+                model_func=gpt_4o_complete,  # Override default model with more capable one
+            ),
         )
     )
 
+
 if __name__ == "__main__":
-    main() 
+    main()
