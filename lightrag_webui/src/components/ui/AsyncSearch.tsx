@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { Loader2 } from 'lucide-react'
 import { useDebounce } from '@/hooks/useDebounce'
 
@@ -81,100 +81,97 @@ export function AsyncSearch<T>({
   const [options, setOptions] = useState<T[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [selectedValue, setSelectedValue] = useState(value)
-  const [focusedValue, setFocusedValue] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
   const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : 150)
-  const [originalOptions, setOriginalOptions] = useState<T[]>([])
+  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     setMounted(true)
-    setSelectedValue(value)
-  }, [value])
+  }, [])
 
-  // Effect for initial fetch
+  // Handle clicks outside of the component
   useEffect(() => {
-    const initializeOptions = async () => {
-      try {
-        setLoading(true)
-        setError(null)
-        // If we have a value, use it for the initial search
-        const data = value !== null ? await fetcher(value) : []
-        setOriginalOptions(data)
-        setOptions(data)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch options')
-      } finally {
-        setLoading(false)
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        containerRef.current &&
+        !containerRef.current.contains(event.target as Node) &&
+        open
+      ) {
+        setOpen(false)
       }
     }
 
-    if (!mounted) {
-      initializeOptions()
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
     }
-  }, [mounted, fetcher, value])
+  }, [open])
 
+  const fetchOptions = useCallback(async (query: string) => {
+    try {
+      setLoading(true)
+      setError(null)
+      const data = await fetcher(query)
+      setOptions(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch options')
+    } finally {
+      setLoading(false)
+    }
+  }, [fetcher])
+
+  // Load options when search term changes
   useEffect(() => {
-    const fetchOptions = async () => {
-      try {
-        setLoading(true)
-        setError(null)
-        const data = await fetcher(debouncedSearchTerm)
-        setOriginalOptions(data)
-        setOptions(data)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to fetch options')
-      } finally {
-        setLoading(false)
-      }
-    }
+    if (!mounted) return
 
-    if (!mounted) {
-      fetchOptions()
-    } else if (!preload) {
-      fetchOptions()
-    } else if (preload) {
+    if (preload) {
       if (debouncedSearchTerm) {
-        setOptions(
-          originalOptions.filter((option) =>
+        setOptions((prev) =>
+          prev.filter((option) =>
             filterFn ? filterFn(option, debouncedSearchTerm) : true
           )
         )
-      } else {
-        setOptions(originalOptions)
       }
+    } else {
+      fetchOptions(debouncedSearchTerm)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fetcher, debouncedSearchTerm, mounted, preload, filterFn])
+  }, [mounted, debouncedSearchTerm, preload, filterFn, fetchOptions])
 
-  const handleSelect = useCallback(
-    (currentValue: string) => {
-      if (currentValue !== selectedValue) {
-        setSelectedValue(currentValue)
-        onChange(currentValue)
-      }
+  // Load initial value
+  useEffect(() => {
+    if (!mounted || !value) return
+    fetchOptions(value)
+  }, [mounted, value, fetchOptions])
+
+  const handleSelect = useCallback((currentValue: string) => {
+    onChange(currentValue)
+    requestAnimationFrame(() => {
+      // Blur the input to ensure focus event triggers on next click
+      const input = document.activeElement as HTMLElement
+      input?.blur()
+      // Close the dropdown
       setOpen(false)
-    },
-    [selectedValue, setSelectedValue, setOpen, onChange]
-  )
+    })
+  }, [onChange])
 
-  const handleFocus = useCallback(
-    (currentValue: string) => {
-      if (currentValue !== focusedValue) {
-        setFocusedValue(currentValue)
-        onFocus(currentValue)
-      }
-    },
-    [focusedValue, setFocusedValue, onFocus]
-  )
+  const handleFocus = useCallback(() => {
+    setOpen(true)
+    // Use current search term to fetch options
+    fetchOptions(searchTerm)
+  }, [searchTerm, fetchOptions])
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    const target = e.target as HTMLElement
+    if (target.closest('.cmd-item')) {
+      e.preventDefault()
+    }
+  }, [])
 
   return (
     <div
+      ref={containerRef}
       className={cn(disabled && 'cursor-not-allowed opacity-50', className)}
-      onFocus={() => {
-        setOpen(true)
-      }}
-      onBlur={() => setOpen(false)}
+      onMouseDown={handleMouseDown}
     >
       <Command shouldFilter={false} className="bg-transparent">
         <div>
@@ -182,12 +179,13 @@ export function AsyncSearch<T>({
             placeholder={placeholder}
             value={searchTerm}
             className="max-h-8"
+            onFocus={handleFocus}
             onValueChange={(value) => {
               setSearchTerm(value)
-              if (value && !open) setOpen(true)
+              if (!open) setOpen(true)
             }}
           />
-          {loading && options.length > 0 && (
+          {loading && (
             <div className="absolute top-1/2 right-2 flex -translate-y-1/2 transform items-center">
               <Loader2 className="h-4 w-4 animate-spin" />
             </div>
@@ -209,8 +207,8 @@ export function AsyncSearch<T>({
                   key={getOptionValue(option) + `${idx}`}
                   value={getOptionValue(option)}
                   onSelect={handleSelect}
-                  onMouseEnter={() => handleFocus(getOptionValue(option))}
-                  className="truncate"
+                  onMouseMove={() => onFocus(getOptionValue(option))}
+                  className="truncate cmd-item"
                 >
                   {renderOption(option)}
                 </CommandItem>

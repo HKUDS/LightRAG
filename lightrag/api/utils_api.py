@@ -4,21 +4,41 @@ Utility functions for the LightRAG API.
 
 import os
 import argparse
-from typing import Optional
+from typing import Optional, List, Tuple
 import sys
 import logging
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
-from fastapi import HTTPException, Security, Depends, Request, status
+from fastapi import HTTPException, Security, Request, status
 from dotenv import load_dotenv
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from .auth import auth_handler
+from ..prompt import PROMPTS
 
 # Load environment variables
 load_dotenv()
 
 global_args = {"main_args": None}
+
+# Get whitelist paths from environment variable, only once during initialization
+default_whitelist = "/health,/api/*"
+whitelist_paths = os.getenv("WHITELIST_PATHS", default_whitelist).split(",")
+
+# Pre-compile path matching patterns
+whitelist_patterns: List[Tuple[str, bool]] = []
+for path in whitelist_paths:
+    path = path.strip()
+    if path:
+        # If path ends with /*, match all paths with that prefix
+        if path.endswith("/*"):
+            prefix = path[:-2]
+            whitelist_patterns.append((prefix, True))  # (prefix, is_prefix_match)
+        else:
+            whitelist_patterns.append((path, False))  # (exact_path, is_prefix_match)
+
+# Global authentication configuration
+auth_configured = bool(auth_handler.accounts)
 
 
 class OllamaServerInfos:
@@ -34,47 +54,114 @@ class OllamaServerInfos:
 ollama_server_infos = OllamaServerInfos()
 
 
-def get_auth_dependency():
-    # Set default whitelist paths
-    whitelist = os.getenv("WHITELIST_PATHS", "/login,/health").split(",")
+def get_combined_auth_dependency(api_key: Optional[str] = None):
+    """
+    Create a combined authentication dependency that implements authentication logic
+    based on API key, OAuth2 token, and whitelist paths.
 
-    async def dependency(
+    Args:
+        api_key (Optional[str]): API key for validation
+
+    Returns:
+        Callable: A dependency function that implements the authentication logic
+    """
+    # Use global whitelist_patterns and auth_configured variables
+    # whitelist_patterns and auth_configured are already initialized at module level
+
+    # Only calculate api_key_configured as it depends on the function parameter
+    api_key_configured = bool(api_key)
+
+    # Create security dependencies with proper descriptions for Swagger UI
+    oauth2_scheme = OAuth2PasswordBearer(
+        tokenUrl="login", auto_error=False, description="OAuth2 Password Authentication"
+    )
+
+    # If API key is configured, create an API key header security
+    api_key_header = None
+    if api_key_configured:
+        api_key_header = APIKeyHeader(
+            name="X-API-Key", auto_error=False, description="API Key Authentication"
+        )
+
+    async def combined_dependency(
         request: Request,
-        token: str = Depends(OAuth2PasswordBearer(tokenUrl="login", auto_error=False)),
+        token: str = Security(oauth2_scheme),
+        api_key_header_value: Optional[str] = None
+        if api_key_header is None
+        else Security(api_key_header),
     ):
-        # Check if authentication is configured
-        auth_configured = bool(auth_handler.accounts)
+        # 1. Check if path is in whitelist
+        path = request.url.path
+        for pattern, is_prefix in whitelist_patterns:
+            if (is_prefix and path.startswith(pattern)) or (
+                not is_prefix and path == pattern
+            ):
+                return  # Whitelist path, allow access
 
-        # If authentication is not configured, skip all validation
-        if not auth_configured:
-            return
+        # 2. Validate token first if provided in the request (Ensure 401 error if token is invalid)
+        if token:
+            try:
+                token_info = auth_handler.validate_token(token)
+                # Accept guest token if no auth is configured
+                if not auth_configured and token_info.get("role") == "guest":
+                    return
+                # Accept non-guest token if auth is configured
+                if auth_configured and token_info.get("role") != "guest":
+                    return
 
-        # For configured auth, allow whitelist paths without token
-        if request.url.path in whitelist:
-            return
-
-        # Require token for all other paths when auth is configured
-        if not token:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Token required"
-            )
-
-        try:
-            token_info = auth_handler.validate_token(token)
-            # Reject guest tokens when authentication is configured
-            if token_info.get("role") == "guest":
+                # Token validation failed, immediately return 401 error
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Authentication required. Guest access not allowed when authentication is configured.",
+                    detail="Invalid token. Please login again.",
                 )
-        except Exception:
+            except HTTPException as e:
+                # If already a 401 error, re-raise it
+                if e.status_code == status.HTTP_401_UNAUTHORIZED:
+                    raise
+                # For other exceptions, continue processing
+
+        # 3. Acept all request if no API protection needed
+        if not auth_configured and not api_key_configured:
+            return
+
+        # 4. Validate API key if provided and API-Key authentication is configured
+        if (
+            api_key_configured
+            and api_key_header_value
+            and api_key_header_value == api_key
+        ):
+            return  # API key validation successful
+
+        ### Authentication failed ####
+
+        # if password authentication is configured but not provided, ensure 401 error if auth_configured
+        if auth_configured and not token:
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No credentials provided. Please login.",
             )
 
-        return
+        # if api key is provided but validation failed
+        if api_key_header_value:
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN,
+                detail="Invalid API Key",
+            )
 
-    return dependency
+        # if api_key_configured but not provided
+        if api_key_configured and not api_key_header_value:
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN,
+                detail="API Key required",
+            )
+
+        # Otherwise: refuse access and return 403 error
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail="API Key required or login authentication required.",
+        )
+
+    return combined_dependency
 
 
 def get_api_key_dependency(api_key: Optional[str]):
@@ -88,19 +175,37 @@ def get_api_key_dependency(api_key: Optional[str]):
     Returns:
         Callable: A dependency function that validates the API key.
     """
-    if not api_key:
+    # Use global whitelist_patterns and auth_configured variables
+    # whitelist_patterns and auth_configured are already initialized at module level
+
+    # Only calculate api_key_configured as it depends on the function parameter
+    api_key_configured = bool(api_key)
+
+    if not api_key_configured:
         # If no API key is configured, return a dummy dependency that always succeeds
-        async def no_auth():
+        async def no_auth(request: Request = None, **kwargs):
             return None
 
         return no_auth
 
-    # If API key is configured, use proper authentication
+    # If API key is configured, use proper authentication with Security for Swagger UI
     api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
     async def api_key_auth(
-        api_key_header_value: Optional[str] = Security(api_key_header),
+        request: Request,
+        api_key_header_value: Optional[str] = Security(
+            api_key_header, description="API Key for authentication"
+        ),
     ):
+        # Check if request path is in whitelist
+        path = request.url.path
+        for pattern, is_prefix in whitelist_patterns:
+            if (is_prefix and path.startswith(pattern)) or (
+                not is_prefix and path == pattern
+            ):
+                return  # Whitelist path, allow access
+
+        # Non-whitelist path, validate API key
         if not api_key_header_value:
             raise HTTPException(
                 status_code=HTTP_403_FORBIDDEN, detail="API Key required"
@@ -364,7 +469,7 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     )
 
     # Get MAX_PARALLEL_INSERT from environment
-    global_args["max_parallel_insert"] = get_env_value("MAX_PARALLEL_INSERT", 2, int)
+    args.max_parallel_insert = get_env_value("MAX_PARALLEL_INSERT", 2, int)
 
     # Handle openai-ollama special case
     if args.llm_binding == "openai-ollama":
@@ -394,6 +499,9 @@ def parse_args(is_uvicorn_mode: bool = False) -> argparse.Namespace:
     args.enable_llm_cache_for_extract = get_env_value(
         "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
     )
+
+    # Inject LLM temperature configuration
+    args.temperature = get_env_value("TEMPERATURE", 0.5, float)
 
     # Select Document loading tool (DOCLING, DEFAULT)
     args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
@@ -462,6 +570,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.llm_binding_host}")
     ASCIIColors.white("    ├─ Model: ", end="")
     ASCIIColors.yellow(f"{args.llm_model}")
+    ASCIIColors.white("    ├─ Temperature: ", end="")
+    ASCIIColors.yellow(f"{args.temperature}")
+    ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
+    ASCIIColors.yellow(f"{args.max_async}")
+    ASCIIColors.white("    ├─ Max Tokens: ", end="")
+    ASCIIColors.yellow(f"{args.max_tokens}")
     ASCIIColors.white("    └─ Timeout: ", end="")
     ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
 
@@ -477,13 +591,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.embedding_dim}")
 
     # RAG Configuration
+    summary_language = os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"])
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
-    ASCIIColors.white("    ├─ Max Async for LLM: ", end="")
-    ASCIIColors.yellow(f"{args.max_async}")
+    ASCIIColors.white("    ├─ Summary Language: ", end="")
+    ASCIIColors.yellow(f"{summary_language}")
     ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
-    ASCIIColors.yellow(f"{global_args['max_parallel_insert']}")
-    ASCIIColors.white("    ├─ Max Tokens: ", end="")
-    ASCIIColors.yellow(f"{args.max_tokens}")
+    ASCIIColors.yellow(f"{args.max_parallel_insert}")
     ASCIIColors.white("    ├─ Max Embed Tokens: ", end="")
     ASCIIColors.yellow(f"{args.max_embed_tokens}")
     ASCIIColors.white("    ├─ Chunk Size: ", end="")
