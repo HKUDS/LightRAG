@@ -39,8 +39,8 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
   }
 
   // If filename is longer than maxLength, truncate it and add ellipsis
-  return fileName.length > maxLength 
-    ? fileName.slice(0, maxLength) + '...' 
+  return fileName.length > maxLength
+    ? fileName.slice(0, maxLength) + '...'
     : fileName;
 };
 
@@ -140,7 +140,7 @@ export default function DocumentManager() {
                   onClick={() => setShowFileName(!showFileName)}
                   className="border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
                 >
-                  {showFileName 
+                  {showFileName
                     ? t('documentPanel.documentManager.hideButton')
                     : t('documentPanel.documentManager.showButton')
                   }
