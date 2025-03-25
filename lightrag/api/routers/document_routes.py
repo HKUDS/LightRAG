@@ -17,15 +17,13 @@ from pydantic import BaseModel, Field, field_validator
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.api.utils_api import (
-    get_api_key_dependency,
+    get_combined_auth_dependency,
     global_args,
-    get_auth_dependency,
 )
 
 router = APIRouter(
     prefix="/documents",
     tags=["documents"],
-    dependencies=[Depends(get_auth_dependency())],
 )
 
 # Temporary file prefix
@@ -113,6 +111,7 @@ class PipelineStatusResponse(BaseModel):
         request_pending: Flag for pending request for processing
         latest_message: Latest message from pipeline processing
         history_messages: List of history messages
+        update_status: Status of update flags for all namespaces
     """
 
     autoscanned: bool = False
@@ -125,6 +124,7 @@ class PipelineStatusResponse(BaseModel):
     request_pending: bool = False
     latest_message: str = ""
     history_messages: Optional[List[str]] = None
+    update_status: Optional[dict] = None
 
     class Config:
         extra = "allow"  # Allow additional fields from the pipeline status
@@ -475,8 +475,8 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         if not new_files:
             return
 
-        # Get MAX_PARALLEL_INSERT from global_args
-        max_parallel = global_args["max_parallel_insert"]
+        # Get MAX_PARALLEL_INSERT from global_args["main_args"]
+        max_parallel = global_args["main_args"].max_parallel_insert
         # Calculate batch size as 2 * MAX_PARALLEL_INSERT
         batch_size = 2 * max_parallel
 
@@ -505,9 +505,10 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
 def create_document_routes(
     rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
-    optional_api_key = get_api_key_dependency(api_key)
+    # Create combined auth dependency for document routes
+    combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.post("/scan", dependencies=[Depends(optional_api_key)])
+    @router.post("/scan", dependencies=[Depends(combined_auth)])
     async def scan_for_new_documents(background_tasks: BackgroundTasks):
         """
         Trigger the scanning process for new documents.
@@ -523,7 +524,7 @@ def create_document_routes(
         background_tasks.add_task(run_scanning_process, rag, doc_manager)
         return {"status": "scanning_started"}
 
-    @router.post("/upload", dependencies=[Depends(optional_api_key)])
+    @router.post("/upload", dependencies=[Depends(combined_auth)])
     async def upload_to_input_dir(
         background_tasks: BackgroundTasks, file: UploadFile = File(...)
     ):
@@ -568,7 +569,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/text", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
+        "/text", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def insert_text(
         request: InsertTextRequest, background_tasks: BackgroundTasks
@@ -603,7 +604,7 @@ def create_document_routes(
     @router.post(
         "/texts",
         response_model=InsertResponse,
-        dependencies=[Depends(optional_api_key)],
+        dependencies=[Depends(combined_auth)],
     )
     async def insert_texts(
         request: InsertTextsRequest, background_tasks: BackgroundTasks
@@ -636,7 +637,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/file", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
+        "/file", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def insert_file(
         background_tasks: BackgroundTasks, file: UploadFile = File(...)
@@ -681,7 +682,7 @@ def create_document_routes(
     @router.post(
         "/file_batch",
         response_model=InsertResponse,
-        dependencies=[Depends(optional_api_key)],
+        dependencies=[Depends(combined_auth)],
     )
     async def insert_batch(
         background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)
@@ -742,7 +743,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete(
-        "", response_model=InsertResponse, dependencies=[Depends(optional_api_key)]
+        "", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
     async def clear_documents():
         """
@@ -771,7 +772,7 @@ def create_document_routes(
 
     @router.get(
         "/pipeline_status",
-        dependencies=[Depends(optional_api_key)],
+        dependencies=[Depends(combined_auth)],
         response_model=PipelineStatusResponse,
     )
     async def get_pipeline_status() -> PipelineStatusResponse:
@@ -798,12 +799,33 @@ def create_document_routes(
             HTTPException: If an error occurs while retrieving pipeline status (500)
         """
         try:
-            from lightrag.kg.shared_storage import get_namespace_data
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_all_update_flags_status,
+            )
 
             pipeline_status = await get_namespace_data("pipeline_status")
 
+            # Get update flags status for all namespaces
+            update_status = await get_all_update_flags_status()
+
+            # Convert MutableBoolean objects to regular boolean values
+            processed_update_status = {}
+            for namespace, flags in update_status.items():
+                processed_flags = []
+                for flag in flags:
+                    # Handle both multiprocess and single process cases
+                    if hasattr(flag, "value"):
+                        processed_flags.append(bool(flag.value))
+                    else:
+                        processed_flags.append(bool(flag))
+                processed_update_status[namespace] = processed_flags
+
             # Convert to regular dict if it's a Manager.dict
             status_dict = dict(pipeline_status)
+
+            # Add processed update_status to the status dictionary
+            status_dict["update_status"] = processed_update_status
 
             # Convert history_messages to a regular list if it's a Manager.list
             if "history_messages" in status_dict:
@@ -819,7 +841,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.get("", dependencies=[Depends(optional_api_key)])
+    @router.get("", dependencies=[Depends(combined_auth)])
     async def documents() -> DocsStatusesResponse:
         """
         Get the status of all documents in the system.
