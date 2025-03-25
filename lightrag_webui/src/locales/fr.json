@@ -259,5 +259,11 @@
   },
   "apiSite": {
     "loading": "Chargement de la documentation de l'API..."
+  },
+  "apiKeyAlert": {
+    "title": "Clé API requise",
+    "description": "Veuillez entrer votre clé API pour accéder au service",
+    "placeholder": "Entrez votre clé API",
+    "save": "Sauvegarder"
   }
 }

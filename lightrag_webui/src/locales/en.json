@@ -274,5 +274,11 @@
   },
   "apiSite": {
     "loading": "Loading API Documentation..."
+  },
+  "apiKeyAlert": {
+    "title": "API Key is required",
+    "description": "Please enter your API key to access the service",
+    "placeholder": "Enter your API key",
+    "save": "Save"
   }
 }

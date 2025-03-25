@@ -8,12 +8,12 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
-from ..utils_api import get_api_key_dependency, get_auth_dependency
+from ..utils_api import get_combined_auth_dependency
 from pydantic import BaseModel, Field, field_validator
 
 from ascii_colors import trace_exception
 
-router = APIRouter(tags=["query"], dependencies=[Depends(get_auth_dependency())])
+router = APIRouter(tags=["query"])
 
 
 class QueryRequest(BaseModel):
@@ -139,10 +139,10 @@ class QueryResponse(BaseModel):
 
 
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
-    optional_api_key = get_api_key_dependency(api_key)
+    combined_auth = get_combined_auth_dependency(api_key)
 
     @router.post(
-        "/query", response_model=QueryResponse, dependencies=[Depends(optional_api_key)]
+        "/query", response_model=QueryResponse, dependencies=[Depends(combined_auth)]
     )
     async def query_text(request: QueryRequest):
         """
@@ -176,7 +176,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.post("/query/stream", dependencies=[Depends(optional_api_key)])
+    @router.post("/query/stream", dependencies=[Depends(combined_auth)])
     async def query_text_stream(request: QueryRequest):
         """
         This endpoint performs a retrieval-augmented generation (RAG) query and streams the response.
