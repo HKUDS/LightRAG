@@ -169,6 +169,10 @@ class QueryParam:
 
 > top_k的默认值可以通过环境变量TOP_K更改。
 
+### LLM and Embedding注入
+
+LightRAG 需要利用LLM和Embeding模型来完成文档索引和知识库查询工作。在初始化LightRAG的时候需要把阶段，需要把LLM和Embedding的操作函数注入到对象中：
+
 <details>
 <summary> <b>使用类OpenAI的API</b> </summary>
 
@@ -245,9 +249,6 @@ rag = LightRAG(
 
 <details>
 <summary> <b>使用Ollama模型</b> </summary>
-
-### 概述
-
 如果您想使用Ollama模型，您需要拉取计划使用的模型和嵌入模型，例如`nomic-embed-text`。
 
 然后您只需要按如下方式设置LightRAG：
@@ -270,11 +271,11 @@ rag = LightRAG(
 )
 ```
 
-### 增加上下文大小
+* **增加上下文大小**
 
 为了使LightRAG正常工作，上下文应至少为32k令牌。默认情况下，Ollama模型的上下文大小为8k。您可以通过以下两种方式之一实现这一点：
 
-#### 在Modelfile中增加`num_ctx`参数。
+* **在Modelfile中增加`num_ctx`参数**
 
 1. 拉取模型：
 
@@ -300,7 +301,7 @@ PARAMETER num_ctx 32768
 ollama create -f Modelfile qwen2m
 ```
 
-#### 通过Ollama API设置`num_ctx`。
+* **通过Ollama API设置`num_ctx`**
 
 您可以使用`llm_model_kwargs`参数配置ollama：
 
@@ -322,7 +323,7 @@ rag = LightRAG(
 )
 ```
 
-#### 低RAM GPU
+* **低RAM GPU**
 
 为了在低RAM GPU上运行此实验，您应该选择小型模型并调整上下文窗口（增加上下文会增加内存消耗）。例如，在6Gb RAM的改装挖矿GPU上运行这个ollama示例需要将上下文大小设置为26k，同时使用`gemma2:2b`。它能够在`book.txt`中找到197个实体和19个关系。
 
@@ -330,13 +331,12 @@ rag = LightRAG(
 <details>
 <summary> <b>LlamaIndex</b> </summary>
 
-LightRAG支持与LlamaIndex集成。
+LightRAG支持与LlamaIndex集成 (`llm/llama_index_impl.py`):
 
-1. **LlamaIndex** (`llm/llama_index_impl.py`):
-   - 通过LlamaIndex与OpenAI和其他提供商集成
-   - 详细设置和示例请参见[LlamaIndex文档](lightrag/llm/Readme.md)
+- 通过LlamaIndex与OpenAI和其他提供商集成
+- 详细设置和示例请参见[LlamaIndex文档](lightrag/llm/Readme.md)
 
-### 使用示例
+**使用示例：**
 
 ```python
 # 使用LlamaIndex直接访问OpenAI
@@ -398,15 +398,15 @@ if __name__ == "__main__":
     main()
 ```
 
-#### 详细文档和示例，请参见：
+**详细文档和示例，请参见：**
 
 - [LlamaIndex文档](lightrag/llm/Readme.md)
 - [直接OpenAI示例](examples/lightrag_llamaindex_direct_demo.py)
 - [LiteLLM代理示例](examples/lightrag_llamaindex_litellm_demo.py)
 
 </details>
-<details>
-<summary> <b>对话历史支持</b> </summary>
+
+### 对话历史
 
 LightRAG现在通过对话历史功能支持多轮对话。以下是使用方法：
 
@@ -432,10 +432,7 @@ response = rag.query(
 )
 ```
 
-</details>
-
-<details>
-<summary> <b>自定义提示支持</b> </summary>
+### 自定义提示词
 
 LightRAG现在支持自定义提示，以便对系统行为进行精细控制。以下是使用方法：
 
@@ -473,14 +470,11 @@ response_custom = rag.query(
 print(response_custom)
 ```
 
-</details>
-
-<details>
-<summary> <b>独立关键词提取</b> </summary>
+### 关键词提取
 
 我们引入了新函数`query_with_separate_keyword_extraction`来增强关键词提取功能。该函数将关键词提取过程与用户提示分开，专注于查询以提高提取关键词的相关性。
 
-##### 工作原理
+* 工作原理
 
 该函数将输入分为两部分：
 
@@ -489,7 +483,7 @@ print(response_custom)
 
 然后仅对`用户查询`执行关键词提取。这种分离确保提取过程是集中和相关的，不受`提示`中任何额外语言的影响。它还允许`提示`纯粹用于响应格式化，保持用户原始问题的意图和清晰度。
 
-##### 使用示例
+* 使用示例
 
 这个`示例`展示了如何为教育内容定制函数，专注于为高年级学生提供详细解释。
 
@@ -501,10 +495,7 @@ rag.query_with_separate_keyword_extraction(
 )
 ```
 
-</details>
-
-<details>
-<summary> <b>插入自定义KG</b> </summary>
+### 插入自定义知识
 
 ```python
 custom_kg = {
@@ -565,16 +556,17 @@ custom_kg = {
 rag.insert_custom_kg(custom_kg)
 ```
 
-</details>
-
 ## 插入
 
-#### 基本插入
+<details>
+  <summary> <b> 基本插入 </b></summary>
 
 ```python
 # 基本插入
 rag.insert("文本")
 ```
+
+</details>
 
 <details>
   <summary> <b> 批量插入 </b></summary>
@@ -795,6 +787,8 @@ rag = LightRAG(
   > 您可以从源代码编译AGE来修复它。
   >
 
+</details>
+
 ## 删除
 
 ```python
@@ -877,13 +871,13 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 
 ## 数据导出功能
 
-## 概述
+### 概述
 
 LightRAG允许您以各种格式导出知识图谱数据，用于分析、共享和备份目的。系统支持导出实体、关系和关系数据。
 
-## 导出功能
+### 导出功能
 
-### 基本用法
+#### 基本用法
 
 ```python
 # 基本CSV导出（默认格式）
@@ -893,7 +887,7 @@ rag.export_data("knowledge_graph.csv")
 rag.export_data("output.xlsx", file_format="excel")
 ```
 
-### 支持的不同文件格式
+#### 支持的不同文件格式
 
 ```python
 # 以CSV格式导出数据
@@ -909,7 +903,7 @@ rag.export_data("graph_data.md", file_format="md")
 rag.export_data("graph_data.txt", file_format="txt")
 ```
 
-## 附加选项
+#### 附加选项
 
 在导出中包含向量嵌入（可选）：
 
@@ -917,7 +911,7 @@ rag.export_data("graph_data.txt", file_format="txt")
 rag.export_data("complete_data.csv", include_vector_data=True)
 ```
 
-## 导出数据包括
+### 导出数据包括
 
 所有导出包括：
 
@@ -1079,13 +1073,11 @@ API包括全面的错误处理：
 
 </details>
 
-## API
+## LightRAG API
 
-LightRag可以安装API支持，以提供Fast api接口来执行数据上传和索引/Rag操作/重新扫描输入文件夹等。
+LightRAG服务器旨在提供Web UI和API支持。**有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。**
 
-[LightRag API](lightrag/api/README.md)
-
-## 图形可视化
+## 知识图谱可视化
 
 LightRAG服务器提供全面的知识图谱可视化功能。它支持各种重力布局、节点查询、子图过滤等。**有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。**
 
