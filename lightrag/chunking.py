@@ -146,16 +146,10 @@ def chunking_by_hierarchical(
     # 调用实际的分块函数
     return chunking_by_markdown_hierarchical(
         content=content,
-        split_by_character=split_by_character,
-        split_by_character_only=split_by_character_only,
         overlap_token_size=overlap_token_size,
         max_token_size=max_token_size,
         tiktoken_model=tiktoken_model,
-        heading_levels=config["heading_levels"],
-        parent_level=config["parent_level"],
-        preprocess_headings=config["preprocess_headings"],
-        preprocess_attachments=config["preprocess_attachments"],
-        file_path=file_path  # 传递文件路径
+        file_path=file_path
     )
 
 def chunking_by_markdown(

@@ -174,4 +174,19 @@ class PromptFactory:
             json_str: JSON格式的配置字符串
         """
         config = json.loads(json_str)
-        self.import_domain_config(domain, config) 
+        self.import_domain_config(domain, config)
+    
+    def register_relationship_types(self, domain_name: str, relationships: List[Dict[str, str]]) -> None:
+        """
+        为特定领域注册关系类型
+        
+        Args:
+            domain_name: 领域名称
+            relationships: 关系类型列表，每个类型包含name、code和description
+        """
+        if domain_name not in self.domain_configs:
+            self.domain_configs[domain_name] = {}
+        
+        # 提取关系类型名称并设置到配置中
+        relationship_names = [r["name"] for r in relationships]
+        self.domain_configs[domain_name]["relationship_types"] = ", ".join(relationship_names) 

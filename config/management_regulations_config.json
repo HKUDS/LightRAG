@@ -1,0 +1,51 @@
+{
+    "domain": "management_regulations",
+    "config": {
+        "language": "中文",
+        "entity_types": ["组织", "人员", "物品/设施", "制度/流程", "文档"],
+        "tuple_delimiter": "<|>",
+        "record_delimiter": "##",
+        "completion_delimiter": "<|COMPLETE|>"
+    },
+    "chunking": {
+        "heading_levels": 3,
+        "parent_level": 2,
+        "preprocess_attachments": false
+    },
+    "relationships": {
+        "types": [
+            {
+                "name": "隶属关系",
+                "code": "BelongsTo",
+                "description": "实体隶属于另一实体"
+            },
+            {
+                "name": "职责关系",
+                "code": "ResponsibleFor",
+                "description": "某人员或组织负责某任务或对象"
+            },
+            {
+                "name": "管理关系",
+                "code": "Manages",
+                "description": "某组织或人员管理某物品/设施"
+            },
+            {
+                "name": "包含关系",
+                "code": "Contains",
+                "description": "某实体包含另一实体"
+            },
+            {
+                "name": "发布关系", 
+                "code": "Issues",
+                "description": "某组织发布某文档或制度"
+            }
+        ]
+    },
+    "extraction_prompt": {
+        "instructions": "从以下企业内部管理规定文档中提取实体和实体关系，以构建知识图谱增强的知识库。",
+        "entity_extraction_guidelines": "识别并提取以下类型的实体：组织（公司、部门、单位、车站等）、人员（具体角色或联系人）、物品/设施（管理或服务相关的物体或设备）、制度/流程（规章制度、职责、流程或标准）、文档（具体的文件或通知）。为每个实体分配唯一标识符，并记录其上下文描述。",
+        "relationship_extraction_guidelines": "识别并提取以下类型的实体关系：隶属关系、职责关系、管理关系、包含关系、发布关系。为每条关系提供证据支持。",
+        "output_format": "实体列表：{实体ID, 实体名称, 实体类型, 上下文描述}。关系列表：{关系ID, 源实体ID, 目标实体ID, 关系类型, 证据支持}。",
+        "notes": "忽略OCR错误或无关文本，仅提取有意义的实体和关系。优先提取具有共性的实体和关系，确保适用于多种管理规定文件。如果实体或关系含义不明确，结合上下文推断其含义。"
+    }
+} 
