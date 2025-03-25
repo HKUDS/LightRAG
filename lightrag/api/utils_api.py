@@ -100,34 +100,7 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
             ):
                 return  # Whitelist path, allow access
 
-        # 2. Check for special endpoints (/health and Ollama API)
-        is_special_endpoint = path == "/health" or path.startswith("/api/")
-        if is_special_endpoint and not api_key_configured:
-            return  # Special endpoint and no API key configured, allow access
-
-        # 3. Validate API key if provided
-        if (
-            api_key_configured
-            and api_key_header_value
-            and api_key_header_value == api_key
-        ):
-            return  # API key validation successful
-
-        # 4. /health and Ollama API only accept API key validation
-        if api_key_configured and is_special_endpoint:
-            # Special endpoint but API key validation failed, return 403 error
-            if api_key_header_value:
-                raise HTTPException(
-                    status_code=HTTP_403_FORBIDDEN,
-                    detail="Invalid API Key",
-                )
-            else:
-                raise HTTPException(
-                    status_code=HTTP_403_FORBIDDEN,
-                    detail="API Key required",
-                )
-
-        # 5. Validate token if provided
+        # 2. Validate token first if provided in the request (Ensure 401 error if token is invalid)
         if token:
             try:
                 token_info = auth_handler.validate_token(token)
@@ -149,32 +122,46 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
                     raise
                 # For other exceptions, continue processing
 
-            # If token exists but validation failed (didn't return above), return 401
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token. Please login again.",
-            )
-
-        # 5. Acept all if no API protection needed
+        # 3. Acept all request if no API protection needed
         if not auth_configured and not api_key_configured:
             return
 
-        # 5. Otherwise: refuse access and return 403 error
-        if api_key_configured:
-            if api_key_header_value is None:
-                raise HTTPException(
-                    status_code=HTTP_403_FORBIDDEN,
-                    detail="API Key required or login authentication required.",
-                )
-            else:
-                raise HTTPException(
-                    status_code=HTTP_403_FORBIDDEN,
-                    detail="Invalid API Key or login authentication required.",
-                )
-        else:
+        # 4. Validate API key if provided and API-Key authentication is configured
+        if (
+            api_key_configured
+            and api_key_header_value
+            and api_key_header_value == api_key
+        ):
+            return  # API key validation successful
+
+        ### Authentication failed ####
+
+        # if password authentication is configured but not provided, ensure 401 error if auth_configured 
+        if auth_configured and not token:
             raise HTTPException(
-                status_code=HTTP_403_FORBIDDEN, detail="Login authentication required."
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No credentials provided. Please login.",
             )
+
+        # if api key is provided but validation failed
+        if api_key_header_value:
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN,
+                detail="Invalid API Key",
+            )
+        
+        # if api_key_configured but not provided
+        if api_key_configured and not api_key_header_value:
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN,
+                detail="API Key required",
+            )
+
+        # Otherwise: refuse access and return 403 error
+        raise HTTPException(
+            status_code=HTTP_403_FORBIDDEN,
+            detail="API Key required or login authentication required.",
+        )
 
     return combined_dependency
 
