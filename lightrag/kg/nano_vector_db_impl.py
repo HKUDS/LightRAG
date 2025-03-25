@@ -20,7 +20,6 @@ from .shared_storage import (
     get_storage_lock,
     get_update_flag,
     set_all_update_flags,
-    is_multiprocess,
 )
 
 
@@ -57,16 +56,14 @@ class NanoVectorDBStorage(BaseVectorStorage):
         # Get the update flag for cross-process update notification
         self.storage_updated = await get_update_flag(self.namespace)
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = get_storage_lock(enable_logging=False)
 
     async def _get_client(self):
         """Check if the storage should be reloaded"""
         # Acquire lock to prevent concurrent read and write
         async with self._storage_lock:
             # Check if data needs to be reloaded
-            if (is_multiprocess and self.storage_updated.value) or (
-                not is_multiprocess and self.storage_updated
-            ):
+            if self.storage_updated.value:
                 logger.info(
                     f"Process {os.getpid()} reloading {self.namespace} due to update by another process"
                 )
@@ -76,10 +73,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                     storage_file=self._client_file_name,
                 )
                 # Reset update flag
-                if is_multiprocess:
-                    self.storage_updated.value = False
-                else:
-                    self.storage_updated = False
+                self.storage_updated.value = False
 
             return self._client
 
@@ -206,19 +200,20 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
     async def index_done_callback(self) -> bool:
         """Save data to disk"""
-        # Check if storage was updated by another process
-        if is_multiprocess and self.storage_updated.value:
-            # Storage was updated by another process, reload data instead of saving
-            logger.warning(
-                f"Storage for {self.namespace} was updated by another process, reloading..."
-            )
-            self._client = NanoVectorDB(
-                self.embedding_func.embedding_dim,
-                storage_file=self._client_file_name,
-            )
-            # Reset update flag
-            self.storage_updated.value = False
-            return False  # Return error
+        async with self._storage_lock:
+            # Check if storage was updated by another process
+            if self.storage_updated.value:
+                # Storage was updated by another process, reload data instead of saving
+                logger.warning(
+                    f"Storage for {self.namespace} was updated by another process, reloading..."
+                )
+                self._client = NanoVectorDB(
+                    self.embedding_func.embedding_dim,
+                    storage_file=self._client_file_name,
+                )
+                # Reset update flag
+                self.storage_updated.value = False
+                return False  # Return error
 
         # Acquire lock and perform persistence
         async with self._storage_lock:
@@ -228,10 +223,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # Notify other processes that data has been updated
                 await set_all_update_flags(self.namespace)
                 # Reset own update flag to avoid self-reloading
-                if is_multiprocess:
-                    self.storage_updated.value = False
-                else:
-                    self.storage_updated = False
+                self.storage_updated.value = False
                 return True  # Return success
             except Exception as e:
                 logger.error(f"Error saving data for {self.namespace}: {e}")
