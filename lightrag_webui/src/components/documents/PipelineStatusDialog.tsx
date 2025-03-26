@@ -159,7 +159,7 @@ export default function PipelineStatusDialog({
             <div>{t('documentPanel.pipelineStatus.jobName')}: {status?.job_name || '-'}</div>
             <div className="flex justify-between">
               <span>{t('documentPanel.pipelineStatus.startTime')}: {status?.job_start ? new Date(status.job_start).toLocaleString() : '-'}</span>
-              <span>{t('documentPanel.pipelineStatus.progress')}: {status ? `${status.cur_batch}/${status.batchs}` : '-'}</span>
+              <span>{t('documentPanel.pipelineStatus.progress')}: {status ? `${status.cur_batch}/${status.batchs} ${t('documentPanel.pipelineStatus.unit')}` : '-'}</span>
             </div>
           </div>
 

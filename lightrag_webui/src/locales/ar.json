@@ -99,6 +99,7 @@
       "jobName": "اسم المهمة",
       "startTime": "وقت البدء",
       "progress": "التقدم",
+      "unit": "دفعة",
       "latestMessage": "آخر رسالة",
       "historyMessages": "سجل الرسائل",
       "errors": {

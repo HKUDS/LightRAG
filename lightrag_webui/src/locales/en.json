@@ -99,6 +99,7 @@
       "jobName": "Job Name",
       "startTime": "Start Time",
       "progress": "Progress",
+      "unit": "batch",
       "latestMessage": "Latest Message",
       "historyMessages": "History Message",
       "errors": {
