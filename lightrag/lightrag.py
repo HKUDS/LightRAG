@@ -892,7 +892,9 @@ class LightRAG:
                 # Get first document's file path and total count for job name
                 first_doc_id, first_doc = next(iter(to_process_docs.items()))
                 first_doc_path = first_doc.file_path
-                path_prefix = first_doc_path[:20] + ("..." if len(first_doc_path) > 20 else "")
+                path_prefix = first_doc_path[:20] + (
+                    "..." if len(first_doc_path) > 20 else ""
+                )
                 total_files = len(to_process_docs)
                 job_name = f"{path_prefix}[{total_files} files]"
                 pipeline_status["job_name"] = job_name

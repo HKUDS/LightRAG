@@ -118,7 +118,7 @@ export default function DocumentManager() {
   const fetchDocuments = useCallback(async () => {
     try {
       const docs = await getDocuments()
-      
+
       // Get new status counts (treat null as all zeros)
       const newStatusCounts = {
         processed: docs?.statuses?.processed?.length || 0,

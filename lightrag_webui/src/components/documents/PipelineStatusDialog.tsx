@@ -55,7 +55,7 @@ export default function PipelineStatusDialog({
     const isAtBottom = Math.abs(
       (container.scrollHeight - container.scrollTop) - container.clientHeight
     ) < 1
-    
+
     if (isAtBottom) {
       setIsUserScrolled(false)
     } else {
@@ -92,7 +92,7 @@ export default function PipelineStatusDialog({
         )}
       >
         <DialogDescription className="sr-only">
-          {status?.job_name 
+          {status?.job_name
             ? `${t('documentPanel.pipelineStatus.jobName')}: ${status.job_name}, ${t('documentPanel.pipelineStatus.progress')}: ${status.cur_batch}/${status.batchs}`
             : t('documentPanel.pipelineStatus.noActiveJob')
           }
@@ -101,7 +101,7 @@ export default function PipelineStatusDialog({
           <DialogTitle className="flex-1">
             {t('documentPanel.pipelineStatus.title')}
           </DialogTitle>
-          
+
           {/* Position control buttons */}
           <div className="flex items-center gap-2 mr-8">
             <Button
@@ -174,7 +174,7 @@ export default function PipelineStatusDialog({
           {/* History Messages */}
           <div className="space-y-2">
             <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.historyMessages')}:</div>
-            <div 
+            <div
               ref={historyRef}
               onScroll={handleScroll}
               className="font-mono text-sm rounded-md bg-zinc-800 text-zinc-100 p-3 overflow-y-auto min-h-[7.5em] max-h-[40vh]"

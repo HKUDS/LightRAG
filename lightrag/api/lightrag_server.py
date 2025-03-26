@@ -423,7 +423,7 @@ def create_app(args):
         """Get current system status"""
         try:
             pipeline_status = await get_namespace_data("pipeline_status")
-            
+
             username = os.getenv("AUTH_USERNAME")
             password = os.getenv("AUTH_PASSWORD")
             if not (username and password):
@@ -454,7 +454,7 @@ def create_app(args):
                 "core_version": core_version,
                 "api_version": __api_version__,
                 "auth_mode": auth_mode,
-                "pipeline_busy": pipeline_status.get("busy", False)
+                "pipeline_busy": pipeline_status.get("busy", False),
             }
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
