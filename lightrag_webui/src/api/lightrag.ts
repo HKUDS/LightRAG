@@ -45,6 +45,7 @@ export type LightragStatus = {
   core_version?: string
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
+  pipeline_busy: boolean
 }
 
 export type LightragDocumentsScanProgress = {
@@ -139,6 +140,20 @@ export type AuthStatusResponse = {
   message?: string
   core_version?: string
   api_version?: string
+}
+
+export type PipelineStatusResponse = {
+  autoscanned: boolean
+  busy: boolean
+  job_name: string
+  job_start?: string
+  docs: number
+  batchs: number
+  cur_batch: number
+  request_pending: boolean
+  latest_message: string
+  history_messages?: string[]
+  update_status?: Record<string, any>
 }
 
 export type LoginResponse = {
@@ -422,6 +437,11 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       auth_mode: 'enabled'
     };
   }
+}
+
+export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
+  const response = await axiosInstance.get('/documents/pipeline_status')
+  return response.data
 }
 
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {

@@ -31,7 +31,7 @@ export default function ClearDocumentsDialog() {
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
     }
-  }, [setOpen])
+  }, [setOpen, t])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -46,7 +46,7 @@ export default function ClearDocumentsDialog() {
           <DialogDescription>{t('documentPanel.clearDocuments.confirm')}</DialogDescription>
         </DialogHeader>
         <Button variant="destructive" onClick={handleClear}>
-        {t('documentPanel.clearDocuments.confirmButton')}
+          {t('documentPanel.clearDocuments.confirmButton')}
         </Button>
       </DialogContent>
     </Dialog>
