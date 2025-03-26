@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
 import Button from '@/components/ui/Button'
@@ -97,6 +97,14 @@ export default function DocumentManager() {
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
 
+  // Store previous status counts
+  const prevStatusCounts = useRef({
+    processed: 0,
+    processing: 0,
+    pending: 0,
+    failed: 0
+  })
+
   // Add pulse style to document
   useEffect(() => {
     const style = document.createElement('style')
@@ -110,8 +118,30 @@ export default function DocumentManager() {
   const fetchDocuments = useCallback(async () => {
     try {
       const docs = await getDocuments()
+      
+      // Get new status counts (treat null as all zeros)
+      const newStatusCounts = {
+        processed: docs?.statuses?.processed?.length || 0,
+        processing: docs?.statuses?.processing?.length || 0,
+        pending: docs?.statuses?.pending?.length || 0,
+        failed: docs?.statuses?.failed?.length || 0
+      }
+
+      // Check if any status count has changed
+      const hasStatusCountChange = (Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>).some(
+        status => newStatusCounts[status] !== prevStatusCounts.current[status]
+      )
+
+      // Trigger health check if changes detected
+      if (hasStatusCountChange) {
+        useBackendState.getState().check()
+      }
+
+      // Update previous status counts
+      prevStatusCounts.current = newStatusCounts
+
+      // Update docs state
       if (docs && docs.statuses) {
-        // compose all documents count
         const numDocuments = Object.values(docs.statuses).reduce(
           (acc, status) => acc + status.length,
           0
