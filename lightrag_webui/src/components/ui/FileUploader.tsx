@@ -6,6 +6,7 @@ import * as React from 'react'
 import { FileText, Upload, X } from 'lucide-react'
 import Dropzone, { type DropzoneProps, type FileRejection } from 'react-dropzone'
 import { toast } from 'sonner'
+import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/lib/utils'
 import { useControllableState } from '@radix-ui/react-use-controllable-state'
@@ -119,6 +120,7 @@ function formatBytes(
 }
 
 function FileUploader(props: FileUploaderProps) {
+  const { t } = useTranslation()
   const {
     value: valueProp,
     onValueChange,
@@ -143,12 +145,12 @@ function FileUploader(props: FileUploaderProps) {
   const onDrop = React.useCallback(
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
       if (!multiple && maxFileCount === 1 && acceptedFiles.length > 1) {
-        toast.error('Cannot upload more than 1 file at a time')
+        toast.error(t('documentPanel.uploadDocuments.fileUploader.singleFileLimit'))
         return
       }
 
       if ((files?.length ?? 0) + acceptedFiles.length > maxFileCount) {
-        toast.error(`Cannot upload more than ${maxFileCount} files`)
+        toast.error(t('documentPanel.uploadDocuments.fileUploader.maxFilesLimit', { count: maxFileCount }))
         return
       }
 
@@ -164,7 +166,7 @@ function FileUploader(props: FileUploaderProps) {
 
       if (rejectedFiles.length > 0) {
         rejectedFiles.forEach(({ file }) => {
-          toast.error(`File ${file.name} was rejected`)
+          toast.error(t('documentPanel.uploadDocuments.fileUploader.fileRejected', { name: file.name }))
         })
       }
 
@@ -173,7 +175,7 @@ function FileUploader(props: FileUploaderProps) {
       }
     },
 
-    [files, maxFileCount, multiple, onUpload, setFiles]
+    [files, maxFileCount, multiple, onUpload, setFiles, t]
   )
 
   function onRemove(index: number) {
@@ -226,7 +228,7 @@ function FileUploader(props: FileUploaderProps) {
                 <div className="rounded-full border border-dashed p-3">
                   <Upload className="text-muted-foreground size-7" aria-hidden="true" />
                 </div>
-                <p className="text-muted-foreground font-medium">Drop the files here</p>
+                <p className="text-muted-foreground font-medium">{t('documentPanel.uploadDocuments.fileUploader.dropHere')}</p>
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center gap-4 sm:px-5">
@@ -235,18 +237,18 @@ function FileUploader(props: FileUploaderProps) {
                 </div>
                 <div className="flex flex-col gap-px">
                   <p className="text-muted-foreground font-medium">
-                    Drag and drop files here, or click to select files
+                    {t('documentPanel.uploadDocuments.fileUploader.dragAndDrop')}
                   </p>
                   {description ? (
                     <p className="text-muted-foreground/70 text-sm">{description}</p>
                   ) : (
                     <p className="text-muted-foreground/70 text-sm">
-                      You can upload
-                      {maxFileCount > 1
-                        ? ` ${maxFileCount === Infinity ? 'multiple' : maxFileCount}
-                      files (up to ${formatBytes(maxSize)} each)`
-                        : ` a file with ${formatBytes(maxSize)}`}
-                      Supported formats: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS
+                      {t('documentPanel.uploadDocuments.fileUploader.uploadDescription', {
+                        count: maxFileCount,
+                        isMultiple: maxFileCount === Infinity,
+                        maxSize: formatBytes(maxSize)
+                      })}
+                      {t('documentPanel.uploadDocuments.fileTypes')}
                     </p>
                   )}
                 </div>
@@ -301,6 +303,7 @@ interface FileCardProps {
 }
 
 function FileCard({ file, progress, error, onRemove }: FileCardProps) {
+  const { t } = useTranslation()
   return (
     <div className="relative flex items-center gap-2.5">
       <div className="flex flex-1 gap-2.5">
@@ -323,7 +326,7 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
       <div className="flex items-center gap-2">
         <Button type="button" variant="outline" size="icon" className="size-7" onClick={onRemove}>
           <X className="size-4" aria-hidden="true" />
-          <span className="sr-only">Remove file</span>
+          <span className="sr-only">{t('documentPanel.uploadDocuments.fileUploader.removeFile')}</span>
         </Button>
       </div>
     </div>
