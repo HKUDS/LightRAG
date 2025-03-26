@@ -6,6 +6,7 @@ import argparse
 import os
 import json
 from lightrag.utils import encode_string_by_tiktoken, decode_tokens_by_tiktoken
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +82,9 @@ def preprocess_markdown_headings(content: str) -> str:
 
 def generate_chunk_id(level: int, index: int) -> str:
     """生成块的唯一ID"""
-    return f"chunk_{level}_{index}"
+    # 生成唯一标识前缀
+    unique_prefix = hashlib.md5(f"{level}_{index}_{uuid.uuid4()}".encode()).hexdigest()[:8]
+    return f"{unique_prefix}_chunk_{level}_{index}"
 
 def generate_full_doc_id(content: str) -> str:
     """生成文档的唯一ID"""
@@ -281,7 +284,9 @@ def process_level(
                 # 如果分块结果超过1个，为额外的块创建新条目
                 if len(token_size_chunks) > 1:
                     for i, chunk_data in enumerate(token_size_chunks[1:], 1):
-                        sub_chunk_id = f"{current_chunk_id}_{i}"
+                        # 为子块生成唯一标识前缀
+                        unique_prefix = hashlib.md5(f"{level}_{current_chunk_index}_{i}_{uuid.uuid4()}".encode()).hexdigest()[:8]
+                        sub_chunk_id = f"{unique_prefix}_chunk_{level}_{current_chunk_index}_{i}"
                         sub_chunk = {
                             **chunk_data,
                             "chunk_order_index": current_chunk_index - 1,
@@ -321,7 +326,9 @@ def process_level(
             for sub_chunk in sub_chunks:
                 # 只添加直接子级（level等于当前level+1）
                 sub_chunk_id = sub_chunk["chunk_id"]
-                if sub_chunk_id.startswith(f"chunk_{level+1}_"):
+                # 使用正则匹配新的ID格式中的level部分
+                match = re.search(r'_chunk_(\d+)_', sub_chunk_id)
+                if match and int(match.group(1)) == level+1:
                     direct_child_ids.append(sub_chunk_id)
             
             # 更新当前块的child_ids
