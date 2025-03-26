@@ -284,7 +284,7 @@ export default function DocumentManager() {
                                 <div className="truncate">
                                   {getDisplayFileName(doc, 35)}
                                 </div>
-                                <div className="invisible group-hover:visible fixed z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
                                   {doc.file_path}
                                 </div>
                               </div>
@@ -295,7 +295,7 @@ export default function DocumentManager() {
                               <div className="truncate">
                                 {doc.id}
                               </div>
-                              <div className="invisible group-hover:visible fixed z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                              <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
                                 {doc.file_path}
                               </div>
                             </div>
@@ -306,7 +306,7 @@ export default function DocumentManager() {
                             <div className="truncate">
                               {doc.content_summary}
                             </div>
-                            <div className="invisible group-hover:visible fixed z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                            <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
                               {doc.content_summary}
                             </div>
                           </div>
