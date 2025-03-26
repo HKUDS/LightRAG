@@ -6,6 +6,7 @@ import os
 import argparse
 from typing import Optional, List, Tuple
 import sys
+from ascii_colors import ASCIIColors
 import logging
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__
@@ -15,6 +16,23 @@ from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from .auth import auth_handler
 from ..prompt import PROMPTS
+
+def check_env_file():
+    """
+    Check if .env file exists and handle user confirmation if needed.
+    Returns True if should continue, False if should exit.
+    """
+    if not os.path.exists(".env"):
+        warning_msg = "Warning: .env file not found. Some features may not work properly."
+        ASCIIColors.yellow(warning_msg)
+        
+        # Check if running in interactive terminal
+        if sys.stdin.isatty():
+            response = input("Do you want to continue? (yes/no): ")
+            if response.lower() != "yes":
+                ASCIIColors.red("Server startup cancelled")
+                return False
+    return True
 
 # Load environment variables
 load_dotenv()
