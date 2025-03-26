@@ -179,9 +179,11 @@ export default function PipelineStatusDialog({
               onScroll={handleScroll}
               className="font-mono text-sm rounded-md bg-zinc-800 text-zinc-100 p-3 overflow-y-auto min-h-[7.5em] max-h-[40vh]"
             >
-              {status?.history_messages?.map((msg, idx) => (
-                <div key={idx}>{msg}</div>
-              )) || '-'}
+              {status?.history_messages?.length ? (
+                status.history_messages.map((msg, idx) => (
+                  <div key={idx}>{msg}</div>
+                ))
+              ) : '-'}
             </div>
           </div>
         </div>
