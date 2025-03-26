@@ -21,18 +21,14 @@ export default function UploadDocumentsDialog() {
   const [open, setOpen] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
-  // Track upload errors for each file
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
 
   const handleDocumentsUpload = useCallback(
     async (filesToUpload: File[]) => {
       setIsUploading(true)
-
-      // Reset error states before new upload
       setFileErrors({})
       
       try {
-        // Use a single toast for the entire batch upload process
         toast.promise(
           (async () => {
             try {
@@ -40,14 +36,13 @@ export default function UploadDocumentsDialog() {
                 filesToUpload.map(async (file) => {
                   try {
                     const result = await uploadDocument(file, (percentCompleted: number) => {
-                      console.debug(t('documentPanel.uploadDocuments.uploading', { name: file.name, percent: percentCompleted }))
+                      console.debug(t('documentPanel.uploadDocuments.single.uploading', { name: file.name, percent: percentCompleted }))
                       setProgresses((pre) => ({
                         ...pre,
                         [file.name]: percentCompleted
                       }))
                     })
                     
-                    // Store error message if upload failed
                     if (result.status !== 'success') {
                       setFileErrors(prev => ({
                         ...prev,
@@ -55,7 +50,6 @@ export default function UploadDocumentsDialog() {
                       }))
                     }
                   } catch (err) {
-                    // Store error message from exception
                     setFileErrors(prev => ({
                       ...prev,
                       [file.name]: errorMessage(err)
@@ -63,21 +57,18 @@ export default function UploadDocumentsDialog() {
                   }
                 })
               )
-              // Keep dialog open to show final status
-              // User needs to close dialog manually
             } catch (error) {
               console.error('Upload failed:', error)
             }
           })(),
           {
-            loading: t('documentPanel.uploadDocuments.uploading.batch'),
-            success: t('documentPanel.uploadDocuments.success.batch'),
-            error: t('documentPanel.uploadDocuments.error.batch')
+            loading: t('documentPanel.uploadDocuments.batch.uploading'),
+            success: t('documentPanel.uploadDocuments.batch.success'),
+            error: t('documentPanel.uploadDocuments.batch.error')
           }
         )
       } catch (err) {
-        // Handle general upload errors
-        toast.error(`Upload error: ${errorMessage(err)}`)
+        toast.error(t('documentPanel.uploadDocuments.generalError', { error: errorMessage(err) }))
       } finally {
         setIsUploading(false)
       }
@@ -89,12 +80,10 @@ export default function UploadDocumentsDialog() {
     <Dialog
       open={open}
       onOpenChange={(open) => {
-        // Prevent closing dialog during upload
         if (isUploading) {
           return
         }
         if (!open) {
-          // Reset states when dialog is closed
           setProgresses({})
           setFileErrors({})
         }

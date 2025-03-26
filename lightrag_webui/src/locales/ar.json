@@ -48,12 +48,28 @@
       "tooltip": "رفع المستندات",
       "title": "رفع المستندات",
       "description": "اسحب وأفلت مستنداتك هنا أو انقر للتصفح.",
-      "uploading": "جارٍ الرفع {{name}}: {{percent}}%",
-      "success": "نجاح الرفع:\nتم رفع {{name}} بنجاح",
-      "failed": "فشل الرفع:\n{{name}}\n{{message}}",
-      "error": "فشل الرفع:\n{{name}}\n{{error}}",
+      "single": {
+        "uploading": "جارٍ الرفع {{name}}: {{percent}}%",
+        "success": "نجاح الرفع:\nتم رفع {{name}} بنجاح",
+        "failed": "فشل الرفع:\n{{name}}\n{{message}}",
+        "error": "فشل الرفع:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "جارٍ رفع الملفات...",
+        "success": "تم رفع الملفات بنجاح",
+        "error": "فشل رفع بعض الملفات"
+      },
       "generalError": "فشل الرفع\n{{error}}",
-      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS"
+      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "fileUploader": {
+        "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
+        "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
+        "fileRejected": "تم رفض الملف {{name}}",
+        "dropHere": "أفلت الملفات هنا",
+        "dragAndDrop": "اسحب وأفلت الملفات هنا، أو انقر للاختيار",
+        "removeFile": "إزالة الملف",
+        "uploadDescription": "يمكنك رفع {{isMultiple ? 'عدة' : count}} ملفات (حتى {{maxSize}} لكل منها)"
+      }
     },
     "documentManager": {
       "title": "إدارة المستندات",
