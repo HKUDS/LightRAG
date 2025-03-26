@@ -27,7 +27,7 @@ export default function UploadDocumentsDialog() {
     async (filesToUpload: File[]) => {
       setIsUploading(true)
       setFileErrors({})
-      
+
       try {
         toast.promise(
           (async () => {
@@ -42,7 +42,7 @@ export default function UploadDocumentsDialog() {
                         [file.name]: percentCompleted
                       }))
                     })
-                    
+
                     if (result.status !== 'success') {
                       setFileErrors(prev => ({
                         ...prev,
