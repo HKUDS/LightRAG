@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
 import Button from '@/components/ui/Button'
+import { cn } from '@/lib/utils'
 import {
   Table,
   TableBody,
@@ -45,14 +46,66 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
     : fileName;
 };
 
+const pulseStyle = `
+@keyframes pulse {
+  0% {
+    background-color: rgb(255 0 0 / 0.1);
+    border-color: rgb(255 0 0 / 0.2);
+  }
+  50% {
+    background-color: rgb(255 0 0 / 0.2);
+    border-color: rgb(255 0 0 / 0.4);
+  }
+  100% {
+    background-color: rgb(255 0 0 / 0.1);
+    border-color: rgb(255 0 0 / 0.2);
+  }
+}
+
+.dark .pipeline-busy {
+  animation: dark-pulse 2s infinite;
+}
+
+@keyframes dark-pulse {
+  0% {
+    background-color: rgb(255 0 0 / 0.2);
+    border-color: rgb(255 0 0 / 0.4);
+  }
+  50% {
+    background-color: rgb(255 0 0 / 0.3);
+    border-color: rgb(255 0 0 / 0.6);
+  }
+  100% {
+    background-color: rgb(255 0 0 / 0.2);
+    border-color: rgb(255 0 0 / 0.4);
+  }
+}
+
+.pipeline-busy {
+  animation: pulse 2s infinite;
+  border: 1px solid;
+}
+`;
+
 export default function DocumentManager() {
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t } = useTranslation()
   const health = useBackendState.use.health()
+  const pipelineBusy = useBackendState.use.pipelineBusy()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
+
+  // Add pulse style to document
+  useEffect(() => {
+    const style = document.createElement('style')
+    style.textContent = pulseStyle
+    document.head.appendChild(style)
+    return () => {
+      document.head.removeChild(style)
+    }
+  }, [])
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -132,6 +185,9 @@ export default function DocumentManager() {
               side="bottom"
               tooltip={t('documentPanel.documentManager.pipelineStatusTooltip')}
               size="sm"
+              className={cn(
+                pipelineBusy && 'pipeline-busy'
+              )}
             >
               <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
             </Button>

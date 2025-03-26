@@ -45,6 +45,7 @@ export type LightragStatus = {
   core_version?: string
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
+  pipeline_busy: boolean
 }
 
 export type LightragDocumentsScanProgress = {
