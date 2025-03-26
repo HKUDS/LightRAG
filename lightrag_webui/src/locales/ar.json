@@ -94,7 +94,7 @@
     },
     "pipelineStatus": {
       "title": "حالة خط المعالجة",
-      "busy": "مشغول",
+      "busy": "خط المعالجة مشغول",
       "requestPending": "الطلب معلق",
       "jobName": "اسم المهمة",
       "startTime": "وقت البدء",

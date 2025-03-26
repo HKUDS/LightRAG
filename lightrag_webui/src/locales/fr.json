@@ -85,11 +85,16 @@
         "loadFailed": "Échec du chargement des documents\n{{error}}",
         "scanFailed": "Échec de la numérisation des documents\n{{error}}",
         "scanProgressFailed": "Échec de l'obtention de la progression de la numérisation\n{{error}}"
-      }
+      },
+      "fileNameLabel": "Nom du fichier",
+      "showButton": "Afficher",
+      "hideButton": "Masquer",
+      "showFileNameTooltip": "Afficher le nom du fichier",
+      "hideFileNameTooltip": "Masquer le nom du fichier"
     },
     "pipelineStatus": {
       "title": "État du Pipeline",
-      "busy": "Occupé",
+      "busy": "Pipeline occupé",
       "requestPending": "Requête en attente",
       "jobName": "Nom du travail",
       "startTime": "Heure de début",

@@ -94,8 +94,8 @@
     },
     "pipelineStatus": {
       "title": "流水线状态",
-      "busy": "忙碌",
-      "requestPending": "请求等待中",
+      "busy": "流水线忙碌",
+      "requestPending": "待处理请求",
       "jobName": "作业名称",
       "startTime": "开始时间",
       "progress": "进度",
