@@ -164,61 +164,6 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
     return combined_dependency
 
 
-def get_api_key_dependency(api_key: Optional[str]):
-    """
-    Create an API key dependency for route protection.
-
-    Args:
-        api_key (Optional[str]): The API key to validate against.
-                                If None, no authentication is required.
-
-    Returns:
-        Callable: A dependency function that validates the API key.
-    """
-    # Use global whitelist_patterns and auth_configured variables
-    # whitelist_patterns and auth_configured are already initialized at module level
-
-    # Only calculate api_key_configured as it depends on the function parameter
-    api_key_configured = bool(api_key)
-
-    if not api_key_configured:
-        # If no API key is configured, return a dummy dependency that always succeeds
-        async def no_auth(request: Request = None, **kwargs):
-            return None
-
-        return no_auth
-
-    # If API key is configured, use proper authentication with Security for Swagger UI
-    api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-    async def api_key_auth(
-        request: Request,
-        api_key_header_value: Optional[str] = Security(
-            api_key_header, description="API Key for authentication"
-        ),
-    ):
-        # Check if request path is in whitelist
-        path = request.url.path
-        for pattern, is_prefix in whitelist_patterns:
-            if (is_prefix and path.startswith(pattern)) or (
-                not is_prefix and path == pattern
-            ):
-                return  # Whitelist path, allow access
-
-        # Non-whitelist path, validate API key
-        if not api_key_header_value:
-            raise HTTPException(
-                status_code=HTTP_403_FORBIDDEN, detail="API Key required"
-            )
-        if api_key_header_value != api_key:
-            raise HTTPException(
-                status_code=HTTP_403_FORBIDDEN, detail="Invalid API Key"
-            )
-        return api_key_header_value
-
-    return api_key_auth
-
-
 class DefaultRAGStorageConfig:
     KV_STORAGE = "JsonKVStorage"
     VECTOR_STORAGE = "NanoVectorDBStorage"
