@@ -6,14 +6,14 @@ interface BackendState {
   health: boolean
   message: string | null
   messageTitle: string | null
-
   status: LightragStatus | null
-
   lastCheckTime: number
+  pipelineBusy: boolean
 
   check: () => Promise<boolean>
   clear: () => void
   setErrorMessage: (message: string, messageTitle: string) => void
+  setPipelineBusy: (busy: boolean) => void
 }
 
 interface AuthState {
@@ -34,6 +34,7 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
   messageTitle: null,
   lastCheckTime: Date.now(),
   status: null,
+  pipelineBusy: false,
 
   check: async () => {
     const health = await checkHealth()
@@ -51,7 +52,8 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
         message: null,
         messageTitle: null,
         lastCheckTime: Date.now(),
-        status: health
+        status: health,
+        pipelineBusy: health.pipeline_busy
       })
       return true
     }
@@ -71,6 +73,10 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
 
   setErrorMessage: (message: string, messageTitle: string) => {
     set({ health: false, message, messageTitle })
+  },
+
+  setPipelineBusy: (busy: boolean) => {
+    set({ pipelineBusy: busy })
   }
 }))
 
