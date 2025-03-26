@@ -22,7 +22,9 @@ from lightrag.api.utils_api import (
     parse_args,
     get_default_host,
     display_splash_screen,
+    check_env_file,
 )
+import sys
 from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
@@ -594,6 +596,10 @@ def main():
         # If started with Gunicorn, return directly as Gunicorn will call get_application
         print("Running under Gunicorn - worker management handled by Gunicorn")
         return
+
+    # Check .env file
+    if not check_env_file():
+        sys.exit(1)
 
     # Check and install dependencies
     check_and_install_dependencies()
