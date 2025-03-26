@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { X, AlignLeft, AlignCenter, AlignRight } from 'lucide-react'
@@ -9,7 +9,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
   AlertDialogOverlay,
-  AlertDialogDescription
 } from '@/components/ui/AlertDialog'
 import Button from '@/components/ui/Button'
 import { getPipelineStatus, PipelineStatusResponse } from '@/api/lightrag'
@@ -31,15 +30,44 @@ export default function PipelineStatusDialog({
   const [status, setStatus] = useState<PipelineStatusResponse | null>(null)
   const [position, setPosition] = useState<DialogPosition>('center')
   const [isUserScrolled, setIsUserScrolled] = useState(false)
+  const [historyHeight, setHistoryHeight] = useState('20em')
   const historyRef = useRef<HTMLDivElement>(null)
+  const resizeObserverRef = useRef<ResizeObserver | null>(null)
+
+  // Calculate history height based on window height
+  const updateHistoryHeight = useCallback(() => {
+    const minHeight = 7.5 // 5 lines * 1.5em line height
+    const windowHeight = window.innerHeight
+    const pixelsPerEm = parseFloat(getComputedStyle(document.documentElement).fontSize)
+    const maxHeightInEm = Math.max(Math.floor((windowHeight * 0.4) / pixelsPerEm), minHeight)
+    setHistoryHeight(`${maxHeightInEm}em`)
+  }, [])
 
   // Reset position when dialog opens
   useEffect(() => {
     if (open) {
       setPosition('center')
       setIsUserScrolled(false)
+      updateHistoryHeight()
     }
-  }, [open])
+  }, [open, updateHistoryHeight])
+
+  // Setup resize observer
+  useEffect(() => {
+    if (!open) return
+
+    resizeObserverRef.current = new ResizeObserver((entries) => {
+      if (entries[0]) {
+        updateHistoryHeight()
+      }
+    })
+
+    resizeObserverRef.current.observe(document.body)
+
+    return () => {
+      resizeObserverRef.current?.disconnect()
+    }
+  }, [open, updateHistoryHeight])
 
   // Handle scroll position
   useEffect(() => {
@@ -145,10 +173,6 @@ export default function PipelineStatusDialog({
             </Button>
           </div>
         </AlertDialogHeader>
-        
-        <AlertDialogDescription>
-          {t('documentPanel.pipelineStatus.description')}
-        </AlertDialogDescription>
 
         {/* Status Content */}
         <div className="space-y-4 pt-4">
@@ -187,7 +211,8 @@ export default function PipelineStatusDialog({
             <div 
               ref={historyRef}
               onScroll={handleScroll}
-              className="font-mono text-sm rounded-md bg-zinc-800 text-zinc-100 p-3 h-[20em] overflow-y-auto"
+              className="font-mono text-sm rounded-md bg-zinc-800 text-zinc-100 p-3 overflow-y-auto"
+              style={{ height: historyHeight }}
             >
               {status?.history_messages?.map((msg, idx) => (
                 <div key={idx}>{msg}</div>
