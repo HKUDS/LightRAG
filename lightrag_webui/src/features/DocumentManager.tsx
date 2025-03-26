@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
 import Button from '@/components/ui/Button'
+import { cn } from '@/lib/utils'
 import {
   Table,
   TableBody,
@@ -20,8 +21,9 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon } from 'lucide-react'
 import { DocStatusResponse } from '@/api/lightrag'
+import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
   // Check if file_path exists and is a non-empty string
@@ -44,19 +46,102 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
     : fileName;
 };
 
+const pulseStyle = `
+@keyframes pulse {
+  0% {
+    background-color: rgb(255 0 0 / 0.1);
+    border-color: rgb(255 0 0 / 0.2);
+  }
+  50% {
+    background-color: rgb(255 0 0 / 0.2);
+    border-color: rgb(255 0 0 / 0.4);
+  }
+  100% {
+    background-color: rgb(255 0 0 / 0.1);
+    border-color: rgb(255 0 0 / 0.2);
+  }
+}
+
+.dark .pipeline-busy {
+  animation: dark-pulse 2s infinite;
+}
+
+@keyframes dark-pulse {
+  0% {
+    background-color: rgb(255 0 0 / 0.2);
+    border-color: rgb(255 0 0 / 0.4);
+  }
+  50% {
+    background-color: rgb(255 0 0 / 0.3);
+    border-color: rgb(255 0 0 / 0.6);
+  }
+  100% {
+    background-color: rgb(255 0 0 / 0.2);
+    border-color: rgb(255 0 0 / 0.4);
+  }
+}
+
+.pipeline-busy {
+  animation: pulse 2s infinite;
+  border: 1px solid;
+}
+`;
+
 export default function DocumentManager() {
+  const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t } = useTranslation()
   const health = useBackendState.use.health()
+  const pipelineBusy = useBackendState.use.pipelineBusy()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
 
+  // Store previous status counts
+  const prevStatusCounts = useRef({
+    processed: 0,
+    processing: 0,
+    pending: 0,
+    failed: 0
+  })
+
+  // Add pulse style to document
+  useEffect(() => {
+    const style = document.createElement('style')
+    style.textContent = pulseStyle
+    document.head.appendChild(style)
+    return () => {
+      document.head.removeChild(style)
+    }
+  }, [])
+
   const fetchDocuments = useCallback(async () => {
     try {
       const docs = await getDocuments()
+
+      // Get new status counts (treat null as all zeros)
+      const newStatusCounts = {
+        processed: docs?.statuses?.processed?.length || 0,
+        processing: docs?.statuses?.processing?.length || 0,
+        pending: docs?.statuses?.pending?.length || 0,
+        failed: docs?.statuses?.failed?.length || 0
+      }
+
+      // Check if any status count has changed
+      const hasStatusCountChange = (Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>).some(
+        status => newStatusCounts[status] !== prevStatusCounts.current[status]
+      )
+
+      // Trigger health check if changes detected
+      if (hasStatusCountChange) {
+        useBackendState.getState().check()
+      }
+
+      // Update previous status counts
+      prevStatusCounts.current = newStatusCounts
+
+      // Update docs state
       if (docs && docs.statuses) {
-        // compose all documents count
         const numDocuments = Object.values(docs.statuses).reduce(
           (acc, status) => acc + status.length,
           0
@@ -114,18 +199,36 @@ export default function DocumentManager() {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={scanDocuments}
-            side="bottom"
-            tooltip={t('documentPanel.documentManager.scanTooltip')}
-            size="sm"
-          >
-            <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={scanDocuments}
+              side="bottom"
+              tooltip={t('documentPanel.documentManager.scanTooltip')}
+              size="sm"
+            >
+              <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setShowPipelineStatus(true)}
+              side="bottom"
+              tooltip={t('documentPanel.documentManager.pipelineStatusTooltip')}
+              size="sm"
+              className={cn(
+                pipelineBusy && 'pipeline-busy'
+              )}
+            >
+              <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
+            </Button>
+          </div>
           <div className="flex-1" />
           <ClearDocumentsDialog />
           <UploadDocumentsDialog />
+          <PipelineStatusDialog
+            open={showPipelineStatus}
+            onOpenChange={setShowPipelineStatus}
+          />
         </div>
 
         <Card>

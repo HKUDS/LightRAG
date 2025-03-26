@@ -59,6 +59,8 @@
       "title": "文档管理",
       "scanButton": "扫描",
       "scanTooltip": "扫描文档",
+      "pipelineStatusButton": "流水线状态",
+      "pipelineStatusTooltip": "查看流水线状态",
       "uploadedTitle": "已上传文档",
       "uploadedDescription": "已上传文档列表及其状态",
       "emptyTitle": "无文档",
@@ -89,6 +91,20 @@
       "hideButton": "隐藏",
       "showFileNameTooltip": "显示文件名",
       "hideFileNameTooltip": "隐藏文件名"
+    },
+    "pipelineStatus": {
+      "title": "流水线状态",
+      "busy": "流水线忙碌",
+      "requestPending": "待处理请求",
+      "jobName": "作业名称",
+      "startTime": "开始时间",
+      "progress": "进度",
+      "unit": "批",
+      "latestMessage": "最新消息",
+      "historyMessages": "历史消息",
+      "errors": {
+        "fetchFailed": "获取流水线状态失败\n{{error}}"
+      }
     }
   },
   "graphPanel": {
