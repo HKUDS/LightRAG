@@ -47,6 +47,14 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
 };
 
 const pulseStyle = `
+/* Custom tooltip styles */
+.tooltip-top {
+  bottom: 100% !important;
+  top: auto !important;
+  margin-bottom: 0.25rem !important;
+  margin-top: 0 !important;
+}
+
 @keyframes pulse {
   0% {
     background-color: rgb(255 0 0 / 0.1);
@@ -114,6 +122,39 @@ export default function DocumentManager() {
       document.head.removeChild(style)
     }
   }, [])
+
+  // Add tooltip position adjustment based on mouse position
+  useEffect(() => {
+    if (!docs) return;
+    
+    // Function to handle mouse movement
+    const handleMouseMove = (event: MouseEvent) => {
+      const cardContent = document.querySelector<HTMLElement>('.flex-1.relative.p-0');
+      if (!cardContent) return;
+      
+      const cardRect = cardContent.getBoundingClientRect();
+      const cardMiddleY = cardRect.top + cardRect.height / 2;
+      
+      // Get all visible tooltips
+      const visibleTooltips = document.querySelectorAll<HTMLElement>('.group:hover > div[class*="invisible group-hover:visible absolute"]');
+      
+      visibleTooltips.forEach(tooltip => {
+        // If mouse is in the bottom half of the card, show tooltip above
+        if (event.clientY > cardMiddleY) {
+          tooltip.classList.add('tooltip-top');
+        } else {
+          tooltip.classList.remove('tooltip-top');
+        }
+      });
+    };
+    
+    // Add mouse move listener to the document
+    document.addEventListener('mousemove', handleMouseMove);
+    
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+    };
+  }, [docs]);
 
   const fetchDocuments = useCallback(async () => {
     try {
@@ -193,12 +234,12 @@ export default function DocumentManager() {
   }, [health, fetchDocuments, t, currentTab])
 
   return (
-    <Card className="!size-full !rounded-none !border-none">
-      <CardHeader>
+    <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
+      <CardHeader className="py-2 px-6">
         <CardTitle className="text-lg">{t('documentPanel.documentManager.title')}</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-2">
-        <div className="flex gap-2">
+      <CardContent className="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <div className="flex gap-2 mb-2">
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -231,8 +272,8 @@ export default function DocumentManager() {
           />
         </div>
 
-        <Card>
-          <CardHeader className="!pb-0">
+        <Card className="flex-1 flex flex-col border rounded-md min-h-0 mb-0">
+          <CardHeader className="flex-none py-2 px-4">
             <div className="flex justify-between items-center">
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
               <div className="flex items-center gap-2">
@@ -253,92 +294,100 @@ export default function DocumentManager() {
             <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
 
-          <CardContent>
+          <CardContent className="flex-1 relative p-0">
             {!docs && (
-              <EmptyCard
-                title={t('documentPanel.documentManager.emptyTitle')}
-                description={t('documentPanel.documentManager.emptyDescription')}
-              />
+              <div className="absolute inset-0 p-0">
+                <EmptyCard
+                  title={t('documentPanel.documentManager.emptyTitle')}
+                  description={t('documentPanel.documentManager.emptyDescription')}
+                />
+              </div>
             )}
             {docs && (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
-                    <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody className="text-sm">
-                  {Object.entries(docs.statuses).map(([status, documents]) =>
-                    documents.map((doc) => (
-                      <TableRow key={doc.id}>
-                        <TableCell className="truncate font-mono overflow-visible">
-                          {showFileName ? (
-                            <>
-                              <div className="group relative overflow-visible">
-                                <div className="truncate">
-                                  {getDisplayFileName(doc, 35)}
+              <div className="absolute inset-0 flex flex-col p-0">
+                <div className="w-full h-full flex flex-col rounded-lg border border-gray-200 dark:border-gray-700">
+                  <div className="flex-1 overflow-hidden flex flex-col">
+                    <Table className="w-full">
+                      <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
+                        <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
+                          <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
+                          <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody className="text-sm overflow-auto">
+                        {Object.entries(docs.statuses).map(([status, documents]) =>
+                          documents.map((doc) => (
+                            <TableRow key={doc.id}>
+                              <TableCell className="truncate font-mono overflow-visible">
+                                {showFileName ? (
+                                  <>
+                                    <div className="group relative overflow-visible">
+                                      <div className="truncate">
+                                        {getDisplayFileName(doc, 35)}
+                                      </div>
+                                      <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                        {doc.file_path}
+                                      </div>
+                                    </div>
+                                    <div className="text-xs text-gray-500">{doc.id}</div>
+                                  </>
+                                ) : (
+                                  <div className="group relative overflow-visible">
+                                    <div className="truncate">
+                                      {doc.id}
+                                    </div>
+                                    <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                      {doc.file_path}
+                                    </div>
+                                  </div>
+                                )}
+                              </TableCell>
+                              <TableCell className="max-w-xs min-w-24 truncate overflow-visible">
+                                <div className="group relative overflow-visible">
+                                  <div className="truncate">
+                                    {doc.content_summary}
+                                  </div>
+                                  <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                    {doc.content_summary}
+                                  </div>
                                 </div>
-                                <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
-                                  {doc.file_path}
-                                </div>
-                              </div>
-                              <div className="text-xs text-gray-500">{doc.id}</div>
-                            </>
-                          ) : (
-                            <div className="group relative overflow-visible">
-                              <div className="truncate">
-                                {doc.id}
-                              </div>
-                              <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
-                                {doc.file_path}
-                              </div>
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell className="max-w-xs min-w-24 truncate overflow-visible">
-                          <div className="group relative overflow-visible">
-                            <div className="truncate">
-                              {doc.content_summary}
-                            </div>
-                            <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
-                              {doc.content_summary}
-                            </div>
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          {status === 'processed' && (
-                            <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
-                          )}
-                          {status === 'processing' && (
-                            <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
-                          )}
-                          {status === 'pending' && <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>}
-                          {status === 'failed' && <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>}
-                          {doc.error && (
-                            <span className="ml-2 text-red-500" title={doc.error}>
-                              ⚠️
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell>{doc.content_length ?? '-'}</TableCell>
-                        <TableCell>{doc.chunks_count ?? '-'}</TableCell>
-                        <TableCell className="truncate">
-                          {new Date(doc.created_at).toLocaleString()}
-                        </TableCell>
-                        <TableCell className="truncate">
-                          {new Date(doc.updated_at).toLocaleString()}
-                        </TableCell>
-                      </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
+                              </TableCell>
+                              <TableCell>
+                                {status === 'processed' && (
+                                  <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
+                                )}
+                                {status === 'processing' && (
+                                  <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
+                                )}
+                                {status === 'pending' && <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>}
+                                {status === 'failed' && <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>}
+                                {doc.error && (
+                                  <span className="ml-2 text-red-500" title={doc.error}>
+                                    ⚠️
+                                  </span>
+                                )}
+                              </TableCell>
+                              <TableCell>{doc.content_length ?? '-'}</TableCell>
+                              <TableCell>{doc.chunks_count ?? '-'}</TableCell>
+                              <TableCell className="truncate">
+                                {new Date(doc.created_at).toLocaleString()}
+                              </TableCell>
+                              <TableCell className="truncate">
+                                {new Date(doc.updated_at).toLocaleString()}
+                              </TableCell>
+                            </TableRow>
+                          ))
+                        )}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>
