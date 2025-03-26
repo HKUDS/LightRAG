@@ -8,6 +8,7 @@ import {
   AlertDialogContent,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogDescription,
   AlertDialogOverlay,
 } from '@/components/ui/AlertDialog'
 import Button from '@/components/ui/Button'
@@ -121,6 +122,12 @@ export default function PipelineStatusDialog({
           position === 'right' && '!right-4 !left-auto !translate-x-0'
         )}
       >
+        <AlertDialogDescription className="sr-only">
+          {status?.job_name 
+            ? `${t('documentPanel.pipelineStatus.jobName')}: ${status.job_name}, ${t('documentPanel.pipelineStatus.progress')}: ${status.cur_batch}/${status.batchs}`
+            : t('documentPanel.pipelineStatus.noActiveJob')
+          }
+        </AlertDialogDescription>
         <AlertDialogHeader className="flex flex-row items-center justify-between">
           <AlertDialogTitle>
             {t('documentPanel.pipelineStatus.title')}
