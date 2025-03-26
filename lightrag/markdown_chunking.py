@@ -32,14 +32,14 @@ def remove_page_numbers(text: str) -> str:
     # 移除形如 (p.1) 的页码标签
     return re.sub(r'\s*\(p\.\d+\)\s*', ' ', text).strip()
 
-def extract_page_numbers(text: str) -> List[str]:
+def extract_page_numbers(text: str) -> List[int]:
     """提取文本中的页码标签
     
     Args:
         text: 需要提取页码的文本
         
     Returns:
-        提取到的不重复页码列表
+        提取到的不重复页码列表（整型）
     """
     # 匹配形如 (p.1) 的页码标签
     pattern = r'\(p\.(\d+)\)'
@@ -49,8 +49,8 @@ def extract_page_numbers(text: str) -> List[str]:
     if not matches:
         return []
     
-    # 转换为字符串列表并去重
-    page_numbers = list(set(matches))
+    # 转换为整型列表并去重
+    page_numbers = list(set(int(page) for page in matches))
     return page_numbers
 
 def preprocess_markdown_headings(content: str) -> str:
