@@ -197,7 +197,7 @@ export default function DocumentManager() {
       <CardHeader>
         <CardTitle className="text-lg">{t('documentPanel.documentManager.title')}</CardTitle>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-2">
         <div className="flex gap-2">
           <div className="flex gap-2">
             <Button
@@ -232,7 +232,7 @@ export default function DocumentManager() {
         </div>
 
         <Card>
-          <CardHeader>
+          <CardHeader className="!pb-0">
             <div className="flex justify-between items-center">
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
               <div className="flex items-center gap-2">
@@ -250,7 +250,7 @@ export default function DocumentManager() {
                 </Button>
               </div>
             </div>
-            <CardDescription>{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
+            <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
 
           <CardContent>
