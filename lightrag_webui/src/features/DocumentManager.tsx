@@ -20,8 +20,9 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon } from 'lucide-react'
 import { DocStatusResponse } from '@/api/lightrag'
+import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
   // Check if file_path exists and is a non-empty string
@@ -45,6 +46,7 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
 };
 
 export default function DocumentManager() {
+  const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t } = useTranslation()
   const health = useBackendState.use.health()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
@@ -114,18 +116,33 @@ export default function DocumentManager() {
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={scanDocuments}
-            side="bottom"
-            tooltip={t('documentPanel.documentManager.scanTooltip')}
-            size="sm"
-          >
-            <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={scanDocuments}
+              side="bottom"
+              tooltip={t('documentPanel.documentManager.scanTooltip')}
+              size="sm"
+            >
+              <RefreshCwIcon /> {t('documentPanel.documentManager.scanButton')}
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => setShowPipelineStatus(true)}
+              side="bottom"
+              tooltip="View pipeline status"
+              size="sm"
+            >
+              <ActivityIcon /> Pipeline Status
+            </Button>
+          </div>
           <div className="flex-1" />
           <ClearDocumentsDialog />
           <UploadDocumentsDialog />
+          <PipelineStatusDialog
+            open={showPipelineStatus}
+            onOpenChange={setShowPipelineStatus}
+          />
         </div>
 
         <Card>
