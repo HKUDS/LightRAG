@@ -99,6 +99,7 @@
       "jobName": "Nom du travail",
       "startTime": "Heure de début",
       "progress": "Progression",
+      "unit": "lot",
       "latestMessage": "Dernier message",
       "historyMessages": "Historique des messages",
       "errors": {

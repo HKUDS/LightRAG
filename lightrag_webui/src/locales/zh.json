@@ -99,6 +99,7 @@
       "jobName": "作业名称",
       "startTime": "开始时间",
       "progress": "进度",
+      "unit": "批",
       "latestMessage": "最新消息",
       "historyMessages": "历史消息",
       "errors": {
