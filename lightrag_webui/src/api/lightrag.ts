@@ -141,6 +141,20 @@ export type AuthStatusResponse = {
   api_version?: string
 }
 
+export type PipelineStatusResponse = {
+  autoscanned: boolean
+  busy: boolean
+  job_name: string
+  job_start?: string
+  docs: number
+  batchs: number
+  cur_batch: number
+  request_pending: boolean
+  latest_message: string
+  history_messages?: string[]
+  update_status?: Record<string, any>
+}
+
 export type LoginResponse = {
   access_token: string
   token_type: string
@@ -422,6 +436,11 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       auth_mode: 'enabled'
     };
   }
+}
+
+export const getPipelineStatus = async (): Promise<PipelineStatusResponse> => {
+  const response = await axiosInstance.get('/documents/pipeline_status')
+  return response.data
 }
 
 export const loginToServer = async (username: string, password: string): Promise<LoginResponse> => {
