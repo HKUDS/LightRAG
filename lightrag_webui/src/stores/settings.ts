@@ -9,6 +9,10 @@ type Language = 'en' | 'zh' | 'fr' | 'ar'
 type Tab = 'documents' | 'knowledge-graph' | 'retrieval' | 'api'
 
 interface SettingsState {
+  // Document manager settings
+  showFileName: boolean
+  setShowFileName: (show: boolean) => void
+
   // Graph viewer settings
   showPropertyPanel: boolean
   showNodeSearchBar: boolean
@@ -83,6 +87,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       apiKey: null,
 
       currentTab: 'documents',
+      showFileName: false,
 
       retrievalHistory: [],
 
@@ -138,12 +143,14 @@ const useSettingsStoreBase = create<SettingsState>()(
       updateQuerySettings: (settings: Partial<QueryRequest>) =>
         set((state) => ({
           querySettings: { ...state.querySettings, ...settings }
-        }))
+        })),
+
+      setShowFileName: (show: boolean) => set({ showFileName: show })
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 8,
+      version: 9,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -185,6 +192,9 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 8) {
           state.graphMinDegree = 0
           state.language = 'en'
+        }
+        if (version < 9) {
+          state.showFileName = false
         }
         return state
       }

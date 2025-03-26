@@ -1330,11 +1330,15 @@ class LightRAG:
         Args:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
+                If param.model_func is provided, it will be used instead of the global model.
             prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
 
         Returns:
             str: The result of the query execution.
         """
+        # If a custom model is provided in param, temporarily update global config
+        global_config = asdict(self)
+
         if param.mode in ["local", "global", "hybrid"]:
             response = await kg_query(
                 query.strip(),
@@ -1343,7 +1347,7 @@ class LightRAG:
                 self.relationships_vdb,
                 self.text_chunks,
                 param,
-                asdict(self),
+                global_config,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
@@ -1353,7 +1357,7 @@ class LightRAG:
                 self.chunks_vdb,
                 self.text_chunks,
                 param,
-                asdict(self),
+                global_config,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
@@ -1366,7 +1370,7 @@ class LightRAG:
                 self.chunks_vdb,
                 self.text_chunks,
                 param,
-                asdict(self),
+                global_config,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )

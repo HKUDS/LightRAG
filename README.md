@@ -28,22 +28,11 @@
 </tr>
 </table>
 
-<div align="center">
-This repository hosts the code of LightRAG. The structure of this code is based on <a href="https://github.com/gusye1234/nano-graphrag">nano-graphrag</a>.
+<img src="./README.assets/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
 
-<img src="https://i-blog.csdnimg.cn/direct/b2aaf634151b4706892693ffb43d9093.png" width="800" alt="LightRAG Diagram">
 </div>
-</div>
-</br>
 
-
-
-
-
-<details>
-  <summary style="font-size: 1.4em; font-weight: bold; cursor: pointer; display: list-item;">
-    🎉 News
-  </summary>
+## 🎉 News
 
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
@@ -62,8 +51,6 @@ This repository hosts the code of LightRAG. The structure of this code is based 
 - [X] [2024.10.17]🎯📢We have created a [Discord channel](https://discord.gg/yF2MmDJyGJ)! Welcome to join for sharing and discussions! 🎉🎉
 - [X] [2024.10.16]🎯📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
 - [X] [2024.10.15]🎯📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
-
-</details>
 
 <details>
   <summary style="font-size: 1.4em; font-weight: bold; cursor: pointer; display: list-item;">
@@ -207,10 +194,19 @@ class QueryParam:
     """Maximum number of tokens allocated for entity descriptions in local retrieval."""
     ids: list[str] | None = None # ONLY SUPPORTED FOR PG VECTOR DBs
     """List of ids to filter the RAG."""
+    model_func: Callable[..., object] | None = None
+    """Optional override for the LLM model function to use for this specific query.
+    If provided, this will be used instead of the global model function.
+    This allows using different models for different query modes.
+    """
     ...
 ```
 
 > default value of Top_k can be change by environment  variables  TOP_K.
+
+### LLM and Embedding Injection
+
+LightRAG requires the utilization of LLM and Embedding models to accomplish document indexing and querying tasks. During the initialization phase, it is necessary to inject the invocation methods of the relevant models into LightRAG：
 
 <details>
 <summary> <b>Using Open AI-like APIs</b> </summary>
@@ -288,8 +284,7 @@ rag = LightRAG(
 
 <details>
 <summary> <b>Using Ollama Models</b> </summary>
-
-### Overview
+**Overview**
 
 If you want to use Ollama models, you need to pull model you plan to use and embedding model, for example `nomic-embed-text`.
 
@@ -313,11 +308,11 @@ rag = LightRAG(
 )
 ```
 
-### Increasing context size
+* **Increasing context size**
 
 In order for LightRAG to work context should be at least 32k tokens. By default Ollama models have context size of 8k. You can achieve this using one of two ways:
 
-#### Increasing the `num_ctx` parameter in Modelfile.
+* **Increasing the `num_ctx` parameter in Modelfile**
 
 1. Pull the model:
 
@@ -343,7 +338,7 @@ PARAMETER num_ctx 32768
 ollama create -f Modelfile qwen2m
 ```
 
-#### Setup `num_ctx` via Ollama API.
+* **Setup `num_ctx` via Ollama API**
 
 Tiy can use `llm_model_kwargs` param to configure ollama:
 
@@ -365,7 +360,7 @@ rag = LightRAG(
 )
 ```
 
-#### Low RAM GPUs
+* **Low RAM GPUs**
 
 In order to run this experiment on low RAM GPU you should select small model and tune context window (increasing context increase memory consumption). For example, running this ollama example on repurposed mining GPU with 6Gb of RAM required to set context size to 26k while using `gemma2:2b`. It was able to find 197 entities and 19 relations on `book.txt`.
 
@@ -373,13 +368,12 @@ In order to run this experiment on low RAM GPU you should select small model and
 <details>
 <summary> <b>LlamaIndex</b> </summary>
 
-LightRAG supports integration with LlamaIndex.
+LightRAG supports integration with LlamaIndex (`llm/llama_index_impl.py`):
 
-1. **LlamaIndex** (`llm/llama_index_impl.py`):
-   - Integrates with OpenAI and other providers through LlamaIndex
-   - See [LlamaIndex Documentation](lightrag/llm/Readme.md) for detailed setup and examples
+- Integrates with OpenAI and other providers through LlamaIndex
+- See [LlamaIndex Documentation](lightrag/llm/Readme.md) for detailed setup and examples
 
-### Example Usage
+**Example Usage**
 
 ```python
 # Using LlamaIndex with direct OpenAI access
@@ -441,15 +435,14 @@ if __name__ == "__main__":
     main()
 ```
 
-#### For detailed documentation and examples, see:
+**For detailed documentation and examples, see:**
 
 - [LlamaIndex Documentation](lightrag/llm/Readme.md)
 - [Direct OpenAI Example](examples/lightrag_llamaindex_direct_demo.py)
 - [LiteLLM Proxy Example](examples/lightrag_llamaindex_litellm_demo.py)
 
-</details>
-<details>
-<summary> <b>Conversation History Support</b> </summary>
+### Conversation History Support
+
 
 LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
 
@@ -475,10 +468,7 @@ response = rag.query(
 )
 ```
 
-</details>
-
-<details>
-<summary> <b>Custom Prompt Support</b> </summary>
+### Custom Prompt Support
 
 LightRAG now supports custom prompts for fine-tuned control over the system's behavior. Here's how to use it:
 
@@ -516,14 +506,11 @@ response_custom = rag.query(
 print(response_custom)
 ```
 
-</details>
-
-<details>
-<summary> <b>Separate Keyword Extraction</b> </summary>
+### Separate Keyword Extraction
 
 We've introduced a new function `query_with_separate_keyword_extraction` to enhance the keyword extraction capabilities. This function separates the keyword extraction process from the user's prompt, focusing solely on the query to improve the relevance of extracted keywords.
 
-##### How It Works?
+**How It Works?**
 
 The function operates by dividing the input into two parts:
 
@@ -532,7 +519,7 @@ The function operates by dividing the input into two parts:
 
 It then performs keyword extraction exclusively on the `user query`. This separation ensures that the extraction process is focused and relevant, unaffected by any additional language in the `prompt`. It also allows the `prompt` to serve purely for response formatting, maintaining the intent and clarity of the user's original question.
 
-##### Usage Example
+**Usage Example**
 
 This `example` shows how to tailor the function for educational content, focusing on detailed explanations for older students.
 
@@ -544,10 +531,7 @@ rag.query_with_separate_keyword_extraction(
 )
 ```
 
-</details>
-
-<details>
-<summary> <b>Insert Custom KG</b> </summary>
+### Insert Custom KG
 
 ```python
 custom_kg = {
@@ -612,12 +596,15 @@ rag.insert_custom_kg(custom_kg)
 
 ## Insert
 
-#### Basic Insert
+<details>
+  <summary> <b> Basic Insert </b></summary>
 
 ```python
 # Basic Insert
 rag.insert("Text")
 ```
+
+</details>
 
 <details>
   <summary> <b> Batch Insert </b></summary>
@@ -630,11 +617,11 @@ rag.insert(["TEXT1", "TEXT2",...])
 rag = LightRAG(
     working_dir=WORKING_DIR,
     addon_params={
-        "insert_batch_size": 20  # Process 20 documents per batch
+        "insert_batch_size": 4  # Process 4 documents per batch
     }
 )
 
-rag.insert(["TEXT1", "TEXT2", "TEXT3", ...])  # Documents will be processed in batches of 20
+rag.insert(["TEXT1", "TEXT2", "TEXT3", ...])  # Documents will be processed in batches of 4
 ```
 
 The `insert_batch_size` parameter in `addon_params` controls how many documents are processed in each batch during insertion. This is useful for:
@@ -855,8 +842,7 @@ rag.delete_by_doc_id("doc_id")
 
 LightRAG now supports comprehensive knowledge graph management capabilities, allowing you to create, edit, and delete entities and relationships within your knowledge graph.
 
-<details>
-<summary> <b>Create Entities and Relations</b> </summary>
+### Create Entities and Relations
 
 ```python
 # Create new entity
@@ -879,10 +865,7 @@ relation = rag.create_relation("Google", "Gmail", {
 })
 ```
 
-</details>
-
-<details>
-<summary> <b>Edit Entities and Relations</b> </summary>
+### Edit Entities and Relations
 
 ```python
 # Edit an existing entity
@@ -905,8 +888,6 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 })
 ```
 
-</details>
-
 All operations are available in both synchronous and asynchronous versions. The asynchronous versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
 #### Entity Operations
@@ -923,13 +904,13 @@ These operations maintain data consistency across both the graph database and ve
 
 ## Data Export Functions
 
-## Overview
+### Overview
 
 LightRAG allows you to export your knowledge graph data in various formats for analysis, sharing, and backup purposes. The system supports exporting entities, relations, and relationship data.
 
-## Export Functions
+### Export Functions
 
-### Basic Usage
+#### Basic Usage
 
 ```python
 # Basic CSV export (default format)
@@ -939,7 +920,7 @@ rag.export_data("knowledge_graph.csv")
 rag.export_data("output.xlsx", file_format="excel")
 ```
 
-### Different File Formats supported
+#### Different File Formats supported
 
 ```python
 #Export data in CSV format
@@ -954,14 +935,14 @@ rag.export_data("graph_data.md", file_format="md")
 # Export data in Text
 rag.export_data("graph_data.txt", file_format="txt")
 ```
-## Additional Options
+#### Additional Options
 
 Include vector embeddings in the export (optional):
 
 ```python
 rag.export_data("complete_data.csv", include_vector_data=True)
 ```
-## Data Included in Export
+### Data Included in Export
 
 All exports include:
 
@@ -1081,33 +1062,33 @@ Valid modes are:
 <details>
 <summary> Parameters </summary>
 
-| **Parameter**                                | **Type**    | **Explanation**                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | **Default**                                                                                             |
-| -------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| **working\_dir**                             | `str`           | Directory where the cache will be stored                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `lightrag_cache+timestamp`                                                                                  |
-| **kv\_storage**                              | `str`           | Storage type for documents and text chunks. Supported types:`JsonKVStorage`, `OracleKVStorage`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `JsonKVStorage`                                                                                             |
-| **vector\_storage**                          | `str`           | Storage type for embedding vectors. Supported types:`NanoVectorDBStorage`, `OracleVectorDBStorage`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | `NanoVectorDBStorage`                                                                                       |
-| **graph\_storage**                           | `str`           | Storage type for graph edges and nodes. Supported types:`NetworkXStorage`, `Neo4JStorage`, `OracleGraphStorage`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `NetworkXStorage`                                                                                           |
-| **chunk\_token\_size**                       | `int`           | Maximum token size per chunk when splitting documents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | `1200`                                                                                                      |
-| **chunk\_overlap\_token\_size**              | `int`           | Overlap token size between two chunks when splitting documents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `100`                                                                                                       |
-| **tiktoken\_model\_name**                    | `str`           | Model name for the Tiktoken encoder used to calculate token numbers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | `gpt-4o-mini`                                                                                               |
-| **entity\_extract\_max\_gleaning**           | `int`           | Number of loops in the entity extraction process, appending history messages                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | `1`                                                                                                         |
-| **entity\_summary\_to\_max\_tokens**         | `int`           | Maximum token size for each entity summary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `500`                                                                                                       |
-| **node\_embedding\_algorithm**               | `str`           | Algorithm for node embedding (currently not used)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     | `node2vec`                                                                                                  |
-| **node2vec\_params**                         | `dict`          | Parameters for node embedding                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `{"dimensions": 1536,"num_walks": 10,"walk_length": 40,"window_size": 2,"iterations": 3,"random_seed": 3,}` |
-| **embedding\_func**                          | `EmbeddingFunc` | Function to generate embedding vectors from text                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | `openai_embed`                                                                                              |
-| **embedding\_batch\_num**                    | `int`           | Maximum batch size for embedding processes (multiple texts sent per batch)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `32`                                                                                                        |
-| **embedding\_func\_max\_async**              | `int`           | Maximum number of concurrent asynchronous embedding processes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `16`                                                                                                        |
-| **llm\_model\_func**                         | `callable`      | Function for LLM generation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | `gpt_4o_mini_complete`                                                                                      |
-| **llm\_model\_name**                         | `str`           | LLM model name for generation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `meta-llama/Llama-3.2-1B-Instruct`                                                                          |
-| **llm\_model\_max\_token\_size**             | `int`           | Maximum token size for LLM generation (affects entity relation summaries)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             | `32768`（default value changed by  env var MAX_TOKENS)                                                      |
-| **llm\_model\_max\_async**                   | `int`           | Maximum number of concurrent asynchronous LLM processes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `4`（default value changed by  env var MAX_ASYNC)                                                          |
-| **llm\_model\_kwargs**                       | `dict`          | Additional parameters for LLM generation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |                                                                                                               |
-| **vector\_db\_storage\_cls\_kwargs**         | `dict`          | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | cosine_better_than_threshold: 0.2（default value changed by  env var COSINE_THRESHOLD)                        |
-| **enable\_llm\_cache**                       | `bool`          | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | `TRUE`                                                                                                      |
-| **enable\_llm\_cache\_for\_entity\_extract** | `bool`          | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | `TRUE`                                                                                                      |
-| **addon\_params**                            | `dict`          | Additional parameters, e.g.,`{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"], "insert_batch_size": 10}`: sets example limit, output language, and batch size for document processing                                                                                                                                                                                                                                                                                                                                                                                                                                             | `example_number: all examples, language: English, insert_batch_size: 10`                                    |
-| **convert\_response\_to\_json\_func**        | `callable`      | Not used                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `convert_response_to_json`                                                                                  |
-| **embedding\_cache\_config**                 | `dict`          | Configuration for question-answer caching. Contains three parameters:`<br>`- `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers.`<br>`- `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM.`<br>`- `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default:`{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}`                          |
+| **Parameter** | **Type** | **Explanation** | **Default** |
+|--------------|----------|-----------------|-------------|
+| **working_dir** | `str` | Directory where the cache will be stored | `lightrag_cache+timestamp` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`, `OracleKVStorage` | `JsonKVStorage` |
+| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`, `OracleVectorDBStorage` | `NanoVectorDBStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`, `Neo4JStorage`, `OracleGraphStorage` | `NetworkXStorage` |
+| **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
+| **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
+| **tiktoken_model_name** | `str` | Model name for the Tiktoken encoder used to calculate token numbers | `gpt-4o-mini` |
+| **entity_extract_max_gleaning** | `int` | Number of loops in the entity extraction process, appending history messages | `1` |
+| **entity_summary_to_max_tokens** | `int` | Maximum token size for each entity summary | `500` |
+| **node_embedding_algorithm** | `str` | Algorithm for node embedding (currently not used) | `node2vec` |
+| **node2vec_params** | `dict` | Parameters for node embedding | `{"dimensions": 1536,"num_walks": 10,"walk_length": 40,"window_size": 2,"iterations": 3,"random_seed": 3,}` |
+| **embedding_func** | `EmbeddingFunc` | Function to generate embedding vectors from text | `openai_embed` |
+| **embedding_batch_num** | `int` | Maximum batch size for embedding processes (multiple texts sent per batch) | `32` |
+| **embedding_func_max_async** | `int` | Maximum number of concurrent asynchronous embedding processes | `16` |
+| **llm_model_func** | `callable` | Function for LLM generation | `gpt_4o_mini_complete` |
+| **llm_model_name** | `str` | LLM model name for generation | `meta-llama/Llama-3.2-1B-Instruct` |
+| **llm_model_max_token_size** | `int` | Maximum token size for LLM generation (affects entity relation summaries) | `32768`（default value changed by env var MAX_TOKENS) |
+| **llm_model_max_async** | `int` | Maximum number of concurrent asynchronous LLM processes | `4`（default value changed by env var MAX_ASYNC) |
+| **llm_model_kwargs** | `dict` | Additional parameters for LLM generation | |
+| **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
+| **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
+| **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
+| **addon_params** | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"], "insert_batch_size": 10}`: sets example limit, output language, and batch size for document processing | `example_number: all examples, language: English, insert_batch_size: 10` |
+| **convert_response_to_json_func** | `callable` | Not used | `convert_response_to_json` |
+| **embedding_cache_config** | `dict` | Configuration for question-answer caching. Contains three parameters: `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers. `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM. `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 
 </details>
 
@@ -1124,174 +1105,15 @@ The API includes comprehensive error handling:
 
 </details>
 
-## API
+## LightRAG API
 
-LightRag can be installed with API support to serve a Fast api interface to perform data upload and indexing/Rag operations/Rescan of the input folder etc..
-
-[LightRag API](lightrag/api/README.md)
+The LightRAG Server is designed to provide Web UI and API support.  **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
 
 ## Graph Visualization
 
-<details>
-<summary> <b>Graph visualization with html</b> </summary>
+The LightRAG Server offers a comprehensive knowledge graph visualization feature. It supports various gravity layouts, node queries, subgraph filtering, and more. **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
 
-* The following code can be found in `examples/graph_visual_with_html.py`
-
-```python
-import networkx as nx
-from pyvis.network import Network
-
-# Load the GraphML file
-G = nx.read_graphml('./dickens/graph_chunk_entity_relation.graphml')
-
-# Create a Pyvis network
-net = Network(notebook=True)
-
-# Convert NetworkX graph to Pyvis network
-net.from_nx(G)
-
-# Save and display the network
-net.show('knowledge_graph.html')
-```
-
-</details>
-
-<details>
-<summary> <b>Graph visualization with Neo4</b> </summary>
-
-* The following code can be found in `examples/graph_visual_with_neo4j.py`
-
-```python
-import os
-import json
-from lightrag.utils import xml_to_json
-from neo4j import GraphDatabase
-
-# Constants
-WORKING_DIR = "./dickens"
-BATCH_SIZE_NODES = 500
-BATCH_SIZE_EDGES = 100
-
-# Neo4j connection credentials
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USERNAME = "neo4j"
-NEO4J_PASSWORD = "your_password"
-
-def convert_xml_to_json(xml_path, output_path):
-    """Converts XML file to JSON and saves the output."""
-    if not os.path.exists(xml_path):
-        print(f"Error: File not found - {xml_path}")
-        return None
-
-    json_data = xml_to_json(xml_path)
-    if json_data:
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(json_data, f, ensure_ascii=False, indent=2)
-        print(f"JSON file created: {output_path}")
-        return json_data
-    else:
-        print("Failed to create JSON data")
-        return None
-
-def process_in_batches(tx, query, data, batch_size):
-    """Process data in batches and execute the given query."""
-    for i in range(0, len(data), batch_size):
-        batch = data[i:i + batch_size]
-        tx.run(query, {"nodes": batch} if "nodes" in query else {"edges": batch})
-
-def main():
-    # Paths
-    xml_file = os.path.join(WORKING_DIR, 'graph_chunk_entity_relation.graphml')
-    json_file = os.path.join(WORKING_DIR, 'graph_data.json')
-
-    # Convert XML to JSON
-    json_data = convert_xml_to_json(xml_file, json_file)
-    if json_data is None:
-        return
-
-    # Load nodes and edges
-    nodes = json_data.get('nodes', [])
-    edges = json_data.get('edges', [])
-
-    # Neo4j queries
-    create_nodes_query = """
-    UNWIND $nodes AS node
-    MERGE (e:Entity {id: node.id})
-    SET e.entity_type = node.entity_type,
-        e.description = node.description,
-        e.source_id = node.source_id,
-        e.displayName = node.id
-    REMOVE e:Entity
-    WITH e, node
-    CALL apoc.create.addLabels(e, [node.entity_type]) YIELD node AS labeledNode
-    RETURN count(*)
-    """
-
-    create_edges_query = """
-    UNWIND $edges AS edge
-    MATCH (source {id: edge.source})
-    MATCH (target {id: edge.target})
-    WITH source, target, edge,
-         CASE
-            WHEN edge.keywords CONTAINS 'lead' THEN 'lead'
-            WHEN edge.keywords CONTAINS 'participate' THEN 'participate'
-            WHEN edge.keywords CONTAINS 'uses' THEN 'uses'
-            WHEN edge.keywords CONTAINS 'located' THEN 'located'
-            WHEN edge.keywords CONTAINS 'occurs' THEN 'occurs'
-           ELSE REPLACE(SPLIT(edge.keywords, ',')[0], '\"', '')
-         END AS relType
-    CALL apoc.create.relationship(source, relType, {
-      weight: edge.weight,
-      description: edge.description,
-      keywords: edge.keywords,
-      source_id: edge.source_id
-    }, target) YIELD rel
-    RETURN count(*)
-    """
-
-    set_displayname_and_labels_query = """
-    MATCH (n)
-    SET n.displayName = n.id
-    WITH n
-    CALL apoc.create.setLabels(n, [n.entity_type]) YIELD node
-    RETURN count(*)
-    """
-
-    # Create a Neo4j driver
-    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD))
-
-    try:
-        # Execute queries in batches
-        with driver.session() as session:
-            # Insert nodes in batches
-            session.execute_write(process_in_batches, create_nodes_query, nodes, BATCH_SIZE_NODES)
-
-            # Insert edges in batches
-            session.execute_write(process_in_batches, create_edges_query, edges, BATCH_SIZE_EDGES)
-
-            # Set displayName and labels
-            session.run(set_displayname_and_labels_query)
-
-    except Exception as e:
-        print(f"Error occurred: {e}")
-
-    finally:
-        driver.close()
-
-if __name__ == "__main__":
-    main()
-```
-
-</details>
-
-<details>
-<summary> <b>Graphml 3d visualizer</b> </summary>
-
-LightRag can be installed with Tools support to add extra tools like the graphml 3d visualizer.
-
-[LightRag Visualizer](lightrag/tools/lightrag_visualizer/README.md)
-
-</details>
+![iShot_2025-03-23_12.40.08](./README.assets/iShot_2025-03-23_12.40.08.png)
 
 ## Evaluation
 
@@ -1386,28 +1208,28 @@ Output your evaluation in the following JSON format:
 
 ### Overall Performance Table
 
-|                             | **Agriculture** |                    | **CS** |                    | **Legal** |                    | **Mix**   |                    |
-| --------------------------- | --------------------- | ------------------ | ------------ | ------------------ | --------------- | ------------------ | --------------- | ------------------ |
-|                             | NaiveRAG              | **LightRAG** | NaiveRAG     | **LightRAG** | NaiveRAG        | **LightRAG** | NaiveRAG        | **LightRAG** |
-| **Comprehensiveness** | 32.4%                 | **67.6%**    | 38.4%        | **61.6%**    | 16.4%           | **83.6%**    | 38.8%           | **61.2%**    |
-| **Diversity**         | 23.6%                 | **76.4%**    | 38.0%        | **62.0%**    | 13.6%           | **86.4%**    | 32.4%           | **67.6%**    |
-| **Empowerment**       | 32.4%                 | **67.6%**    | 38.8%        | **61.2%**    | 16.4%           | **83.6%**    | 42.8%           | **57.2%**    |
-| **Overall**           | 32.4%                 | **67.6%**    | 38.8%        | **61.2%**    | 15.2%           | **84.8%**    | 40.0%           | **60.0%**    |
-|                             | RQ-RAG                | **LightRAG** | RQ-RAG       | **LightRAG** | RQ-RAG          | **LightRAG** | RQ-RAG          | **LightRAG** |
-| **Comprehensiveness** | 31.6%                 | **68.4%**    | 38.8%        | **61.2%**    | 15.2%           | **84.8%**    | 39.2%           | **60.8%**    |
-| **Diversity**         | 29.2%                 | **70.8%**    | 39.2%        | **60.8%**    | 11.6%           | **88.4%**    | 30.8%           | **69.2%**    |
-| **Empowerment**       | 31.6%                 | **68.4%**    | 36.4%        | **63.6%**    | 15.2%           | **84.8%**    | 42.4%           | **57.6%**    |
-| **Overall**           | 32.4%                 | **67.6%**    | 38.0%        | **62.0%**    | 14.4%           | **85.6%**    | 40.0%           | **60.0%**    |
-|                             | HyDE                  | **LightRAG** | HyDE         | **LightRAG** | HyDE            | **LightRAG** | HyDE            | **LightRAG** |
-| **Comprehensiveness** | 26.0%                 | **74.0%**    | 41.6%        | **58.4%**    | 26.8%           | **73.2%**    | 40.4%           | **59.6%**    |
-| **Diversity**         | 24.0%                 | **76.0%**    | 38.8%        | **61.2%**    | 20.0%           | **80.0%**    | 32.4%           | **67.6%**    |
-| **Empowerment**       | 25.2%                 | **74.8%**    | 40.8%        | **59.2%**    | 26.0%           | **74.0%**    | 46.0%           | **54.0%**    |
-| **Overall**           | 24.8%                 | **75.2%**    | 41.6%        | **58.4%**    | 26.4%           | **73.6%**    | 42.4%           | **57.6%**    |
-|                             | GraphRAG              | **LightRAG** | GraphRAG     | **LightRAG** | GraphRAG        | **LightRAG** | GraphRAG        | **LightRAG** |
-| **Comprehensiveness** | 45.6%                 | **54.4%**    | 48.4%        | **51.6%**    | 48.4%           | **51.6%**    | **50.4%** | 49.6%              |
-| **Diversity**         | 22.8%                 | **77.2%**    | 40.8%        | **59.2%**    | 26.4%           | **73.6%**    | 36.0%           | **64.0%**    |
-| **Empowerment**       | 41.2%                 | **58.8%**    | 45.2%        | **54.8%**    | 43.6%           | **56.4%**    | **50.8%** | 49.2%              |
-| **Overall**           | 45.2%                 | **54.8%**    | 48.0%        | **52.0%**    | 47.2%           | **52.8%**    | **50.4%** | 49.6%              |
+|                      |**Agriculture**|            |**CS**|            |**Legal**|            |**Mix**|            |
+|----------------------|---------------|------------|------|------------|---------|------------|-------|------------|
+|                      |NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|
+|**Comprehensiveness**|32.4%|**67.6%**|38.4%|**61.6%**|16.4%|**83.6%**|38.8%|**61.2%**|
+|**Diversity**|23.6%|**76.4%**|38.0%|**62.0%**|13.6%|**86.4%**|32.4%|**67.6%**|
+|**Empowerment**|32.4%|**67.6%**|38.8%|**61.2%**|16.4%|**83.6%**|42.8%|**57.2%**|
+|**Overall**|32.4%|**67.6%**|38.8%|**61.2%**|15.2%|**84.8%**|40.0%|**60.0%**|
+|                      |RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|
+|**Comprehensiveness**|31.6%|**68.4%**|38.8%|**61.2%**|15.2%|**84.8%**|39.2%|**60.8%**|
+|**Diversity**|29.2%|**70.8%**|39.2%|**60.8%**|11.6%|**88.4%**|30.8%|**69.2%**|
+|**Empowerment**|31.6%|**68.4%**|36.4%|**63.6%**|15.2%|**84.8%**|42.4%|**57.6%**|
+|**Overall**|32.4%|**67.6%**|38.0%|**62.0%**|14.4%|**85.6%**|40.0%|**60.0%**|
+|                      |HyDE|**LightRAG**|HyDE|**LightRAG**|HyDE|**LightRAG**|HyDE|**LightRAG**|
+|**Comprehensiveness**|26.0%|**74.0%**|41.6%|**58.4%**|26.8%|**73.2%**|40.4%|**59.6%**|
+|**Diversity**|24.0%|**76.0%**|38.8%|**61.2%**|20.0%|**80.0%**|32.4%|**67.6%**|
+|**Empowerment**|25.2%|**74.8%**|40.8%|**59.2%**|26.0%|**74.0%**|46.0%|**54.0%**|
+|**Overall**|24.8%|**75.2%**|41.6%|**58.4%**|26.4%|**73.6%**|42.4%|**57.6%**|
+|                      |GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|
+|**Comprehensiveness**|45.6%|**54.4%**|48.4%|**51.6%**|48.4%|**51.6%**|**50.4%**|49.6%|
+|**Diversity**|22.8%|**77.2%**|40.8%|**59.2%**|26.4%|**73.6%**|36.0%|**64.0%**|
+|**Empowerment**|41.2%|**58.8%**|45.2%|**54.8%**|43.6%|**56.4%**|**50.8%**|49.2%|
+|**Overall**|45.2%|**54.8%**|48.0%|**52.0%**|47.2%|**52.8%**|**50.4%**|49.6%|
 
 ## Reproduce
 

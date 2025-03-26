@@ -2,7 +2,7 @@ import { cn } from '@/lib/utils'
 import { useBackendState } from '@/stores/state'
 import { useEffect, useState } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
-import StatusCard from '@/components/graph/StatusCard'
+import StatusCard from '@/components/status/StatusCard'
 import { useTranslation } from 'react-i18next'
 
 const StatusIndicator = () => {
