@@ -842,10 +842,17 @@ class LightRAG:
                     logger.info("No documents to process")
                     return
 
+                # Get first document's file path and total count for job name
+                first_doc_id, first_doc = next(iter(to_process_docs.items()))
+                first_doc_path = first_doc.file_path
+                path_prefix = first_doc_path[:20] + ("..." if len(first_doc_path) > 20 else "")
+                total_files = len(to_process_docs)
+                job_name = f"{path_prefix}[{total_files} files]"
+
                 pipeline_status.update(
                     {
                         "busy": True,
-                        "job_name": "indexing files",
+                        "job_name": job_name,
                         "job_start": datetime.now().isoformat(),
                         "docs": 0,
                         "batchs": 0,
