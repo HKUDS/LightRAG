@@ -10,7 +10,6 @@ import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { useControllableState } from '@radix-ui/react-use-controllable-state'
 import Button from '@/components/ui/Button'
-import Progress from '@/components/ui/Progress'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { supportedFileTypes } from '@/lib/constants'
 
@@ -46,6 +45,14 @@ interface FileUploaderProps extends React.HTMLAttributes<HTMLDivElement> {
    * @example progresses={{ "file1.png": 50 }}
    */
   progresses?: Record<string, number>
+
+  /**
+   * Error messages for failed uploads.
+   * @type Record<string, string> | undefined
+   * @default undefined
+   * @example fileErrors={{ "file1.png": "Upload failed" }}
+   */
+  fileErrors?: Record<string, string>
 
   /**
    * Accepted file types for the uploader.
@@ -117,6 +124,7 @@ function FileUploader(props: FileUploaderProps) {
     onValueChange,
     onUpload,
     progresses,
+    fileErrors,
     accept = supportedFileTypes,
     maxSize = 1024 * 1024 * 200,
     maxFileCount = 1,
@@ -161,16 +169,7 @@ function FileUploader(props: FileUploaderProps) {
       }
 
       if (onUpload && updatedFiles.length > 0 && updatedFiles.length <= maxFileCount) {
-        const target = updatedFiles.length > 0 ? `${updatedFiles.length} files` : 'file'
-
-        toast.promise(onUpload(updatedFiles), {
-          loading: `Uploading ${target}...`,
-          success: () => {
-            setFiles([])
-            return `${target} uploaded`
-          },
-          error: `Failed to upload ${target}`
-        })
+        onUpload(updatedFiles)
       }
     },
 
@@ -265,6 +264,7 @@ function FileUploader(props: FileUploaderProps) {
                 file={file}
                 onRemove={() => onRemove(index)}
                 progress={progresses?.[file.name]}
+                error={fileErrors?.[file.name]}
               />
             ))}
           </div>
@@ -274,13 +274,33 @@ function FileUploader(props: FileUploaderProps) {
   )
 }
 
+interface ProgressProps {
+  value: number
+  error?: boolean
+}
+
+function Progress({ value, error }: ProgressProps) {
+  return (
+    <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+      <div
+        className={cn(
+          'h-full transition-all',
+          error ? 'bg-destructive' : 'bg-primary'
+        )}
+        style={{ width: `${value}%` }}
+      />
+    </div>
+  )
+}
+
 interface FileCardProps {
   file: File
   onRemove: () => void
   progress?: number
+  error?: string
 }
 
-function FileCard({ file, progress, onRemove }: FileCardProps) {
+function FileCard({ file, progress, error, onRemove }: FileCardProps) {
   return (
     <div className="relative flex items-center gap-2.5">
       <div className="flex flex-1 gap-2.5">
@@ -290,7 +310,14 @@ function FileCard({ file, progress, onRemove }: FileCardProps) {
             <p className="text-foreground/80 line-clamp-1 text-sm font-medium">{file.name}</p>
             <p className="text-muted-foreground text-xs">{formatBytes(file.size)}</p>
           </div>
-          {progress ? <Progress value={progress} /> : null}
+          {error ? (
+            <div className="text-destructive text-sm">
+              <Progress value={100} error={true} />
+              <p className="mt-1">{error}</p>
+            </div>
+          ) : (
+            progress ? <Progress value={progress} /> : null
+          )}
         </div>
       </div>
       <div className="flex items-center gap-2">
