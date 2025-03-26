@@ -59,6 +59,8 @@
       "title": "إدارة المستندات",
       "scanButton": "مسح ضوئي",
       "scanTooltip": "مسح المستندات ضوئيًا",
+      "pipelineStatusButton": "حالة خط المعالجة",
+      "pipelineStatusTooltip": "عرض حالة خط المعالجة",
       "uploadedTitle": "المستندات المرفوعة",
       "uploadedDescription": "قائمة المستندات المرفوعة وحالاتها.",
       "emptyTitle": "لا توجد مستندات",
@@ -89,6 +91,19 @@
       "hideButton": "إخفاء",
       "showFileNameTooltip": "عرض اسم الملف",
       "hideFileNameTooltip": "إخفاء اسم الملف"
+    },
+    "pipelineStatus": {
+      "title": "حالة خط المعالجة",
+      "busy": "مشغول",
+      "requestPending": "الطلب معلق",
+      "jobName": "اسم المهمة",
+      "startTime": "وقت البدء",
+      "progress": "التقدم",
+      "latestMessage": "آخر رسالة",
+      "historyMessages": "سجل الرسائل",
+      "errors": {
+        "fetchFailed": "فشل في جلب حالة خط المعالجة\n{{error}}"
+      }
     }
   },
   "graphPanel": {

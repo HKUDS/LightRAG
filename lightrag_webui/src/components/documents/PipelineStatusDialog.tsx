@@ -150,27 +150,27 @@ export default function PipelineStatusDialog({
           {/* Pipeline Status */}
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2">
-              <div className="text-sm font-medium">Busy:</div>
+              <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.busy')}:</div>
               <div className={`h-2 w-2 rounded-full ${status?.busy ? 'bg-green-500' : 'bg-gray-300'}`} />
             </div>
             <div className="flex items-center gap-2">
-              <div className="text-sm font-medium">Request Pending:</div>
+              <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.requestPending')}:</div>
               <div className={`h-2 w-2 rounded-full ${status?.request_pending ? 'bg-green-500' : 'bg-gray-300'}`} />
             </div>
           </div>
 
           {/* Job Information */}
           <div className="rounded-md border p-3 space-y-2">
-            <div>Job Name: {status?.job_name || '-'}</div>
+            <div>{t('documentPanel.pipelineStatus.jobName')}: {status?.job_name || '-'}</div>
             <div className="flex justify-between">
-              <span>Start Time: {status?.job_start ? new Date(status.job_start).toLocaleString() : '-'}</span>
-              <span>Progress: {status ? `${status.cur_batch}/${status.batchs}` : '-'}</span>
+              <span>{t('documentPanel.pipelineStatus.startTime')}: {status?.job_start ? new Date(status.job_start).toLocaleString() : '-'}</span>
+              <span>{t('documentPanel.pipelineStatus.progress')}: {status ? `${status.cur_batch}/${status.batchs}` : '-'}</span>
             </div>
           </div>
 
           {/* Latest Message */}
           <div className="space-y-2">
-            <div className="text-sm font-medium">Latest Message:</div>
+            <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.latestMessage')}:</div>
             <div className="font-mono text-sm rounded-md bg-zinc-800 text-zinc-100 p-3">
               {status?.latest_message || '-'}
             </div>
@@ -178,7 +178,7 @@ export default function PipelineStatusDialog({
 
           {/* History Messages */}
           <div className="space-y-2">
-            <div className="text-sm font-medium">History Messages:</div>
+            <div className="text-sm font-medium">{t('documentPanel.pipelineStatus.historyMessages')}:</div>
             <div 
               ref={historyRef}
               onScroll={handleScroll}
