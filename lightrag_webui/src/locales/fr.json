@@ -59,6 +59,8 @@
       "title": "Gestion des documents",
       "scanButton": "Scanner",
       "scanTooltip": "Scanner les documents",
+      "pipelineStatusButton": "État du Pipeline",
+      "pipelineStatusTooltip": "Voir l'état du pipeline",
       "uploadedTitle": "Documents téléchargés",
       "uploadedDescription": "Liste des documents téléchargés et leurs statuts.",
       "emptyTitle": "Aucun document",
@@ -83,6 +85,19 @@
         "loadFailed": "Échec du chargement des documents\n{{error}}",
         "scanFailed": "Échec de la numérisation des documents\n{{error}}",
         "scanProgressFailed": "Échec de l'obtention de la progression de la numérisation\n{{error}}"
+      }
+    },
+    "pipelineStatus": {
+      "title": "État du Pipeline",
+      "busy": "Occupé",
+      "requestPending": "Requête en attente",
+      "jobName": "Nom du travail",
+      "startTime": "Heure de début",
+      "progress": "Progression",
+      "latestMessage": "Dernier message",
+      "historyMessages": "Historique des messages",
+      "errors": {
+        "fetchFailed": "Échec de la récupération de l'état du pipeline\n{{error}}"
       }
     }
   },

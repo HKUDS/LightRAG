@@ -130,10 +130,10 @@ export default function DocumentManager() {
               variant="outline"
               onClick={() => setShowPipelineStatus(true)}
               side="bottom"
-              tooltip="View pipeline status"
+              tooltip={t('documentPanel.documentManager.pipelineStatusTooltip')}
               size="sm"
             >
-              <ActivityIcon /> Pipeline Status
+              <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
             </Button>
           </div>
           <div className="flex-1" />
