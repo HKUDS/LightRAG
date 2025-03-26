@@ -8,7 +8,8 @@ import {
   AlertDialogContent,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogOverlay
+  AlertDialogOverlay,
+  AlertDialogDescription
 } from '@/components/ui/AlertDialog'
 import Button from '@/components/ui/Button'
 import { getPipelineStatus, PipelineStatusResponse } from '@/api/lightrag'
@@ -144,6 +145,10 @@ export default function PipelineStatusDialog({
             </Button>
           </div>
         </AlertDialogHeader>
+        
+        <AlertDialogDescription>
+          {t('documentPanel.pipelineStatus.description')}
+        </AlertDialogDescription>
 
         {/* Status Content */}
         <div className="space-y-4 pt-4">
