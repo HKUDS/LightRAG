@@ -48,12 +48,28 @@
       "tooltip": "Upload documents",
       "title": "Upload Documents",
       "description": "Drag and drop your documents here or click to browse.",
-      "uploading": "Uploading {{name}}: {{percent}}%",
-      "success": "Upload Success:\n{{name}} uploaded successfully",
-      "failed": "Upload Failed:\n{{name}}\n{{message}}",
-      "error": "Upload Failed:\n{{name}}\n{{error}}",
+      "single": {
+        "uploading": "Uploading {{name}}: {{percent}}%",
+        "success": "Upload Success:\n{{name}} uploaded successfully",
+        "failed": "Upload Failed:\n{{name}}\n{{message}}",
+        "error": "Upload Failed:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "Uploading files...",
+        "success": "Files uploaded successfully",
+        "error": "Some files failed to upload"
+      },
       "generalError": "Upload Failed\n{{error}}",
-      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
+      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "Cannot upload more than 1 file at a time",
+        "maxFilesLimit": "Cannot upload more than {{count}} files",
+        "fileRejected": "File {{name}} was rejected",
+        "dropHere": "Drop the files here",
+        "dragAndDrop": "Drag and drop files here, or click to select files",
+        "removeFile": "Remove file",
+        "uploadDescription": "You can upload {{isMultiple ? 'multiple' : count}} files (up to {{maxSize}} each)"
+      }
     },
     "documentManager": {
       "title": "Document Management",
@@ -95,15 +111,15 @@
     "pipelineStatus": {
       "title": "Pipeline Status",
       "busy": "Pipeline Busy",
-      "requestPending": "Reques Pending",
+      "requestPending": "Request Pending",
       "jobName": "Job Name",
       "startTime": "Start Time",
       "progress": "Progress",
       "unit": "batch",
       "latestMessage": "Latest Message",
-      "historyMessages": "History Message",
+      "historyMessages": "History Messages",
       "errors": {
-        "fetchFailed": "Fail to get pipeline status\n{{error}}"
+        "fetchFailed": "Failed to get pipeline status\n{{error}}"
       }
     }
   },
