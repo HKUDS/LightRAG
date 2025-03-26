@@ -6,11 +6,11 @@ import * as React from 'react'
 import { FileText, Upload, X } from 'lucide-react'
 import Dropzone, { type DropzoneProps, type FileRejection } from 'react-dropzone'
 import { toast } from 'sonner'
+import { useTranslation } from 'react-i18next'
 
 import { cn } from '@/lib/utils'
 import { useControllableState } from '@radix-ui/react-use-controllable-state'
 import Button from '@/components/ui/Button'
-import Progress from '@/components/ui/Progress'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 import { supportedFileTypes } from '@/lib/constants'
 
@@ -46,6 +46,14 @@ interface FileUploaderProps extends React.HTMLAttributes<HTMLDivElement> {
    * @example progresses={{ "file1.png": 50 }}
    */
   progresses?: Record<string, number>
+
+  /**
+   * Error messages for failed uploads.
+   * @type Record<string, string> | undefined
+   * @default undefined
+   * @example fileErrors={{ "file1.png": "Upload failed" }}
+   */
+  fileErrors?: Record<string, string>
 
   /**
    * Accepted file types for the uploader.
@@ -112,11 +120,13 @@ function formatBytes(
 }
 
 function FileUploader(props: FileUploaderProps) {
+  const { t } = useTranslation()
   const {
     value: valueProp,
     onValueChange,
     onUpload,
     progresses,
+    fileErrors,
     accept = supportedFileTypes,
     maxSize = 1024 * 1024 * 200,
     maxFileCount = 1,
@@ -135,12 +145,12 @@ function FileUploader(props: FileUploaderProps) {
   const onDrop = React.useCallback(
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
       if (!multiple && maxFileCount === 1 && acceptedFiles.length > 1) {
-        toast.error('Cannot upload more than 1 file at a time')
+        toast.error(t('documentPanel.uploadDocuments.fileUploader.singleFileLimit'))
         return
       }
 
       if ((files?.length ?? 0) + acceptedFiles.length > maxFileCount) {
-        toast.error(`Cannot upload more than ${maxFileCount} files`)
+        toast.error(t('documentPanel.uploadDocuments.fileUploader.maxFilesLimit', { count: maxFileCount }))
         return
       }
 
@@ -156,25 +166,16 @@ function FileUploader(props: FileUploaderProps) {
 
       if (rejectedFiles.length > 0) {
         rejectedFiles.forEach(({ file }) => {
-          toast.error(`File ${file.name} was rejected`)
+          toast.error(t('documentPanel.uploadDocuments.fileUploader.fileRejected', { name: file.name }))
         })
       }
 
       if (onUpload && updatedFiles.length > 0 && updatedFiles.length <= maxFileCount) {
-        const target = updatedFiles.length > 0 ? `${updatedFiles.length} files` : 'file'
-
-        toast.promise(onUpload(updatedFiles), {
-          loading: `Uploading ${target}...`,
-          success: () => {
-            setFiles([])
-            return `${target} uploaded`
-          },
-          error: `Failed to upload ${target}`
-        })
+        onUpload(updatedFiles)
       }
     },
 
-    [files, maxFileCount, multiple, onUpload, setFiles]
+    [files, maxFileCount, multiple, onUpload, setFiles, t]
   )
 
   function onRemove(index: number) {
@@ -227,7 +228,7 @@ function FileUploader(props: FileUploaderProps) {
                 <div className="rounded-full border border-dashed p-3">
                   <Upload className="text-muted-foreground size-7" aria-hidden="true" />
                 </div>
-                <p className="text-muted-foreground font-medium">Drop the files here</p>
+                <p className="text-muted-foreground font-medium">{t('documentPanel.uploadDocuments.fileUploader.dropHere')}</p>
               </div>
             ) : (
               <div className="flex flex-col items-center justify-center gap-4 sm:px-5">
@@ -236,18 +237,18 @@ function FileUploader(props: FileUploaderProps) {
                 </div>
                 <div className="flex flex-col gap-px">
                   <p className="text-muted-foreground font-medium">
-                    Drag and drop files here, or click to select files
+                    {t('documentPanel.uploadDocuments.fileUploader.dragAndDrop')}
                   </p>
                   {description ? (
                     <p className="text-muted-foreground/70 text-sm">{description}</p>
                   ) : (
                     <p className="text-muted-foreground/70 text-sm">
-                      You can upload
-                      {maxFileCount > 1
-                        ? ` ${maxFileCount === Infinity ? 'multiple' : maxFileCount}
-                      files (up to ${formatBytes(maxSize)} each)`
-                        : ` a file with ${formatBytes(maxSize)}`}
-                      Supported formats: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS
+                      {t('documentPanel.uploadDocuments.fileUploader.uploadDescription', {
+                        count: maxFileCount,
+                        isMultiple: maxFileCount === Infinity,
+                        maxSize: formatBytes(maxSize)
+                      })}
+                      {t('documentPanel.uploadDocuments.fileTypes')}
                     </p>
                   )}
                 </div>
@@ -265,6 +266,7 @@ function FileUploader(props: FileUploaderProps) {
                 file={file}
                 onRemove={() => onRemove(index)}
                 progress={progresses?.[file.name]}
+                error={fileErrors?.[file.name]}
               />
             ))}
           </div>
@@ -274,13 +276,34 @@ function FileUploader(props: FileUploaderProps) {
   )
 }
 
+interface ProgressProps {
+  value: number
+  error?: boolean
+}
+
+function Progress({ value, error }: ProgressProps) {
+  return (
+    <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+      <div
+        className={cn(
+          'h-full transition-all',
+          error ? 'bg-destructive' : 'bg-primary'
+        )}
+        style={{ width: `${value}%` }}
+      />
+    </div>
+  )
+}
+
 interface FileCardProps {
   file: File
   onRemove: () => void
   progress?: number
+  error?: string
 }
 
-function FileCard({ file, progress, onRemove }: FileCardProps) {
+function FileCard({ file, progress, error, onRemove }: FileCardProps) {
+  const { t } = useTranslation()
   return (
     <div className="relative flex items-center gap-2.5">
       <div className="flex flex-1 gap-2.5">
@@ -290,13 +313,20 @@ function FileCard({ file, progress, onRemove }: FileCardProps) {
             <p className="text-foreground/80 line-clamp-1 text-sm font-medium">{file.name}</p>
             <p className="text-muted-foreground text-xs">{formatBytes(file.size)}</p>
           </div>
-          {progress ? <Progress value={progress} /> : null}
+          {error ? (
+            <div className="text-destructive text-sm">
+              <Progress value={100} error={true} />
+              <p className="mt-1">{error}</p>
+            </div>
+          ) : (
+            progress ? <Progress value={progress} /> : null
+          )}
         </div>
       </div>
       <div className="flex items-center gap-2">
         <Button type="button" variant="outline" size="icon" className="size-7" onClick={onRemove}>
           <X className="size-4" aria-hidden="true" />
-          <span className="sr-only">Remove file</span>
+          <span className="sr-only">{t('documentPanel.uploadDocuments.fileUploader.removeFile')}</span>
         </Button>
       </div>
     </div>
