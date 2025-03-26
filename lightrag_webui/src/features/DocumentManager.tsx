@@ -126,18 +126,18 @@ export default function DocumentManager() {
   // Add tooltip position adjustment based on mouse position
   useEffect(() => {
     if (!docs) return;
-    
+
     // Function to handle mouse movement
     const handleMouseMove = (event: MouseEvent) => {
       const cardContent = document.querySelector<HTMLElement>('.flex-1.relative.p-0');
       if (!cardContent) return;
-      
+
       const cardRect = cardContent.getBoundingClientRect();
       const cardMiddleY = cardRect.top + cardRect.height / 2;
-      
+
       // Get all visible tooltips
       const visibleTooltips = document.querySelectorAll<HTMLElement>('.group:hover > div[class*="invisible group-hover:visible absolute"]');
-      
+
       visibleTooltips.forEach(tooltip => {
         // If mouse is in the bottom half of the card, show tooltip above
         if (event.clientY > cardMiddleY) {
@@ -147,10 +147,10 @@ export default function DocumentManager() {
         }
       });
     };
-    
+
     // Add mouse move listener to the document
     document.addEventListener('mousemove', handleMouseMove);
-    
+
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
     };
