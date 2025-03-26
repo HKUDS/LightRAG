@@ -307,7 +307,7 @@ export default function DocumentManager() {
               <div className="absolute inset-0 flex flex-col p-0">
                 <div className="w-full h-full flex flex-col rounded-lg border border-gray-200 dark:border-gray-700">
                   <div className="flex-1 overflow-hidden flex flex-col">
-                    <Table className="w-full">
+                    <Table className="w-full" style={{ minHeight: 'calc(100% - 10px)' }}>
                       <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                         <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
                           <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
