@@ -201,8 +201,7 @@ LightRAG API 服务器使用基于 HS256 算法的 JWT 认证。要启用安全�
 
 ```bash
 # JWT 认证
-AUTH_USERNAME=admin      # 登录名
-AUTH_PASSWORD=admin123   # 密码
+AUTH_ACCOUNTS='admin:admin123,user1:pass456'      # 登录帐号与密码
 TOKEN_SECRET=your-key    # JWT 密钥
 TOKEN_EXPIRE_HOURS=4     # 过期时间
 ```
