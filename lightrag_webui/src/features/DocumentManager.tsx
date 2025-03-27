@@ -358,12 +358,12 @@ export default function DocumentManager() {
                         {Object.entries(docs.statuses).map(([status, documents]) =>
                           documents.map((doc) => (
                             <TableRow key={doc.id}>
-                              <TableCell className="truncate font-mono overflow-visible max-w-[200px]">
+                              <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                                 {showFileName ? (
                                   <>
                                     <div className="group relative overflow-visible tooltip-container">
                                       <div className="truncate">
-                                        {getDisplayFileName(doc, 25)}
+                                        {getDisplayFileName(doc, 30)}
                                       </div>
                                       <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[600px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
                                         {doc.file_path}
@@ -382,7 +382,7 @@ export default function DocumentManager() {
                                   </div>
                                 )}
                               </TableCell>
-                              <TableCell className="max-w-xs min-w-48 truncate overflow-visible">
+                              <TableCell className="max-w-xs min-w-45 truncate overflow-visible">
                                 <div className="group relative overflow-visible tooltip-container">
                                   <div className="truncate">
                                     {doc.content_summary}
