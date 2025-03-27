@@ -59,6 +59,7 @@ config.read("config.ini")
 # Global authentication configuration
 auth_configured = bool(auth_handler.accounts)
 
+
 def create_app(args):
     # Setup logging
     logger.setLevel(args.log_level)
