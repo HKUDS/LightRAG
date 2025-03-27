@@ -112,11 +112,11 @@ export default function DocumentManager() {
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
-  
+
   // Sort state
   const [sortField, setSortField] = useState<SortField>('updated_at')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
-  
+
   // Handle sort column click
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -128,12 +128,12 @@ export default function DocumentManager() {
       setSortDirection('desc')
     }
   }
-  
+
   // Sort documents based on current sort field and direction
   const sortDocuments = (documents: DocStatusResponse[]) => {
     return [...documents].sort((a, b) => {
       let valueA, valueB;
-      
+
       // Special handling for ID field based on showFileName setting
       if (sortField === 'id' && showFileName) {
         valueA = getDisplayFileName(a);
@@ -146,10 +146,10 @@ export default function DocumentManager() {
         valueA = new Date(a[sortField]).getTime();
         valueB = new Date(b[sortField]).getTime();
       }
-      
+
       // Apply sort direction
       const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
-      
+
       // Compare values
       if (typeof valueA === 'string' && typeof valueB === 'string') {
         return sortMultiplier * valueA.localeCompare(valueB);
@@ -399,7 +399,7 @@ export default function DocumentManager() {
                   <Table className="w-full">
                     <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                       <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
-                        <TableHead 
+                        <TableHead
                           onClick={() => handleSort('id')}
                           className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 select-none"
                         >
@@ -416,7 +416,7 @@ export default function DocumentManager() {
                         <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
-                        <TableHead 
+                        <TableHead
                           onClick={() => handleSort('created_at')}
                           className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 select-none"
                         >
@@ -429,7 +429,7 @@ export default function DocumentManager() {
                             )}
                           </div>
                         </TableHead>
-                        <TableHead 
+                        <TableHead
                           onClick={() => handleSort('updated_at')}
                           className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 select-none"
                         >
@@ -448,7 +448,7 @@ export default function DocumentManager() {
                       {Object.entries(docs.statuses).flatMap(([status, documents]) => {
                         // Apply sorting to documents
                         const sortedDocuments = sortDocuments(documents);
-                        
+
                         return sortedDocuments.map(doc => (
                           <TableRow key={doc.id}>
                             <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
