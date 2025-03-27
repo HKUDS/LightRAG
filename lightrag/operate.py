@@ -1063,21 +1063,22 @@ async def mix_kg_vector_query(
     if query_param.only_need_context:
         return {"kg_context": kg_context, "vector_context": vector_context}
 
-    # 5. Construct hybrid prompt
-    sys_prompt = (
-        system_prompt
-        if system_prompt
-        else PROMPTS["mix_rag_response"].format(
-            kg_context=kg_context
-            if kg_context
-            else "No relevant knowledge graph information found",
-            vector_context=vector_context
-            if vector_context
-            else "No relevant text information found",
+    # 5. Construct mix prompt
+    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["mix_rag_response"]
+    try:
+        sys_prompt = sys_prompt_temp.format(
+            kg_context=kg_context if kg_context else "No relevant knowledge graph information found",
+            vector_context=vector_context if vector_context else "No relevant text information found",
             response_type=query_param.response_type,
             history=history_context,
         )
-    )
+    except (KeyError, IndexError):
+        sys_prompt = sys_prompt_temp
+        sys_prompt += "\n\n---Data Sources---\n"
+        if kg_context:
+            sys_prompt += "\n1. From Knowledge Graph(KG):\n" + kg_context
+        if vector_context:
+            sys_prompt += "\n2. From Document Chunks(DC):\n" + vector_context
 
     if query_param.only_need_prompt:
         return sys_prompt
