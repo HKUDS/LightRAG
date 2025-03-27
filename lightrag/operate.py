@@ -1079,6 +1079,8 @@ async def mix_kg_vector_query(
             sys_prompt += "\n1. From Knowledge Graph(KG):\n" + kg_context
         if vector_context:
             sys_prompt += "\n2. From Document Chunks(DC):\n" + vector_context
+        if history_context:
+            sys_prompt += "\n\n---Conversation History---\n" + history_context
 
     if query_param.only_need_prompt:
         return sys_prompt
