@@ -21,7 +21,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon } from 'lucide-react'
 import { DocStatusResponse } from '@/api/lightrag'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
@@ -47,16 +47,39 @@ const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): str
 };
 
 const pulseStyle = `
-/* Fixed tooltip styles for small tables */
-.tooltip-fixed {
-  position: fixed !important;
-  z-index: 9999 !important;
-}
-
-/* Parent container for tooltips */
+/* Tooltip styles */
 .tooltip-container {
   position: relative;
   overflow: visible !important;
+}
+
+.tooltip {
+  position: fixed; /* Use fixed positioning to escape overflow constraints */
+  z-index: 9999; /* Ensure tooltip appears above all other elements */
+  max-width: 600px;
+  white-space: normal;
+  border-radius: 0.375rem;
+  padding: 0.5rem 0.75rem;
+  background-color: rgba(0, 0, 0, 0.95);
+  color: white;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  pointer-events: none; /* Prevent tooltip from interfering with mouse events */
+}
+
+.dark .tooltip {
+  background-color: rgba(255, 255, 255, 0.95);
+  color: black;
+}
+
+/* Position tooltip helper class */
+.tooltip-helper {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 0;
 }
 
 @keyframes pulse {
@@ -99,6 +122,10 @@ const pulseStyle = `
 }
 `;
 
+// Type definitions for sort field and direction
+type SortField = 'created_at' | 'updated_at' | 'id';
+type SortDirection = 'asc' | 'desc';
+
 export default function DocumentManager() {
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t } = useTranslation()
@@ -108,6 +135,52 @@ export default function DocumentManager() {
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
+
+  // Sort state
+  const [sortField, setSortField] = useState<SortField>('updated_at')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+
+  // Handle sort column click
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      // Toggle sort direction if clicking the same field
+      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      // Set new sort field with default desc direction
+      setSortField(field)
+      setSortDirection('desc')
+    }
+  }
+
+  // Sort documents based on current sort field and direction
+  const sortDocuments = (documents: DocStatusResponse[]) => {
+    return [...documents].sort((a, b) => {
+      let valueA, valueB;
+
+      // Special handling for ID field based on showFileName setting
+      if (sortField === 'id' && showFileName) {
+        valueA = getDisplayFileName(a);
+        valueB = getDisplayFileName(b);
+      } else if (sortField === 'id') {
+        valueA = a.id;
+        valueB = b.id;
+      } else {
+        // Date fields
+        valueA = new Date(a[sortField]).getTime();
+        valueB = new Date(b[sortField]).getTime();
+      }
+
+      // Apply sort direction
+      const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
+
+      // Compare values
+      if (typeof valueA === 'string' && typeof valueB === 'string') {
+        return sortMultiplier * valueA.localeCompare(valueB);
+      } else {
+        return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
+      }
+    });
+  }
 
   // Store previous status counts
   const prevStatusCounts = useRef({
@@ -130,64 +203,47 @@ export default function DocumentManager() {
   // Reference to the card content element
   const cardContentRef = useRef<HTMLDivElement>(null);
 
-  // Add tooltip position adjustment based on mouse position
+  // Add tooltip position adjustment for fixed positioning
   useEffect(() => {
     if (!docs) return;
 
-    // Function to handle mouse movement - throttled to reduce layout calculations
-    let lastExecution = 0;
-    const throttleInterval = 50; // ms
+    // Function to position tooltips
+    const positionTooltips = () => {
+      // Get all tooltip containers
+      const containers = document.querySelectorAll<HTMLElement>('.tooltip-container');
 
-    const handleMouseMove = () => {
-      const now = Date.now();
-      if (now - lastExecution < throttleInterval) return;
-      lastExecution = now;
+      containers.forEach(container => {
+        const tooltip = container.querySelector<HTMLElement>('.tooltip');
+        if (!tooltip) return;
 
-      const cardContent = cardContentRef.current;
-      if (!cardContent) return;
+        // Only position visible tooltips
+        if (getComputedStyle(tooltip).visibility === 'hidden') return;
 
-      // Get all visible tooltips
-      const visibleTooltips = document.querySelectorAll<HTMLElement>('.group:hover > div[class*="invisible group-hover:visible absolute"]');
-      if (visibleTooltips.length === 0) return;
+        // Get container position
+        const rect = container.getBoundingClientRect();
 
-      visibleTooltips.forEach(tooltip => {
-        // Get the parent element that triggered the tooltip
-        const triggerElement = tooltip.parentElement;
-        if (!triggerElement) return;
-
-        const triggerRect = triggerElement.getBoundingClientRect();
-
-        // Use fixed positioning for all tooltips
-        tooltip.classList.add('tooltip-fixed');
-
-        // Calculate position based on trigger element
-        const tooltipHeight = tooltip.offsetHeight;
-        const viewportHeight = window.innerHeight;
-
-        // Check if tooltip would go off the bottom of the viewport
-        const wouldOverflowBottom = triggerRect.bottom + tooltipHeight + 5 > viewportHeight;
-
-        if (wouldOverflowBottom) {
-          // Position above the trigger
-          tooltip.style.top = `${triggerRect.top - tooltipHeight - 5}px`;
-          tooltip.style.bottom = 'auto';
-        } else {
-          // Position below the trigger
-          tooltip.style.top = `${triggerRect.bottom + 5}px`;
-          tooltip.style.bottom = 'auto';
-        }
-
-        // Horizontal positioning
-        tooltip.style.left = `${triggerRect.left}px`;
-        tooltip.style.maxWidth = '600px';
+        // Position tooltip above the container
+        tooltip.style.left = `${rect.left}px`;
+        tooltip.style.top = `${rect.top - 5}px`;
+        tooltip.style.transform = 'translateY(-100%)';
       });
     };
 
-    // Add mouse move listener to the document
-    document.addEventListener('mousemove', handleMouseMove);
+    // Set up event listeners
+    const handleMouseOver = (e: MouseEvent) => {
+      // Check if target or its parent is a tooltip container
+      const target = e.target as HTMLElement;
+      const container = target.closest('.tooltip-container');
+      if (!container) return;
+
+      // Small delay to ensure tooltip is visible before positioning
+      setTimeout(positionTooltips, 10);
+    };
+
+    document.addEventListener('mouseover', handleMouseOver);
 
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseover', handleMouseOver);
     };
   }, [docs]);
 
@@ -268,6 +324,11 @@ export default function DocumentManager() {
     return () => clearInterval(interval)
   }, [health, fetchDocuments, t, currentTab])
 
+  // Add dependency on sort state to re-render when sort changes
+  useEffect(() => {
+    // This effect ensures the component re-renders when sort state changes
+  }, [sortField, sortDirection]);
+
   return (
     <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
       <CardHeader className="py-2 px-6">
@@ -340,22 +401,61 @@ export default function DocumentManager() {
             )}
             {docs && (
               <div className="absolute inset-0 flex flex-col p-0">
-                <div className="w-full h-full flex flex-col rounded-lg border border-gray-200 dark:border-gray-700 overflow-auto">
+                <div className="w-full h-full flex flex-col border border-gray-200 dark:border-gray-700 overflow-hidden">
                   <Table className="w-full">
                     <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                       <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
-                        <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
+                        <TableHead
+                          onClick={() => handleSort('id')}
+                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                        >
+                          <div className="flex items-center">
+                            {t('documentPanel.documentManager.columns.id')}
+                            {sortField === 'id' && (
+                              <span className="ml-1">
+                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                              </span>
+                            )}
+                          </div>
+                        </TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
+                        <TableHead
+                          onClick={() => handleSort('created_at')}
+                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                        >
+                          <div className="flex items-center">
+                            {t('documentPanel.documentManager.columns.created')}
+                            {sortField === 'created_at' && (
+                              <span className="ml-1">
+                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                              </span>
+                            )}
+                          </div>
+                        </TableHead>
+                        <TableHead
+                          onClick={() => handleSort('updated_at')}
+                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                        >
+                          <div className="flex items-center">
+                            {t('documentPanel.documentManager.columns.updated')}
+                            {sortField === 'updated_at' && (
+                              <span className="ml-1">
+                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                              </span>
+                            )}
+                          </div>
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
-                      {Object.entries(docs.statuses).map(([status, documents]) =>
-                        documents.map((doc) => (
+                      {Object.entries(docs.statuses).flatMap(([status, documents]) => {
+                        // Apply sorting to documents
+                        const sortedDocuments = sortDocuments(documents);
+
+                        return sortedDocuments.map(doc => (
                           <TableRow key={doc.id}>
                             <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                               {showFileName ? (
@@ -364,7 +464,7 @@ export default function DocumentManager() {
                                     <div className="truncate">
                                       {getDisplayFileName(doc, 30)}
                                     </div>
-                                    <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[600px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                    <div className="invisible group-hover:visible tooltip">
                                       {doc.file_path}
                                     </div>
                                   </div>
@@ -375,7 +475,7 @@ export default function DocumentManager() {
                                   <div className="truncate">
                                     {doc.id}
                                   </div>
-                                  <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[600px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                  <div className="invisible group-hover:visible tooltip">
                                     {doc.file_path}
                                   </div>
                                 </div>
@@ -386,7 +486,7 @@ export default function DocumentManager() {
                                 <div className="truncate">
                                   {doc.content_summary}
                                 </div>
-                                <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[600px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                <div className="invisible group-hover:visible tooltip">
                                   {doc.content_summary}
                                 </div>
                               </div>
@@ -415,8 +515,8 @@ export default function DocumentManager() {
                               {new Date(doc.updated_at).toLocaleString()}
                             </TableCell>
                           </TableRow>
-                        ))
-                      )}
+                        ));
+                      })}
                     </TableBody>
                   </Table>
                 </div>
