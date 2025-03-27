@@ -56,6 +56,8 @@ load_dotenv(".env")
 config = configparser.ConfigParser()
 config.read("config.ini")
 
+# Global authentication configuration
+auth_configured = bool(auth_handler.accounts)
 
 def create_app(args):
     # Setup logging
@@ -426,9 +428,7 @@ def create_app(args):
         try:
             pipeline_status = await get_namespace_data("pipeline_status")
 
-            username = os.getenv("AUTH_USERNAME")
-            password = os.getenv("AUTH_PASSWORD")
-            if not (username and password):
+            if not auth_configured:
                 auth_mode = "disabled"
             else:
                 auth_mode = "enabled"
