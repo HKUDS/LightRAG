@@ -203,8 +203,7 @@ LightRAG API Server implements JWT-based authentication using HS256 algorithm. T
 
 ```bash
 # For jwt auth
-AUTH_USERNAME=admin      # login name
-AUTH_PASSWORD=admin123   # password
+AUTH_ACCOUNTS='admin:admin123,user1:pass456'      # login name and password, separated by comma
 TOKEN_SECRET=your-key    # JWT key
 TOKEN_EXPIRE_HOURS=4     # expire duration
 ```
