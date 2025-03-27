@@ -639,8 +639,6 @@ class PGVectorStorage(BaseVectorStorage):
             "doc_ids": list(ids) if ids is not None else None,
             "embedding": f"[{embedding_string}]"
         }
-        
-        logger.debug(f"Vector query params: {params}")
 
         try:
             results = await self.db.query(sql, params=params, multirows=True)
