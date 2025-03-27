@@ -7,6 +7,7 @@ from typing import Any, Union, final
 import numpy as np
 import configparser
 
+from lightrag.prompt import GRAPH_FIELD_SEP
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 
 import sys
@@ -540,8 +541,8 @@ class PGVectorStorage(BaseVectorStorage):
     def _upsert_entities(self, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         upsert_sql = SQL_TEMPLATES["upsert_entity"]
         source_id = item["source_id"]
-        if isinstance(source_id, str) and "<SEP>" in source_id:
-            chunk_ids = source_id.split("<SEP>")
+        if isinstance(source_id, str) and GRAPH_FIELD_SEP in source_id:
+            chunk_ids = source_id.split(GRAPH_FIELD_SEP)
         else:
             chunk_ids = [source_id]
 
@@ -560,8 +561,8 @@ class PGVectorStorage(BaseVectorStorage):
     def _upsert_relationships(self, item: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         upsert_sql = SQL_TEMPLATES["upsert_relationship"]
         source_id = item["source_id"]
-        if isinstance(source_id, str) and "<SEP>" in source_id:
-            chunk_ids = source_id.split("<SEP>")
+        if isinstance(source_id, str) and GRAPH_FIELD_SEP in source_id:
+            chunk_ids = source_id.split(GRAPH_FIELD_SEP)
         else:
             chunk_ids = [source_id]
 
