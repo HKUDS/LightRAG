@@ -55,6 +55,18 @@ const pulseStyle = `
   margin-top: 0 !important;
 }
 
+/* Fixed tooltip styles for small tables */
+.tooltip-fixed {
+  position: fixed !important;
+  z-index: 9999 !important;
+}
+
+/* Parent container for tooltips */
+.tooltip-container {
+  position: relative;
+  overflow: visible !important;
+}
+
 @keyframes pulse {
   0% {
     background-color: rgb(255 0 0 / 0.1);
@@ -123,27 +135,76 @@ export default function DocumentManager() {
     }
   }, [])
 
+  // Reference to the card content element
+  const cardContentRef = useRef<HTMLDivElement>(null);
+
   // Add tooltip position adjustment based on mouse position
   useEffect(() => {
     if (!docs) return;
 
     // Function to handle mouse movement
     const handleMouseMove = (event: MouseEvent) => {
-      const cardContent = document.querySelector<HTMLElement>('.flex-1.relative.p-0');
+      const cardContent = cardContentRef.current;
       if (!cardContent) return;
 
       const cardRect = cardContent.getBoundingClientRect();
       const cardMiddleY = cardRect.top + cardRect.height / 2;
+      
+      // Get table element to check its height
+      const tableElement = cardContent.querySelector<HTMLElement>('table');
+      const tableHeight = tableElement?.offsetHeight || 0;
+      
+      // Determine if table is small (less than 3 rows approximately)
+      const isSmallTable = tableHeight < 150;
 
       // Get all visible tooltips
       const visibleTooltips = document.querySelectorAll<HTMLElement>('.group:hover > div[class*="invisible group-hover:visible absolute"]');
 
       visibleTooltips.forEach(tooltip => {
-        // If mouse is in the bottom half of the card, show tooltip above
-        if (event.clientY > cardMiddleY) {
-          tooltip.classList.add('tooltip-top');
+        // Get the parent element that triggered the tooltip
+        const triggerElement = tooltip.parentElement;
+        if (!triggerElement) return;
+        
+        const triggerRect = triggerElement.getBoundingClientRect();
+        
+        // If table is small, use fixed positioning
+        if (isSmallTable) {
+          tooltip.classList.add('tooltip-fixed');
+          
+          // Calculate position based on trigger element and mouse
+          const tooltipHeight = tooltip.offsetHeight;
+          const viewportHeight = window.innerHeight;
+          
+          // Check if tooltip would go off the bottom of the viewport
+          const wouldOverflowBottom = event.clientY + tooltipHeight > viewportHeight;
+          
+          if (wouldOverflowBottom) {
+            // Position above the trigger
+            tooltip.style.top = `${triggerRect.top - tooltipHeight - 5}px`;
+            tooltip.style.bottom = 'auto';
+          } else {
+            // Position below the trigger
+            tooltip.style.top = `${triggerRect.bottom + 5}px`;
+            tooltip.style.bottom = 'auto';
+          }
+          
+          // Horizontal positioning
+          tooltip.style.left = `${triggerRect.left}px`;
+          tooltip.style.maxWidth = '800px';
+          
         } else {
-          tooltip.classList.remove('tooltip-top');
+          // For normal sized tables, use the original logic
+          tooltip.classList.remove('tooltip-fixed');
+          tooltip.style.top = '';
+          tooltip.style.left = '';
+          tooltip.style.bottom = '';
+          
+          // If mouse is in the bottom half of the card, show tooltip above
+          if (event.clientY > cardMiddleY) {
+            tooltip.classList.add('tooltip-top');
+          } else {
+            tooltip.classList.remove('tooltip-top');
+          }
         }
       });
     };
@@ -294,7 +355,7 @@ export default function DocumentManager() {
             <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
 
-          <CardContent className="flex-1 relative p-0">
+          <CardContent className="flex-1 relative p-0" ref={cardContentRef}>
             {!docs && (
               <div className="absolute inset-0 p-0">
                 <EmptyCard
@@ -307,7 +368,7 @@ export default function DocumentManager() {
               <div className="absolute inset-0 flex flex-col p-0">
                 <div className="w-full h-full flex flex-col rounded-lg border border-gray-200 dark:border-gray-700">
                   <div className="flex-1 overflow-hidden flex flex-col">
-                    <Table className="w-full" style={{ minHeight: 'calc(100% - 10px)' }}>
+                    <Table className="w-full" style={{ minHeight: '100%', height: '100%'}}>
                       <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                         <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
                           <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
@@ -326,7 +387,7 @@ export default function DocumentManager() {
                               <TableCell className="truncate font-mono overflow-visible">
                                 {showFileName ? (
                                   <>
-                                    <div className="group relative overflow-visible">
+                                    <div className="group relative overflow-visible tooltip-container">
                                       <div className="truncate">
                                         {getDisplayFileName(doc, 35)}
                                       </div>
@@ -337,7 +398,7 @@ export default function DocumentManager() {
                                     <div className="text-xs text-gray-500">{doc.id}</div>
                                   </>
                                 ) : (
-                                  <div className="group relative overflow-visible">
+                                  <div className="group relative overflow-visible tooltip-container">
                                     <div className="truncate">
                                       {doc.id}
                                     </div>
@@ -348,7 +409,7 @@ export default function DocumentManager() {
                                 )}
                               </TableCell>
                               <TableCell className="max-w-xs min-w-24 truncate overflow-visible">
-                                <div className="group relative overflow-visible">
+                                <div className="group relative overflow-visible tooltip-container">
                                   <div className="truncate">
                                     {doc.content_summary}
                                   </div>
