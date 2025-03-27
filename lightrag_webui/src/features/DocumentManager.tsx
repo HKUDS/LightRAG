@@ -149,11 +149,11 @@ export default function DocumentManager() {
 
       const cardRect = cardContent.getBoundingClientRect();
       const cardMiddleY = cardRect.top + cardRect.height / 2;
-      
+
       // Get table element to check its height
       const tableElement = cardContent.querySelector<HTMLElement>('table');
       const tableHeight = tableElement?.offsetHeight || 0;
-      
+
       // Determine if table is small (less than 3 rows approximately)
       const isSmallTable = tableHeight < 150;
 
@@ -164,20 +164,20 @@ export default function DocumentManager() {
         // Get the parent element that triggered the tooltip
         const triggerElement = tooltip.parentElement;
         if (!triggerElement) return;
-        
+
         const triggerRect = triggerElement.getBoundingClientRect();
-        
+
         // If table is small, use fixed positioning
         if (isSmallTable) {
           tooltip.classList.add('tooltip-fixed');
-          
+
           // Calculate position based on trigger element and mouse
           const tooltipHeight = tooltip.offsetHeight;
           const viewportHeight = window.innerHeight;
-          
+
           // Check if tooltip would go off the bottom of the viewport
           const wouldOverflowBottom = event.clientY + tooltipHeight > viewportHeight;
-          
+
           if (wouldOverflowBottom) {
             // Position above the trigger
             tooltip.style.top = `${triggerRect.top - tooltipHeight - 5}px`;
@@ -187,18 +187,18 @@ export default function DocumentManager() {
             tooltip.style.top = `${triggerRect.bottom + 5}px`;
             tooltip.style.bottom = 'auto';
           }
-          
+
           // Horizontal positioning
           tooltip.style.left = `${triggerRect.left}px`;
           tooltip.style.maxWidth = '800px';
-          
+
         } else {
           // For normal sized tables, use the original logic
           tooltip.classList.remove('tooltip-fixed');
           tooltip.style.top = '';
           tooltip.style.left = '';
           tooltip.style.bottom = '';
-          
+
           // If mouse is in the bottom half of the card, show tooltip above
           if (event.clientY > cardMiddleY) {
             tooltip.classList.add('tooltip-top');
