@@ -395,13 +395,13 @@ export default function DocumentManager() {
             )}
             {docs && (
               <div className="absolute inset-0 flex flex-col p-0">
-                <div className="w-full h-full flex flex-col rounded-lg border border-gray-200 dark:border-gray-700 overflow-auto">
+                <div className="w-full h-full flex flex-col border border-gray-200 dark:border-gray-700 overflow-auto">
                   <Table className="w-full">
                     <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                       <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
                         <TableHead
                           onClick={() => handleSort('id')}
-                          className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 select-none"
+                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
                         >
                           <div className="flex items-center">
                             {t('documentPanel.documentManager.columns.id')}
@@ -418,7 +418,7 @@ export default function DocumentManager() {
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
                         <TableHead
                           onClick={() => handleSort('created_at')}
-                          className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 select-none"
+                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
                         >
                           <div className="flex items-center">
                             {t('documentPanel.documentManager.columns.created')}
@@ -431,7 +431,7 @@ export default function DocumentManager() {
                         </TableHead>
                         <TableHead
                           onClick={() => handleSort('updated_at')}
-                          className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 select-none"
+                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
                         >
                           <div className="flex items-center">
                             {t('documentPanel.documentManager.columns.updated')}
