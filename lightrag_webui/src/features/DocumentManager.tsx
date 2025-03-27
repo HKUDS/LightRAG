@@ -147,16 +147,6 @@ export default function DocumentManager() {
       const cardContent = cardContentRef.current;
       if (!cardContent) return;
 
-      const cardRect = cardContent.getBoundingClientRect();
-      const cardMiddleY = cardRect.top + cardRect.height / 2;
-
-      // Get table element to check its height
-      const tableElement = cardContent.querySelector<HTMLElement>('table');
-      const tableHeight = tableElement?.offsetHeight || 0;
-
-      // Determine if table is small (less than 3 rows approximately)
-      const isSmallTable = tableHeight < 150;
-
       // Get all visible tooltips
       const visibleTooltips = document.querySelectorAll<HTMLElement>('.group:hover > div[class*="invisible group-hover:visible absolute"]');
 
@@ -167,45 +157,29 @@ export default function DocumentManager() {
 
         const triggerRect = triggerElement.getBoundingClientRect();
 
-        // If table is small, use fixed positioning
-        if (isSmallTable) {
-          tooltip.classList.add('tooltip-fixed');
+        // Use fixed positioning for all tooltips
+        tooltip.classList.add('tooltip-fixed');
 
-          // Calculate position based on trigger element and mouse
-          const tooltipHeight = tooltip.offsetHeight;
-          const viewportHeight = window.innerHeight;
+        // Calculate position based on trigger element and mouse
+        const tooltipHeight = tooltip.offsetHeight;
+        const viewportHeight = window.innerHeight;
 
-          // Check if tooltip would go off the bottom of the viewport
-          const wouldOverflowBottom = event.clientY + tooltipHeight > viewportHeight;
+        // Check if tooltip would go off the bottom of the viewport
+        const wouldOverflowBottom = event.clientY + tooltipHeight > viewportHeight;
 
-          if (wouldOverflowBottom) {
-            // Position above the trigger
-            tooltip.style.top = `${triggerRect.top - tooltipHeight - 5}px`;
-            tooltip.style.bottom = 'auto';
-          } else {
-            // Position below the trigger
-            tooltip.style.top = `${triggerRect.bottom + 5}px`;
-            tooltip.style.bottom = 'auto';
-          }
-
-          // Horizontal positioning
-          tooltip.style.left = `${triggerRect.left}px`;
-          tooltip.style.maxWidth = '800px';
-
+        if (wouldOverflowBottom) {
+          // Position above the trigger
+          tooltip.style.top = `${triggerRect.top - tooltipHeight - 5}px`;
+          tooltip.style.bottom = 'auto';
         } else {
-          // For normal sized tables, use the original logic
-          tooltip.classList.remove('tooltip-fixed');
-          tooltip.style.top = '';
-          tooltip.style.left = '';
-          tooltip.style.bottom = '';
-
-          // If mouse is in the bottom half of the card, show tooltip above
-          if (event.clientY > cardMiddleY) {
-            tooltip.classList.add('tooltip-top');
-          } else {
-            tooltip.classList.remove('tooltip-top');
-          }
+          // Position below the trigger
+          tooltip.style.top = `${triggerRect.bottom + 5}px`;
+          tooltip.style.bottom = 'auto';
         }
+
+        // Horizontal positioning
+        tooltip.style.left = `${triggerRect.left}px`;
+        tooltip.style.maxWidth = '600px';
       });
     };
 
@@ -384,14 +358,14 @@ export default function DocumentManager() {
                         {Object.entries(docs.statuses).map(([status, documents]) =>
                           documents.map((doc) => (
                             <TableRow key={doc.id}>
-                              <TableCell className="truncate font-mono overflow-visible">
+                              <TableCell className="truncate font-mono overflow-visible max-w-[200px]">
                                 {showFileName ? (
                                   <>
                                     <div className="group relative overflow-visible tooltip-container">
                                       <div className="truncate">
-                                        {getDisplayFileName(doc, 35)}
+                                        {getDisplayFileName(doc, 25)}
                                       </div>
-                                      <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                      <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[600px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
                                         {doc.file_path}
                                       </div>
                                     </div>
@@ -402,18 +376,18 @@ export default function DocumentManager() {
                                     <div className="truncate">
                                       {doc.id}
                                     </div>
-                                    <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                    <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[600px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
                                       {doc.file_path}
                                     </div>
                                   </div>
                                 )}
                               </TableCell>
-                              <TableCell className="max-w-xs min-w-24 truncate overflow-visible">
+                              <TableCell className="max-w-xs min-w-48 truncate overflow-visible">
                                 <div className="group relative overflow-visible tooltip-container">
                                   <div className="truncate">
                                     {doc.content_summary}
                                   </div>
-                                  <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[800px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
+                                  <div className="invisible group-hover:visible absolute z-[9999] mt-1 max-w-[600px] whitespace-normal break-all rounded-md bg-black/95 px-3 py-2 text-sm text-white shadow-lg dark:bg-white/95 dark:text-black">
                                     {doc.content_summary}
                                   </div>
                                 </div>
