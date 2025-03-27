@@ -74,7 +74,7 @@
     "documentManager": {
       "title": "إدارة المستندات",
       "scanButton": "مسح ضوئي",
-      "scanTooltip": "مسح المستندات ضوئيًا",
+      "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
       "pipelineStatusButton": "حالة خط المعالجة",
       "pipelineStatusTooltip": "عرض حالة خط المعالجة",
       "uploadedTitle": "المستندات المرفوعة",

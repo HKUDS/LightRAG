@@ -74,7 +74,7 @@
     "documentManager": {
       "title": "文档管理",
       "scanButton": "扫描",
-      "scanTooltip": "扫描文档",
+      "scanTooltip": "扫描输入目录中的文档",
       "pipelineStatusButton": "流水线状态",
       "pipelineStatusTooltip": "查看流水线状态",
       "uploadedTitle": "已上传文档",

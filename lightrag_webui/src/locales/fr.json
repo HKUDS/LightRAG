@@ -74,7 +74,7 @@
     "documentManager": {
       "title": "Gestion des documents",
       "scanButton": "Scanner",
-      "scanTooltip": "Scanner les documents",
+      "scanTooltip": "Scanner les documents dans le dossier d'entrée",
       "pipelineStatusButton": "État du Pipeline",
       "pipelineStatusTooltip": "Voir l'état du pipeline",
       "uploadedTitle": "Documents téléchargés",
