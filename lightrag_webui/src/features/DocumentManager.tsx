@@ -21,7 +21,7 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon } from 'lucide-react'
 import { DocStatusResponse } from '@/api/lightrag'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
@@ -99,6 +99,10 @@ const pulseStyle = `
 }
 `;
 
+// Type definitions for sort field and direction
+type SortField = 'created_at' | 'updated_at' | 'id';
+type SortDirection = 'asc' | 'desc';
+
 export default function DocumentManager() {
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t } = useTranslation()
@@ -108,6 +112,52 @@ export default function DocumentManager() {
   const currentTab = useSettingsStore.use.currentTab()
   const showFileName = useSettingsStore.use.showFileName()
   const setShowFileName = useSettingsStore.use.setShowFileName()
+  
+  // Sort state
+  const [sortField, setSortField] = useState<SortField>('updated_at')
+  const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
+  
+  // Handle sort column click
+  const handleSort = (field: SortField) => {
+    if (sortField === field) {
+      // Toggle sort direction if clicking the same field
+      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')
+    } else {
+      // Set new sort field with default desc direction
+      setSortField(field)
+      setSortDirection('desc')
+    }
+  }
+  
+  // Sort documents based on current sort field and direction
+  const sortDocuments = (documents: DocStatusResponse[]) => {
+    return [...documents].sort((a, b) => {
+      let valueA, valueB;
+      
+      // Special handling for ID field based on showFileName setting
+      if (sortField === 'id' && showFileName) {
+        valueA = getDisplayFileName(a);
+        valueB = getDisplayFileName(b);
+      } else if (sortField === 'id') {
+        valueA = a.id;
+        valueB = b.id;
+      } else {
+        // Date fields
+        valueA = new Date(a[sortField]).getTime();
+        valueB = new Date(b[sortField]).getTime();
+      }
+      
+      // Apply sort direction
+      const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
+      
+      // Compare values
+      if (typeof valueA === 'string' && typeof valueB === 'string') {
+        return sortMultiplier * valueA.localeCompare(valueB);
+      } else {
+        return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
+      }
+    });
+  }
 
   // Store previous status counts
   const prevStatusCounts = useRef({
@@ -268,6 +318,11 @@ export default function DocumentManager() {
     return () => clearInterval(interval)
   }, [health, fetchDocuments, t, currentTab])
 
+  // Add dependency on sort state to re-render when sort changes
+  useEffect(() => {
+    // This effect ensures the component re-renders when sort state changes
+  }, [sortField, sortDirection]);
+
   return (
     <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
       <CardHeader className="py-2 px-6">
@@ -344,18 +399,57 @@ export default function DocumentManager() {
                   <Table className="w-full">
                     <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                       <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
-                        <TableHead>{t('documentPanel.documentManager.columns.id')}</TableHead>
+                        <TableHead 
+                          onClick={() => handleSort('id')}
+                          className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 select-none"
+                        >
+                          <div className="flex items-center">
+                            {t('documentPanel.documentManager.columns.id')}
+                            {sortField === 'id' && (
+                              <span className="ml-1">
+                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                              </span>
+                            )}
+                          </div>
+                        </TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.summary')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.status')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.length')}</TableHead>
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.created')}</TableHead>
-                        <TableHead>{t('documentPanel.documentManager.columns.updated')}</TableHead>
+                        <TableHead 
+                          onClick={() => handleSort('created_at')}
+                          className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 select-none"
+                        >
+                          <div className="flex items-center">
+                            {t('documentPanel.documentManager.columns.created')}
+                            {sortField === 'created_at' && (
+                              <span className="ml-1">
+                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                              </span>
+                            )}
+                          </div>
+                        </TableHead>
+                        <TableHead 
+                          onClick={() => handleSort('updated_at')}
+                          className="cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-800 select-none"
+                        >
+                          <div className="flex items-center">
+                            {t('documentPanel.documentManager.columns.updated')}
+                            {sortField === 'updated_at' && (
+                              <span className="ml-1">
+                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                              </span>
+                            )}
+                          </div>
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
-                      {Object.entries(docs.statuses).map(([status, documents]) =>
-                        documents.map((doc) => (
+                      {Object.entries(docs.statuses).flatMap(([status, documents]) => {
+                        // Apply sorting to documents
+                        const sortedDocuments = sortDocuments(documents);
+                        
+                        return sortedDocuments.map(doc => (
                           <TableRow key={doc.id}>
                             <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                               {showFileName ? (
@@ -415,8 +509,8 @@ export default function DocumentManager() {
                               {new Date(doc.updated_at).toLocaleString()}
                             </TableCell>
                           </TableRow>
-                        ))
-                      )}
+                        ));
+                      })}
                     </TableBody>
                   </Table>
                 </div>
