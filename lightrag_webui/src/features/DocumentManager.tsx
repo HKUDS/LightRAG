@@ -211,17 +211,17 @@ export default function DocumentManager() {
     const positionTooltips = () => {
       // Get all tooltip containers
       const containers = document.querySelectorAll<HTMLElement>('.tooltip-container');
-      
+
       containers.forEach(container => {
         const tooltip = container.querySelector<HTMLElement>('.tooltip');
         if (!tooltip) return;
-        
+
         // Only position visible tooltips
         if (getComputedStyle(tooltip).visibility === 'hidden') return;
-        
+
         // Get container position
         const rect = container.getBoundingClientRect();
-        
+
         // Position tooltip above the container
         tooltip.style.left = `${rect.left}px`;
         tooltip.style.top = `${rect.top - 5}px`;
@@ -235,13 +235,13 @@ export default function DocumentManager() {
       const target = e.target as HTMLElement;
       const container = target.closest('.tooltip-container');
       if (!container) return;
-      
+
       // Small delay to ensure tooltip is visible before positioning
       setTimeout(positionTooltips, 10);
     };
-    
+
     document.addEventListener('mouseover', handleMouseOver);
-    
+
     return () => {
       document.removeEventListener('mouseover', handleMouseOver);
     };
