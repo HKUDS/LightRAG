@@ -274,7 +274,9 @@ def process_level(
                 current_content,
                 overlap_token_size=overlap_token_size,
                 max_token_size=max_token_size,
-                tiktoken_model=tiktoken_model
+                tiktoken_model=tiktoken_model,
+                doc_title=doc_title,
+                parent_title=parent_title
             )
             
             if token_size_chunks:
@@ -290,7 +292,7 @@ def process_level(
                         sub_chunk = {
                             **chunk_data,
                             "chunk_order_index": current_chunk_index - 1,
-                            "content": cleaned_content,
+                            "content": chunk_data["content"],  # 使用实际分块内容而不是cleaned_content
                             "chunk_id": sub_chunk_id,
                             "parent_id": parent_id,
                             "child_ids": [],
@@ -388,24 +390,206 @@ def chunking_by_token_size_v2(
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
     tiktoken_model: str = "gpt-4o",
+    doc_title: Optional[str] = None,  # 添加文档标题参数
+    parent_title: Optional[str] = None,  # 添加父级标题参数
 ) -> list[dict[str, Any]]:
-    """Split text by token size."""
+    """
+    Split text by token size using recursive/hierarchical character splitting.
+    
+    核心思想：优先使用最能代表语义完整的大分隔符（如段落符），如果拆分后的块仍然超过
+    最大长度限制，则在该块内部使用次级分隔符（如句号、问号、感叹号），再不行则用更小
+    的分隔符（如逗号、空格），最后实在没办法才按字符数硬切。
+    
+    同时在分割后尽量合并相邻段落，保证在不超过最大token数的情况下最大限度保持文本连贯性。
+    
+    Args:
+        content: 要分割的文本内容
+        overlap_token_size: 重叠的token大小
+        max_token_size: 最大token大小
+        tiktoken_model: token化模型名称
+        doc_title: 文档标题
+        parent_title: 父级标题
+    
+    Returns:
+        分块结果列表
+    """
     # 先移除页码标签
     content = remove_page_numbers(content)
     
-    tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
-    results: list[dict[str, Any]] = []
+    # 创建标题前缀
+    title_prefix = ""
+    if doc_title:
+        title_prefix += f"{remove_page_numbers(doc_title)}\n"
+    if parent_title:
+        title_prefix += f"{remove_page_numbers(parent_title)}\n"
     
-    for index, start in enumerate(range(0, len(tokens), max_token_size - overlap_token_size)):
-        chunk_content = decode_tokens_by_tiktoken(
-            tokens[start : start + max_token_size],
-            model_name=tiktoken_model
-        )
-        results.append({
-            "tokens": min(max_token_size, len(tokens) - start),
-            "content": chunk_content.strip(),
-            "chunk_order_index": index,
-        })
+    # 计算标题前缀的token长度
+    title_prefix_tokens = 0
+    if title_prefix:
+        title_prefix_tokens = len(encode_string_by_tiktoken(title_prefix, model_name=tiktoken_model))
+        # 调整最大token大小，为标题预留空间
+        adjusted_max_token_size = max_token_size - title_prefix_tokens
+    else:
+        adjusted_max_token_size = max_token_size
+    
+    # 按优先级排序的分隔符列表（从高到低）
+    delimiters = ["\n\n", "\n", "。", "！", "？", ".", "!", "?", "，", ",", " ", ""]
+    
+    # 递归分割函数
+    def split_text_recursive(text: str, delimiter_index: int = 0) -> list[str]:
+        """递归地使用不同级别的分隔符拆分文本"""
+        # 检查当前文本的token长度
+        tokens = encode_string_by_tiktoken(text, model_name=tiktoken_model)
+        
+        # 如果文本已经小于调整后的最大长度，直接返回
+        if len(tokens) <= adjusted_max_token_size:
+            return [text]
+            
+        # 如果已经用完了所有分隔符，使用token硬切
+        if delimiter_index >= len(delimiters) - 1:
+            chunks = []
+            for start in range(0, len(tokens), adjusted_max_token_size - overlap_token_size):
+                end = min(start + adjusted_max_token_size, len(tokens))
+                chunk_tokens = tokens[start:end]
+                chunk_text = decode_tokens_by_tiktoken(chunk_tokens, model_name=tiktoken_model)
+                chunks.append(chunk_text)
+            return chunks
+        
+        # 获取当前级别的分隔符
+        delimiter = delimiters[delimiter_index]
+        
+        # 使用当前分隔符拆分文本
+        segments = text.split(delimiter)
+        
+        # 如果分隔符不存在于文本中（拆分后仍然只有一段），尝试下一级分隔符
+        if len(segments) == 1:
+            return split_text_recursive(text, delimiter_index + 1)
+        
+        # 处理所有分段
+        result_chunks = []
+        for segment in segments:
+            if not segment.strip():  # 跳过空段
+                continue
+                
+            # 检查分段大小
+            segment_tokens = encode_string_by_tiktoken(segment, model_name=tiktoken_model)
+            
+            if len(segment_tokens) <= adjusted_max_token_size:
+                # 分段已经足够小，直接添加
+                result_chunks.append(segment)
+            else:
+                # 分段仍然太大，使用下一级分隔符递归分割
+                sub_chunks = split_text_recursive(segment, delimiter_index + 1)
+                result_chunks.extend(sub_chunks)
+        
+        return result_chunks
+    
+    # 执行递归分割，获取初步的分块
+    initial_chunks = split_text_recursive(content)
+    
+    # 贪心合并函数：在不超过adjusted_max_token_size的前提下尽可能合并相邻段落
+    def merge_chunks(chunks: list[str]) -> list[str]:
+        if not chunks or len(chunks) == 1:
+            return chunks
+            
+        merged_chunks = []
+        current_chunk = chunks[0]
+        current_tokens = encode_string_by_tiktoken(current_chunk, model_name=tiktoken_model)
+        
+        for i in range(1, len(chunks)):
+            next_chunk = chunks[i]
+            next_tokens = encode_string_by_tiktoken(next_chunk, model_name=tiktoken_model)
+            
+            # 计算合并后的token长度（加上分隔符的长度）
+            # 这里假设我们使用原始分隔符合并相邻分块
+            delimiter_to_use = delimiters[0] if delimiters[0] in ["\n\n", "\n"] else "\n"
+            combined_chunk = current_chunk + delimiter_to_use + next_chunk
+            combined_tokens_len = len(encode_string_by_tiktoken(combined_chunk, model_name=tiktoken_model))
+            
+            # 如果合并后不超过调整后的最大长度，则合并
+            if combined_tokens_len <= adjusted_max_token_size:
+                current_chunk = combined_chunk
+                current_tokens = encode_string_by_tiktoken(current_chunk, model_name=tiktoken_model)
+            else:
+                # 如果合并会超过最大长度，先保存当前块，然后从下一个块开始
+                merged_chunks.append(current_chunk)
+                current_chunk = next_chunk
+                current_tokens = next_tokens
+        
+        # 添加最后一个块
+        if current_chunk:
+            merged_chunks.append(current_chunk)
+            
+        return merged_chunks
+    
+    # 应用合并策略，可以多次合并直到不能再合并
+    merged_chunks = initial_chunks
+    prev_len = 0
+    
+    # 连续合并直到没有更多可以合并的相邻块
+    while len(merged_chunks) != prev_len:
+        prev_len = len(merged_chunks)
+        merged_chunks = merge_chunks(merged_chunks)
+    
+    # 处理重叠（如果需要）
+    if overlap_token_size > 0 and len(merged_chunks) > 1:
+        overlapped_chunks = []
+        for i in range(len(merged_chunks)):
+            current_chunk = merged_chunks[i]
+            
+            # 如果不是第一个块，添加前一个块的末尾部分
+            if i > 0:
+                prev_chunk = merged_chunks[i-1]
+                prev_tokens = encode_string_by_tiktoken(prev_chunk, model_name=tiktoken_model)
+                
+                # 如果前一个块足够长，提取末尾部分作为重叠
+                if len(prev_tokens) >= overlap_token_size:
+                    overlap_tokens = prev_tokens[-overlap_token_size:]
+                    overlap_text = decode_tokens_by_tiktoken(overlap_tokens, model_name=tiktoken_model)
+                    
+                    # 将重叠部分添加到当前块的开头
+                    current_chunk = overlap_text + current_chunk
+            
+            overlapped_chunks.append(current_chunk)
+        
+        merged_chunks = overlapped_chunks
+    
+    # 构建最终结果
+    results = []
+    for i, chunk in enumerate(merged_chunks):
+        # 确保没有超出最大token数
+        # 添加标题前缀到内容
+        chunk_with_title = title_prefix + chunk if title_prefix else chunk
+        chunk_tokens = encode_string_by_tiktoken(chunk_with_title, model_name=tiktoken_model)
+        
+        if len(chunk_tokens) > max_token_size:
+            # 如果添加标题后超出最大token数，需要重新调整内容
+            # 计算可用于内容的token数
+            available_content_tokens = max_token_size - title_prefix_tokens
+            
+            # 对原始内容进行切分
+            original_tokens = encode_string_by_tiktoken(chunk, model_name=tiktoken_model)
+            for start in range(0, len(original_tokens), available_content_tokens - overlap_token_size):
+                end = min(start + available_content_tokens, len(original_tokens))
+                sub_chunk_tokens = original_tokens[start:end]
+                sub_chunk = decode_tokens_by_tiktoken(sub_chunk_tokens, model_name=tiktoken_model)
+                
+                # 构建带标题的最终分块
+                final_sub_chunk = title_prefix + sub_chunk
+                final_sub_chunk_tokens = encode_string_by_tiktoken(final_sub_chunk, model_name=tiktoken_model)
+                
+                results.append({
+                    "tokens": len(final_sub_chunk_tokens),
+                    "content": final_sub_chunk.strip(),
+                    "chunk_order_index": len(results),
+                })
+        else:
+            # 如果不超出，直接添加
+            results.append({
+                "tokens": len(chunk_tokens),
+                "content": chunk_with_title.strip(),
+                "chunk_order_index": len(results),
+            })
     
     return results
 
