@@ -24,9 +24,7 @@ def check_env_file():
     Returns True if should continue, False if should exit.
     """
     if not os.path.exists(".env"):
-        warning_msg = (
-            "Warning: Startup directory must contain .env file for multi-instance support."
-        )
+        warning_msg = "Warning: Startup directory must contain .env file for multi-instance support."
         ASCIIColors.yellow(warning_msg)
 
         # Check if running in interactive terminal
