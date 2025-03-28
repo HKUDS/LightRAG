@@ -215,7 +215,8 @@
           "entity_id": "الاسم",
           "entity_type": "النوع",
           "source_id": "معرف المصدر",
-          "Neighbour": "الجار"
+          "Neighbour": "الجار",
+          "file_path": "المصدر"
         }
       },
       "edge": {
