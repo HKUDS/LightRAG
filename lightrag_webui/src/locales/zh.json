@@ -65,6 +65,8 @@
         "singleFileLimit": "一次只能上传一个文件",
         "maxFilesLimit": "最多只能上传 {{count}} 个文件",
         "fileRejected": "文件 {{name}} 被拒绝",
+        "unsupportedType": "不支持的文件类型",
+        "fileTooLarge": "文件过大，最大允许 {{maxSize}}",
         "dropHere": "将文件拖放到此处",
         "dragAndDrop": "拖放文件到此处，或点击选择文件",
         "removeFile": "移除文件",
