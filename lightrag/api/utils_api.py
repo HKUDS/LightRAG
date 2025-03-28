@@ -38,8 +38,10 @@ def check_env_file():
     return True
 
 
-# Load environment variables
-load_dotenv()
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 global_args = {"main_args": None}
 

@@ -47,10 +47,10 @@ from lightrag.kg.shared_storage import (
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 
-# Load environment variables
-# Updated to use the .env that is inside the current folder
-# This update allows the user to put a different.env file for each lightrag folder
-load_dotenv(".env")
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 # Initialize config parser
 config = configparser.ConfigParser()
