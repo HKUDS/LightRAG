@@ -30,18 +30,18 @@ export default function UploadDocumentsDialog() {
       rejectedFiles.forEach(({ file, errors }) => {
         // Get the first error message
         let errorMsg = errors[0]?.message || t('documentPanel.uploadDocuments.fileUploader.fileRejected', { name: file.name })
-        
+
         // Simplify error message for unsupported file types
         if (errorMsg.includes('file-invalid-type')) {
           errorMsg = t('documentPanel.uploadDocuments.fileUploader.unsupportedType')
         }
-        
+
         // Set progress to 100% to display error message
         setProgresses((pre) => ({
           ...pre,
           [file.name]: 100
         }))
-        
+
         // Add error message to fileErrors
         setFileErrors(prev => ({
           ...prev,
@@ -55,7 +55,7 @@ export default function UploadDocumentsDialog() {
   const handleDocumentsUpload = useCallback(
     async (filesToUpload: File[]) => {
       setIsUploading(true)
-      
+
       // Only clear errors for files that are being uploaded, keep errors for rejected files
       setFileErrors(prev => {
         const newErrors = { ...prev };
@@ -64,14 +64,14 @@ export default function UploadDocumentsDialog() {
         });
         return newErrors;
       });
-      
+
       // Show uploading toast
       const toastId = toast.loading(t('documentPanel.uploadDocuments.batch.uploading'))
-      
+
       try {
         // Track errors locally to ensure we have the final state
         const uploadErrors: Record<string, string> = {}
-        
+
         await Promise.all(
           filesToUpload.map(async (file) => {
             try {
@@ -80,7 +80,7 @@ export default function UploadDocumentsDialog() {
                 ...pre,
                 [file.name]: 0
               }))
-              
+
               const result = await uploadDocument(file, (percentCompleted: number) => {
                 console.debug(t('documentPanel.uploadDocuments.single.uploading', { name: file.name, percent: percentCompleted }))
                 setProgresses((pre) => ({
@@ -104,10 +104,10 @@ export default function UploadDocumentsDialog() {
               }
             } catch (err) {
               console.error(`Upload failed for ${file.name}:`, err)
-              
+
               // Handle HTTP errors, including 400 errors
               let errorMsg = errorMessage(err)
-              
+
               // If it's an axios error with response data, try to extract more detailed error info
               if (err && typeof err === 'object' && 'response' in err) {
                 const axiosError = err as { response?: { status: number, data?: { detail?: string } } }
@@ -115,14 +115,14 @@ export default function UploadDocumentsDialog() {
                   // Extract specific error message from backend response
                   errorMsg = axiosError.response.data?.detail || errorMsg
                 }
-                
+
                 // Set progress to 100% to display error message
                 setProgresses((pre) => ({
                   ...pre,
                   [file.name]: 100
                 }))
               }
-              
+
               // Record error message in both local tracking and state
               uploadErrors[file.name] = errorMsg
               setFileErrors(prev => ({
@@ -132,10 +132,10 @@ export default function UploadDocumentsDialog() {
             }
           })
         )
-        
+
         // Check if any files failed to upload using our local tracking
         const hasErrors = Object.keys(uploadErrors).length > 0
-        
+
         // Update toast status
         if (hasErrors) {
           toast.error(t('documentPanel.uploadDocuments.batch.error'), { id: toastId })

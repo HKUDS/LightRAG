@@ -559,7 +559,7 @@ def create_document_routes(
             if file_path.exists():
                 return InsertResponse(
                     status="duplicated",
-                    message=f"File '{file.filename}' already exists in the input directory."
+                    message=f"File '{file.filename}' already exists in the input directory.",
                 )
 
             with open(file_path, "wb") as buffer:

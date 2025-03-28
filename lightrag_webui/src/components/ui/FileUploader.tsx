@@ -155,7 +155,7 @@ function FileUploader(props: FileUploaderProps) {
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
       // Calculate total file count including both accepted and rejected files
       const totalFileCount = (files?.length ?? 0) + acceptedFiles.length + rejectedFiles.length
-      
+
       // Check file count limits
       if (!multiple && maxFileCount === 1 && (acceptedFiles.length + rejectedFiles.length) > 1) {
         toast.error(t('documentPanel.uploadDocuments.fileUploader.singleFileLimit'))
@@ -186,19 +186,19 @@ function FileUploader(props: FileUploaderProps) {
           preview: URL.createObjectURL(file)
         })
       )
-      
+
       // Process rejected files for UI display
-      const newRejectedFiles = rejectedFiles.map(({ file }) => 
+      const newRejectedFiles = rejectedFiles.map(({ file }) =>
         Object.assign(file, {
           preview: URL.createObjectURL(file),
           rejected: true
         })
       )
-      
+
       // Combine all files for display
       const allNewFiles = [...newAcceptedFiles, ...newRejectedFiles]
       const updatedFiles = files ? [...files, ...allNewFiles] : allNewFiles
-      
+
       // Update the files state with all files
       setFiles(updatedFiles)
 
@@ -211,13 +211,13 @@ function FileUploader(props: FileUploaderProps) {
           const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
             return file.type === mimeType || extensions.includes(fileExt);
           });
-          
+
           // Check file size
           const isSizeValid = file.size <= maxSize;
-          
+
           return isAccepted && isSizeValid;
         });
-        
+
         if (validFiles.length > 0) {
           onUpload(validFiles);
         }
@@ -265,24 +265,24 @@ function FileUploader(props: FileUploaderProps) {
           const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
             return file.type === mimeType || extensions.includes(fileExt);
           });
-          
+
           if (!isAccepted) {
             return {
               code: 'file-invalid-type',
               message: t('documentPanel.uploadDocuments.fileUploader.unsupportedType')
             };
           }
-          
+
           // Check file size
           if (file.size > maxSize) {
             return {
               code: 'file-too-large',
-              message: t('documentPanel.uploadDocuments.fileUploader.fileTooLarge', { 
-                maxSize: formatBytes(maxSize) 
+              message: t('documentPanel.uploadDocuments.fileUploader.fileTooLarge', {
+                maxSize: formatBytes(maxSize)
               })
             };
           }
-          
+
           return null;
         }}
       >
