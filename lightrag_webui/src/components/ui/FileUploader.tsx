@@ -40,6 +40,14 @@ interface FileUploaderProps extends React.HTMLAttributes<HTMLDivElement> {
   onUpload?: (files: File[]) => Promise<void>
 
   /**
+   * Function to be called when files are rejected.
+   * @type (rejections: FileRejection[]) => void
+   * @default undefined
+   * @example onReject={(rejections) => handleRejectedFiles(rejections)}
+   */
+  onReject?: (rejections: FileRejection[]) => void
+
+  /**
    * Progress of the uploaded files.
    * @type Record<string, number> | undefined
    * @default undefined
@@ -125,6 +133,7 @@ function FileUploader(props: FileUploaderProps) {
     value: valueProp,
     onValueChange,
     onUpload,
+    onReject,
     progresses,
     fileErrors,
     accept = supportedFileTypes,
@@ -144,38 +153,77 @@ function FileUploader(props: FileUploaderProps) {
 
   const onDrop = React.useCallback(
     (acceptedFiles: File[], rejectedFiles: FileRejection[]) => {
-      if (!multiple && maxFileCount === 1 && acceptedFiles.length > 1) {
+      // Calculate total file count including both accepted and rejected files
+      const totalFileCount = (files?.length ?? 0) + acceptedFiles.length + rejectedFiles.length
+      
+      // Check file count limits
+      if (!multiple && maxFileCount === 1 && (acceptedFiles.length + rejectedFiles.length) > 1) {
         toast.error(t('documentPanel.uploadDocuments.fileUploader.singleFileLimit'))
         return
       }
 
-      if ((files?.length ?? 0) + acceptedFiles.length > maxFileCount) {
+      if (totalFileCount > maxFileCount) {
         toast.error(t('documentPanel.uploadDocuments.fileUploader.maxFilesLimit', { count: maxFileCount }))
         return
       }
 
-      const newFiles = acceptedFiles.map((file) =>
+      // Handle rejected files first - this will set error states
+      if (rejectedFiles.length > 0) {
+        if (onReject) {
+          // Use the onReject callback if provided
+          onReject(rejectedFiles)
+        } else {
+          // Fall back to toast notifications if no callback is provided
+          rejectedFiles.forEach(({ file }) => {
+            toast.error(t('documentPanel.uploadDocuments.fileUploader.fileRejected', { name: file.name }))
+          })
+        }
+      }
+
+      // Process accepted files
+      const newAcceptedFiles = acceptedFiles.map((file) =>
         Object.assign(file, {
           preview: URL.createObjectURL(file)
         })
       )
-
-      const updatedFiles = files ? [...files, ...newFiles] : newFiles
-
+      
+      // Process rejected files for UI display
+      const newRejectedFiles = rejectedFiles.map(({ file }) => 
+        Object.assign(file, {
+          preview: URL.createObjectURL(file),
+          rejected: true
+        })
+      )
+      
+      // Combine all files for display
+      const allNewFiles = [...newAcceptedFiles, ...newRejectedFiles]
+      const updatedFiles = files ? [...files, ...allNewFiles] : allNewFiles
+      
+      // Update the files state with all files
       setFiles(updatedFiles)
 
-      if (rejectedFiles.length > 0) {
-        rejectedFiles.forEach(({ file }) => {
-          toast.error(t('documentPanel.uploadDocuments.fileUploader.fileRejected', { name: file.name }))
-        })
-      }
-
-      if (onUpload && updatedFiles.length > 0 && updatedFiles.length <= maxFileCount) {
-        onUpload(updatedFiles)
+      // Only upload accepted files - make sure we're not uploading rejected files
+      if (onUpload && acceptedFiles.length > 0) {
+        // Filter out any files that might have been rejected by our custom validator
+        const validFiles = acceptedFiles.filter(file => {
+          // Check if file type is accepted
+          const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
+          const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
+            return file.type === mimeType || extensions.includes(fileExt);
+          });
+          
+          // Check file size
+          const isSizeValid = file.size <= maxSize;
+          
+          return isAccepted && isSizeValid;
+        });
+        
+        if (validFiles.length > 0) {
+          onUpload(validFiles);
+        }
       }
     },
-
-    [files, maxFileCount, multiple, onUpload, setFiles, t]
+    [files, maxFileCount, multiple, onUpload, onReject, setFiles, t, accept, maxSize]
   )
 
   function onRemove(index: number) {
@@ -204,11 +252,39 @@ function FileUploader(props: FileUploaderProps) {
     <div className="relative flex flex-col gap-6 overflow-hidden">
       <Dropzone
         onDrop={onDrop}
-        accept={accept}
+        // remove accept，use customizd validator
+        noClick={false}
+        noKeyboard={false}
         maxSize={maxSize}
         maxFiles={maxFileCount}
         multiple={maxFileCount > 1 || multiple}
         disabled={isDisabled}
+        validator={(file) => {
+          // Check if file type is accepted
+          const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
+          const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
+            return file.type === mimeType || extensions.includes(fileExt);
+          });
+          
+          if (!isAccepted) {
+            return {
+              code: 'file-invalid-type',
+              message: t('documentPanel.uploadDocuments.fileUploader.unsupportedType')
+            };
+          }
+          
+          // Check file size
+          if (file.size > maxSize) {
+            return {
+              code: 'file-too-large',
+              message: t('documentPanel.uploadDocuments.fileUploader.fileTooLarge', { 
+                maxSize: formatBytes(maxSize) 
+              })
+            };
+          }
+          
+          return null;
+        }}
       >
         {({ getRootProps, getInputProps, isDragActive }) => (
           <div
@@ -279,18 +355,21 @@ function FileUploader(props: FileUploaderProps) {
 interface ProgressProps {
   value: number
   error?: boolean
+  showIcon?: boolean  // New property to control icon display
 }
 
 function Progress({ value, error }: ProgressProps) {
   return (
-    <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
-      <div
-        className={cn(
-          'h-full transition-all',
-          error ? 'bg-destructive' : 'bg-primary'
-        )}
-        style={{ width: `${value}%` }}
-      />
+    <div className="relative h-2 w-full">
+      <div className="h-full w-full overflow-hidden rounded-full bg-secondary">
+        <div
+          className={cn(
+            'h-full transition-all',
+            error ? 'bg-destructive' : 'bg-primary'
+          )}
+          style={{ width: `${value}%` }}
+        />
+      </div>
     </div>
   )
 }
@@ -307,7 +386,11 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
   return (
     <div className="relative flex items-center gap-2.5">
       <div className="flex flex-1 gap-2.5">
-        {isFileWithPreview(file) ? <FilePreview file={file} /> : null}
+        {error ? (
+          <FileText className="text-destructive size-10" aria-hidden="true" />
+        ) : (
+          isFileWithPreview(file) ? <FilePreview file={file} /> : null
+        )}
         <div className="flex w-full flex-col gap-2">
           <div className="flex flex-col gap-px">
             <p className="text-foreground/80 line-clamp-1 text-sm font-medium">{file.name}</p>
@@ -315,8 +398,10 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
           </div>
           {error ? (
             <div className="text-destructive text-sm">
-              <Progress value={100} error={true} />
-              <p className="mt-1">{error}</p>
+              <div className="relative mb-2">
+                <Progress value={100} error={true} />
+              </div>
+              <p>{error}</p>
             </div>
           ) : (
             progress ? <Progress value={progress} /> : null
