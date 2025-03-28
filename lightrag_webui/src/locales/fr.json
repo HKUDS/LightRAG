@@ -215,7 +215,8 @@
           "entity_id": "Nom",
           "entity_type": "Type",
           "source_id": "ID source",
-          "Neighbour": "Voisin"
+          "Neighbour": "Voisin",
+          "file_path": "Source"
         }
       },
       "edge": {
