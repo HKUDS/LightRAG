@@ -90,7 +90,9 @@ lightrag-server
 ```
 lightrag-gunicorn --workers 4
 ```
-The `.env` file must be placed in the startup directory. Upon launching, the LightRAG Server will create a documents directory (default is `./inputs`) and a data directory (default is `./rag_storage`). This allows you to initiate multiple instances of LightRAG Server from different directories, with each instance configured to listen on a distinct network port.
+The `.env` file **must be placed in the startup directory**. 
+
+Upon launching, the LightRAG Server will create a documents directory (default is `./inputs`) and a data directory (default is `./rag_storage`). This allows you to initiate multiple instances of LightRAG Server from different directories, with each instance configured to listen on a distinct network port.
 
 Here are some common used startup parameters:
 
@@ -99,6 +101,8 @@ Here are some common used startup parameters:
 - `--timeout`: LLM request timeout (default: 150 seconds)
 - `--log-level`: Logging level (default: INFO)
 - --input-dir: specifying the directory to scan for documents (default: ./input)
+
+> The requirement for the .env file to be in the startup directory is intentionally designed this way. The purpose is to support users in launching multiple LightRAG instances simultaneously. Allow different .env files for different instances.
 
 ### Auto scan on startup
 
