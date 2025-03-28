@@ -90,11 +90,13 @@ async def openai_complete_if_cache(
     messages.extend(history_messages)
     messages.append({"role": "user", "content": prompt})
 
-    logger.debug("===== Sending Query to LLM =====")
+    logger.debug("===== Entering func of LLM =====")
     logger.debug(f"Model: {model}   Base URL: {base_url}")
     logger.debug(f"Additional kwargs: {kwargs}")
-    verbose_debug(f"Query: {prompt}")
+    logger.debug(f"Num of history messages: {len(history_messages)}")
     verbose_debug(f"System prompt: {system_prompt}")
+    verbose_debug(f"Query: {prompt}")
+    logger.debug("===== Sending Query to LLM =====")
 
     try:
         if "response_format" in kwargs:
@@ -163,6 +165,9 @@ async def openai_complete_if_cache(
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
             token_tracker.add_usage(token_counts)
+    
+        logger.debug(f"Response content len: {len(content)}")
+        verbose_debug(f"Response: {response}")
 
         return content
 
