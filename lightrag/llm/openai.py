@@ -58,6 +58,7 @@ async def openai_complete_if_cache(
     history_messages: list[dict[str, Any]] | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
+    token_tracker: Any | None = None,
     **kwargs: Any,
 ) -> str:
     if history_messages is None:
@@ -154,6 +155,15 @@ async def openai_complete_if_cache(
 
         if r"\u" in content:
             content = safe_unicode_decode(content.encode("utf-8"))
+
+        if token_tracker and hasattr(response, "usage"):
+            token_counts = {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+                "total_tokens": getattr(response.usage, "total_tokens", 0),
+            }
+            token_tracker.add_usage(token_counts)
+
         return content
 
 
