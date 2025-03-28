@@ -70,7 +70,8 @@
         "dropHere": "将文件拖放到此处",
         "dragAndDrop": "拖放文件到此处，或点击选择文件",
         "removeFile": "移除文件",
-        "uploadDescription": "您可以上传{{isMultiple ? '多个' : count}}个文件（每个文件最大{{maxSize}}）"
+        "uploadDescription": "您可以上传{{isMultiple ? '多个' : count}}个文件（每个文件最大{{maxSize}}）",
+        "duplicateFile": "文件名与服务器上的缓存重复"
       }
     },
     "documentManager": {

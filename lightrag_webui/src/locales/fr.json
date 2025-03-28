@@ -70,7 +70,8 @@
         "dropHere": "Déposez les fichiers ici",
         "dragAndDrop": "Glissez et déposez les fichiers ici, ou cliquez pour sélectionner",
         "removeFile": "Supprimer le fichier",
-        "uploadDescription": "Vous pouvez télécharger {{isMultiple ? 'plusieurs' : count}} fichiers (jusqu'à {{maxSize}} chacun)"
+        "uploadDescription": "Vous pouvez télécharger {{isMultiple ? 'plusieurs' : count}} fichiers (jusqu'à {{maxSize}} chacun)",
+        "duplicateFile": "Le nom du fichier existe déjà dans le cache du serveur"
       }
     },
     "documentManager": {

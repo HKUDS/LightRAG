@@ -70,7 +70,8 @@
         "dropHere": "Drop the files here",
         "dragAndDrop": "Drag and drop files here, or click to select files",
         "removeFile": "Remove file",
-        "uploadDescription": "You can upload {{isMultiple ? 'multiple' : count}} files (up to {{maxSize}} each)"
+        "uploadDescription": "You can upload {{isMultiple ? 'multiple' : count}} files (up to {{maxSize}} each)",
+        "duplicateFile": "File name already exists in server cache"
       }
     },
     "documentManager": {

@@ -70,7 +70,8 @@
         "dropHere": "أفلت الملفات هنا",
         "dragAndDrop": "اسحب وأفلت الملفات هنا، أو انقر للاختيار",
         "removeFile": "إزالة الملف",
-        "uploadDescription": "يمكنك رفع {{isMultiple ? 'عدة' : count}} ملفات (حتى {{maxSize}} لكل منها)"
+        "uploadDescription": "يمكنك رفع {{isMultiple ? 'عدة' : count}} ملفات (حتى {{maxSize}} لكل منها)",
+        "duplicateFile": "اسم الملف موجود بالفعل في ذاكرة التخزين المؤقت للخادم"
       }
     },
     "documentManager": {

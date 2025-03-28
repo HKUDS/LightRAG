@@ -542,6 +542,7 @@ def create_document_routes(
 
         Returns:
             InsertResponse: A response object containing the upload status and a message.
+                status can be "success", "duplicated", or error is thrown.
 
         Raises:
             HTTPException: If the file type is not supported (400) or other errors occur (500).
@@ -554,6 +555,13 @@ def create_document_routes(
                 )
 
             file_path = doc_manager.input_dir / file.filename
+            # Check if file already exists
+            if file_path.exists():
+                return InsertResponse(
+                    status="duplicated",
+                    message=f"File '{file.filename}' already exists in the input directory."
+                )
+
             with open(file_path, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
 

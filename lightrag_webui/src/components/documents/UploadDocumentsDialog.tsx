@@ -89,7 +89,13 @@ export default function UploadDocumentsDialog() {
                 }))
               })
 
-              if (result.status !== 'success') {
+              if (result.status === 'duplicated') {
+                uploadErrors[file.name] = t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
+                setFileErrors(prev => ({
+                  ...prev,
+                  [file.name]: t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
+                }))
+              } else if (result.status !== 'success') {
                 uploadErrors[file.name] = result.message
                 setFileErrors(prev => ({
                   ...prev,
