@@ -443,8 +443,8 @@ if __name__ == "__main__":
         batch_process_directories(root_directory)
     else:
         # 使用默认示例
-        json_file = '/Users/llp/llp_experiments/management/383/383_content_list.json'
-        markdown_file = '/Users/llp/llp_experiments/management/383/output.md'
+        json_file = '/Users/llp/llp_experiments/management/test1/A2/A2.json'
+        markdown_file = '/Users/llp/llp_experiments/management/test1/A2/output.md'
         json_to_markdown(json_file, markdown_file)
 
 # json_file = 'jna_content_list.json'  # Replace with the actual path to your JSON file

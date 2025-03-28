@@ -194,8 +194,8 @@ def json_to_markdown(json_file_path, markdown_file_path):
     print(f"Successfully converted {json_file_path} to {markdown_file_path}")
 
 # Example usage:
-json_file = '/Users/llp/llp_experiments/management/383/383_content_list.json'  # Replace with the actual path to your JSON file
-markdown_file = '/Users/llp/llp_experiments/management/383/output.md'  # Replace with the desired path for the output Markdown file
+json_file = '/Users/llp/llp_experiments/management/test1/A2/A2.json'
+markdown_file = '/Users/llp/llp_experiments/management/test1/A2/output.md'
 json_to_markdown(json_file, markdown_file)
 
 # json_file = 'jna_content_list.json'  # Replace with the actual path to your JSON file

@@ -174,7 +174,7 @@ def process_level(
             "child_ids": [],  # 稍后更新
             "file_path": file_path,
             "full_doc_id": full_doc_id,
-            "heading": remove_markdown(current_heading),
+            "heading": remove_markdown(remove_page_numbers(current_heading)),
             "page_numbers": []  # 添加页码属性
         }
         
@@ -298,7 +298,7 @@ def process_level(
                             "child_ids": [],
                             "file_path": file_path,
                             "full_doc_id": full_doc_id,
-                            "heading": remove_markdown(current_heading),
+                            "heading": remove_markdown(remove_page_numbers(current_heading)),
                             "page_numbers": all_page_numbers  # 添加页码属性
                         }
                         chunks.append(sub_chunk)
