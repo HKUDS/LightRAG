@@ -8,7 +8,8 @@ from typing import Optional, List, Tuple
 import sys
 from ascii_colors import ASCIIColors
 import logging
-from lightrag.api import __api_version__
+from lightrag.api import __api_version__ as api_version
+from lightrag import __version__ as core_version
 from fastapi import HTTPException, Security, Request, status
 from dotenv import load_dotenv
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
@@ -488,7 +489,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     # Banner
     ASCIIColors.cyan(f"""
     ╔══════════════════════════════════════════════════════════════╗
-    ║                   🚀 LightRAG Server v{__api_version__}                  ║
+    ║                   🚀 LightRAG Server v{core_version}/{api_version}            ║
     ║          Fast, Lightweight RAG Server Implementation         ║
     ╚══════════════════════════════════════════════════════════════╝
     """)
