@@ -65,6 +65,8 @@
         "singleFileLimit": "Impossible de télécharger plus d'un fichier à la fois",
         "maxFilesLimit": "Impossible de télécharger plus de {{count}} fichiers",
         "fileRejected": "Le fichier {{name}} a été rejeté",
+        "unsupportedType": "Type de fichier non pris en charge",
+        "fileTooLarge": "Fichier trop volumineux, taille maximale {{maxSize}}",
         "dropHere": "Déposez les fichiers ici",
         "dragAndDrop": "Glissez et déposez les fichiers ici, ou cliquez pour sélectionner",
         "removeFile": "Supprimer le fichier",
