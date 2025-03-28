@@ -65,10 +65,13 @@
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",
         "fileRejected": "File {{name}} was rejected",
+        "unsupportedType": "Unsupported file type",
+        "fileTooLarge": "File too large, maximum size is {{maxSize}}",
         "dropHere": "Drop the files here",
         "dragAndDrop": "Drag and drop files here, or click to select files",
         "removeFile": "Remove file",
-        "uploadDescription": "You can upload {{isMultiple ? 'multiple' : count}} files (up to {{maxSize}} each)"
+        "uploadDescription": "You can upload {{isMultiple ? 'multiple' : count}} files (up to {{maxSize}} each)",
+        "duplicateFile": "File name already exists in server cache"
       }
     },
     "documentManager": {

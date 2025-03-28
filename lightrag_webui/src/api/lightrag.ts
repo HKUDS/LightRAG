@@ -109,7 +109,7 @@ export type QueryResponse = {
 }
 
 export type DocActionResponse = {
-  status: 'success' | 'partial_success' | 'failure'
+  status: 'success' | 'partial_success' | 'failure' | 'duplicated'
   message: string
 }
 
