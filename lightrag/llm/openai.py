@@ -165,7 +165,7 @@ async def openai_complete_if_cache(
                 "total_tokens": getattr(response.usage, "total_tokens", 0),
             }
             token_tracker.add_usage(token_counts)
-    
+
         logger.debug(f"Response content len: {len(content)}")
         verbose_debug(f"Response: {response}")
 
