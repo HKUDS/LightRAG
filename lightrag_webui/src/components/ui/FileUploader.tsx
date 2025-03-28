@@ -365,7 +365,7 @@ function Progress({ value, error }: ProgressProps) {
         <div
           className={cn(
             'h-full transition-all',
-            error ? 'bg-destructive' : 'bg-primary'
+            error ? 'bg-red-400' : 'bg-primary'
           )}
           style={{ width: `${value}%` }}
         />
@@ -387,7 +387,7 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
     <div className="relative flex items-center gap-2.5">
       <div className="flex flex-1 gap-2.5">
         {error ? (
-          <FileText className="text-destructive size-10" aria-hidden="true" />
+          <FileText className="text-red-400 size-10" aria-hidden="true" />
         ) : (
           isFileWithPreview(file) ? <FilePreview file={file} /> : null
         )}
@@ -397,7 +397,7 @@ function FileCard({ file, progress, error, onRemove }: FileCardProps) {
             <p className="text-muted-foreground text-xs">{formatBytes(file.size)}</p>
           </div>
           {error ? (
-            <div className="text-destructive text-sm">
+            <div className="text-red-400 text-sm">
               <div className="relative mb-2">
                 <Progress value={100} error={true} />
               </div>
