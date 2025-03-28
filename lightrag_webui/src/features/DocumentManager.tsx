@@ -64,6 +64,14 @@ const pulseStyle = `
   color: white;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
   pointer-events: none; /* Prevent tooltip from interfering with mouse events */
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.15s, visibility 0.15s;
+}
+
+.tooltip.visible {
+  opacity: 1;
+  visibility: visible;
 }
 
 .dark .tooltip {
@@ -216,8 +224,8 @@ export default function DocumentManager() {
         const tooltip = container.querySelector<HTMLElement>('.tooltip');
         if (!tooltip) return;
 
-        // Only position visible tooltips
-        if (getComputedStyle(tooltip).visibility === 'hidden') return;
+        // Skip tooltips that aren't visible
+        if (!tooltip.classList.contains('visible')) return;
 
         // Get container position
         const rect = container.getBoundingClientRect();
@@ -236,14 +244,32 @@ export default function DocumentManager() {
       const container = target.closest('.tooltip-container');
       if (!container) return;
 
-      // Small delay to ensure tooltip is visible before positioning
-      setTimeout(positionTooltips, 10);
+      // Find tooltip and make it visible
+      const tooltip = container.querySelector<HTMLElement>('.tooltip');
+      if (tooltip) {
+        tooltip.classList.add('visible');
+        // Position immediately without delay
+        positionTooltips();
+      }
+    };
+
+    const handleMouseOut = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const container = target.closest('.tooltip-container');
+      if (!container) return;
+
+      const tooltip = container.querySelector<HTMLElement>('.tooltip');
+      if (tooltip) {
+        tooltip.classList.remove('visible');
+      }
     };
 
     document.addEventListener('mouseover', handleMouseOver);
+    document.addEventListener('mouseout', handleMouseOut);
 
     return () => {
       document.removeEventListener('mouseover', handleMouseOver);
+      document.removeEventListener('mouseout', handleMouseOut);
     };
   }, [docs]);
 
