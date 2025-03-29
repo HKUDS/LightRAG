@@ -1,0 +1,75 @@
+# config.yaml
+# Schema and Normalization Configuration for entity_extract.py
+
+schema:
+  # List of allowed entity types for extraction
+  entity_types:
+    - 文档
+    - 章节
+    - 主题
+    - 关键词
+    - 人员
+    - 角色
+    - 组织
+    - 时间
+    - 事件
+    - 法规
+
+  # Mapping from Chinese entity types to Cypher labels (often English/Uppercase)
+  entity_type_map_cypher:
+    文档: Document
+    章节: Section
+    主题: Topic
+    关键词: Keyword
+    人员: Person
+    角色: Role
+    组织: Organization
+    时间: Time
+    事件: Event
+    法规: Regulation
+
+  # List of allowed relation types for extraction
+  relation_types:
+    - 隶属关系
+    - 版本关系
+    - 引用
+    - 依据
+    - 责任
+    - 审批
+    - 时间
+    - 生效
+    - 关联
+
+  # Mapping from Chinese relation types to Cypher relationship types (often UPPERCASE)
+  relation_type_map_cypher:
+    隶属关系: BELONGS_TO
+    版本关系: HAS_VERSION
+    引用: REFERENCES
+    依据: BASED_ON
+    责任: RESPONSIBLE_FOR
+    审批: APPROVED_BY
+    时间: OCCURS_AT
+    生效: EFFECTIVE_FROM
+    关联: RELATED_TO
+
+normalization:
+  # Map of raw entity names to their canonical/normalized form
+  canonical_map:
+    客运部: 集团公司客运部
+    信息技术所: 集团公司信息技术所
+    科信部: 集团公司科信部
+    财务部: 集团公司财务部
+    计统部: 集团公司计统部
+    电务部: 集团公司电务部
+    供电部: 集团公司供电部
+    宣传部: 集团公司宣传部
+    调度所: 集团公司调度所
+    集团公司应急领导小组办公室: 集团公司应急领导小组办公室
+    集团公司应急领导小组: 集团公司应急领导小组
+    国铁集团应急领导小组办公室: 国铁集团应急领导小组办公室
+    国铁集团应急领导小组: 国铁集团应急领导小组
+    国铁集团客运部: 国铁集团客运部
+    12306科创中心: 12306科创中心
+    广铁集团: 中国铁路广州局集团有限公司
+    集团公司: 中国铁路广州局集团有限公司 # Note: Context might be needed for more specific rules
+    客票系统: 客票发售和预订系统
