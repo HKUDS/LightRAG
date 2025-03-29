@@ -92,7 +92,7 @@ lightrag-server
 ```
 lightrag-gunicorn --workers 4
 ```
-The `.env` file **must be placed in the startup directory**. 
+The `.env` file **must be placed in the startup directory**.
 
 Upon launching, the LightRAG Server will create a documents directory (default is `./inputs`) and a data directory (default is `./rag_storage`). This allows you to initiate multiple instances of LightRAG Server from different directories, with each instance configured to listen on a distinct network port.
 
