@@ -1067,8 +1067,12 @@ async def mix_kg_vector_query(
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["mix_rag_response"]
     try:
         sys_prompt = sys_prompt_temp.format(
-            kg_context=kg_context if kg_context else "No relevant knowledge graph information found",
-            vector_context=vector_context if vector_context else "No relevant text information found",
+            kg_context=kg_context
+            if kg_context
+            else "No relevant knowledge graph information found",
+            vector_context=vector_context
+            if vector_context
+            else "No relevant text information found",
             response_type=query_param.response_type,
             history=history_context,
         )
