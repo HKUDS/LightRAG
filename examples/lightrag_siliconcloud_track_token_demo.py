@@ -44,14 +44,10 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
 
 # function test
 async def test_funcs():
-    # Reset tracker before processing queries
-    token_tracker.reset()
-
-    result = await llm_model_func("How are you?")
-    print("llm_model_func: ", result)
-
-    # Display final token usage after main query
-    print("Token usage:", token_tracker.get_usage())
+    # Context Manager Method
+    with token_tracker:
+        result = await llm_model_func("How are you?")
+        print("llm_model_func: ", result)
 
 
 asyncio.run(test_funcs())

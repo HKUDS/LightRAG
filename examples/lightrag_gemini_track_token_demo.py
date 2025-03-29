@@ -115,38 +115,36 @@ def main():
     # Initialize RAG instance
     rag = asyncio.run(initialize_rag())
 
-    # Reset tracker before processing queries
-    token_tracker.reset()
-
     with open("./book.txt", "r", encoding="utf-8") as f:
         rag.insert(f.read())
 
-    print(
-        rag.query(
-            "What are the top themes in this story?", param=QueryParam(mode="naive")
+    # Context Manager Method
+    with token_tracker:
+        print(
+            rag.query(
+                "What are the top themes in this story?", param=QueryParam(mode="naive")
+            )
         )
-    )
 
-    print(
-        rag.query(
-            "What are the top themes in this story?", param=QueryParam(mode="local")
+        print(
+            rag.query(
+                "What are the top themes in this story?", param=QueryParam(mode="local")
+            )
         )
-    )
 
-    print(
-        rag.query(
-            "What are the top themes in this story?", param=QueryParam(mode="global")
+        print(
+            rag.query(
+                "What are the top themes in this story?",
+                param=QueryParam(mode="global"),
+            )
         )
-    )
 
-    print(
-        rag.query(
-            "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+        print(
+            rag.query(
+                "What are the top themes in this story?",
+                param=QueryParam(mode="hybrid"),
+            )
         )
-    )
-
-    # Display final token usage after main query
-    print("Token usage:", token_tracker.get_usage())
 
 
 if __name__ == "__main__":
