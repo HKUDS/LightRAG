@@ -449,6 +449,7 @@ if __name__ == "__main__":
 LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
 
 <details>
+  <summary> <b> Usage Example </b></summary>
 
 ```python
 # Create conversation history
@@ -472,9 +473,14 @@ response = rag.query(
 )
 ```
 
+</details>
+
 ### Custom Prompt Support
 
 LightRAG now supports custom prompts for fine-tuned control over the system's behavior. Here's how to use it:
+
+<details>
+  <summary> <b> Usage Example </b></summary>
 
 ```python
 # Create query parameters
