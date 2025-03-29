@@ -422,7 +422,6 @@ EMBEDDING_BINDING_HOST=http://localhost:11434
 ```
 
 
-
 ## API Endpoints
 
 All servers (LoLLMs, Ollama, OpenAI and Azure OpenAI) provide the same REST API endpoints for RAG functionality. When API Server is running, visit:
