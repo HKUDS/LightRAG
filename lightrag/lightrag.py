@@ -13,7 +13,6 @@ import pandas as pd
 
 
 from lightrag.kg import (
-    STORAGE_ENV_REQUIREMENTS,
     STORAGES,
     verify_storage_implementation,
 )
@@ -1588,7 +1587,7 @@ class LightRAG:
             logger.debug(f"Found {len(chunk_ids)} chunks to delete")
 
             # TODO: self.entities_vdb.client_storage only works for local storage, need to fix this
-            
+
             # 3. Before deleting, check the related entities and relationships for these chunks
             for chunk_id in chunk_ids:
                 # Check entities
