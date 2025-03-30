@@ -229,6 +229,7 @@ class LightRAG:
     vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional parameters for vector database storage."""
 
+    # TODO：deprecated, remove in the future, use WORKSPACE instead
     namespace_prefix: str = field(default="")
     """Prefix for namespacing stored data across different environments."""
 
