@@ -275,6 +275,34 @@ def normalize_entity_name(raw_name: str) -> str:
     cleaned_name = raw_name.strip().replace('\n', ' ')
     return CANONICAL_MAP.get(cleaned_name, cleaned_name)
 
+def normalize_entity_type(raw_type: str) -> str:
+    """规范化实体类型，确保使用配置中定义的标准类型。
+    
+    将尝试匹配中英文类型名称，确保使用ENTITY_TYPE_MAP_CYPHER中定义的标准类型。
+    """
+    if not isinstance(raw_type, str):
+        logging.warning(f"Attempted to normalize non-string entity type: {raw_type}. Returning as is.")
+        return str(raw_type)
+    
+    cleaned_type = raw_type.strip().replace('\n', ' ')
+    
+    # 如果是中文类型且存在于ENTITY_TYPE_MAP_CYPHER中，返回对应的英文类型
+    if cleaned_type in ENTITY_TYPES:
+        return ENTITY_TYPE_MAP_CYPHER.get(cleaned_type, cleaned_type)
+    
+    # 如果是英文类型且是ENTITY_TYPE_MAP_CYPHER的值的一部分，保持原样返回
+    if cleaned_type in ENTITY_TYPE_MAP_CYPHER.values():
+        return cleaned_type
+    
+    # 尝试通过反向查找，从英文映射回中文再映射回标准英文
+    for cn_type, en_type in ENTITY_TYPE_MAP_CYPHER.items():
+        if cleaned_type.lower() == en_type.lower():
+            return en_type  # 返回正确大小写的英文类型名
+    
+    # 如果无法匹配，记录警告并返回原始类型
+    logging.warning(f"实体类型 '{cleaned_type}' 未在配置中定义，无法规范化")
+    return cleaned_type
+
 def escape_cypher_string(value: str) -> str:
     """Escapes single quotes and backslashes for Cypher strings."""
     if not isinstance(value, str):
@@ -835,23 +863,31 @@ def generate_cypher_statements(entities: Set[Tuple[str, str, str]], relations: S
         cypher_statements.append(f"// CREATE CONSTRAINT ON (n:`{entity_type_cypher}`) ASSERT n.name IS UNIQUE;")
 
     cypher_statements.append("\n// --- Entity Creation ---")
-    sorted_entities = sorted(list(entities))
+    
+    # 规范化实体类型，创建新的规范化实体集合
+    normalized_entities = set()
+    for name, type_cn, chunk_id in entities:
+        if not name:  # Skip empty names
+            continue
+        normalized_type = normalize_entity_type(type_cn)
+        normalized_entities.add((name, normalized_type, chunk_id))
+    
+    sorted_entities = sorted(list(normalized_entities))
     # 创建实体类型到实体名称的映射，方便后续查找
     entity_type_mapping = {}
-    for name, type_cn, chunk_id in sorted_entities:
+    for name, type_cypher, chunk_id in sorted_entities:
         if not name: # Skip empty names
             continue
         if name not in entity_type_mapping:
             entity_type_mapping[name] = set()
-        entity_type_mapping[name].add(type_cn)
+        entity_type_mapping[name].add(type_cypher)
         
-        entity_type_cypher = ENTITY_TYPE_MAP_CYPHER.get(type_cn, type_cn.replace(" ", "_")) # Map or sanitize
         escaped_name = escape_cypher_string(name)
         # 添加唯一ID属性以提高唯一性识别能力，并添加chunk_id和entity_type属性
-        cypher_statements.append(f"MERGE (n:`{entity_type_cypher}` {{name: '{escaped_name}'}}) "
-                                 f"ON CREATE SET n.uuid = '{entity_type_cypher}_' + timestamp() + '_' + toString(rand()), "
+        cypher_statements.append(f"MERGE (n:`{type_cypher}` {{name: '{escaped_name}'}}) "
+                                 f"ON CREATE SET n.uuid = '{type_cypher}_' + timestamp() + '_' + toString(rand()), "
                                  f"n.chunk_id = '{chunk_id}', "
-                                 f"n.entity_type = '{type_cn}';")
+                                 f"n.entity_type = '{type_cypher}';")
 
     cypher_statements.append("\n// --- Relationship Creation ---")
     # 记录无法匹配类型的关系数量
@@ -870,19 +906,16 @@ def generate_cypher_statements(entities: Set[Tuple[str, str, str]], relations: S
         source_types = entity_type_mapping.get(source, set())
         target_types = entity_type_mapping.get(target, set())
         
-        # 从实体集合中查找对应的实体类型
-        source_type_cn = next((t for n, t, c in sorted_entities if n == source), None)
-        target_type_cn = next((t for n, t, c in sorted_entities if n == target), None)
+        # 从规范化实体集合中查找对应的实体类型
+        source_type_cypher = next((t for n, t, c in sorted_entities if n == source), None)
+        target_type_cypher = next((t for n, t, c in sorted_entities if n == target), None)
         
         # 如果实体有多种可能的类型，记录为歧义关系
         source_ambiguous = len(source_types) > 1
         target_ambiguous = len(target_types) > 1
 
-        if source_type_cn and target_type_cn:
-            source_type_cypher = ENTITY_TYPE_MAP_CYPHER.get(source_type_cn, source_type_cn.replace(" ", "_"))
-            target_type_cypher = ENTITY_TYPE_MAP_CYPHER.get(target_type_cn, target_type_cn.replace(" ", "_"))
-            
-            # 使用类型标签进行精确匹配，并添加属性
+        if source_type_cypher and target_type_cypher:
+            # 使用规范化的类型标签进行精确匹配，并添加属性
             cypher_statements.append(
                 f"MATCH (a:`{source_type_cypher}` {{name: '{escaped_source}'}}), "
                 f"(b:`{target_type_cypher}` {{name: '{escaped_target}'}}) "
@@ -905,8 +938,8 @@ def generate_cypher_statements(entities: Set[Tuple[str, str, str]], relations: S
                 untyped_relations_count += 1
                 
             # 改进的匹配逻辑，添加属性
-            if source_type_cn and not target_type_cn:
-                source_type_cypher = ENTITY_TYPE_MAP_CYPHER.get(source_type_cn, source_type_cn.replace(" ", "_"))
+            if source_type_cypher and not target_type_cypher:
+                # source_type_cypher已经是规范化后的类型，不需要再次转换
                 cypher_statements.append(
                     f"MATCH (a:`{source_type_cypher}` {{name: '{escaped_source}'}}), "
                     f"(b {{name: '{escaped_target}'}}) "
@@ -914,8 +947,8 @@ def generate_cypher_statements(entities: Set[Tuple[str, str, str]], relations: S
                     f"ON CREATE SET r.match_type = 'source_typed', r.created_at = timestamp(), "
                     f"r.chunk_id = '{chunk_id}', "
                     f"r.relation_type = '{type_cn}';")
-            elif not source_type_cn and target_type_cn:
-                target_type_cypher = ENTITY_TYPE_MAP_CYPHER.get(target_type_cn, target_type_cn.replace(" ", "_"))
+            elif not source_type_cypher and target_type_cypher:
+                # target_type_cypher已经是规范化后的类型，不需要再次转换
                 cypher_statements.append(
                     f"MATCH (a {{name: '{escaped_source}'}}), "
                     f"(b:`{target_type_cypher}` {{name: '{escaped_target}'}}) "
@@ -1064,8 +1097,10 @@ async def extract_entities_and_relations(data: List[Dict[str, Any]]) -> Tuple[Se
                 raw_type = entity.get('type')
                 if raw_name and raw_type and raw_type in ENTITY_TYPES:
                     normalized_name = normalize_entity_name(raw_name)
+                    # 规范化实体类型
+                    normalized_type = normalize_entity_type(raw_type)
                     # 将实体添加到集合中，包含chunk_id属性
-                    entities_set.add((normalized_name, raw_type, task.chunk_id))
+                    entities_set.add((normalized_name, normalized_type, task.chunk_id))
                 else: 
                     logging.warning(f"Invalid entity format or type in chunk {task.chunk_id}: {entity}")
     
@@ -1096,19 +1131,23 @@ async def extract_entities_and_relations(data: List[Dict[str, Any]]) -> Tuple[Se
                 
                 # 存储实体类型信息并添加到实体集合，包含chunk_id属性
                 if source_type and source_type in ENTITY_TYPES:
+                    # 规范化源实体类型
+                    normalized_source_type = normalize_entity_type(source_type)
                     # 使用关系中提供的类型丰富实体集合
-                    entities_set.add((normalized_source, source_type, task.chunk_id))
+                    entities_set.add((normalized_source, normalized_source_type, task.chunk_id))
                     # 记录类型信息，用于后续关系处理
                     if normalized_source not in relation_type_info:
                         relation_type_info[normalized_source] = set()
-                    relation_type_info[normalized_source].add(source_type)
+                    relation_type_info[normalized_source].add(normalized_source_type)
                     enriched_relation_count += 1
                 
                 if target_type and target_type in ENTITY_TYPES:
-                    entities_set.add((normalized_target, target_type, task.chunk_id))
+                    # 规范化目标实体类型
+                    normalized_target_type = normalize_entity_type(target_type)
+                    entities_set.add((normalized_target, normalized_target_type, task.chunk_id))
                     if normalized_target not in relation_type_info:
                         relation_type_info[normalized_target] = set()
-                    relation_type_info[normalized_target].add(target_type)
+                    relation_type_info[normalized_target].add(normalized_target_type)
                     enriched_relation_count += 1
             else: 
                 logging.warning(f"Invalid relation format or type in chunk {task.chunk_id}: {relation}")
@@ -1166,9 +1205,13 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
                     child_type = "章节"  # 默认假设非根标题为章节
                     parent_type = "章节" if parent_chunk.get("parent_id") else "文档"
                     
+                    # 规范化实体类型
+                    normalized_child_type = normalize_entity_type(child_type)
+                    normalized_parent_type = normalize_entity_type(parent_type)
+                    
                     # 添加实体，包含chunk_id
-                    entities_set.add((child_entity_name, child_type, chunk_id))
-                    entities_set.add((parent_entity_name, parent_type, parent_id))
+                    entities_set.add((child_entity_name, normalized_child_type, chunk_id))
+                    entities_set.add((parent_entity_name, normalized_parent_type, parent_id))
                     
                     # 添加关系，包含chunk_id
                     relation_tuple = (child_entity_name, parent_entity_name, "隶属关系", chunk_id)
@@ -1185,26 +1228,29 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
     
     # 识别所有Document实体、顶级Section实体和所有Section实体
     for name, entity_type, chunk_id in entities_set:
-        if entity_type.lower() in ["document", "文档"]:
+        normalized_type = normalize_entity_type(entity_type)
+        
+        if normalized_type.lower() == "document":
             documents.add((name, chunk_id))
         
         # 记录所有章节实体
-        if entity_type.lower() in ["section", "章节", "Section"]:
-            all_sections.add((name, entity_type, chunk_id))
+        if normalized_type.lower() == "section":
+            all_sections.add((name, normalized_type, chunk_id))
         
         # 找出顶级章节（通过parent_id指向文档的章节）
-        if entity_type.lower() in ["section", "章节", "Section"] and chunk_id in chunk_map:
+        if normalized_type.lower() == "section" and chunk_id in chunk_map:
             parent_id = chunk_map[chunk_id].get("parent_id")
             if parent_id and parent_id in chunk_map:
                 parent_entity_type = None
                 # 查找父级实体的类型
                 for parent_name, parent_type, parent_chunk_id in entities_set:
                     if parent_chunk_id == parent_id:
-                        parent_entity_type = parent_type
+                        normalized_parent_type = normalize_entity_type(parent_type)
+                        parent_entity_type = normalized_parent_type
                         break
                         
                 # 如果父级是文档，则此章节是顶级章节
-                if parent_entity_type and parent_entity_type.lower() in ["document", "文档"]:
+                if parent_entity_type and parent_entity_type.lower() == "document":
                     top_level_sections.add((name, chunk_id))
     
     # 添加Document到顶级Section的HAS_SECTION关系
@@ -1266,7 +1312,9 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
         else:
             # 没有文档实体，创建默认文档
             logging.info(f"没有找到文档实体，创建默认文档并关联孤立Section...")
-            entities_set.add((default_doc_name, "文档", default_doc_chunk_id))
+            # 规范化文档类型
+            normalized_doc_type = normalize_entity_type("文档")
+            entities_set.add((default_doc_name, normalized_doc_type, default_doc_chunk_id))
             
             for section_name, section_type, section_chunk_id in isolated_sections:
                 # 添加HAS_SECTION关系
