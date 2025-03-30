@@ -1494,6 +1494,7 @@ class LightRAG:
             target_entity: Name of the target entity
         """
         try:
+            # TODO: check if has_edge function works on reverse relation
             # Check if the relation exists
             edge_exists = await self.chunk_entity_relation_graph.has_edge(
                 source_entity, target_entity
@@ -1586,6 +1587,8 @@ class LightRAG:
             chunk_ids = set(related_chunks.keys())
             logger.debug(f"Found {len(chunk_ids)} chunks to delete")
 
+            # TODO: self.entities_vdb.client_storage only works for local storage, need to fix this
+            
             # 3. Before deleting, check the related entities and relationships for these chunks
             for chunk_id in chunk_ids:
                 # Check entities
@@ -1856,24 +1859,6 @@ class LightRAG:
             result["vector_data"] = vector_data
 
         return result
-
-    def check_storage_env_vars(self, storage_name: str) -> None:
-        """Check if all required environment variables for storage implementation exist
-
-        Args:
-            storage_name: Storage implementation name
-
-        Raises:
-            ValueError: If required environment variables are missing
-        """
-        required_vars = STORAGE_ENV_REQUIREMENTS.get(storage_name, [])
-        missing_vars = [var for var in required_vars if var not in os.environ]
-
-        if missing_vars:
-            raise ValueError(
-                f"Storage implementation '{storage_name}' requires the following "
-                f"environment variables: {', '.join(missing_vars)}"
-            )
 
     async def aclear_cache(self, modes: list[str] | None = None) -> None:
         """Clear cache data from the LLM response cache storage.
