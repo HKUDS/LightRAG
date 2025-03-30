@@ -42,6 +42,7 @@ class NetworkXStorage(BaseGraphStorage):
         )
         nx.write_graphml(graph, file_name)
 
+    # TODO：deprecated, remove later
     @staticmethod
     def _stabilize_graph(graph: nx.Graph) -> nx.Graph:
         """Refer to https://github.com/microsoft/graphrag/index/graph/utils/stable_lcc.py
@@ -424,3 +425,33 @@ class NetworkXStorage(BaseGraphStorage):
                 return False  # Return error
 
         return True
+
+    async def drop(self) -> dict[str, str]:
+        """Drop all graph data from storage and clean up resources
+        
+        This method will:
+        1. Remove the graph storage file if it exists
+        2. Reset the graph to an empty state
+        3. Update flags to notify other processes
+        4. Trigger index_done_callback to save the empty state
+        
+        Returns:
+            dict[str, str]: Operation status and message
+            - On success: {"status": "success", "message": "data dropped"}
+            - On failure: {"status": "error", "message": "<error details>"}
+        """
+        try:
+            async with self._storage_lock:
+                # delete _client_file_name
+                if os.path.exists(self._graphml_xml_file):
+                    os.remove(self._graphml_xml_file)
+                self._graph = nx.Graph()
+                # Notify other processes that data has been updated
+                await set_all_update_flags(self.namespace)
+                # Reset own update flag to avoid self-reloading
+                self.storage_updated.value = False
+                logger.info(f"Process {os.getpid()} drop graph {self.namespace} (file:{self._graphml_xml_file})")
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping graph {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}
