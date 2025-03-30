@@ -27,7 +27,7 @@ if not pm.is_installed("oracledb"):
     pm.install("oracledb")
 
 from graspologic import embed
-import oracledb
+import oracledb # type: ignore
 
 
 class OracleDB:
@@ -392,6 +392,21 @@ class OracleKVStorage(BaseKVStorage):
         # Oracle handles persistence automatically
         pass
 
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage"""
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
+                
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.db.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
 
 @final
 @dataclass
@@ -604,6 +619,21 @@ class OracleVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
+
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage"""
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
+                
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.db.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 
 @final
@@ -932,6 +962,21 @@ class OracleGraphStorage(BaseGraphStorage):
         except Exception as e:
             logger.error(f"Error retrieving entity types: {e}")
             return []
+
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage"""
+        try:
+            # 使用图形查询删除所有节点和关系
+            delete_edges_sql = """DELETE FROM LIGHTRAG_GRAPH_EDGES WHERE workspace=:workspace"""
+            await self.db.execute(delete_edges_sql, {"workspace": self.db.workspace})
+            
+            delete_nodes_sql = """DELETE FROM LIGHTRAG_GRAPH_NODES WHERE workspace=:workspace"""
+            await self.db.execute(delete_nodes_sql, {"workspace": self.db.workspace})
+            
+            return {"status": "success", "message": "graph data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping graph: {e}")
+            return {"status": "error", "message": str(e)}
 
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 5
@@ -1343,4 +1388,6 @@ SQL_TEMPLATES = {
         MATCH (a)
         WHERE a.workspace=:workspace AND a.name=:node_id
         ACTION DELETE a)""",
+    # Drop tables
+    "drop_specifiy_table_workspace": "DELETE FROM {table_name} WHERE workspace=:workspace",
 }
