@@ -280,3 +280,39 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         client = await self._get_client()
         return client.get(ids)
+
+    async def drop(self) -> dict[str, str]:
+        """Drop all vector data from storage and clean up resources
+        
+        This method will:
+        1. Remove the vector database storage file if it exists
+        2. Reinitialize the vector database client
+        3. Update flags to notify other processes
+        4. Trigger index_done_callback to save the empty state
+        
+        Returns:
+            dict[str, str]: Operation status and message
+            - On success: {"status": "success", "message": "data dropped"}
+            - On failure: {"status": "error", "message": "<error details>"}
+        """
+        try:
+            async with self._storage_lock:
+                # delete _client_file_name
+                if os.path.exists(self._client_file_name):
+                    os.remove(self._client_file_name)
+
+                self._client = NanoVectorDB(
+                    self.embedding_func.embedding_dim,
+                    storage_file=self._client_file_name,
+                )
+
+                # Notify other processes that data has been updated
+                await set_all_update_flags(self.namespace)
+                # Reset own update flag to avoid self-reloading
+                self.storage_updated.value = False
+
+                logger.info(f"Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})")
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}

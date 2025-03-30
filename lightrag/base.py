@@ -111,6 +111,31 @@ class StorageNameSpace(ABC):
     @abstractmethod
     async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing"""
+        
+    @abstractmethod
+    async def drop(self) -> dict[str, str]:
+        """Drop all data from storage and clean up resources
+        
+        This abstract method defines the contract for dropping all data from a storage implementation.
+        Each storage type must implement this method to:
+        1. Clear all data from memory and/or external storage
+        2. Remove any associated storage files if applicable
+        3. Reset the storage to its initial state
+        4. Handle cleanup of any resources
+        5. Notify other processes if necessary
+        
+        Returns:
+            dict[str, str]: Operation status and message with the following format:
+                {
+                    "status": str,  # "success" or "error"
+                    "message": str  # "data dropped" on success, error details on failure
+                }
+                
+        Implementation specific:
+        - On success: return {"status": "success", "message": "data dropped"}
+        - On failure: return {"status": "error", "message": "<error details>"}
+        - If not supported: return {"status": "error", "message": "unsupported"}
+        """
 
 
 @dataclass
