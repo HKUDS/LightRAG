@@ -24,9 +24,9 @@ from ..base import BaseGraphStorage
 if not pm.is_installed("gremlinpython"):
     pm.install("gremlinpython")
 
-from gremlin_python.driver import client, serializer
-from gremlin_python.driver.aiohttp.transport import AiohttpTransport
-from gremlin_python.driver.protocol import GremlinServerError
+from gremlin_python.driver import client, serializer # type: ignore
+from gremlin_python.driver.aiohttp.transport import AiohttpTransport # type: ignore
+from gremlin_python.driver.protocol import GremlinServerError # type: ignore
 
 
 @final
@@ -695,3 +695,24 @@ class GremlinStorage(BaseGraphStorage):
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")
                 raise
+                
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage by removing all nodes and relationships in the graph.
+        
+        This function deletes all nodes with the specified graph name property,
+        which automatically removes all associated edges.
+        
+        Returns:
+            dict[str, str]: Status of the operation with keys 'status' and 'message'
+        """
+        try:
+            query = f"""g
+                    .V().has('graph', {self.graph_name})
+                    .drop()
+                    """
+            await self._query(query)
+            logger.info(f"Successfully dropped all data from graph {self.graph_name}")
+            return {"status": "success", "message": "graph data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping graph {self.graph_name}: {e}")
+            return {"status": "error", "message": str(e)}
