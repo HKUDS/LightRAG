@@ -315,7 +315,7 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            namespace_prefix=args.namespace_prefix,
+            # namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
         )
@@ -345,7 +345,7 @@ def create_app(args):
                 "similarity_threshold": 0.95,
                 "use_llm_check": False,
             },
-            namespace_prefix=args.namespace_prefix,
+            # namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
         )
