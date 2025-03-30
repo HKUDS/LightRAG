@@ -1168,11 +1168,10 @@ async def extract_entities_and_relations(data: List[Dict[str, Any]]) -> Tuple[Se
 def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple[str, str, str]], 
                             relations_set: Set[Tuple[str, str, str, str]]) -> int:
     """
-    添加文档结构关系，优先使用结构化数据而非依赖LLM来创建文档结构
+    添加文档结构关系，确保所有实体都与其源文档或章节相连
     
-    1. 从结构化数据创建Document和Section节点
-    2. 从结构化数据建立HAS_SECTION和HAS_PARENT_SECTION关系 
-    3. 将LLM提取的实体与其源Section通过CONTAINS关系连接
+    1. 添加文档结构关系（章节隶属关系）
+    2. 为所有孤立实体添加CONTAINS关系，确保可从文档结构遍历所有实体
     
     Args:
         data: 包含多个文本块的列表
@@ -1182,191 +1181,285 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
     Returns:
         添加的结构关系数量
     """
-    logging.info("添加结构化关系，优先使用结构化数据...")
+    logging.info("添加结构化关系...")
     chunk_map: Dict[str, Dict[str, Any]] = {chunk['chunk_id']: chunk for chunk in data}
     
-    # 获取实体类型和关系类型映射
-    entity_type_map = ENTITY_TYPE_MAP_CYPHER
+    structural_relations_added = 0
+    
+    # 第一步：添加已有的文档结构隶属关系
+    for chunk in data:
+        chunk_id = chunk.get("chunk_id")
+        parent_id = chunk.get("parent_id")
+        heading = chunk.get("heading")
+        
+        if not chunk_id:
+            continue
+            
+        if parent_id and heading:
+            parent_chunk = chunk_map.get(parent_id)
+            if parent_chunk and parent_chunk.get("heading"):
+                child_entity_name = normalize_entity_name(heading)
+                parent_entity_name = normalize_entity_name(parent_chunk["heading"])
+                
+                if child_entity_name and parent_entity_name:
+                    child_type = "章节"  # 默认假设非根标题为章节
+                    parent_type = "章节" if parent_chunk.get("parent_id") else "文档"
+                    
+                    # 规范化实体类型
+                    normalized_child_type = normalize_entity_type(child_type)
+                    normalized_parent_type = normalize_entity_type(parent_type)
+                    
+                    # 添加实体，包含chunk_id
+                    entities_set.add((child_entity_name, normalized_child_type, chunk_id))
+                    entities_set.add((parent_entity_name, normalized_parent_type, parent_id))
+                    
+                    # 添加关系，包含chunk_id
+                    relation_tuple = (child_entity_name, parent_entity_name, "隶属关系", chunk_id)
+                    if relation_tuple not in relations_set:
+                        relations_set.add(relation_tuple)
+                        structural_relations_added += 1
+    
+    # 新增步骤：明确添加Document和Section之间的HAS_SECTION关系
+    logging.info("添加文档和章节之间的HAS_SECTION关系...")
+    documents = set()
+    top_level_sections = set()
+    all_sections = set()  # 记录所有章节实体
+    document_section_added = 0
+    
+    # 识别所有Document实体、顶级Section实体和所有Section实体
+    for name, entity_type, chunk_id in entities_set:
+        normalized_type = normalize_entity_type(entity_type)
+        
+        if normalized_type.lower() == "document":
+            documents.add((name, chunk_id))
+        
+        # 记录所有章节实体
+        if normalized_type.lower() == "section":
+            all_sections.add((name, normalized_type, chunk_id))
+        
+        # 找出顶级章节（通过parent_id指向文档的章节）
+        if normalized_type.lower() == "section" and chunk_id in chunk_map:
+            parent_id = chunk_map[chunk_id].get("parent_id")
+            if parent_id and parent_id in chunk_map:
+                parent_entity_type = None
+                # 查找父级实体的类型
+                for parent_name, parent_type, parent_chunk_id in entities_set:
+                    if parent_chunk_id == parent_id:
+                        normalized_parent_type = normalize_entity_type(parent_type)
+                        parent_entity_type = normalized_parent_type
+                        break
+                        
+                # 如果父级是文档，则此章节是顶级章节
+                if parent_entity_type and parent_entity_type.lower() == "document":
+                    top_level_sections.add((name, chunk_id))
+    
+    # 添加Document到顶级Section的HAS_SECTION关系
     relation_type_map = RELATION_TYPE_MAP_CYPHER
     has_section_type = relation_type_map.get("HAS_SECTION", "HAS_SECTION")
-    has_parent_section_type = relation_type_map.get("HAS_PARENT_SECTION", "HAS_PARENT_SECTION")
-    contains_rel_type = relation_type_map.get("CONTAINS", "CONTAINS")
     
-    # 计数器
-    document_nodes_added = 0
-    section_nodes_added = 0
-    has_section_relations_added = 0
-    has_parent_section_relations_added = 0
-    contains_relations_added = 0
+    # 首先，为每个文档明确查找和关联其顶级章节
+    for doc_name, doc_chunk_id in documents:
+        for section_name, section_chunk_id in top_level_sections:
+            # 检查章节的父级是否为当前文档
+            if section_chunk_id in chunk_map and chunk_map[section_chunk_id].get("parent_id") == doc_chunk_id:
+                has_section_relation = (doc_name, section_name, has_section_type, doc_chunk_id)
+                if has_section_relation not in relations_set:
+                    relations_set.add(has_section_relation)
+                    document_section_added += 1
     
-    # --- 步骤1: 直接从结构化数据创建Document和Section节点 ---
-    document_entities = set()  # 存储文档实体 (name, chunk_id)
-    section_entities = {}  # chunk_id -> (name, type, chunk_id)
+    # 如果通过父级链接没有找到足够的关系，尝试添加所有文档到所有顶级章节的关系
+    if document_section_added == 0 and documents and top_level_sections:
+        logging.info("未找到明确的文档-章节关系，尝试添加所有文档到顶级章节的关系...")
+        for doc_name, doc_chunk_id in documents:
+            for section_name, section_chunk_id in top_level_sections:
+                has_section_relation = (doc_name, section_name, has_section_type, doc_chunk_id)
+                if has_section_relation not in relations_set:
+                    relations_set.add(has_section_relation)
+                    document_section_added += 1
     
-    # 查找文档级节点和信息
-    document_title = None
-    document_chunk_id = None
+    # 确保所有Section实体都有关系
+    # 如果没有Document实体，则创建一个默认的Document实体
+    default_doc_name = "默认文档"
+    default_doc_chunk_id = "default_document"
     
-    # 1.1 首先查找文档信息 (通常位于根节点或有full_doc_id的节点)
-    for chunk in data:
-        # 查找文档标题
-        if 'full_doc_id' in chunk and chunk.get('full_doc_id') and 'heading' in chunk:
-            document_title = chunk.get('heading')
-            document_chunk_id = chunk.get('chunk_id')
-            break  # 找到文档信息就跳出
-    
-    # 如果没有找到明确的文档信息，尝试使用没有parent_id的根节点
-    if not document_title:
-        for chunk in data:
-            if not chunk.get('parent_id') and chunk.get('heading'):
-                document_title = chunk.get('heading')
-                document_chunk_id = chunk.get('chunk_id')
-                break
-    
-    # 如果仍然没有找到文档信息，使用文件名或默认名称
-    if not document_title:
-        if 'file_path' in data[0]:
-            # 从文件路径提取文件名
-            file_path = data[0].get('file_path')
-            document_title = os.path.basename(file_path) if file_path else "未知文档"
-        else:
-            document_title = "未知文档"
-        
-        document_chunk_id = "document_root"
-    
-    # 1.2 创建Document节点
-    normalized_document_type = normalize_entity_type("Document")
-    entities_set.add((document_title, normalized_document_type, document_chunk_id))
-    document_entities.add((document_title, document_chunk_id))
-    document_nodes_added += 1
-    logging.info(f"从结构化数据创建文档实体: '{document_title}' [chunk_id: {document_chunk_id}]")
-    
-    # 1.3 从结构化数据创建Section节点
-    for chunk in data:
-        chunk_id = chunk.get('chunk_id')
-        heading = chunk.get('heading')
-        
-        # 跳过非有效节点
-        if not chunk_id or not heading:
-            continue
-        
-        # 创建Section节点 (所有非文档根节点都视为章节)
-        if chunk_id != document_chunk_id:
-            normalized_section_type = normalize_entity_type("Section")
-            normalized_heading = normalize_entity_name(heading)
-            # 添加到实体集
-            entities_set.add((normalized_heading, normalized_section_type, chunk_id))
-            # 记录所有Section实体，用于后续创建关系
-            section_entities[chunk_id] = (normalized_heading, normalized_section_type, chunk_id)
-            section_nodes_added += 1
-    
-    logging.info(f"从结构化数据创建了 {section_nodes_added} 个章节实体")
-    
-    # --- 步骤2: 建立文档结构关系 (HAS_SECTION & HAS_PARENT_SECTION) ---
-    
-    # 2.1 建立Document -> Section (HAS_SECTION)关系
-    for chunk in data:
-        chunk_id = chunk.get('chunk_id')
-        parent_id = chunk.get('parent_id')
-        
-        # 跳过非有效节点
-        if chunk_id not in section_entities:
-            continue
-        
-        section_name = section_entities[chunk_id][0]
-        
-        # 如果父级是文档或没有父级(表示顶级章节)
-        if parent_id == document_chunk_id or not parent_id:
-            # 为所有顶级章节添加HAS_SECTION关系
-            has_section_relation = (document_title, section_name, has_section_type, document_chunk_id)
-            if has_section_relation not in relations_set:
-                relations_set.add(has_section_relation)
-                has_section_relations_added += 1
-    
-    # 2.2 建立Section -> Section (HAS_PARENT_SECTION)关系
-    for chunk in data:
-        chunk_id = chunk.get('chunk_id')
-        parent_id = chunk.get('parent_id')
-        
-        # 跳过非有效节点或没有父级的节点
-        if chunk_id not in section_entities or not parent_id or parent_id not in section_entities:
-            continue
-        
-        child_section_name = section_entities[chunk_id][0]
-        parent_section_name = section_entities[parent_id][0]
-        
-        # 添加HAS_PARENT_SECTION关系
-        has_parent_relation = (child_section_name, parent_section_name, has_parent_section_type, chunk_id)
-        if has_parent_relation not in relations_set:
-            relations_set.add(has_parent_relation)
-            has_parent_section_relations_added += 1
-    
-    logging.info(f"从结构化数据创建了 {has_section_relations_added} 个Document-Section HAS_SECTION关系")
-    logging.info(f"从结构化数据创建了 {has_parent_section_relations_added} 个Section-Section HAS_PARENT_SECTION关系")
-    
-    # --- 步骤3: 为LLM提取的实体添加CONTAINS关系 ---
-    
-    # 3.1 为每个非结构性实体(非Document/Section)添加与其所在Section的CONTAINS关系
-    processed_entity_section_pairs = set()  # 用于跟踪已处理的实体-章节对
-    
-    for name, entity_type, chunk_id in entities_set:
-        # 跳过Document和Section类型的实体
-        if entity_type.lower() in ["document", "section"]:
-            continue
-        
-        # 每个实体都应该与其所在的章节建立CONTAINS关系
-        entity_section_key = (name, chunk_id)
-        
-        if entity_section_key in processed_entity_section_pairs:
-            continue
-        
-        # 检查此实体是否已有CONTAINS关系
-        entity_has_contains_relation = False
+    # 检查Section孤立实体，确保每个Section都有与Document的关系
+    isolated_sections = []
+    for section_name, section_type, section_chunk_id in all_sections:
+        # 检查此Section是否有任何关系
+        section_has_relation = False
         for src, tgt, rel_type, rel_chunk_id in relations_set:
-            if tgt == name and rel_chunk_id == chunk_id and rel_type == contains_rel_type:
-                entity_has_contains_relation = True
-                processed_entity_section_pairs.add(entity_section_key)
+            if (src == section_name or tgt == section_name) and rel_chunk_id == section_chunk_id:
+                section_has_relation = True
                 break
         
-        # 如果没有CONTAINS关系，则添加
-        if not entity_has_contains_relation:
-            # 找到实体所在chunk对应的Section
-            if chunk_id in section_entities:
-                # 当前chunk就是一个Section，直接关联
-                section_name = section_entities[chunk_id][0]
-                contains_relation = (section_name, name, contains_rel_type, chunk_id)
-                if contains_relation not in relations_set:
-                    relations_set.add(contains_relation)
-                    contains_relations_added += 1
-                    processed_entity_section_pairs.add(entity_section_key)
-            elif chunk_id in chunk_map:
-                # 查找当前chunk的父级，应该是一个Section
-                parent_id = chunk_map[chunk_id].get('parent_id')
-                if parent_id and parent_id in section_entities:
-                    section_name = section_entities[parent_id][0]
+        if not section_has_relation:
+            isolated_sections.append((section_name, section_type, section_chunk_id))
+    
+    # 如果有孤立的Section，添加它们到现有文档或创建默认文档
+    if isolated_sections:
+        logging.info(f"发现 {len(isolated_sections)} 个孤立的Section实体，将添加关系...")
+        isolated_section_count = 0
+        
+        # 如果有文档实体，则使用第一个文档
+        if documents:
+            doc_name, doc_chunk_id = next(iter(documents))
+            for section_name, section_type, section_chunk_id in isolated_sections:
+                # 添加HAS_SECTION关系
+                has_section_relation = (doc_name, section_name, has_section_type, doc_chunk_id)
+                if has_section_relation not in relations_set:
+                    relations_set.add(has_section_relation)
+                    isolated_section_count += 1
+        else:
+            # 没有文档实体，创建默认文档
+            logging.info(f"没有找到文档实体，创建默认文档并关联孤立Section...")
+            # 规范化文档类型
+            normalized_doc_type = normalize_entity_type("文档")
+            entities_set.add((default_doc_name, normalized_doc_type, default_doc_chunk_id))
+            
+            for section_name, section_type, section_chunk_id in isolated_sections:
+                # 添加HAS_SECTION关系
+                has_section_relation = (default_doc_name, section_name, has_section_type, default_doc_chunk_id)
+                if has_section_relation not in relations_set:
+                    relations_set.add(has_section_relation)
+                    isolated_section_count += 1
+        
+        logging.info(f"为 {isolated_section_count} 个孤立Section添加了关系")
+        document_section_added += isolated_section_count
+    
+    logging.info(f"添加了 {structural_relations_added} 个结构化隶属关系")
+    logging.info(f"添加了 {document_section_added} 个Document-Section HAS_SECTION关系")
+    
+    # 第二步：确保所有实体都与其源文档或章节有CONTAINS关系
+    # 先根据chunk_id创建实体到章节的映射
+    chunk_to_section_map = {}  # 记录chunk_id -> (section_name, section_type)
+    section_entities = set()   # 记录所有章节和文档实体
+    
+    # 找出所有章节和文档实体
+    for name, entity_type, chunk_id in entities_set:
+        # 考虑所有可能的Section和Document类型变体
+        if entity_type.lower() in ["section", "章节", "document", "文档"]:
+            section_entities.add((name, entity_type, chunk_id))
+            # 每个章节映射到自己
+            chunk_to_section_map[chunk_id] = (name, entity_type)
+    
+    # 获取实体类型映射
+    entity_type_map = ENTITY_TYPE_MAP_CYPHER
+    relation_type_map = RELATION_TYPE_MAP_CYPHER
+
+    # 为每个非章节非文档实体添加与其源chunk的章节的CONTAINS关系
+    contains_added = 0
+    
+    # 创建关系集合的副本用于遍历，避免在遍历时修改集合
+    relations_list = list(relations_set)
+    
+    # 记录已经添加了CONTAINS关系的实体-章节对
+    processed_entity_section_pairs = set()
+
+    for name, entity_type, chunk_id in entities_set:
+        # 判断是否为章节或文档，考虑所有可能的变体
+        if entity_type.lower() not in ["section", "章节", "document", "文档"]:
+            # 每个实体必须与其所在的章节建立CONTAINS关系，即使实体名称相同但在不同chunk中
+            entity_section_key = (name, chunk_id)
+            
+            if entity_section_key in processed_entity_section_pairs:
+                continue
+                
+            # 检查此实体是否已与其章节建立了关系
+            entity_has_section_relation = False
+            
+            # 获取Cypher中使用的实体类型标签
+            cypher_entity_type = entity_type_map.get(entity_type, entity_type)
+            
+            # 检查是否已存在链接到章节的关系
+            for src, tgt, rel_type, rel_chunk_id in relations_list:
+                # 仅检查当前实体的关系
+                if tgt == name and chunk_id == rel_chunk_id:
+                    # 检查源是否为章节/文档
+                    src_is_section = False
+                    for sect_name, sect_type, sect_chunk_id in section_entities:
+                        if src == sect_name:
+                            src_is_section = True
+                            break
+                    
+                    # 如果源是章节且关系类型已经是CONTAINS，则已经有关系
+                    if src_is_section and rel_type.upper() == "CONTAINS":
+                        entity_has_section_relation = True
+                        processed_entity_section_pairs.add(entity_section_key)
+                        break
+            
+            # 如果没有章节关系，则添加到其源chunk的章节
+            if not entity_has_section_relation:
+                # 找到实体所在chunk的章节
+                section = chunk_to_section_map.get(chunk_id)
+                
+                if section:
+                    section_name, section_type = section
+                    # 添加CONTAINS关系
+                    cypher_section_type = entity_type_map.get(section_type, section_type)
+                    # 使用CONTAINS的Cypher映射
+                    contains_rel_type = relation_type_map.get("CONTAINS", "CONTAINS")
                     contains_relation = (section_name, name, contains_rel_type, chunk_id)
+                    
                     if contains_relation not in relations_set:
                         relations_set.add(contains_relation)
-                        contains_relations_added += 1
+                        contains_added += 1
                         processed_entity_section_pairs.add(entity_section_key)
                 else:
-                    # 如果找不到父section，使用文档作为容器
-                    contains_relation = (document_title, name, contains_rel_type, chunk_id)
-                    if contains_relation not in relations_set:
-                        relations_set.add(contains_relation)
-                        contains_relations_added += 1
-                        processed_entity_section_pairs.add(entity_section_key)
-            else:
-                # 找不到chunk，使用文档作为容器
-                contains_relation = (document_title, name, contains_rel_type, chunk_id)
-                if contains_relation not in relations_set:
-                    relations_set.add(contains_relation)
-                    contains_relations_added += 1
-                    processed_entity_section_pairs.add(entity_section_key)
+                    # 如果找不到对应章节，则查找此chunk的父chunk
+                    if chunk_id in chunk_map:
+                        parent_id = chunk_map[chunk_id].get("parent_id")
+                        if parent_id and parent_id in chunk_to_section_map:
+                            section_name, section_type = chunk_to_section_map[parent_id]
+                            # 添加CONTAINS关系
+                            cypher_section_type = entity_type_map.get(section_type, section_type)
+                            # 使用CONTAINS的Cypher映射
+                            contains_rel_type = relation_type_map.get("CONTAINS", "CONTAINS")
+                            contains_relation = (section_name, name, contains_rel_type, chunk_id)
+                            
+                            if contains_relation not in relations_set:
+                                relations_set.add(contains_relation)
+                                contains_added += 1
+                                processed_entity_section_pairs.add(entity_section_key)
+                        else:
+                            # 如果找不到父chunk，使用任何可用的章节/文档
+                            # 这是确保没有孤立实体的最后手段
+                            if section_entities:
+                                # 使用第一个可用的文档
+                                doc_found = False
+                                for sect_name, sect_type, sect_chunk_id in section_entities:
+                                    if sect_type.lower() in ["document", "文档"]:
+                                        cypher_section_type = entity_type_map.get(sect_type, sect_type)
+                                        # 使用CONTAINS的Cypher映射
+                                        contains_rel_type = relation_type_map.get("CONTAINS", "CONTAINS")
+                                        contains_relation = (sect_name, name, contains_rel_type, chunk_id)
+                                        
+                                        if contains_relation not in relations_set:
+                                            relations_set.add(contains_relation)
+                                            contains_added += 1
+                                            processed_entity_section_pairs.add(entity_section_key)
+                                            doc_found = True
+                                            break
+                                
+                                # 如果没有找到文档，使用任何章节
+                                if not doc_found:
+                                    # 取第一个章节
+                                    for sect_name, sect_type, sect_chunk_id in section_entities:
+                                        cypher_section_type = entity_type_map.get(sect_type, sect_type)
+                                        # 使用CONTAINS的Cypher映射
+                                        contains_rel_type = relation_type_map.get("CONTAINS", "CONTAINS")
+                                        contains_relation = (sect_name, name, contains_rel_type, chunk_id)
+                                        
+                                        if contains_relation not in relations_set:
+                                            relations_set.add(contains_relation)
+                                            contains_added += 1
+                                            processed_entity_section_pairs.add(entity_section_key)
+                                            break
     
-    logging.info(f"为LLM提取的实体添加了 {contains_relations_added} 个CONTAINS关系")
+    logging.info(f"添加了 {structural_relations_added} 个结构化隶属关系")
+    logging.info(f"添加了 {document_section_added} 个Document-Section HAS_SECTION关系")
+    logging.info(f"添加了 {contains_added} 个CONTAINS关系，确保实体可通过文档结构访问")
     
-    # --- 步骤4: 最终检查，确保没有孤立实体 ---
+    # 最终检查：确保没有孤立实体
     all_entities_with_relations = set()
     for src, tgt, rel_type, rel_chunk_id in relations_set:
         # 找到源实体和目标实体
@@ -1380,25 +1473,37 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
     isolated_entities = entities_set - all_entities_with_relations
     
     if isolated_entities:
-        logging.warning(f"发现 {len(isolated_entities)} 个仍然孤立的实体，将添加到文档的CONTAINS关系")
-        isolated_fixes = 0
+        logging.warning(f"发现 {len(isolated_entities)} 个仍然孤立的实体，将添加默认关系")
+        final_fixes = 0
         
-        # 为每个孤立实体添加到文档的CONTAINS关系
+        # 获取或创建一个根文档节点
+        root_doc_entity = None
+        for name, entity_type, chunk_id in entities_set:
+            if entity_type.lower() in ["document", "文档"]:
+                root_doc_entity = (name, entity_type, chunk_id)
+                break
+        
+        # 如果没有文档实体，创建一个默认文档
+        if root_doc_entity is None:
+            default_doc_name = "默认文档"
+            default_doc_chunk_id = "default_document"
+            root_doc_entity = (default_doc_name, "文档", default_doc_chunk_id)
+            entities_set.add(root_doc_entity)
+            logging.info(f"创建默认文档实体: {default_doc_name}")
+        
+        # 为每个孤立实体添加到根文档的CONTAINS关系
+        contains_rel_type = relation_type_map.get("CONTAINS", "CONTAINS")
         for name, entity_type, chunk_id in isolated_entities:
-            contains_relation = (document_title, name, contains_rel_type, chunk_id)
+            contains_relation = (root_doc_entity[0], name, contains_rel_type, chunk_id)
             
             if contains_relation not in relations_set:
                 relations_set.add(contains_relation)
-                isolated_fixes += 1
-                contains_relations_added += isolated_fixes
+                final_fixes += 1
         
-        logging.info(f"为 {isolated_fixes} 个孤立实体添加了与文档的CONTAINS关系")
+        logging.info(f"为 {final_fixes} 个孤立实体添加了与根文档的CONTAINS关系")
+        contains_added += final_fixes
     
-    # 返回所有添加的关系总数
-    total_relations_added = has_section_relations_added + has_parent_section_relations_added + contains_relations_added
-    
-    logging.info(f"总共添加了 {total_relations_added} 个结构化关系")
-    return total_relations_added
+    return structural_relations_added + document_section_added + contains_added
 
 def print_extraction_results(entities_set: Set[Tuple[str, str, str]], relations_set: Set[Tuple[str, str, str, str]]):
     """
