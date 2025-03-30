@@ -380,10 +380,20 @@ class PGKVStorage(BaseKVStorage):
         # PG handles persistence automatically
         pass
 
-    async def drop(self) -> None:
+    async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        drop_sql = SQL_TEMPLATES["drop_all"]
-        await self.db.execute(drop_sql)
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
+                
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.db.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 
 @final
@@ -690,6 +700,21 @@ class PGVectorStorage(BaseVectorStorage):
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
 
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage"""
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
+                
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.db.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
 
 @final
 @dataclass
@@ -846,10 +871,20 @@ class PGDocStatusStorage(DocStatusStorage):
                 },
             )
 
-    async def drop(self) -> None:
+    async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        drop_sql = SQL_TEMPLATES["drop_doc_full"]
-        await self.db.execute(drop_sql)
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
+                
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.db.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
 
 class PGGraphQueryException(Exception):
@@ -1530,12 +1565,19 @@ class PGGraphStorage(BaseGraphStorage):
 
         return kg
 
-    async def drop(self) -> None:
+    async def drop(self) -> dict[str, str]:
         """Drop the storage"""
-        drop_sql = SQL_TEMPLATES["drop_vdb_entity"]
-        await self.db.execute(drop_sql)
-        drop_sql = SQL_TEMPLATES["drop_vdb_relation"]
-        await self.db.execute(drop_sql)
+        try:
+            drop_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                              MATCH (n)
+                              DETACH DELETE n
+                            $$) AS (result agtype)"""
+            
+            await self._query(drop_query, readonly=False)
+            return {"status": "success", "message": "graph data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping graph: {e}")
+            return {"status": "error", "message": str(e)}
 
 
 NAMESPACE_TABLE_MAP = {
@@ -1693,6 +1735,7 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time = CURRENT_TIMESTAMP
                      """,
+    # SQL for VectorStorage
     "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
                       content_vector, chunk_ids, file_path)
                       VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7)
@@ -1715,46 +1758,7 @@ SQL_TEMPLATES = {
                       chunk_ids=EXCLUDED.chunk_ids,
                       file_path=EXCLUDED.file_path,
                       update_time = CURRENT_TIMESTAMP
-                     """,
-    # SQL for VectorStorage
-    # "entities": """SELECT entity_name FROM
-    #     (SELECT id, entity_name, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-    #     FROM LIGHTRAG_VDB_ENTITY where workspace=$1)
-    #     WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
-    #    """,
-    # "relationships": """SELECT source_id as src_id, target_id as tgt_id FROM
-    #     (SELECT id, source_id,target_id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-    #     FROM LIGHTRAG_VDB_RELATION where workspace=$1)
-    #     WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
-    #    """,
-    # "chunks": """SELECT id FROM
-    #     (SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
-    #     FROM LIGHTRAG_DOC_CHUNKS where workspace=$1)
-    #     WHERE distance>$2 ORDER BY distance DESC  LIMIT $3
-    #    """,
-    # DROP tables
-    "drop_all": """
-	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
-	    DROP TABLE IF EXISTS LIGHTRAG_DOC_CHUNKS CASCADE;
-	    DROP TABLE IF EXISTS LIGHTRAG_LLM_CACHE CASCADE;
-	    DROP TABLE IF EXISTS LIGHTRAG_VDB_ENTITY CASCADE;
-	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
-       """,
-    "drop_doc_full": """
-	    DROP TABLE IF EXISTS LIGHTRAG_DOC_FULL CASCADE;
-       """,
-    "drop_doc_chunks": """
-	    DROP TABLE IF EXISTS LIGHTRAG_DOC_CHUNKS CASCADE;
-       """,
-    "drop_llm_cache": """
-	    DROP TABLE IF EXISTS LIGHTRAG_LLM_CACHE CASCADE;
-       """,
-    "drop_vdb_entity": """
-	    DROP TABLE IF EXISTS LIGHTRAG_VDB_ENTITY CASCADE;
-       """,
-    "drop_vdb_relation": """
-	    DROP TABLE IF EXISTS LIGHTRAG_VDB_RELATION CASCADE;
-       """,
+                     """,    
     "relationships": """
     WITH relevant_chunks AS (
         SELECT id as chunk_id
@@ -1806,4 +1810,8 @@ SQL_TEMPLATES = {
             ORDER BY distance DESC
             LIMIT $3
     """,
+    # DROP tables
+    "drop_specifiy_table_workspace": """
+        DELETE FROM {table_name} WHERE workspace=$1
+       """,
 }
