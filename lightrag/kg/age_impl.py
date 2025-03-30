@@ -34,9 +34,9 @@ if not pm.is_installed("psycopg-pool"):
 if not pm.is_installed("asyncpg"):
     pm.install("asyncpg")
 
-import psycopg
-from psycopg.rows import namedtuple_row
-from psycopg_pool import AsyncConnectionPool, PoolTimeout
+import psycopg # type: ignore
+from psycopg.rows import namedtuple_row # type: ignore
+from psycopg_pool import AsyncConnectionPool, PoolTimeout # type: ignore
 
 
 class AGEQueryException(Exception):
@@ -871,3 +871,21 @@ class AGEStorage(BaseGraphStorage):
     async def index_done_callback(self) -> None:
         # AGES handles persistence automatically
         pass
+        
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage by removing all nodes and relationships in the graph.
+        
+        Returns:
+            dict[str, str]: Status of the operation with keys 'status' and 'message'
+        """
+        try:
+            query = """
+            MATCH (n)
+            DETACH DELETE n
+            """
+            await self._query(query)
+            logger.info(f"Successfully dropped all data from graph {self.graph_name}")
+            return {"status": "success", "message": "graph data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping graph {self.graph_name}: {e}")
+            return {"status": "error", "message": str(e)}
