@@ -83,3 +83,29 @@ class RedisKVStorage(BaseKVStorage):
         logger.info(
             f"Deleted {deleted_count} of {len(ids)} entries from {self.namespace}"
         )
+        
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage by removing all keys under the current namespace.
+        
+        Returns:
+            dict[str, str]: Status of the operation with keys 'status' and 'message'
+        """
+        try:
+            keys = await self._redis.keys(f"{self.namespace}:*")
+            
+            if keys:
+                pipe = self._redis.pipeline()
+                for key in keys:
+                    pipe.delete(key)
+                results = await pipe.execute()
+                deleted_count = sum(results)
+                
+                logger.info(f"Dropped {deleted_count} keys from {self.namespace}")
+                return {"status": "success", "message": f"{deleted_count} keys dropped"}
+            else:
+                logger.info(f"No keys found to drop in {self.namespace}")
+                return {"status": "success", "message": "no keys to drop"}
+                
+        except Exception as e:
+            logger.error(f"Error dropping keys from {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}
