@@ -141,6 +141,7 @@
         "maxQueryDepth": "Profondeur maximale de la requête",
         "minDegree": "Degré minimum",
         "maxLayoutIterations": "Itérations maximales de mise en page",
+        "edgeSizeRange": "Plage de taille des arêtes",
         "depth": "Profondeur",
         "degree": "Degré",
         "apiKey": "Clé API",

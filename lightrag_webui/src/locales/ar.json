@@ -141,6 +141,7 @@
         "maxQueryDepth": "أقصى عمق للاستعلام",
         "minDegree": "الدرجة الدنيا",
         "maxLayoutIterations": "أقصى تكرارات التخطيط",
+        "edgeSizeRange": "نطاق حجم الحافة",
         "depth": "العمق",
         "degree": "الدرجة",
         "apiKey": "مفتاح واجهة برمجة التطبيقات",
