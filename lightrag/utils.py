@@ -962,6 +962,13 @@ class TokenTracker:
     def __init__(self):
         self.reset()
 
+    def __enter__(self):
+        self.reset()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        print(self)
+
     def reset(self):
         self.prompt_tokens = 0
         self.completion_tokens = 0
