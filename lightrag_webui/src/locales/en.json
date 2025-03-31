@@ -95,6 +95,7 @@
         "metadata": "Metadata"
       },
       "status": {
+        "all": "All",
         "completed": "Completed",
         "processing": "Processing",
         "pending": "Pending",
