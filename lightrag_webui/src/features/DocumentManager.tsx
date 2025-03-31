@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
 import Button from '@/components/ui/Button'
@@ -16,14 +16,16 @@ import EmptyCard from '@/components/ui/EmptyCard'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
 
-import { getDocuments, scanNewDocuments, DocsStatusesResponse } from '@/api/lightrag'
+import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus, DocStatusResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon } from 'lucide-react'
-import { DocStatusResponse } from '@/api/lightrag'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
+
+type StatusFilter = DocStatus | 'all';
+
 
 const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
   // Check if file_path exists and is a non-empty string
@@ -148,6 +150,10 @@ export default function DocumentManager() {
   const [sortField, setSortField] = useState<SortField>('updated_at')
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 
+  // State for document status filter
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+
+
   // Handle sort column click
   const handleSort = (field: SortField) => {
     if (sortField === field) {
@@ -159,36 +165,54 @@ export default function DocumentManager() {
       setSortDirection('desc')
     }
   }
+  const filteredAndSortedDocs = useMemo(() => {
+    if (!docs) return null;
 
-  // Sort documents based on current sort field and direction
-  const sortDocuments = (documents: DocStatusResponse[]) => {
-    return [...documents].sort((a, b) => {
-      let valueA, valueB;
+    let filteredDocs = { ...docs };
 
-      // Special handling for ID field based on showFileName setting
-      if (sortField === 'id' && showFileName) {
-        valueA = getDisplayFileName(a);
-        valueB = getDisplayFileName(b);
-      } else if (sortField === 'id') {
-        valueA = a.id;
-        valueB = b.id;
-      } else {
-        // Date fields
-        valueA = new Date(a[sortField]).getTime();
-        valueB = new Date(b[sortField]).getTime();
-      }
+    if (statusFilter !== 'all') {
+      filteredDocs = {
+        ...docs,
+        statuses: {
+          pending: [],
+          processing: [],
+          processed: [],
+          failed: [],
+          [statusFilter]: docs.statuses[statusFilter] || []
+        }
+      };
+    }
 
-      // Apply sort direction
-      const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
+    if (!sortField || !sortDirection) return filteredDocs;
 
-      // Compare values
-      if (typeof valueA === 'string' && typeof valueB === 'string') {
-        return sortMultiplier * valueA.localeCompare(valueB);
-      } else {
-        return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
-      }
+    const sortedStatuses = Object.entries(filteredDocs.statuses).reduce((acc, [status, documents]) => {
+      const sortedDocuments = [...documents].sort((a, b) => {
+        if (sortDirection === 'asc') {
+          return (a[sortField] ?? 0) > (b[sortField] ?? 0) ? 1 : -1;
+        } else {
+          return (a[sortField] ?? 0) < (b[sortField] ?? 0) ? 1 : -1;
+        }
+      });
+      acc[status as DocStatus] = sortedDocuments;
+      return acc;
+    }, {} as DocsStatusesResponse['statuses']);
+
+    return { ...filteredDocs, statuses: sortedStatuses };
+  }, [docs, sortField, sortDirection, statusFilter]);
+
+  // Calculate document counts for each status
+  const documentCounts = useMemo(() => {
+    if (!docs) return { all: 0 } as Record<string, number>;
+
+    const counts: Record<string, number> = { all: 0 };
+
+    Object.entries(docs.statuses).forEach(([status, documents]) => {
+      counts[status as DocStatus] = documents.length;
+      counts.all += documents.length;
     });
-  }
+
+    return counts;
+  }, [docs]);
 
   // Store previous status counts
   const prevStatusCounts = useRef({
@@ -399,6 +423,50 @@ export default function DocumentManager() {
             <div className="flex justify-between items-center">
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
               <div className="flex items-center gap-2">
+                <FilterIcon className="h-4 w-4" />
+                <div className="flex gap-1">
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'all' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('all')}
+                  >
+                    {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('processed')}
+                    className={documentCounts.processed > 0 ? 'text-green-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('processing')}
+                    className={documentCounts.processing > 0 ? 'text-blue-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('pending')}
+                    className={documentCounts.pending > 0 ? 'text-yellow-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
+                    onClick={() => setStatusFilter('failed')}
+                    className={documentCounts.failed > 0 ? 'text-red-600' : 'text-gray-500'}
+                  >
+                    {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
+                  </Button>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
                 <span className="text-sm text-gray-500">{t('documentPanel.documentManager.fileNameLabel')}</span>
                 <Button
                   variant="outline"
@@ -477,11 +545,8 @@ export default function DocumentManager() {
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
-                      {Object.entries(docs.statuses).flatMap(([status, documents]) => {
-                        // Apply sorting to documents
-                        const sortedDocuments = sortDocuments(documents);
-
-                        return sortedDocuments.map(doc => (
+                      {filteredAndSortedDocs?.statuses && Object.entries(filteredAndSortedDocs.statuses).flatMap(([status, documents]) =>
+                        documents.map((doc) => (
                           <TableRow key={doc.id}>
                             <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                               {showFileName ? (
@@ -541,8 +606,8 @@ export default function DocumentManager() {
                               {new Date(doc.updated_at).toLocaleString()}
                             </TableCell>
                           </TableRow>
-                        ));
-                      })}
+                        )))
+                      }
                     </TableBody>
                   </Table>
                 </div>
