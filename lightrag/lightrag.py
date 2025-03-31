@@ -1894,12 +1894,18 @@ class LightRAG:
         try:
             # Reset the cache storage for specified mode
             if modes:
-                await self.llm_response_cache.delete(modes)
-                logger.info(f"Cleared cache for modes: {modes}")
+                success = await self.llm_response_cache.drop_cache_by_modes(modes)
+                if success:
+                    logger.info(f"Cleared cache for modes: {modes}")
+                else:
+                    logger.warning(f"Failed to clear cache for modes: {modes}")
             else:
                 # Clear all modes
-                await self.llm_response_cache.delete(valid_modes)
-                logger.info("Cleared all cache")
+                success = await self.llm_response_cache.drop_cache_by_modes(valid_modes)
+                if success:
+                    logger.info("Cleared all cache")
+                else:
+                    logger.warning("Failed to clear all cache")
 
             await self.llm_response_cache.index_done_callback()
 
