@@ -65,16 +65,19 @@
         "singleFileLimit": "Cannot upload more than 1 file at a time",
         "maxFilesLimit": "Cannot upload more than {{count}} files",
         "fileRejected": "File {{name}} was rejected",
+        "unsupportedType": "Unsupported file type",
+        "fileTooLarge": "File too large, maximum size is {{maxSize}}",
         "dropHere": "Drop the files here",
         "dragAndDrop": "Drag and drop files here, or click to select files",
         "removeFile": "Remove file",
-        "uploadDescription": "You can upload {{isMultiple ? 'multiple' : count}} files (up to {{maxSize}} each)"
+        "uploadDescription": "You can upload {{isMultiple ? 'multiple' : count}} files (up to {{maxSize}} each)",
+        "duplicateFile": "File name already exists in server cache"
       }
     },
     "documentManager": {
       "title": "Document Management",
       "scanButton": "Scan",
-      "scanTooltip": "Scan documents",
+      "scanTooltip": "Scan documents in input folder",
       "pipelineStatusButton": "Pipeline Status",
       "pipelineStatusTooltip": "View pipeline status",
       "uploadedTitle": "Uploaded Documents",
@@ -212,7 +215,8 @@
           "entity_id": "Name",
           "entity_type": "Type",
           "source_id": "SrcID",
-          "Neighbour": "Neigh"
+          "Neighbour": "Neigh",
+          "file_path": "Source"
         }
       },
       "edge": {

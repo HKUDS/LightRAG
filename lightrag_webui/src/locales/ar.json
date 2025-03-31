@@ -65,16 +65,19 @@
         "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
         "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
         "fileRejected": "تم رفض الملف {{name}}",
+        "unsupportedType": "نوع الملف غير مدعوم",
+        "fileTooLarge": "حجم الملف كبير جدًا، الحد الأقصى {{maxSize}}",
         "dropHere": "أفلت الملفات هنا",
         "dragAndDrop": "اسحب وأفلت الملفات هنا، أو انقر للاختيار",
         "removeFile": "إزالة الملف",
-        "uploadDescription": "يمكنك رفع {{isMultiple ? 'عدة' : count}} ملفات (حتى {{maxSize}} لكل منها)"
+        "uploadDescription": "يمكنك رفع {{isMultiple ? 'عدة' : count}} ملفات (حتى {{maxSize}} لكل منها)",
+        "duplicateFile": "اسم الملف موجود بالفعل في ذاكرة التخزين المؤقت للخادم"
       }
     },
     "documentManager": {
       "title": "إدارة المستندات",
       "scanButton": "مسح ضوئي",
-      "scanTooltip": "مسح المستندات ضوئيًا",
+      "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
       "pipelineStatusButton": "حالة خط المعالجة",
       "pipelineStatusTooltip": "عرض حالة خط المعالجة",
       "uploadedTitle": "المستندات المرفوعة",
@@ -212,7 +215,8 @@
           "entity_id": "الاسم",
           "entity_type": "النوع",
           "source_id": "معرف المصدر",
-          "Neighbour": "الجار"
+          "Neighbour": "الجار",
+          "file_path": "المصدر"
         }
       },
       "edge": {
