@@ -117,7 +117,7 @@ class JsonKVStorage(BaseKVStorage):
         """
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed        
+        2. update flags to notify other processes that data persistence is needed
         """
         if not data:
             return
@@ -128,14 +128,14 @@ class JsonKVStorage(BaseKVStorage):
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
-        
+
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
-        
+
         Args:
             ids (list[str]): List of document IDs to be deleted from storage
-        
+
         Returns:
             None
         """
@@ -144,39 +144,38 @@ class JsonKVStorage(BaseKVStorage):
                 self._data.pop(doc_id, None)
             await set_all_update_flags(self.namespace)
 
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) ->  bool:
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Delete specific records from storage by by cache mode
-        
+
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
-        
+
         Args:
             ids (list[str]): List of cache mode to be drop from storage
-        
+
         Returns:
              True: if the cache drop successfully
              False: if the cache drop failed
         """
         if not modes:
             return False
-            
+
         try:
             await self.delete(modes)
             return True
         except Exception:
             return False
 
-
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
            This action will persistent the data to disk immediately.
-        
+
         This method will:
         1. Clear all data from memory
         2. Update flags to notify other processes
         3. Trigger index_done_callback to save the empty state
-        
+
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}

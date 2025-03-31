@@ -1028,12 +1028,12 @@ class Neo4JStorage(BaseGraphStorage):
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
         raise NotImplementedError
-        
+
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
-        
+
         This method will delete all nodes and relationships in the Neo4j database.
-        
+
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
@@ -1045,8 +1045,10 @@ class Neo4JStorage(BaseGraphStorage):
                 query = "MATCH (n) DETACH DELETE n"
                 result = await session.run(query)
                 await result.consume()  # Ensure result is fully consumed
-                
-                logger.info(f"Process {os.getpid()} drop Neo4j database {self._DATABASE}")
+
+                logger.info(
+                    f"Process {os.getpid()} drop Neo4j database {self._DATABASE}"
+                )
                 return {"status": "success", "message": "data dropped"}
         except Exception as e:
             logger.error(f"Error dropping Neo4j database {self._DATABASE}: {e}")

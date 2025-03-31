@@ -8,7 +8,7 @@ if not pm.is_installed("redis"):
     pm.install("redis")
 
 # aioredis is a depricated library, replaced with redis
-from redis.asyncio import Redis # type: ignore
+from redis.asyncio import Redis  # type: ignore
 from lightrag.utils import logger
 from lightrag.base import BaseKVStorage
 import json
@@ -83,51 +83,51 @@ class RedisKVStorage(BaseKVStorage):
         logger.info(
             f"Deleted {deleted_count} of {len(ids)} entries from {self.namespace}"
         )
-        
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) ->  bool:
+
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Delete specific records from storage by by cache mode
-        
+
         Importance notes for Redis storage:
         1. This will immediately delete the specified cache modes from Redis
-        
+
         Args:
             modes (list[str]): List of cache mode to be drop from storage
-        
+
         Returns:
              True: if the cache drop successfully
              False: if the cache drop failed
         """
         if not modes:
             return False
-            
+
         try:
             await self.delete(modes)
             return True
         except Exception:
             return False
-    
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all keys under the current namespace.
-        
+
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
         try:
             keys = await self._redis.keys(f"{self.namespace}:*")
-            
+
             if keys:
                 pipe = self._redis.pipeline()
                 for key in keys:
                     pipe.delete(key)
                 results = await pipe.execute()
                 deleted_count = sum(results)
-                
+
                 logger.info(f"Dropped {deleted_count} keys from {self.namespace}")
                 return {"status": "success", "message": f"{deleted_count} keys dropped"}
             else:
                 logger.info(f"No keys found to drop in {self.namespace}")
                 return {"status": "success", "message": "no keys to drop"}
-                
+
         except Exception as e:
             logger.error(f"Error dropping keys from {self.namespace}: {e}")
             return {"status": "error", "message": str(e)}

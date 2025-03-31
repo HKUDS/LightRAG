@@ -15,7 +15,7 @@ if not pm.is_installed("pymilvus"):
     pm.install("pymilvus")
 
 import configparser
-from pymilvus import MilvusClient # type: ignore
+from pymilvus import MilvusClient  # type: ignore
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -287,12 +287,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
-            
+
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources
-        
+
         This method will delete all data from the Milvus collection.
-        
+
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
@@ -302,15 +302,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Drop the collection and recreate it
             if self._client.has_collection(self.namespace):
                 self._client.drop_collection(self.namespace)
-                
+
             # Recreate the collection
             MilvusVectorDBStorage.create_collection_if_not_exist(
                 self._client,
                 self.namespace,
                 dimension=self.embedding_func.embedding_dim,
             )
-            
-            logger.info(f"Process {os.getpid()} drop Milvus collection {self.namespace}")
+
+            logger.info(
+                f"Process {os.getpid()} drop Milvus collection {self.namespace}"
+            )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             logger.error(f"Error dropping Milvus collection {self.namespace}: {e}")

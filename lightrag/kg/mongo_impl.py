@@ -25,13 +25,13 @@ if not pm.is_installed("pymongo"):
 if not pm.is_installed("motor"):
     pm.install("motor")
 
-from motor.motor_asyncio import ( # type: ignore
+from motor.motor_asyncio import (  # type: ignore
     AsyncIOMotorClient,
     AsyncIOMotorDatabase,
     AsyncIOMotorCollection,
 )
-from pymongo.operations import SearchIndexModel # type: ignore
-from pymongo.errors import PyMongoError # type: ignore
+from pymongo.operations import SearchIndexModel  # type: ignore
+from pymongo.errors import PyMongoError  # type: ignore
 
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
@@ -149,34 +149,36 @@ class MongoKVStorage(BaseKVStorage):
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
         pass
-        
+
     async def delete(self, ids: list[str]) -> None:
         """Delete documents with specified IDs
-        
+
         Args:
             ids: List of document IDs to be deleted
         """
         if not ids:
             return
-            
+
         try:
             result = await self._data.delete_many({"_id": {"$in": ids}})
-            logger.info(f"Deleted {result.deleted_count} documents from {self.namespace}")
+            logger.info(
+                f"Deleted {result.deleted_count} documents from {self.namespace}"
+            )
         except PyMongoError as e:
             logger.error(f"Error deleting documents from {self.namespace}: {e}")
-        
+
     async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Delete specific records from storage by cache mode
-        
+
         Args:
             modes (list[str]): List of cache modes to be dropped from storage
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
         if not modes:
             return False
-            
+
         try:
             # Build regex pattern to match documents with the specified modes
             pattern = f"^({'|'.join(modes)})_"
@@ -189,16 +191,21 @@ class MongoKVStorage(BaseKVStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.
-        
+
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
         try:
             result = await self._data.delete_many({})
             deleted_count = result.deleted_count
-            
-            logger.info(f"Dropped {deleted_count} documents from doc status {self._collection_name}")
-            return {"status": "success", "message": f"{deleted_count} documents dropped"}
+
+            logger.info(
+                f"Dropped {deleted_count} documents from doc status {self._collection_name}"
+            )
+            return {
+                "status": "success",
+                "message": f"{deleted_count} documents dropped",
+            }
         except PyMongoError as e:
             logger.error(f"Error dropping doc status {self._collection_name}: {e}")
             return {"status": "error", "message": str(e)}
@@ -282,19 +289,24 @@ class MongoDocStatusStorage(DocStatusStorage):
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
         pass
-        
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.
-        
+
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
         try:
             result = await self._data.delete_many({})
             deleted_count = result.deleted_count
-            
-            logger.info(f"Dropped {deleted_count} documents from doc status {self._collection_name}")
-            return {"status": "success", "message": f"{deleted_count} documents dropped"}
+
+            logger.info(
+                f"Dropped {deleted_count} documents from doc status {self._collection_name}"
+            )
+            return {
+                "status": "success",
+                "message": f"{deleted_count} documents dropped",
+            }
         except PyMongoError as e:
             logger.error(f"Error dropping doc status {self._collection_name}: {e}")
             return {"status": "error", "message": str(e)}
@@ -911,16 +923,21 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.
-        
+
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
         try:
             result = await self.collection.delete_many({})
             deleted_count = result.deleted_count
-            
-            logger.info(f"Dropped {deleted_count} documents from graph {self._collection_name}")
-            return {"status": "success", "message": f"{deleted_count} documents dropped"}
+
+            logger.info(
+                f"Dropped {deleted_count} documents from graph {self._collection_name}"
+            )
+            return {
+                "status": "success",
+                "message": f"{deleted_count} documents dropped",
+            }
         except PyMongoError as e:
             logger.error(f"Error dropping graph {self._collection_name}: {e}")
             return {"status": "error", "message": str(e)}
@@ -1211,10 +1228,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
-            
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection and recreating vector index.
-        
+
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
@@ -1222,12 +1239,17 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Delete all documents
             result = await self._data.delete_many({})
             deleted_count = result.deleted_count
-            
+
             # Recreate vector index
             await self.create_vector_index_if_not_exists()
-            
-            logger.info(f"Dropped {deleted_count} documents from vector storage {self._collection_name} and recreated vector index")
-            return {"status": "success", "message": f"{deleted_count} documents dropped and vector index recreated"}
+
+            logger.info(
+                f"Dropped {deleted_count} documents from vector storage {self._collection_name} and recreated vector index"
+            )
+            return {
+                "status": "success",
+                "message": f"{deleted_count} documents dropped and vector index recreated",
+            }
         except PyMongoError as e:
             logger.error(f"Error dropping vector storage {self._collection_name}: {e}")
             return {"status": "error", "message": str(e)}

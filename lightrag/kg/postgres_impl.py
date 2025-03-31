@@ -380,10 +380,10 @@ class PGKVStorage(BaseKVStorage):
 
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
-                
+
         Args:
             ids (list[str]): List of document IDs to be deleted from storage
-        
+
         Returns:
             None
         """
@@ -398,40 +398,41 @@ class PGKVStorage(BaseKVStorage):
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
         try:
-            await self.db.execute(delete_sql, {"workspace": self.db.workspace, "ids": ids})
-            logger.debug(f"Successfully deleted {len(ids)} records from {self.namespace}")
+            await self.db.execute(
+                delete_sql, {"workspace": self.db.workspace, "ids": ids}
+            )
+            logger.debug(
+                f"Successfully deleted {len(ids)} records from {self.namespace}"
+            )
         except Exception as e:
             logger.error(f"Error while deleting records from {self.namespace}: {e}")
 
     async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Delete specific records from storage by cache mode
-        
+
         Args:
             modes (list[str]): List of cache modes to be dropped from storage
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
         if not modes:
             return False
-            
+
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
                 return False
-                
+
             if table_name != "LIGHTRAG_LLM_CACHE":
                 return False
-                
+
             sql = f"""
             DELETE FROM {table_name}
             WHERE workspace = $1 AND mode = ANY($2)
             """
-            params = {
-                "workspace": self.db.workspace,
-                "modes": modes
-            }
-            
+            params = {"workspace": self.db.workspace, "modes": modes}
+
             logger.info(f"Deleting cache by modes: {modes}")
             await self.db.execute(sql, params)
             return True
@@ -444,8 +445,11 @@ class PGKVStorage(BaseKVStorage):
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
-                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
-                
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
+
             drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
                 table_name=table_name
             )
@@ -622,7 +626,9 @@ class PGVectorStorage(BaseVectorStorage):
         delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
         try:
-            await self.db.execute(delete_sql, {"workspace": self.db.workspace, "ids": ids})
+            await self.db.execute(
+                delete_sql, {"workspace": self.db.workspace, "ids": ids}
+            )
             logger.debug(
                 f"Successfully deleted {len(ids)} vectors from {self.namespace}"
             )
@@ -759,8 +765,11 @@ class PGVectorStorage(BaseVectorStorage):
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
-                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
-                
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
+
             drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
                 table_name=table_name
             )
@@ -930,8 +939,11 @@ class PGDocStatusStorage(DocStatusStorage):
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
-                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
-                
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
+
             drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
                 table_name=table_name
             )
@@ -1626,7 +1638,7 @@ class PGGraphStorage(BaseGraphStorage):
                               MATCH (n)
                               DETACH DELETE n
                             $$) AS (result agtype)"""
-            
+
             await self._query(drop_query, readonly=False)
             return {"status": "success", "message": "graph data dropped"}
         except Exception as e:
@@ -1812,7 +1824,7 @@ SQL_TEMPLATES = {
                       chunk_ids=EXCLUDED.chunk_ids,
                       file_path=EXCLUDED.file_path,
                       update_time = CURRENT_TIMESTAMP
-                     """,    
+                     """,
     "relationships": """
     WITH relevant_chunks AS (
         SELECT id as chunk_id

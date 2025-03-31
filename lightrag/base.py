@@ -111,11 +111,11 @@ class StorageNameSpace(ABC):
     @abstractmethod
     async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing"""
-        
+
     @abstractmethod
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
-        
+
         This abstract method defines the contract for dropping all data from a storage implementation.
         Each storage type must implement this method to:
         1. Clear all data from memory and/or external storage
@@ -124,14 +124,14 @@ class StorageNameSpace(ABC):
         4. Handle cleanup of any resources
         5. Notify other processes if necessary
         6. This action should persistent the data to disk immediately.
-        
+
         Returns:
             dict[str, str]: Operation status and message with the following format:
                 {
                     "status": str,  # "success" or "error"
                     "message": str  # "data dropped" on success, error details on failure
                 }
-                
+
         Implementation specific:
         - On success: return {"status": "success", "message": "data dropped"}
         - On failure: return {"status": "error", "message": "<error details>"}
@@ -238,41 +238,42 @@ class BaseKVStorage(StorageNameSpace, ABC):
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Upsert data
-        
+
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed        
+        2. update flags to notify other processes that data persistence is needed
         """
 
     @abstractmethod
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
-        
+
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
-        
+
         Args:
             ids (list[str]): List of document IDs to be deleted from storage
-        
+
         Returns:
             None
         """
 
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) ->  bool:
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Delete specific records from storage by cache mode
-        
+
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. update flags to notify other processes that data persistence is needed
-        
+
         Args:
             modes (list[str]): List of cache modes to be dropped from storage
-        
+
         Returns:
              True: if the cache drop successfully
              False: if the cache drop failed, or the cache mode is not supported
         """
+
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
@@ -394,7 +395,7 @@ class DocStatusStorage(BaseKVStorage, ABC):
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
 
-    async def drop_cache_by_modes(self, modes: list[str] | None = None) ->  bool:
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Drop cache is not supported for Doc Status storage"""
         return False
 

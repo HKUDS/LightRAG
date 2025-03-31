@@ -443,10 +443,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     results.append({**metadata, "id": metadata.get("__id__")})
 
         return results
-        
+
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources
-        
+
         This method will:
         1. Remove the vector database storage file if it exists
         2. Reinitialize the vector database client
@@ -454,7 +454,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         4. Changes is persisted to disk immediately
 
         This method will remove all vectors from the Faiss index and delete the storage files.
-        
+
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
@@ -465,7 +465,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Reset the index
                 self._index = faiss.IndexFlatIP(self._dim)
                 self._id_to_meta = {}
-                
+
                 # Remove storage files if they exist
                 if os.path.exists(self._faiss_index_file):
                     os.remove(self._faiss_index_file)
@@ -478,7 +478,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Notify other processes
                 await set_all_update_flags(self.namespace)
                 self.storage_updated.value = False
-                
+
                 logger.info(f"Process {os.getpid()} drop FAISS index {self.namespace}")
             return {"status": "success", "message": "data dropped"}
         except Exception as e:

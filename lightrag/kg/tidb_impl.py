@@ -20,7 +20,7 @@ if not pm.is_installed("pymysql"):
 if not pm.is_installed("sqlalchemy"):
     pm.install("sqlalchemy")
 
-from sqlalchemy import create_engine, text # type: ignore
+from sqlalchemy import create_engine, text  # type: ignore
 
 
 class TiDB:
@@ -290,47 +290,49 @@ class TiDBKVStorage(BaseKVStorage):
         try:
             table_name = namespace_to_table_name(self.namespace)
             id_field = namespace_to_id(self.namespace)
-            
+
             if not table_name or not id_field:
                 logger.error(f"Unknown namespace for deletion: {self.namespace}")
                 return
-                
+
             ids_list = ",".join([f"'{id}'" for id in ids])
             delete_sql = f"DELETE FROM {table_name} WHERE workspace = :workspace AND {id_field} IN ({ids_list})"
-            
+
             await self.db.execute(delete_sql, {"workspace": self.db.workspace})
-            logger.info(f"Successfully deleted {len(ids)} records from {self.namespace}")
+            logger.info(
+                f"Successfully deleted {len(ids)} records from {self.namespace}"
+            )
         except Exception as e:
             logger.error(f"Error deleting records from {self.namespace}: {e}")
 
     async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Delete specific records from storage by cache mode
-        
+
         Args:
             modes (list[str]): List of cache modes to be dropped from storage
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
         if not modes:
             return False
-            
+
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
                 return False
-                
+
             if table_name != "LIGHTRAG_LLM_CACHE":
                 return False
-                
+
             # 构建MySQL风格的IN查询
             modes_list = ", ".join([f"'{mode}'" for mode in modes])
             sql = f"""
             DELETE FROM {table_name}
-            WHERE workspace = :workspace 
+            WHERE workspace = :workspace
             AND mode IN ({modes_list})
             """
-            
+
             logger.info(f"Deleting cache by modes: {modes}")
             await self.db.execute(sql, {"workspace": self.db.workspace})
             return True
@@ -343,8 +345,11 @@ class TiDBKVStorage(BaseKVStorage):
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
-                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
-                
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
+
             drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
                 table_name=table_name
             )
@@ -492,7 +497,7 @@ class TiDBVectorDBStorage(BaseVectorStorage):
 
         table_name = namespace_to_table_name(self.namespace)
         id_field = namespace_to_id(self.namespace)
-        
+
         if not table_name or not id_field:
             logger.error(f"Unknown namespace for vector deletion: {self.namespace}")
             return
@@ -502,7 +507,9 @@ class TiDBVectorDBStorage(BaseVectorStorage):
 
         try:
             await self.db.execute(delete_sql, {"workspace": self.db.workspace})
-            logger.debug(f"Successfully deleted {len(ids)} vectors from {self.namespace}")
+            logger.debug(
+                f"Successfully deleted {len(ids)} vectors from {self.namespace}"
+            )
         except Exception as e:
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
 
@@ -551,8 +558,11 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
-                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
-                
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
+
             drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
                 table_name=table_name
             )
