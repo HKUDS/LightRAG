@@ -127,7 +127,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         async with self._storage_lock:
             return self._data.get(id)
 
-    async def delete(self, doc_ids: list[str]):
+    async def delete(self, doc_ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
         
         Importance notes for in-memory storage:

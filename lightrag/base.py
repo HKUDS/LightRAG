@@ -259,6 +259,20 @@ class BaseKVStorage(StorageNameSpace, ABC):
             None
         """
 
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) ->  bool:
+        """Delete specific records from storage by cache mode
+        
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed
+        
+        Args:
+            modes (list[str]): List of cache modes to be dropped from storage
+        
+        Returns:
+             True: if the cache drop successfully
+             False: if the cache drop failed, or the cache mode is not supported
+        """
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
@@ -309,7 +323,6 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-
 
     @abstractmethod
     async def delete_node(self, node_id: str) -> None:
@@ -380,6 +393,10 @@ class DocStatusStorage(BaseKVStorage, ABC):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
+
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) ->  bool:
+        """Drop cache is not supported for Doc Status storage"""
+        return False
 
 
 class StoragesStatus(str, Enum):
