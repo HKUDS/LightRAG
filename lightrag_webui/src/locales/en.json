@@ -141,6 +141,7 @@
         "maxQueryDepth": "Max Query Depth",
         "minDegree": "Minimum Degree",
         "maxLayoutIterations": "Max Layout Iterations",
+        "edgeSizeRange": "Edge Size Range",
         "depth": "Depth",
         "degree": "Degree",
         "apiKey": "API Key",

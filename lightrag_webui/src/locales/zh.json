@@ -141,6 +141,7 @@
         "maxQueryDepth": "最大查询深度",
         "minDegree": "最小邻边数",
         "maxLayoutIterations": "最大布局迭代次数",
+        "edgeSizeRange": "边粗细范围",
         "depth": "深度",
         "degree": "邻边",
         "apiKey": "API密钥",

@@ -24,6 +24,12 @@ interface SettingsState {
   enableHideUnselectedEdges: boolean
   enableEdgeEvents: boolean
 
+  minEdgeSize: number
+  setMinEdgeSize: (size: number) => void
+
+  maxEdgeSize: number
+  setMaxEdgeSize: (size: number) => void
+
   graphQueryMaxDepth: number
   setGraphQueryMaxDepth: (depth: number) => void
 
@@ -75,6 +81,9 @@ const useSettingsStoreBase = create<SettingsState>()(
       showEdgeLabel: false,
       enableHideUnselectedEdges: true,
       enableEdgeEvents: false,
+
+      minEdgeSize: 1,
+      maxEdgeSize: 1,
 
       graphQueryMaxDepth: 3,
       graphMinDegree: 0,
@@ -131,6 +140,10 @@ const useSettingsStoreBase = create<SettingsState>()(
       setGraphQueryMaxDepth: (depth: number) => set({ graphQueryMaxDepth: depth }),
 
       setGraphMinDegree: (degree: number) => set({ graphMinDegree: degree }),
+
+      setMinEdgeSize: (size: number) => set({ minEdgeSize: size }),
+
+      setMaxEdgeSize: (size: number) => set({ maxEdgeSize: size }),
 
       setEnableHealthCheck: (enable: boolean) => set({ enableHealthCheck: enable }),
 
@@ -195,6 +208,10 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 9) {
           state.showFileName = false
+        }
+        if (version < 10) {
+          state.minEdgeSize = 1
+          state.maxEdgeSize = 1
         }
         return state
       }
