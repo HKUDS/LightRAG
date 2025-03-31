@@ -109,6 +109,11 @@ class JsonDocStatusStorage(DocStatusStorage):
                 await clear_all_update_flags(self.namespace)
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        """
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed        
+        """
         if not data:
             return
         logger.info(f"Inserting {len(data)} records to {self.namespace}")
@@ -125,10 +130,9 @@ class JsonDocStatusStorage(DocStatusStorage):
     async def delete(self, doc_ids: list[str]):
         """Delete specific records from storage by their IDs
         
-        This method will:
-        1. Remove the specified records from in-memory storage
-        2. Update flags to notify other processes that data persistence is needed
-        3. The changes will be persisted to disk during the next index_done_callback
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed        
         
         Args:
             ids (list[str]): List of document IDs to be deleted from storage

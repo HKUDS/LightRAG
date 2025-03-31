@@ -217,6 +217,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def delete(self, ids: list[str]):
         """
         Delete vectors for the provided custom IDs.
+
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
         """
         logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
         to_remove = []
@@ -232,13 +237,22 @@ class FaissVectorDBStorage(BaseVectorStorage):
         )
 
     async def delete_entity(self, entity_name: str) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
         await self.delete([entity_id])
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         """
-        Delete relations for a given entity by scanning metadata.
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
         """
         logger.debug(f"Searching relations for entity {entity_name}")
         relations = []
@@ -433,6 +447,12 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources
         
+        This method will:
+        1. Remove the vector database storage file if it exists
+        2. Reinitialize the vector database client
+        3. Update flags to notify other processes
+        4. Changes is persisted to disk immediately
+
         This method will remove all vectors from the Faiss index and delete the storage files.
         
         Returns:
