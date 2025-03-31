@@ -22,7 +22,9 @@ from lightrag.api.utils_api import (
     parse_args,
     get_default_host,
     display_splash_screen,
+    check_env_file,
 )
+import sys
 from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
@@ -45,14 +47,17 @@ from lightrag.kg.shared_storage import (
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 
-# Load environment variables
-# Updated to use the .env that is inside the current folder
-# This update allows the user to put a different.env file for each lightrag folder
-load_dotenv(".env")
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 # Initialize config parser
 config = configparser.ConfigParser()
 config.read("config.ini")
+
+# Global authentication configuration
+auth_configured = bool(auth_handler.accounts)
 
 
 def create_app(args):
@@ -421,37 +426,42 @@ def create_app(args):
     @app.get("/health", dependencies=[Depends(combined_auth)])
     async def get_status():
         """Get current system status"""
-        username = os.getenv("AUTH_USERNAME")
-        password = os.getenv("AUTH_PASSWORD")
-        if not (username and password):
-            auth_mode = "disabled"
-        else:
-            auth_mode = "enabled"
+        try:
+            pipeline_status = await get_namespace_data("pipeline_status")
 
-        return {
-            "status": "healthy",
-            "working_directory": str(args.working_dir),
-            "input_directory": str(args.input_dir),
-            "configuration": {
-                # LLM configuration binding/host address (if applicable)/model (if applicable)
-                "llm_binding": args.llm_binding,
-                "llm_binding_host": args.llm_binding_host,
-                "llm_model": args.llm_model,
-                # embedding model configuration binding/host address (if applicable)/model (if applicable)
-                "embedding_binding": args.embedding_binding,
-                "embedding_binding_host": args.embedding_binding_host,
-                "embedding_model": args.embedding_model,
-                "max_tokens": args.max_tokens,
-                "kv_storage": args.kv_storage,
-                "doc_status_storage": args.doc_status_storage,
-                "graph_storage": args.graph_storage,
-                "vector_storage": args.vector_storage,
-                "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
-            },
-            "core_version": core_version,
-            "api_version": __api_version__,
-            "auth_mode": auth_mode,
-        }
+            if not auth_configured:
+                auth_mode = "disabled"
+            else:
+                auth_mode = "enabled"
+
+            return {
+                "status": "healthy",
+                "working_directory": str(args.working_dir),
+                "input_directory": str(args.input_dir),
+                "configuration": {
+                    # LLM configuration binding/host address (if applicable)/model (if applicable)
+                    "llm_binding": args.llm_binding,
+                    "llm_binding_host": args.llm_binding_host,
+                    "llm_model": args.llm_model,
+                    # embedding model configuration binding/host address (if applicable)/model (if applicable)
+                    "embedding_binding": args.embedding_binding,
+                    "embedding_binding_host": args.embedding_binding_host,
+                    "embedding_model": args.embedding_model,
+                    "max_tokens": args.max_tokens,
+                    "kv_storage": args.kv_storage,
+                    "doc_status_storage": args.doc_status_storage,
+                    "graph_storage": args.graph_storage,
+                    "vector_storage": args.vector_storage,
+                    "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
+                },
+                "core_version": core_version,
+                "api_version": __api_version__,
+                "auth_mode": auth_mode,
+                "pipeline_busy": pipeline_status.get("busy", False),
+            }
+        except Exception as e:
+            logger.error(f"Error getting health status: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     # Custom StaticFiles class to prevent caching of HTML files
     class NoCacheStaticFiles(StaticFiles):
@@ -587,6 +597,10 @@ def main():
         # If started with Gunicorn, return directly as Gunicorn will call get_application
         print("Running under Gunicorn - worker management handled by Gunicorn")
         return
+
+    # Check .env file
+    if not check_env_file():
+        sys.exit(1)
 
     # Check and install dependencies
     check_and_install_dependencies()

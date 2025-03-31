@@ -48,17 +48,38 @@
       "tooltip": "上传文档",
       "title": "上传文档",
       "description": "拖拽文件到此处或点击浏览",
-      "uploading": "正在上传 {{name}}：{{percent}}%",
-      "success": "上传成功：\n{{name}} 上传完成",
-      "failed": "上传失败：\n{{name}}\n{{message}}",
-      "error": "上传失败：\n{{name}}\n{{error}}",
+      "single": {
+        "uploading": "正在上传 {{name}}：{{percent}}%",
+        "success": "上传成功：\n{{name}} 上传完成",
+        "failed": "上传失败：\n{{name}}\n{{message}}",
+        "error": "上传失败：\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "正在上传文件...",
+        "success": "文件上传完成",
+        "error": "部分文件上传失败"
+      },
       "generalError": "上传失败\n{{error}}",
-      "fileTypes": "支持的文件类型：TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
+      "fileTypes": "支持的文件类型：TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "一次只能上传一个文件",
+        "maxFilesLimit": "最多只能上传 {{count}} 个文件",
+        "fileRejected": "文件 {{name}} 被拒绝",
+        "unsupportedType": "不支持的文件类型",
+        "fileTooLarge": "文件过大，最大允许 {{maxSize}}",
+        "dropHere": "将文件拖放到此处",
+        "dragAndDrop": "拖放文件到此处，或点击选择文件",
+        "removeFile": "移除文件",
+        "uploadDescription": "您可以上传{{isMultiple ? '多个' : count}}个文件（每个文件最大{{maxSize}}）",
+        "duplicateFile": "文件名与服务器上的缓存重复"
+      }
     },
     "documentManager": {
       "title": "文档管理",
       "scanButton": "扫描",
-      "scanTooltip": "扫描文档",
+      "scanTooltip": "扫描输入目录中的文档",
+      "pipelineStatusButton": "流水线状态",
+      "pipelineStatusTooltip": "查看流水线状态",
       "uploadedTitle": "已上传文档",
       "uploadedDescription": "已上传文档列表及其状态",
       "emptyTitle": "无文档",
@@ -89,6 +110,20 @@
       "hideButton": "隐藏",
       "showFileNameTooltip": "显示文件名",
       "hideFileNameTooltip": "隐藏文件名"
+    },
+    "pipelineStatus": {
+      "title": "流水线状态",
+      "busy": "流水线忙碌",
+      "requestPending": "待处理请求",
+      "jobName": "作业名称",
+      "startTime": "开始时间",
+      "progress": "进度",
+      "unit": "批",
+      "latestMessage": "最新消息",
+      "historyMessages": "历史消息",
+      "errors": {
+        "fetchFailed": "获取流水线状态失败\n{{error}}"
+      }
     }
   },
   "graphPanel": {
@@ -180,7 +215,8 @@
           "entity_id": "名称",
           "entity_type": "类型",
           "source_id": "信源ID",
-          "Neighbour": "邻接"
+          "Neighbour": "邻接",
+          "file_path": "信源"
         }
       },
       "edge": {

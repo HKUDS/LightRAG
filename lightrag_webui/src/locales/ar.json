@@ -48,17 +48,38 @@
       "tooltip": "رفع المستندات",
       "title": "رفع المستندات",
       "description": "اسحب وأفلت مستنداتك هنا أو انقر للتصفح.",
-      "uploading": "جارٍ الرفع {{name}}: {{percent}}%",
-      "success": "نجاح الرفع:\nتم رفع {{name}} بنجاح",
-      "failed": "فشل الرفع:\n{{name}}\n{{message}}",
-      "error": "فشل الرفع:\n{{name}}\n{{error}}",
+      "single": {
+        "uploading": "جارٍ الرفع {{name}}: {{percent}}%",
+        "success": "نجاح الرفع:\nتم رفع {{name}} بنجاح",
+        "failed": "فشل الرفع:\n{{name}}\n{{message}}",
+        "error": "فشل الرفع:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "جارٍ رفع الملفات...",
+        "success": "تم رفع الملفات بنجاح",
+        "error": "فشل رفع بعض الملفات"
+      },
       "generalError": "فشل الرفع\n{{error}}",
-      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS"
+      "fileTypes": "الأنواع المدعومة: TXT، MD، DOCX، PDF، PPTX، RTF، ODT، EPUB، HTML، HTM، TEX، JSON، XML، YAML، YML، CSV، LOG، CONF، INI، PROPERTIES، SQL، BAT، SH، C، CPP، PY، JAVA، JS، TS، SWIFT، GO، RB، PHP، CSS، SCSS، LESS",
+      "fileUploader": {
+        "singleFileLimit": "لا يمكن رفع أكثر من ملف واحد في المرة الواحدة",
+        "maxFilesLimit": "لا يمكن رفع أكثر من {{count}} ملفات",
+        "fileRejected": "تم رفض الملف {{name}}",
+        "unsupportedType": "نوع الملف غير مدعوم",
+        "fileTooLarge": "حجم الملف كبير جدًا، الحد الأقصى {{maxSize}}",
+        "dropHere": "أفلت الملفات هنا",
+        "dragAndDrop": "اسحب وأفلت الملفات هنا، أو انقر للاختيار",
+        "removeFile": "إزالة الملف",
+        "uploadDescription": "يمكنك رفع {{isMultiple ? 'عدة' : count}} ملفات (حتى {{maxSize}} لكل منها)",
+        "duplicateFile": "اسم الملف موجود بالفعل في ذاكرة التخزين المؤقت للخادم"
+      }
     },
     "documentManager": {
       "title": "إدارة المستندات",
       "scanButton": "مسح ضوئي",
-      "scanTooltip": "مسح المستندات ضوئيًا",
+      "scanTooltip": "مسح المستندات ضوئيًا في مجلد الإدخال",
+      "pipelineStatusButton": "حالة خط المعالجة",
+      "pipelineStatusTooltip": "عرض حالة خط المعالجة",
       "uploadedTitle": "المستندات المرفوعة",
       "uploadedDescription": "قائمة المستندات المرفوعة وحالاتها.",
       "emptyTitle": "لا توجد مستندات",
@@ -89,6 +110,20 @@
       "hideButton": "إخفاء",
       "showFileNameTooltip": "عرض اسم الملف",
       "hideFileNameTooltip": "إخفاء اسم الملف"
+    },
+    "pipelineStatus": {
+      "title": "حالة خط المعالجة",
+      "busy": "خط المعالجة مشغول",
+      "requestPending": "الطلب معلق",
+      "jobName": "اسم المهمة",
+      "startTime": "وقت البدء",
+      "progress": "التقدم",
+      "unit": "دفعة",
+      "latestMessage": "آخر رسالة",
+      "historyMessages": "سجل الرسائل",
+      "errors": {
+        "fetchFailed": "فشل في جلب حالة خط المعالجة\n{{error}}"
+      }
     }
   },
   "graphPanel": {
@@ -180,7 +215,8 @@
           "entity_id": "الاسم",
           "entity_type": "النوع",
           "source_id": "معرف المصدر",
-          "Neighbour": "الجار"
+          "Neighbour": "الجار",
+          "file_path": "المصدر"
         }
       },
       "edge": {

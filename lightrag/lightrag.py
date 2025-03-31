@@ -55,8 +55,10 @@ from .utils import (
 from .types import KnowledgeGraph
 from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv(override=True)
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 # TODO: TO REMOVE @Yannick
 config = configparser.ConfigParser()
@@ -845,7 +847,7 @@ class LightRAG:
                 pipeline_status.update(
                     {
                         "busy": True,
-                        "job_name": "indexing files",
+                        "job_name": "Default Job",
                         "job_start": datetime.now().isoformat(),
                         "docs": 0,
                         "batchs": 0,
@@ -884,10 +886,20 @@ class LightRAG:
                 logger.info(log_message)
 
                 # Update pipeline status with current batch information
-                pipeline_status["docs"] += len(to_process_docs)
-                pipeline_status["batchs"] += len(docs_batches)
+                pipeline_status["docs"] = len(to_process_docs)
+                pipeline_status["batchs"] = len(docs_batches)
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
+
+                # Get first document's file path and total count for job name
+                first_doc_id, first_doc = next(iter(to_process_docs.items()))
+                first_doc_path = first_doc.file_path
+                path_prefix = first_doc_path[:20] + (
+                    "..." if len(first_doc_path) > 20 else ""
+                )
+                total_files = len(to_process_docs)
+                job_name = f"{path_prefix}[{total_files} files]"
+                pipeline_status["job_name"] = job_name
 
                 async def process_document(
                     doc_id: str,

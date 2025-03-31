@@ -48,17 +48,38 @@
       "tooltip": "Télécharger des documents",
       "title": "Télécharger des documents",
       "description": "Glissez-déposez vos documents ici ou cliquez pour parcourir.",
-      "uploading": "Téléchargement de {{name}} : {{percent}}%",
-      "success": "Succès du téléchargement :\n{{name}} téléchargé avec succès",
-      "failed": "Échec du téléchargement :\n{{name}}\n{{message}}",
-      "error": "Échec du téléchargement :\n{{name}}\n{{error}}",
+      "single": {
+        "uploading": "Téléchargement de {{name}} : {{percent}}%",
+        "success": "Succès du téléchargement :\n{{name}} téléchargé avec succès",
+        "failed": "Échec du téléchargement :\n{{name}}\n{{message}}",
+        "error": "Échec du téléchargement :\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "Téléchargement des fichiers...",
+        "success": "Fichiers téléchargés avec succès",
+        "error": "Certains fichiers n'ont pas pu être téléchargés"
+      },
       "generalError": "Échec du téléchargement\n{{error}}",
-      "fileTypes": "Types pris en charge : TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
+      "fileTypes": "Types pris en charge : TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "Impossible de télécharger plus d'un fichier à la fois",
+        "maxFilesLimit": "Impossible de télécharger plus de {{count}} fichiers",
+        "fileRejected": "Le fichier {{name}} a été rejeté",
+        "unsupportedType": "Type de fichier non pris en charge",
+        "fileTooLarge": "Fichier trop volumineux, taille maximale {{maxSize}}",
+        "dropHere": "Déposez les fichiers ici",
+        "dragAndDrop": "Glissez et déposez les fichiers ici, ou cliquez pour sélectionner",
+        "removeFile": "Supprimer le fichier",
+        "uploadDescription": "Vous pouvez télécharger {{isMultiple ? 'plusieurs' : count}} fichiers (jusqu'à {{maxSize}} chacun)",
+        "duplicateFile": "Le nom du fichier existe déjà dans le cache du serveur"
+      }
     },
     "documentManager": {
       "title": "Gestion des documents",
       "scanButton": "Scanner",
-      "scanTooltip": "Scanner les documents",
+      "scanTooltip": "Scanner les documents dans le dossier d'entrée",
+      "pipelineStatusButton": "État du Pipeline",
+      "pipelineStatusTooltip": "Voir l'état du pipeline",
       "uploadedTitle": "Documents téléchargés",
       "uploadedDescription": "Liste des documents téléchargés et leurs statuts.",
       "emptyTitle": "Aucun document",
@@ -83,6 +104,25 @@
         "loadFailed": "Échec du chargement des documents\n{{error}}",
         "scanFailed": "Échec de la numérisation des documents\n{{error}}",
         "scanProgressFailed": "Échec de l'obtention de la progression de la numérisation\n{{error}}"
+      },
+      "fileNameLabel": "Nom du fichier",
+      "showButton": "Afficher",
+      "hideButton": "Masquer",
+      "showFileNameTooltip": "Afficher le nom du fichier",
+      "hideFileNameTooltip": "Masquer le nom du fichier"
+    },
+    "pipelineStatus": {
+      "title": "État du Pipeline",
+      "busy": "Pipeline occupé",
+      "requestPending": "Requête en attente",
+      "jobName": "Nom du travail",
+      "startTime": "Heure de début",
+      "progress": "Progression",
+      "unit": "lot",
+      "latestMessage": "Dernier message",
+      "historyMessages": "Historique des messages",
+      "errors": {
+        "fetchFailed": "Échec de la récupération de l'état du pipeline\n{{error}}"
       }
     }
   },
@@ -175,7 +215,8 @@
           "entity_id": "Nom",
           "entity_type": "Type",
           "source_id": "ID source",
-          "Neighbour": "Voisin"
+          "Neighbour": "Voisin",
+          "file_path": "Source"
         }
       },
       "edge": {

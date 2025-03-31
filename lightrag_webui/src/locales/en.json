@@ -48,17 +48,38 @@
       "tooltip": "Upload documents",
       "title": "Upload Documents",
       "description": "Drag and drop your documents here or click to browse.",
-      "uploading": "Uploading {{name}}: {{percent}}%",
-      "success": "Upload Success:\n{{name}} uploaded successfully",
-      "failed": "Upload Failed:\n{{name}}\n{{message}}",
-      "error": "Upload Failed:\n{{name}}\n{{error}}",
+      "single": {
+        "uploading": "Uploading {{name}}: {{percent}}%",
+        "success": "Upload Success:\n{{name}} uploaded successfully",
+        "failed": "Upload Failed:\n{{name}}\n{{message}}",
+        "error": "Upload Failed:\n{{name}}\n{{error}}"
+      },
+      "batch": {
+        "uploading": "Uploading files...",
+        "success": "Files uploaded successfully",
+        "error": "Some files failed to upload"
+      },
       "generalError": "Upload Failed\n{{error}}",
-      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS"
+      "fileTypes": "Supported types: TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+      "fileUploader": {
+        "singleFileLimit": "Cannot upload more than 1 file at a time",
+        "maxFilesLimit": "Cannot upload more than {{count}} files",
+        "fileRejected": "File {{name}} was rejected",
+        "unsupportedType": "Unsupported file type",
+        "fileTooLarge": "File too large, maximum size is {{maxSize}}",
+        "dropHere": "Drop the files here",
+        "dragAndDrop": "Drag and drop files here, or click to select files",
+        "removeFile": "Remove file",
+        "uploadDescription": "You can upload {{isMultiple ? 'multiple' : count}} files (up to {{maxSize}} each)",
+        "duplicateFile": "File name already exists in server cache"
+      }
     },
     "documentManager": {
       "title": "Document Management",
       "scanButton": "Scan",
-      "scanTooltip": "Scan documents",
+      "scanTooltip": "Scan documents in input folder",
+      "pipelineStatusButton": "Pipeline Status",
+      "pipelineStatusTooltip": "View pipeline status",
       "uploadedTitle": "Uploaded Documents",
       "uploadedDescription": "List of uploaded documents and their statuses.",
       "emptyTitle": "No Documents",
@@ -89,6 +110,20 @@
       "hideButton": "Hide",
       "showFileNameTooltip": "Show file name",
       "hideFileNameTooltip": "Hide file name"
+    },
+    "pipelineStatus": {
+      "title": "Pipeline Status",
+      "busy": "Pipeline Busy",
+      "requestPending": "Request Pending",
+      "jobName": "Job Name",
+      "startTime": "Start Time",
+      "progress": "Progress",
+      "unit": "batch",
+      "latestMessage": "Latest Message",
+      "historyMessages": "History Messages",
+      "errors": {
+        "fetchFailed": "Failed to get pipeline status\n{{error}}"
+      }
     }
   },
   "graphPanel": {
@@ -113,7 +148,6 @@
         "save": "Save",
         "refreshLayout": "Refresh Layout"
       },
-
       "zoomControl": {
         "zoomIn": "Zoom In",
         "zoomOut": "Zoom Out",
@@ -121,7 +155,6 @@
         "rotateCamera": "Clockwise Rotate",
         "rotateCameraCounterClockwise": "Counter-Clockwise Rotate"
       },
-
       "layoutsControl": {
         "startAnimation": "Continue layout animation",
         "stopAnimation": "Stop layout animation",
@@ -135,7 +168,6 @@
           "Force Atlas": "Force Atlas"
         }
       },
-
       "fullScreenControl": {
         "fullScreen": "Full Screen",
         "windowed": "Windowed"
@@ -183,7 +215,8 @@
           "entity_id": "Name",
           "entity_type": "Type",
           "source_id": "SrcID",
-          "Neighbour": "Neigh"
+          "Neighbour": "Neigh",
+          "file_path": "Source"
         }
       },
       "edge": {
@@ -224,7 +257,6 @@
     "querySettings": {
       "parametersTitle": "Parameters",
       "parametersDescription": "Configure your query parameters",
-
       "queryMode": "Query Mode",
       "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval",
       "queryModeOptions": {
@@ -234,7 +266,6 @@
         "hybrid": "Hybrid",
         "mix": "Mix"
       },
-
       "responseFormat": "Response Format",
       "responseFormatTooltip": "Defines the response format. Examples:\n• Multiple Paragraphs\n• Single Paragraph\n• Bullet Points",
       "responseFormatOptions": {
@@ -242,37 +273,27 @@
         "singleParagraph": "Single Paragraph",
         "bulletPoints": "Bullet Points"
       },
-
       "topK": "Top K Results",
       "topKTooltip": "Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode",
       "topKPlaceholder": "Number of results",
-
       "maxTokensTextUnit": "Max Tokens for Text Unit",
       "maxTokensTextUnitTooltip": "Maximum number of tokens allowed for each retrieved text chunk",
-
       "maxTokensGlobalContext": "Max Tokens for Global Context",
       "maxTokensGlobalContextTooltip": "Maximum number of tokens allocated for relationship descriptions in global retrieval",
-
       "maxTokensLocalContext": "Max Tokens for Local Context",
       "maxTokensLocalContextTooltip": "Maximum number of tokens allocated for entity descriptions in local retrieval",
-
       "historyTurns": "History Turns",
       "historyTurnsTooltip": "Number of complete conversation turns (user-assistant pairs) to consider in the response context",
       "historyTurnsPlaceholder": "Number of history turns",
-
       "hlKeywords": "High-Level Keywords",
       "hlKeywordsTooltip": "List of high-level keywords to prioritize in retrieval. Separate with commas",
       "hlkeywordsPlaceHolder": "Enter keywords",
-
       "llKeywords": "Low-Level Keywords",
       "llKeywordsTooltip": "List of low-level keywords to refine retrieval focus. Separate with commas",
-
       "onlyNeedContext": "Only Need Context",
       "onlyNeedContextTooltip": "If True, only returns the retrieved context without generating a response",
-
       "onlyNeedPrompt": "Only Need Prompt",
       "onlyNeedPromptTooltip": "If True, only returns the generated prompt without producing a response",
-
       "streamResponse": "Stream Response",
       "streamResponseTooltip": "If True, enables streaming output for real-time responses"
     }

@@ -7,13 +7,14 @@ import os
 import sys
 import signal
 import pipmaster as pm
-from lightrag.api.utils_api import parse_args, display_splash_screen
+from lightrag.api.utils_api import parse_args, display_splash_screen, check_env_file
 from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
 from dotenv import load_dotenv
 
-# Updated to use the .env that is inside the current folder
-# This update allows the user to put a different.env file for each lightrag folder
-load_dotenv(".env")
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 
 def check_and_install_dependencies():
@@ -47,6 +48,10 @@ def signal_handler(sig, frame):
 
 
 def main():
+    # Check .env file
+    if not check_env_file():
+        sys.exit(1)
+
     # Check and install dependencies
     check_and_install_dependencies()
 

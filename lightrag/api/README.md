@@ -52,7 +52,8 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-4o
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-MAX_TOKENS=32768                # Max tokens send to LLM (less than model context size)
+### Max tokens send to LLM (less than model context size)
+MAX_TOKENS=32768
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
@@ -68,7 +69,8 @@ LLM_BINDING=ollama
 LLM_MODEL=mistral-nemo:latest
 LLM_BINDING_HOST=http://localhost:11434
 # LLM_BINDING_API_KEY=your_api_key
-MAX_TOKENS=8192                  # Max tokens send to LLM (base on your Ollama Server capacity)
+### Max tokens send to LLM (base on your Ollama Server capacity)
+MAX_TOKENS=8192
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
@@ -90,7 +92,9 @@ lightrag-server
 ```
 lightrag-gunicorn --workers 4
 ```
-The `.env` file must be placed in the startup directory. Upon launching, the LightRAG Server will create a documents directory (default is `./inputs`) and a data directory (default is `./rag_storage`). This allows you to initiate multiple instances of LightRAG Server from different directories, with each instance configured to listen on a distinct network port.
+The `.env` file **must be placed in the startup directory**.
+
+Upon launching, the LightRAG Server will create a documents directory (default is `./inputs`) and a data directory (default is `./rag_storage`). This allows you to initiate multiple instances of LightRAG Server from different directories, with each instance configured to listen on a distinct network port.
 
 Here are some common used startup parameters:
 
@@ -99,6 +103,8 @@ Here are some common used startup parameters:
 - `--timeout`: LLM request timeout (default: 150 seconds)
 - `--log-level`: Logging level (default: INFO)
 - --input-dir: specifying the directory to scan for documents (default: ./input)
+
+> The requirement for the .env file to be in the startup directory is intentionally designed this way. The purpose is to support users in launching multiple LightRAG instances simultaneously. Allow different .env files for different instances.
 
 ### Auto scan on startup
 
@@ -117,9 +123,12 @@ The LightRAG Server can operate in the `Gunicorn + Uvicorn` preload mode. Gunico
 Though LightRAG Server uses one workers to process the document indexing pipeline, with aysnc task supporting of Uvicorn, multiple files can be processed in parallell. The bottleneck of document indexing speed mainly lies with the LLM. If your LLM supports high concurrency, you can accelerate document indexing by increasing the concurrency level of the LLM. Below are several environment variables related to concurrent processing, along with their default values:
 
 ```
-WORKERS=2                    # Num of worker processes, not greater then (2 x number_of_cores) + 1
-MAX_PARALLEL_INSERT=2        # Num of parallel files to process in one batch
-MAX_ASYNC=4                  # Max concurrency requests of LLM
+### Num of worker processes, not greater then (2 x number_of_cores) + 1
+WORKERS=2
+### Num of parallel files to process in one batch
+MAX_PARALLEL_INSERT=2
+### Max concurrency requests of LLM
+MAX_ASYNC=4
 ```
 
 ### Install Lightrag as a Linux Service
@@ -203,10 +212,9 @@ LightRAG API Server implements JWT-based authentication using HS256 algorithm. T
 
 ```bash
 # For jwt auth
-AUTH_USERNAME=admin      # login name
-AUTH_PASSWORD=admin123   # password
-TOKEN_SECRET=your-key    # JWT key
-TOKEN_EXPIRE_HOURS=4     # expire duration
+AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+TOKEN_SECRET='your-key'
+TOKEN_EXPIRE_HOURS=4
 ```
 
 > Currently, only the configuration of an administrator account and password is supported. A comprehensive account system is yet to be developed and implemented.
@@ -243,10 +251,12 @@ LLM_BINDING=azure_openai
 LLM_BINDING_HOST=your-azure-endpoint
 LLM_MODEL=your-model-deployment-name
 LLM_BINDING_API_KEY=your-azure-api-key
-AZURE_OPENAI_API_VERSION=2024-08-01-preview  # optional, defaults to latest version
-EMBEDDING_BINDING=azure_openai  # if using Azure OpenAI for embeddings
-EMBEDDING_MODEL=your-embedding-deployment-name
+### API version is optional, defaults to latest version
+AZURE_OPENAI_API_VERSION=2024-08-01-preview
 
+### if using Azure OpenAI for embeddings
+EMBEDDING_BINDING=azure_openai
+EMBEDDING_MODEL=your-embedding-deployment-name
 ```
 
 
@@ -370,76 +380,47 @@ You can not change storage implementation selection after you add documents to L
 | --embedding-binding | ollama | Embedding binding type (lollms, ollama, openai, azure_openai) |
 | auto-scan-at-startup | - | Scan input directory for new files and start indexing |
 
-### Example Usage
-
-#### Running a Lightrag server with ollama default local server as llm and embedding backends
-
-Ollama is the default backend for both llm and embedding, so by default you can run lightrag-server with no parameters and the default ones will be used. Make sure ollama is installed and is running and default models are already installed on ollama.
+### .env Examples
 
 ```bash
-# Run lightrag with ollama, mistral-nemo:latest for llm, and bge-m3:latest for embedding
-lightrag-server
+### Server Configuration
+# HOST=0.0.0.0
+PORT=9621
+WORKERS=2
 
-# Using an authentication key
-lightrag-server --key my-key
+### Settings for document indexing
+ENABLE_LLM_CACHE_FOR_EXTRACT=true
+SUMMARY_LANGUAGE=Chinese
+MAX_PARALLEL_INSERT=2
+
+### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
+TIMEOUT=200
+TEMPERATURE=0.0
+MAX_ASYNC=4
+MAX_TOKENS=32768
+
+LLM_BINDING=openai
+LLM_MODEL=gpt-4o-mini
+LLM_BINDING_HOST=https://api.openai.com/v1
+LLM_BINDING_API_KEY=your-api-key
+
+### Embedding Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
+EMBEDDING_MODEL=bge-m3:latest
+EMBEDDING_DIM=1024
+EMBEDDING_BINDING=ollama
+EMBEDDING_BINDING_HOST=http://localhost:11434
+
+### For JWT Auth
+# AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+# TOKEN_SECRET=your-key-for-LightRAG-API-Server-xxx
+# TOKEN_EXPIRE_HOURS=48
+
+# LIGHTRAG_API_KEY=your-secure-api-key-here-123
+# WHITELIST_PATHS=/api/*
+# WHITELIST_PATHS=/health,/api/*
+
 ```
 
-#### Running a Lightrag server with lollms default local server as llm and embedding backends
-
-```bash
-# Run lightrag with lollms, mistral-nemo:latest for llm, and bge-m3:latest for embedding
-# Configure LLM_BINDING=lollms and EMBEDDING_BINDING=lollms in .env or config.ini
-lightrag-server
-
-# Using an authentication key
-lightrag-server --key my-key
-```
-
-#### Running a Lightrag server with openai server as llm and embedding backends
-
-```bash
-# Run lightrag with openai, GPT-4o-mini for llm, and text-embedding-3-small for embedding
-# Configure in .env or config.ini:
-# LLM_BINDING=openai
-# LLM_MODEL=GPT-4o-mini
-# EMBEDDING_BINDING=openai
-# EMBEDDING_MODEL=text-embedding-3-small
-lightrag-server
-
-# Using an authentication key
-lightrag-server --key my-key
-```
-
-#### Running a Lightrag server with azure openai server as llm and embedding backends
-
-```bash
-# Run lightrag with azure_openai
-# Configure in .env or config.ini:
-# LLM_BINDING=azure_openai
-# LLM_MODEL=your-model
-# EMBEDDING_BINDING=azure_openai
-# EMBEDDING_MODEL=your-embedding-model
-lightrag-server
-
-# Using an authentication key
-lightrag-server --key my-key
-```
-
-**Important Notes:**
-- For LoLLMs: Make sure the specified models are installed in your LoLLMs instance
-- For Ollama: Make sure the specified models are installed in your Ollama instance
-- For OpenAI: Ensure you have set up your OPENAI_API_KEY environment variable
-- For Azure OpenAI: Build and configure your server as stated in the Prequisites section
-
-For help on any server, use the --help flag:
-```bash
-lightrag-server --help
-```
-
-Note: If you don't need the API functionality, you can install the base package without API support using:
-```bash
-pip install lightrag-hku
-```
 
 ## API Endpoints
 
