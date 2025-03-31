@@ -59,6 +59,11 @@ class InsertResponse(BaseModel):
     message: str = Field(description="Message describing the operation result")
 
 
+class ClearDocumentsResponse(BaseModel):
+    status: str = Field(description="Status of the clear operation: success/partial_success/busy/fail")
+    message: str = Field(description="Message describing the operation result")
+
+
 class DocStatusResponse(BaseModel):
     @staticmethod
     def format_datetime(dt: Any) -> Optional[str]:
@@ -755,7 +760,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete(
-        "", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
+        "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
     async def clear_documents():
         """
@@ -766,7 +771,7 @@ def create_document_routes(
         from the input directory.
 
         Returns:
-            InsertResponse: A response object containing the status and message.
+            ClearDocumentsResponse: A response object containing the status and message.
                 - status="success":           All documents and files were successfully cleared.
                 - status="partial_success":   Document clear job exit with some errors.
                 - status="busy":              Operation could not be completed because the pipeline is busy.
@@ -787,7 +792,7 @@ def create_document_routes(
         # Check and set status with lock
         async with pipeline_status_lock:
             if pipeline_status.get("busy", False):
-                return InsertResponse(
+                return ClearDocumentsResponse(
                     status="busy",
                     message="Cannot clear documents while pipeline is busy"
                 )
@@ -855,7 +860,7 @@ def create_document_routes(
                 logger.error(error_message)
                 if "history_messages" in pipeline_status:
                     pipeline_status["history_messages"].append(error_message)
-                return InsertResponse(
+                return ClearDocumentsResponse(
                     status="fail",
                     message=error_message
                 )
@@ -904,7 +909,7 @@ def create_document_routes(
                 pipeline_status["history_messages"].append(final_message)
             
             # Return response based on results
-            return InsertResponse(
+            return ClearDocumentsResponse(
                 status=status,
                 message=final_message
             )
