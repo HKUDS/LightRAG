@@ -205,7 +205,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   // Add edges from raw graph data
   for (const rawEdge of rawGraph?.edges ?? []) {
     rawEdge.dynamicId = graph.addDirectedEdge(rawEdge.source, rawEdge.target, {
-      label: rawEdge.type || undefined
+      label: rawEdge.properties?.keywords || undefined
     })
   }
 
@@ -660,7 +660,7 @@ const useLightrangeGraph = () => {
 
           // Add the edge to the sigma graph
           newEdge.dynamicId = sigmaGraph.addDirectedEdge(newEdge.source, newEdge.target, {
-            label: newEdge.type || undefined
+            label: newEdge.properties?.keywords || undefined
           });
 
           // Add the edge to the raw graph

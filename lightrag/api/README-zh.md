@@ -52,7 +52,8 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-4o
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-MAX_TOKENS=32768                # 发送给 LLM 的最大 token 数（小于模型上下文大小）
+### 发送给 LLM 的最大 token 数（小于模型上下文大小）
+MAX_TOKENS=32768
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
@@ -68,7 +69,8 @@ LLM_BINDING=ollama
 LLM_MODEL=mistral-nemo:latest
 LLM_BINDING_HOST=http://localhost:11434
 # LLM_BINDING_API_KEY=your_api_key
-MAX_TOKENS=8192                  # 发送给 LLM 的最大 token 数（基于您的 Ollama 服务器容量）
+### 发送给 LLM 的最大 token 数（基于您的 Ollama 服务器容量）
+MAX_TOKENS=8192
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
@@ -117,9 +119,12 @@ LightRAG 服务器可以在 `Gunicorn + Uvicorn` 预加载模式下运行。Guni
 虽然 LightRAG 服务器使用一个工作进程来处理文档索引流程，但通过 Uvicorn 的异步任务支持，可以并行处理多个文件。文档索引速度的瓶颈主要在于 LLM。如果您的 LLM 支持高并发，您可以通过增加 LLM 的并发级别来加速文档索引。以下是几个与并发处理相关的环境变量及其默认值：
 
 ```
-WORKERS=2                    # 工作进程数，不大于 (2 x 核心数) + 1
-MAX_PARALLEL_INSERT=2        # 一批中并行处理的文件数
-MAX_ASYNC=4                  # LLM 的最大并发请求数
+### 工作进程数，数字不大于 (2 x 核心数) + 1
+WORKERS=2
+### 一批中并行处理的文件数
+MAX_PARALLEL_INSERT=2
+# LLM 的最大并发请求数
+MAX_ASYNC=4
 ```
 
 ### 将 Lightrag 安装为 Linux 服务
@@ -201,10 +206,9 @@ LightRAG API 服务器使用基于 HS256 算法的 JWT 认证。要启用安全�
 
 ```bash
 # JWT 认证
-AUTH_USERNAME=admin      # 登录名
-AUTH_PASSWORD=admin123   # 密码
-TOKEN_SECRET=your-key    # JWT 密钥
-TOKEN_EXPIRE_HOURS=4     # 过期时间
+AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+TOKEN_SECRET='your-key'
+TOKEN_EXPIRE_HOURS=4
 ```
 
 > 目前仅支持配置一个管理员账户和密码。尚未开发和实现完整的账户系统。
@@ -238,8 +242,11 @@ LLM_BINDING=azure_openai
 LLM_BINDING_HOST=your-azure-endpoint
 LLM_MODEL=your-model-deployment-name
 LLM_BINDING_API_KEY=your-azure-api-key
-AZURE_OPENAI_API_VERSION=2024-08-01-preview  # 可选，默认为最新版本
-EMBEDDING_BINDING=azure_openai  # 如果使用 Azure OpenAI 进行嵌入
+### API Version可选，默认为最新版本
+AZURE_OPENAI_API_VERSION=2024-08-01-preview
+
+### 如果使用 Azure OpenAI 进行嵌入
+EMBEDDING_BINDING=azure_openai
 EMBEDDING_MODEL=your-embedding-deployment-name
 ```
 
@@ -362,7 +369,47 @@ LIGHTRAG_DOC_STATUS_STORAGE=PGDocStatusStorage
 | --embedding-binding | ollama | 嵌入绑定类型（lollms、ollama、openai、azure_openai） |
 | auto-scan-at-startup | - | 扫描输入目录中的新文件并开始索引 |
 
-### 使用示例
+### .env 文件示例
+
+```bash
+### Server Configuration
+# HOST=0.0.0.0
+PORT=9621
+WORKERS=2
+
+### Settings for document indexing
+ENABLE_LLM_CACHE_FOR_EXTRACT=true
+SUMMARY_LANGUAGE=Chinese
+MAX_PARALLEL_INSERT=2
+
+### LLM Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
+TIMEOUT=200
+TEMPERATURE=0.0
+MAX_ASYNC=4
+MAX_TOKENS=32768
+
+LLM_BINDING=openai
+LLM_MODEL=gpt-4o-mini
+LLM_BINDING_HOST=https://api.openai.com/v1
+LLM_BINDING_API_KEY=your-api-key
+
+### Embedding Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
+EMBEDDING_MODEL=bge-m3:latest
+EMBEDDING_DIM=1024
+EMBEDDING_BINDING=ollama
+EMBEDDING_BINDING_HOST=http://localhost:11434
+
+### For JWT Auth
+# AUTH_ACCOUNTS='admin:admin123,user1:pass456'
+# TOKEN_SECRET=your-key-for-LightRAG-API-Server-xxx
+# TOKEN_EXPIRE_HOURS=48
+
+# LIGHTRAG_API_KEY=your-secure-api-key-here-123
+# WHITELIST_PATHS=/api/*
+# WHITELIST_PATHS=/health,/api/*
+```
+
+
 
 #### 使用 ollama 默认本地服务器作为 llm 和嵌入后端运行 Lightrag 服务器
 

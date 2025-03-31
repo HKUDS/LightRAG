@@ -65,16 +65,19 @@
         "singleFileLimit": "Impossible de télécharger plus d'un fichier à la fois",
         "maxFilesLimit": "Impossible de télécharger plus de {{count}} fichiers",
         "fileRejected": "Le fichier {{name}} a été rejeté",
+        "unsupportedType": "Type de fichier non pris en charge",
+        "fileTooLarge": "Fichier trop volumineux, taille maximale {{maxSize}}",
         "dropHere": "Déposez les fichiers ici",
         "dragAndDrop": "Glissez et déposez les fichiers ici, ou cliquez pour sélectionner",
         "removeFile": "Supprimer le fichier",
-        "uploadDescription": "Vous pouvez télécharger {{isMultiple ? 'plusieurs' : count}} fichiers (jusqu'à {{maxSize}} chacun)"
+        "uploadDescription": "Vous pouvez télécharger {{isMultiple ? 'plusieurs' : count}} fichiers (jusqu'à {{maxSize}} chacun)",
+        "duplicateFile": "Le nom du fichier existe déjà dans le cache du serveur"
       }
     },
     "documentManager": {
       "title": "Gestion des documents",
       "scanButton": "Scanner",
-      "scanTooltip": "Scanner les documents",
+      "scanTooltip": "Scanner les documents dans le dossier d'entrée",
       "pipelineStatusButton": "État du Pipeline",
       "pipelineStatusTooltip": "Voir l'état du pipeline",
       "uploadedTitle": "Documents téléchargés",
@@ -212,7 +215,8 @@
           "entity_id": "Nom",
           "entity_type": "Type",
           "source_id": "ID source",
-          "Neighbour": "Voisin"
+          "Neighbour": "Voisin",
+          "file_path": "Source"
         }
       },
       "edge": {

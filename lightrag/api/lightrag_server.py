@@ -50,14 +50,17 @@ from lightrag.kg.shared_storage import (
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
 
-# Load environment variables
-# Updated to use the .env that is inside the current folder
-# This update allows the user to put a different.env file for each lightrag folder
-load_dotenv(".env")
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 # Initialize config parser
 config = configparser.ConfigParser()
 config.read("config.ini")
+
+# Global authentication configuration
+auth_configured = bool(auth_handler.accounts)
 
 
 def create_app(args):
@@ -429,9 +432,7 @@ def create_app(args):
         try:
             pipeline_status = await get_namespace_data("pipeline_status")
 
-            username = os.getenv("AUTH_USERNAME")
-            password = os.getenv("AUTH_PASSWORD")
-            if not (username and password):
+            if not auth_configured:
                 auth_mode = "disabled"
             else:
                 auth_mode = "enabled"

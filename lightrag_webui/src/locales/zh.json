@@ -65,16 +65,19 @@
         "singleFileLimit": "一次只能上传一个文件",
         "maxFilesLimit": "最多只能上传 {{count}} 个文件",
         "fileRejected": "文件 {{name}} 被拒绝",
+        "unsupportedType": "不支持的文件类型",
+        "fileTooLarge": "文件过大，最大允许 {{maxSize}}",
         "dropHere": "将文件拖放到此处",
         "dragAndDrop": "拖放文件到此处，或点击选择文件",
         "removeFile": "移除文件",
-        "uploadDescription": "您可以上传{{isMultiple ? '多个' : count}}个文件（每个文件最大{{maxSize}}）"
+        "uploadDescription": "您可以上传{{isMultiple ? '多个' : count}}个文件（每个文件最大{{maxSize}}）",
+        "duplicateFile": "文件名与服务器上的缓存重复"
       }
     },
     "documentManager": {
       "title": "文档管理",
       "scanButton": "扫描",
-      "scanTooltip": "扫描文档",
+      "scanTooltip": "扫描输入目录中的文档",
       "pipelineStatusButton": "流水线状态",
       "pipelineStatusTooltip": "查看流水线状态",
       "uploadedTitle": "已上传文档",
@@ -212,7 +215,8 @@
           "entity_id": "名称",
           "entity_type": "类型",
           "source_id": "信源ID",
-          "Neighbour": "邻接"
+          "Neighbour": "邻接",
+          "file_path": "信源"
         }
       },
       "edge": {
