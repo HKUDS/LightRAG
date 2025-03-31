@@ -767,10 +767,16 @@ def create_document_routes(
 
         Returns:
             InsertResponse: A response object containing the status and message.
+                - status="success":           All documents and files were successfully cleared.
+                - status="partial_success":   Document clear job exit with some errors.
+                - status="busy":              Operation could not be completed because the pipeline is busy.
+                - status="fail":              All storage drop operations failed, with message
+                - message: Detailed information about the operation results, including counts
+                  of deleted files and any errors encountered.
 
         Raises:
-            HTTPException: If an error occurs during the clearing process (500) or if
-                          the pipeline is busy (400).
+            HTTPException: Raised when a serious error occurs during the clearing process,
+                          with status code 500 and error details in the detail field.
         """
         from lightrag.kg.shared_storage import get_namespace_data, get_pipeline_status_lock
 
@@ -782,7 +788,7 @@ def create_document_routes(
         async with pipeline_status_lock:
             if pipeline_status.get("busy", False):
                 return InsertResponse(
-                    status="error",
+                    status="busy",
                     message="Cannot clear documents while pipeline is busy"
                 )
             # Set busy to true
@@ -842,6 +848,17 @@ def create_document_routes(
                     pipeline_status["history_messages"].append(
                         f"Successfully dropped all {storage_success_count} storage components"
                     )
+            
+            # If all storage operations failed, return error status and don't proceed with file deletion
+            if storage_success_count == 0 and storage_error_count > 0:
+                error_message = "All storage drop operations failed. Aborting document clearing process."
+                logger.error(error_message)
+                if "history_messages" in pipeline_status:
+                    pipeline_status["history_messages"].append(error_message)
+                return InsertResponse(
+                    status="fail",
+                    message=error_message
+                )
             
             # Log file deletion start
             if "history_messages" in pipeline_status:
