@@ -20,7 +20,7 @@ if not pm.is_installed("pymysql"):
 if not pm.is_installed("sqlalchemy"):
     pm.install("sqlalchemy")
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text # type: ignore
 
 
 class TiDB:
@@ -278,6 +278,21 @@ class TiDBKVStorage(BaseKVStorage):
         # Ti handles persistence automatically
         pass
 
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage"""
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
+                
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.db.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+
 
 @final
 @dataclass
@@ -415,6 +430,21 @@ class TiDBVectorDBStorage(BaseVectorStorage):
     async def index_done_callback(self) -> None:
         # Ti handles persistence automatically
         pass
+
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage"""
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
+                
+            drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
+                table_name=table_name
+            )
+            await self.db.execute(drop_sql, {"workspace": self.db.workspace})
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
         """Search for records with IDs starting with a specific prefix.
@@ -709,6 +739,18 @@ class TiDBGraphStorage(BaseGraphStorage):
     async def index_done_callback(self) -> None:
         # Ti handles persistence automatically
         pass
+
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage"""
+        try:
+            drop_sql = """
+                DELETE FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = :workspace;
+                DELETE FROM LIGHTRAG_GRAPH_NODES WHERE workspace = :workspace;
+            """
+            await self.db.execute(drop_sql, {"workspace": self.db.workspace})
+            return {"status": "success", "message": "graph data dropped"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node and all its related edges
@@ -1129,4 +1171,6 @@ SQL_TEMPLATES = {
         FROM LIGHTRAG_DOC_CHUNKS
         WHERE chunk_id LIKE :prefix_pattern AND workspace = :workspace
     """,
+    # Drop tables
+    "drop_specifiy_table_workspace": "DELETE FROM {table_name} WHERE workspace = :workspace",
 }
