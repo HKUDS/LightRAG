@@ -122,14 +122,27 @@ class JsonKVStorage(BaseKVStorage):
             await set_all_update_flags(self.namespace)
 
     async def delete(self, ids: list[str]) -> None:
+        """Delete specific records from storage by their IDs
+        
+        This method will:
+        1. Remove the specified records from in-memory storage
+        2. Update flags to notify other processes that data persistence is needed
+        3. The changes will be persisted to disk during the next index_done_callback
+        
+        Args:
+            ids (list[str]): List of document IDs to be deleted from storage
+        
+        Returns:
+            None
+        """
         async with self._storage_lock:
             for doc_id in ids:
                 self._data.pop(doc_id, None)
             await set_all_update_flags(self.namespace)
-        await self.index_done_callback()
 
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
+           This action will persistent the data to disk immediately.
         
         This method will:
         1. Clear all data from memory

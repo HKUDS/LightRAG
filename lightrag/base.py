@@ -123,6 +123,7 @@ class StorageNameSpace(ABC):
         3. Reset the storage to its initial state
         4. Handle cleanup of any resources
         5. Notify other processes if necessary
+        6. This action should persistent the data to disk immediately.
         
         Returns:
             dict[str, str]: Operation status and message with the following format:
@@ -206,6 +207,22 @@ class BaseKVStorage(StorageNameSpace, ABC):
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Upsert data"""
+
+    @abstractmethod
+    async def delete(self, ids: list[str]) -> None:
+        """Delete specific records from storage by their IDs
+        
+        This method will:
+        1. Remove the specified records from in-memory storage
+        2. For in-memory DB, update flags to notify other processes that data persistence is needed
+        3. For in-memory DB, changes will be persisted to disk during the next index_done_callback
+        
+        Args:
+            ids (list[str]): List of document IDs to be deleted from storage
+        
+        Returns:
+            None
+        """
 
 
 @dataclass
