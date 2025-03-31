@@ -1449,6 +1449,7 @@ class LightRAG:
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.adelete_by_entity(entity_name))
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def adelete_by_entity(self, entity_name: str) -> None:
         try:
             await self.entities_vdb.delete_entity(entity_name)
@@ -1486,6 +1487,7 @@ class LightRAG:
             self.adelete_by_relation(source_entity, target_entity)
         )
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def adelete_by_relation(self, source_entity: str, target_entity: str) -> None:
         """Asynchronously delete a relation between two entities.
 
@@ -1555,6 +1557,7 @@ class LightRAG:
         """
         return await self.doc_status.get_docs_by_status(status)
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def adelete_by_doc_id(self, doc_id: str) -> None:
         """Delete a document and all its related data
 
@@ -1907,6 +1910,7 @@ class LightRAG:
         """Synchronous version of aclear_cache."""
         return always_get_an_event_loop().run_until_complete(self.aclear_cache(modes))
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def aedit_entity(
         self, entity_name: str, updated_data: dict[str, str], allow_rename: bool = True
     ) -> dict[str, Any]:
@@ -2119,6 +2123,7 @@ class LightRAG:
             ]
         )
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def aedit_relation(
         self, source_entity: str, target_entity: str, updated_data: dict[str, Any]
     ) -> dict[str, Any]:
@@ -2433,6 +2438,7 @@ class LightRAG:
             self.acreate_relation(source_entity, target_entity, relation_data)
         )
 
+    # TODO: Lock all KG relative DB to esure consistency across multiple processes
     async def amerge_entities(
         self,
         source_entities: list[str],

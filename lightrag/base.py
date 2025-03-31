@@ -153,15 +153,33 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Insert or update vectors in the storage."""
+        """Insert or update vectors in the storage.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
 
     @abstractmethod
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete a single entity by its name."""
+        """Delete a single entity by its name.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
 
     @abstractmethod
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete relations for a given entity."""
+        """Delete relations for a given entity.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
 
     @abstractmethod
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
@@ -187,6 +205,19 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         """
         pass
 
+    @abstractmethod
+    async def delete(self, ids: list[str]):
+        """Delete vectors with specified IDs
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+
+        Args:
+            ids: List of vector IDs to be deleted
+        """
+
 
 @dataclass
 class BaseKVStorage(StorageNameSpace, ABC):
@@ -206,16 +237,20 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Upsert data"""
+        """Upsert data
+        
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed        
+        """
 
     @abstractmethod
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
         
-        This method will:
-        1. Remove the specified records from in-memory storage
-        2. For in-memory DB, update flags to notify other processes that data persistence is needed
-        3. For in-memory DB, changes will be persisted to disk during the next index_done_callback
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed
         
         Args:
             ids (list[str]): List of document IDs to be deleted from storage
@@ -267,7 +302,14 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        """Delete a node from the graph."""
+        """Delete a node from the graph.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
+
 
     @abstractmethod
     async def delete_node(self, node_id: str) -> None:

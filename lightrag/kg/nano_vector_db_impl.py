@@ -78,6 +78,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             return self._client
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
+
         logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
@@ -146,6 +153,11 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def delete(self, ids: list[str]):
         """Delete vectors with specified IDs
 
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+
         Args:
             ids: List of vector IDs to be deleted
         """
@@ -159,6 +171,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
 
     async def delete_entity(self, entity_name: str) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
+
         try:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             logger.debug(
@@ -176,6 +195,13 @@ class NanoVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error deleting entity {entity_name}: {e}")
 
     async def delete_entity_relation(self, entity_name: str) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
+
         try:
             client = await self._get_client()
             storage = getattr(client, "_NanoVectorDB__storage")
@@ -288,7 +314,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
         1. Remove the vector database storage file if it exists
         2. Reinitialize the vector database client
         3. Update flags to notify other processes
-        4. Trigger index_done_callback to save the empty state
+        4. Changes is persisted to disk immediately
+
+        This method is intended for use in scenarios where all data needs to be removed,
         
         Returns:
             dict[str, str]: Operation status and message

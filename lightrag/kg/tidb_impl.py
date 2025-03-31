@@ -278,6 +278,35 @@ class TiDBKVStorage(BaseKVStorage):
         # Ti handles persistence automatically
         pass
 
+    async def delete(self, ids: list[str]) -> dict[str, str]:
+        """Delete records with specified IDs from the storage.
+
+        Args:
+            ids: List of record IDs to be deleted
+
+        Returns:
+            Dictionary with status and message
+        """
+        if not ids:
+            return {"status": "success", "message": "No IDs provided for deletion"}
+
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            id_field = namespace_to_id(self.namespace)
+            
+            if not table_name or not id_field:
+                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
+                
+            ids_list = ",".join([f"'{id}'" for id in ids])
+            delete_sql = f"DELETE FROM {table_name} WHERE workspace = :workspace AND {id_field} IN ({ids_list})"
+            
+            await self.db.execute(delete_sql, {"workspace": self.db.workspace})
+            logger.info(f"Successfully deleted {len(ids)} records from {self.namespace}")
+            return {"status": "success", "message": f"Successfully deleted {len(ids)} records"}
+        except Exception as e:
+            logger.error(f"Error deleting records from {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:
@@ -421,11 +450,66 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         params = {"workspace": self.db.workspace, "status": status}
         return await self.db.query(SQL, params, multirows=True)
 
+    async def delete(self, ids: list[str]) -> None:
+        """Delete vectors with specified IDs from the storage.
+
+        Args:
+            ids: List of vector IDs to be deleted
+        """
+        if not ids:
+            return
+
+        table_name = namespace_to_table_name(self.namespace)
+        id_field = namespace_to_id(self.namespace)
+        
+        if not table_name or not id_field:
+            logger.error(f"Unknown namespace for vector deletion: {self.namespace}")
+            return
+
+        ids_list = ",".join([f"'{id}'" for id in ids])
+        delete_sql = f"DELETE FROM {table_name} WHERE workspace = :workspace AND {id_field} IN ({ids_list})"
+
+        try:
+            await self.db.execute(delete_sql, {"workspace": self.db.workspace})
+            logger.debug(f"Successfully deleted {len(ids)} vectors from {self.namespace}")
+        except Exception as e:
+            logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
+
     async def delete_entity(self, entity_name: str) -> None:
-        raise NotImplementedError
+        """Delete an entity by its name from the vector storage.
+
+        Args:
+            entity_name: The name of the entity to delete
+        """
+        try:
+            # Construct SQL to delete the entity
+            delete_sql = """DELETE FROM LIGHTRAG_GRAPH_NODES
+                            WHERE workspace = :workspace AND name = :entity_name"""
+
+            await self.db.execute(
+                delete_sql, {"workspace": self.db.workspace, "entity_name": entity_name}
+            )
+            logger.debug(f"Successfully deleted entity {entity_name}")
+        except Exception as e:
+            logger.error(f"Error deleting entity {entity_name}: {e}")
 
     async def delete_entity_relation(self, entity_name: str) -> None:
-        raise NotImplementedError
+        """Delete all relations associated with an entity.
+
+        Args:
+            entity_name: The name of the entity whose relations should be deleted
+        """
+        try:
+            # Delete relations where the entity is either the source or target
+            delete_sql = """DELETE FROM LIGHTRAG_GRAPH_EDGES
+                            WHERE workspace = :workspace AND (source_name = :entity_name OR target_name = :entity_name)"""
+
+            await self.db.execute(
+                delete_sql, {"workspace": self.db.workspace, "entity_name": entity_name}
+            )
+            logger.debug(f"Successfully deleted relations for entity {entity_name}")
+        except Exception as e:
+            logger.error(f"Error deleting relations for entity {entity_name}: {e}")
 
     async def index_done_callback(self) -> None:
         # Ti handles persistence automatically

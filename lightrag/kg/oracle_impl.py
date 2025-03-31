@@ -392,6 +392,33 @@ class OracleKVStorage(BaseKVStorage):
         # Oracle handles persistence automatically
         pass
 
+    async def delete(self, ids: list[str]) -> dict[str, str]:
+        """Delete records with specified IDs from the storage.
+
+        Args:
+            ids: List of record IDs to be deleted
+
+        Returns:
+            Dictionary with status and message
+        """
+        if not ids:
+            return {"status": "success", "message": "No IDs provided for deletion"}
+
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
+                
+            ids_list = ",".join([f"'{id}'" for id in ids])
+            delete_sql = f"DELETE FROM {table_name} WHERE workspace=:workspace AND id IN ({ids_list})"
+            
+            await self.db.execute(delete_sql, {"workspace": self.db.workspace})
+            logger.info(f"Successfully deleted {len(ids)} records from {self.namespace}")
+            return {"status": "success", "message": f"Successfully deleted {len(ids)} records"}
+        except Exception as e:
+            logger.error(f"Error deleting records from {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:

@@ -156,16 +156,34 @@ class NetworkXStorage(BaseGraphStorage):
         return None
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
         graph = await self._get_graph()
         graph.add_node(node_id, **node_data)
 
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
         graph = await self._get_graph()
         graph.add_edge(source_node_id, target_node_id, **edge_data)
 
     async def delete_node(self, node_id: str) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
         graph = await self._get_graph()
         if graph.has_node(node_id):
             graph.remove_node(node_id)
@@ -173,6 +191,7 @@ class NetworkXStorage(BaseGraphStorage):
         else:
             logger.warning(f"Node {node_id} not found in the graph for deletion.")
 
+    # TODO: NOT USED
     async def embed_nodes(
         self, algorithm: str
     ) -> tuple[np.ndarray[Any, Any], list[str]]:
@@ -193,6 +212,11 @@ class NetworkXStorage(BaseGraphStorage):
     async def remove_nodes(self, nodes: list[str]):
         """Delete multiple nodes
 
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+
         Args:
             nodes: List of node IDs to be deleted
         """
@@ -203,6 +227,11 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def remove_edges(self, edges: list[tuple[str, str]]):
         """Delete multiple edges
+
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
 
         Args:
             edges: List of edges to be deleted, each edge is a (source, target) tuple
@@ -433,7 +462,7 @@ class NetworkXStorage(BaseGraphStorage):
         1. Remove the graph storage file if it exists
         2. Reset the graph to an empty state
         3. Update flags to notify other processes
-        4. Trigger index_done_callback to save the empty state
+        4. Changes is persisted to disk immediately
         
         Returns:
             dict[str, str]: Operation status and message

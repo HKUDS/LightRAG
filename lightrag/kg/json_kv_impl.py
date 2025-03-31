@@ -114,6 +114,11 @@ class JsonKVStorage(BaseKVStorage):
             return set(keys) - set(self._data.keys())
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
+        """
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed        
+        """
         if not data:
             return
         logger.info(f"Inserting {len(data)} records to {self.namespace}")
@@ -124,10 +129,9 @@ class JsonKVStorage(BaseKVStorage):
     async def delete(self, ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
         
-        This method will:
-        1. Remove the specified records from in-memory storage
-        2. Update flags to notify other processes that data persistence is needed
-        3. The changes will be persisted to disk during the next index_done_callback
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed
         
         Args:
             ids (list[str]): List of document IDs to be deleted from storage
