@@ -60,7 +60,9 @@ class InsertResponse(BaseModel):
 
 
 class ClearDocumentsResponse(BaseModel):
-    status: str = Field(description="Status of the clear operation: success/partial_success/busy/fail")
+    status: str = Field(
+        description="Status of the clear operation: success/partial_success/busy/fail"
+    )
     message: str = Field(description="Message describing the operation result")
 
 
@@ -448,7 +450,7 @@ async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
     await rag.apipeline_process_enqueue_documents()
 
 
-# TODO: deprecate after /insert_file is removed    
+# TODO: deprecate after /insert_file is removed
 async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
     """Save the uploaded file to a temporary location
 
@@ -783,7 +785,10 @@ def create_document_routes(
             HTTPException: Raised when a serious error occurs during the clearing process,
                           with status code 500 and error details in the detail field.
         """
-        from lightrag.kg.shared_storage import get_namespace_data, get_pipeline_status_lock
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_pipeline_status_lock,
+        )
 
         # Get pipeline status and lock
         pipeline_status = await get_namespace_data("pipeline_status")
@@ -794,14 +799,16 @@ def create_document_routes(
             if pipeline_status.get("busy", False):
                 return ClearDocumentsResponse(
                     status="busy",
-                    message="Cannot clear documents while pipeline is busy"
+                    message="Cannot clear documents while pipeline is busy",
                 )
             # Set busy to true
             pipeline_status["busy"] = True
             pipeline_status["job_name"] = "Clearing Documents"
             pipeline_status["latest_message"] = "Starting document clearing process"
             if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append("Starting document clearing process")
+                pipeline_status["history_messages"].append(
+                    "Starting document clearing process"
+                )
 
         try:
             # Use drop method to clear all data
@@ -813,25 +820,27 @@ def create_document_routes(
                 rag.relationships_vdb,
                 rag.chunks_vdb,
                 rag.chunk_entity_relation_graph,
-                rag.doc_status
+                rag.doc_status,
             ]
-            
+
             # Log storage drop start
             if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append("Starting to drop storage components")
-            
+                pipeline_status["history_messages"].append(
+                    "Starting to drop storage components"
+                )
+
             for storage in storages:
                 if storage is not None:
                     drop_tasks.append(storage.drop())
-            
+
             # Wait for all drop tasks to complete
             drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
-            
+
             # Check for errors and log results
             errors = []
             storage_success_count = 0
             storage_error_count = 0
-            
+
             for i, result in enumerate(drop_results):
                 storage_name = storages[i].__class__.__name__
                 if isinstance(result, Exception):
@@ -842,7 +851,7 @@ def create_document_routes(
                 else:
                     logger.info(f"Successfully dropped {storage_name}")
                     storage_success_count += 1
-            
+
             # Log storage drop results
             if "history_messages" in pipeline_status:
                 if storage_error_count > 0:
@@ -853,26 +862,25 @@ def create_document_routes(
                     pipeline_status["history_messages"].append(
                         f"Successfully dropped all {storage_success_count} storage components"
                     )
-            
+
             # If all storage operations failed, return error status and don't proceed with file deletion
             if storage_success_count == 0 and storage_error_count > 0:
                 error_message = "All storage drop operations failed. Aborting document clearing process."
                 logger.error(error_message)
                 if "history_messages" in pipeline_status:
                     pipeline_status["history_messages"].append(error_message)
-                return ClearDocumentsResponse(
-                    status="fail",
-                    message=error_message
-                )
-            
+                return ClearDocumentsResponse(status="fail", message=error_message)
+
             # Log file deletion start
             if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append("Starting to delete files in input directory")
-            
+                pipeline_status["history_messages"].append(
+                    "Starting to delete files in input directory"
+                )
+
             # Delete all files in input_dir
             deleted_files_count = 0
             file_errors_count = 0
-            
+
             for file_path in doc_manager.input_dir.glob("**/*"):
                 if file_path.is_file():
                     try:
@@ -881,7 +889,7 @@ def create_document_routes(
                     except Exception as e:
                         logger.error(f"Error deleting file {file_path}: {str(e)}")
                         file_errors_count += 1
-            
+
             # Log file deletion results
             if "history_messages" in pipeline_status:
                 if file_errors_count > 0:
@@ -893,7 +901,7 @@ def create_document_routes(
                     pipeline_status["history_messages"].append(
                         f"Successfully deleted {deleted_files_count} files"
                     )
-            
+
             # Prepare final result message
             final_message = ""
             if errors:
@@ -903,16 +911,12 @@ def create_document_routes(
                 final_message = f"All documents cleared successfully. Deleted {deleted_files_count} files."
                 status = "success"
 
-
             # Log final result
             if "history_messages" in pipeline_status:
                 pipeline_status["history_messages"].append(final_message)
-            
+
             # Return response based on results
-            return ClearDocumentsResponse(
-                status=status,
-                message=final_message
-            )
+            return ClearDocumentsResponse(status=status, message=final_message)
         except Exception as e:
             error_msg = f"Error clearing documents: {str(e)}"
             logger.error(error_msg)

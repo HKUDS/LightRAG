@@ -309,7 +309,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources
-        
+
         This method will:
         1. Remove the vector database storage file if it exists
         2. Reinitialize the vector database client
@@ -317,7 +317,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         4. Changes is persisted to disk immediately
 
         This method is intended for use in scenarios where all data needs to be removed,
-        
+
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
@@ -339,7 +339,9 @@ class NanoVectorDBStorage(BaseVectorStorage):
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
 
-                logger.info(f"Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})")
+                logger.info(
+                    f"Process {os.getpid()} drop {self.namespace}(file:{self._client_file_name})"
+                )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             logger.error(f"Error dropping {self.namespace}: {e}")

@@ -457,13 +457,13 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop all graph data from storage and clean up resources
-        
+
         This method will:
         1. Remove the graph storage file if it exists
         2. Reset the graph to an empty state
         3. Update flags to notify other processes
         4. Changes is persisted to disk immediately
-        
+
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}
@@ -479,7 +479,9 @@ class NetworkXStorage(BaseGraphStorage):
                 await set_all_update_flags(self.namespace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
-                logger.info(f"Process {os.getpid()} drop graph {self.namespace} (file:{self._graphml_xml_file})")
+                logger.info(
+                    f"Process {os.getpid()} drop graph {self.namespace} (file:{self._graphml_xml_file})"
+                )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
             logger.error(f"Error dropping graph {self.namespace}: {e}")

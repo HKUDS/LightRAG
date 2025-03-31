@@ -112,7 +112,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         """
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed        
+        2. update flags to notify other processes that data persistence is needed
         """
         if not data:
             return
@@ -129,14 +129,14 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def delete(self, doc_ids: list[str]) -> None:
         """Delete specific records from storage by their IDs
-        
+
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
-        2. update flags to notify other processes that data persistence is needed        
-        
+        2. update flags to notify other processes that data persistence is needed
+
         Args:
             ids (list[str]): List of document IDs to be deleted from storage
-        
+
         Returns:
             None
         """
@@ -147,12 +147,12 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources
-        
+
         This method will:
         1. Clear all document status data from memory
         2. Update flags to notify other processes
         3. Trigger index_done_callback to save the empty state
-        
+
         Returns:
             dict[str, str]: Operation status and message
             - On success: {"status": "success", "message": "data dropped"}

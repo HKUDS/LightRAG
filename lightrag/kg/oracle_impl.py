@@ -27,7 +27,7 @@ if not pm.is_installed("oracledb"):
     pm.install("oracledb")
 
 from graspologic import embed
-import oracledb # type: ignore
+import oracledb  # type: ignore
 
 
 class OracleDB:
@@ -406,43 +406,45 @@ class OracleKVStorage(BaseKVStorage):
             if not table_name:
                 logger.error(f"Unknown namespace for deletion: {self.namespace}")
                 return
-                
+
             ids_list = ",".join([f"'{id}'" for id in ids])
             delete_sql = f"DELETE FROM {table_name} WHERE workspace=:workspace AND id IN ({ids_list})"
-            
+
             await self.db.execute(delete_sql, {"workspace": self.db.workspace})
-            logger.info(f"Successfully deleted {len(ids)} records from {self.namespace}")
+            logger.info(
+                f"Successfully deleted {len(ids)} records from {self.namespace}"
+            )
         except Exception as e:
             logger.error(f"Error deleting records from {self.namespace}: {e}")
 
     async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Delete specific records from storage by cache mode
-        
+
         Args:
             modes (list[str]): List of cache modes to be dropped from storage
-            
+
         Returns:
             bool: True if successful, False otherwise
         """
         if not modes:
             return False
-            
+
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
                 return False
-                
+
             if table_name != "LIGHTRAG_LLM_CACHE":
                 return False
-                
+
             # 构建Oracle风格的IN查询
             modes_list = ", ".join([f"'{mode}'" for mode in modes])
             sql = f"""
             DELETE FROM {table_name}
-            WHERE workspace = :workspace 
+            WHERE workspace = :workspace
             AND cache_mode IN ({modes_list})
             """
-            
+
             logger.info(f"Deleting cache by modes: {modes}")
             await self.db.execute(sql, {"workspace": self.db.workspace})
             return True
@@ -455,8 +457,11 @@ class OracleKVStorage(BaseKVStorage):
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
-                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
-                
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
+
             drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
                 table_name=table_name
             )
@@ -683,8 +688,11 @@ class OracleVectorDBStorage(BaseVectorStorage):
         try:
             table_name = namespace_to_table_name(self.namespace)
             if not table_name:
-                return {"status": "error", "message": f"Unknown namespace: {self.namespace}"}
-                
+                return {
+                    "status": "error",
+                    "message": f"Unknown namespace: {self.namespace}",
+                }
+
             drop_sql = SQL_TEMPLATES["drop_specifiy_table_workspace"].format(
                 table_name=table_name
             )
@@ -1025,12 +1033,16 @@ class OracleGraphStorage(BaseGraphStorage):
         """Drop the storage"""
         try:
             # 使用图形查询删除所有节点和关系
-            delete_edges_sql = """DELETE FROM LIGHTRAG_GRAPH_EDGES WHERE workspace=:workspace"""
+            delete_edges_sql = (
+                """DELETE FROM LIGHTRAG_GRAPH_EDGES WHERE workspace=:workspace"""
+            )
             await self.db.execute(delete_edges_sql, {"workspace": self.db.workspace})
-            
-            delete_nodes_sql = """DELETE FROM LIGHTRAG_GRAPH_NODES WHERE workspace=:workspace"""
+
+            delete_nodes_sql = (
+                """DELETE FROM LIGHTRAG_GRAPH_NODES WHERE workspace=:workspace"""
+            )
             await self.db.execute(delete_nodes_sql, {"workspace": self.db.workspace})
-            
+
             return {"status": "success", "message": "graph data dropped"}
         except Exception as e:
             logger.error(f"Error dropping graph: {e}")
