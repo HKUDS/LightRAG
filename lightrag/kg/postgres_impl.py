@@ -378,6 +378,67 @@ class PGKVStorage(BaseKVStorage):
         # PG handles persistence automatically
         pass
 
+    async def delete(self, ids: list[str]) -> None:
+        """Delete specific records from storage by their IDs
+                
+        Args:
+            ids (list[str]): List of document IDs to be deleted from storage
+        
+        Returns:
+            None
+        """
+        if not ids:
+            return
+
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(f"Unknown namespace for deletion: {self.namespace}")
+            return
+
+        delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
+
+        try:
+            await self.db.execute(delete_sql, {"workspace": self.db.workspace, "ids": ids})
+            logger.debug(f"Successfully deleted {len(ids)} records from {self.namespace}")
+        except Exception as e:
+            logger.error(f"Error while deleting records from {self.namespace}: {e}")
+
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
+        """Delete specific records from storage by cache mode
+        
+        Args:
+            modes (list[str]): List of cache modes to be dropped from storage
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not modes:
+            return False
+            
+        try:
+            table_name = namespace_to_table_name(self.namespace)
+            if not table_name:
+                return False
+                
+            if table_name != "LIGHTRAG_LLM_CACHE":
+                return False
+                
+            sql = f"""
+            DELETE FROM {table_name}
+            WHERE workspace = $1 AND mode = ANY($2)
+            """
+            params = {
+                "workspace": self.db.workspace,
+                "modes": modes
+            }
+            
+            logger.info(f"Deleting cache by modes: {modes}")
+            await self.db.execute(sql, params)
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting cache by modes {modes}: {e}")
+            return False
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage"""
         try:
@@ -558,13 +619,10 @@ class PGVectorStorage(BaseVectorStorage):
             logger.error(f"Unknown namespace for vector deletion: {self.namespace}")
             return
 
-        ids_list = ",".join([f"'{id}'" for id in ids])
-        delete_sql = (
-            f"DELETE FROM {table_name} WHERE workspace=$1 AND id IN ({ids_list})"
-        )
+        delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
 
         try:
-            await self.db.execute(delete_sql, {"workspace": self.db.workspace})
+            await self.db.execute(delete_sql, {"workspace": self.db.workspace, "ids": ids})
             logger.debug(
                 f"Successfully deleted {len(ids)} vectors from {self.namespace}"
             )

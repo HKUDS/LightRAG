@@ -165,6 +165,28 @@ class MongoKVStorage(BaseKVStorage):
         except PyMongoError as e:
             logger.error(f"Error deleting documents from {self.namespace}: {e}")
         
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
+        """Delete specific records from storage by cache mode
+        
+        Args:
+            modes (list[str]): List of cache modes to be dropped from storage
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        if not modes:
+            return False
+            
+        try:
+            # Build regex pattern to match documents with the specified modes
+            pattern = f"^({'|'.join(modes)})_"
+            result = await self._data.delete_many({"_id": {"$regex": pattern}})
+            logger.info(f"Deleted {result.deleted_count} documents by modes: {modes}")
+            return True
+        except Exception as e:
+            logger.error(f"Error deleting cache by modes {modes}: {e}")
+            return False
+
     async def drop(self) -> dict[str, str]:
         """Drop the storage by removing all documents in the collection.
         
