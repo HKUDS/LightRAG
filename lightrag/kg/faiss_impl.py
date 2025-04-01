@@ -11,15 +11,19 @@ import pipmaster as pm
 from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
 
-if not pm.is_installed("faiss"):
-    pm.install("faiss")
-
-import faiss  # type: ignore
 from .shared_storage import (
     get_storage_lock,
     get_update_flag,
     set_all_update_flags,
 )
+
+import faiss  # type: ignore
+
+USE_GPU = os.getenv("FAISS_USE_GPU", "0") == "1"
+FAISS_PACKAGE = "faiss-gpu" if USE_GPU else "faiss-cpu"
+
+if not pm.is_installed(FAISS_PACKAGE):
+    pm.install(FAISS_PACKAGE)
 
 
 @final
