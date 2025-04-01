@@ -13,7 +13,7 @@ import Input from '@/components/ui/Input'
 import Checkbox from '@/components/ui/Checkbox'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
-import { clearDocuments, clearCache, getDocuments } from '@/api/lightrag'
+import { clearDocuments, clearCache } from '@/api/lightrag'
 import { useBackendState } from '@/stores/state'
 
 import { EraserIcon, AlertTriangleIcon } from 'lucide-react'
@@ -35,7 +35,11 @@ const Label = ({
   </label>
 )
 
-export default function ClearDocumentsDialog() {
+interface ClearDocumentsDialogProps {
+  onDocumentsCleared?: () => Promise<void>
+}
+
+export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocumentsDialogProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [confirmText, setConfirmText] = useState('')
@@ -55,10 +59,8 @@ export default function ClearDocumentsDialog() {
     if (!isConfirmEnabled) return
 
     try {
-      // 清空文档
       const result = await clearDocuments()
 
-      // 如果选择了清空缓存，则清空缓存
       if (clearCacheOption) {
         try {
           await clearCache()
@@ -70,23 +72,28 @@ export default function ClearDocumentsDialog() {
 
       if (result.status === 'success') {
         toast.success(t('documentPanel.clearDocuments.success'))
-
-        // 刷新文档列表和后端状态
-        try {
-          await getDocuments()
-          check()
-        } catch (refreshErr) {
-          console.error('Error refreshing documents:', refreshErr)
-        }
-
-        setOpen(false)
       } else {
         toast.error(t('documentPanel.clearDocuments.failed', { message: result.message }))
       }
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
+    } finally {
+      // Execute these operations regardless of success or failure
+      try {
+        // Update backend state
+        await check()
+
+        // Refresh document list
+        if (onDocumentsCleared) {
+          await onDocumentsCleared()
+        }
+      } catch (refreshErr) {
+        console.error('Error refreshing state:', refreshErr)
+      }
+
+      setOpen(false)
     }
-  }, [isConfirmEnabled, clearCacheOption, setOpen, t, check])
+  }, [isConfirmEnabled, clearCacheOption, setOpen, t, check, onDocumentsCleared])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
