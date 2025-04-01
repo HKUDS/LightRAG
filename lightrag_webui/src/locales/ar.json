@@ -32,14 +32,23 @@
     "authDisabled": "تم تعطيل المصادقة. استخدام وضع بدون تسجيل دخول.",
     "guestMode": "وضع بدون تسجيل دخول"
   },
+  "common": {
+    "cancel": "إلغاء"
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "مسح",
       "tooltip": "مسح المستندات",
       "title": "مسح المستندات",
+      "warning": "تحذير: سيؤدي هذا الإجراء إلى حذف جميع المستندات بشكل دائم ولا يمكن التراجع عنه!",
       "confirm": "هل تريد حقًا مسح جميع المستندات؟",
+      "confirmPrompt": "اكتب 'yes' لتأكيد هذا الإجراء",
+      "confirmPlaceholder": "اكتب yes للتأكيد",
+      "clearCache": "مسح ذاكرة التخزين المؤقت أيضًا",
       "confirmButton": "نعم",
       "success": "تم مسح المستندات بنجاح",
+      "cacheCleared": "تم مسح ذاكرة التخزين المؤقت بنجاح",
+      "cacheClearFailed": "فشل مسح ذاكرة التخزين المؤقت:\n{{error}}",
       "failed": "فشل مسح المستندات:\n{{message}}",
       "error": "فشل مسح المستندات:\n{{error}}"
     },
