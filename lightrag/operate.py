@@ -1005,7 +1005,6 @@ async def mix_kg_vector_query(
         try:
             # Reduce top_k for vector search in hybrid mode since we have structured information from KG
             mix_topk = min(10, query_param.top_k)
-            # TODO: add ids to the query
             results = await chunks_vdb.query(
                 augmented_query, top_k=mix_topk, ids=query_param.ids
             )
@@ -1601,7 +1600,7 @@ async def _get_edge_data(
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"], t["file_path"]])
+        text_units_section_list.append([i, t["content"], t.get("file_path", "unknown")])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
