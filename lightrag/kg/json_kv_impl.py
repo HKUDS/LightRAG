@@ -140,9 +140,14 @@ class JsonKVStorage(BaseKVStorage):
             None
         """
         async with self._storage_lock:
+            any_deleted = False
             for doc_id in ids:
-                self._data.pop(doc_id, None)
-            await set_all_update_flags(self.namespace)
+                result = self._data.pop(doc_id, None)
+                if result is not None:
+                    any_deleted = True
+
+            if any_deleted:
+                await set_all_update_flags(self.namespace)
 
     async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
         """Delete specific records from storage by by cache mode
@@ -183,7 +188,9 @@ class JsonKVStorage(BaseKVStorage):
         """
         try:
             async with self._storage_lock:
-                self._data.update({})
+                self._data.clear()
+                await set_all_update_flags(self.namespace)
+
             await self.index_done_callback()
             logger.info(f"Process {os.getpid()} drop {self.namespace}")
             return {"status": "success", "message": "data dropped"}

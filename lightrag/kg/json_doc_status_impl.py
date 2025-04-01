@@ -141,9 +141,14 @@ class JsonDocStatusStorage(DocStatusStorage):
             None
         """
         async with self._storage_lock:
+            any_deleted = False
             for doc_id in doc_ids:
-                self._data.pop(doc_id, None)
-            await set_all_update_flags(self.namespace)
+                result = self._data.pop(doc_id, None)
+                if result is not None:
+                    any_deleted = True
+
+            if any_deleted:
+                await set_all_update_flags(self.namespace)
 
     async def drop(self) -> dict[str, str]:
         """Drop all document status data from storage and clean up resources
@@ -160,7 +165,9 @@ class JsonDocStatusStorage(DocStatusStorage):
         """
         try:
             async with self._storage_lock:
-                self._data.update({})
+                self._data.clear()
+                await set_all_update_flags(self.namespace)
+
             await self.index_done_callback()
             logger.info(f"Process {os.getpid()} drop {self.namespace}")
             return {"status": "success", "message": "data dropped"}
