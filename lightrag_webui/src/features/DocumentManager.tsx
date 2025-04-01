@@ -387,7 +387,7 @@ export default function DocumentManager() {
           </div>
           <div className="flex-1" />
           <ClearDocumentsDialog onDocumentsCleared={fetchDocuments} />
-          <UploadDocumentsDialog />
+          <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
           <PipelineStatusDialog
             open={showPipelineStatus}
             onOpenChange={setShowPipelineStatus}
