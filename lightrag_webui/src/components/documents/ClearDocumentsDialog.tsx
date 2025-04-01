@@ -20,15 +20,15 @@ import { EraserIcon, AlertTriangleIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 // 简单的Label组件
-const Label = ({ 
-  htmlFor, 
-  className, 
-  children, 
-  ...props 
+const Label = ({
+  htmlFor,
+  className,
+  children,
+  ...props
 }: React.LabelHTMLAttributes<HTMLLabelElement>) => (
-  <label 
-    htmlFor={htmlFor} 
-    className={className} 
+  <label
+    htmlFor={htmlFor}
+    className={className}
     {...props}
   >
     {children}
@@ -57,7 +57,7 @@ export default function ClearDocumentsDialog() {
     try {
       // 清空文档
       const result = await clearDocuments()
-      
+
       // 如果选择了清空缓存，则清空缓存
       if (clearCacheOption) {
         try {
@@ -70,7 +70,7 @@ export default function ClearDocumentsDialog() {
 
       if (result.status === 'success') {
         toast.success(t('documentPanel.clearDocuments.success'))
-        
+
         // 刷新文档列表和后端状态
         try {
           await getDocuments()
@@ -78,7 +78,7 @@ export default function ClearDocumentsDialog() {
         } catch (refreshErr) {
           console.error('Error refreshing documents:', refreshErr)
         }
-        
+
         setOpen(false)
       } else {
         toast.error(t('documentPanel.clearDocuments.failed', { message: result.message }))
@@ -110,7 +110,7 @@ export default function ClearDocumentsDialog() {
             </div>
           </DialogDescription>
         </DialogHeader>
-        
+
         <div className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="confirm-text" className="text-sm font-medium">
@@ -124,7 +124,7 @@ export default function ClearDocumentsDialog() {
               className="w-full"
             />
           </div>
-          
+
           <div className="flex items-center space-x-2">
             <Checkbox
               id="clear-cache"
@@ -136,14 +136,14 @@ export default function ClearDocumentsDialog() {
             </Label>
           </div>
         </div>
-        
+
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)}>
             {t('common.cancel')}
           </Button>
-          <Button 
-            variant="destructive" 
-            onClick={handleClear} 
+          <Button
+            variant="destructive"
+            onClick={handleClear}
             disabled={!isConfirmEnabled}
           >
             {t('documentPanel.clearDocuments.confirmButton')}
