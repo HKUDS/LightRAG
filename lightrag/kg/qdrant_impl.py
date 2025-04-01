@@ -275,3 +275,50 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error searching for prefix '{prefix}': {e}")
             return []
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        try:
+            qdrant_id = compute_mdhash_id_for_qdrant(id)
+            result = self._client.retrieve(
+                collection_name=self.namespace,
+                ids=[qdrant_id],
+                with_payload=True
+            )
+            if result and len(result) > 0:
+                return {**result[0].payload}
+            return None
+        except Exception as e:
+            logger.error(f"Error getting vector by ID {id}: {e}")
+            return None
+            
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+            
+        try:
+            qdrant_ids = [compute_mdhash_id_for_qdrant(id) for id in ids]
+            results = self._client.retrieve(
+                collection_name=self.namespace,
+                ids=qdrant_ids,
+                with_payload=True
+            )
+            return [{**point.payload} for point in results if point]
+        except Exception as e:
+            logger.error(f"Error getting vectors by IDs: {e}")
+            return []
