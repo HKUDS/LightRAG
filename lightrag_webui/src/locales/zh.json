@@ -32,14 +32,23 @@
     "authDisabled": "认证已禁用，使用无需登陆模式。",
     "guestMode": "无需登陆"
   },
+  "common": {
+    "cancel": "取消"
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "清空",
       "tooltip": "清空文档",
       "title": "清空文档",
+      "warning": "警告：此操作将永久删除所有文档，无法恢复！",
       "confirm": "确定要清空所有文档吗？",
+      "confirmPrompt": "请输入 yes 确认操作",
+      "confirmPlaceholder": "输入 yes 确认",
+      "clearCache": "同时清空缓存",
       "confirmButton": "确定",
       "success": "文档清空成功",
+      "cacheCleared": "缓存清空成功",
+      "cacheClearFailed": "清空缓存失败：\n{{error}}",
       "failed": "清空文档失败：\n{{message}}",
       "error": "清空文档失败：\n{{error}}"
     },

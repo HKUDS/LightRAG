@@ -382,6 +382,14 @@ export const clearDocuments = async (): Promise<DocActionResponse> => {
   return response.data
 }
 
+export const clearCache = async (modes?: string[]): Promise<{
+  status: 'success' | 'fail'
+  message: string
+}> => {
+  const response = await axiosInstance.post('/documents/clear_cache', { modes })
+  return response.data
+}
+
 export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
   try {
     // Add a timeout to the request to prevent hanging

@@ -32,14 +32,23 @@
     "authDisabled": "Authentication is disabled. Using login free mode.",
     "guestMode": "Login Free"
   },
+  "common": {
+    "cancel": "Cancel"
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "Clear",
       "tooltip": "Clear documents",
       "title": "Clear Documents",
+      "warning": "WARNING: This action will permanently delete all documents and cannot be undone!",
       "confirm": "Do you really want to clear all documents?",
+      "confirmPrompt": "Type 'yes' to confirm this action",
+      "confirmPlaceholder": "Type yes to confirm",
+      "clearCache": "Also clear cache",
       "confirmButton": "YES",
       "success": "Documents cleared successfully",
+      "cacheCleared": "Cache cleared successfully",
+      "cacheClearFailed": "Failed to clear cache:\n{{error}}",
       "failed": "Clear Documents Failed:\n{{message}}",
       "error": "Clear Documents Failed:\n{{error}}"
     },
