@@ -11,7 +11,6 @@
 - [X] [2024.12.31]🎯📢LightRAG现在支持[通过文档ID删除](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete)。
 - [X] [2024.11.25]🎯📢LightRAG现在支持无缝集成[自定义知识图谱](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#insert-custom-kg)，使用户能够用自己的领域专业知识增强系统。
 - [X] [2024.11.19]🎯📢LightRAG的综合指南现已在[LearnOpenCV](https://learnopencv.com/lightrag)上发布。非常感谢博客作者。
-- [X] [2024.11.12]🎯📢LightRAG现在支持[Oracle Database 23ai的所有存储类型（KV、向量和图）](https://github.com/HKUDS/LightRAG/blob/main/examples/lightrag_oracle_demo.py)。
 - [X] [2024.11.11]🎯📢LightRAG现在支持[通过实体名称删除实体](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete)。
 - [X] [2024.11.09]🎯📢推出[LightRAG Gui](https://lightrag-gui.streamlit.app)，允许您插入、查询、可视化和下载LightRAG知识。
 - [X] [2024.11.04]🎯📢现在您可以[使用Neo4J进行存储](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage)。
@@ -1037,9 +1036,10 @@ rag.clear_cache(modes=["local"])
 | **参数** | **类型** | **说明** | **默认值** |
 |--------------|----------|-----------------|-------------|
 | **working_dir** | `str` | 存储缓存的目录 | `lightrag_cache+timestamp` |
-| **kv_storage** | `str` | 文档和文本块的存储类型。支持的类型：`JsonKVStorage`、`OracleKVStorage` | `JsonKVStorage` |
-| **vector_storage** | `str` | 嵌入向量的存储类型。支持的类型：`NanoVectorDBStorage`、`OracleVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | 图边和节点的存储类型。支持的类型：`NetworkXStorage`、`Neo4JStorage`、`OracleGraphStorage` | `NetworkXStorage` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage`,`TiDBKVStorage` | `JsonKVStorage` |
+| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`TiDBVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage`,`GremlinStorage` | `NetworkXStorage` |
+| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | 拆分文档时每个块的最大令牌大小 | `1200` |
 | **chunk_overlap_token_size** | `int` | 拆分文档时两个块之间的重叠令牌大小 | `100` |
 | **tiktoken_model_name** | `str` | 用于计算令牌数的Tiktoken编码器的模型名称 | `gpt-4o-mini` |

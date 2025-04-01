@@ -302,11 +302,10 @@ Each storage type have servals implementations:
 
 ```
 JsonKVStorage    JsonFile(default)
-MongoKVStorage   MogonDB
-RedisKVStorage   Redis
-TiDBKVStorage    TiDB
 PGKVStorage      Postgres
-OracleKVStorage  Oracle
+RedisKVStorage   Redis
+MongoKVStorage   MogonDB
+TiDBKVStorage    TiDB
 ```
 
 * GRAPH_STORAGE supported implement-name
@@ -314,25 +313,21 @@ OracleKVStorage  Oracle
 ```
 NetworkXStorage      NetworkX(defualt)
 Neo4JStorage         Neo4J
-MongoGraphStorage    MongoDB
-TiDBGraphStorage     TiDB
+PGGraphStorage       Postgres
 AGEStorage           AGE
 GremlinStorage       Gremlin
-PGGraphStorage       Postgres
-OracleGraphStorage   Postgres
 ```
 
 * VECTOR_STORAGE supported implement-name
 
 ```
 NanoVectorDBStorage         NanoVector(default)
-MilvusVectorDBStorage       Milvus
-ChromaVectorDBStorage       Chroma
-TiDBVectorDBStorage         TiDB
 PGVectorStorage             Postgres
+MilvusVectorDBStorge        Milvus
+ChromaVectorDBStorage       Chroma
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
-OracleVectorDBStorage       Oracle
+TiDBVectorDBStorage         TiDB
 MongoVectorDBStorage        MongoDB
 ```
 

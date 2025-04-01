@@ -6,7 +6,6 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisKVStorage",
             "TiDBKVStorage",
             "PGKVStorage",
-            "OracleKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
     },
@@ -19,7 +18,6 @@ STORAGE_IMPLEMENTATIONS = {
             "AGEStorage",
             "GremlinStorage",
             "PGGraphStorage",
-            # "OracleGraphStorage",
         ],
         "required_methods": ["upsert_node", "upsert_edge"],
     },
@@ -32,7 +30,6 @@ STORAGE_IMPLEMENTATIONS = {
             "PGVectorStorage",
             "FaissVectorDBStorage",
             "QdrantVectorDBStorage",
-            "OracleVectorDBStorage",
             "MongoVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
@@ -40,7 +37,6 @@ STORAGE_IMPLEMENTATIONS = {
     "DOC_STATUS_STORAGE": {
         "implementations": [
             "JsonDocStatusStorage",
-            "PGDocStatusStorage",
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
         ],
@@ -56,12 +52,6 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "RedisKVStorage": ["REDIS_URI"],
     "TiDBKVStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
-    "OracleKVStorage": [
-        "ORACLE_DSN",
-        "ORACLE_USER",
-        "ORACLE_PASSWORD",
-        "ORACLE_CONFIG_DIR",
-    ],
     # Graph Storage Implementations
     "NetworkXStorage": [],
     "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
@@ -78,12 +68,6 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "POSTGRES_PASSWORD",
         "POSTGRES_DATABASE",
     ],
-    "OracleGraphStorage": [
-        "ORACLE_DSN",
-        "ORACLE_USER",
-        "ORACLE_PASSWORD",
-        "ORACLE_CONFIG_DIR",
-    ],
     # Vector Storage Implementations
     "NanoVectorDBStorage": [],
     "MilvusVectorDBStorage": [],
@@ -92,12 +76,6 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "PGVectorStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     "FaissVectorDBStorage": [],
     "QdrantVectorDBStorage": ["QDRANT_URL"],  # QDRANT_API_KEY has default value None
-    "OracleVectorDBStorage": [
-        "ORACLE_DSN",
-        "ORACLE_USER",
-        "ORACLE_PASSWORD",
-        "ORACLE_CONFIG_DIR",
-    ],
     "MongoVectorDBStorage": [],
     # Document Status Storage Implementations
     "JsonDocStatusStorage": [],
@@ -112,9 +90,6 @@ STORAGES = {
     "NanoVectorDBStorage": ".kg.nano_vector_db_impl",
     "JsonDocStatusStorage": ".kg.json_doc_status_impl",
     "Neo4JStorage": ".kg.neo4j_impl",
-    "OracleKVStorage": ".kg.oracle_impl",
-    "OracleGraphStorage": ".kg.oracle_impl",
-    "OracleVectorDBStorage": ".kg.oracle_impl",
     "MilvusVectorDBStorage": ".kg.milvus_impl",
     "MongoKVStorage": ".kg.mongo_impl",
     "MongoDocStatusStorage": ".kg.mongo_impl",
