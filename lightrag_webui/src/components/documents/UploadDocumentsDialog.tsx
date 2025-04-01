@@ -1,5 +1,4 @@
 import { useState, useCallback } from 'react'
-import { useBackendState } from '@/stores/state'
 import { FileRejection } from 'react-dropzone'
 import Button from '@/components/ui/Button'
 import {
@@ -28,7 +27,6 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
   const [isUploading, setIsUploading] = useState(false)
   const [progresses, setProgresses] = useState<Record<string, number>>({})
   const [fileErrors, setFileErrors] = useState<Record<string, string>>({})
-  const check = useBackendState.use.check()
 
   const handleRejectedFiles = useCallback(
     (rejectedFiles: FileRejection[]) => {
@@ -155,16 +153,11 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
 
         // Only update if at least one file was uploaded successfully
         if (hasSuccessfulUpload) {
-          try {
-            // Update backend state
-            await check()
-
-            // Refresh document list
-            if (onDocumentsUploaded) {
-              await onDocumentsUploaded()
-            }
-          } catch (refreshErr) {
-            console.error('Error refreshing state:', refreshErr)
+          // Refresh document list
+          if (onDocumentsUploaded) {
+            onDocumentsUploaded().catch(err => {
+              console.error('Error refreshing documents:', err)
+            })
           }
         }
       } catch (err) {
@@ -174,7 +167,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         setIsUploading(false)
       }
     },
-    [setIsUploading, setProgresses, setFileErrors, t, check, onDocumentsUploaded]
+    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded]
   )
 
   return (
