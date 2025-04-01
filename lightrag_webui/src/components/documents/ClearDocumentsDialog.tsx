@@ -61,6 +61,14 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
     try {
       const result = await clearDocuments()
 
+      if (result.status !== 'success') {
+        toast.error(t('documentPanel.clearDocuments.failed', { message: result.message }))
+        setConfirmText('')
+        return
+      }
+
+      toast.success(t('documentPanel.clearDocuments.success'))
+
       if (clearCacheOption) {
         try {
           await clearCache()
@@ -70,28 +78,19 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
         }
       }
 
-      if (result.status === 'success') {
-        toast.success(t('documentPanel.clearDocuments.success'))
-      } else {
-        toast.error(t('documentPanel.clearDocuments.failed', { message: result.message }))
+      // Update health check status
+      await check()
+
+      // Refresh document list if provided
+      if (onDocumentsCleared) {
+        await onDocumentsCleared()
       }
+
+      // 所有操作成功后关闭对话框
+      setOpen(false)
     } catch (err) {
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
-    } finally {
-      // Execute these operations regardless of success or failure
-      try {
-        // Update backend state
-        await check()
-
-        // Refresh document list
-        if (onDocumentsCleared) {
-          await onDocumentsCleared()
-        }
-      } catch (refreshErr) {
-        console.error('Error refreshing state:', refreshErr)
-      }
-
-      setOpen(false)
+      setConfirmText('')
     }
   }, [isConfirmEnabled, clearCacheOption, setOpen, t, check, onDocumentsCleared])
 
