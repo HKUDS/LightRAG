@@ -898,6 +898,35 @@ class PGDocStatusStorage(DocStatusStorage):
         # PG handles persistence automatically
         pass
 
+    async def delete(self, ids: list[str]) -> None:
+        """Delete specific records from storage by their IDs
+
+        Args:
+            ids (list[str]): List of document IDs to be deleted from storage
+
+        Returns:
+            None
+        """
+        if not ids:
+            return
+
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(f"Unknown namespace for deletion: {self.namespace}")
+            return
+
+        delete_sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id = ANY($2)"
+
+        try:
+            await self.db.execute(
+                delete_sql, {"workspace": self.db.workspace, "ids": ids}
+            )
+            logger.debug(
+                f"Successfully deleted {len(ids)} records from {self.namespace}"
+            )
+        except Exception as e:
+            logger.error(f"Error while deleting records from {self.namespace}: {e}")
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """Update or insert document status
 
