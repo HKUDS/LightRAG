@@ -998,13 +998,23 @@ def create_document_routes(
                     message="Cannot clear documents while pipeline is busy",
                 )
             # Set busy to true
-            pipeline_status["busy"] = True
-            pipeline_status["job_name"] = "Clearing Documents"
-            pipeline_status["latest_message"] = "Starting document clearing process"
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(
-                    "Starting document clearing process"
-                )
+            pipeline_status.update(
+                {
+                    "busy": True,
+                    "job_name": "Clearing Documents",
+                    "job_start": datetime.now().isoformat(),
+                    "docs": 0,
+                    "batchs": 0,
+                    "cur_batch": 0,
+                    "request_pending": False,  # Clear any previous request
+                    "latest_message": "Starting document clearing process",
+                }
+            )
+            # Cleaning history_messages without breaking it as a shared list object
+            del pipeline_status["history_messages"][:]
+            pipeline_status["history_messages"].append(
+                "Starting document clearing process"
+            )
 
         try:
             # Use drop method to clear all data
