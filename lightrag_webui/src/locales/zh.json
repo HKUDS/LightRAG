@@ -44,7 +44,7 @@
       "confirm": "确定要清空所有文档吗？",
       "confirmPrompt": "请输入 yes 确认操作",
       "confirmPlaceholder": "输入 yes 确认",
-      "clearCache": "同时清空缓存",
+      "clearCache": "清空LLM缓存",
       "confirmButton": "确定",
       "success": "文档清空成功",
       "cacheCleared": "缓存清空成功",

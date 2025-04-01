@@ -44,7 +44,7 @@
       "confirm": "Voulez-vous vraiment effacer tous les documents ?",
       "confirmPrompt": "Tapez 'yes' pour confirmer cette action",
       "confirmPlaceholder": "Tapez yes pour confirmer",
-      "clearCache": "Effacer également le cache",
+      "clearCache": "Effacer le cache LLM",
       "confirmButton": "OUI",
       "success": "Documents effacés avec succès",
       "cacheCleared": "Cache effacé avec succès",

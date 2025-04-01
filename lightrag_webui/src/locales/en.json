@@ -44,7 +44,7 @@
       "confirm": "Do you really want to clear all documents?",
       "confirmPrompt": "Type 'yes' to confirm this action",
       "confirmPlaceholder": "Type yes to confirm",
-      "clearCache": "Also clear cache",
+      "clearCache": "Clear LLM cache",
       "confirmButton": "YES",
       "success": "Documents cleared successfully",
       "cacheCleared": "Cache cleared successfully",

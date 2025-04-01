@@ -44,7 +44,7 @@
       "confirm": "هل تريد حقًا مسح جميع المستندات؟",
       "confirmPrompt": "اكتب 'yes' لتأكيد هذا الإجراء",
       "confirmPlaceholder": "اكتب yes للتأكيد",
-      "clearCache": "مسح ذاكرة التخزين المؤقت أيضًا",
+      "clearCache": "مسح كاش نموذج اللغة",
       "confirmButton": "نعم",
       "success": "تم مسح المستندات بنجاح",
       "cacheCleared": "تم مسح ذاكرة التخزين المؤقت بنجاح",
