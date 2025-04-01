@@ -14,7 +14,6 @@ import Checkbox from '@/components/ui/Checkbox'
 import { toast } from 'sonner'
 import { errorMessage } from '@/lib/utils'
 import { clearDocuments, clearCache } from '@/api/lightrag'
-import { useBackendState } from '@/stores/state'
 
 import { EraserIcon, AlertTriangleIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -45,7 +44,6 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
   const [confirmText, setConfirmText] = useState('')
   const [clearCacheOption, setClearCacheOption] = useState(false)
   const isConfirmEnabled = confirmText.toLowerCase() === 'yes'
-  const check = useBackendState.use.check()
 
   // 重置状态当对话框关闭时
   useEffect(() => {
@@ -78,12 +76,9 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
         }
       }
 
-      // Update health check status
-      await check()
-
       // Refresh document list if provided
       if (onDocumentsCleared) {
-        await onDocumentsCleared()
+        onDocumentsCleared().catch(console.error)
       }
 
       // 所有操作成功后关闭对话框
@@ -92,7 +87,7 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
       toast.error(t('documentPanel.clearDocuments.error', { error: errorMessage(err) }))
       setConfirmText('')
     }
-  }, [isConfirmEnabled, clearCacheOption, setOpen, t, check, onDocumentsCleared])
+  }, [isConfirmEnabled, clearCacheOption, setOpen, t, onDocumentsCleared])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
