@@ -376,6 +376,23 @@ class PGKVStorage(BaseKVStorage):
 
                     await self.db.execute(upsert_sql, _data)
 
+    async def delete(self, ids: list[str]) -> None:
+        """Delete records by IDs"""
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            raise ValueError(f"Invalid namespace: {self.namespace}")
+
+        if self.namespace.endswith("cache"):
+            sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND mode=$2"
+            for mode in ids:
+                await self.db.execute(
+                    sql, {"workspace": self.db.workspace, "mode": mode}
+                )
+        else:
+            ids_str = ",".join([f"'{id}'" for id in ids])
+            sql = f"DELETE FROM {table_name} WHERE workspace=$1 AND id IN ({ids_str})"
+            await self.db.execute(sql, {"workspace": self.db.workspace})
+
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
         pass
