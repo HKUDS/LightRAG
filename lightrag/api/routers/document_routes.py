@@ -1261,7 +1261,7 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.post(
-        "/cache_clear",
+        "/clear_cache",
         response_model=ClearCacheResponse,
         dependencies=[Depends(combined_auth)],
     )
