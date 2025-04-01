@@ -4,7 +4,8 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.kg.shared_storage import initialize_pipeline_status
 
-WORKING_DIR = "./dickens"
+#Set OpenAI key
+WORKING_DIR = "./NonLife"
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -28,34 +29,34 @@ def main():
     # Initialize RAG instance
     rag = asyncio.run(initialize_rag())
 
-    with open("./book.txt", "r", encoding="utf-8") as f:
+    with open("./IAA_Risk_Book_Non_Life.txt", "r", encoding="utf-8") as f:
         rag.insert(f.read())
 
     # Perform naive search
     print(
         rag.query(
-            "What are the top themes in this story?", param=QueryParam(mode="naive")
+            "What are the top themes in this book?", param=QueryParam(mode="naive")
         )
     )
 
     # Perform local search
     print(
         rag.query(
-            "What are the top themes in this story?", param=QueryParam(mode="local")
+            "What are the top themes in this book?", param=QueryParam(mode="local")
         )
     )
 
     # Perform global search
     print(
         rag.query(
-            "What are the top themes in this story?", param=QueryParam(mode="global")
+            "What are the top themes in this book?", param=QueryParam(mode="global")
         )
     )
 
     # Perform hybrid search
     print(
         rag.query(
-            "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+            "What are the top themes in this book?", param=QueryParam(mode="hybrid")
         )
     )
 

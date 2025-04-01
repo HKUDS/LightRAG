@@ -1,0 +1,2815 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <key id="d9" for="edge" attr.name="file_path" attr.type="string" />
+  <key id="d8" for="edge" attr.name="source_id" attr.type="string" />
+  <key id="d7" for="edge" attr.name="keywords" attr.type="string" />
+  <key id="d6" for="edge" attr.name="description" attr.type="string" />
+  <key id="d5" for="edge" attr.name="weight" attr.type="double" />
+  <key id="d4" for="node" attr.name="file_path" attr.type="string" />
+  <key id="d3" for="node" attr.name="source_id" attr.type="string" />
+  <key id="d2" for="node" attr.name="description" attr.type="string" />
+  <key id="d1" for="node" attr.name="entity_type" attr.type="string" />
+  <key id="d0" for="node" attr.name="entity_id" attr.type="string" />
+  <graph edgedefault="undirected">
+    <node id="International Actuarial Association">
+      <data key="d0">International Actuarial Association</data>
+      <data key="d1">organization</data>
+      <data key="d2">The International Actuarial Association (IAA) is a global organization focused on the development and promotion of actuarial science and regulation in the insurance sector.&lt;SEP&gt;The International Actuarial Association is a global organization that focuses on the practice of actuarial science and provides a platform for actuaries worldwide.&lt;SEP&gt;The International Actuarial Association is the global organization representing actuaries and promoting the worldwide advancement of actuarial knowledge and practices.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-7894c778f2d4643377c8fa305c515a73&lt;SEP&gt;chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurance Regulation Committee">
+      <data key="d0">Insurance Regulation Committee</data>
+      <data key="d1">organization</data>
+      <data key="d2">The Insurance Regulation Committee is a branch of the IAA responsible for developing and approving chapters related to insurance regulations.</data>
+      <data key="d3">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Margaret Tiller Sherwood">
+      <data key="d0">Margaret Tiller Sherwood</data>
+      <data key="d1">person</data>
+      <data key="d2">Margaret Tiller Sherwood is an author involved in developing chapters of the IAA Risk Book, focusing on insurance-related topics.</data>
+      <data key="d3">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Ralph Blanchard">
+      <data key="d0">Ralph Blanchard</data>
+      <data key="d1">person</data>
+      <data key="d2">Ralph Blanchard is an IAA reviewer who contributed to the review of chapters in the IAA Risk Book.</data>
+      <data key="d3">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Kudzai Chigiji">
+      <data key="d0">Kudzai Chigiji</data>
+      <data key="d1">person</data>
+      <data key="d2">Kudzai Chigiji is another reviewer for the IAA Risk Book, involved in the review process of insurance regulation chapters.</data>
+      <data key="d3">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Toshihiro Kawano">
+      <data key="d0">Toshihiro Kawano</data>
+      <data key="d1">person</data>
+      <data key="d2">Toshihiro Kawano is among the reviewers of the IAA Risk Book and contributes to its development.</data>
+      <data key="d3">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Gerd Warnke">
+      <data key="d0">Gerd Warnke</data>
+      <data key="d1">person</data>
+      <data key="d2">Gerd Warnke is one of the reviewers for the IAA Risk Book, helping to ensure its accuracy and relevance.</data>
+      <data key="d3">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Non-Life Perils and Coverages">
+      <data key="d0">Non-Life Perils and Coverages</data>
+      <data key="d1">category</data>
+      <data key="d2">Non-Life Perils and Coverages refers to categories of risks and insurance policies concerning non-life insurance, including the perils faced by policyholders.&lt;SEP&gt;Non-Life Perils and Coverages refers to the risks and corresponding insurance policies related to non-life insurance, focusing on various perils affecting policyholders.&lt;SEP&gt;Non-life perils and coverages refer to risks and insurance products related to events that fall outside of life insurance, such as property damage, accidents, and natural disasters.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="IAA Risk Book">
+      <data key="d0">IAA Risk Book</data>
+      <data key="d1">organization</data>
+      <data key="d2">IAA Risk Book is a reference book that provides detailed information on non-life insurance, including terms, policies, and coverages.&lt;SEP&gt;The IAA Risk Book is a comprehensive resource discussing various topics related to risk management including insurance risks and data issues.&lt;SEP&gt;The IAA Risk Book is a guide that discusses various aspects of risks and insurance, including non-life perils and coverages.&lt;SEP&gt;The IAA Risk Book is a publication developed by the International Actuarial Association that addresses various aspects of insurance regulation and risk management.&lt;SEP&gt;The IAA Risk Book is a publication discussing concepts related to non-life perils, risk management, and insurance.&lt;SEP&gt;The IAA Risk Book is a publication produced by the International Actuarial Association that provides reference materials on risk management topics, particularly focused on non-life insurance.&lt;SEP&gt;The IAA Risk Book is a publication that outlines principles and practices related to non-life perils and coverages in the actuarial profession.&lt;SEP&gt;The IAA Risk Book is a publication that provides insights and guidelines on risk management, specifically focusing on non-life insurance and related topics.&lt;SEP&gt;The IAA Risk Book is a resource that provides information on risks covered by various types of insurance, focusing on non-life insurance perils and coverages.&lt;SEP&gt;The IAA Risk Book serves as a comprehensive guide addressing non-life insurance perils and coverages, offering insights on regulations and rate-making.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085&lt;SEP&gt;chunk-3200997f85808ab4d0c66bdf44c41323&lt;SEP&gt;chunk-e3b85dc382df5c44abcfe359f5091e72&lt;SEP&gt;chunk-088e006ffcf9011043ec204248ccd020&lt;SEP&gt;chunk-a15dbe3dfd5e1c5c40dd10006443ca66&lt;SEP&gt;chunk-5d3da1a801901208dff381d8878476b9&lt;SEP&gt;chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-7894c778f2d4643377c8fa305c515a73&lt;SEP&gt;chunk-5c65d1bf3fffbee73cab4023dda9b6e2&lt;SEP&gt;chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Table of Contents">
+      <data key="d0">Table of Contents</data>
+      <data key="d1">category</data>
+      <data key="d2">Table of Contents outlines the structure and sections contained within the IAA Risk Book, providing an overview of topics covered.</data>
+      <data key="d3">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Version Number">
+      <data key="d0">Version Number</data>
+      <data key="d1">category</data>
+      <data key="d2">Version Number indicates the edition and approval date of the chapters developed in the IAA Risk Book, useful for tracking updates.</data>
+      <data key="d3">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Canada">
+      <data key="d0">Canada</data>
+      <data key="d1">geo</data>
+      <data key="d2">Canada is the country where the International Actuarial Association's headquarters is located, specifically in Ottawa, Ontario.</data>
+      <data key="d3">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Non-Life Insurance">
+      <data key="d0">Non-Life Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Non-Life Insurance encompasses various types of insurance that cover risks excluding life insurance, including personal and commercial lines.&lt;SEP&gt;Non-Life Insurance refers to insurance products that provide coverage for various types of risks excluding life insurance, such as property and liability.&lt;SEP&gt;Non-life insurance includes all types of insurance products except life insurance, encompassing various covers like property, liability, and health.&lt;SEP&gt;Non-life insurance refers to insurance that provides coverage against risks other than death, including property and liability risks.&lt;SEP&gt;Non-life insurance refers to various insurance policies that provide coverage against loss or damages that are not related to life insurance, including health, property, liability, and workers' compensation.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da&lt;SEP&gt;chunk-088e006ffcf9011043ec204248ccd020&lt;SEP&gt;chunk-5d3da1a801901208dff381d8878476b9&lt;SEP&gt;chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Risk Management">
+      <data key="d0">Risk Management</data>
+      <data key="d1">category</data>
+      <data key="d2">Risk management encompasses strategies and techniques to identify, assess, and mitigate risks.&lt;SEP&gt;Risk management in the insurance context involves strategies to identify, assess, and mitigate risks associated with non-life insurance.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Bad Faith Claims">
+      <data key="d0">Bad Faith Claims</data>
+      <data key="d1">category</data>
+      <data key="d2">Bad Faith Claims refer to instances in which insurers do not fulfill their obligations to insureds, potentially leading to legal disputes.&lt;SEP&gt;Bad Faith Claims refer to legal actions taken against insurers for not fulfilling their contractual obligations to policyholders in non-life insurance.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Government Insurance Programs">
+      <data key="d0">Government Insurance Programs</data>
+      <data key="d1">category</data>
+      <data key="d2">Government Insurance Programs are initiatives by the government to provide insurance coverage, particularly in the context of risks that are difficult to insure through private markets.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Underwriting Requirements">
+      <data key="d0">Underwriting Requirements</data>
+      <data key="d1">category</data>
+      <data key="d2">Underwriting Requirements involve guidelines and criteria used by insurers to evaluate the risk of insuring an applicant, particularly in non-life insurance.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Rate and Policy Form Regulation">
+      <data key="d0">Rate and Policy Form Regulation</data>
+      <data key="d1">category</data>
+      <data key="d2">Rate and Policy Form Regulation encompasses standards and legal requirements that govern how insurance rates are set and how policy forms are structured.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Residual Markets">
+      <data key="d0">Residual Markets</data>
+      <data key="d1">category</data>
+      <data key="d2">Residual Markets refer to markets for riskier insurance applicants that are unable to obtain insurance through standard options, typically supported by state mechanisms.&lt;SEP&gt;Residual markets exist to provide insurance to high-risk individuals or businesses that cannot obtain coverage in the voluntary market.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Changes in Rate">
+      <data key="d0">Changes in Rate</data>
+      <data key="d1">category</data>
+      <data key="d2">Changes in Rate pertain to modifications in insurance premiums, which can be based on various factors, such as changes in risk assessments or regulatory decisions.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Mandatory Coverages">
+      <data key="d0">Mandatory Coverages</data>
+      <data key="d1">category</data>
+      <data key="d2">Mandatory Coverages refer to specific types of insurance coverages that are required by law, such as liability insurance for drivers.&lt;SEP&gt;Mandatory coverages are types of insurance that certain jurisdictions require individuals or businesses to purchase for specific risks, such as motor liability and health insurance.&lt;SEP&gt;Mandatory coverages refer to types of insurance that some jurisdictions require to be purchased, such as auto liability or workers’ compensation insurance.&lt;SEP&gt;Mandatory coverages refer to types of insurance that the law requires individuals or companies to carry, such as auto liability or workers' compensation insurance.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38&lt;SEP&gt;chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Adverse Selection">
+      <data key="d0">Adverse Selection</data>
+      <data key="d1">category</data>
+      <data key="d2">Adverse Selection is a phenomenon where only high-risk individuals seek insurance, leading to imbalances in the insurance pool.&lt;SEP&gt;Adverse selection is a situation in insurance markets where buyers have more information about their risk than sellers, potentially skewing risk assessments.&lt;SEP&gt;Adverse selection is a situation in which individuals with higher risk of claims seek to purchase insurance at higher rates, potentially leading to financial losses for insurers.&lt;SEP&gt;Adverse selection occurs when there is an imbalance of information between buyers and sellers in the insurance market, usually resulting in higher risk customers being more likely to seek coverage.&lt;SEP&gt;Adverse selection occurs when there is an imbalance of risk between those who seek insurance coverage, leading to potential financial losses for insurers.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38&lt;SEP&gt;chunk-a15dbe3dfd5e1c5c40dd10006443ca66&lt;SEP&gt;chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Actuarial Skills">
+      <data key="d0">Actuarial Skills</data>
+      <data key="d1">category</data>
+      <data key="d2">Actuarial Skills refer to expertise in assessing and managing financial risks, particularly related to uncertain future events in insurance and finance.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Risk Book Editorial Board">
+      <data key="d0">Risk Book Editorial Board</data>
+      <data key="d1">organization</data>
+      <data key="d2">The Risk Book Editorial Board is responsible for managing the development and updates of the IAA Risk Book, ensuring its relevance and accuracy.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Contributors to the Risk Book">
+      <data key="d0">Contributors to the Risk Book</data>
+      <data key="d1">person</data>
+      <data key="d2">Contributors to the Risk Book are individuals, mostly actuaries, who have provided inputs, research, and insights into the topics covered in the book.</data>
+      <data key="d3">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Accident Insurance">
+      <data key="d0">Accident Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Accident insurance is a form of insurance that provides financial coverage for losses resulting from accidents.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Health Insurance">
+      <data key="d0">Health Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Health insurance covers the costs of medical services and is important for managing health-related risks.&lt;SEP&gt;Health insurance refers to coverage that pays for medical expenses, often mandated in some jurisdictions to mitigate risks of adverse selection.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc&lt;SEP&gt;chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Short-term Disability Insurance">
+      <data key="d0">Short-term Disability Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Short-term disability insurance provides income replacement for a limited period to individuals unable to work due to temporary conditions.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Long-term Disability Insurance">
+      <data key="d0">Long-term Disability Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Long-term disability insurance offers income protection for an extended period for individuals unable to work due to chronic conditions.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Non-life Insurance">
+      <data key="d0">Non-life Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Non-life insurance encompasses various types of insurance that cover risks other than death, such as property damage and liability.&lt;SEP&gt;Non-life insurance refers to insurance products that cover risks other than life, such as property and casualty insurance.&lt;SEP&gt;Non-life insurance refers to various types of insurance that do not involve life insurance, such as property and casualty insurance.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72&lt;SEP&gt;chunk-777a24db2d47d5093bb701f380784085&lt;SEP&gt;chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Perils">
+      <data key="d0">Perils</data>
+      <data key="d1">category</data>
+      <data key="d2">Perils are events that can cause loss, such as fire, which are often covered by insurance policies.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Hazards">
+      <data key="d0">Hazards</data>
+      <data key="d1">category</data>
+      <data key="d2">Hazards refer to conditions that increase the likelihood of a loss occurring, impacting risk assessments.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Actuaries">
+      <data key="d0">Actuaries</data>
+      <data key="d1">person</data>
+      <data key="d2">Actuaries are professionals who analyze financial risks using mathematics, statistics, and financial theory to assess non-life perils.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Risk Management Techniques">
+      <data key="d0">Risk Management Techniques</data>
+      <data key="d1">category</data>
+      <data key="d2">Risk management techniques refer to the strategies employed to identify, assess, and mitigate risks associated with various perils and hazards in insurance.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Pure Risks">
+      <data key="d0">Pure Risks</data>
+      <data key="d1">category</data>
+      <data key="d2">Pure risks are risks that can result in loss but do not provide any opportunity for gain, often managed through insurance.&lt;SEP&gt;Pure risks are risks that only involve the possibility of loss or no loss, such as natural disasters, which can be insured against.&lt;SEP&gt;Pure risks are types of risks that present only the chance of loss without any possibility of gain, often covered by insurance.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a&lt;SEP&gt;chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Speculative Risks">
+      <data key="d0">Speculative Risks</data>
+      <data key="d1">category</data>
+      <data key="d2">Speculative risks are risks assumed voluntarily with the potential for both losses and gains, typically not insured.&lt;SEP&gt;Speculative risks are risks that can result in either loss or gain, such as investing in stocks, and typically cannot be insured.&lt;SEP&gt;Speculative risks involve potential losses or gains and are generally voluntary; they are not typically insurable.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a&lt;SEP&gt;chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Frequency">
+      <data key="d0">Frequency</data>
+      <data key="d1">category</data>
+      <data key="d2">Frequency refers to the rate at which claims or losses occur within a specified time period for non-life insurance policies.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Severity">
+      <data key="d0">Severity</data>
+      <data key="d1">category</data>
+      <data key="d2">Severity indicates the potential monetary loss or damage that can arise from an occurrence of a peril, typically assessed in insurance contexts.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Non-life Perils">
+      <data key="d0">Non-life Perils</data>
+      <data key="d1">category</data>
+      <data key="d2">Non-life perils are natural or man-made events, like fire or flooding, that can lead to losses and are covered by non-life insurance policies.</data>
+      <data key="d3">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurance Companies">
+      <data key="d0">Insurance Companies</data>
+      <data key="d1">organization</data>
+      <data key="d2">Insurance companies are businesses that provide coverage and assume the risk of financial losses from insured events, operating within regulatory frameworks.&lt;SEP&gt;Insurance companies are organizations that provide financial protection against risks by accepting premiums in exchange for coverage of losses.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc&lt;SEP&gt;chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Loss Control">
+      <data key="d0">Loss Control</data>
+      <data key="d1">category</data>
+      <data key="d2">Loss Control is part of Risk Control involving both loss prevention and loss reduction activities to mitigate potential damages.&lt;SEP&gt;Loss Control refers to methods aimed at either preventing losses or minimizing their impact when they occur, integral to risk management.&lt;SEP&gt;Loss control is a risk management practice aimed at reducing the frequency and severity of losses within an organization or insured entity.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb&lt;SEP&gt;chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurance Contracts">
+      <data key="d0">Insurance Contracts</data>
+      <data key="d1">category</data>
+      <data key="d2">Insurance Contracts outline the terms of the insurance policy, including coverage, premiums, and responsibilities of both the insurer and the insured.&lt;SEP&gt;Insurance contracts are legal agreements outlining the terms, coverage, and conditions under which an insurance policy is provided.&lt;SEP&gt;Insurance contracts are legally binding agreements outlining the terms, conditions, and types of coverage between the insurer and insured.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da&lt;SEP&gt;chunk-777a24db2d47d5093bb701f380784085&lt;SEP&gt;chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Risk Control">
+      <data key="d0">Risk Control</data>
+      <data key="d1">category</data>
+      <data key="d2">Risk Control encompasses a set of methods designed to minimize loss frequency or severity, enhancing predictability in risk management.&lt;SEP&gt;Risk Control encompasses strategies aimed at minimizing the frequency or reducing the severity of losses in risk management.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Risk Financing">
+      <data key="d0">Risk Financing</data>
+      <data key="d1">category</data>
+      <data key="d2">Risk Financing includes methods for generating funds to cover any losses that occur, such as risk retention and risk transfer strategies.&lt;SEP&gt;Risk Financing refers to strategies to generate funds to cover losses that may occur, including risk retention and risk transfer.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Avoidance">
+      <data key="d0">Avoidance</data>
+      <data key="d1">category</data>
+      <data key="d2">Avoidance is a risk control method aimed at eliminating the possibility of loss by forgoing activities or assets that might lead to loss.&lt;SEP&gt;Avoidance is a risk control strategy that eliminates potential losses by not engaging in risky activities or not owning assets that could lead to loss.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Loss Prevention">
+      <data key="d0">Loss Prevention</data>
+      <data key="d1">category</data>
+      <data key="d2">Loss Prevention is a component of Loss Control focused on reducing the frequency of potential losses.&lt;SEP&gt;Loss Prevention is focused on reducing the frequency of losses through proactive measures such as safety protocols and inspections.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Loss Reduction">
+      <data key="d0">Loss Reduction</data>
+      <data key="d1">category</data>
+      <data key="d2">Loss Reduction aims to minimize the impact of losses that do occur, often through responsive action plans and resource allocation.&lt;SEP&gt;Loss Reduction refers to efforts to decrease the severity of losses that have already occurred, to manage impact.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Segregation of Losses">
+      <data key="d0">Segregation of Losses</data>
+      <data key="d1">category</data>
+      <data key="d2">Segregation of Losses is a risk control strategy that organizes assets so that a single event does not cause a total loss.&lt;SEP&gt;Segregation of Losses is a risk management strategy that separates assets and activities to avoid total loss from a single event.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Contractual Transfer">
+      <data key="d0">Contractual Transfer</data>
+      <data key="d1">category</data>
+      <data key="d2">Contractual Transfer involves legally transferring responsibilities for potential losses through specific contract terms.&lt;SEP&gt;Contractual Transfer involves shifting the financial and legal responsibility for losses to another entity through legal agreements.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Risk Retention">
+      <data key="d0">Risk Retention</data>
+      <data key="d1">category</data>
+      <data key="d2">Risk Retention, or self-insurance, involves using one's own finances to cover losses as they occur.&lt;SEP&gt;Risk Retention, or self-insurance, is a strategy where an entity uses its own funds to cover losses instead of purchasing insurance.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Risk Transfer">
+      <data key="d0">Risk Transfer</data>
+      <data key="d1">category</data>
+      <data key="d2">Risk Transfer is the method of shifting financial responsibility for loss to another party or entity, typically through insurance contracts.&lt;SEP&gt;Risk Transfer is the process of shifting financial responsibility for a loss to another entity, often through insurance contracts.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Group Self-Insurance">
+      <data key="d0">Group Self-Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Group Self-Insurance allows multiple entities to pool resources to share the costs of risks, often resulting in lower expenses.&lt;SEP&gt;Group Self-Insurance is a pooling arrangement where multiple entities share the financial burden of risks.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Combination of Risk Management Techniques">
+      <data key="d0">Combination of Risk Management Techniques</data>
+      <data key="d1">category</data>
+      <data key="d2">The Combination of Risk Management Techniques refers to employing multiple methods to address and mitigate various perils effectively.&lt;SEP&gt;The Combination of Risk Management Techniques refers to using various methods simultaneously to effectively handle perils such as fire.</data>
+      <data key="d3">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="sprinkler system">
+      <data key="d0">sprinkler system</data>
+      <data key="d1">equipment</data>
+      <data key="d2">A sprinkler system is a firefighting equipment that can help prevent or minimize fire damage in a facility.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="firefighting equipment">
+      <data key="d0">firefighting equipment</data>
+      <data key="d1">equipment</data>
+      <data key="d2">Firefighting equipment includes tools and devices used to extinguish or control fires, ensuring safety in various environments.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="fire loss event">
+      <data key="d0">fire loss event</data>
+      <data key="d1">event</data>
+      <data key="d2">A fire loss event refers to an incident where a fire causes damage or destruction to property, leading to financial loss.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="insurance">
+      <data key="d0">insurance</data>
+      <data key="d1">organization</data>
+      <data key="d2">Insurance is a financial product that provides protection against potential future losses, including fire-related damages, through policies and premiums.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="First-Party Risks">
+      <data key="d0">First-Party Risks</data>
+      <data key="d1">category</data>
+      <data key="d2">First-party risks are the risks of loss faced by the entity purchasing the insurance, impacting their own assets or rights.&lt;SEP&gt;First-party risks encompass the potential losses faced by an individual or organization purchasing insurance for their own assets.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Third-Party Risks">
+      <data key="d0">Third-Party Risks</data>
+      <data key="d1">category</data>
+      <data key="d2">Third-party risks involve losses that affect someone other than the insured, which may result in liability claims against them.&lt;SEP&gt;Third-party risks involve losses to someone or some entity other than the insured that may be the insured's financial responsibility.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Financial Risks">
+      <data key="d0">Financial Risks</data>
+      <data key="d1">category</data>
+      <data key="d2">Financial risks are associated with the possibility of monetary loss or gain related to investments or business operations.&lt;SEP&gt;Financial risks are the potential for loss or gain arising from investments or business activities, often linked to market uncertainties.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Fundamental Risks">
+      <data key="d0">Fundamental Risks</data>
+      <data key="d1">category</data>
+      <data key="d2">Fundamental risks affect large groups or societies, such as natural disasters, and can sometimes be insured.&lt;SEP&gt;Fundamental risks are widespread risks affecting large populations, such as natural disasters or pandemics, which may or may not be insurable.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Particular Risks">
+      <data key="d0">Particular Risks</data>
+      <data key="d1">category</data>
+      <data key="d2">Particular risks are risks that impact individuals or single entities, often insurable unless they are speculative in nature.&lt;SEP&gt;Particular risks refer to risks that affect individual entities or specific situations, often insurable unless they involve speculative elements.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Sprinkler System">
+      <data key="d0">Sprinkler System</data>
+      <data key="d1">equipment</data>
+      <data key="d2">A sprinkler system is a fire protection mechanism that aids in extinguishing fires and preventing damage by discharging water automatically when a fire is detected.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Employees">
+      <data key="d0">Employees</data>
+      <data key="d1">person</data>
+      <data key="d2">Employees are individuals working within a company who are trained in various safety protocols, including the use of firefighting equipment to respond to fire incidents.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Factories">
+      <data key="d0">Factories</data>
+      <data key="d1">organization</data>
+      <data key="d2">Factories are industrial facilities where goods are produced; in this context, two factories are discussed in relation to managing fire risks.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Fire Insurance">
+      <data key="d0">Fire Insurance</data>
+      <data key="d1">organization</data>
+      <data key="d2">Fire insurance is a financial product that provides compensation for damages or losses caused by fire incidents, often requiring a deductible.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="$50,000 Deductible">
+      <data key="d0">$50,000 Deductible</data>
+      <data key="d1">economic_policy</data>
+      <data key="d2">The $50,000 deductible is a financial threshold that the organization agrees to pay before insurance coverage applies, reducing insurance premiums.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Categories of Risks">
+      <data key="d0">Categories of Risks</data>
+      <data key="d1">category</data>
+      <data key="d2">Categories of risks refer to various classifications that help in understanding the nature of risks involved, such as pure, speculative, and financial risks.</data>
+      <data key="d3">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Catastrophe Risk chapter">
+      <data key="d0">Catastrophe Risk chapter</data>
+      <data key="d1">event</data>
+      <data key="d2">The Catastrophe Risk chapter of the IAA Risk Book discusses how catastrophic losses can be insured.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Workers’ Compensation">
+      <data key="d0">Workers’ Compensation</data>
+      <data key="d1">category</data>
+      <data key="d2">Workers' compensation is insurance that provides wage replacement and medical benefits to employees injured in the course of employment, classified as a long-tail line of insurance.&lt;SEP&gt;Workers’ Compensation is a type of insurance providing benefits to workers injured on the job, eliminating the need for lawsuits against employers.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9&lt;SEP&gt;chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Unemployment Insurance">
+      <data key="d0">Unemployment Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Unemployment Insurance offers payments to unemployed individuals who meet certain criteria and is often funded through compulsory government systems.&lt;SEP&gt;Unemployment Insurance provides financial support to individuals who are unemployed but actively seeking work.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Surety Bonds">
+      <data key="d0">Surety Bonds</data>
+      <data key="d1">category</data>
+      <data key="d2">Surety Bonds are a type of insurance involving a promise that ensures one party meets its contractual obligations, typically in construction or finance.&lt;SEP&gt;Surety Bonds are financial instruments that ensure one party fulfills its contractual obligations to a second party, backed by an insurer.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurance">
+      <data key="d0">Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Insurance is a financial product designed to provide protection against financial losses or risks, covering both personal and commercial aspects.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Non-Financial Losses">
+      <data key="d0">Non-Financial Losses</data>
+      <data key="d1">category</data>
+      <data key="d2">Non-Financial Losses refer to types of loss that do not involve direct financial loss but can still be covered by insurance, such as pain and emotional distress.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Personal Lines Insurance">
+      <data key="d0">Personal Lines Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Personal Lines Insurance is a type of insurance that covers risks faced by individuals, providing financial protection for personal losses.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Commercial Lines Insurance">
+      <data key="d0">Commercial Lines Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Commercial Lines Insurance refers to insurance products designed to protect businesses from risks and financial losses they cannot afford to cover themselves.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="First-Party Coverages">
+      <data key="d0">First-Party Coverages</data>
+      <data key="d1">category</data>
+      <data key="d2">First-Party Coverages provide insurance reimbursements for losses that insureds themselves face, including damages to property and personal injuries.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Third-Party Insurance">
+      <data key="d0">Third-Party Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Third-Party Insurance covers losses that the insured is responsible for to another party, such as liability claims.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Property Loss">
+      <data key="d0">Property Loss</data>
+      <data key="d1">category</data>
+      <data key="d2">Property Loss refers to the damage or destruction of physical properties, which can be insured under certain coverages.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Motor/Auto Physical Damage">
+      <data key="d0">Motor/Auto Physical Damage</data>
+      <data key="d1">category</data>
+      <data key="d2">Motor/Auto Physical Damage covers losses related to the physical damage of vehicles due to accidents, theft, or other perils.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Business Interruption Insurance">
+      <data key="d0">Business Interruption Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Business Interruption Insurance compensates businesses for lost income during periods when business operations are halted.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Event Cancellation Insurance">
+      <data key="d0">Event Cancellation Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Event Cancellation Insurance provides coverage for financial losses if an event needs to be canceled due to unforeseen circumstances.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Legal Expense Insurance">
+      <data key="d0">Legal Expense Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Legal Expense Insurance protects individuals or businesses against legal costs arising from legal disputes.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Travel Insurance">
+      <data key="d0">Travel Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Travel Insurance is a type of insurance designed to cover expenses and losses associated with traveling.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Workers’ Compensation Insurance">
+      <data key="d0">Workers’ Compensation Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Workers' compensation insurance is a form of mandatory coverage designed to provide benefits to employees injured at work.&lt;SEP&gt;Workers’ Compensation Insurance protects workers by providing benefits for work-related injuries without requiring court action against employers.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9&lt;SEP&gt;chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Mortgage Insurance">
+      <data key="d0">Mortgage Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Mortgage Insurance protects lenders against losses when a borrower defaults on mortgage payments.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Catastrophic Losses">
+      <data key="d0">Catastrophic Losses</data>
+      <data key="d1">category</data>
+      <data key="d2">Catastrophic Losses refer to extensive and severe damages that can be financially devastating to individuals or organizations.</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurance Policies">
+      <data key="d0">Insurance Policies</data>
+      <data key="d1">category</data>
+      <data key="d2">Insurance policies are agreements that outline the coverage against risks and uncertainties faced by individuals or organizations.&lt;SEP&gt;Insurance policies are legal contracts between an insurer and insured, outlining coverage against various risks.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Surety Bond">
+      <data key="d0">Surety Bond</data>
+      <data key="d1">category</data>
+      <data key="d2">A surety bond is a contract guaranteeing that a builder will complete a project as per the agreed terms, protecting the client.&lt;SEP&gt;A surety bond is a financial agreement that ensures the completion of a project by the builder, protecting the client's interests.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Financial Risk Insurance">
+      <data key="d0">Financial Risk Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">A type of insurance covering potential losses from financial risks, such as trade credit and political risk insurance.&lt;SEP&gt;Financial risk insurance covers potential losses arising from financial uncertainties, such as trade credit or political risks.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Homeowners/Residential Policy">
+      <data key="d0">Homeowners/Residential Policy</data>
+      <data key="d1">category</data>
+      <data key="d2">This insurance policy covers physical damage and third-party liabilities for homeowners, offering protection for issues like storm damage.&lt;SEP&gt;This insurance policy provides coverage for homeowners, protecting against loss or damage to property and liabilities.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Commercial Multiple-Peril Policy">
+      <data key="d0">Commercial Multiple-Peril Policy</data>
+      <data key="d1">category</data>
+      <data key="d2">An insurance policy designed to cover various risks faced by businesses, including physical damage and liability insurance.&lt;SEP&gt;This type of insurance covers various risks for businesses, including property damage and liability claims.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Cyber Insurance">
+      <data key="d0">Cyber Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Cyber insurance provides coverage for data recovery and liabilities related to cyber incidents, securing businesses against digital threats.&lt;SEP&gt;Cyber insurance provides coverage for losses related to data breaches and cyber incidents, protecting firms' digital assets.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Marine Insurance">
+      <data key="d0">Marine Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Marine insurance offers coverage for vessels and goods transported by sea against loss or damage.&lt;SEP&gt;Ocean marine insurance offers protection for vessels against physical damage and third-party liabilities while operating on water.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Aviation Insurance">
+      <data key="d0">Aviation Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Aviation insurance caters to risks associated with aircraft operations, covering aircraft damage and third-party liabilities.&lt;SEP&gt;Insurance covering losses related to aircraft, including damage to the aircraft and third-party liabilities during operations.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Boiler and Machinery Insurance">
+      <data key="d0">Boiler and Machinery Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">This insurance covers the repair and replacement costs of machinery, along with preventive services to mitigate risks.&lt;SEP&gt;This specialized insurance covers losses related to equipment breakdown and often includes maintenance services.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Title Insurance">
+      <data key="d0">Title Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Title Insurance is a type of insurance that protects real estate buyers and lenders from issues related to the title of a property, such as claims or liens.&lt;SEP&gt;Title insurance protects buyers and lenders from losses due to defects in property titles and ensures clear ownership.&lt;SEP&gt;Title insurance protects buyers and lenders from past defects in property titles, ensuring clear ownership records.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06&lt;SEP&gt;chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Builder">
+      <data key="d0">Builder</data>
+      <data key="d1">person</data>
+      <data key="d2">The builder is a person or entity responsible for completing a construction project as per the contractual agreement with the client.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Obligee">
+      <data key="d0">Obligee</data>
+      <data key="d1">person</data>
+      <data key="d2">The obligee is the client in a construction contract who is guaranteed project completion by the builder.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurer">
+      <data key="d0">Insurer</data>
+      <data key="d1">organization</data>
+      <data key="d2">An Insurer is an organization that provides insurance coverage to individuals and entities, holding the responsibility to pay claims for covered incidents.&lt;SEP&gt;The insurer is the organization providing financial protection by compensating the obligee if the builder fails to meet contractual obligations.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06&lt;SEP&gt;chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Principal">
+      <data key="d0">Principal</data>
+      <data key="d1">person</data>
+      <data key="d2">The principal is the party who owes the obligation under the surety bond, typically the builder in the context of construction contracts.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Contractor">
+      <data key="d0">Contractor</data>
+      <data key="d1">person</data>
+      <data key="d2">Another contractor may be hired to complete the work if the original builder fails to fulfill their obligations.</data>
+      <data key="d3">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Title Insurer">
+      <data key="d0">Title Insurer</data>
+      <data key="d1">organization</data>
+      <data key="d2">A title insurer conducts extensive searches to verify property title and ensure there are no claims or liens against it prior to property transactions.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Parametric Insurance">
+      <data key="d0">Parametric Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Parametric Insurance is a type that pays out a predetermined amount based on the occurrence of a specified event, such as natural disasters.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Drones">
+      <data key="d0">Drones</data>
+      <data key="d1">category</data>
+      <data key="d2">Drones are new items that require insurance for first-party damages or third-party liabilities when they cause harm.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Episodic Insurance">
+      <data key="d0">Episodic Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Episodic Insurance covers first- and third-party losses for items during periods they are shared or rented, aligning with the sharing economy.&lt;SEP&gt;Episodic Insurance provides coverage for short-term periods when items, like vehicles, are shared or rented, addressing the needs of the sharing economy.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Professional Liability Insurance">
+      <data key="d0">Professional Liability Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Professional Liability Insurance protects professionals against claims of negligence and provides legal defense costs.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Natural Catastrophes">
+      <data key="d0">Natural Catastrophes</data>
+      <data key="d1">event</data>
+      <data key="d2">Natural catastrophes refer to destructive events, such as earthquakes, for which parametric insurance is increasingly popular.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Named Insured">
+      <data key="d0">Named Insured</data>
+      <data key="d1">category</data>
+      <data key="d2">The Named Insured is the person or business explicitly covered under a non-life insurance policy.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Additional Insured">
+      <data key="d0">Additional Insured</data>
+      <data key="d1">category</data>
+      <data key="d2">An Additional Insured is a person or business that receives limited coverage added by endorsement to the main policy.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurance Policy">
+      <data key="d0">Insurance Policy</data>
+      <data key="d1">category</data>
+      <data key="d2">An Insurance Policy is a contract that outlines the coverage agreement between the insured and insurer.&lt;SEP&gt;An insurance policy is a contract delineating the terms and conditions under which coverage is provided for specified risks.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085&lt;SEP&gt;chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claims">
+      <data key="d0">Claims</data>
+      <data key="d1">category</data>
+      <data key="d2">Claims are requests made to an insurance company for compensation for covered losses or damages incurred by the insured entity.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Liens">
+      <data key="d0">Liens</data>
+      <data key="d1">category</data>
+      <data key="d2">Liens are legal claims against a property that must be paid off when the property is sold or transferred.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Back Taxes">
+      <data key="d0">Back Taxes</data>
+      <data key="d1">category</data>
+      <data key="d2">Back Taxes refer to unpaid taxes that are owed on a property and can create a lien against it if not resolved.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Legal Defense">
+      <data key="d0">Legal Defense</data>
+      <data key="d1">category</data>
+      <data key="d2">Legal Defense refers to the protection provided to insured parties in the event of legal claims made against them, often included in liability insurance policies.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Physical Damage">
+      <data key="d0">Physical Damage</data>
+      <data key="d1">category</data>
+      <data key="d2">Physical Damage refers to harm or destruction of a property that can lead to claims under insurance policies.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Financial Loss">
+      <data key="d0">Financial Loss</data>
+      <data key="d1">category</data>
+      <data key="d2">Financial Loss encompasses losses resulting from damage, liability claims, or other risks covered under non-life insurance policies.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Derivatives">
+      <data key="d0">Derivatives</data>
+      <data key="d1">category</data>
+      <data key="d2">Derivatives in the context of insurance refer to contracts that gain or lose value based on the underlying insurance product or event, treated differently in accounting.</data>
+      <data key="d3">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Employee">
+      <data key="d0">Employee</data>
+      <data key="d1">person</data>
+      <data key="d2">An Employee is an individual who is insured under an insurance policy provided by their employer, seeking protection against specified risks.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claim">
+      <data key="d0">Claim</data>
+      <data key="d1">event</data>
+      <data key="d2">A Claim is a formal request made by an insured individual to their insurer for compensation for losses that may be covered under their insurance policy.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Fraudulent Claims">
+      <data key="d0">Fraudulent Claims</data>
+      <data key="d1">category</data>
+      <data key="d2">Fraudulent Claims are insurance claims that are intentionally made with false information to obtain funds from an insurer unjustly.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Moral Hazard">
+      <data key="d0">Moral Hazard</data>
+      <data key="d1">category</data>
+      <data key="d2">Moral Hazard refers to a situation where an insured individual may take greater risks because they do not bear the full cost of those risks, potentially leading to losses for the insurer.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Occurrence">
+      <data key="d0">Occurrence</data>
+      <data key="d1">event</data>
+      <data key="d2">An Occurrence is defined as an accident or event that results in unintentional loss to the insured, which may trigger multiple claims under different policies.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Non-Life Insurance Policy">
+      <data key="d0">Non-Life Insurance Policy</data>
+      <data key="d1">category</data>
+      <data key="d2">A Non-Life Insurance Policy is a contract that provides coverage for various risks, excluding life insurance, and typically includes provisions for claims and services.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claim Notice Provision">
+      <data key="d0">Claim Notice Provision</data>
+      <data key="d1">category</data>
+      <data key="d2">The Claim Notice Provision requires the insured to notify the insurer promptly after a loss occurs or when a claim is made against the insured.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Coverage Trigger">
+      <data key="d0">Coverage Trigger</data>
+      <data key="d1">category</data>
+      <data key="d2">Coverage Trigger refers to events that must happen for an insurance policy to respond to a particular loss claim, key to understanding policy applications.&lt;SEP&gt;Coverage Triggers are specific conditions or events that need to occur for an insurance policy to provide coverage for a loss.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e&lt;SEP&gt;chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claims Handling">
+      <data key="d0">Claims Handling</data>
+      <data key="d1">category</data>
+      <data key="d2">Claims Handling refers to the administrative process an insurer follows to review, evaluate, and settle claims made by insured parties.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Legal Defense Services">
+      <data key="d0">Legal Defense Services</data>
+      <data key="d1">category</data>
+      <data key="d2">Legal Defense Services encompass assistance provided by insurers to cover legal costs incurred by the insured in the event of claims.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Damaged Property">
+      <data key="d0">Damaged Property</data>
+      <data key="d1">category</data>
+      <data key="d2">Damaged Property refers to any items or assets that have incurred loss due to an insured event, for which the insured may file a claim.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Earthquake Peril">
+      <data key="d0">Earthquake Peril</data>
+      <data key="d1">category</data>
+      <data key="d2">Earthquake Peril refers to damage or loss occurring from earthquakes, which may or may not be covered under an insurance policy.</data>
+      <data key="d3">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claims-Made Policy">
+      <data key="d0">Claims-Made Policy</data>
+      <data key="d1">event</data>
+      <data key="d2">A claims-made policy is a type of insurance policy that covers claims reported during the policy period, often characterized by specific retroactive dates and tail coverage options.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Occurrence Policy">
+      <data key="d0">Occurrence Policy</data>
+      <data key="d1">event</data>
+      <data key="d2">An occurrence policy covers losses from events that transpire during the policy period, regardless of when the claims are reported.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Errors and Omissions Insurance">
+      <data key="d0">Errors and Omissions Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Errors and omissions insurance is a liability insurance that protects professionals against claims of inadequate work or negligent actions, also considered a long-tail line of insurance.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claims-Paid Policy">
+      <data key="d0">Claims-Paid Policy</data>
+      <data key="d1">event</data>
+      <data key="d2">A claims-paid policy covers losses once they are paid, often resulting in a requirement for the insured to remain with the same insurer until the claim is settled.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Payment Lag">
+      <data key="d0">Payment Lag</data>
+      <data key="d1">category</data>
+      <data key="d2">Payment Lag refers to the duration between the time a loss is reported to an insurer and the time when the final payment for that loss is made, which can vary based on the type of insurance.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Reporting Lag">
+      <data key="d0">Reporting Lag</data>
+      <data key="d1">category</data>
+      <data key="d2">Reporting Lag describes the time gap between when a loss event occurs and when it is reported to the insurer, impacting the claims process and potential settlements.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Soft-tail Insurance">
+      <data key="d0">Soft-tail Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Short-tail insurance includes policies that typically exhibit a brief time between the occurrence of a loss and the payment such as health insurance and property insurance, allowing for rapid claims management.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Long-Tail Insurance">
+      <data key="d0">Long-Tail Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Long-tail insurance represents types of coverage where there is an extended period between a loss being reported and the claim being settled, often involving complicated claims processes.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claims Settlement">
+      <data key="d0">Claims Settlement</data>
+      <data key="d1">event</data>
+      <data key="d2">Claims Settlement is the process through which an insurance company agrees to pay the costs for a claim, which might involve negotiations and agreements between parties involved.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Policy Limit">
+      <data key="d0">Policy Limit</data>
+      <data key="d1">category</data>
+      <data key="d2">Policy Limit defines the maximum amount an insurer will pay for a covered loss, a critical concept in insurance contracts influencing claims outcomes.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Premium Rates">
+      <data key="d0">Premium Rates</data>
+      <data key="d1">category</data>
+      <data key="d2">Premium Rates are the amounts that policyholders pay to maintain insurance coverage, influenced by various factors including risk assessments and historical loss data.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Occurrence Limit">
+      <data key="d0">Occurrence Limit</data>
+      <data key="d1">category</data>
+      <data key="d2">Occurrence Limit specifies a cap on the total amount an insurance policy will cover for losses related to a specific occurrence or event.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Liability Claims">
+      <data key="d0">Liability Claims</data>
+      <data key="d1">category</data>
+      <data key="d2">Liability Claims arise when a third party suffers a loss and seeks compensation from the insured, often leading to complex legal and claims resolutions.</data>
+      <data key="d3">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Data Issues">
+      <data key="d0">Data Issues</data>
+      <data key="d1">category</data>
+      <data key="d2">Data issues in insurance involve challenges related to the accuracy, completeness, and timeliness of claim data used for setting rates and reserves.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Risk and Uncertainty Chapter">
+      <data key="d0">Risk and Uncertainty Chapter</data>
+      <data key="d1">event</data>
+      <data key="d2">The Risk and Uncertainty chapter in the IAA Risk Book provides an in-depth discussion on the uncertainty in insurance data and outcomes.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claim History">
+      <data key="d0">Claim History</data>
+      <data key="d1">category</data>
+      <data key="d2">Claim history consists of the records of past insurance claims made by an insured, which is crucial for new insurers to assess risk.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Salvage and Subrogation">
+      <data key="d0">Salvage and Subrogation</data>
+      <data key="d1">category</data>
+      <data key="d2">Salvage and subrogation are rights in non-life insurance that deal with recovering losses from third parties after a claim is paid.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Emerging Products">
+      <data key="d0">Emerging Products</data>
+      <data key="d1">category</data>
+      <data key="d2">Emerging products in non-life insurance are new insurance offerings that arise due to changes in technology and risk environments.&lt;SEP&gt;Emerging products in non-life insurance refer to new and developing insurance products that present additional complexities.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72&lt;SEP&gt;chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Economic Environment">
+      <data key="d0">Economic Environment</data>
+      <data key="d1">category</data>
+      <data key="d2">The economic environment refers to the set of economic factors that affect the operations and conditions for businesses, including changes in policyholder behavior.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Social Environment">
+      <data key="d0">Social Environment</data>
+      <data key="d1">category</data>
+      <data key="d2">The social environment encompasses societal trends, behaviors, and demographic factors that can impact the insurance industry and policyholder decisions.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Statistical Fluctuation">
+      <data key="d0">Statistical Fluctuation</data>
+      <data key="d1">category</data>
+      <data key="d2">Statistical fluctuation in losses refers to the variations in loss amounts that occur due to random chance when other variables are constant.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Non-life Insurance Claim Volume">
+      <data key="d0">Non-life Insurance Claim Volume</data>
+      <data key="d1">category</data>
+      <data key="d2">Non-life insurance claim volume represents the total number of claims filed under non-life insurance policies by insured entities.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claim Adjusters">
+      <data key="d0">Claim Adjusters</data>
+      <data key="d1">person</data>
+      <data key="d2">Claim adjusters are professionals who evaluate insurance claims and determine the insurer's liability, often setting case reserves for damages.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Case Reserves">
+      <data key="d0">Case Reserves</data>
+      <data key="d1">category</data>
+      <data key="d2">Case reserves are estimates set by claim adjusters that reflect the anticipated costs associated with handling a specific claim.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insured">
+      <data key="d0">Insured</data>
+      <data key="d1">person</data>
+      <data key="d2">An insured is an individual or entity that holds an insurance policy and is protected against specific risks outlined in that policy.</data>
+      <data key="d3">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Reinsurance">
+      <data key="d0">Reinsurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Reinsurance is a practice where insurance companies purchase insurance from other insurers to mitigate risk exposure.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Motor/Auto Losses">
+      <data key="d0">Motor/Auto Losses</data>
+      <data key="d1">category</data>
+      <data key="d2">Motor/auto losses refer to financial losses related to motor vehicle claims, influenced by technological advancements and changing risks.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Climate Risks">
+      <data key="d0">Climate Risks</data>
+      <data key="d1">category</data>
+      <data key="d2">Climate risks encompass threats posed by natural disasters such as hurricanes, floods, and wildfires, impacting insurance products.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Ceded Reinsurance">
+      <data key="d0">Ceded Reinsurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Ceded reinsurance involves an insurance company transferring part of its risk to another insurer to reduce its liability.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurance Premium">
+      <data key="d0">Insurance Premium</data>
+      <data key="d1">category</data>
+      <data key="d2">An insurance premium is the amount paid for an insurance policy, which covers potential losses and administrative costs.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Life Insurance">
+      <data key="d0">Life Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Life insurance is a contract that provides a monetary benefit to a designated beneficiary upon the death of the insured individual.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Annuities">
+      <data key="d0">Annuities</data>
+      <data key="d1">category</data>
+      <data key="d2">Annuities are financial products that provide a stream of income, typically for retirement, in exchange for an initial investment.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Pension Obligations">
+      <data key="d0">Pension Obligations</data>
+      <data key="d1">category</data>
+      <data key="d2">Pension obligations are the commitments a company has to pay retirement benefits to its employees, often requiring periodic updates.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Facultative Reinsurance">
+      <data key="d0">Facultative Reinsurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Facultative reinsurance is a type of reinsurance negotiated individually for each policy, allowing tailored risk transfer.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Treaty Reinsurance">
+      <data key="d0">Treaty Reinsurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Treaty reinsurance involves an agreement where a reinsurer covers specified losses from the cedent's insurance policies.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Proportional Reinsurance">
+      <data key="d0">Proportional Reinsurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Proportional reinsurance is a method where the insurer and reinsurer share losses according to a predetermined percentage.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Non-Proportional Reinsurance">
+      <data key="d0">Non-Proportional Reinsurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Non-proportional reinsurance involves the reinsurer taking on losses that exceed a set limit defined in the reinsurance contract.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Deductible">
+      <data key="d0">Deductible</data>
+      <data key="d1">category</data>
+      <data key="d2">A deductible is the amount the insured must pay out-of-pocket before the insurance coverage kicks in for a claim.</data>
+      <data key="d3">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insuring Agreement">
+      <data key="d0">Insuring Agreement</data>
+      <data key="d1">event</data>
+      <data key="d2">The insuring agreement specifies the details regarding who or what is covered under the insurance policy and its terms.&lt;SEP&gt;The insuring agreement specifies the parties covered, the covered items or issues, and the terms of coverage in an insurance policy.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Exclusions Section">
+      <data key="d0">Exclusions Section</data>
+      <data key="d1">event</data>
+      <data key="d2">The exclusions section of an insurance policy specifies the perils or risks for which coverage is not provided.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Conditions">
+      <data key="d0">Conditions</data>
+      <data key="d1">event</data>
+      <data key="d2">Conditions in an insurance policy outline additional requirements, such as premium payment timing and post-loss reporting obligations.&lt;SEP&gt;Conditions in an insurance policy outline necessary actions and circumstances required for coverage to be valid and claims to be processed.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Endorsements">
+      <data key="d0">Endorsements</data>
+      <data key="d1">event</data>
+      <data key="d2">Endorsements are modifications to a standard insurance policy that may add, modify, or exclude coverages.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Coverage Deductibles and Limits">
+      <data key="d0">Coverage Deductibles and Limits</data>
+      <data key="d1">category</data>
+      <data key="d2">Coverage deductibles and limits refer to the amount an insured is responsible for paying before the insurance coverage kicks in and the maximum payout by the insurer.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Premium">
+      <data key="d0">Premium</data>
+      <data key="d1">category</data>
+      <data key="d2">The Premium is the amount paid by the ceding entity to the reinsurer, reflecting the anticipated risk of claims being transferred.&lt;SEP&gt;The premium is the amount paid by the insured to the insurer for coverage, which varies based on the type and extent of the insurance policy.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38&lt;SEP&gt;chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Property and Liability">
+      <data key="d0">Property and Liability</data>
+      <data key="d1">category</data>
+      <data key="d2">Property and liability refer to the types of coverage typically found in homeowners and residential insurance policies that protect against property damage and legal liabilities.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Policy Limits">
+      <data key="d0">Policy Limits</data>
+      <data key="d1">category</data>
+      <data key="d2">Policy limits define the maximum amount an insurance company will pay for a covered loss under an insurance policy.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Exclusions">
+      <data key="d0">Exclusions</data>
+      <data key="d1">category</data>
+      <data key="d2">Exclusions refer to the specific risks or perils that are not covered by an insurance policy, clarifying the limits of insurance protection.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Reinstatement Clause">
+      <data key="d0">Reinstatement Clause</data>
+      <data key="d1">event</data>
+      <data key="d2">A reinstatement clause outlines the conditions under which an insurance policy coverage can be reset after a claim is made.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Retrospective Rating">
+      <data key="d0">Retrospective Rating</data>
+      <data key="d1">event</data>
+      <data key="d2">Retrospective rating is a method of calculating insurance premiums based on the actual losses experienced by the insured during the policy term.</data>
+      <data key="d3">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Government">
+      <data key="d0">Government</data>
+      <data key="d1">organization</data>
+      <data key="d2">The Government may mandate certain insurance coverages and provide insurance directly when risks are too high or uncertain.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Motor/Auto Liability Insurance">
+      <data key="d0">Motor/Auto Liability Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Motor/auto liability insurance is required in some jurisdictions to cover damages from vehicle-related incidents.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurance Mandates">
+      <data key="d0">Insurance Mandates</data>
+      <data key="d1">category</data>
+      <data key="d2">Insurance mandates are regulations that require individuals or businesses to maintain certain types of insurance coverage.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="High-Risk Individuals">
+      <data key="d0">High-Risk Individuals</data>
+      <data key="d1">category</data>
+      <data key="d2">High-risk individuals are those considered more likely to incur significant insurance claims, often leading to difficulties in obtaining coverage in the voluntary market.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Money Laundering Laws">
+      <data key="d0">Money Laundering Laws</data>
+      <data key="d1">category</data>
+      <data key="d2">Money laundering laws are regulations prohibiting insurers from providing coverage to certain entities associated with illegal activities.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Risk Retention Programs">
+      <data key="d0">Risk Retention Programs</data>
+      <data key="d1">category</data>
+      <data key="d2">Risk retention programs are alternatives for meeting mandatory coverage requirements, allowing groups to manage risks collectively under government approval.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Flood Insurance">
+      <data key="d0">Flood Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Flood insurance is a type of insurance specifically designed to cover damages caused by flooding, often included in residual markets.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Terrorism Insurance">
+      <data key="d0">Terrorism Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Terrorism insurance is coverage for damages and losses caused by terrorist acts, often provided directly by the government when the voluntary market is unwilling.</data>
+      <data key="d3">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="United States">
+      <data key="d0">United States</data>
+      <data key="d1">geo</data>
+      <data key="d2">The United States is a country where specific legal rulings regarding insurance policies, particularly in commercial general liability, have had significant implications.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Non-Life Insurance Policies">
+      <data key="d0">Non-Life Insurance Policies</data>
+      <data key="d1">category</data>
+      <data key="d2">Non-life insurance policies encompass various types of coverage, including those that deal with property and liability risks.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Asbestos Liability Claims">
+      <data key="d0">Asbestos Liability Claims</data>
+      <data key="d1">event</data>
+      <data key="d2">Asbestos liability claims have become a significant issue in insurance coverage, as court rulings mandate coverage under certain circumstances.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claims-Made Insurance">
+      <data key="d0">Claims-Made Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Claims-made insurance policies provide coverage for claims reported during the policy period, which often leads to coverage complexities when transitioning to other types of insurance.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Occurrence-Based Insurance">
+      <data key="d0">Occurrence-Based Insurance</data>
+      <data key="d1">category</data>
+      <data key="d2">Occurrence-based insurance covers incidents that occur during the policy period regardless of when the claims are reported, differing from claims-made insurance.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Tail Policies">
+      <data key="d0">Tail Policies</data>
+      <data key="d1">category</data>
+      <data key="d2">Tail policies are a type of retroactive insurance that extends coverage for claims not reported before a policy ends, often relevant in medical and business transitions.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Loss Portfolio Transfer">
+      <data key="d0">Loss Portfolio Transfer</data>
+      <data key="d1">category</data>
+      <data key="d2">Loss Portfolio Transfer refers to the process where an insurer transfers a portfolio of claims liabilities to a reinsurer, often at a discounted price due to the time value of money.&lt;SEP&gt;Loss portfolio transfer involves transferring claims liability from one insurer to another, usually to remove risk from financial statements.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66&lt;SEP&gt;chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurers">
+      <data key="d0">Insurers</data>
+      <data key="d1">organization</data>
+      <data key="d2">Insurers are companies that provide risk management by offering policies to cover various losses, including property and liability.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Property Policy">
+      <data key="d0">Property Policy</data>
+      <data key="d1">category</data>
+      <data key="d2">A property policy is a type of insurance that protects against risks associated with physical property, including potential risks from insufficient safety measures like sprinkler systems.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Rating Authority">
+      <data key="d0">Rating Authority</data>
+      <data key="d1">organization</data>
+      <data key="d2">The rating authority is an official body that evaluates and approves insurance rates before they are implemented by insurers.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Socially Unacceptable Factors">
+      <data key="d0">Socially Unacceptable Factors</data>
+      <data key="d1">category</data>
+      <data key="d2">Socially unacceptable factors refer to characteristics that should not be used for discrimination in insurance, such as race or religion.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Data Analytics">
+      <data key="d0">Data Analytics</data>
+      <data key="d1">category</data>
+      <data key="d2">Data analytics involves using algorithms and statistical models to analyze large sets of data to inform decisions on insurance underwriting and risk assessment.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Coverage Changes">
+      <data key="d0">Coverage Changes</data>
+      <data key="d1">category</data>
+      <data key="d2">Coverage changes refer to adjustments made to insurance policies, which can occur due to legal rulings or market conditions.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Legal Rulings">
+      <data key="d0">Legal Rulings</data>
+      <data key="d1">event</data>
+      <data key="d2">Legal rulings include court decisions that affect insurance policies and how they are interpreted concerning coverage and claims.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Claims Liability">
+      <data key="d0">Claims Liability</data>
+      <data key="d1">category</data>
+      <data key="d2">Claims Liability represents the financial responsibility an insurance company has for claims made by its insureds following covered events.&lt;SEP&gt;Claims liability refers to the financial obligations an insurer has to pay for claims made by policyholders under their insurance agreements.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66&lt;SEP&gt;chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Insurance Premiums">
+      <data key="d0">Insurance Premiums</data>
+      <data key="d1">category</data>
+      <data key="d2">Insurance premiums are the amounts paid by policyholders to insurers for coverage, which can vary based on numerous risk factors.</data>
+      <data key="d3">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Ceding Entity">
+      <data key="d0">Ceding Entity</data>
+      <data key="d1">organization</data>
+      <data key="d2">The Ceding Entity refers to an insurance company that transfers its risk to a reinsurer, reflecting the expectations of loss and expense associated with claims liabilities.</data>
+      <data key="d3">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Reinsurer">
+      <data key="d0">Reinsurer</data>
+      <data key="d1">organization</data>
+      <data key="d2">The Reinsurer is an insurance company that assumes risk from a ceding entity and is responsible for handling specific claims and liabilities.</data>
+      <data key="d3">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Bad Faith Insurance Practices">
+      <data key="d0">Bad Faith Insurance Practices</data>
+      <data key="d1">category</data>
+      <data key="d2">Bad Faith Insurance Practices involve situations where insurers fail to fulfill their obligations to insureds, leading to potential legal actions.</data>
+      <data key="d3">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Contractual Remedy">
+      <data key="d0">Contractual Remedy</data>
+      <data key="d1">category</data>
+      <data key="d2">Contractual Remedy refers to the legal options available to insured parties when an insurer does not act in accordance with the terms of the insurance policy.</data>
+      <data key="d3">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Second-Party Insurance">
+      <data key="d0">Second-Party Insurance</data>
+      <data key="d3">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d2">Third-Party Insurance is related to the financial obligations of the insured when losses occur to another party.".</data>
+      <data key="d1">UNKNOWN</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <edge source="International Actuarial Association" target="Insurance Regulation Committee">
+      <data key="d5">9.0</data>
+      <data key="d6">The Insurance Regulation Committee is a part of the International Actuarial Association, focused on insurance regulation matters.</data>
+      <data key="d7">organizational structure, regulation oversight</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="International Actuarial Association" target="IAA Risk Book">
+      <data key="d5">26.0</data>
+      <data key="d6">The IAA Risk Book is a publication developed by the International Actuarial Association as part of their initiatives in actuarial science.&lt;SEP&gt;The IAA Risk Book is published by the International Actuarial Association, contributing to the understanding of risk management in insurance.";&lt;SEP&gt;The IAA Risk Book is published by the International Actuarial Association, emphasizing its focus on actuarial science and practices.</data>
+      <data key="d7">publication, organization&lt;SEP&gt;publication, professional organization&lt;SEP&gt;publication, regulatory guidance</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023&lt;SEP&gt;chunk-7894c778f2d4643377c8fa305c515a73&lt;SEP&gt;chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="International Actuarial Association" target="Canada">
+      <data key="d5">9.0</data>
+      <data key="d6">The headquarters of the International Actuarial Association is located in Canada, specifically in Ottawa, Ontario.</data>
+      <data key="d7">location, organizational base</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="International Actuarial Association" target="Bad Faith Claims">
+      <data key="d5">7.0</data>
+      <data key="d6">The topic of Bad Faith Claims is relevant to the work and guidelines provided by the International Actuarial Association regarding risk and liability.</data>
+      <data key="d7">insurance practices, legal implications</data>
+      <data key="d8">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Regulation Committee" target="Margaret Tiller Sherwood">
+      <data key="d5">8.0</data>
+      <data key="d6">Margaret Tiller Sherwood developed chapters that the Insurance Regulation Committee approved for the IAA Risk Book.</data>
+      <data key="d7">chapter development, approval process</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Regulation Committee" target="IAA Risk Book">
+      <data key="d5">9.0</data>
+      <data key="d6">The Insurance Regulation Committee approves and develops chapters in the IAA Risk Book to address regulatory standards in insurance.</data>
+      <data key="d7">committee oversight, regulatory framework</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Margaret Tiller Sherwood" target="IAA Risk Book">
+      <data key="d5">8.0</data>
+      <data key="d6">Margaret Tiller Sherwood is an author contributing to the development of chapters within the IAA Risk Book.</data>
+      <data key="d7">author contribution, chapter development</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Ralph Blanchard" target="IAA Risk Book">
+      <data key="d5">8.0</data>
+      <data key="d6">Ralph Blanchard reviewed chapters of the IAA Risk Book to ensure compliance and quality.</data>
+      <data key="d7">review process, content validation</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Kudzai Chigiji" target="IAA Risk Book">
+      <data key="d5">8.0</data>
+      <data key="d6">Kudzai Chigiji contributed as a reviewer to validate the content of chapters in the IAA Risk Book.</data>
+      <data key="d7">review process, content validation</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Toshihiro Kawano" target="IAA Risk Book">
+      <data key="d5">8.0</data>
+      <data key="d6">Toshihiro Kawano was involved in reviewing the IAA Risk Book, contributing to quality assurance.</data>
+      <data key="d7">review process, content validation</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Gerd Warnke" target="IAA Risk Book">
+      <data key="d5">8.0</data>
+      <data key="d6">Gerd Warnke participated as a reviewer for the IAA Risk Book, ensuring relevant content quality.</data>
+      <data key="d7">review process, content validation</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Perils and Coverages" target="Non-Life Insurance">
+      <data key="d5">9.0</data>
+      <data key="d6">Non-life insurance encompasses various perils and coverages that relate to events that pose risks outside the scope of life insurance.</data>
+      <data key="d7">insurance category, risk coverage</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Version Number">
+      <data key="d5">7.0</data>
+      <data key="d6">Version Number indicates the update cycle for the IAA Risk Book, allowing tracking of changes over different editions.</data>
+      <data key="d7">version tracking, updates</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Table of Contents">
+      <data key="d5">8.0</data>
+      <data key="d6">The Table of Contents serves to navigate the IAA Risk Book, detailing the sections included in the publication.</data>
+      <data key="d7">navigation, structure</data>
+      <data key="d8">chunk-7894c778f2d4643377c8fa305c515a73</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Risk Book Editorial Board">
+      <data key="d5">8.0</data>
+      <data key="d6">The Risk Book Editorial Board manages the development and updates of the IAA Risk Book, playing a crucial role in its content and accuracy.</data>
+      <data key="d7">management, publication oversight</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Contributors to the Risk Book">
+      <data key="d5">8.0</data>
+      <data key="d6">Contributors to the Risk Book provide valuable insights that shape the content and utility of the IAA Risk Book for its readers.</data>
+      <data key="d7">content development, collaboration</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Risk Management">
+      <data key="d5">8.0</data>
+      <data key="d6">The IAA Risk Book provides a detailed discussion of risk management techniques related to non-life perils and insurance.")</data>
+      <data key="d7">insurance, risk assessment</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Actuaries">
+      <data key="d5">7.0</data>
+      <data key="d6">Actuaries utilize information from the IAA Risk Book to assess non-life perils and manage risks effectively.")</data>
+      <data key="d7">professional practice, resource utilization</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Risk Management Techniques">
+      <data key="d5">8.0</data>
+      <data key="d6">The IAA Risk Book outlines various risk management techniques that are relevant in the context of non-life perils and their coverage.")</data>
+      <data key="d7">publication, risk assessment</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Non-Life Insurance">
+      <data key="d5">27.0</data>
+      <data key="d6">IAA Risk Book provides comprehensive details about non-life insurance, including definitions and types of coverage.&lt;SEP&gt;The IAA Risk Book provides detailed information on non-life insurance types and their coverage.".&lt;SEP&gt;The IAA Risk Book serves as a comprehensive resource for understanding various aspects of non-life insurance, including types and policies.</data>
+      <data key="d7">insurance guidelines, risk management&lt;SEP&gt;insurance reference, coverage details&lt;SEP&gt;insurance resource, coverage explanation</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38&lt;SEP&gt;chunk-5d3da1a801901208dff381d8878476b9&lt;SEP&gt;chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Workers’ Compensation">
+      <data key="d5">7.0</data>
+      <data key="d6">Workers’ Compensation is discussed within the context of non-life insurance in the IAA Risk Book.".</data>
+      <data key="d7">insurance type, policy context</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Unemployment Insurance">
+      <data key="d5">7.0</data>
+      <data key="d6">Unemployment Insurance is another non-life insurance topic covered in the IAA Risk Book.".</data>
+      <data key="d7">insurance context, benefits discussion</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Surety Bonds">
+      <data key="d5">7.0</data>
+      <data key="d6">Surety Bonds are explained within the IAA Risk Book as part of the broader non-life insurance categories.".</data>
+      <data key="d7">insurance category overview, contractual guarantee</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Insurance">
+      <data key="d5">9.0</data>
+      <data key="d6">The IAA Risk Book serves as a comprehensive resource detailing various types of insurance and risks involved.".</data>
+      <data key="d7">referential resource, insurance overview</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Risk and Uncertainty Chapter">
+      <data key="d5">9.0</data>
+      <data key="d6">The Risk and Uncertainty chapter is a part of the IAA Risk Book, discussing critical aspects of risk management in insurance.</data>
+      <data key="d7">resource content, chapter relevance</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Non-life Insurance">
+      <data key="d5">8.0</data>
+      <data key="d6">The IAA Risk Book provides detailed information and regulations about non-life insurance products and practices.</data>
+      <data key="d7">insurance education, regulatory framework</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="IAA Risk Book" target="Non-Life Insurance Policies">
+      <data key="d5">9.0</data>
+      <data key="d6">The IAA Risk Book provides detailed guidance on non-life insurance policies, directly relating to their definitions and regulations.</data>
+      <data key="d7">insurance guidance, coverage types</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Risk Management">
+      <data key="d5">7.0</data>
+      <data key="d6">Risk management techniques are crucial for understanding and addressing the risks associated with non-life insurance.</data>
+      <data key="d7">risk assessment, insurance</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Government Insurance Programs">
+      <data key="d5">7.0</data>
+      <data key="d6">Government Insurance Programs often provide coverage for specialized non-life insurance needs that are not adequately addressed by private markets.</data>
+      <data key="d7">insurance coverage, government involvement</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Underwriting Requirements">
+      <data key="d5">8.0</data>
+      <data key="d6">Underwriting Requirements strategically assess risks to determine eligibility for non-life insurance policies.</data>
+      <data key="d7">risk evaluation, policy qualification</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Adverse Selection">
+      <data key="d5">15.0</data>
+      <data key="d6">Adverse Selection is a critical issue in non-life insurance, as high-risk individuals may disproportionately seek coverage, affecting pricing and availability.&lt;SEP&gt;Adverse selection affects non-life insurance by causing insurance risks to be underestimated due to hidden information.</data>
+      <data key="d7">market dynamics, risk assessment&lt;SEP&gt;risk management, insurer challenges</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38&lt;SEP&gt;chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Rate and Policy Form Regulation">
+      <data key="d5">8.0</data>
+      <data key="d6">Rate and Policy Form Regulation governs how insurance products are structured and the rates charged for non-life insurance, ensuring fairness and compliance.</data>
+      <data key="d7">regulatory impact, insurance frameworks</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Changes in Rate">
+      <data key="d5">7.0</data>
+      <data key="d6">Changes in Rate affect the premiums of non-life insurance policies based on the assessment of risk and market conditions.</data>
+      <data key="d7">premium adjustment, market dynamics</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Bad Faith Claims">
+      <data key="d5">9.0</data>
+      <data key="d6">Bad Faith Claims arise when insurers fail to meet their obligations in non-life insurance, reflecting a serious legal and ethical concern.</data>
+      <data key="d7">legal action, obligation fulfillment</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Catastrophe Risk chapter">
+      <data key="d5">8.0</data>
+      <data key="d6">The Catastrophe Risk chapter discusses specific risks that fall under non-life insurance coverage.".</data>
+      <data key="d7">insurance classification, risk management</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Claims-Made Policy">
+      <data key="d5">8.0</data>
+      <data key="d6">Claims-made policies represent a specific category of non-life insurance, illustrating specialized coverage conditions and characteristics.</data>
+      <data key="d7">insurance types, policy features</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Occurrence Policy">
+      <data key="d5">8.0</data>
+      <data key="d6">Occurrence policies are a fundamental form of non-life insurance, showcasing coverage based on incidents happening during the policy period.</data>
+      <data key="d7">insurance types, coverage methods</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Workers’ Compensation">
+      <data key="d5">10.0</data>
+      <data key="d6">Workers' compensation is a key category in non-life insurance, focused on workplace-related injuries and relevant claims.</data>
+      <data key="d7">insurance categories, employee safety</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Errors and Omissions Insurance">
+      <data key="d5">9.0</data>
+      <data key="d6">Errors and omissions insurance falls within the realm of non-life insurance, protecting against specific professional liabilities.</data>
+      <data key="d7">professional liability, insurance categories</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Claims-Paid Policy">
+      <data key="d5">7.0</data>
+      <data key="d6">Claims-paid policies represent another variation of non-life insurance that addresses how claims payments are managed.</data>
+      <data key="d7">payment terms, insurance policies</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Insuring Agreement">
+      <data key="d5">8.0</data>
+      <data key="d6">The insuring agreement is a critical component of non-life insurance policies that outlines coverage terms.</data>
+      <data key="d7">insurance policy, coverage specifics</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Exclusions Section">
+      <data key="d5">8.0</data>
+      <data key="d6">The exclusions section describes specific perils that are not covered under non-life insurance policies.</data>
+      <data key="d7">coverage limitations, policy exclusions</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Conditions">
+      <data key="d5">7.0</data>
+      <data key="d6">Conditions outline the requirements and actions to be taken after a loss in non-life insurance policies.</data>
+      <data key="d7">policy requirements, post-loss actions</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Endorsements">
+      <data key="d5">7.0</data>
+      <data key="d6">Endorsements can modify non-life insurance policies to add or change coverage terms.</data>
+      <data key="d7">policy modifications, coverage adjustments</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance" target="Mandatory Coverages">
+      <data key="d5">8.0</data>
+      <data key="d6">Mandatory coverages are a subset of non-life insurance policies that must be purchased under certain regulations.</data>
+      <data key="d7">regulatory requirements, insurance coverage</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Risk Management" target="Actuarial Skills">
+      <data key="d5">10.0</data>
+      <data key="d6">Actuarial Skills are essential in effective Risk Management, providing the expertise to assess and mitigate risks related to insurance products.</data>
+      <data key="d7">expertise application, risk assessment</data>
+      <data key="d8">chunk-3b4d30c881c3bbf16b533605c4b49023</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Residual Markets" target="Government">
+      <data key="d5">8.0</data>
+      <data key="d6">The Government creates residual markets to cover high-risk individuals when insurance is unavailable in the voluntary market.</data>
+      <data key="d7">insurance provision, support</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Residual Markets" target="Health Insurance">
+      <data key="d5">7.0</data>
+      <data key="d6">Health insurance mandates lead to the existence of residual markets for high-risk individuals who cannot get coverage.</data>
+      <data key="d7">risk management, insurance accessibility</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Residual Markets" target="High-Risk Individuals">
+      <data key="d5">8.0</data>
+      <data key="d6">High-risk individuals often rely on residual markets when they cannot obtain coverage in the regular insurance market.</data>
+      <data key="d7">insurance access, risk grouping</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Residual Markets" target="Flood Insurance">
+      <data key="d5">8.0</data>
+      <data key="d6">Flood insurance is often included in residual markets to ensure coverage is available for those at high risk.</data>
+      <data key="d7">risk management, coverage provision</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Mandatory Coverages" target="Adverse Selection">
+      <data key="d5">8.0</data>
+      <data key="d6">Mandatory coverages exist to mitigate the risks associated with adverse selection in the insurance market.</data>
+      <data key="d7">risk management, insurance requirements</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Mandatory Coverages" target="Government">
+      <data key="d5">16.0</data>
+      <data key="d6">Mandatory coverages are enforced by government regulations to ensure that individuals have necessary insurance protection.&lt;SEP&gt;The Government mandates the purchase of certain coverages to protect individuals and businesses from potential financial risks.</data>
+      <data key="d7">insurance regulation, legal requirements&lt;SEP&gt;legislation, protection</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Adverse Selection" target="Insurance Companies">
+      <data key="d5">8.0</data>
+      <data key="d6">Insurance Companies face challenges related to adverse selection, where high-risk individuals seek coverage, impacting their financial stability.</data>
+      <data key="d7">risk management, financial stability</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Adverse Selection" target="Insurers">
+      <data key="d5">8.0</data>
+      <data key="d6">Insurers face challenges of adverse selection as they cannot fully predict the risk each policyholder brings, leading to potential financial losses.</data>
+      <data key="d7">risk management, financial risk</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Accident Insurance" target="Non-life Insurance">
+      <data key="d5">6.0</data>
+      <data key="d6">Accident insurance is a subset of non-life insurance designed to cover specific risks associated with accidents.")</data>
+      <data key="d7">insurance category, risk coverage</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Health Insurance" target="Non-life Insurance">
+      <data key="d5">6.0</data>
+      <data key="d6">Health insurance is classified under non-life insurance, focusing on healthcare-related risks and coverage.")</data>
+      <data key="d7">insurance category, risk coverage</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Health Insurance" target="Government">
+      <data key="d5">9.0</data>
+      <data key="d6">The Government mandates the purchase of health insurance to reduce risks associated with adverse selection.</data>
+      <data key="d7">mandate, regulation</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Short-term Disability Insurance" target="Non-life Insurance">
+      <data key="d5">6.0</data>
+      <data key="d6">Short-term disability insurance falls under the category of non-life insurance that provides coverage for disabled individuals temporarily.")</data>
+      <data key="d7">insurance category, risk coverage</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Long-term Disability Insurance" target="Non-life Insurance">
+      <data key="d5">6.0</data>
+      <data key="d6">Long-term disability insurance is part of non-life insurance products that provide income support over an extended period.")</data>
+      <data key="d7">6</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-life Insurance" target="Insurance Companies">
+      <data key="d5">8.0</data>
+      <data key="d6">Insurance companies typically provide coverage for non-life insurance, protecting against various non-life perils.")</data>
+      <data key="d7">insurance provider, risk coverage</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-life Insurance" target="Insurance Contracts">
+      <data key="d5">8.0</data>
+      <data key="d6">Insurance contracts are the formal agreements through which non-life insurance is provided to policyholders.")</data>
+      <data key="d7">contractual agreement, insurance service</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-life Insurance" target="Data Issues">
+      <data key="d5">8.0</data>
+      <data key="d6">Data issues are particularly relevant in the context of non-life insurance due to the challenges in accurately assessing claims.</data>
+      <data key="d7">insurance challenges, data accuracy</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-life Insurance" target="Salvage and Subrogation">
+      <data key="d5">10.0</data>
+      <data key="d6">Salvage and subrogation rights are integral components of non-life insurance, providing recovery mechanisms after claims are paid.</data>
+      <data key="d7">recovery rights, insurance practice</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-life Insurance" target="Emerging Products">
+      <data key="d5">15.0</data>
+      <data key="d6">Emerging products are a significant focus in non-life insurance as they represent new opportunities for coverage types.&lt;SEP&gt;Emerging products represent new offerings in the non-life insurance sector that require substantial evaluation and development.</data>
+      <data key="d7">innovation, insurance complexity&lt;SEP&gt;innovation, market evolution</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72&lt;SEP&gt;chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-life Insurance" target="Reinsurance">
+      <data key="d5">9.0</data>
+      <data key="d6">Reinsurance plays a critical role in non-life insurance by helping insurers manage risk exposure effectively.</data>
+      <data key="d7">risk management, financial stability</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-life Insurance" target="Life Insurance">
+      <data key="d5">6.0</data>
+      <data key="d6">Non-life insurance includes various products that protect against various risks, whereas life insurance specifically covers the risk of death.</data>
+      <data key="d7">insurance categories, risk protection</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Perils" target="Hazards">
+      <data key="d5">5.0</data>
+      <data key="d6">Perils are influenced by hazards, as the presence of hazards can increase the likelihood and impact of specific perils.")</data>
+      <data key="d7">5</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Risk Management Techniques" target="Loss Control">
+      <data key="d5">7.0</data>
+      <data key="d6">Loss control is an essential component of risk management techniques aimed at minimizing potential losses for insured entities.")</data>
+      <data key="d7">strategy, risk reduction</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Pure Risks" target="Non-life Perils">
+      <data key="d5">7.0</data>
+      <data key="d6">Pure risks are a type of non-life peril that can be insured against, such as fire and natural disasters.")</data>
+      <data key="d7">risk category, insurability</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Pure Risks" target="insurance">
+      <data key="d5">7.0</data>
+      <data key="d6">Pure risks can be managed through insurance, providing coverage for potential losses without the opportunity for gain.</data>
+      <data key="d7">risk management, insurance coverage</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Pure Risks" target="Categories of Risks">
+      <data key="d5">8.0</data>
+      <data key="d6">Pure risks are one of the categories of risks used to understand and manage potential losses within insured environments.</data>
+      <data key="d7">risk classification, insurance coverage</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Speculative Risks" target="insurance">
+      <data key="d5">6.0</data>
+      <data key="d6">Speculative risks are usually not covered by insurance due to their voluntary nature and potential for both loss and gain.</data>
+      <data key="d7">risk classification, insurance limitations</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Speculative Risks" target="Categories of Risks">
+      <data key="d5">7.0</data>
+      <data key="d6">Speculative risks are categorized to highlight the differences between risks that can and cannot be insured.</data>
+      <data key="d7">risk differentiation, insurance scope</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Frequency" target="Severity">
+      <data key="d5">9.0</data>
+      <data key="d6">Frequency and severity are two critical metrics in risk assessment that impact how insurance coverage is structured and priced.")</data>
+      <data key="d7">risk assessment metrics, insurance evaluation</data>
+      <data key="d8">chunk-5c65d1bf3fffbee73cab4023dda9b6e2</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Companies" target="Money Laundering Laws">
+      <data key="d5">9.0</data>
+      <data key="d6">Money laundering laws restrict insurance companies from providing coverage to certain entities, thereby maintaining regulatory compliance.</data>
+      <data key="d7">regulatory compliance, risk management</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Loss Control" target="Risk Control">
+      <data key="d5">18.0</data>
+      <data key="d6">Loss Control is a fundamental part of Risk Control, focused on reducing both the frequency and impact of risks.&lt;SEP&gt;Loss Control is a subset of Risk Control that focuses on minimizing potential losses through preventive measures.</data>
+      <data key="d7">risk management, mitigation</data>
+      <data key="d8">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Loss Control" target="Loss Prevention">
+      <data key="d5">8.0</data>
+      <data key="d6">Loss Prevention is an essential aspect of Loss Control that aims to prevent incidents that could lead to financial loss.</data>
+      <data key="d7">prevention, risk control</data>
+      <data key="d8">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Contracts" target="Claims">
+      <data key="d5">9.0</data>
+      <data key="d6">Insurance Contracts outline how Claims are processed, including the conditions under which payments are made and disputes arise.</data>
+      <data key="d7">contractual agreement, claims processing</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Contracts" target="Episodic Insurance">
+      <data key="d5">8.0</data>
+      <data key="d6">Episodic Insurance is structured as Insurance Contracts specifically designed for short-term coverage needs in shared economies.</data>
+      <data key="d7">insurance structure, sharing economy</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Contracts" target="Life Insurance">
+      <data key="d5">9.0</data>
+      <data key="d6">Life insurance contracts define the terms and conditions under which benefits are paid upon the death of the insured.</data>
+      <data key="d7">contractual agreement, benefits payout</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Risk Control" target="Combination of Risk Management Techniques">
+      <data key="d5">16.0</data>
+      <data key="d6">The Combination of Risk Management Techniques includes Risk Control methods to address various types of perils effectively.&lt;SEP&gt;The Combination of Risk Management Techniques integrates Risk Control strategies to effectively handle various risks.</data>
+      <data key="d7">comprehensive strategy, risk management&lt;SEP&gt;integrated approach, risk management</data>
+      <data key="d8">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Risk Financing" target="Risk Retention">
+      <data key="d5">16.0</data>
+      <data key="d6">Risk Retention is a key component of Risk Financing, employing personal funds to cover losses.&lt;SEP&gt;Risk Retention is a primary component of Risk Financing, utilizing internal funds for loss coverage.</data>
+      <data key="d7">financial management, insurance&lt;SEP&gt;financial strategy, loss coverage</data>
+      <data key="d8">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Risk Financing" target="Risk Transfer">
+      <data key="d5">16.0</data>
+      <data key="d6">Risk Transfer is another major strategy under Risk Financing, focusing on passing financial liability to another entity.&lt;SEP&gt;Risk Transfer is one of the primary strategies under Risk Financing used to manage financial responsibility for losses.</data>
+      <data key="d7">financial management, liability&lt;SEP&gt;financial strategy, risk management</data>
+      <data key="d8">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Risk Financing" target="Group Self-Insurance">
+      <data key="d5">7.0</data>
+      <data key="d6">Group Self-Insurance serves as a strategy under Risk Financing, allowing entities to pool their resources for shared risk reduction.</data>
+      <data key="d7">financial strategy, risk pooling</data>
+      <data key="d8">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Avoidance" target="Segregation of Losses">
+      <data key="d5">14.0</data>
+      <data key="d6">Segregation of Losses can be a part of an Avoidance strategy, reducing the risk of total loss from a single event.&lt;SEP&gt;Segregation of Losses can support Avoidance by ensuring that risks are distributed in a way that minimizes potential overall loss.</data>
+      <data key="d7">risk distribution, mitigation&lt;SEP&gt;risk strategy, prevention</data>
+      <data key="d8">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Contractual Transfer" target="Risk Transfer">
+      <data key="d5">18.0</data>
+      <data key="d6">Contractual Transfer is a method facilitating Risk Transfer by legally defining responsibility in contracts.&lt;SEP&gt;Contractual Transfer is a specific mechanism through which Risk Transfer can occur, establishing legal responsibilities in agreements.</data>
+      <data key="d7">contract law, risk responsibility&lt;SEP&gt;contractual obligation, risk management</data>
+      <data key="d8">chunk-854cf520191f45b2bdcacfd4b2abc6fb</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="sprinkler system" target="firefighting equipment">
+      <data key="d5">8.0</data>
+      <data key="d6">The sprinkler system is categorized under firefighting equipment and serves a vital role in fire prevention and control.</data>
+      <data key="d7">fire safety, prevention</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="fire loss event" target="insurance">
+      <data key="d5">9.0</data>
+      <data key="d6">Insurance often covers incidents classified as fire loss events, helping mitigate financial damage from such occurrences.</data>
+      <data key="d7">financial protection, risk management</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="insurance" target="First-Party Risks">
+      <data key="d5">8.0</data>
+      <data key="d6">First-party risks are directly insured under policies purchased by the entity to cover potential personal losses.</data>
+      <data key="d7">risk coverage, personal assets</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="insurance" target="Third-Party Risks">
+      <data key="d5">9.0</data>
+      <data key="d6">Third-party risks imply that insurance may cover losses affecting entities other than the insured, such as liability claims.</data>
+      <data key="d7">liability coverage, financial responsibility</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="insurance" target="Financial Risks">
+      <data key="d5">5.0</data>
+      <data key="d6">Certain financial risks may be addressed with specialized insurance products, although many remain uninsurable.</data>
+      <data key="d7">investment risk, insurance products</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="insurance" target="Fundamental Risks">
+      <data key="d5">7.0</data>
+      <data key="d6">Some fundamental risks can be insured, especially those impacting communities, while others like war are generally uninsurable.</data>
+      <data key="d7">insurance scope, public policy</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="insurance" target="Particular Risks">
+      <data key="d5">8.0</data>
+      <data key="d6">Particular risks are typically insurable unless deemed speculative, focusing on individual or entity losses.</data>
+      <data key="d7">insurance coverage, risk management</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="First-Party Risks" target="Fire Insurance">
+      <data key="d5">9.0</data>
+      <data key="d6">First-party risks are generally covered by fire insurance to protect the insured's own assets against fire-related losses.</data>
+      <data key="d7">insurance coverage, asset protection</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Third-Party Risks" target="Fire Insurance">
+      <data key="d5">8.0</data>
+      <data key="d6">Fire insurance can also address liabilities arising from third-party risks that result from fire incidents, providing comprehensive coverage.</data>
+      <data key="d7">liability coverage, risk exposure</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Fundamental Risks" target="Fire Insurance">
+      <data key="d5">6.0</data>
+      <data key="d6">Some fundamental risks might be insurable through specialized fire insurance policies under specific circumstances for public benefit.</data>
+      <data key="d7">public policy, insurance function</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Particular Risks" target="Fire Insurance">
+      <data key="d5">8.0</data>
+      <data key="d6">Particular risks are often covered by fire insurance, allowing for protection against specific, individual loss events.</data>
+      <data key="d7">insurance coverage, personal losses</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Sprinkler System" target="Employees">
+      <data key="d5">8.0</data>
+      <data key="d6">Training employees to use the sprinkler system enhances fire safety preparedness and response within the organization.</data>
+      <data key="d7">training, fire safety</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Employees" target="Factories">
+      <data key="d5">9.0</data>
+      <data key="d6">Employees working in factories are crucial for implementing safety protocols and managing fire risks associated with production activities.</data>
+      <data key="d7">workplace safety, risk management</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Factories" target="Fire Insurance">
+      <data key="d5">9.0</data>
+      <data key="d6">Factories often purchase fire insurance to protect against potential damages from fire loss events, thereby mitigating financial risks.</data>
+      <data key="d7">financial protection, risk mitigation</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Fire Insurance" target="$50,000 Deductible">
+      <data key="d5">7.0</data>
+      <data key="d6">The $50,000 deductible reduces the insurance premium, which the organization pays for fire insurance while managing risk exposure.</data>
+      <data key="d7">financial strategy, insurance policy</data>
+      <data key="d8">chunk-860785edb25b3bff2bb26cbd44082b2a</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Unemployment Insurance" target="Workers’ Compensation Insurance">
+      <data key="d5">7.0</data>
+      <data key="d6">Workers’ Compensation Insurance and Unemployment Insurance are both forms of coverage that protect individuals in job-related scenarios.".</data>
+      <data key="d7">employee protection, insurance types</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance" target="Non-Financial Losses">
+      <data key="d5">8.0</data>
+      <data key="d6">Non-Financial Losses are a type of risk that can be covered by insurance policies, as detailed in the IAA Risk Book.".</data>
+      <data key="d7">insurance coverage, risk management</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance" target="Personal Lines Insurance">
+      <data key="d5">7.0</data>
+      <data key="d6">Personal Lines Insurance is a category of insurance that falls under the broader insurance umbrella, protecting individuals.".</data>
+      <data key="d7">insurance type, personal coverage</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance" target="Commercial Lines Insurance">
+      <data key="d5">7.0</data>
+      <data key="d6">Commercial Lines Insurance protects businesses from various financial losses, thus being a critical part of overall insurance offerings.".</data>
+      <data key="d7">business protection, financial security</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance" target="Catastrophic Losses">
+      <data key="d5">8.0</data>
+      <data key="d6">Catastrophic Losses are a significant risk that insurance aims to cover, specifically highlighted in the IAA Risk Book.".</data>
+      <data key="d7">high severity risk, insurance coverage</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Financial Losses" target="First-Party Coverages">
+      <data key="d5">6.0</data>
+      <data key="d6">First-Party Coverages may include provisions for protecting against Non-Financial Losses as per various insurance policies.".</data>
+      <data key="d7">coverage type, loss protection</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Third-Party Insurance" target="Second-Party Insurance">
+      <data key="d5">6.0</data>
+      <data key="d6">Third-Party Insurance is related to the financial obligations of the insured when losses occur to another party.".</data>
+      <data key="d7">insurance responsibility, financial obligation</data>
+      <data key="d8">chunk-5d3da1a801901208dff381d8878476b9</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Workers’ Compensation Insurance" target="Government">
+      <data key="d5">8.0</data>
+      <data key="d6">Government regulation mandates the use of workers' compensation insurance in certain jurisdictions to protect employees.</data>
+      <data key="d7">mandatory coverage, workplace safety</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policies" target="Surety Bond">
+      <data key="d5">8.0</data>
+      <data key="d6">A surety bond is a specific type of insurance policy that ensures project completion for the obligee.</data>
+      <data key="d7">insurance type, obligation</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policies" target="Financial Risk Insurance">
+      <data key="d5">15.0</data>
+      <data key="d6">Financial risk insurance is a specific type of insurance policy designed to cover speculative financial losses.&lt;SEP&gt;Financial risk insurance is classified within broader insurance policies to cover speculative losses.</data>
+      <data key="d7">coverage type, financial uncertainty&lt;SEP&gt;coverage type, speculative risks</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policies" target="Homeowners/Residential Policy">
+      <data key="d5">18.0</data>
+      <data key="d6">Homeowners/residential policies are common insurance contracts that protect against risks associated with homeownership.&lt;SEP&gt;Homeowners/residential policy is a common type of insurance that protects individuals from specific risks related to homeownership.</data>
+      <data key="d7">property insurance, client coverage&lt;SEP&gt;property protection, insurance category</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policies" target="Commercial Multiple-Peril Policy">
+      <data key="d5">18.0</data>
+      <data key="d6">Commercial multiple-peril policies provide comprehensive coverage against various business-related risks.&lt;SEP&gt;Commercial multiple-peril policies provide coverage for businesses against various types of risks and liabilities.</data>
+      <data key="d7">business insurance, coverage type&lt;SEP&gt;business protection, insurance type</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policies" target="Cyber Insurance">
+      <data key="d5">17.0</data>
+      <data key="d6">Cyber insurance is a category of insurance policies dedicated to addressing losses from cyber threats and data breaches.&lt;SEP&gt;Cyber insurance is a significant category within insurance policies that focuses on digital threats and their costs.</data>
+      <data key="d7">digital coverage, security risks&lt;SEP&gt;digital security, insurance coverage</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policies" target="Marine Insurance">
+      <data key="d5">18.0</data>
+      <data key="d6">Marine insurance is another specific area of insurance, addressing risks related to maritime operations.&lt;SEP&gt;Marine insurance is another specific insurance policy designed to mitigate risks associated with maritime operations.</data>
+      <data key="d7">maritime coverage, insurance category&lt;SEP&gt;transport insurance, maritime risks</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policies" target="Aviation Insurance">
+      <data key="d5">18.0</data>
+      <data key="d6">Aviation insurance falls under insurance policies covering risks associated with aircraft operations.&lt;SEP&gt;Aviation insurance is designed to cover aircraft-related risks, making it part of specialized insurance policies.</data>
+      <data key="d7">aircraft coverage, insurance category&lt;SEP&gt;aviation coverage, risk management</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policies" target="Boiler and Machinery Insurance">
+      <data key="d5">17.0</data>
+      <data key="d6">Boiler and machinery insurance encompasses policies that protect against equipment failures, indicating its specialized nature.&lt;SEP&gt;Boiler and machinery insurance is a specialized insurance category focused on equipment breakdown risks.</data>
+      <data key="d7">equipment coverage, insurance type&lt;SEP&gt;equipment protection, specialized insurance</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policies" target="Title Insurance">
+      <data key="d5">20.0</data>
+      <data key="d6">Title insurance is designed to protect against defects in property titles, making it an essential part of real estate transactions.&lt;SEP&gt;Title insurance protects property buyers against past defects in titles, thus being a critical insurance policy for real estate transactions.</data>
+      <data key="d7">property rights, real estate&lt;SEP&gt;real estate protection, insurance category</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Surety Bond" target="Builder">
+      <data key="d5">10.0</data>
+      <data key="d6">The builder is the party guaranteed by the surety bond to complete the project satisfactorily.</data>
+      <data key="d7">financial guarantee, project completion</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Surety Bond" target="Obligee">
+      <data key="d5">10.0</data>
+      <data key="d6">The obligee benefits from the surety bond as it guarantees project completion and protects their interests.</data>
+      <data key="d7">client protection, project assurance</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Title Insurance" target="Liens">
+      <data key="d5">9.0</data>
+      <data key="d6">Title Insurance protects against Liens on a property, ensuring that buyers are safeguarded from unexpected claims that may arise.</data>
+      <data key="d7">property protection, financial security</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Title Insurance" target="Claims">
+      <data key="d5">8.0</data>
+      <data key="d6">Title Insurance helps in addressing Claims related to property disputes, maintaining legal ownership integrity.</data>
+      <data key="d7">insurance claims, property rights</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Title Insurance" target="Back Taxes">
+      <data key="d5">8.0</data>
+      <data key="d6">Title Insurance can cover Back Taxes that might create issues during property transactions, ensuring clear ownership.</data>
+      <data key="d7">property conveyance, debt resolution</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Builder" target="Obligee">
+      <data key="d5">9.0</data>
+      <data key="d6">The builder is contractually obligated to complete the project for the obligee, the client needing the construction work done.</data>
+      <data key="d7">contractual obligation, client relationship</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Builder" target="Insurer">
+      <data key="d5">8.0</data>
+      <data key="d6">The insurer may seek compensation from the builder if they fail to complete the project, indicating a financial relationship between them.</data>
+      <data key="d7">financial liability, contractual relationship</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Obligee" target="Insurer">
+      <data key="d5">9.0</data>
+      <data key="d6">The insurer financially protects the obligee by compensating damages if the builder fails to fulfill their contractual obligations.</data>
+      <data key="d7">financial protection, contractual assurance</data>
+      <data key="d8">chunk-eb9dc035e681189524c321d0dc9e6a06</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurer" target="Employee">
+      <data key="d5">18.0</data>
+      <data key="d6">The Insurer has a contractual relationship with the Employee, providing insurance coverage and assuming responsibility for covered claims made by the Employee.</data>
+      <data key="d7">insurance contract, liability</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurer" target="Claims Handling">
+      <data key="d5">8.0</data>
+      <data key="d6">The Insurer uses Claims Handling processes to evaluate and settle Claims submitted by Employees.</data>
+      <data key="d7">process management, insurance operations</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Title Insurer" target="Insurance Policy">
+      <data key="d5">8.0</data>
+      <data key="d6">The Title Insurer conducts searches as a prerequisite to ensure property title issues are covered by the Insurance Policy.</data>
+      <data key="d7">property assurance, insurance process</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Parametric Insurance" target="Natural Catastrophes">
+      <data key="d5">9.0</data>
+      <data key="d6">Parametric Insurance is utilized to cover risks associated with Natural Catastrophes, facilitating quick compensation post-event.</data>
+      <data key="d7">risk coverage, disaster response</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Drones" target="Episodic Insurance">
+      <data key="d5">7.0</data>
+      <data key="d6">Insurance for Drones falls under the recent trend of Episodic Insurance, covering periods of usage in sharing scenarios.</data>
+      <data key="d7">emerging risks, insurance innovation</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Episodic Insurance" target="Physical Damage">
+      <data key="d5">8.0</data>
+      <data key="d6">Episodic Insurance provides coverage for Physical Damage incurred during the rental or sharing period of properties or vehicles.</data>
+      <data key="d7">temporary coverage, shared assets</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Professional Liability Insurance" target="Additional Insured">
+      <data key="d5">6.0</data>
+      <data key="d6">Professional Liability Insurance extends to protect the Additional Insured against specific claims in covered scenarios.</data>
+      <data key="d7">liability protection, shared coverage</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Named Insured" target="Insurance Policy">
+      <data key="d5">10.0</data>
+      <data key="d6">The Named Insured is listed in the Insurance Policy and has the broadest rights under it.</data>
+      <data key="d7">policy coverage, primary holder</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Policy" target="Insurance Premium">
+      <data key="d5">8.0</data>
+      <data key="d6">The price of insurance premium is directly tied to the terms of the insurance policy and the associated risks covered.</data>
+      <data key="d7">contractual relationship, financial obligation</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claims" target="Legal Defense">
+      <data key="d5">19.0</data>
+      <data key="d6">Legal Defense serves to protect policyholders when Claims are made against them, securing their professional reputation in liability cases.&lt;SEP&gt;The occurrence of Claims often necessitates Legal Defense, highlighting the interconnection between claims-made and defense policies.</data>
+      <data key="d7">legal protection, liability insurance&lt;SEP&gt;risk management, liability response</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claims" target="Financial Loss">
+      <data key="d5">7.0</data>
+      <data key="d6">Claims often result from Financial Losses when damages or liabilities exceed the policy coverage, leading to disputes.</data>
+      <data key="d7">insurance payouts, financial impact</data>
+      <data key="d8">chunk-40b0e477ae6d11b9cd074d3bcae3c5da</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Employee" target="Claim">
+      <data key="d5">16.0</data>
+      <data key="d6">The Employee submits a Claim to the Insurer to recover funds for losses incurred, which may relate to incidents covered under their insurance policy.</data>
+      <data key="d7">claim submission, recovery</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claim" target="Fraudulent Claims">
+      <data key="d5">14.0</data>
+      <data key="d6">Fraudulent Claims are a type of Claim made with false information, representing a significant risk to Insurers and leading to possible denial of legitimate claims.</data>
+      <data key="d7">insurance fraud, risk management</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claim" target="Non-Life Insurance Policy">
+      <data key="d5">16.0</data>
+      <data key="d6">The Non-Life Insurance Policy outlines the conditions under which a Claim can be made by the Employee for losses or damages covered by the policy.</data>
+      <data key="d7">policy terms, claims process</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claim" target="Occurrence">
+      <data key="d5">16.0</data>
+      <data key="d6">The occurrence of an unforeseen event can lead to a Claim being made by the insured, indicating intense connections between the concepts of the event and the insurance response.</data>
+      <data key="d7">event-triggered claims, insurance mechanics</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claim" target="Claim Notice Provision">
+      <data key="d5">9.0</data>
+      <data key="d6">The Claim Notice Provision requires the Employee to notify the Insurer promptly about any Claims made, ensuring timely processing of claims.</data>
+      <data key="d7">notification requirement, claims process</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claim" target="Legal Defense Services">
+      <data key="d5">7.0</data>
+      <data key="d6">Claims may require Legal Defense Services if the insurer is challenged legally regarding the validity of a Claim.</data>
+      <data key="d7">claims defense, legal support</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Moral Hazard" target="Non-Life Insurance Policy">
+      <data key="d5">12.0</data>
+      <data key="d6">Moral Hazard arises from the nature of coverage in Non-Life Insurance Policies, potentially leading to situations where insured parties engage in riskier behavior.</data>
+      <data key="d7">risk assessment, behavioral economics</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance Policy" target="Earthquake Peril">
+      <data key="d5">7.0</data>
+      <data key="d6">Earthquake Peril refers to specific coverage provisions within Non-Life Insurance Policies about losses that result from earthquakes.</data>
+      <data key="d7">coverage specification, risk classification</data>
+      <data key="d8">chunk-49c681c4027f4aabc223ae2177cfc42e</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Coverage Trigger" target="Occurrence Limit">
+      <data key="d5">6.0</data>
+      <data key="d6">The occurrence limit can affect the applicability of the coverage trigger as it determines the cap on losses covered within a specific incident.</data>
+      <data key="d7">insurance terms, coverage implications</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Coverage Trigger" target="Claims-Made Policy">
+      <data key="d5">9.0</data>
+      <data key="d6">Coverage triggers are a key feature of claims-made policies, dictating the conditions under which claims can be made during the policy period.</data>
+      <data key="d7">policy features, insurance mechanics</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Payment Lag" target="Claims Settlement">
+      <data key="d5">7.0</data>
+      <data key="d6">The payment lag influences how quickly claims settlements are finalized, which can affect the cash flow of insured parties.</data>
+      <data key="d7">claims process, financial impact</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Payment Lag" target="Long-Tail Insurance">
+      <data key="d5">9.0</data>
+      <data key="d6">Long-tail insurance often involves significant payment lag due to extended claims processing and settlement times.</data>
+      <data key="d7">insurance types, claims duration</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Reporting Lag" target="Claims Settlement">
+      <data key="d5">8.0</data>
+      <data key="d6">The timing of claims settlement is directly affected by the reporting lag, as delays in reporting can postpone processing and payment.</data>
+      <data key="d7">claims process, timing</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Reporting Lag" target="Long-Tail Insurance">
+      <data key="d5">8.0</data>
+      <data key="d6">Long-tail insurance characteristics typically include an extended reporting lag as claims can take time to surface and be processed.</data>
+      <data key="d7">claims duration, insurance characteristics</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claims Settlement" target="Liability Claims">
+      <data key="d5">9.0</data>
+      <data key="d6">Liability claims often result in claims settlements after negotiations regarding the extent and nature of the loss claimed.</data>
+      <data key="d7">insurance claims, legal settlements</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Policy Limit" target="Premium Rates">
+      <data key="d5">8.0</data>
+      <data key="d6">Premium rates are influenced by the policy limits set by insurance providers, as higher limits typically lead to higher premiums.</data>
+      <data key="d7">insurance pricing, policy terms</data>
+      <data key="d8">chunk-088e006ffcf9011043ec204248ccd020</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Data Issues" target="Claim History">
+      <data key="d5">7.0</data>
+      <data key="d6">Claim history affects data completeness and accuracy issues when changing insurers, which is critical in non-life insurance.</data>
+      <data key="d7">data reliability, insurance transition</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Economic Environment" target="Non-life Insurance Claim Volume">
+      <data key="d5">8.0</data>
+      <data key="d6">The economic environment influences non-life insurance claim volume, as economic conditions can affect policyholder behavior and claims activity.</data>
+      <data key="d7">economic impact, claims dynamics</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Social Environment" target="Non-life Insurance Claim Volume">
+      <data key="d5">7.0</data>
+      <data key="d6">The social environment can affect non-life insurance claim volume through changes in public behavior and demographic shifts that impact insurance needs.</data>
+      <data key="d7">socioeconomic factors, claims behavior</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Statistical Fluctuation" target="Non-life Insurance Claim Volume">
+      <data key="d5">6.0</data>
+      <data key="d6">Statistical fluctuations relate to the variations in claim volume experienced in non-life insurance, affecting overall financial performance.</data>
+      <data key="d7">risk variability, financial impact</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-life Insurance Claim Volume" target="Insured">
+      <data key="d5">7.0</data>
+      <data key="d6">The volume of non-life insurance claims directly affects insured entities as it influences the overall cost and reliability of their coverage.</data>
+      <data key="d7">claims impact, insurance reliability</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claim Adjusters" target="Case Reserves">
+      <data key="d5">9.0</data>
+      <data key="d6">Claim adjusters determine the case reserves for claims, reflecting their assessment of anticipated loss payments and expenses.</data>
+      <data key="d7">claims handling, financial assessment</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claim Adjusters" target="Insured">
+      <data key="d5">8.0</data>
+      <data key="d6">The insured interacts with claim adjusters during the claims process, where adjusters evaluate claims on behalf of the insured's insurer.</data>
+      <data key="d7">claims process, policyholder interaction</data>
+      <data key="d8">chunk-e3b85dc382df5c44abcfe359f5091e72</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Reinsurance" target="Ceded Reinsurance">
+      <data key="d5">16.0</data>
+      <data key="d6">Ceded reinsurance is a method used within reinsurance frameworks to transfer risk from one insurer to another.&lt;SEP&gt;Ceded reinsurance is a specific type of reinsurance where insurers pass on risk to other reinsurers.</data>
+      <data key="d7">risk management, insurance transfer&lt;SEP&gt;risk transfer, financial arrangement</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Reinsurance" target="Facultative Reinsurance">
+      <data key="d5">7.0</data>
+      <data key="d6">Facultative reinsurance is a specific approach within the broader category of reinsurance, tailored for individual policies.</data>
+      <data key="d7">risk transfer, customization</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Motor/Auto Losses" target="Climate Risks">
+      <data key="d5">6.0</data>
+      <data key="d6">Climate risks have significant implications for motor/auto losses as extreme weather events can increase claims in this category.</data>
+      <data key="d7">impact of climate change, risk assessment</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurance Premium" target="Deductible">
+      <data key="d5">7.0</data>
+      <data key="d6">The insurance premium may be influenced by the deductible amount, affecting overall insurance costs and coverage decisions.</data>
+      <data key="d7">cost structure, policy terms</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Annuities" target="Pension Obligations">
+      <data key="d5">8.0</data>
+      <data key="d6">Annuities can serve as a funding mechanism for pension obligations by providing ongoing income during retirement.</data>
+      <data key="d7">retirement planning, income generation</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Facultative Reinsurance" target="Treaty Reinsurance">
+      <data key="d5">8.0</data>
+      <data key="d6">Treaty reinsurance and facultative reinsurance are two primary methods of managing risk through reinsurance agreements.</data>
+      <data key="d7">insurance negotiation, risk sharing</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Treaty Reinsurance" target="Proportional Reinsurance">
+      <data key="d5">9.0</data>
+      <data key="d6">Proportional reinsurance is a common arrangement within treaty reinsurance where losses are shared between the insurer and reinsurer.</data>
+      <data key="d7">risk sharing, losses allocation</data>
+      <data key="d8">chunk-777a24db2d47d5093bb701f380784085</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insuring Agreement" target="Coverage Deductibles and Limits">
+      <data key="d5">8.0</data>
+      <data key="d6">The insuring agreement outlines coverage details including deductible amounts and limits on claims.</data>
+      <data key="d7">insurance terms, policy benefits</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insuring Agreement" target="Premium">
+      <data key="d5">7.0</data>
+      <data key="d6">The insuring agreement serves as a basis for determining the premium amount paid by the insured to the insurer.</data>
+      <data key="d7">insurance costs, financial obligation</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insuring Agreement" target="Property and Liability">
+      <data key="d5">8.0</data>
+      <data key="d6">Property and liability types of coverage are specified within the insuring agreement of a policy.</data>
+      <data key="d7">coverage types, insurance provisions</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insuring Agreement" target="Policy Limits">
+      <data key="d5">9.0</data>
+      <data key="d6">The insuring agreement defines the policy limits, setting the maximum payouts for claims under that policy.</data>
+      <data key="d7">claims management, insurance coverage</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insuring Agreement" target="Exclusions">
+      <data key="d5">8.0</data>
+      <data key="d6">The exclusions are detailed in the insuring agreement, outlining what is not covered under the policy.</data>
+      <data key="d7">coverage limitations, policy details</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insuring Agreement" target="Conditions">
+      <data key="d5">9.0</data>
+      <data key="d6">Conditions are integral to the insuring agreement, laying out what is required to uphold coverage.</data>
+      <data key="d7">policy compliance, coverage validity</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Conditions" target="Reinstatement Clause">
+      <data key="d5">7.0</data>
+      <data key="d6">The reinstatement clause is a specific condition that details how coverage can be restored following a claim.</data>
+      <data key="d7">policy specifics, coverage restoration</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Conditions" target="Retrospective Rating">
+      <data key="d5">6.0</data>
+      <data key="d6">Retrospective rating is often subject to specific conditions stipulated in the insurance policy.</data>
+      <data key="d7">premium calculation, policy terms</data>
+      <data key="d8">chunk-4e5a656a8ff6a31eb84c4669c8329c38</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Premium" target="Ceding Entity">
+      <data key="d5">8.0</data>
+      <data key="d6">The Ceding Entity pays a Premium to the Reinsurer as compensation for transferring its claims liabilities.</data>
+      <data key="d7">payment for risk, financial transaction</data>
+      <data key="d8">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Government" target="Motor/Auto Liability Insurance">
+      <data key="d5">8.0</data>
+      <data key="d6">Government mandates motor/auto liability insurance to ensure that drivers are protected and can cover damages.</data>
+      <data key="d7">mandatory coverage, road safety</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Government" target="Terrorism Insurance">
+      <data key="d5">9.0</data>
+      <data key="d6">The Government may directly provide terrorism insurance to address coverage gaps in the voluntary market for extreme risks.</data>
+      <data key="d7">public policy, risk coverage</data>
+      <data key="d8">chunk-76427d47a9c73bd17de03e3dfcb268dc</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="United States" target="Asbestos Liability Claims">
+      <data key="d5">7.0</data>
+      <data key="d6">The specific rulings in the United States around asbestos liability claims influence how insurers handle non-life policy coverage.</data>
+      <data key="d7">jurisdictional rulings, liability issues</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Non-Life Insurance Policies" target="Asbestos Liability Claims">
+      <data key="d5">8.0</data>
+      <data key="d6">Non-life insurance policies may face legal challenges related to asbestos liability claims, impacting coverage terms and insurer liabilities.</data>
+      <data key="d7">legal implications, liability coverage</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claims-Made Insurance" target="Tail Policies">
+      <data key="d5">8.0</data>
+      <data key="d6">Tail policies are often purchased in conjunction with claims-made insurance when transitioning to other forms of coverage, addressing claims that arise post-policy.</data>
+      <data key="d7">insurance transition, claims coverage</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Tail Policies" target="Loss Portfolio Transfer">
+      <data key="d5">6.0</data>
+      <data key="d6">Loss portfolio transfer may occur in situations where tail policies are necessary, reflecting financial liability adjustments in insurers.</data>
+      <data key="d7">financial transactions, liability management</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Loss Portfolio Transfer" target="Reinsurer">
+      <data key="d5">9.0</data>
+      <data key="d6">The Reinsurer is involved in the process of Loss Portfolio Transfer, where it assumes the liabilities from the Ceding Entity.</data>
+      <data key="d7">risk assumption, liability transfer</data>
+      <data key="d8">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurers" target="Property Policy">
+      <data key="d5">8.0</data>
+      <data key="d6">Insurers provide property policies to cover risks associated with physical property such as fire or water damage.</data>
+      <data key="d7">insurance provision, risk coverage</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurers" target="Rating Authority">
+      <data key="d5">9.0</data>
+      <data key="d6">Insurers must seek approval from the rating authority before implementing new insurance rates to ensure compliance with regulations.</data>
+      <data key="d7">regulatory compliance, rate approval</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurers" target="Socially Unacceptable Factors">
+      <data key="d5">8.0</data>
+      <data key="d6">Insurers must refrain from discriminating against buyers based on socially unacceptable factors when underwriting policies.</data>
+      <data key="d7">fairness in underwriting, non-discrimination</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Insurers" target="Data Analytics">
+      <data key="d5">9.0</data>
+      <data key="d6">Insurers utilize data analytics to improve their risk assessment and underwriting processes, aiding in premium determination.</data>
+      <data key="d7">risk assessment, underwriting improvement</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Coverage Changes" target="Legal Rulings">
+      <data key="d5">7.0</data>
+      <data key="d6">Coverage changes can occur as a direct result of legal rulings that redefine the terms of insurance policies.</data>
+      <data key="d7">policy interpretation, legal influence</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Claims Liability" target="Insurance Premiums">
+      <data key="d5">9.0</data>
+      <data key="d6">Claims liability directly influences insurance premiums as insurers estimate required payouts to set appropriate premium levels.</data>
+      <data key="d7">financial planning, premium setting</data>
+      <data key="d8">chunk-a15dbe3dfd5e1c5c40dd10006443ca66</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Ceding Entity" target="Reinsurer">
+      <data key="d5">9.0</data>
+      <data key="d6">The Ceding Entity transfers its risk to the Reinsurer, thus establishing a financial and operational relationship concerning claims liabilities.</data>
+      <data key="d7">risk transfer, insurance relationships</data>
+      <data key="d8">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Ceding Entity" target="Bad Faith Insurance Practices">
+      <data key="d5">6.0</data>
+      <data key="d6">The Ceding Entity may experience Bad Faith Insurance Practices if the Reinsurer fails to adequately manage transferred claims.</data>
+      <data key="d7">insurance obligations, legal consequences</data>
+      <data key="d8">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Bad Faith Insurance Practices" target="Contractual Remedy">
+      <data key="d5">7.0</data>
+      <data key="d6">Contractual Remedy is invoked in cases of Bad Faith Insurance Practices when insurers do not fulfill their policy obligations.</data>
+      <data key="d7">legal rights, insurance law</data>
+      <data key="d8">chunk-3200997f85808ab4d0c66bdf44c41323</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+  </graph>
+</graphml>
