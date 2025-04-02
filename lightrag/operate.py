@@ -1338,7 +1338,9 @@ async def _get_node_data(
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"], t["file_path"]])
+        text_units_section_list.append(
+            [i, t["content"], t.get("file_path", "unknown_source")]
+        )
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1601,7 +1603,9 @@ async def _get_edge_data(
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"], t["file_path"]])
+        text_units_section_list.append(
+            [i, t["content"], t.get("file_path", "unknown_source")]
+        )
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 

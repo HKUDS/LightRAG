@@ -1891,9 +1891,9 @@ SQL_TEMPLATES = {
             FROM LIGHTRAG_DOC_CHUNKS
             WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
         )
-        SELECT id FROM
+        SELECT id, content, file_path FROM
             (
-                SELECT id, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
+                SELECT id, content, file_path, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
                 FROM LIGHTRAG_DOC_CHUNKS
                 where workspace=$1
                 AND id IN (SELECT chunk_id FROM relevant_chunks)
