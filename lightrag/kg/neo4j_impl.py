@@ -614,22 +614,19 @@ class Neo4JStorage(BaseGraphStorage):
         self,
         node_label: str,
         max_depth: int = 3,
-        min_degree: int = 0,
-        inclusive: bool = False,
+        max_nodes: int = MAX_GRAPH_NODES,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
         Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
         When reducing the number of nodes, the prioritization criteria are as follows:
-            1. min_degree does not affect nodes directly connected to the matching nodes
-            2. Label matching nodes take precedence
-            3. Followed by nodes directly connected to the matching nodes
-            4. Finally, the degree of the nodes
+            1. Label matching nodes take precedence
+            2. Followed by nodes directly connected to the matching nodes
+            3. Finally, the degree of the nodes
 
         Args:
             node_label: Label of the starting node
             max_depth: Maximum depth of the subgraph
-            min_degree: Minimum degree of nodes to include. Defaults to 0
             inclusive: Do an inclusive search if true
         Returns:
             KnowledgeGraph: Complete connected subgraph for specified node
@@ -647,7 +644,6 @@ class Neo4JStorage(BaseGraphStorage):
                     MATCH (n)
                     OPTIONAL MATCH (n)-[r]-()
                     WITH n, COALESCE(count(r), 0) AS degree
-                    WHERE degree >= $min_degree
                     ORDER BY degree DESC
                     LIMIT $max_nodes
                     WITH collect({node: n}) AS filtered_nodes
@@ -660,18 +656,14 @@ class Neo4JStorage(BaseGraphStorage):
                     """
                     result_set = await session.run(
                         main_query,
-                        {"max_nodes": MAX_GRAPH_NODES, "min_degree": min_degree},
+                        {"max_nodes": max_nodes},
                     )
 
                 else:
                     # Main query uses partial matching
                     main_query = """
                     MATCH (start)
-                    WHERE
-                        CASE
-                            WHEN $inclusive THEN start.entity_id CONTAINS $entity_id
-                            ELSE start.entity_id = $entity_id
-                        END
+                    WHERE start.entity_id = $entity_id
                     WITH start
                     CALL apoc.path.subgraphAll(start, {
                         relationshipFilter: '',
@@ -684,13 +676,11 @@ class Neo4JStorage(BaseGraphStorage):
                     UNWIND nodes AS node
                     OPTIONAL MATCH (node)-[r]-()
                     WITH node, COALESCE(count(r), 0) AS degree, start, nodes, relationships
-                    WHERE node = start OR EXISTS((start)--(node)) OR degree >= $min_degree
                     ORDER BY
                         CASE
-                            WHEN node = start THEN 3
-                            WHEN EXISTS((start)--(node)) THEN 2
-                            ELSE 1
-                        END DESC,
+                            WHEN node = start THEN 0 
+                            ELSE length(shortestPath((start)--(node)))
+                        END ASC,
                         degree DESC
                     LIMIT $max_nodes
                     WITH collect({node: node}) AS filtered_nodes
@@ -704,11 +694,9 @@ class Neo4JStorage(BaseGraphStorage):
                     result_set = await session.run(
                         main_query,
                         {
-                            "max_nodes": MAX_GRAPH_NODES,
+                            "max_nodes": max_nodes,
                             "entity_id": node_label,
-                            "inclusive": inclusive,
                             "max_depth": max_depth,
-                            "min_degree": min_degree,
                         },
                     )
 
@@ -759,19 +747,13 @@ class Neo4JStorage(BaseGraphStorage):
                     logger.warning(
                         "Neo4j: falling back to basic Cypher recursive search..."
                     )
-                    if inclusive:
-                        logger.warning(
-                            "Neo4j: inclusive search mode is not supported in recursive query, using exact matching"
-                        )
                     return await self._robust_fallback(
-                        node_label, max_depth, min_degree
+                        node_label, max_depth, max_nodes
                     )
 
         return result
 
-    async def _robust_fallback(
-        self, node_label: str, max_depth: int, min_degree: int = 0
-    ) -> KnowledgeGraph:
+    async def _robust_fallback(self, node_label: str, max_depth: int, max_nodes: int) -> KnowledgeGraph:
         """
         Fallback implementation when APOC plugin is not available or incompatible.
         This method implements the same functionality as get_knowledge_graph but uses
@@ -790,7 +772,7 @@ class Neo4JStorage(BaseGraphStorage):
             if current_depth > max_depth:
                 logger.debug(f"Reached max depth: {max_depth}")
                 return
-            if len(visited_nodes) >= MAX_GRAPH_NODES:
+            if len(visited_nodes) >= max_nodes:
                 logger.debug(f"Reached max nodes limit: {MAX_GRAPH_NODES}")
                 return
 
@@ -816,8 +798,8 @@ class Neo4JStorage(BaseGraphStorage):
                 await results.consume()  # Ensure results are consumed
 
                 # Nodes not connected to start node need to check degree
-                if current_depth > 1 and len(records) < min_degree:
-                    return
+                # if current_depth > 1 and len(records) < min_degree:
+                #     return
 
                 # Add current node to result
                 result.nodes.append(node)
