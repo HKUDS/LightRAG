@@ -150,6 +150,7 @@
         "maxQueryDepth": "Max Query Depth",
         "maxNodes": "Max Nodes",
         "maxLayoutIterations": "Max Layout Iterations",
+        "resetToDefault": "Reset to default",
         "depth": "D",
         "max": "Max",
         "degree": "Degree",
