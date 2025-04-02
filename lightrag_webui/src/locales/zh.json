@@ -136,6 +136,7 @@
     }
   },
   "graphPanel": {
+    "dataIsTruncated": "图数据已截断至最大返回节点数",
     "sideBar": {
       "settings": {
         "settings": "设置",

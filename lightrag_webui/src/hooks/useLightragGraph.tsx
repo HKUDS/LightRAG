@@ -169,7 +169,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
   }
 
   // console.debug({ data: JSON.parse(JSON.stringify(rawData)) })
-  return rawGraph
+  return { rawGraph, is_truncated: rawData.is_truncated }
 }
 
 // Create a new graph instance with the raw graph data
@@ -303,12 +303,18 @@ const useLightrangeGraph = () => {
       } else {
         // 2. If query label is empty, set data to null
         console.log('Query label is empty, show empty graph')
-        dataPromise = Promise.resolve(null);
+        dataPromise = Promise.resolve({ rawGraph: null, is_truncated: false });
       }
 
       // 3. Process data
-      dataPromise.then((data) => {
+      dataPromise.then((result) => {
         const state = useGraphStore.getState()
+        const data = result?.rawGraph;
+
+        // Check if data is truncated
+        if (result?.is_truncated) {
+          toast.info(t('graphPanel.dataIsTruncated', 'Graph data is truncated to Max Nodes'));
+        }
 
         // Reset state
         state.reset()
