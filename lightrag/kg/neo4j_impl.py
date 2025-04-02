@@ -151,6 +151,37 @@ class Neo4JStorage(BaseGraphStorage):
                             raise e
 
             if connected:
+                # Create index for base nodes on entity_id if it doesn't exist
+                try:
+                    async with self._driver.session(database=database) as session:
+                        # Check if index exists first
+                        check_query = """
+                        CALL db.indexes() YIELD name, labelsOrTypes, properties
+                        WHERE labelsOrTypes = ['base'] AND properties = ['entity_id']
+                        RETURN count(*) > 0 AS exists
+                        """
+                        try:
+                            check_result = await session.run(check_query)
+                            record = await check_result.single()
+                            await check_result.consume()
+                            
+                            index_exists = record and record.get("exists", False)
+                            
+                            if not index_exists:
+                                # Create index only if it doesn't exist
+                                result = await session.run(
+                                    "CREATE INDEX FOR (n:base) ON (n.entity_id)"
+                                )
+                                await result.consume()
+                                logger.info(f"Created index for base nodes on entity_id in {database}")
+                        except Exception:
+                            # Fallback if db.indexes() is not supported in this Neo4j version
+                            result = await session.run(
+                                "CREATE INDEX IF NOT EXISTS FOR (n:base) ON (n.entity_id)"
+                            )
+                            await result.consume()
+                except Exception as e:
+                    logger.warning(f"Failed to create index: {str(e)}")
                 break
 
     async def finalize(self):
