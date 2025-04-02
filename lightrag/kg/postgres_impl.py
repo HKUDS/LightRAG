@@ -102,7 +102,7 @@ class PostgreSQLDB:
         ):
             pass
 
-    async def check_tables(self):    
+    async def check_tables(self):
         for k, v in TABLES.items():
             try:
                 await self.query(f"SELECT 1 FROM {k} LIMIT 1")
@@ -120,7 +120,6 @@ class PostgreSQLDB:
                         f"PostgreSQL, Failed to create table {k} in database, Please verify the connection with PostgreSQL database, Got: {e}"
                     )
                     raise e
-                    
     async def _ensure_indexes(self, table_name: str):
         """Ensures required indexes exist on existing tables"""
         try:
@@ -135,8 +134,10 @@ class PostgreSQLDB:
                         "CREATE INDEX IF NOT EXISTS idx_chunks_vector ON LIGHTRAG_DOC_CHUNKS USING ivfflat (content_vector vector_cosine_ops) WITH (lists = 100)"
                     )
                 except Exception as e:
-                    logger.warning(f"Could not create vector index on {table_name}: {e}")
-                
+                    logger.warning(
+                        f"Could not create vector index on {table_name}: {e}"
+                    )
+
             elif table_name == "LIGHTRAG_VDB_ENTITY":
                 # Add entity name index
                 await self.execute(
@@ -148,8 +149,10 @@ class PostgreSQLDB:
                         "CREATE INDEX IF NOT EXISTS idx_entity_vector ON LIGHTRAG_VDB_ENTITY USING ivfflat (content_vector vector_cosine_ops) WITH (lists = 100)"
                     )
                 except Exception as e:
-                    logger.warning(f"Could not create vector index on {table_name}: {e}")
-                
+                    logger.warning(
+                        f"Could not create vector index on {table_name}: {e}"
+                    )
+
             elif table_name == "LIGHTRAG_VDB_RELATION":
                 # Add source and target indexes
                 await self.execute(
@@ -164,20 +167,22 @@ class PostgreSQLDB:
                         "CREATE INDEX IF NOT EXISTS idx_relation_vector ON LIGHTRAG_VDB_RELATION USING ivfflat (content_vector vector_cosine_ops) WITH (lists = 100)"
                     )
                 except Exception as e:
-                    logger.warning(f"Could not create vector index on {table_name}: {e}")
-                
+                    logger.warning(
+                        f"Could not create vector index on {table_name}: {e}"
+                    )
+
             elif table_name == "LIGHTRAG_LLM_CACHE":
                 # Add mode index
                 await self.execute(
                     "CREATE INDEX IF NOT EXISTS idx_llm_cache_mode ON LIGHTRAG_LLM_CACHE(workspace, mode)"
                 )
-                
+
             elif table_name == "LIGHTRAG_DOC_STATUS":
                 # Add status index
                 await self.execute(
                     "CREATE INDEX IF NOT EXISTS idx_doc_status_status ON LIGHTRAG_DOC_STATUS(workspace, status)"
                 )
-                
+
             logger.debug(f"PostgreSQL, Ensured indexes for {table_name}")
         except Exception as e:
             logger.warning(f"Failed to create indexes for {table_name}: {e}")
@@ -1201,7 +1206,9 @@ class PGGraphStorage(BaseGraphStorage):
         # otherwise return the value stripping out some common special chars
         return field.replace("(", "_").replace(")", "")
 
-    async def _query(self, query: str, readonly: bool = True, upsert: bool = False) -> list[dict[str, Any]]:
+    async def _query(
+        self, query: str, readonly: bool = True, upsert: bool = False
+    ) -> list[dict[str, Any]]:
         """
         Query the graph by taking a cypher query, converting it to an
         age compatible query, executing it and converting the result
@@ -1213,7 +1220,7 @@ class PGGraphStorage(BaseGraphStorage):
 
         Returns:
             list[dict[str, Any]]: a list of dictionaries containing the result set
-        
+
         Raises:
             PGGraphQueryException: If the query fails
         """
@@ -1237,23 +1244,29 @@ class PGGraphStorage(BaseGraphStorage):
                 return []
             else:
                 return [self._record_to_dict(d) for d in data]
-                
+
         except asyncpg.exceptions.QueryCanceledError as e:
             query_summary = query[:100] + "..." if len(query) > 100 else query
             logger.error(f"Query execution timed out: {query_summary}")
-            raise PGGraphQueryException({"message": "Query execution timed out", "detail": str(e)})
-            
+            raise PGGraphQueryException(
+                {"message": "Query execution timed out", "detail": str(e)}
+            )
+
         except asyncpg.exceptions.PostgresError as e:
             logger.error(f"Database error: {str(e)}")
-            raise PGGraphQueryException({"message": f"Database error: {str(e)}", "detail": str(e)}) from e
-            
+            raise PGGraphQueryException(
+                {"message": f"Database error: {str(e)}", "detail": str(e)}
+            ) from e
+
         except Exception as e:
             logger.error(f"Error in graph query: {str(e)}")
-            raise PGGraphQueryException({
-                "message": f"Error executing graph query: {query[:100]}...",
-                "wrapped": query,
-                "detail": str(e),
-            }) from e
+            raise PGGraphQueryException(
+                {
+                    "message": f"Error executing graph query: {query[:100]}...",
+                    "wrapped": query,
+                    "detail": str(e),
+                }
+            ) from e
 
     async def has_node(self, node_id: str) -> bool:
         try:
@@ -1377,64 +1390,64 @@ class PGGraphStorage(BaseGraphStorage):
             return None
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]]:
-      """
-      Retrieves all edges (relationships) for a particular node identified by its label.
-      :return: list of tuples containing (source, target) node IDs
-      """
-      try:
-          label = self._encode_graph_label(source_node_id.strip('"'))
-          
-          # Query for outgoing edges
-          outgoing_query = """SELECT * FROM cypher('%s', $$
-                          MATCH (n:Entity {node_id: "%s"})-[]->(connected:Entity)
-                          RETURN n, connected
-                          LIMIT 100
-                        $$) AS (n agtype, connected agtype)""" % (
-              self.graph_name,
-              label,
-          )
-          outgoing_results = await self._query(outgoing_query)
-          
-          # Query for incoming edges
-          incoming_query = """SELECT * FROM cypher('%s', $$
-                          MATCH (connected:Entity)-[]->(n:Entity {node_id: "%s"})
-                          RETURN n, connected
-                          LIMIT 100
-                        $$) AS (n agtype, connected agtype)""" % (
-              self.graph_name,
-              label,
-          )
-          incoming_results = await self._query(incoming_query)
+        """
+        Retrieves all edges (relationships) for a particular node identified by its label.
+        :return: list of tuples containing (source, target) node IDs
+        """
+        try:
+            label = self._encode_graph_label(source_node_id.strip('"'))
 
-          # Combine results
-          results = (outgoing_results or []) + (incoming_results or [])
-          if not results:
-              return []
+            # Query for outgoing edges
+            outgoing_query = """SELECT * FROM cypher('%s', $$
+                           MATCH (n:Entity {node_id: "%s"})-[]->(connected:Entity)
+                           RETURN n, connected
+                           LIMIT 100
+                         $$) AS (n agtype, connected agtype)""" % (
+                self.graph_name,
+                label,
+            )
+            outgoing_results = await self._query(outgoing_query)
 
-          # Extract unique edges
-          edges = []
-          for record in results:
-              source_node = record.get("n")
-              connected_node = record.get("connected")
+            # Query for incoming edges
+            incoming_query = """SELECT * FROM cypher('%s', $$
+                           MATCH (connected:Entity)-[]->(n:Entity {node_id: "%s"})
+                           RETURN n, connected
+                           LIMIT 100
+                         $$) AS (n agtype, connected agtype)""" % (
+                self.graph_name,
+                label,
+            )
+            incoming_results = await self._query(incoming_query)
 
-              if not source_node or not connected_node:
-                  continue
-                  
-              source_label = source_node.get("node_id")
-              target_label = connected_node.get("node_id")
+            # Combine results
+            results = (outgoing_results or []) + (incoming_results or [])
+            if not results:
+                return []
 
-              if source_label and target_label:
-                  edge = (
-                      self._decode_graph_label(source_label),
-                      self._decode_graph_label(target_label),
-                  )
-                  if edge not in edges:
-                      edges.append(edge)
+            # Extract unique edges
+            edges = []
+            for record in results:
+                source_node = record.get("n")
+                connected_node = record.get("connected")
 
-          return edges
-      except Exception as e:
-          logger.error(f"Error getting edges for node {source_node_id}: {e}")
-          return []
+                if not source_node or not connected_node:
+                    continue
+
+                source_label = source_node.get("node_id")
+                target_label = connected_node.get("node_id")
+
+                if source_label and target_label:
+                    edge = (
+                        self._decode_graph_label(source_label),
+                        self._decode_graph_label(target_label),
+                    )
+                    if edge not in edges:
+                        edges.append(edge)
+
+            return edges
+        except Exception as e:
+            logger.error(f"Error getting edges for node {source_node_id}: {e}")
+            return []
 
     @retry(
         stop=stop_after_attempt(3),
