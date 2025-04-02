@@ -906,7 +906,7 @@ class Neo4JStorage(BaseGraphStorage):
 
             # Method 2: Query compatible with older versions
             query = """
-            MATCH (n)
+            MATCH (n:base)
             WHERE n.entity_id IS NOT NULL
             RETURN DISTINCT n.entity_id AS label
             ORDER BY label
