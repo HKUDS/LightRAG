@@ -305,7 +305,6 @@ JsonKVStorage    JsonFile(default)
 PGKVStorage      Postgres
 RedisKVStorage   Redis
 MongoKVStorage   MogonDB
-TiDBKVStorage    TiDB
 ```
 
 * GRAPH_STORAGE supported implement-name
@@ -327,7 +326,6 @@ MilvusVectorDBStorge        Milvus
 ChromaVectorDBStorage       Chroma
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
-TiDBVectorDBStorage         TiDB
 MongoVectorDBStorage        MongoDB
 ```
 
