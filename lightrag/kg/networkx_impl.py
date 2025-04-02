@@ -316,7 +316,9 @@ class NetworkXStorage(BaseGraphStorage):
                     if depth < max_depth:
                         # Add neighbor nodes to queue with incremented depth
                         neighbors = list(graph.neighbors(current))
-                        queue.extend([(n, depth + 1) for n in neighbors if n not in visited])
+                        queue.extend(
+                            [(n, depth + 1) for n in neighbors if n not in visited]
+                        )
 
             # Check if graph is truncated - if we still have nodes in the queue
             # and we've reached max_nodes, then the graph is truncated
