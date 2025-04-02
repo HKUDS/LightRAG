@@ -294,7 +294,6 @@ JsonKVStorage    JsonFile(默认)
 PGKVStorage      Postgres
 RedisKVStorage   Redis
 MongoKVStorage   MogonDB
-TiDBKVStorage    TiDB
 ```
 
 * GRAPH_STORAGE 支持的实现名称
@@ -316,7 +315,6 @@ MilvusVectorDBStorge        Milvus
 ChromaVectorDBStorage       Chroma
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
-TiDBVectorDBStorage         TiDB
 MongoVectorDBStorage        MongoDB
 ```
 
