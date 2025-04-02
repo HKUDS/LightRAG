@@ -303,7 +303,6 @@ NetworkXStorage      NetworkX(默认)
 Neo4JStorage         Neo4J
 PGGraphStorage       Postgres
 AGEStorage           AGE
-GremlinStorage       Gremlin
 ```
 
 * VECTOR_STORAGE 支持的实现名称

@@ -314,7 +314,6 @@ NetworkXStorage      NetworkX(defualt)
 Neo4JStorage         Neo4J
 PGGraphStorage       Postgres
 AGEStorage           AGE
-GremlinStorage       Gremlin
 ```
 
 * VECTOR_STORAGE supported implement-name
