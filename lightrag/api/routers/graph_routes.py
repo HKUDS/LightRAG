@@ -41,7 +41,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             label (str): Label to get knowledge graph for
             max_depth (int, optional): Maximum depth of graph. Defaults to 3.
             inclusive_search (bool, optional): If True, search for nodes that include the label. Defaults to False.
-            min_degree (int, optional): Minimum degree of nodes. Defaults to 0.
+            min_degree (int, optional): Minimum degree of nodes. Defaults to 0. （Deprecated, always 0）
 
         Returns:
             Dict[str, List[str]]: Knowledge graph for label
@@ -49,8 +49,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         return await rag.get_knowledge_graph(
             node_label=label,
             max_depth=max_depth,
-            inclusive=inclusive,
-            min_degree=min_degree,
         )
 
     return router
