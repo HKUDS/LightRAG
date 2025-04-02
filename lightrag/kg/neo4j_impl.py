@@ -532,7 +532,9 @@ class Neo4JStorage(BaseGraphStorage):
                     """
                         % entity_type
                     )
-                    result = await tx.run(query, entity_id=node_id, properties=properties)
+                    result = await tx.run(
+                        query, entity_id=node_id, properties=properties
+                    )
                     logger.debug(
                         f"Upserted node with entity_id '{node_id}' and properties: {properties}"
                     )
