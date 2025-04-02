@@ -148,7 +148,7 @@
         "hideUnselectedEdges": "إخفاء الحواف غير المحددة",
         "edgeEvents": "أحداث الحافة",
         "maxQueryDepth": "أقصى عمق للاستعلام",
-        "minDegree": "الدرجة الدنيا",
+        "maxNodes": "الحد الأقصى للعقد",
         "maxLayoutIterations": "أقصى تكرارات التخطيط",
         "depth": "العمق",
         "degree": "الدرجة",

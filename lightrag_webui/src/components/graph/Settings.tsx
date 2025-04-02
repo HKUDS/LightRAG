@@ -121,7 +121,7 @@ export default function Settings() {
   const enableHideUnselectedEdges = useSettingsStore.use.enableHideUnselectedEdges()
   const showEdgeLabel = useSettingsStore.use.showEdgeLabel()
   const graphQueryMaxDepth = useSettingsStore.use.graphQueryMaxDepth()
-  const graphMinDegree = useSettingsStore.use.graphMinDegree()
+  const graphMaxNodes = useSettingsStore.use.graphMaxNodes()
   const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
@@ -180,15 +180,14 @@ export default function Settings() {
     }, 300)
   }, [])
 
-  const setGraphMinDegree = useCallback((degree: number) => {
-    if (degree < 0) return
-    useSettingsStore.setState({ graphMinDegree: degree })
+  const setGraphMaxNodes = useCallback((nodes: number) => {
+    if (nodes < 1 || nodes > 1000) return
+    useSettingsStore.setState({ graphMaxNodes: nodes })
     const currentLabel = useSettingsStore.getState().queryLabel
     useSettingsStore.getState().setQueryLabel('')
     setTimeout(() => {
       useSettingsStore.getState().setQueryLabel(currentLabel)
     }, 300)
-
   }, [])
 
   const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
@@ -277,10 +276,11 @@ export default function Settings() {
               onEditFinished={setGraphQueryMaxDepth}
             />
             <LabeledNumberInput
-              label={t('graphPanel.sideBar.settings.minDegree')}
-              min={0}
-              value={graphMinDegree}
-              onEditFinished={setGraphMinDegree}
+              label={t('graphPanel.sideBar.settings.maxNodes')}
+              min={1}
+              max={1000}
+              value={graphMaxNodes}
+              onEditFinished={setGraphMaxNodes}
             />
             <LabeledNumberInput
               label={t('graphPanel.sideBar.settings.maxLayoutIterations')}
