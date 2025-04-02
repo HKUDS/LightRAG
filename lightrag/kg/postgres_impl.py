@@ -120,6 +120,7 @@ class PostgreSQLDB:
                         f"PostgreSQL, Failed to create table {k} in database, Please verify the connection with PostgreSQL database, Got: {e}"
                     )
                     raise e
+
     async def _ensure_indexes(self, table_name: str):
         """Ensures required indexes exist on existing tables"""
         try:
@@ -204,15 +205,17 @@ class PostgreSQLDB:
             try:
                 # Prepare the SQL statement to ensure safe execution and mitigate the risk of SQL injection
                 stmt = await connection.prepare(sql)
-                
+
                 if params:
                     param_values = []
                     for _, val in params.items():
-                        if isinstance(val, list) and all(isinstance(x, str) for x in val):
+                        if isinstance(val, list) and all(
+                            isinstance(x, str) for x in val
+                        ):
                             param_values.append(val)
                         else:
                             param_values.append(val)
-                    
+
                     rows = await stmt.fetch(*param_values)
                 else:
                     rows = await stmt.fetch()
@@ -250,17 +253,19 @@ class PostgreSQLDB:
                     raise ValueError("Graph name is required when with_age is True")
 
                 stmt = await connection.prepare(sql)
-                
+
                 if data is None:
                     await stmt.fetch()
                 else:
                     param_values = []
                     for val in data.values():
-                        if isinstance(val, list) and all(isinstance(x, str) for x in val):
+                        if isinstance(val, list) and all(
+                            isinstance(x, str) for x in val
+                        ):
                             param_values.append(val)
                         else:
                             param_values.append(val)
-                            
+
                     await stmt.fetch(*param_values)
         except (
             asyncpg.exceptions.UniqueViolationError,
@@ -272,9 +277,13 @@ class PostgreSQLDB:
                 logger.error(f"Upsert error: {e}")
         except asyncpg.exceptions.QueryCanceledError as e:
             logger.error(f"Query timed out: {sql[:100]}...")
-            raise asyncpg.exceptions.QueryCanceledError(f"Query execution timeout: {e}") from e
+            raise asyncpg.exceptions.QueryCanceledError(
+                f"Query execution timeout: {e}"
+            ) from e
         except Exception as e:
-            logger.error(f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{str(e)}")
+            logger.error(
+                f"PostgreSQL database,\nsql:{sql},\ndata:{data},\nerror:{str(e)}"
+            )
             raise
 
 
@@ -392,7 +401,7 @@ class PGKVStorage(BaseKVStorage):
         """Get doc_chunks data by id"""
         if not ids:
             return []
-            
+
         if is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
             sql = SQL_TEMPLATES["get_by_ids_full_docs"]
         elif is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
@@ -402,10 +411,10 @@ class PGKVStorage(BaseKVStorage):
         else:
             logger.error(f"Unknown namespace for get_by_ids: {self.namespace}")
             return []
-            
+
         # Properly cast parameters to their PostgreSQL types
         params = {"workspace": str(self.db.workspace), "ids": list(ids)}
-        
+
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
             array_res = await self.db.query(sql, params, multirows=True)
             modes = set()
@@ -431,11 +440,11 @@ class PGKVStorage(BaseKVStorage):
         """Filter out duplicated content"""
         if not keys:
             return set()
-            
+
         table_name = namespace_to_table_name(self.namespace)
         sql = f"SELECT id FROM {table_name} WHERE workspace=$1::varchar(255) AND id = ANY($2::varchar(255)[])"
         params = {"workspace": str(self.db.workspace), "ids": list(keys)}
-        
+
         try:
             res = await self.db.query(sql, params, multirows=True)
             if res:
@@ -630,30 +639,32 @@ class PGVectorStorage(BaseVectorStorage):
         elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
             sql = SQL_TEMPLATES["vector_query_relationships"]
         else:
-            raise ValueError(f"Unsupported namespace for vector query: {self.namespace}")
-        
+            raise ValueError(
+                f"Unsupported namespace for vector query: {self.namespace}"
+            )
+
         params = {
             "workspace": str(self.db.workspace),
             "top_k": int(top_k),
             "doc_ids": list(ids) if ids is not None else None,
-            "embedding": f"[{embedding_string}]"
+            "embedding": f"[{embedding_string}]",
         }
 
         try:
             results = await self.db.query(sql, params=params, multirows=True)
-            
+
             if is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
                 for result in results:
                     if "entity_name" not in result and "e.entity_name" in result:
                         result["entity_name"] = result["e.entity_name"]
-            
+
             elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
                 for result in results:
                     if "src_id" not in result and "r.source_id" in result:
                         result["src_id"] = result["r.source_id"]
                     if "tgt_id" not in result and "r.target_id" in result:
                         result["tgt_id"] = result["r.target_id"]
-            
+
             return results
         except Exception as e:
             logger.error(f"Error in vector query: {e}")
@@ -836,11 +847,11 @@ class PGDocStatusStorage(DocStatusStorage):
         """Filter out duplicated content"""
         if not keys:
             return set()
-            
+
         table_name = namespace_to_table_name(self.namespace)
         sql = f"SELECT id FROM {table_name} WHERE workspace=$1::varchar(255) AND id = ANY($2::varchar(255)[])"
         params = {"workspace": str(self.db.workspace), "ids": list(keys)}
-        
+
         try:
             res = await self.db.query(sql, params, multirows=True)
             if res:
@@ -1275,13 +1286,16 @@ class PGGraphStorage(BaseGraphStorage):
             query = """SELECT * FROM cypher('%s', $$
                          MATCH (n:Entity {node_id: "%s"})
                          RETURN count(n) > 0 AS node_exists
-                       $$) AS (node_exists bool)""" % (self.graph_name, entity_name_label)
+                       $$) AS (node_exists bool)""" % (
+                self.graph_name,
+                entity_name_label,
+            )
 
             results = await self._query(query)
-            
+
             if not results:
                 return False
-                
+
             return results[0]["node_exists"]
         except Exception as e:
             logger.warning(f"Node existence check failed for {node_id}: {e}")
@@ -1302,26 +1316,28 @@ class PGGraphStorage(BaseGraphStorage):
             )
 
             results = await self._query(query)
-            
+
             if not results:
                 return False
-                
+
             return results[0]["edge_exists"]
         except Exception as e:
-            logger.warning(f"Edge existence check failed for {source_node_id} -> {target_node_id}: {e}")
+            logger.warning(
+                f"Edge existence check failed for {source_node_id} -> {target_node_id}: {e}"
+            )
             return False
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         try:
             label = self._encode_graph_label(node_id.strip('"'))
-            
+
             query = """SELECT * FROM cypher('%s', $$
                          MATCH (n:Entity {node_id: "%s"})
                          RETURN n
                        $$) AS (n agtype)""" % (self.graph_name, label)
-            
+
             record = await self._query(query)
-            
+
             if record and len(record) > 0 and "n" in record[0]:
                 node_dict = record[0]["n"]
                 return node_dict
@@ -1338,12 +1354,12 @@ class PGGraphStorage(BaseGraphStorage):
                          MATCH (n:Entity {node_id: "%s"})-[]->(x)
                          RETURN count(x) AS total_edge_count
                        $$) AS (total_edge_count integer)""" % (self.graph_name, label)
-            
+
             results = await self._query(query)
-            
+
             if not results:
                 return 0
-                
+
             edge_count = int(results[0]["total_edge_count"])
             return edge_count
         except Exception as e:
@@ -1378,15 +1394,17 @@ class PGGraphStorage(BaseGraphStorage):
                 src_label,
                 tgt_label,
             )
-            
+
             record = await self._query(query)
-            
+
             if record and record[0] and record[0]["edge_properties"]:
                 result = record[0]["edge_properties"]
                 return result
             return None
         except Exception as e:
-            logger.error(f"Error getting edge {source_node_id} -> {target_node_id}: {e}")
+            logger.error(
+                f"Error getting edge {source_node_id} -> {target_node_id}: {e}"
+            )
             return None
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]]:
@@ -1775,14 +1793,14 @@ TABLES = {
                     update_time TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
                     );
-                    
+
                     -- Create index for full_doc_id lookups
-                    CREATE INDEX IF NOT EXISTS idx_doc_chunks_full_doc_id 
+                    CREATE INDEX IF NOT EXISTS idx_doc_chunks_full_doc_id
                     ON LIGHTRAG_DOC_CHUNKS(workspace, full_doc_id);
-                    
+
                     -- Create optimized vector index for similarity search
-                    CREATE INDEX IF NOT EXISTS idx_chunks_vector 
-                    ON LIGHTRAG_DOC_CHUNKS USING ivfflat (content_vector vector_cosine_ops) 
+                    CREATE INDEX IF NOT EXISTS idx_chunks_vector
+                    ON LIGHTRAG_DOC_CHUNKS USING ivfflat (content_vector vector_cosine_ops)
                     WITH (lists = 100);
                     """
     },
@@ -1799,14 +1817,14 @@ TABLES = {
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
                     );
-                    
+
                     -- Add index for entity lookups
-                    CREATE INDEX IF NOT EXISTS idx_entity_entity_name 
+                    CREATE INDEX IF NOT EXISTS idx_entity_entity_name
                     ON LIGHTRAG_VDB_ENTITY(workspace, entity_name);
-                    
+
                     -- Create optimized vector index for similarity search
-                    CREATE INDEX IF NOT EXISTS idx_entity_vector 
-                    ON LIGHTRAG_VDB_ENTITY USING ivfflat (content_vector vector_cosine_ops) 
+                    CREATE INDEX IF NOT EXISTS idx_entity_vector
+                    ON LIGHTRAG_VDB_ENTITY USING ivfflat (content_vector vector_cosine_ops)
                     WITH (lists = 100);
                     """
     },
@@ -1824,17 +1842,17 @@ TABLES = {
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
                     );
-                    
+
                     -- Add indexes for relationship lookups
-                    CREATE INDEX IF NOT EXISTS idx_relation_source_id 
+                    CREATE INDEX IF NOT EXISTS idx_relation_source_id
                     ON LIGHTRAG_VDB_RELATION(workspace, source_id);
-                    
-                    CREATE INDEX IF NOT EXISTS idx_relation_target_id 
+
+                    CREATE INDEX IF NOT EXISTS idx_relation_target_id
                     ON LIGHTRAG_VDB_RELATION(workspace, target_id);
-                    
+
                     -- Create optimized vector index for similarity search
-                    CREATE INDEX IF NOT EXISTS idx_relation_vector 
-                    ON LIGHTRAG_VDB_RELATION USING ivfflat (content_vector vector_cosine_ops) 
+                    CREATE INDEX IF NOT EXISTS idx_relation_vector
+                    ON LIGHTRAG_VDB_RELATION USING ivfflat (content_vector vector_cosine_ops)
                     WITH (lists = 100);
                     """
     },
@@ -1849,9 +1867,9 @@ TABLES = {
                     update_time TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, mode, id)
                     );
-                    
+
                     -- Add index for cache lookups by mode
-                    CREATE INDEX IF NOT EXISTS idx_llm_cache_mode 
+                    CREATE INDEX IF NOT EXISTS idx_llm_cache_mode
                     ON LIGHTRAG_LLM_CACHE(workspace, mode);
                     """
     },
@@ -1869,9 +1887,9 @@ TABLES = {
 	               updated_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
 	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)
 	              );
-	              
+
 	              -- Add index for status lookups
-                  CREATE INDEX IF NOT EXISTS idx_doc_status_status 
+                  CREATE INDEX IF NOT EXISTS idx_doc_status_status
                   ON LIGHTRAG_DOC_STATUS(workspace, status);
                   """
     },
@@ -1917,7 +1935,7 @@ SQL_TEMPLATES = {
             SELECT e.entity_name
             FROM LIGHTRAG_VDB_ENTITY e
             WHERE e.workspace=$1::varchar(255)
-            AND ($3::varchar(255)[] IS NULL OR 
+            AND ($3::varchar(255)[] IS NULL OR
                 EXISTS (
                     SELECT 1 FROM LIGHTRAG_DOC_CHUNKS c
                     WHERE c.id = ANY(e.chunk_ids::varchar(255)[])
@@ -1932,7 +1950,7 @@ SQL_TEMPLATES = {
             SELECT r.source_id as src_id, r.target_id as tgt_id
             FROM LIGHTRAG_VDB_RELATION r
             WHERE r.workspace=$1::varchar(255)
-            AND ($3::varchar(255)[] IS NULL OR 
+            AND ($3::varchar(255)[] IS NULL OR
                 EXISTS (
                     SELECT 1 FROM LIGHTRAG_DOC_CHUNKS c
                     WHERE c.id = ANY(r.chunk_ids::varchar(255)[])
