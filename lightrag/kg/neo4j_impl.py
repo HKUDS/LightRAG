@@ -517,7 +517,6 @@ class Neo4JStorage(BaseGraphStorage):
         """
         properties = node_data
         entity_type = properties["entity_type"]
-        entity_id = properties["entity_id"]
         if "entity_id" not in properties:
             raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
 
@@ -527,15 +526,15 @@ class Neo4JStorage(BaseGraphStorage):
                 async def execute_upsert(tx: AsyncManagedTransaction):
                     query = (
                         """
-                    MERGE (n:base {entity_id: $properties.entity_id})
+                    MERGE (n:base {entity_id: $entity_id})
                     SET n += $properties
                     SET n:`%s`
                     """
                         % entity_type
                     )
-                    result = await tx.run(query, properties=properties)
+                    result = await tx.run(query, entity_id=node_id, properties=properties)
                     logger.debug(
-                        f"Upserted node with entity_id '{entity_id}' and properties: {properties}"
+                        f"Upserted node with entity_id '{node_id}' and properties: {properties}"
                     )
                     await result.consume()  # Ensure result is fully consumed
 
