@@ -998,7 +998,7 @@ async def mix_kg_vector_query(
 
     async def get_vector_context():
         # Consider conversation history in vector search
-        augmented_query = query
+        augmented_query = f"Instructions: Based on the user query, provide a list of relevant documents that are most likely to contain the answer to the user's query.\nQuery: {query}"
         if history_context:
             augmented_query = f"{history_context}\n{query}"
 
