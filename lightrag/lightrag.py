@@ -523,7 +523,9 @@ class LightRAG:
             KnowledgeGraph: Knowledge graph containing nodes and edges
         """
 
-        return await self.chunk_entity_relation_graph.get_knowledge_graph(node_label, max_depth, max_nodes)
+        return await self.chunk_entity_relation_graph.get_knowledge_graph(
+            node_label, max_depth, max_nodes
+        )
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
         import_path = STORAGES[storage_name]
