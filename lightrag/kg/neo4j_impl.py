@@ -164,16 +164,18 @@ class Neo4JStorage(BaseGraphStorage):
                             check_result = await session.run(check_query)
                             record = await check_result.single()
                             await check_result.consume()
-                            
+
                             index_exists = record and record.get("exists", False)
-                            
+
                             if not index_exists:
                                 # Create index only if it doesn't exist
                                 result = await session.run(
                                     "CREATE INDEX FOR (n:base) ON (n.entity_id)"
                                 )
                                 await result.consume()
-                                logger.info(f"Created index for base nodes on entity_id in {database}")
+                                logger.info(
+                                    f"Created index for base nodes on entity_id in {database}"
+                                )
                         except Exception:
                             # Fallback if db.indexes() is not supported in this Neo4j version
                             result = await session.run(
@@ -709,7 +711,7 @@ class Neo4JStorage(BaseGraphStorage):
                     WITH node, COALESCE(count(r), 0) AS degree, start, nodes, relationships
                     ORDER BY
                         CASE
-                            WHEN node = start THEN 0 
+                            WHEN node = start THEN 0
                             ELSE length(shortestPath((start)--(node)))
                         END ASC,
                         degree DESC
@@ -778,13 +780,13 @@ class Neo4JStorage(BaseGraphStorage):
                     logger.warning(
                         "Neo4j: falling back to basic Cypher recursive search..."
                     )
-                    return await self._robust_fallback(
-                        node_label, max_depth, max_nodes
-                    )
+                    return await self._robust_fallback(node_label, max_depth, max_nodes)
 
         return result
 
-    async def _robust_fallback(self, node_label: str, max_depth: int, max_nodes: int) -> KnowledgeGraph:
+    async def _robust_fallback(
+        self, node_label: str, max_depth: int, max_nodes: int
+    ) -> KnowledgeGraph:
         """
         Fallback implementation when APOC plugin is not available or incompatible.
         This method implements the same functionality as get_knowledge_graph but uses
