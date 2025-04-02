@@ -651,16 +651,15 @@ class Neo4JStorage(BaseGraphStorage):
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
-        Maximum number of nodes is constrained by the environment variable `MAX_GRAPH_NODES` (default: 1000).
         When reducing the number of nodes, the prioritization criteria are as follows:
-            1. Label matching nodes take precedence
-            2. Followed by nodes directly connected to the matching nodes
-            3. Finally, the degree of the nodes
+            1. Hops(path) to the staring node take precedence
+            2. Followed by the degree of the nodes
 
         Args:
             node_label: Label of the starting node
-            max_depth: Maximum depth of the subgraph
-            inclusive: Do an inclusive search if true
+            max_depth: Maximum depth of the subgraph, Defaults to 3
+            max_nodes: Maxiumu nodes to return
+
         Returns:
             KnowledgeGraph: Complete connected subgraph for specified node
         """
