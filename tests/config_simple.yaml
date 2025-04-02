@@ -1,0 +1,242 @@
+# config.yaml (Simplified - Structure derived from JSON)
+# Schema and Normalization for Corporate Regulations KG
+
+# LightRAG 知识图谱提取配置文件
+
+# 图谱模式定义
+schema:
+  # Entity types: Focused on actors and core content categorization (Structure derived from JSON)
+  entity_types_llm: # Renamed to clarify these are for LLM extraction
+    # Key Actors
+    - Organization
+    - Role
+    # Core Content & Categorization
+    - Statement       # (What rule/req/def/goal?)
+    - Topic           # (What predefined category/type of regulation?)
+
+  # --- Keep conceptual types for Cypher mapping ---
+  all_entity_types: # All types that will exist in the graph
+    - Document
+    - Section
+    - Organization
+    - Role
+    - Statement
+    - Topic
+
+  # Mapping to Cypher labels (Includes Document and Section)
+  entity_type_map_cypher:
+    Document: Document
+    Section: Section
+    Organization: Organization
+    Role: Role
+    Statement: Statement
+    Topic: Topic
+
+  # Relation types: Focused on semantic links and containment (Structure derived from JSON)
+  relation_types_llm: # Renamed to clarify these are for LLM extraction
+    # 语义关系
+    # 职责和归属
+    - RESPONSIBLE_FOR # (Organization/Role -> Statement/Topic)
+    - BELONGS_TO      # (Organization/Role -> Organization/Role)
+    # 内容关系
+    - HAS_PURPOSE     # (Statement -> Statement[type=Goal])
+    - REFERENCES      # (Statement/Document/Section -> Section) # LLM might still find references *within* text
+    - APPLIES_TO      # (Statement -> Organization/Role)
+    # 通用关系
+    - RELATED_TO      # (Entity -> Entity)
+    # --- MENTIONS and CONTAINS might be partially LLM, partially structural ---
+    # MENTIONS        # (Section -> Topic) - LLM can find this semantic link
+    # CONTAINS        # (Section -> Statement/Organization/Role/Topic) - LLM finds *what* is contained, script links it to the section
+
+  # --- Keep conceptual types for Cypher mapping ---
+  all_relation_types: # All types that will exist in the graph
+    # Structural (Derived from JSON)
+    - HAS_SECTION     # (Document -> Section)
+    - HAS_PARENT_SECTION # (Section -> Section)
+    # Containment (linking structure to semantics)
+    - CONTAINS        # (Section -> Statement/Organization/Role/Topic) - Added explicitly
+    # Semantic (Extracted by LLM or potentially inferred)
+    - RESPONSIBLE_FOR
+    - BELONGS_TO
+    - HAS_PURPOSE
+    - REFERENCES
+    - MENTIONS # Keep MENTIONS here if LLM should extract Section->Topic links
+    - APPLIES_TO
+    - HAS_VERSION # Keep if needed, LLM *might* find version refs in text
+    - RELATED_TO
+
+  # Mapping to Cypher relationship types (Includes structural ones)
+  relation_type_map_cypher:
+    HAS_SECTION: HAS_SECTION
+    HAS_PARENT_SECTION: HAS_PARENT_SECTION
+    CONTAINS: CONTAINS
+    RESPONSIBLE_FOR: RESPONSIBLE_FOR
+    BELONGS_TO: BELONGS_TO
+    HAS_PURPOSE: HAS_PURPOSE
+    REFERENCES: REFERENCES
+    MENTIONS: MENTIONS # Map if used
+    APPLIES_TO: APPLIES_TO
+    HAS_VERSION: HAS_VERSION
+    RELATED_TO: RELATED_TO
+
+normalization:
+  # (保持不变, 但可以添加 Section 标题的规范化，如去除页码)
+  canonical_map:
+    # ... (existing mappings) ...
+    # Optional: Add Section title normalization here if needed beyond basic cleaning
+    # Example: "1 总则 (p.1)": "1 总则" # Though script might handle this directly
+
+# Prompt 模板配置 (Revised - LLM focuses on semantic content)
+prompts:
+  entity_extraction:
+    definitions: |
+      实体类型定义 (请在返回结果中使用括号中的英文类型名称):
+      # --- Document 和 Section 的定义已移除，因为它们将从输入结构中获取 ---
+      - Topic (主题/规定类型)：指管理规定所属的**预定义分类或类型**，用于标识规则内容的性质。请识别文本中明确提及的、代表这些分类的术语。例如：'旅客候车'、'乘车人身安全'、'劳动安全'、'服务质量'、'工作流程'、'考核标准'等。 如果文本中没有明确提及这些分类术语，则不提取Topic。**重要：各种信息系统名称如"客票发售和预订系统"、"12306系统"等应归类为Topic类型。**
+      - Role (角色)：指代具有特定职责的职位或岗位，如"客运部主任"、"值班负责人"。注意与组织区分。
+      - Organization (组织)：涉及的单位、部门或公司，如"中国铁路广州局集团有限公司"、"集团公司客运部"、"信息技术所"、"各车务站段"。**注意：带有《》括号的文件名、预案名称或管理办法名称不是Organization，它们是Document类型；系统名称如"客票发售和预订系统"、"广州局集团公司客票发售和预订系统"等绝对不是Organization，应归类为Topic。**
+      - Statement (陈述)：规则、要求、定义、标准、目标或条件的明确说明，如"本预案适用于集团公司及所属各客运单位相关工作"、"各单位应明确职责分工"、"应保持站台清洁"。这是具体的规定内容。
+
+    template: |
+      请从以下文本中提取定义的实体类型。专注于识别 **组织、角色、具体规定陈述、以及预定义的规定类型(Topic)**。尽可能完整提取，确保不遗漏文本中的关键信息。
+
+      {definitions}
+
+      **要提取的实体类型列表**: {entity_types} # Excludes Document, Section
+
+      文档信息 (仅供参考，不要提取为实体):
+      文档标题: {document_title}
+      当前章节: {current_heading}
+      章节路径: {section_path}
+      父章节内容摘要: {parent_section_summary} # Optional context
+
+      文本：
+      """
+      {content}
+      """
+
+      【重要】：必须使用英文实体类型！返回的JSON中，实体类型必须为英文，且仅包含以下类型: {entity_types_english}
+
+      请以严格的 JSON 格式输出，包含一个名为 "entities" 的列表，其中每个对象包含 "name" (实体名称) 和 "type" (实体类型)。确保实体名称是文本中实际出现的词语。
+
+      注意事项：
+      1. **不要提取文档标题或章节标题作为实体。**
+      2. 确保每个实体完整识别。
+      3. 识别实体时考虑缩写和全称。
+      4. 保留相同实体的不同表述。
+      5. 确保每个实体都准确分配了正确的英文实体类型。
+      6. **严格使用以下英文类型名**: {entity_types_english}
+      7. 类型区分指南：
+         - **Topic与Statement的区别**：Topic是规定内容的**分类标签**（如"服务质量"），Statement是**具体的规定本身**（如"应使用规范用语"）。
+         - Organization与Role的区别：Organization是部门/单位，Role是岗位/职责。
+         - **文档名称、预案名称**：带有《》括号的文件名不是Organization，如"《广州局集团公司网络安全事件应急预案》"不是Organization。
+         - **信息系统**：各种信息系统如"客票发售和预订系统"、"12306系统"、"广州局集团公司客票发售和预订系统"等**绝对不是Organization**，也不是Section，必须归类为**Topic**类型。信息系统名称如"广州局集团公司客票发售和预订系统"是一个领域概念，应被视为Topic。
+      8. 利用文档上下文信息辅助判断。
+      9. **警告：信息系统名称绝对不能归类为Organization或Section，一定要归类为Topic。**
+
+      例如:
+      {
+        "entities": [
+          {"name": "集团公司客运部", "type": "Organization"},
+          # {"name": "《服务质量管理办法》", "type": "Document"}, # REMOVED
+          {"name": "应使用规范用语，保持微笑服务", "type": "Statement"},
+          {"name": "服务质量", "type": "Topic"},
+          {"name": "客票发售和预订系统", "type": "Topic"}, # 正确的系统名称分类
+          {"name": "站务员", "type": "Role"}
+          # {"name": "3.1 基本要求", "type": "Section"} # REMOVED
+        ]
+      }
+
+  relation_extraction:
+    definitions: |
+      关系类型定义 (请在返回结果中使用括号中的英文关系类型):
+      # --- HAS_SECTION, HAS_PARENT_SECTION, and potentially CONTAINS (if fully structural) definitions removed ---
+      # 语义关系
+      - BELONGS_TO (隶属关系): 指明组织或角色的归属。 (Organization/Role -> Organization/Role)
+      - RESPONSIBLE_FOR (责任): 明确组织或角色对某项具体规定(Statement)或某一类规定(Topic)的职责。 (Organization/Role -> Statement/Topic)
+      - REFERENCES (引用): 明确引用某章节或文档。**这个关系仅用于表示对章节或文档的明确引用**，例如"详见2.3章节"或"根据《某文件》..."。对于系统、流程或其他非文档/章节的引用，应使用RELATED_TO关系。(Statement/Document/Section -> Section/Document)
+      - MENTIONS (提及): 章节中明确提及某规定类型(Topic)。 (Section -> Topic) # LLM finds semantic mention
+      - APPLIES_TO (适用于): 规则(Statement)适用的组织或角色。 (Statement -> Organization/Role)
+      - HAS_PURPOSE (目的): 陈述的目的。 (Statement -> Statement)
+      # 通用关系
+      - RELATED_TO (关联): 连接实体间的其他关联。用于表达其他类型关系无法清晰表达的联系，包括对非文档/章节实体的引用。 (Entity -> Entity)
+
+    template: |
+      请从以下文本中，根据预定义的实体列表（**不包括文档和章节实体**），提取这些实体之间符合定义的关系类型。请专注于在文本段落中**直接陈述**的语义关系。
+
+      {definitions}
+
+      **要提取的关系类型列表**: {relation_types} # Excludes HAS_SECTION, HAS_PARENT_SECTION
+      预定义的实体类型列表 (用于关系端点): {all_entity_types_english} # LLM can reference Struct types
+
+      文档信息 (仅供参考):
+      文档标题: {document_title}
+      当前章节: {current_heading}
+      章节路径: {section_path}
+
+      文本：
+      """
+      {content}
+      """
+
+      文本中已识别的 **语义实体** 列表 (用于构建关系):
+      """
+      {entities_json} # Should contain only Organization, Role, Statement, Topic extracted earlier
+      """
+
+      【重要】：必须使用英文实体类型和关系类型！
+
+      请以严格的 JSON 格式输出，包含一个名为 "relations" 的列表，其中每个对象必须包含 "source", "source_type", "target", "target_type", "type" 字段。
+
+      注意事项:
+      1. 关系必须连接上面 **语义实体列表** 中的实体，或者连接语义实体到已知的**章节(Section)** 或 **文档(Document)**（如果文本明确引用）。
+      2. source_type 和 target_type 必须是以下英文类型之一: {all_entity_types_english}。
+      3. 关系类型必须是预定义的英文类型之一: {relation_types_english}
+      4. **不要提取 Document -> Section 或 Section -> Section 的结构关系。**
+      5. `CONTAINS` 关系将由脚本自动处理（连接章节和其包含的语义实体），**不要** 让 LLM 提取 `CONTAINS`。
+      6. 关系类型使用指南：
+         - RESPONSIBLE_FOR：描述对具体规则(Statement)或规则类型(Topic)的责任。
+         - MENTIONS：用于连接章节(Section)和其明确提及的规定类型(Topic)。
+         - REFERENCES: 用于文本中明确提到的对其他章节或文档的引用 (e.g., "详见章节 3.1")。**不要用于连接非文档/章节的实体**。例如，系统名称、业务流程等非章节/文档的引用应使用RELATED_TO关系。
+         - RELATED_TO: 用于表达其他关系类型无法清晰表达的联系，包括提及系统、业务流程等非文档/章节的情况。
+      7. **系统名称类型**：所有信息系统名称（如"客票发售和预订系统"）都应该被视为Topic类型，而不是Organization或Section。在关系中处理时，请始终将信息系统视为Topic。
+
+      例如 (基于上面修改的实体提取例子):
+      {
+        "relations": [
+          {
+            "source": "集团公司客运部",
+            "source_type": "Organization",
+            "target": "服务质量",
+            "target_type": "Topic",
+            "type": "RESPONSIBLE_FOR"
+          },
+          {
+            "source": "信息技术所",
+            "source_type": "Organization",
+            "target": "客票发售和预订系统",
+            "target_type": "Topic",
+            "type": "RESPONSIBLE_FOR"
+          },
+          {
+            "source": "应使用规范用语，保持微笑服务",
+            "source_type": "Statement",
+            "target": "站务员",
+            "target_type": "Role",
+            "type": "APPLIES_TO"
+           }
+          # { # Section -> Topic MENTION might still be extracted by LLM if relevant
+          #   "source": "3.1 基本要求", # Assuming this context is implicitly known or passed
+          #   "source_type": "Section",
+          #   "target": "服务质量",
+          #   "target_type": "Topic",
+          #   "type": "MENTIONS"
+          # },
+          # --- CONTAINS relationship is NOT extracted by LLM ---
+        ]
+      }
+
+# 图数据库配置 (保持不变)
+database:
+  enable_uniqueness_constraints: true
+  enable_relation_metadata: true

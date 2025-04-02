@@ -20,15 +20,30 @@ def read_cypher_file(file_path: str) -> List[str]:
     with open(file_path, 'r', encoding='utf-8') as f:
         content = f.read()
     
-    # 根据分号和新行分割语句
+    # 根据分号分割语句
     statements = []
-    for statement in content.split(';;'):
-        statement = statement.strip()
-        if statement and not statement.startswith('//'):
-            # 删除注释并清理空白
-            clean_statement = statement.replace('\n', ' ').strip()
-            if clean_statement:
-                statements.append(clean_statement + ';')
+    current_statement = []
+    
+    for line in content.split('\n'):
+        # 跳过空行和注释行
+        if not line.strip() or line.strip().startswith('//'):
+            continue
+            
+        # 添加当前行到当前语句
+        current_statement.append(line.strip())
+        
+        # 如果行以分号结尾，说明是一个完整的语句
+        if line.strip().endswith(';'):
+            # 合并当前语句的所有行
+            full_statement = ' '.join(current_statement)
+            # 清理语句
+            full_statement = full_statement.replace('\n', ' ').strip()
+            # 移除多余的分号
+            while full_statement.endswith(';'):
+                full_statement = full_statement[:-1].strip()
+            if full_statement:
+                statements.append(full_statement)
+            current_statement = []
     
     return statements
 

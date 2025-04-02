@@ -1,0 +1,347 @@
+# config.yaml (Revised with Document, Section, Organization + 5W2H)
+# Schema and Normalization for General Corporate Regulations KG
+
+# LightRAG 知识图谱提取配置文件
+
+# 图谱模式定义
+schema:
+  # Entity types: Structural + Key Actors + 5W2H Semantic Core
+  entity_types:
+    # Structural (Primarily from JSON structure, but LLM might identify mentions)
+    - Document
+    - Section
+    # Key Actors (Explicit extraction targets answering "Who")
+    - Organization
+    - Role
+    # 5W2H Semantic Core (Extracted by LLM from content)
+    - Statement       # (What rule/req/def/goal? How defined?)
+    - Action          # (What activity? How done?)
+    - Resource        # (What object/system/tool?)
+    - Condition       # (Why triggered? Under what condition?)
+    - Location        # (Where?)
+    - TimeConstraint  # (When? How often? How long?)
+    - ReferenceSource # (Why based on what? Which document/standard?)
+    - Topic           # (What general subject?)
+    - Person          # (Individuals mentioned in the text)
+    - Event           # (Specific occurrences or actions)
+    - Regulation      # (Relevant laws or regulations)
+
+  # Mapping to Cypher labels
+  entity_type_map_cypher:
+    Document: Document
+    Section: Section
+    Organization: Organization # Explicitly Org
+    Role: Role             # Explicitly Role
+    Statement: Statement
+    Action: Action
+    Resource: Resource
+    Condition: Condition
+    Location: Location
+    TimeConstraint: TimeConstraint
+    ReferenceSource: ReferenceSource
+    Topic: Topic
+    Person: Person
+    Event: Event
+    Regulation: Regulation
+    # Note: Organization and Role nodes could also be labeled as :Actor if useful for broad queries
+
+  # Relation types: Structural + Semantic (5W2H based)
+  relation_types:
+    # 结构化关系 (优先通过结构化数据直接构建，而非依赖LLM提取)
+    - HAS_SECTION     # (Document -> Section) 文档包含章节，通过JSON结构直接构建
+    - HAS_PARENT_SECTION # (Section -> Section) 章节的父子关系，通过JSON结构直接构建
+    - CONTAINS        # (Section -> Statement/Action/Org/Role/etc.) 章节包含的内容实体，核心连接结构和语义
+
+    # 语义关系 (通过LLM从文本内容中提取)
+    # 行为关系
+    - PERFORMED_BY    # (Action -> Organization/Role) 动作的执行者
+    - RESPONSIBLE_FOR # (Organization/Role -> Action/Statement/Topic) 职责归属
+    - USES            # (Action -> Resource) 使用的工具/资源
+    - REQUIRES        # (Action/Statement -> Resource/Action) 前置条件/依赖
+    
+    # 条件关系 (合并TRIGGERED_BY到HAS_CONDITION)
+    - HAS_CONDITION   # (Statement/Action -> Condition) 适用条件或触发条件，统一表示条件关系
+    
+    # 目的和依据
+    - HAS_PURPOSE     # (Statement/Action -> Statement[type=Goal]) 目的
+    - BASED_ON        # (Statement/Document -> ReferenceSource) 依据某标准/法规
+    
+    # 引用和提及 (明确区分)
+    - REFERENCES      # (Statement/Document/Section -> ReferenceSource/Section) 明确引用，如"详见附件5"
+    - MENTIONS        # (Section -> Topic) 仅在无法使用更具体关系时使用，如章节提及某主题
+    
+    # 时间和位置
+    - OCCURS_AT       # (Action/Condition -> TimeConstraint) 时间点/段
+    - OCCURS_IN       # (Action/Condition -> Location/Resource) 地点/环境
+    
+    # 适用范围
+    - APPLIES_TO      # (Statement/Action -> Organization/Role/Location/Resource) 规则适用对象
+    
+    # 序列关系
+    - SEQUENCE        # (Action -> Action) 动作顺序，如"先A后B"
+    
+    # 组织和文档关系
+    - BELONGS_TO      # (Organization/Role -> Organization/Role) 组织隶属关系
+    - HAS_VERSION     # (Document -> Document) 文档版本关系
+    - EFFECTIVE_FROM  # (Document -> Time) 生效时间
+    
+    # 通用关系 (谨慎使用)
+    - RELATED_TO      # (Entity -> Entity) 通用关系，仅在无法用更具体关系时使用
+
+  # Mapping to Cypher relationship types
+  relation_type_map_cypher:
+    HAS_SECTION: HAS_SECTION
+    HAS_PARENT_SECTION: HAS_PARENT_SECTION
+    CONTAINS: CONTAINS # Links structure to content
+    APPLIES_TO: APPLIES_TO
+    PERFORMED_BY: PERFORMED_BY
+    RESPONSIBLE_FOR: RESPONSIBLE_FOR
+    USES: USES
+    REQUIRES: REQUIRES
+    HAS_CONDITION: HAS_CONDITION
+    HAS_PURPOSE: HAS_PURPOSE
+    BASED_ON: BASED_ON
+    REFERENCES: REFERENCES
+    OCCURS_AT: OCCURS_AT
+    OCCURS_IN: OCCURS_IN
+    SEQUENCE: SEQUENCE
+    MENTIONS: MENTIONS
+    BELONGS_TO: BELONGS_TO
+    HAS_VERSION: HAS_VERSION
+    EFFECTIVE_FROM: EFFECTIVE_FROM
+    RELATED_TO: RELATED_TO
+
+normalization:
+  # Crucial for Organization, Role, Resource names
+  canonical_map:
+    客运部: 集团公司客运部
+    信息技术所: 集团公司信息技术所
+    科信部: 集团公司科信部
+    财务部: 集团公司财务部
+    计统部: 集团公司计统部
+    电务部: 集团公司电务部
+    供电部: 集团公司供电部
+    宣传部: 集团公司宣传部
+    调度所: 集团公司调度所
+    集团公司应急领导小组办公室: 集团公司应急领导小组办公室
+    集团公司应急领导小组: 集团公司应急领导小组
+    国铁集团应急领导小组办公室: 国铁集团应急领导小组办公室
+    国铁集团应急领导小组: 国铁集团应急领导小组
+    国铁集团客运部: 国铁集团客运部
+    12306科创中心: 12306科创中心
+    广铁集团: 中国铁路广州局集团有限公司
+    集团公司: 中国铁路广州局集团有限公司
+    本预案: 《广州局集团公司客票发售和预订系统（含互联网售票部分）应急预案》
+    客票系统: 客票发售和预订系统
+    # ... (Expand significantly)
+
+# Prompt 模板配置 (Updated to reflect explicit Org/Role and context)
+prompts:
+  entity_extraction:
+    definitions: |
+      实体类型定义 (请在返回结果中使用括号中的英文类型名称):
+      - Document (文档)：管理规定的文件名称，如《应急预案》。提取完整的文档标题，包括文号。
+      - Section (章节)：文档中的具体章节标题，如"1 总则"、"2.3 应急响应"等。
+      - Topic (主题)：文档或章节讨论的具体业务领域或核心议题，如"应急组织机构"、"客票系统故障"、"应急演练"等。比关键词更重要，更能概括内容的核心主题，通常是名词短语。
+      - Person (人员)：具体的人名或职位担任者。
+      - Role (角色)：指代具有特定职责的职位或岗位，如"客运部主任"、"售票员"。注意与组织区分。
+      - Organization (组织)：涉及的单位、部门或公司，如"中国铁路广州局集团有限公司"、"集团公司客运部"、"信息技术所"、"各车务站段"。
+      - TimeConstraint (时间约束)：具体的日期、时间点或时间段，如"2021年"、"4小时及以上"、"每年3月"，以及频率和期限要求。
+      - Event (事件)：文档中描述的已发生或可能发生的事故、状况或情景，如"系统突发事件"、"售票故障"、"网络中断"。通常是触发应急预案的原因。
+      - Action (行动)：需要执行的具体操作、行为或步骤，如"启动应急预案"、"逐级上报"、"发售纸质车票"。通常是应对事件的措施。
+      - Regulation (法规)：引用的其他法规或文件名称及其编号，如"《铁路客票发售和预订系统(含互联网售票部分)应急预案》（铁办客〔2021〕92号）"。
+      - Statement (陈述)：规则、要求、定义、标准、目标或条件的明确说明，如"本预案适用于集团公司及所属各客运单位客票系统突发事件应急工作"。与Topic不同，Statement是一个完整的描述性句子。
+      - Resource (资源)：涉及的对象、系统、工具、文档或数据，如"客票系统"、"应急售票系统"、"纸质车票"。与组织和角色不同，资源是被使用的工具或对象。
+      - Condition (条件)：触发动作或规定适用的条件、情况或前提，如"因人为原因、网络故障、设备故障..."、"当所有窗口售票故障时"。
+      - Location (位置)：动作发生或规定适用的物理地点或系统环境，如"车站窗口"、"12306手机客户端"。
+      - ReferenceSource (引用源)：规定或动作基于或引用的法规、标准、文件（及其编号）或附件，与Regulation相似但更强调被引用的关系。
+
+    template: |
+      请从以下文本中提取定义的实体类型。尽可能完整提取每个实体，确保不遗漏文本中的关键实体。
+
+      {definitions}
+
+      预定义的实体类型列表: {entity_types}
+
+      文档信息：
+      文档标题: {document_title}
+      当前章节: {current_heading}
+      章节路径: {section_path}
+      父章节内容摘要: {parent_section_summary}
+
+      文本：
+      """
+      {content}
+      """
+
+      【重要】：必须使用英文实体类型！返回的JSON中，实体类型必须为英文，绝对不要使用中文实体类型。
+
+      请以严格的 JSON 格式输出，包含一个名为 "entities" 的列表，其中每个对象包含 "name" (实体名称) 和 "type" (实体类型)。确保实体名称是文本中实际出现的词语。
+
+      注意事项：
+      1. 确保每个实体完整识别，尤其是组织、文档和法规名称不要截断
+      2. 识别实体时考虑可能存在的缩写和全称（如"集团公司"与"中国铁路广州局集团有限公司"）
+      3. 对于相同实体的不同表述，保留所有出现形式
+      4. 确保每个实体都准确分配了正确的实体类型，必须使用英文类型名
+      5. 严格使用以下英文类型名：Document, Section, Topic, Person, Role, Organization, TimeConstraint, Event, Action, Regulation, Statement, Resource, Condition, Location, ReferenceSource
+      6. 类型区分指南：
+         - Topic与Statement的区别：Topic是名词短语（如"应急响应"），Statement是完整句子（如"应当立即启动应急预案"）
+         - Event与Action的区别：Event是发生的事件/情况（如"系统故障"），Action是应对措施（如"启动预案"）
+         - Resource与Organization的区别：Resource是被使用的系统/工具（如"客票系统"），Organization是执行主体（如"客运部"）
+      7. 请利用文档信息提供的上下文（尤其是章节路径和父章节摘要）来更准确地判断实体类型和完整性
+
+      例如:
+      {
+        "entities": [
+          {"name": "集团公司客运部", "type": "Organization"},
+          {"name": "售票故障", "type": "Event"},
+          {"name": "启动应急预案", "type": "Action"},
+          {"name": "《铁路客票发售和预订系统(含互联网售票部分)应急预案》（铁办客〔2021〕92号）", "type": "Regulation"},
+          {"name": "本预案适用于集团公司及所属各客运单位客票系统突发事件应急工作", "type": "Statement"},
+          {"name": "客票系统", "type": "Resource"},
+          {"name": "当系统中断超过4小时", "type": "Condition"}
+        ]
+      }
+
+  relation_extraction:
+    definitions: |
+      关系类型定义 (请在返回结果中使用括号中的英文关系类型):
+      # 结构化关系 (优先通过结构化数据直接构建)
+      - HAS_SECTION (包含章节): 文档包含的章节，通常从结构化数据直接提取。
+      - HAS_PARENT_SECTION (父章节): 章节的父子关系，通常从结构化数据直接提取。
+      - CONTAINS (包含): 章节包含的内容或实体，核心连接结构和语义。
+      
+      # 语义关系 (从文本中提取)
+      # 组织和职责关系
+      - BELONGS_TO (隶属关系): 指明组织或角色的归属，如"办公室设在客运部"。
+      - RESPONSIBLE_FOR (责任): 明确组织或角色的职责范围，如"客运部负责协调"。
+      - PERFORMED_BY (执行者): 指明执行某动作的组织或角色，如"由客运部发布信息"。
+      
+      # 文档关系
+      - HAS_VERSION (版本关系): 指明文档的版本信息或与其他版本的关系，如"修订版"、"废止旧版"。
+      - EFFECTIVE_FROM (生效): 文档的生效日期，如"自发布之日起实施"。
+      
+      # 引用和依据关系 (明确区分)
+      - REFERENCES (引用): 明确引用某实体或文件，如"详见附件5"。
+      - BASED_ON (依据): 明确依据某法规或标准制定，如"根据...制定本预案"。
+      - MENTIONS (提及): 仅用于无法用更具体关系表达的提及，如章节中提到某主题。
+      
+      # 条件和触发关系
+      - HAS_CONDITION (条件): 适用条件或触发条件，用于描述规则适用条件或动作的触发条件，如"当...时"、"如果...则"。
+      
+      # 动作和资源关系
+      - USES (使用): 动作使用的资源或工具，如"使用纸质票销售"。
+      - REQUIRES (需要): 动作或规则的前置需求，如"需提前填写表格"。
+      - APPLIES_TO (适用于): 规则或动作适用的范围、对象等，如"适用于所有客运站点"。
+      
+      # 时间和位置关系
+      - OCCURS_AT (时间): 动作或情况发生的时间，如"每日8点前"。
+      - OCCURS_IN (地点): 动作或情况发生的地点或环境，如"在车站窗口"。
+      
+      # 目的和顺序关系
+      - HAS_PURPOSE (目的): 动作或规则的目的，如"为保证系统安全运行"。
+      - SEQUENCE (序列): 动作之间的先后顺序，如"先上报，再处理"。
+      
+      # 通用关系 (谨慎使用)
+      - RELATED_TO (关联): 仅当无法用更具体关系表达时使用，表示实体间的其他关联。
+
+    template: |
+      请从以下文本中，根据预定义的实体列表，提取这些实体之间符合定义的关系类型。请专注于在文本段落中**直接陈述**的关系。
+
+      {definitions}
+
+      预定义的关系类型列表: {relation_types}
+      预定义的实体类型列表: {entity_types}
+
+      文档信息：
+      文档标题: {document_title}
+      当前章节: {current_heading}
+      章节路径: {section_path}
+
+      文本：
+      """
+      {content}
+      """
+
+      文本中已识别的实体列表:
+      """
+      {entities_json}
+      """
+
+      【重要】：必须使用英文实体类型和关系类型！返回的JSON中，实体类型和关系类型必须为英文，绝对不要使用中文类型。
+
+      请以严格的 JSON 格式输出，包含一个名为 "relations" 的列表，其中每个对象必须包含以下字段:
+      - "source" (源实体名称，必须来自上面实体列表)
+      - "source_type" (源实体类型，必须来自上面实体列表)
+      - "target" (目标实体名称，必须来自上面实体列表)
+      - "target_type" (目标实体类型，必须来自上面实体列表)
+      - "type" (关系类型，必须是预定义的英文关系类型之一)
+
+      确保实体名称是文本中实际出现的词语，并且为每个实体提供正确的类型。
+      注意事项:
+      1. 关系必须连接上面实体列表中存在的实体
+      2. 每个关系必须同时包含source_type和target_type，这些类型必须使用英文
+      3. 实体类型必须从预定义列表中选择对应的英文类型
+      4. 关系类型必须从预定义列表中选择对应的英文类型
+      5. 确保实体名称完整，不要截断组织、文档或法规名称
+      6. 关系类型使用指南：
+         - HAS_CONDITION：统一表示条件关系，无论是触发条件还是适用条件
+         - REFERENCES vs MENTIONS：前者表示明确引用，后者仅用于一般性提及
+         - RESPONSIBLE_FOR vs PERFORMED_BY：前者表示责任归属，后者表示执行者
+         - MENTIONS和RELATED_TO：尽量使用更具体的关系，这两个关系应作为后备选项
+         - CONTAINS：章节与其中内容的关系，重要的结构-语义连接点
+
+      例如:
+      {
+        "relations": [
+          {
+            "source": "集团公司应急领导小组办公室", 
+            "source_type": "Organization",
+            "target": "集团公司客运部", 
+            "target_type": "Organization",
+            "type": "BELONGS_TO"
+          },
+          {
+            "source": "本预案", 
+            "source_type": "Document",
+            "target": "《铁路客票发售和预订系统(含互联网售票部分)应急预案》", 
+            "target_type": "Regulation",
+            "type": "BASED_ON"
+          },
+          {
+            "source": "客运部", 
+            "source_type": "Organization",
+            "target": "协调各相关部门", 
+            "target_type": "Action",
+            "type": "RESPONSIBLE_FOR"
+          },
+          {
+            "source": "启动应急预案", 
+            "source_type": "Action",
+            "target": "系统中断超过4小时", 
+            "target_type": "Condition",
+            "type": "HAS_CONDITION"
+          },
+          {
+            "source": "发售纸质车票", 
+            "source_type": "Action",
+            "target": "客票系统", 
+            "target_type": "Resource",
+            "type": "USES"
+          }
+        ]
+      }
+
+# 图数据库配置
+database:
+  # 是否启用唯一性约束（推荐在数据库初始化时启用）
+  enable_uniqueness_constraints: true
+  # 是否为关系添加额外的元数据（创建时间、可靠性等）
+  enable_relation_metadata: true
+
+# 实现建议：
+# 1. 结构化关系(HAS_SECTION, HAS_PARENT_SECTION)优先使用JSON结构直接构建，不完全依赖LLM提取
+# 2. CONTAINS关系是连接结构和语义的桥梁，确保稳定创建
+# 3. TRIGGERED_BY已合并到HAS_CONDITION，统一处理条件关系
+# 4. MENTIONS和RELATED_TO应作为补充，优先使用更具体的关系
+# 5. 对于复杂文档，可考虑分段处理，先提取实体再提取关系

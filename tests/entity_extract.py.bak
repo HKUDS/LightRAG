@@ -6,11 +6,10 @@ import requests  # 用于HTTP请求，调用LLM API
 import yaml  # 用于加载配置文件
 import asyncio  # 用于异步并发处理
 import httpx  # 用于异步HTTP请求
-import regex
-import re
-from typing import List, Dict, Set, Tuple, Optional, Any, NamedTuple, Union
+from typing import List, Dict, Set, Tuple, Optional, Any, NamedTuple
 from dataclasses import dataclass, field  # 用于定义数据类
 from pathlib import Path  # 用于处理路径
+import re  # 用于正则表达式
 import argparse
 
 # --- 数据类定义 ---
@@ -280,7 +279,7 @@ class LLMClient:
                         {"role": "system", "content": "你是一个实体关系提取助手，善于从文本中提取结构化信息并以JSON格式输出。"},
                         {"role": "user", "content": task.prompt}
                     ],
-                    "max_tokens": 4096,
+                    "max_tokens": 2000,
                     "temperature": 0.1,  # 设置较低的温度以获得确定性结果
                     "response_format": {"type": "text"}
                 }
@@ -551,81 +550,21 @@ def normalize_entity_type(raw_type: str, config: Config) -> str:
     
     cleaned_type = raw_type.strip().replace('\n', ' ')
     
-    # 1. 先检查是否已是有效的实体类型
-    if cleaned_type in config.entity_type_map_cypher.values() or cleaned_type in config.entity_types_llm:
-        # 如果是中文类型且存在于ENTITY_TYPE_MAP_CYPHER中，返回对应的英文类型
-        if cleaned_type in config.entity_types_llm:
-            return config.entity_type_map_cypher.get(cleaned_type, cleaned_type)
+    # 如果是中文类型且存在于ENTITY_TYPE_MAP_CYPHER中，返回对应的英文类型
+    if cleaned_type in config.entity_types_llm:
+        return config.entity_type_map_cypher.get(cleaned_type, cleaned_type)
+    
+    # 如果是英文类型且是ENTITY_TYPE_MAP_CYPHER的值的一部分，保持原样返回
+    if cleaned_type in config.entity_type_map_cypher.values():
         return cleaned_type
     
-    # 2. 检查是否误将关系类型作为实体类型传入（只在类型不在有效实体类型列表中时检查）
-    if cleaned_type in config.relation_type_map_cypher.values() or cleaned_type in config.relation_types_llm:
-        # 对于误传入的关系类型，根据关系类型返回可能的实体类型，或者返回一个默认值
-        # 但不记录普通日志，因为这种情况可能很常见，只在调试级别记录
-        logging.debug(f"识别到关系类型 '{cleaned_type}' 被误用作实体类型，尝试返回适当的实体类型")
-        if cleaned_type in ["BELONGS_TO", "RESPONSIBLE_FOR"]:
-            return "Organization"  # 这些关系通常与组织实体相关
-        elif cleaned_type == "APPLIES_TO":
-            return "Statement"  # APPLIES_TO通常源自Statement
-        elif cleaned_type == "MENTIONS":
-            return "Section"  # MENTIONS通常源自Section
-        elif cleaned_type == "REFERENCES":
-            return "Statement"  # REFERENCES通常源自Statement
-        elif cleaned_type == "HAS_PURPOSE":
-            return "Statement"  # HAS_PURPOSE通常与Statement相关
-        return "Topic"  # 返回一个默认实体类型
-    
-    # 3. 尝试通过反向查找，从英文映射回中文再映射回标准英文
+    # 尝试通过反向查找，从英文映射回中文再映射回标准英文
     for cn_type, en_type in config.entity_type_map_cypher.items():
         if cleaned_type.lower() == en_type.lower():
             return en_type  # 返回正确大小写的英文类型名
     
-    # 4. 如果无法匹配，记录警告并返回原始类型
+    # 如果无法匹配，记录警告并返回原始类型
     logging.warning(f"实体类型 '{cleaned_type}' 未在配置中定义，无法规范化")
-    return cleaned_type
-
-def normalize_relation_type(raw_type: str, config: Config) -> str:
-    """规范化关系类型，确保使用配置中定义的标准类型。
-    
-    将尝试匹配中英文类型名称，确保使用RELATION_TYPE_MAP_CYPHER中定义的标准类型。
-    """
-    if not isinstance(raw_type, str):
-        logging.warning(f"Attempted to normalize non-string relation type: {raw_type}. Returning as is.")
-        return str(raw_type)
-    
-    cleaned_type = raw_type.strip().replace('\n', ' ')
-    
-    # 1. 先检查是否已是有效的关系类型
-    if cleaned_type in config.relation_type_map_cypher.values() or cleaned_type in config.relation_types_llm:
-        # 如果是中文类型且存在于RELATION_TYPE_MAP_CYPHER中，返回对应的英文类型
-        if cleaned_type in config.relation_types_llm:
-            return config.relation_type_map_cypher.get(cleaned_type, cleaned_type)
-        return cleaned_type
-    
-    # 2. 检查是否误将实体类型作为关系类型传入（只在类型不在有效关系类型列表中时检查）
-    if cleaned_type in config.entity_type_map_cypher.values() or cleaned_type in config.entity_types_llm:
-        # 对于误传入的实体类型，根据实体类型返回可能的关系类型，或者返回一个默认值
-        # 但不记录普通日志，因为这种情况可能很常见，只在调试级别记录
-        logging.debug(f"识别到实体类型 '{cleaned_type}' 被误用作关系类型，尝试返回适当的关系类型")
-        if cleaned_type in ["Organization", "Role"]:
-            return "BELONGS_TO"  # 这些实体类型通常与隶属关系相关
-        elif cleaned_type == "Statement":
-            return "HAS_PURPOSE"  # Statement通常与HAS_PURPOSE相关
-        elif cleaned_type == "Topic":
-            return "MENTIONS"  # Topic通常与MENTIONS相关
-        elif cleaned_type == "Section":
-            return "CONTAINS"  # Section通常与CONTAINS相关
-        elif cleaned_type == "Document":
-            return "HAS_SECTION"  # Document通常与HAS_SECTION相关
-        return "RELATED_TO"  # 返回一个通用关系类型
-    
-    # 3. 尝试通过反向查找，从英文映射回中文再映射回标准英文
-    for cn_type, en_type in config.relation_type_map_cypher.items():
-        if cleaned_type.lower() == en_type.lower():
-            return en_type  # 返回正确大小写的英文类型名
-    
-    # 4. 如果无法匹配，记录警告并返回原始类型
-    logging.warning(f"关系类型 '{cleaned_type}' 未在配置中定义，无法规范化")
     return cleaned_type
 
 def escape_cypher_string(value: str) -> str:
@@ -635,387 +574,262 @@ def escape_cypher_string(value: str) -> str:
     return value.replace('\\', '\\\\').replace("'", "\\'")
 
 def parse_llm_response(response_text: Optional[str]) -> Optional[Dict[str, List[Dict[str, str]]]]:
-    """安全地解析LLM的JSON响应，处理各种格式和边缘情况。"""
+    """Safely parses the LLM's JSON response."""
     if not response_text: 
         return None
-    
-    # 记录原始响应的前100个字符，用于调试
-    logging.debug(f"解析LLM响应: {response_text[:100]}...")
-    
+        
     try:
-        # 1. 清理Markdown代码块标记
-        cleaned_text = response_text.strip()
-        
-        # 特别处理包含```json的代码块 (常见于大部分LLM响应)
-        json_block_pattern = r"```(?:json)?\s*([\s\S]*?)```"
-        json_blocks = re.findall(json_block_pattern, cleaned_text, re.DOTALL)
-        
-        if json_blocks:
-            # 如果有多个代码块，选择最长的一个
-            longest_block = max(json_blocks, key=len).strip()
-            logging.debug(f"从Markdown代码块提取JSON: {longest_block[:50]}...")
-            cleaned_text = longest_block
-        
-        # 2. 尝试直接解析清理后的文本
+        # 1. 首先尝试直接解析完整响应，以处理格式良好的 JSON
         try:
-            parsed_data = json.loads(cleaned_text)
+            parsed_data = json.loads(response_text.strip())
             if isinstance(parsed_data, dict) and \
                (('entities' in parsed_data and isinstance(parsed_data['entities'], list)) or \
                 ('relations' in parsed_data and isinstance(parsed_data['relations'], list))):
-                logging.debug("成功直接解析JSON响应")
                 return parsed_data
-        except json.JSONDecodeError as e:
-            # 如果直接解析失败，继续使用更复杂的方法
-            logging.debug(f"直接解析JSON失败: {e}，尝试修复...")
+        except json.JSONDecodeError:
+            # 如果直接解析失败，继续使用更细致的方法
+            pass
         
-        # 3. 定位JSON对象的边界
-        # 查找第一个左大括号和最后一个右大括号
+        # 2. 处理可能包含在代码块中的 JSON
+        cleaned_text = response_text
+        if "```" in cleaned_text:
+            # 如果有多个代码块，取最大的一个
+            blocks = []
+            start = 0
+            while True:
+                start_mark = cleaned_text.find("```", start)
+                if start_mark == -1:
+                    break
+                end_mark = cleaned_text.find("```", start_mark + 3)
+                if end_mark == -1:
+                    break
+                blocks.append((start_mark, end_mark + 3, end_mark - start_mark))
+                start = end_mark + 3
+            
+            if blocks:
+                # 取最长的代码块
+                largest_block = max(blocks, key=lambda x: x[2])
+                start_content = cleaned_text.find("\n", largest_block[0]) + 1
+                if start_content > 0 and start_content < largest_block[1]:
+                    end_content = largest_block[1]
+                    cleaned_text = cleaned_text[start_content:end_content].strip()
+        
+        # 3. 处理 JSON 可能嵌入在其他文本中的情况
         json_start = cleaned_text.find('{')
         json_end = cleaned_text.rfind('}')
         
-        if json_start != -1 and json_end != -1 and json_end > json_start:
-            # 提取潜在的JSON文本
-            json_text = cleaned_text[json_start:json_end + 1]
-            logging.debug(f"提取潜在JSON文本: {json_text[:50]}...")
+        if json_start == -1 or json_end == -1:
+            # 尝试一种更宽松的方式查找 "entities" 或 "relations" 关键字
+            entities_pos = cleaned_text.find('"entities"')
+            relations_pos = cleaned_text.find('"relations"')
             
-            # 4. 尝试解析提取的JSON
-            try:
-                parsed_data = json.loads(json_text)
-                if isinstance(parsed_data, dict) and \
-                   (('entities' in parsed_data and isinstance(parsed_data['entities'], list)) or \
-                    ('relations' in parsed_data and isinstance(parsed_data['relations'], list))):
-                    logging.debug("成功解析提取的JSON文本")
-                    return parsed_data
-            except json.JSONDecodeError:
-                # 如果仍然失败，尝试更高级的修复
-                pass
-            
-            # 5. 尝试修复可能不完整的JSON
-            # 查找实体或关系数组
+            if entities_pos != -1 or relations_pos != -1:
+                # 向前寻找最近的 {，向后寻找匹配的 }
+                pos = min(p for p in [entities_pos, relations_pos] if p != -1)
+                bracket_count = 0
+                json_start = pos
+                while json_start >= 0:
+                    if cleaned_text[json_start] == '{':
+                        bracket_count += 1
+                        if bracket_count > 0:
+                            break
+                    elif cleaned_text[json_start] == '}':
+                        bracket_count -= 1
+                    json_start -= 1
+                
+                if json_start == -1:
+                    # 如果找不到起始的 {，尝试使用其他解析策略
+                    logging.warning(f"Could not find JSON structure in response: {response_text}")
+                    return None
+                    
+                # 找到匹配的结束 }
+                bracket_count = 1  # 已经找到一个 {
+                json_end = pos
+                while json_end < len(cleaned_text):
+                    if cleaned_text[json_end] == '{':
+                        bracket_count += 1
+                    elif cleaned_text[json_end] == '}':
+                        bracket_count -= 1
+                        if bracket_count == 0:
+                            break
+                    json_end += 1
+                
+                if bracket_count != 0:
+                    # 括号不匹配，返回错误
+                    logging.warning(f"Unbalanced brackets in JSON: {cleaned_text}")
+                    return None
+            else:
+                logging.warning(f"No JSON structure indicators found in response: {response_text}")
+                return None
+        
+        # 提取并尝试解析 JSON 部分
+        json_text = cleaned_text[json_start:json_end + 1]
+        
+        # 4. 最终清理和解析
+        try:
+            # 有时候 JSON 文本中可能有额外的空格、注释或格式不正确
+            # 尝试更宽松的处理
+            cleaned_json = re.sub(r'//.*?$', '', json_text, flags=re.MULTILINE)  # 移除注释
+            cleaned_json = re.sub(r'/\*.*?\*/', '', cleaned_json, flags=re.DOTALL)  # 移除块注释
+            parsed_data = json.loads(cleaned_json)
+        except:
+            # 尝试一种更宽松的方式创建 JSON
             try:
                 if '"entities"' in json_text:
-                    entities_match = re.search(r'"entities"\s*:\s*\[(.*?)(?:\]|$)', json_text, re.DOTALL)
+                    # 手动构建简单的实体 JSON
+                    entities_match = re.search(r'"entities"\s*:\s*\[(.*?)\]', json_text, re.DOTALL)
                     if entities_match:
                         entities_content = entities_match.group(1).strip()
-                        # 检查最后一个对象是否完整
-                        if entities_content.endswith(','):
-                            entities_content = entities_content[:-1]  # 移除尾部逗号
-                        
-                        # 确保JSON数组内容有效
-                        if not entities_content.endswith('}'):
-                            # 查找最后一个完整的对象
-                            last_complete_obj = entities_content.rfind('}')
-                            if last_complete_obj != -1:
-                                entities_content = entities_content[:last_complete_obj+1]
-                        
-                        # 构建完整的JSON字符串
-                        fixed_json = f'{{"entities": [{entities_content}]}}'
-                        try:
+                        if entities_content:
+                            # 尝试解析实体列表
+                            fixed_json = f'{{"entities": [{entities_content}]}}'
                             parsed_data = json.loads(fixed_json)
-                            logging.debug(f"成功修复并解析entities JSON: {fixed_json[:50]}...")
-                            return parsed_data
-                        except json.JSONDecodeError as e:
-                            logging.warning(f"修复entities JSON失败: {e}")
-                
+                        else:
+                            parsed_data = {"entities": []}
+                    else:
+                        parsed_data = {"entities": []}
                 elif '"relations"' in json_text:
-                    relations_match = re.search(r'"relations"\s*:\s*\[(.*?)(?:\]|$)', json_text, re.DOTALL)
+                    # 手动构建简单的关系 JSON
+                    relations_match = re.search(r'"relations"\s*:\s*\[(.*?)\]', json_text, re.DOTALL)
                     if relations_match:
                         relations_content = relations_match.group(1).strip()
-                        # 检查最后一个对象是否完整
-                        if relations_content.endswith(','):
-                            relations_content = relations_content[:-1]  # 移除尾部逗号
-                        
-                        # 处理可能存在问题的关系内容
-                        # 分析和提取每个完整的对象
-                        objects = []
-                        brace_count = 0
-                        start_pos = 0
-                        in_object = False
-                        
-                        for i, char in enumerate(relations_content):
-                            if char == '{':
-                                if brace_count == 0:
-                                    start_pos = i
-                                    in_object = True
-                                brace_count += 1
-                            elif char == '}':
-                                brace_count -= 1
-                                if brace_count == 0 and in_object:
-                                    # 找到一个完整的对象
-                                    obj_str = relations_content[start_pos:i+1]
-                                    try:
-                                        # 尝试解析单个对象
-                                        obj = json.loads(obj_str)
-                                        # 检查对象是否包含所有必要的字段
-                                        required_fields = ["source", "source_type", "target", "target_type", "type"]
-                                        if all(field in obj for field in required_fields):
-                                            objects.append(obj)
-                                    except json.JSONDecodeError:
-                                        pass  # 忽略无法解析的对象
-                                    in_object = False
-                        
-                        if objects:
-                            logging.debug(f"从关系内容中提取了 {len(objects)} 个完整的关系对象")
-                            return {"relations": objects}
-                            
-                        # 旧的方法如果上面方法提取不了单个对象
-                        # 构建完整的JSON字符串
-                        fixed_json = f'{{"relations": [{relations_content}]}}'
-                        try:
+                        if relations_content:
+                            # 尝试解析关系列表
+                            fixed_json = f'{{"relations": [{relations_content}]}}'
                             parsed_data = json.loads(fixed_json)
-                            logging.debug(f"成功修复并解析relations JSON: {fixed_json[:50]}...")
-                            return parsed_data
-                        except json.JSONDecodeError as e:
-                            logging.warning(f"修复relations JSON失败: {e}")
-            except Exception as repair_error:
-                logging.error(f"尝试修复JSON时出错: {repair_error}")
+                        else:
+                            parsed_data = {"relations": []}
+                    else:
+                        parsed_data = {"relations": []}
+                else:
+                    raise ValueError("Neither entities nor relations found in JSON")
+            except Exception as inner_e:
+                logging.error(f"Failed to repair JSON: {inner_e}\nOriginal JSON: {json_text}")
+                return None
         
-        # 6. 使用正则表达式直接提取实体或关系对象
-        try:
-            # 匹配实体对象
-            entity_pattern = r'\{\s*"name"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"type"\s*:\s*"((?:\\.|[^"\\])*?)"\s*\}'
-            entities = re.findall(entity_pattern, cleaned_text)
-            if entities:
-                entity_objects = [{"name": name, "type": type_} for name, type_ in entities]
-                logging.debug(f"通过正则表达式提取了 {len(entity_objects)} 个实体")
-                return {"entities": entity_objects}
-            
-            # 匹配关系对象 - 使用非贪婪模式
-            relation_pattern = r'\{\s*"source"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"source_type"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"target"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"target_type"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"type"\s*:\s*"((?:\\.|[^"\\])*?)"\s*\}'
-            relations = re.findall(relation_pattern, cleaned_text)
-            if relations:
-                relation_objects = [
-                    {
-                        "source": source, 
-                        "source_type": source_type, 
-                        "target": target, 
-                        "target_type": target_type, 
-                        "type": rel_type
-                    } 
-                    for source, source_type, target, target_type, rel_type in relations
-                ]
-                logging.debug(f"通过正则表达式提取了 {len(relation_objects)} 个关系")
-                return {"relations": relation_objects}
-                
-            # 尝试一种更灵活的关系模式，允许字段顺序不同
-            # 找到所有的JSON对象
-            obj_pattern = r'\{[^\{\}]+\}'
-            objs = re.findall(obj_pattern, cleaned_text)
-            relation_fields = ["source", "source_type", "target", "target_type", "type"]
-            relations_list = []
-            
-            for obj in objs:
-                # 检查是否包含所有关系字段
-                if all(f'"{field}"' in obj for field in relation_fields):
-                    # 提取每个字段
-                    relation = {}
-                    for field in relation_fields:
-                        match = re.search(f'"{field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*?)"', obj)
-                        if match:
-                            relation[field] = match.group(1)
-                    
-                    # 只有包含所有字段才添加
-                    if len(relation) == len(relation_fields):
-                        relations_list.append(relation)
-            
-            if relations_list:
-                logging.debug(f"通过灵活匹配提取了 {len(relations_list)} 个关系")
-                return {"relations": relations_list}
-                
-        except Exception as regex_error:
-            logging.error(f"使用正则表达式提取JSON时出错: {regex_error}")
-        
-        # 所有方法都失败，记录警告并输出完整响应
-        logging.warning(f"无法从LLM响应中提取有效的JSON结构:\n{response_text}")
+        # 5. 验证解析结果是否符合预期格式
+        if isinstance(parsed_data, dict) and \
+           (('entities' in parsed_data and isinstance(parsed_data['entities'], list)) or \
+            ('relations' in parsed_data and isinstance(parsed_data['relations'], list))):
+            return parsed_data
+        else:
+            logging.warning(f"LLM response is valid JSON but not the expected structure: {json_text}")
+            return None
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to decode LLM JSON response: {e}\nResponse text:\n{response_text}")
         return None
     except Exception as e:
-        logging.error(f"解析LLM响应时发生未预期的错误: {e}")
-        logging.error(f"问题响应完整内容:\n{response_text}")
+        logging.error(f"An unexpected error occurred during LLM response parsing: {e}\nResponse text:\n{response_text}")
         return None
 
 def create_entity_prompt(chunk_content: str, context: Dict[str, Any], config: Config) -> str:
-    """创建实体提取的提示词"""
-    # 从配置中获取模板
-    template = config.prompt_templates.get('entity_extraction', {}).get('template', '')
-    definitions = config.prompt_templates.get('entity_extraction', {}).get('definitions', '')
+    """使用配置的实体类型创建实体提取提示，并包含文档结构信息作为上下文。"""
+    # 获取模板配置
+    entity_config = config.prompt_templates.get('entity_extraction', {})
+    definitions = entity_config.get('definitions', '')
+    template = entity_config.get('template', '')
     
-    # 如果模板为空，使用默认模板
+    # 如果没有找到模板，返回默认消息
     if not template:
-        logging.warning("配置中没有找到实体提取模板，使用默认模板")
-        template = """请从以下文本中提取定义的实体类型。\n\n{definitions}\n\n要提取的实体类型列表: {entity_types}\n\n文本：\n\"\"\"\n{content}\n\"\"\"\n\n请以JSON格式输出，包含一个名为 "entities" 的列表，其中每个对象包含 "name" 和 "type"。"""
+        logging.warning("未找到实体提取模板，使用默认空模板")
+        return "请提取实体"
     
-    if not definitions:
-        logging.warning("配置中没有找到实体类型定义，使用空定义")
-        definitions = ""
+    # 获取实体类型英文名，用于提示词中的使用
+    entity_types_english = [config.entity_type_map_cypher.get(t, t) for t in config.entity_types_llm]
     
-    # 获取实体类型列表
-    entity_types = config.entity_types_llm
-    entity_types_english = [config.entity_type_map_cypher.get(t, t) for t in entity_types]
-    
-    # 获取文档上下文信息
-    document_title = context.get('document_title', "未知文档")
-    current_heading = context.get('current_heading', "未知章节")
-    section_path = context.get('section_path', "")
-    parent_section_summary = context.get('parent_section_summary', "")
-    
-    # 强化对实体类型的约束
-    strict_entity_type_guidance = """
-【特别强调】：
-1. 必须严格使用以下英文实体类型，不得使用其他类型：{entity_types_english}
-2. 请勿将关系类型（如RESPONSIBLE_FOR, APPLIES_TO, HAS_PURPOSE等）错误地用作实体类型
-3. 请确保每个提取的实体都分配了正确的实体类型
-"""
-    
-    # 先使用安全的手工构建的提示词，完全避开模板格式化的问题
-    prompt = f"""请从以下文本中提取定义的实体类型。专注于识别组织、角色、具体规定陈述、以及预定义的规定类型(Topic)。
-
-{definitions}
-
-要提取的实体类型列表: {', '.join(entity_types)}
-
-文档信息 (仅供参考，不要提取为实体):
-文档标题: {document_title}
-当前章节: {current_heading}
-章节路径: {section_path}
-父章节内容摘要: {parent_section_summary}
-
-文本：
-\"\"\"
-{chunk_content}
-\"\"\"
-
-【重要】：必须使用英文实体类型！返回的JSON中，实体类型必须为英文，且仅包含以下类型: {', '.join(entity_types_english)}
-
-请以严格的JSON格式输出，包含一个名为"entities"的列表，其中每个对象包含"name"(实体名称)和"type"(实体类型)。确保实体名称是文本中实际出现的词语。
-
-注意事项：
-1. 不要提取文档标题或章节标题作为实体。
-2. 确保每个实体完整识别。
-3. 识别实体时考虑缩写和全称。
-4. 保留相同实体的不同表述。
-5. 确保每个实体都准确分配了正确的英文实体类型。
-6. 严格使用以下英文类型名: {', '.join(entity_types_english)}
-7. 类型区分指南：
-   - Topic与Statement的区别：Topic是规定内容的分类标签（如"服务质量"），Statement是具体的规定本身（如"应使用规范用语"）。
-   - Organization与Role的区别：Organization是部门/单位，Role是岗位/职责。
-   - 文档名称、预案名称：带有《》括号的文件名不是Organization，如"《广州局集团公司网络安全事件应急预案》"不是Organization。
-   - 信息系统：各种信息系统如"客票发售和预订系统"、"12306系统"等不是Organization，应考虑作为Statement或Topic提取（如果符合这些类型的定义）。
-8. 利用文档上下文信息辅助判断。
-
-{strict_entity_type_guidance.format(entity_types_english=', '.join(entity_types_english))}
-
-JSON输出示例：
-{{
-  "entities": [
-    {{"name": "集团公司客运部", "type": "Organization"}},
-    {{"name": "应使用规范用语，保持微笑服务", "type": "Statement"}},
-    {{"name": "服务质量", "type": "Topic"}},
-    {{"name": "站务员", "type": "Role"}}
-  ]
-}}"""
+    # 使用命名参数的格式化方法
+    try:
+        # 格式化模板
+        prompt = template.format(
+            definitions=definitions,
+            entity_types=', '.join(config.entity_types_llm),
+            entity_types_english=', '.join(entity_types_english),
+            content=chunk_content,
+            document_title=context.get('document_title', 'N/A'),
+            current_heading=context.get('current_heading', 'N/A'),
+            section_path=context.get('section_path', 'N/A'),
+            parent_section_summary=context.get('parent_section_summary', '')
+        )
+    except KeyError as e:
+        # 如果发生KeyError，可能是内容中含有花括号或特殊字符，尝试使用安全的替代方法
+        logging.warning(f"格式化模板时出现KeyError: {e}，尝试使用替代方法")
+        # 将模板中的{content}替换为实际内容，而不使用format方法
+        placeholder = "{content}"
+        if placeholder in template:
+            prompt = template.replace(placeholder, chunk_content)
+            # 然后手动替换其他占位符
+            prompt = prompt.replace("{definitions}", definitions)
+            prompt = prompt.replace("{entity_types}", ', '.join(config.entity_types_llm))
+            prompt = prompt.replace("{entity_types_english}", ', '.join(entity_types_english))
+            prompt = prompt.replace("{document_title}", context.get('document_title', 'N/A'))
+            prompt = prompt.replace("{current_heading}", context.get('current_heading', 'N/A'))
+            prompt = prompt.replace("{section_path}", context.get('section_path', 'N/A'))
+            prompt = prompt.replace("{parent_section_summary}", context.get('parent_section_summary', ''))
+        else:
+            # 如果没有找到{content}占位符，记录错误并返回简单提示
+            logging.error(f"模板中找不到{{content}}占位符，使用简单提示。错误: {e}")
+            prompt = f"请从以下内容中提取实体类型: {', '.join(config.entity_types_llm)}\n\n{chunk_content}"
+    except Exception as e:
+        # 捕获其他可能的异常
+        logging.error(f"创建实体提取提示时发生错误: {e}")
+        prompt = f"请从以下内容中提取实体类型: {', '.join(config.entity_types_llm)}\n\n{chunk_content}"
     
     return prompt
 
 def create_relation_prompt(chunk_content: str, entities_json: str, context: Dict[str, Any], config: Config) -> str:
-    """创建关系提取的提示词"""
-    # 从配置中获取模板
-    template = config.prompt_templates.get('relation_extraction', {}).get('template', '')
-    definitions = config.prompt_templates.get('relation_extraction', {}).get('definitions', '')
+    """使用配置的关系类型和已提取的实体创建关系提取提示，并包含文档结构信息作为上下文。"""
+    # 获取模板配置
+    relation_config = config.prompt_templates.get('relation_extraction', {})
+    definitions = relation_config.get('definitions', '')
+    template = relation_config.get('template', '')
     
-    # 如果模板为空，使用默认模板
+    # 如果没有找到模板，返回默认消息
     if not template:
-        logging.warning("配置中没有找到关系提取模板，使用默认模板")
-        template = """请从以下文本中提取定义的关系类型。\n\n{definitions}\n\n要提取的关系类型列表: {relation_types}\n\n文本：\n\"\"\"\n{content}\n\"\"\"\n\n已识别的实体列表：\n\"\"\"\n{entities_json}\n\"\"\"\n\n请以JSON格式输出，包含一个名为 "relations" 的列表，其中每个对象包含 "source", "source_type", "target", "target_type", "type"。"""
+        logging.warning("未找到关系提取模板，使用默认空模板")
+        return "请提取关系"
     
-    if not definitions:
-        logging.warning("配置中没有找到关系类型定义，使用空定义")
-        definitions = ""
+    # 获取关系类型和所有实体类型的英文名称，用于提示词
+    relation_types_english = [config.relation_type_map_cypher.get(t, t) for t in config.relation_types_llm]
+    all_entity_types_english = [config.entity_type_map_cypher.get(t, t) for t in config.all_entity_types]
     
-    # 获取关系类型列表
-    relation_types = config.relation_types_llm
-    relation_types_english = [config.relation_type_map_cypher.get(t, t) for t in relation_types]
-    
-    # 获取所有实体类型（包括Document和Section）
-    all_entity_types = config.all_entity_types
-    all_entity_types_english = [config.entity_type_map_cypher.get(t, t) for t in all_entity_types]
-    
-    # 获取文档上下文信息
-    document_title = context.get('document_title', "未知文档")
-    current_heading = context.get('current_heading', "未知章节")
-    section_path = context.get('section_path', "")
-    
-    # 强化对关系类型的约束
-    strict_relation_type_guidance = """
-【特别强调】：
-1. 必须严格使用以下英文关系类型，不得使用其他类型：{relation_types_english}
-2. source_type和target_type必须严格使用以下英文实体类型：{all_entity_types_english}
-3. 请勿将实体类型（如Organization, Statement, Topic等）错误地用作关系类型
-4. 确保每个关系的source和target都是文本中实际提取的实体
-"""
-    
-    # 直接使用安全的手工构建的提示词，完全避开模板格式化的问题
-    prompt = f"""请从以下文本中提取定义的关系类型。根据预定义的实体列表提取这些实体之间符合定义的关系类型。请专注于在文本段落中直接陈述的语义关系。
-
-{definitions}
-
-要提取的关系类型列表: {', '.join(relation_types)}
-预定义的实体类型列表 (用于关系端点): {', '.join(all_entity_types_english)}
-
-文档信息 (仅供参考):
-文档标题: {document_title}
-当前章节: {current_heading}
-章节路径: {section_path}
-
-文本：
-\"\"\"
-{chunk_content}
-\"\"\"
-
-文本中已识别的语义实体列表 (用于构建关系):
-\"\"\"
-{entities_json}
-\"\"\"
-
-【重要】：必须使用英文实体类型和关系类型！
-
-请以严格的JSON格式输出，包含一个名为"relations"的列表，其中每个对象必须包含"source", "source_type", "target", "target_type", "type"字段。
-
-注意事项:
-1. 关系必须连接上面语义实体列表中的实体，或者连接语义实体到已知的章节(Section)或文档(Document)（如果文本明确引用）。
-2. source_type和target_type必须是以下英文类型之一: {', '.join(all_entity_types_english)}
-3. 关系类型必须是预定义的英文类型之一: {', '.join(relation_types_english)}
-4. 不要提取Document -> Section或Section -> Section的结构关系。
-5. CONTAINS关系将由脚本自动处理（连接章节和其包含的语义实体），不要让LLM提取CONTAINS。
-6. 关系类型使用指南：
-   - RESPONSIBLE_FOR：描述对具体规则(Statement)或规则类型(Topic)的责任。
-   - MENTIONS：用于连接章节(Section)和其明确提及的规定类型(Topic)。
-   - REFERENCES: 用于文本中明确提到的对其他章节或文档的引用 (e.g., "详见章节 3.1")。不要用于连接非文档/章节的实体。例如，系统名称、业务流程等非章节/文档的引用应使用RELATED_TO关系。
-   - RELATED_TO: 用于表达其他关系类型无法清晰表达的联系，包括提及系统、业务流程等非文档/章节的情况。
-
-{strict_relation_type_guidance.format(
-    relation_types_english=', '.join(relation_types_english),
-    all_entity_types_english=', '.join(all_entity_types_english)
-)}
-
-JSON输出示例：
-{{
-  "relations": [
-    {{
-      "source": "集团公司客运部",
-      "source_type": "Organization",
-      "target": "服务质量",
-      "target_type": "Topic",
-      "type": "RESPONSIBLE_FOR"
-    }},
-    {{
-      "source": "应使用规范用语，保持微笑服务",
-      "source_type": "Statement",
-      "target": "站务员",
-      "target_type": "Role",
-      "type": "APPLIES_TO"
-    }}
-  ]
-}}"""
+    # 使用安全的模板格式化方法
+    try:
+        # 格式化模板
+        prompt = template.format(
+            definitions=definitions,
+            relation_types=', '.join(config.relation_types_llm),
+            relation_types_english=', '.join(relation_types_english),
+            all_entity_types_english=', '.join(all_entity_types_english),
+            content=chunk_content,
+            entities_json=entities_json,
+            document_title=context.get('document_title', 'N/A'),
+            current_heading=context.get('current_heading', 'N/A'),
+            section_path=context.get('section_path', 'N/A')
+        )
+    except KeyError as e:
+        # 如果发生KeyError，尝试使用安全的替代方法
+        logging.warning(f"格式化关系提取模板时出现KeyError: {e}，尝试使用替代方法")
+        # 将模板中的{content}替换为实际内容，而不使用format方法
+        placeholder = "{content}"
+        if placeholder in template:
+            prompt = template.replace(placeholder, chunk_content)
+            # 然后手动替换其他占位符
+            prompt = prompt.replace("{definitions}", definitions)
+            prompt = prompt.replace("{relation_types}", ', '.join(config.relation_types_llm))
+            prompt = prompt.replace("{relation_types_english}", ', '.join(relation_types_english))
+            prompt = prompt.replace("{all_entity_types_english}", ', '.join(all_entity_types_english))
+            prompt = prompt.replace("{entities_json}", entities_json)
+            prompt = prompt.replace("{document_title}", context.get('document_title', 'N/A'))
+            prompt = prompt.replace("{current_heading}", context.get('current_heading', 'N/A'))
+            prompt = prompt.replace("{section_path}", context.get('section_path', 'N/A'))
+        else:
+            # 如果没有找到{content}占位符，记录错误并返回简单提示
+            logging.error(f"关系提取模板中找不到{{content}}占位符，使用简单提示。错误: {e}")
+            prompt = f"请从以下内容中提取关系类型: {', '.join(config.relation_types_llm)}\n\n已识别的实体:\n{entities_json}\n\n{chunk_content}"
+    except Exception as e:
+        # 捕获其他可能的异常
+        logging.error(f"创建关系提取提示时发生错误: {e}")
+        prompt = f"请从以下内容中提取关系类型: {', '.join(config.relation_types_llm)}\n\n已识别的实体:\n{entities_json}\n\n{chunk_content}"
     
     return prompt
 
@@ -1372,42 +1186,23 @@ def generate_cypher_statements(entities: List[Entity], relations: List[Relation]
         source_types = entity_type_mapping.get(relation.source, set())
         target_types = entity_type_mapping.get(relation.target, set())
         
-        # 针对系统名称的特殊处理
-        # 处理源实体，如果是系统名称并且包含多个类型，优先使用Topic
-        if len(source_types) > 1 and "Topic" in source_types and "Section" in source_types:
-            if "系统" in relation.source or "12306" in relation.source:
-                source_type = "Topic"
-                logging.info(f"实体 '{relation.source}' 歧义解决为 Topic 类型（系统名称）")
-            else:
-                source_type = None
-        else:
-            source_type = next(iter(source_types)) if len(source_types) == 1 else None
-        
-        # 处理目标实体，如果是系统名称并且包含多个类型，优先使用Topic
-        if len(target_types) > 1 and "Topic" in target_types and "Section" in target_types:
-            if "系统" in relation.target or "12306" in relation.target:
-                target_type = "Topic"
-                logging.info(f"实体 '{relation.target}' 歧义解决为 Topic 类型（系统名称）")
-            else:
-                target_type = None
-        else:
-            target_type = next(iter(target_types)) if len(target_types) == 1 else None
+        # 查找唯一的源和目标类型（如果有多个类型，可能导致歧义）
+        source_type = next(iter(source_types)) if len(source_types) == 1 else None
+        target_type = next(iter(target_types)) if len(target_types) == 1 else None
         
         # 检查歧义
-        source_ambiguous = len(source_types) > 1 and source_type is None
-        target_ambiguous = len(target_types) > 1 and target_type is None
+        source_ambiguous = len(source_types) > 1
+        target_ambiguous = len(target_types) > 1
 
         if source_type and target_type:
             # 使用精确的类型标签进行匹配，并添加属性
-            # 规范化关系类型
-            normalized_rel_type = normalize_relation_type(relation.type, config)
             cypher_statements.append(
                 f"MATCH (a:`{source_type}` {{name: '{escaped_source}'}}), "
                 f"(b:`{target_type}` {{name: '{escaped_target}'}}) "
-                f"MERGE (a)-[r:`{normalized_rel_type}`]->(b) "
+                f"MERGE (a)-[r:`{relation.type}`]->(b) "
                 f"ON CREATE SET r.created_at = timestamp(), "
                 f"r.context_id = '{relation.context_id}', "
-                f"r.relation_type = '{normalized_rel_type}';")
+                f"r.relation_type = '{relation.type}';")
         else:
             # 如果存在歧义，添加警告
             if source_ambiguous or target_ambiguous:
@@ -1422,35 +1217,32 @@ def generate_cypher_statements(entities: List[Entity], relations: List[Relation]
             else:
                 untyped_relations_count += 1
                 
-            # 规范化关系类型
-            normalized_rel_type = normalize_relation_type(relation.type, config)
-                
             # 改进的匹配逻辑，添加属性
             if source_type and not target_type:
                 cypher_statements.append(
                     f"MATCH (a:`{source_type}` {{name: '{escaped_source}'}}), "
                     f"(b {{name: '{escaped_target}'}}) "
-                    f"MERGE (a)-[r:`{normalized_rel_type}`]->(b) "
+                    f"MERGE (a)-[r:`{relation.type}`]->(b) "
                     f"ON CREATE SET r.match_type = 'source_typed', r.created_at = timestamp(), "
                     f"r.context_id = '{relation.context_id}', "
-                    f"r.relation_type = '{normalized_rel_type}';")
+                    f"r.relation_type = '{relation.type}';")
             elif not source_type and target_type:
                 cypher_statements.append(
                     f"MATCH (a {{name: '{escaped_source}'}}), "
                     f"(b:`{target_type}` {{name: '{escaped_target}'}}) "
-                    f"MERGE (a)-[r:`{normalized_rel_type}`]->(b) "
+                    f"MERGE (a)-[r:`{relation.type}`]->(b) "
                     f"ON CREATE SET r.match_type = 'target_typed', r.created_at = timestamp(), "
                     f"r.context_id = '{relation.context_id}', "
-                    f"r.relation_type = '{normalized_rel_type}';")
+                    f"r.relation_type = '{relation.type}';")
             else:
                 # 如果两边都没有明确类型，使用模糊匹配但添加警告标记
                 cypher_statements.append(
                     f"MATCH (a {{name: '{escaped_source}'}}), (b {{name: '{escaped_target}'}}) "
-                    f"MERGE (a)-[r:`{normalized_rel_type}`]->(b) "
+                    f"MERGE (a)-[r:`{relation.type}`]->(b) "
                     f"ON CREATE SET r.match_type = 'untyped', r.reliability = 'low', "
                     f"r.created_at = timestamp(), r.warning = '实体类型未知，可能存在错误匹配', "
                     f"r.context_id = '{relation.context_id}', "
-                    f"r.relation_type = '{normalized_rel_type}';")
+                    f"r.relation_type = '{relation.type}';")
 
     if untyped_relations_count > 0:
         logging.warning(f"发现 {untyped_relations_count} 个关系的实体类型无法确定，已使用通用匹配并标记为低可靠性。")
@@ -1623,55 +1415,9 @@ async def extract_entities_and_relations(data: List[Dict[str, Any]]) -> Tuple[Se
                 normalized_source = normalize_entity_name(raw_source, config)
                 normalized_target = normalize_entity_name(raw_target, config)
                 
-                # 规范化关系类型
-                normalized_type = normalize_relation_type(raw_type, config)
-                
                 # 添加关系，包含chunk_id属性
-                relations_set.add((normalized_source, normalized_target, normalized_type, task.chunk_id))
+                relations_set.add((normalized_source, normalized_target, raw_type, task.chunk_id))
                 relation_count += 1
-                
-                # 对各种关系类型进行特殊处理，确保关系两端的实体类型正确
-                # REFERENCES关系的目标必须是Document或Section
-                if normalized_type == 'REFERENCES' and target_type and target_type not in ['Document', 'Section']:
-                    logging.warning(f"REFERENCES关系的目标实体类型应为Document或Section，但实际为 '{target_type}'，将其更正为Section类型")
-                    target_type = "Section"
-                
-                # APPLIES_TO关系的目标必须是Organization或Role
-                elif normalized_type == 'APPLIES_TO' and target_type and target_type not in ['Organization', 'Role']:
-                    logging.warning(f"APPLIES_TO关系的目标实体类型应为Organization或Role，但实际为 '{target_type}'，将其更正为Organization类型")
-                    target_type = "Organization"
-                
-                # RESPONSIBLE_FOR关系的源必须是Organization或Role
-                elif normalized_type == 'RESPONSIBLE_FOR' and source_type and source_type not in ['Organization', 'Role']:
-                    logging.warning(f"RESPONSIBLE_FOR关系的源实体类型应为Organization或Role，但实际为 '{source_type}'，将其更正为Organization类型")
-                    source_type = "Organization"
-                
-                # BELONGS_TO关系的源和目标必须是Organization或Role
-                elif normalized_type == 'BELONGS_TO':
-                    if source_type and source_type not in ['Organization', 'Role']:
-                        logging.warning(f"BELONGS_TO关系的源实体类型应为Organization或Role，但实际为 '{source_type}'，将其更正为Organization类型")
-                        source_type = "Organization"
-                    if target_type and target_type not in ['Organization', 'Role']:
-                        logging.warning(f"BELONGS_TO关系的目标实体类型应为Organization或Role，但实际为 '{target_type}'，将其更正为Organization类型")
-                        target_type = "Organization"
-                
-                # MENTIONS关系的源必须是Section，目标必须是Topic
-                elif normalized_type == 'MENTIONS':
-                    if source_type and source_type != 'Section':
-                        logging.warning(f"MENTIONS关系的源实体类型应为Section，但实际为 '{source_type}'，将其更正为Section类型")
-                        source_type = "Section"
-                    if target_type and target_type != 'Topic':
-                        logging.warning(f"MENTIONS关系的目标实体类型应为Topic，但实际为 '{target_type}'，将其更正为Topic类型")
-                        target_type = "Topic"
-                
-                # HAS_PURPOSE关系的源和目标必须是Statement
-                elif normalized_type == 'HAS_PURPOSE':
-                    if source_type and source_type != 'Statement':
-                        logging.warning(f"HAS_PURPOSE关系的源实体类型应为Statement，但实际为 '{source_type}'，将其更正为Statement类型")
-                        source_type = "Statement"
-                    if target_type and target_type != 'Statement':
-                        logging.warning(f"HAS_PURPOSE关系的目标实体类型应为Statement，但实际为 '{target_type}'，将其更正为Statement类型")
-                        target_type = "Statement"
                 
                 # 存储实体类型信息并添加到实体集合，包含chunk_id属性
                 if source_type and source_type in [config.entity_type_map_cypher.get(t, t) for t in config.entity_types_llm]:
@@ -1992,6 +1738,213 @@ def save_cypher_statements(entities_set: Set[Tuple[str, str, str]], relations_se
         print("\nCypher Statements:\n")
         print(";\n".join(cypher_statements) + ";\n")  # 作为备选方案打印到控制台
 
+def create_example_config_file(config_path: str) -> bool:
+    """创建示例配置文件，包含所有图谱模式定义"""
+    example_content = """# LightRAG 知识图谱提取配置文件
+
+# 图谱模式定义
+schema:
+  # 实体类型定义
+  entity_types:
+    - 文档
+    - 章节
+    - 主题
+    - 关键词
+    - 人员
+    - 角色
+    - 组织
+    - 时间
+    - 事件
+    - 法规
+
+  # 实体类型映射到Cypher中的标签
+  entity_type_map_cypher:
+    文档: Document
+    章节: Section
+    主题: Topic
+    关键词: Keyword
+    人员: Person
+    角色: Role
+    组织: Organization
+    时间: Time
+    事件: Event
+    法规: Regulation
+
+  # 关系类型定义
+  relation_types:
+    - 隶属关系
+    - 版本关系
+    - 引用
+    - 依据
+    - 责任
+    - 审批
+    - 时间
+    - 生效
+    - 关联
+
+  # 关系类型映射到Cypher中的关系类型
+  relation_type_map_cypher:
+    隶属关系: BELONGS_TO
+    版本关系: HAS_VERSION
+    引用: REFERENCES
+    依据: BASED_ON
+    责任: RESPONSIBLE_FOR
+    审批: APPROVED_BY
+    时间: OCCURS_AT
+    生效: EFFECTIVE_FROM
+    关联: RELATED_TO
+
+# 实体名称规范化映射
+normalization:
+  canonical_map:
+    客运部: 集团公司客运部
+    信息技术所: 集团公司信息技术所
+    科信部: 集团公司科信部
+    财务部: 集团公司财务部
+    计统部: 集团公司计统部
+    电务部: 集团公司电务部
+    供电部: 集团公司供电部
+    宣传部: 集团公司宣传部
+    调度所: 集团公司调度所
+    集团公司应急领导小组办公室: 集团公司应急领导小组办公室
+    集团公司应急领导小组: 集团公司应急领导小组
+    国铁集团应急领导小组办公室: 国铁集团应急领导小组办公室
+    国铁集团应急领导小组: 国铁集团应急领导小组
+    国铁集团客运部: 国铁集团客运部
+    12306科创中心: 12306科创中心
+    广铁集团: 中国铁路广州局集团有限公司
+    集团公司: 中国铁路广州局集团有限公司
+    本预案: 《广州局集团公司客票发售和预订系统（含互联网售票部分）应急预案》
+    客票系统: 客票发售和预订系统
+
+# 提示词模板
+prompts:
+  entity_extraction:
+    definitions: |
+      实体类型定义:
+      - 文档：管理规定的文件名称，如《应急预案》。
+      - 章节：文档中的具体章节标题，如"1 总则"。
+      - 主题：文档或章节的核心议题，如"应急组织机构"。
+      - 关键词：文本中重要的名词或术语，如"客票系统"、"应急响应"、"电子客票"。
+      - 人员：具体的人名（此文档中可能较少）。
+      - 角色：指代具有特定职责的职位或岗位，如"客运部主任"、"售票员"。
+      - 组织：涉及的单位、部门或公司，如"中国铁路广州局集团有限公司"、"集团公司客运部"、"信息技术所"、"各车务站段"。
+      - 时间：具体的日期、时间点或时间段，如"2021年"、"4小时及以上"、"每年3月"。
+      - 事件：文档中描述的具体活动或状况，如"系统突发事件"、"启动应急预案"、"应急演练"、"售票故障"。
+      - 法规：引用的其他法规或文件名称及其编号，如"《铁路客票发售和预订系统(含互联网售票部分)应急预案》（铁办客〔2021〕92号）"。
+
+    template: |
+      请从以下文本中提取定义的实体类型。尽可能完整提取每个实体，确保不遗漏文本中的关键实体。
+
+      {definitions}
+
+      预定义的实体类型列表: {entity_types}
+
+      文本：
+      \"\"\"
+{content}
+      \"\"\"
+
+      请以严格的 JSON 格式输出，包含一个名为 "entities" 的列表，其中每个对象包含 "name" (实体名称) 和 "type" (实体类型)。确保实体名称是文本中实际出现的词语。
+
+      注意事项：
+      1. 确保每个实体完整识别，尤其是组织、文档和法规名称不要截断
+      2. 识别实体时考虑可能存在的缩写和全称（如"集团公司"与"中国铁路广州局集团有限公司"）
+      3. 对于相同实体的不同表述，保留所有出现形式
+      4. 确保每个实体都准确分配了正确的实体类型
+
+      例如:
+      {
+        "entities": [
+          {"name": "集团公司客运部", "type": "组织"},
+          {"name": "售票故障", "type": "事件"},
+          {"name": "《铁路客票发售和预订系统(含互联网售票部分)应急预案》（铁办客〔2021〕92号）", "type": "法规"}
+        ]
+      }
+
+  relation_extraction:
+    definitions: |
+      关系类型定义 (请仅提取文本段落内明确描述的关系):
+      - 隶属关系 (BelongsTo): 通常是结构化的，此提示词主要关注文本内描述，如"办公室设在客运部"。(结构化部分将后处理)
+      - 版本关系 (HasVersion): 指明文档的版本信息或与其他版本的关系 (如"修订版"、"废止旧版")。
+      - 引用 (References): 一个实体提到了另一个实体或文件，如"详见附件5"。
+      - 依据 (BasedOn): 指出制定某文件或采取某行动所依据的法规或原则，如"根据...制定本预案"。
+      - 责任 (ResponsibleFor): 指明某个角色或组织负责某项任务或职责，如"客运部负责协调"。
+      - 审批 (ApprovedBy): 指出某事项需要经过哪个组织或角色批准，如"经...同意后"。
+      - 时间 (OccursAt): 事件发生的时间，或规定适用的时间点/段，如"事件影响4小时"、"每年3月开展演练"。
+      - 生效 (EffectiveFrom): 规定或文件的生效日期，如"自发布之日起实施"。
+      - 关联 (RelatedTo): 实体间的其他关联，如"与...不一致时，以此为准"。
+
+    template: |
+      请从以下文本中提取实体之间的关系。请专注于在文本段落中**直接陈述**的关系。
+
+      {definitions}
+
+      预定义的关系类型列表: {relation_types}
+      预定义的实体类型列表: {entity_types}
+
+      文本：
+      \"\"\"
+{content}
+      \"\"\"
+
+      请以严格的 JSON 格式输出，包含一个名为 "relations" 的列表，其中每个对象必须包含以下字段:
+      - "source" (源实体名称)
+      - "source_type" (源实体类型，必须是预定义的实体类型之一)
+      - "target" (目标实体名称)
+      - "target_type" (目标实体类型，必须是预定义的实体类型之一)
+      - "type" (关系类型，必须是预定义的关系类型之一)
+
+      确保实体名称是文本中实际出现的词语，并且为每个实体提供正确的类型。
+      注意事项:
+      1. 每个关系必须同时包含source_type和target_type
+      2. 实体类型必须从预定义列表中选择
+      3. 确保实体名称完整，不要截断组织、文档或法规名称
+
+      例如:
+      {
+        "relations": [
+          {
+            "source": "集团公司应急领导小组办公室", 
+            "source_type": "组织",
+            "target": "集团公司客运部", 
+            "target_type": "组织",
+            "type": "隶属关系"
+          },
+          {
+            "source": "本预案", 
+            "source_type": "文档",
+            "target": "《铁路客票发售和预订系统(含互联网售票部分)应急预案》", 
+            "target_type": "法规",
+            "type": "依据"
+          },
+          {
+            "source": "客运部", 
+            "source_type": "组织",
+            "target": "协调各相关部门", 
+            "target_type": "责任",
+            "type": "责任"
+          }
+        ]
+      }
+
+# 图数据库配置
+database:
+  # 是否启用唯一性约束（推荐在数据库初始化时启用）
+  enable_uniqueness_constraints: true
+  # 是否为关系添加额外的元数据（创建时间、可靠性等）
+  enable_relation_metadata: true
+"""
+    try:
+        if not os.path.exists(config_path):
+            with open(config_path, 'w', encoding='utf-8') as f:
+                f.write(example_content)
+            logging.info(f"已创建示例配置文件: {config_path}")
+            return True
+        return False
+    except Exception as e:
+        logging.warning(f"创建示例配置文件失败: {e}")
+        return False
 
 def create_contains_relations(section_entities: List[Entity], semantic_entities: List[Entity]) -> List[Relation]:
     """为语义实体创建CONTAINS关系（Section -> 语义实体）"""
@@ -2138,6 +2091,40 @@ def main(input_file: str, output_file: str, config_file: str):
         logging.error(f"执行过程中发生错误: {e}")
         logging.exception("详细错误信息:")
 
+def test_normalize_entity_name():
+    """测试normalize_entity_name函数对章节序号和页码标签的处理"""
+    # 创建一个简单的测试配置
+    test_config = Config(
+        entity_types_llm=["测试类型"],
+        all_entity_types=["测试类型"],
+        entity_type_map_cypher={"测试类型": "TestType"},
+        relation_types_llm=["测试关系"],
+        all_relation_types=["测试关系"],
+        relation_type_map_cypher={"测试关系": "TEST_RELATION"},
+        canonical_map={},
+        prompt_templates={}
+    )
+    
+    test_cases = [
+        ("4.4 应急处置要求 (p.12)", "应急处置要求"),
+        ("1.2.3 测试内容 (p.5)", "测试内容"),
+        ("第三章 安全管理 (p.8)", "第三章 安全管理"),  # 中文章节不会被删除
+        ("普通文本内容", "普通文本内容"),  # 无需修改的内容
+        ("应急处置要求 (p.12)", "应急处置要求"),  # 只有页码
+        ("4.4 应急处置要求", "应急处置要求"),  # 只有章节序号
+    ]
+    
+    print("\n测试normalize_entity_name函数:")
+    for input_str, expected in test_cases:
+        # 使用测试配置对象
+        result = normalize_entity_name(input_str, test_config)
+        
+        print(f"输入: '{input_str}'")
+        print(f"结果: '{result}'")
+        print(f"期望: '{expected}'")
+        print(f"通过: {result == expected}\n")
+    
+    print("测试完成")
 
 def clean_heading(heading: str, config: Config) -> str:
     """移除标题中的页码和可能的其他噪声。"""
@@ -2423,11 +2410,28 @@ if __name__ == "__main__":
     parser.add_argument('-i', '--input', required=True, help='输入JSON文件路径 (必须)')
     parser.add_argument('-o', '--output', required=True, help='输出Cypher文件路径 (必须)')
     parser.add_argument('-c', '--config', required=True, help='配置YAML文件路径 (必须)')
+    parser.add_argument('-t', '--test', action='store_true', help='运行测试函数')
     
     args = parser.parse_args()
     
-    # 使用命令行参数调用main函数（所有参数都是必需的）
-    main(input_file=args.input, output_file=args.output, config_file=args.config)
+    # 如果指定了测试参数，运行测试函数
+    if args.test:
+        # 创建简单的测试配置
+        test_config = Config(
+            entity_types_llm=["测试类型"],
+            all_entity_types=["测试类型"],
+            entity_type_map_cypher={"测试类型": "TestType"},
+            relation_types_llm=["测试关系"],
+            all_relation_types=["测试关系"],
+            relation_type_map_cypher={"测试关系": "TEST_RELATION"},
+            canonical_map={},
+            prompt_templates={}
+        )
+        # 直接将测试配置传递给测试函数，而不使用全局变量
+        test_normalize_entity_name()
+    else:
+        # 使用命令行参数调用main函数（所有参数都是必需的）
+        main(input_file=args.input, output_file=args.output, config_file=args.config)
 
 # README:
 # 
