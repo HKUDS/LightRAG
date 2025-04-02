@@ -276,18 +276,21 @@ class NetworkXStorage(BaseGraphStorage):
         graph = await self._get_graph()
 
         result = KnowledgeGraph()
-        
+
         # Handle special case for "*" label
         if node_label == "*":
             # Get degrees of all nodes
             degrees = dict(graph.degree())
             # Sort nodes by degree in descending order and take top max_nodes
             sorted_nodes = sorted(degrees.items(), key=lambda x: x[1], reverse=True)
-            
+
             # Check if graph is truncated
             if len(sorted_nodes) > max_nodes:
                 result.is_truncated = True
-                
+                logger.info(
+                    f"Graph truncated: {len(sorted_nodes)} nodes found, limited to {max_nodes}"
+                )
+
             limited_nodes = [node for node, _ in sorted_nodes[:max_nodes]]
             # Create subgraph with the highest degree nodes
             subgraph = graph.subgraph(limited_nodes)
@@ -301,23 +304,26 @@ class NetworkXStorage(BaseGraphStorage):
             bfs_nodes = []
             visited = set()
             queue = [node_label]
-            
+
             # Breadth-first search
             while queue and len(bfs_nodes) < max_nodes:
                 current = queue.pop(0)
                 if current not in visited:
                     visited.add(current)
                     bfs_nodes.append(current)
-                    
+
                     # Add neighbor nodes to queue
                     neighbors = list(graph.neighbors(current))
                     queue.extend([n for n in neighbors if n not in visited])
-            
+
             # Check if graph is truncated - if we still have nodes in the queue
             # and we've reached max_nodes, then the graph is truncated
             if queue and len(bfs_nodes) >= max_nodes:
                 result.is_truncated = True
-            
+                logger.info(
+                    f"Graph truncated: breadth-first search limited to {max_nodes} nodes"
+                )
+
             # Create subgraph with BFS discovered nodes
             subgraph = graph.subgraph(bfs_nodes)
 
