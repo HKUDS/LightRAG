@@ -9,7 +9,6 @@ import configparser
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 
-import sys
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -28,11 +27,6 @@ from ..base import (
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger
 
-if sys.platform.startswith("win"):
-    import asyncio.windows_events
-
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 import pipmaster as pm
 
 if not pm.is_installed("asyncpg"):
@@ -40,6 +34,9 @@ if not pm.is_installed("asyncpg"):
 
 import asyncpg  # type: ignore
 from asyncpg import Pool  # type: ignore
+
+# Get maximum number of graph nodes from environment variable, default is 1000
+MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
 
 
 class PostgreSQLDB:
@@ -1535,14 +1532,13 @@ class PGGraphStorage(BaseGraphStorage):
                      MATCH (n:base)
                      WHERE n.entity_id IS NOT NULL
                      RETURN DISTINCT n.entity_id AS label
-                     ORDER BY label
+                     ORDER BY n.entity_id
                    $$) AS (label text)"""
             % self.graph_name
         )
 
         results = await self._query(query)
-        labels = [self._decode_graph_label(result["label"]) for result in results]
-
+        labels = [result["label"] for result in results]
         return labels
 
     async def embed_nodes(
