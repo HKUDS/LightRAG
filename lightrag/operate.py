@@ -823,16 +823,16 @@ async def get_keywords_from_query(
 ) -> tuple[list[str], list[str]]:
     """
     Retrieves high-level and low-level keywords for RAG operations.
-    
+
     This function checks if keywords are already provided in query parameters,
     and if not, extracts them from the query text using LLM.
-    
+
     Args:
         query: The user's query text
         query_param: Query parameters that may contain pre-defined keywords
         global_config: Global configuration dictionary
         hashing_kv: Optional key-value storage for caching results
-        
+
     Returns:
         A tuple containing (high_level_keywords, low_level_keywords)
     """
