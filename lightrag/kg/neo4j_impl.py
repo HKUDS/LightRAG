@@ -651,17 +651,14 @@ class Neo4JStorage(BaseGraphStorage):
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
-        When reducing the number of nodes, the prioritization criteria are as follows:
-            1. Hops(path) to the staring node take precedence
-            2. Followed by the degree of the nodes
 
         Args:
-            node_label: Label of the starting node
+            node_label: Label of the starting node，* means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
-            max_nodes: Maxiumu nodes to return
+            max_nodes: Maxiumu nodes to return by BFS, Defaults to 1000
 
         Returns:
-            KnowledgeGraph: Complete connected subgraph for specified node
+            KnowledgeGraph object containing nodes and edges
         """
         result = KnowledgeGraph()
         seen_nodes = set()

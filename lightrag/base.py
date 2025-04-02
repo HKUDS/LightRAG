@@ -343,7 +343,18 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     async def get_knowledge_graph(
         self, node_label: str, max_depth: int = 3, max_nodes: int = 1000
     ) -> KnowledgeGraph:
-        """Retrieve a subgraph of the knowledge graph starting from a given node."""
+        """
+        Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
+
+        Args:
+            node_label: Label of the starting node，* means all nodes
+            max_depth: Maximum depth of the subgraph, Defaults to 3
+            max_nodes: Maxiumu nodes to return by BFS, Defaults to 1000
+
+        Returns:
+            KnowledgeGraph object containing nodes and edges, with an is_truncated flag
+            indicating whether the graph was truncated due to max_nodes limit
+        """
 
 
 class DocStatus(str, Enum):
