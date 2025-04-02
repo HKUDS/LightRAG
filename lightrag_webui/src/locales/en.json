@@ -136,6 +136,7 @@
     }
   },
   "graphPanel": {
+    "dataIsTruncated": "Graph data is truncated to Max Nodes",
     "sideBar": {
       "settings": {
         "settings": "Settings",

@@ -136,6 +136,7 @@
     }
   },
   "graphPanel": {
+    "dataIsTruncated": "Les données du graphe sont tronquées au nombre maximum de nœuds",
     "sideBar": {
       "settings": {
         "settings": "Paramètres",
