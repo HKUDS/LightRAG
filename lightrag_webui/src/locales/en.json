@@ -148,7 +148,7 @@
         "hideUnselectedEdges": "Hide Unselected Edges",
         "edgeEvents": "Edge Events",
         "maxQueryDepth": "Max Query Depth",
-        "minDegree": "Minimum Degree",
+        "maxNodes": "Max Nodes",
         "maxLayoutIterations": "Max Layout Iterations",
         "depth": "Depth",
         "degree": "Degree",

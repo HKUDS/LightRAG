@@ -27,8 +27,8 @@ interface SettingsState {
   graphQueryMaxDepth: number
   setGraphQueryMaxDepth: (depth: number) => void
 
-  graphMinDegree: number
-  setGraphMinDegree: (degree: number) => void
+  graphMaxNodes: number
+  setGraphMaxNodes: (nodes: number) => void
 
   graphLayoutMaxIterations: number
   setGraphLayoutMaxIterations: (iterations: number) => void
@@ -77,7 +77,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       enableEdgeEvents: false,
 
       graphQueryMaxDepth: 3,
-      graphMinDegree: 0,
+      graphMaxNodes: 1000,
       graphLayoutMaxIterations: 15,
 
       queryLabel: defaultQueryLabel,
@@ -130,7 +130,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setGraphQueryMaxDepth: (depth: number) => set({ graphQueryMaxDepth: depth }),
 
-      setGraphMinDegree: (degree: number) => set({ graphMinDegree: degree }),
+      setGraphMaxNodes: (nodes: number) => set({ graphMaxNodes: nodes }),
 
       setEnableHealthCheck: (enable: boolean) => set({ enableHealthCheck: enable }),
 
@@ -150,7 +150,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 9,
+      version: 10,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -195,6 +195,10 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 9) {
           state.showFileName = false
+        }
+        if (version < 10) {
+          delete state.graphMinDegree // 删除废弃参数
+          state.graphMaxNodes = 1000  // 添加新参数
         }
         return state
       }
