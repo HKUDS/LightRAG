@@ -701,34 +701,20 @@ class Neo4JStorage(BaseGraphStorage):
                         relationshipFilter: '',
                         minLevel: 0,
                         maxLevel: $max_depth,
+                        limit: $max_nodes,
                         bfs: true
                     })
                     YIELD nodes, relationships
-                    WITH start, nodes, relationships
                     UNWIND nodes AS node
-                    OPTIONAL MATCH (node)-[r]-()
-                    WITH node, COALESCE(count(r), 0) AS degree, start, nodes, relationships
-                    ORDER BY
-                        CASE
-                            WHEN node = start THEN 0
-                            ELSE length(shortestPath((start)--(node)))
-                        END ASC,
-                        degree DESC
-                    LIMIT $max_nodes
-                    WITH collect({node: node}) AS filtered_nodes
-                    UNWIND filtered_nodes AS node_info
-                    WITH collect(node_info.node) AS kept_nodes, filtered_nodes
-                    OPTIONAL MATCH (a)-[r]-(b)
-                    WHERE a IN kept_nodes AND b IN kept_nodes
-                    RETURN filtered_nodes AS node_info,
-                           collect(DISTINCT r) AS relationships
+                    WITH collect({node: node}) AS node_info, relationships
+                    RETURN node_info, relationships
                     """
                     result_set = await session.run(
                         main_query,
                         {
-                            "max_nodes": max_nodes,
                             "entity_id": node_label,
                             "max_depth": max_depth,
+                            "max_nodes": max_nodes,
                         },
                     )
 
