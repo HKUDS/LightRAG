@@ -150,6 +150,7 @@
         "maxQueryDepth": "أقصى عمق للاستعلام",
         "maxNodes": "الحد الأقصى للعقد",
         "maxLayoutIterations": "أقصى تكرارات التخطيط",
+        "resetToDefault": "إعادة التعيين إلى الافتراضي",
         "depth": "D",
         "max": "Max",
         "degree": "الدرجة",

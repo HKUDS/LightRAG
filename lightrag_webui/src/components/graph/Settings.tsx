@@ -54,6 +54,7 @@ const LabeledNumberInput = ({
   max?: number
   defaultValue?: number
 }) => {
+  const { t } = useTranslation();
   const [currentValue, setCurrentValue] = useState<number | null>(value)
 
   const onValueChange = useCallback(
@@ -120,7 +121,7 @@ const LabeledNumberInput = ({
             className="h-6 w-6 flex-shrink-0 hover:bg-muted text-muted-foreground hover:text-foreground"
             onClick={handleReset}
             type="button"
-            title="重置为默认值"
+            title={t('graphPanel.sideBar.settings.resetToDefault')}
           >
             <Undo2 className="h-3.5 w-3.5" />
           </Button>

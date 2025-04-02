@@ -150,6 +150,7 @@
         "maxQueryDepth": "最大查询深度",
         "maxNodes": "最大返回节点数",
         "maxLayoutIterations": "最大布局迭代次数",
+        "resetToDefault": "重置为默认值",
         "depth": "深",
         "max": "Max",
         "degree": "邻边",
