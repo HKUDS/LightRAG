@@ -102,14 +102,7 @@ class PostgreSQLDB:
         ):
             pass
 
-    async def check_tables(self):
-        # Ensure pgvector extension is available
-        try:
-            await self.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            logger.info("PostgreSQL, Ensured vector extension is available")
-        except Exception as e:
-            logger.warning(f"PostgreSQL, Unable to create vector extension: {e}")
-            
+    async def check_tables(self):    
         for k, v in TABLES.items():
             try:
                 await self.query(f"SELECT 1 FROM {k} LIMIT 1")
@@ -185,10 +178,9 @@ class PostgreSQLDB:
                     "CREATE INDEX IF NOT EXISTS idx_doc_status_status ON LIGHTRAG_DOC_STATUS(workspace, status)"
                 )
                 
-            logger.info(f"PostgreSQL, Ensured indexes for {table_name}")
+            logger.debug(f"PostgreSQL, Ensured indexes for {table_name}")
         except Exception as e:
             logger.warning(f"Failed to create indexes for {table_name}: {e}")
-            # Non-fatal - indexes improve performance but aren't essential for functionality
 
     async def query(
         self,
@@ -205,6 +197,7 @@ class PostgreSQLDB:
                 raise ValueError("Graph name is required when with_age is True")
 
             try:
+                # Prepare the SQL statement to ensure safe execution and mitigate the risk of SQL injection
                 stmt = await connection.prepare(sql)
                 
                 if params:
@@ -1528,7 +1521,7 @@ class PGGraphStorage(BaseGraphStorage):
                    $$) AS (n agtype)""" % (self.graph_name, label)
 
         try:
-            await self._query(query, readonly=False, upsert=False)
+            await self._query(query, readonly=False)
         except Exception as e:
             logger.error("Error during node deletion: {%s}", e)
             raise
@@ -1552,7 +1545,7 @@ class PGGraphStorage(BaseGraphStorage):
                    $$) AS (n agtype)""" % (self.graph_name, node_id_list)
 
         try:
-            await self._query(query, readonly=False, upsert=False)
+            await self._query(query, readonly=False)
         except Exception as e:
             logger.error("Error during node removal: {%s}", e)
             raise
@@ -1580,7 +1573,7 @@ class PGGraphStorage(BaseGraphStorage):
                    $$) AS (r agtype)""" % (self.graph_name, edge_list)
 
         try:
-            await self._query(query, readonly=False, upsert=False)
+            await self._query(query, readonly=False)
         except Exception as e:
             logger.error("Error during edge removal: {%s}", e)
             raise
