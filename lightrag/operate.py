@@ -1069,7 +1069,9 @@ async def mix_kg_vector_query(
             # Include time information in content
             formatted_chunks = []
             for c in maybe_trun_chunks:
-                chunk_text = "File path: " + c.get("file_path", "unknown") + "\n" + c["content"]
+                chunk_text = (
+                    "File path: " + c.get("file_path", "unknown") + "\n" + c["content"]
+                )
                 if c.get("created_at"):
                     chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
                 formatted_chunks.append(chunk_text)
