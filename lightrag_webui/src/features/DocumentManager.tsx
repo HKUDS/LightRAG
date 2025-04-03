@@ -165,6 +165,37 @@ export default function DocumentManager() {
       setSortDirection('desc')
     }
   }
+
+  // Sort documents based on current sort field and direction
+  const sortDocuments = (documents: DocStatusResponse[]) => {
+    return [...documents].sort((a, b) => {
+      let valueA, valueB;
+
+      // Special handling for ID field based on showFileName setting
+      if (sortField === 'id' && showFileName) {
+        valueA = getDisplayFileName(a);
+        valueB = getDisplayFileName(b);
+      } else if (sortField === 'id') {
+        valueA = a.id;
+        valueB = b.id;
+      } else {
+        // Date fields
+        valueA = new Date(a[sortField]).getTime();
+        valueB = new Date(b[sortField]).getTime();
+      }
+
+      // Apply sort direction
+      const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
+
+      // Compare values
+      if (typeof valueA === 'string' && typeof valueB === 'string') {
+        return sortMultiplier * valueA.localeCompare(valueB);
+      } else {
+        return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
+      }
+    });
+  }
+
   const filteredAndSortedDocs = useMemo(() => {
     if (!docs) return null;
 
@@ -186,13 +217,7 @@ export default function DocumentManager() {
     if (!sortField || !sortDirection) return filteredDocs;
 
     const sortedStatuses = Object.entries(filteredDocs.statuses).reduce((acc, [status, documents]) => {
-      const sortedDocuments = [...documents].sort((a, b) => {
-        if (sortDirection === 'asc') {
-          return (a[sortField] ?? 0) > (b[sortField] ?? 0) ? 1 : -1;
-        } else {
-          return (a[sortField] ?? 0) < (b[sortField] ?? 0) ? 1 : -1;
-        }
-      });
+      const sortedDocuments = sortDocuments(documents);
       acc[status as DocStatus] = sortedDocuments;
       return acc;
     }, {} as DocsStatusesResponse['statuses']);
