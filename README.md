@@ -443,6 +443,55 @@ if __name__ == "__main__":
 
 </details>
 
+### Token Usage Tracking
+
+<details>
+<summary> <b>Overview and Usage</b> </summary>
+
+LightRAG provides a TokenTracker tool to monitor and manage token consumption by large language models. This feature is particularly useful for controlling API costs and optimizing performance.
+
+#### Usage
+
+```python
+from lightrag.utils import TokenTracker
+
+# Create TokenTracker instance
+token_tracker = TokenTracker()
+
+# Method 1: Using context manager (Recommended)
+# Suitable for scenarios requiring automatic token usage tracking
+with token_tracker:
+    result1 = await llm_model_func("your question 1")
+    result2 = await llm_model_func("your question 2")
+
+# Method 2: Manually adding token usage records
+# Suitable for scenarios requiring more granular control over token statistics
+token_tracker.reset()
+
+rag.insert()
+
+rag.query("your question 1", param=QueryParam(mode="naive"))
+rag.query("your question 2", param=QueryParam(mode="mix"))
+
+# Display total token usage (including insert and query operations)
+print("Token usage:", token_tracker.get_usage())
+```
+
+#### Usage Tips
+- Use context managers for long sessions or batch operations to automatically track all token consumption
+- For scenarios requiring segmented statistics, use manual mode and call reset() when appropriate
+- Regular checking of token usage helps detect abnormal consumption early
+- Actively use this feature during development and testing to optimize production costs
+
+#### Practical Examples
+You can refer to these examples for implementing token tracking:
+- `examples/lightrag_gemini_track_token_demo.py`: Token tracking example using Google Gemini model
+- `examples/lightrag_siliconcloud_track_token_demo.py`: Token tracking example using SiliconCloud model
+
+These examples demonstrate how to effectively use the TokenTracker feature with different models and scenarios.
+
+</details>
+
 ### Conversation History Support
 
 
