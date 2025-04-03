@@ -1242,9 +1242,6 @@ class PGGraphStorage(BaseGraphStorage):
         record = (await self._query(query))[0]
         if record:
             edge_count = int(record["total_edge_count"])
-
-            print(f"edge_count: {edge_count} / {node_id}")
-
             return edge_count
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
