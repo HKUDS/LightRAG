@@ -14,7 +14,7 @@ STORAGE_IMPLEMENTATIONS = {
             "NetworkXStorage",
             "Neo4JStorage",
             "PGGraphStorage",
-            "AGEStorage",
+            # "AGEStorage",
             # "MongoGraphStorage",
             # "TiDBGraphStorage",
             # "GremlinStorage",
