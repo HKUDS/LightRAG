@@ -1069,8 +1069,8 @@ async def mix_kg_vector_query(
             # Include time information in content
             formatted_chunks = []
             for c in maybe_trun_chunks:
-                chunk_text = "File path: " + c["file_path"] + "\n" + c["content"]
-                if c["created_at"]:
+                chunk_text = "File path: " + c.get("file_path", "unknown") + "\n" + c["content"]
+                if c.get("created_at"):
                     chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
                 formatted_chunks.append(chunk_text)
 
@@ -1367,7 +1367,7 @@ async def _get_node_data(
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append([i, t["content"], t["file_path"]])
+        text_units_section_list.append([i, t["content"], t.get("file_path", "unknown")])
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
@@ -1818,7 +1818,7 @@ async def naive_query(
 
     section = "\n--New Chunk--\n".join(
         [
-            "File path: " + c["file_path"] + "\n" + c["content"]
+            "File path: " + c.get("file_path", "unknown") + "\n" + c["content"]
             for c in maybe_trun_chunks
         ]
     )
