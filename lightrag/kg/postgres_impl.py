@@ -1232,12 +1232,14 @@ class PGGraphStorage(BaseGraphStorage):
         label = node_id.strip('"')
 
         query = """SELECT * FROM cypher('%s', $$
-                     MATCH (n:base {entity_id: "%s"})-[]->(x)
+                     MATCH (n:base {entity_id: "%s"})-[]-(x)
                      RETURN count(x) AS total_edge_count
                    $$) AS (total_edge_count integer)""" % (self.graph_name, label)
         record = (await self._query(query))[0]
         if record:
             edge_count = int(record["total_edge_count"])
+
+            print(f"edge_count: {edge_count} / {node_id}")
 
             return edge_count
 
