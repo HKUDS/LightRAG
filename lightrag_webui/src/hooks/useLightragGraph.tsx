@@ -12,22 +12,31 @@ import { useSettingsStore } from '@/stores/settings'
 import seedrandom from 'seedrandom'
 
 // Helper function to generate a color based on type
-const getNodeColorByType = (nodeType: string | undefined, typeColorMap: React.RefObject<Map<string, string>>): string => {
+const getNodeColorByType = (nodeType: string | undefined): string => {
   const defaultColor = '#CCCCCC'; // Default color for nodes without a type or undefined type
   if (!nodeType) {
     return defaultColor;
   }
-  if (!typeColorMap.current.has(nodeType)) {
+
+  const typeColorMap = useGraphStore.getState().typeColorMap;
+
+  if (!typeColorMap.has(nodeType)) {
     // Generate a color based on the type string itself for consistency
     // Seed the global random number generator based on the node type
     seedrandom(nodeType, { global: true });
     // Call randomColor without arguments; it will use the globally seeded Math.random()
     const newColor = randomColor();
-    typeColorMap.current.set(nodeType, newColor);
+
+    const newMap = new Map(typeColorMap);
+    newMap.set(nodeType, newColor);
+    useGraphStore.setState({ typeColorMap: newMap });
+
+    return newColor;
   }
+
   // Restore the default random seed if necessary, though usually not required for this use case
   // seedrandom(Date.now().toString(), { global: true });
-  return typeColorMap.current.get(nodeType) || defaultColor; // Add fallback just in case
+  return typeColorMap.get(nodeType) || defaultColor; // Add fallback just in case
 };
 
 
@@ -240,8 +249,6 @@ const useLightrangeGraph = () => {
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
 
-    // Ref to store the mapping from node type to color
-    const typeColorMap = useRef<Map<string, string>>(new Map());
 
   // Use ref to track if data has been loaded and initial load
   const dataLoadedRef = useRef(false)
@@ -333,7 +340,7 @@ const useLightrangeGraph = () => {
           data.nodes.forEach(node => {
             // Use entity_type instead of type
             const nodeEntityType = node.properties?.entity_type as string | undefined;
-            node.color = getNodeColorByType(nodeEntityType, typeColorMap);
+            node.color = getNodeColorByType(nodeEntityType);
           });
         }
 
@@ -446,9 +453,9 @@ const useLightrangeGraph = () => {
         // Process nodes to add required properties for RawNodeType
         const processedNodes: RawNodeType[] = [];
         for (const node of extendedGraph.nodes) {
-          // Get color based on entity_type using the helper function and the shared map
-          const nodeEntityType = node.properties?.entity_type as string | undefined; // Use entity_type
-          const color = getNodeColorByType(nodeEntityType, typeColorMap);
+          // Get color based on entity_type using the helper function
+          const nodeEntityType = node.properties?.entity_type as string | undefined;
+          const color = getNodeColorByType(nodeEntityType);
 
           // Create a properly typed RawNodeType
           processedNodes.push({
