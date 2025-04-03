@@ -127,6 +127,7 @@
     }
   },
   "graphPanel": {
+    "legend": "المفتاح",
     "sideBar": {
       "settings": {
         "settings": "الإعدادات",
@@ -171,6 +172,9 @@
       "fullScreenControl": {
         "fullScreen": "شاشة كاملة",
         "windowed": "نوافذ"
+      },
+      "legendControl": {
+        "toggleLegend": "تبديل المفتاح"
       }
     },
     "statusIndicator": {

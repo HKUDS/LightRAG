@@ -127,6 +127,7 @@
     }
   },
   "graphPanel": {
+    "legend": "Légende",
     "sideBar": {
       "settings": {
         "settings": "Paramètres",
@@ -171,6 +172,9 @@
       "fullScreenControl": {
         "fullScreen": "Plein écran",
         "windowed": "Fenêtré"
+      },
+      "legendControl": {
+        "toggleLegend": "Basculer la légende"
       }
     },
     "statusIndicator": {
