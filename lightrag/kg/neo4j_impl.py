@@ -452,13 +452,8 @@ class Neo4JStorage(BaseGraphStorage):
                     logger.debug(
                         f"{inspect.currentframe().f_code.co_name}: No edge found between {source_node_id} and {target_node_id}"
                     )
-                    # Return default edge properties when no edge found
-                    return {
-                        "weight": 0.0,
-                        "source_id": None,
-                        "description": None,
-                        "keywords": None,
-                    }
+                    # Return None when no edge found
+                    return None
                 finally:
                     await result.consume()  # Ensure result is fully consumed
 
