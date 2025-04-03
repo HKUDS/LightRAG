@@ -836,7 +836,8 @@ async def get_keywords_from_query(
     Returns:
         A tuple containing (high_level_keywords, low_level_keywords)
     """
-    if not query_param.hl_keywords.empty() and not query_param.ll_keywords.empty():
+    # Check if pre-defined keywords are already provided
+    if query_param.hl_keywords or query_param.ll_keywords:
         return query_param.hl_keywords, query_param.ll_keywords
 
     # Extract keywords using extract_keywords_only function which already supports conversation history
