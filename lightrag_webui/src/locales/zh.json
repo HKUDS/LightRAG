@@ -137,6 +137,9 @@
   },
   "graphPanel": {
     "dataIsTruncated": "图数据已截断至最大返回节点数",
+    "statusDialog": {
+      "title": "LightRAG 服务器设置"
+    },
     "sideBar": {
       "settings": {
         "settings": "设置",
