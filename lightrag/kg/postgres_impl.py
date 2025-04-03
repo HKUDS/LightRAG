@@ -1194,6 +1194,8 @@ class PGGraphStorage(BaseGraphStorage):
         return single_result["edge_exists"]
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
+        """Get node by its label identifier, return only node properties"""
+
         label = node_id.strip('"')
         query = """SELECT * FROM cypher('%s', $$
                      MATCH (n:base {entity_id: "%s"})
@@ -1202,7 +1204,7 @@ class PGGraphStorage(BaseGraphStorage):
         record = await self._query(query)
         if record:
             node = record[0]
-            node_dict = node["n"]
+            node_dict = node["n"]["properties"]
 
             return node_dict
         return None
@@ -1235,6 +1237,8 @@ class PGGraphStorage(BaseGraphStorage):
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
+        """Get edge properties between two nodes"""
+        
         src_label = source_node_id.strip('"')
         tgt_label = target_node_id.strip('"')
 

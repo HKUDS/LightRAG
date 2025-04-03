@@ -297,13 +297,13 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        """Get an edge by its source and target node ids."""
+        """Get node by its label identifier, return only node properties"""
 
     @abstractmethod
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        """Get all edges connected to a node."""
+        """Get edge properties between two nodes"""
 
     @abstractmethod
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:

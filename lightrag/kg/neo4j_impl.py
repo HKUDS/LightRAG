@@ -267,7 +267,7 @@ class Neo4JStorage(BaseGraphStorage):
                 raise
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        """Get node by its label identifier.
+        """Get node by its label identifier, return only node properties
 
         Args:
             node_id: The node label to look up
