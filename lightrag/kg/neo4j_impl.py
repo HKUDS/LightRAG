@@ -832,8 +832,8 @@ class Neo4JStorage(BaseGraphStorage):
                             seen_edges.add(edge_id)
 
                     logger.info(
-                        f"Process {os.getpid()} graph query return: {len(result.nodes)} nodes, {len(result.edges)} edges"
-                    )
+                        f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+        )
 
             except neo4jExceptions.ClientError as e:
                 logger.warning(f"APOC plugin error: {str(e)}")
