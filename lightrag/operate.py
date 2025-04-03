@@ -719,8 +719,7 @@ async def kg_query(
     if cached_response is not None:
         return cached_response
 
-    # Extract keywords using extract_keywords_only function which already supports conversation history
-    hl_keywords, ll_keywords = await extract_keywords_only(
+    hl_keywords, ll_keywords = await get_keywords_from_query(
         query, query_param, global_config, hashing_kv
     )
 
@@ -814,6 +813,37 @@ async def kg_query(
         ),
     )
     return response
+
+
+async def get_keywords_from_query(
+    query: str,
+    query_param: QueryParam,
+    global_config: dict[str, str],
+    hashing_kv: BaseKVStorage | None = None,
+) -> tuple[list[str], list[str]]:
+    """
+    Retrieves high-level and low-level keywords for RAG operations.
+
+    This function checks if keywords are already provided in query parameters,
+    and if not, extracts them from the query text using LLM.
+
+    Args:
+        query: The user's query text
+        query_param: Query parameters that may contain pre-defined keywords
+        global_config: Global configuration dictionary
+        hashing_kv: Optional key-value storage for caching results
+
+    Returns:
+        A tuple containing (high_level_keywords, low_level_keywords)
+    """
+    if not query_param.hl_keywords.empty() and not query_param.ll_keywords.empty():
+        return query_param.hl_keywords, query_param.ll_keywords
+
+    # Extract keywords using extract_keywords_only function which already supports conversation history
+    hl_keywords, ll_keywords = await extract_keywords_only(
+        query, query_param, global_config, hashing_kv
+    )
+    return hl_keywords, ll_keywords
 
 
 async def extract_keywords_only(
@@ -956,8 +986,7 @@ async def mix_kg_vector_query(
     # 2. Execute knowledge graph and vector searches in parallel
     async def get_kg_context():
         try:
-            # Extract keywords using extract_keywords_only function which already supports conversation history
-            hl_keywords, ll_keywords = await extract_keywords_only(
+            hl_keywords, ll_keywords = await get_keywords_from_query(
                 query, query_param, global_config, hashing_kv
             )
 
@@ -2034,15 +2063,12 @@ async def query_with_keywords(
         Query response or async iterator
     """
     # Extract keywords
-    hl_keywords, ll_keywords = await extract_keywords_only(
-        text=query,
-        param=param,
+    hl_keywords, ll_keywords = await get_keywords_from_query(
+        query=query,
+        query_param=param,
         global_config=global_config,
         hashing_kv=hashing_kv,
     )
-
-    param.hl_keywords = hl_keywords
-    param.ll_keywords = ll_keywords
 
     # Create a new string with the prompt and the keywords
     ll_keywords_str = ", ".join(ll_keywords)
