@@ -11,6 +11,26 @@ import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
 
+// Helper function to generate a color based on type
+const getNodeColorByType = (nodeType: string | undefined, typeColorMap: React.RefObject<Map<string, string>>): string => {
+  const defaultColor = '#CCCCCC'; // Default color for nodes without a type or undefined type
+  if (!nodeType) {
+    return defaultColor;
+  }
+  if (!typeColorMap.current.has(nodeType)) {
+    // Generate a color based on the type string itself for consistency
+    // Seed the global random number generator based on the node type
+    seedrandom(nodeType, { global: true });
+    // Call randomColor without arguments; it will use the globally seeded Math.random()
+    const newColor = randomColor();
+    typeColorMap.current.set(nodeType, newColor);
+  }
+  // Restore the default random seed if necessary, though usually not required for this use case
+  // seedrandom(Date.now().toString(), { global: true });
+  return typeColorMap.current.get(nodeType) || defaultColor; // Add fallback just in case
+};
+
+
 const validateGraph = (graph: RawGraph) => {
   // Check if graph exists
   if (!graph) {
@@ -106,9 +126,6 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
       const node = rawData.nodes[i]
       nodeIdMap[node.id] = i
 
-      // const seed = node.labels.length > 0 ? node.labels[0] : node.id
-      seedrandom(node.id, { global: true })
-      node.color = randomColor()
       node.x = Math.random()
       node.y = Math.random()
       node.degree = 0
@@ -223,6 +240,9 @@ const useLightrangeGraph = () => {
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
 
+    // Ref to store the mapping from node type to color
+    const typeColorMap = useRef<Map<string, string>>(new Map());
+
   // Use ref to track if data has been loaded and initial load
   const dataLoadedRef = useRef(false)
   const initialLoadRef = useRef(false)
@@ -295,7 +315,7 @@ const useLightrangeGraph = () => {
       const currentMinDegree = minDegree
 
       // Declare a variable to store data promise
-      let dataPromise;
+      let dataPromise: Promise<RawGraph | null>;
 
       // 1. If query label is not empty, use fetchGraph
       if (currentQueryLabel) {
@@ -308,6 +328,15 @@ const useLightrangeGraph = () => {
 
       // 3. Process data
       dataPromise.then((data) => {
+        // Assign colors based on entity_type *after* fetching
+        if (data && data.nodes) {
+          data.nodes.forEach(node => {
+            // Use entity_type instead of type
+            const nodeEntityType = node.properties?.entity_type as string | undefined;
+            node.color = getNodeColorByType(nodeEntityType, typeColorMap);
+          });
+        }
+
         const state = useGraphStore.getState()
 
         // Reset state
@@ -417,9 +446,9 @@ const useLightrangeGraph = () => {
         // Process nodes to add required properties for RawNodeType
         const processedNodes: RawNodeType[] = [];
         for (const node of extendedGraph.nodes) {
-          // Generate random color values
-          seedrandom(node.id, { global: true });
-          const color = randomColor();
+          // Get color based on entity_type using the helper function and the shared map
+          const nodeEntityType = node.properties?.entity_type as string | undefined; // Use entity_type
+          const color = getNodeColorByType(nodeEntityType, typeColorMap);
 
           // Create a properly typed RawNodeType
           processedNodes.push({
