@@ -349,7 +349,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         Args:
             node_label: Label of the starting node，* means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
-            max_nodes: Maxiumu nodes to return by BFS, Defaults to 1000
+            max_nodes: Maxiumu nodes to return, Defaults to 1000（BFS if possible)
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
