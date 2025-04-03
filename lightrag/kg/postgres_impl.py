@@ -1103,7 +1103,8 @@ class PGGraphStorage(BaseGraphStorage):
                 try:
                     d[k] = (
                         json.loads(v)
-                        if isinstance(v, str) and (v.startswith("{") or v.startswith("["))
+                        if isinstance(v, str)
+                        and (v.startswith("{") or v.startswith("["))
                         else v
                     )
                 except json.JSONDecodeError:
