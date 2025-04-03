@@ -1347,7 +1347,7 @@ class PGGraphStorage(BaseGraphStorage):
             await self._query(query, readonly=False, upsert=True)
 
         except Exception:
-            logger.error("POSTGRES, upsert_node error on node_id: {node_id}")
+            logger.error(f"POSTGRES, upsert_node error on node_id: `{node_id}`")
             raise
 
     @retry(
@@ -1389,7 +1389,7 @@ class PGGraphStorage(BaseGraphStorage):
 
         except Exception:
             logger.error(
-                "POSTGRES, upsert_edge error on edge: {source_node_id} - {target_node_id}"
+                f"POSTGRES, upsert_edge error on edge: `{source_node_id}`-`{target_node_id}`"
             )
             raise
 
