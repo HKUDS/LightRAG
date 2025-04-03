@@ -137,6 +137,9 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Les données du graphe sont tronquées au nombre maximum de nœuds",
+    "statusDialog": {
+      "title": "Paramètres du Serveur LightRAG"
+    },
     "sideBar": {
       "settings": {
         "settings": "Paramètres",

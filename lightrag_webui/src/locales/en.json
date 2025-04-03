@@ -137,6 +137,9 @@
   },
   "graphPanel": {
     "dataIsTruncated": "Graph data is truncated to Max Nodes",
+    "statusDialog": {
+      "title": "LightRAG Server Settings"
+    },
     "sideBar": {
       "settings": {
         "settings": "Settings",
