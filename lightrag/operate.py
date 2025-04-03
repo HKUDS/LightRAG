@@ -616,21 +616,19 @@ async def extract_entities(
 
     # Ensure that nodes and edges are merged and upserted atomically
     async with graph_db_lock:
-        all_entities_data = await asyncio.gather(
-            *[
-                _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
-                for k, v in maybe_nodes.items()
-            ]
-        )
+        # serial processing nodes under lock
+        all_entities_data = []
+        for k, v in maybe_nodes.items():
+            entity_data = await _merge_nodes_then_upsert(k, v, knowledge_graph_inst, global_config)
+            all_entities_data.append(entity_data)
 
-        all_relationships_data = await asyncio.gather(
-            *[
-                _merge_edges_then_upsert(
-                    k[0], k[1], v, knowledge_graph_inst, global_config
-                )
-                for k, v in maybe_edges.items()
-            ]
-        )
+        # serial processing edges under lock
+        all_relationships_data = []
+        for k, v in maybe_edges.items():
+            edge_data = await _merge_edges_then_upsert(
+                k[0], k[1], v, knowledge_graph_inst, global_config
+            )
+            all_relationships_data.append(edge_data)
 
     if not (all_entities_data or all_relationships_data):
         log_message = "Didn't extract any entities and relationships."

@@ -1612,6 +1612,9 @@ class PGGraphStorage(BaseGraphStorage):
             is_truncated=is_truncated,
         )
 
+        logger.info(
+            f"Subgraph query successful | Node count: {len(kg.nodes)} | Edge count: {len(kg.edges)}"
+        )
         return kg
 
     async def drop(self) -> dict[str, str]:
