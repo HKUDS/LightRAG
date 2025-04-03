@@ -440,10 +440,64 @@ if __name__ == "__main__":
 - [Direct OpenAI Example](examples/lightrag_llamaindex_direct_demo.py)
 - [LiteLLM Proxy Example](examples/lightrag_llamaindex_litellm_demo.py)
 
+</details>
+
+### Token Usage Tracking
+
+<details>
+<summary> <b>Overview and Usage</b> </summary>
+
+LightRAG provides a TokenTracker tool to monitor and manage token consumption by large language models. This feature is particularly useful for controlling API costs and optimizing performance.
+
+#### Usage
+
+```python
+from lightrag.utils import TokenTracker
+
+# Create TokenTracker instance
+token_tracker = TokenTracker()
+
+# Method 1: Using context manager (Recommended)
+# Suitable for scenarios requiring automatic token usage tracking
+with token_tracker:
+    result1 = await llm_model_func("your question 1")
+    result2 = await llm_model_func("your question 2")
+
+# Method 2: Manually adding token usage records
+# Suitable for scenarios requiring more granular control over token statistics
+token_tracker.reset()
+
+rag.insert()
+
+rag.query("your question 1", param=QueryParam(mode="naive"))
+rag.query("your question 2", param=QueryParam(mode="mix"))
+
+# Display total token usage (including insert and query operations)
+print("Token usage:", token_tracker.get_usage())
+```
+
+#### Usage Tips
+- Use context managers for long sessions or batch operations to automatically track all token consumption
+- For scenarios requiring segmented statistics, use manual mode and call reset() when appropriate
+- Regular checking of token usage helps detect abnormal consumption early
+- Actively use this feature during development and testing to optimize production costs
+
+#### Practical Examples
+You can refer to these examples for implementing token tracking:
+- `examples/lightrag_gemini_track_token_demo.py`: Token tracking example using Google Gemini model
+- `examples/lightrag_siliconcloud_track_token_demo.py`: Token tracking example using SiliconCloud model
+
+These examples demonstrate how to effectively use the TokenTracker feature with different models and scenarios.
+
+</details>
+
 ### Conversation History Support
 
 
 LightRAG now supports multi-turn dialogue through the conversation history feature. Here's how to use it:
+
+<details>
+  <summary> <b> Usage Example </b></summary>
 
 ```python
 # Create conversation history
@@ -467,9 +521,14 @@ response = rag.query(
 )
 ```
 
+</details>
+
 ### Custom Prompt Support
 
 LightRAG now supports custom prompts for fine-tuned control over the system's behavior. Here's how to use it:
+
+<details>
+  <summary> <b> Usage Example </b></summary>
 
 ```python
 # Create query parameters
@@ -505,6 +564,8 @@ response_custom = rag.query(
 print(response_custom)
 ```
 
+</details>
+
 ### Separate Keyword Extraction
 
 We've introduced a new function `query_with_separate_keyword_extraction` to enhance the keyword extraction capabilities. This function separates the keyword extraction process from the user's prompt, focusing solely on the query to improve the relevance of extracted keywords.
@@ -518,7 +579,8 @@ The function operates by dividing the input into two parts:
 
 It then performs keyword extraction exclusively on the `user query`. This separation ensures that the extraction process is focused and relevant, unaffected by any additional language in the `prompt`. It also allows the `prompt` to serve purely for response formatting, maintaining the intent and clarity of the user's original question.
 
-**Usage Example**
+<details>
+  <summary> <b> Usage Example </b></summary>
 
 This `example` shows how to tailor the function for educational content, focusing on detailed explanations for older students.
 
@@ -528,67 +590,6 @@ rag.query_with_separate_keyword_extraction(
     prompt="Provide a detailed explanation suitable for high school students studying physics.",
     param=QueryParam(mode="hybrid")
 )
-```
-
-### Insert Custom KG
-
-```python
-custom_kg = {
-    "chunks": [
-        {
-            "content": "Alice and Bob are collaborating on quantum computing research.",
-            "source_id": "doc-1"
-        }
-    ],
-    "entities": [
-        {
-            "entity_name": "Alice",
-            "entity_type": "person",
-            "description": "Alice is a researcher specializing in quantum physics.",
-            "source_id": "doc-1"
-        },
-        {
-            "entity_name": "Bob",
-            "entity_type": "person",
-            "description": "Bob is a mathematician.",
-            "source_id": "doc-1"
-        },
-        {
-            "entity_name": "Quantum Computing",
-            "entity_type": "technology",
-            "description": "Quantum computing utilizes quantum mechanical phenomena for computation.",
-            "source_id": "doc-1"
-        }
-    ],
-    "relationships": [
-        {
-            "src_id": "Alice",
-            "tgt_id": "Bob",
-            "description": "Alice and Bob are research partners.",
-            "keywords": "collaboration research",
-            "weight": 1.0,
-            "source_id": "doc-1"
-        },
-        {
-            "src_id": "Alice",
-            "tgt_id": "Quantum Computing",
-            "description": "Alice conducts research on quantum computing.",
-            "keywords": "research expertise",
-            "weight": 1.0,
-            "source_id": "doc-1"
-        },
-        {
-            "src_id": "Bob",
-            "tgt_id": "Quantum Computing",
-            "description": "Bob researches quantum computing.",
-            "keywords": "research application",
-            "weight": 1.0,
-            "source_id": "doc-1"
-        }
-    ]
-}
-
-rag.insert_custom_kg(custom_kg)
 ```
 
 </details>
@@ -678,6 +679,70 @@ file_path = 'TEXT.pdf'
 text_content = textract.process(file_path)
 
 rag.insert(text_content.decode('utf-8'))
+```
+
+</details>
+
+<details>
+  <summary> <b> Insert Custom KG </b></summary>
+
+```python
+custom_kg = {
+    "chunks": [
+        {
+            "content": "Alice and Bob are collaborating on quantum computing research.",
+            "source_id": "doc-1"
+        }
+    ],
+    "entities": [
+        {
+            "entity_name": "Alice",
+            "entity_type": "person",
+            "description": "Alice is a researcher specializing in quantum physics.",
+            "source_id": "doc-1"
+        },
+        {
+            "entity_name": "Bob",
+            "entity_type": "person",
+            "description": "Bob is a mathematician.",
+            "source_id": "doc-1"
+        },
+        {
+            "entity_name": "Quantum Computing",
+            "entity_type": "technology",
+            "description": "Quantum computing utilizes quantum mechanical phenomena for computation.",
+            "source_id": "doc-1"
+        }
+    ],
+    "relationships": [
+        {
+            "src_id": "Alice",
+            "tgt_id": "Bob",
+            "description": "Alice and Bob are research partners.",
+            "keywords": "collaboration research",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        },
+        {
+            "src_id": "Alice",
+            "tgt_id": "Quantum Computing",
+            "description": "Alice conducts research on quantum computing.",
+            "keywords": "research expertise",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        },
+        {
+            "src_id": "Bob",
+            "tgt_id": "Quantum Computing",
+            "description": "Bob researches quantum computing.",
+            "keywords": "research application",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        }
+    ]
+}
+
+rag.insert_custom_kg(custom_kg)
 ```
 
 </details>
@@ -841,7 +906,8 @@ rag.delete_by_doc_id("doc_id")
 
 LightRAG now supports comprehensive knowledge graph management capabilities, allowing you to create, edit, and delete entities and relationships within your knowledge graph.
 
-### Create Entities and Relations
+<details>
+  <summary> <b> Create Entities and Relations </b></summary>
 
 ```python
 # Create new entity
@@ -864,7 +930,10 @@ relation = rag.create_relation("Google", "Gmail", {
 })
 ```
 
-### Edit Entities and Relations
+</details>
+
+<details>
+  <summary> <b> Edit Entities and Relations </b></summary>
 
 ```python
 # Edit an existing entity
@@ -901,6 +970,8 @@ All operations are available in both synchronous and asynchronous versions. The 
 
 These operations maintain data consistency across both the graph database and vector database components, ensuring your knowledge graph remains coherent.
 
+</details>
+
 ## Data Export Functions
 
 ### Overview
@@ -909,7 +980,8 @@ LightRAG allows you to export your knowledge graph data in various formats for a
 
 ### Export Functions
 
-#### Basic Usage
+<details>
+  <summary> <b> Basic Usage </b></summary>
 
 ```python
 # Basic CSV export (default format)
@@ -919,7 +991,10 @@ rag.export_data("knowledge_graph.csv")
 rag.export_data("output.xlsx", file_format="excel")
 ```
 
-#### Different File Formats supported
+</details>
+
+<details>
+  <summary> <b> Different File Formats supported </b></summary>
 
 ```python
 #Export data in CSV format
@@ -934,13 +1009,18 @@ rag.export_data("graph_data.md", file_format="md")
 # Export data in Text
 rag.export_data("graph_data.txt", file_format="txt")
 ```
-#### Additional Options
+</details>
+
+<details>
+  <summary> <b> Additional Options </b></summary>
 
 Include vector embeddings in the export (optional):
 
 ```python
 rag.export_data("complete_data.csv", include_vector_data=True)
 ```
+</details>
+
 ### Data Included in Export
 
 All exports include:

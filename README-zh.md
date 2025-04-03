@@ -409,6 +409,54 @@ if __name__ == "__main__":
 
 </details>
 
+### Token统计功能
+<details>
+<summary> <b>概述和使用</b> </summary>
+
+LightRAG提供了TokenTracker工具来跟踪和管理大模型的token消耗。这个功能对于控制API成本和优化性能特别有用。
+
+#### 使用方法
+
+```python
+from lightrag.utils import TokenTracker
+
+# 创建TokenTracker实例
+token_tracker = TokenTracker()
+
+# 方法1：使用上下文管理器（推荐）
+# 适用于需要自动跟踪token使用的场景
+with token_tracker:
+    result1 = await llm_model_func("你的问题1")
+    result2 = await llm_model_func("你的问题2")
+
+# 方法2：手动添加token使用记录
+# 适用于需要更精细控制token统计的场景
+token_tracker.reset()
+
+rag.insert()
+
+rag.query("你的问题1", param=QueryParam(mode="naive"))
+rag.query("你的问题2", param=QueryParam(mode="mix"))
+
+# 显示总token使用量（包含插入和查询操作）
+print("Token usage:", token_tracker.get_usage())
+```
+
+#### 使用建议
+- 在长会话或批量操作中使用上下文管理器，可以自动跟踪所有token消耗
+- 对于需要分段统计的场景，使用手动模式并适时调用reset()
+- 定期检查token使用情况，有助于及时发现异常消耗
+- 在开发测试阶段积极使用此功能，以便优化生产环境的成本
+
+#### 实际应用示例
+您可以参考以下示例来实现token统计：
+- `examples/lightrag_gemini_track_token_demo.py`：使用Google Gemini模型的token统计示例
+- `examples/lightrag_siliconcloud_track_token_demo.py`：使用SiliconCloud模型的token统计示例
+
+这些示例展示了如何在不同模型和场景下有效地使用TokenTracker功能。
+
+</details>
+
 ### 对话历史
 
 LightRAG现在通过对话历史功能支持多轮对话。以下是使用方法：
