@@ -114,6 +114,23 @@ class PostgreSQLDB:
                         f"PostgreSQL, Failed to create table {k} in database, Please verify the connection with PostgreSQL database, Got: {e}"
                     )
                     raise e
+            
+            # Create index for id column in each table
+            try:
+                index_name = f"idx_{k.lower()}_id"
+                check_index_sql = f"""
+                SELECT 1 FROM pg_indexes 
+                WHERE indexname = '{index_name}' 
+                AND tablename = '{k.lower()}'
+                """
+                index_exists = await self.query(check_index_sql)
+                
+                if not index_exists:
+                    create_index_sql = f"CREATE INDEX {index_name} ON {k}(id)"
+                    logger.info(f"PostgreSQL, Creating index {index_name} on table {k}")
+                    await self.execute(create_index_sql)
+            except Exception as e:
+                logger.error(f"PostgreSQL, Failed to create index on table {k}, Got: {e}")
 
     async def query(
         self,
