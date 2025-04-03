@@ -16,7 +16,7 @@ interface StatusDialogProps {
 
 const StatusDialog = ({ open, onOpenChange, status }: StatusDialogProps) => {
   const { t } = useTranslation()
-  
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[500px]">
