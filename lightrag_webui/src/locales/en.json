@@ -127,6 +127,7 @@
     }
   },
   "graphPanel": {
+    "legend": "Legend",
     "sideBar": {
       "settings": {
         "settings": "Settings",
@@ -171,6 +172,9 @@
       "fullScreenControl": {
         "fullScreen": "Full Screen",
         "windowed": "Windowed"
+      },
+      "legendControl": {
+        "toggleLegend": "Toggle Legend"
       }
     },
     "statusIndicator": {

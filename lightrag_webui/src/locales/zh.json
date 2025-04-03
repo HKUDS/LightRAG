@@ -127,6 +127,7 @@
     }
   },
   "graphPanel": {
+    "legend": "图例",
     "sideBar": {
       "settings": {
         "settings": "设置",
@@ -171,6 +172,9 @@
       "fullScreenControl": {
         "fullScreen": "全屏",
         "windowed": "窗口"
+      },
+      "legendControl": {
+        "toggleLegend": "切换图例显示"
       }
     },
     "statusIndicator": {
