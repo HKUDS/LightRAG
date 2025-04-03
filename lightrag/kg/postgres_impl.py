@@ -1318,6 +1318,18 @@ class PGGraphStorage(BaseGraphStorage):
         retry=retry_if_exception_type((PGGraphQueryException,)),
     )
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
+        """
+        Upsert a node in the Neo4j database.
+
+        Args:
+            node_id: The unique identifier for the node (used as label)
+            node_data: Dictionary of node properties
+        """
+        if "entity_id" not in node_data:
+            raise ValueError(
+                "PostgreSQL: node properties must contain an 'entity_id' field"
+            )
+
         label = node_id.strip('"')
         properties = self._format_properties(node_data)
 
@@ -1334,8 +1346,8 @@ class PGGraphStorage(BaseGraphStorage):
         try:
             await self._query(query, readonly=False, upsert=True)
 
-        except Exception as e:
-            logger.error("POSTGRES, Error during upsert: {%s}", e)
+        except Exception:
+            logger.error("POSTGRES, upsert_node error on node_id: {node_id}")
             raise
 
     @retry(
@@ -1375,8 +1387,10 @@ class PGGraphStorage(BaseGraphStorage):
         try:
             await self._query(query, readonly=False, upsert=True)
 
-        except Exception as e:
-            logger.error("Error during edge upsert: {%s}", e)
+        except Exception:
+            logger.error(
+                "POSTGRES, upsert_edge error on edge: {source_node_id} - {target_node_id}"
+            )
             raise
 
     async def _node2vec_embed(self):
