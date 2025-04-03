@@ -1201,7 +1201,6 @@ class PGGraphStorage(BaseGraphStorage):
                    $$) AS (n agtype)""" % (self.graph_name, label)
         record = await self._query(query)
         if record:
-            print(f"Record: {record}")
             node = record[0]
             node_dict = node["n"]
 
@@ -1250,7 +1249,6 @@ class PGGraphStorage(BaseGraphStorage):
         )
         record = await self._query(query)
         if record and record[0] and record[0]["edge_properties"]:
-            print(f"Record: {record}")
             result = record[0]["edge_properties"]
 
             return result
