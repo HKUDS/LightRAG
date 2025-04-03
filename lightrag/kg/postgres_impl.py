@@ -1238,7 +1238,7 @@ class PGGraphStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
         """Get edge properties between two nodes"""
-        
+
         src_label = source_node_id.strip('"')
         tgt_label = target_node_id.strip('"')
 
@@ -1515,7 +1515,7 @@ class PGGraphStorage(BaseGraphStorage):
                 if node_id not in nodes_dict:
                     nodes_dict[node_id] = KnowledgeGraphNode(
                         id=node_id,
-                        labels=[result["n"]["properties"]["entity_id"]], 
+                        labels=[result["n"]["properties"]["entity_id"]],
                         properties=result["n"]["properties"],
                     )
             # Handle node list cases
@@ -1526,10 +1526,10 @@ class PGGraphStorage(BaseGraphStorage):
                         if node_id not in nodes_dict and "properties" in node:
                             nodes_dict[node_id] = KnowledgeGraphNode(
                                 id=node_id,
-                                labels=[node["properties"]["entity_id"]], 
+                                labels=[node["properties"]["entity_id"]],
                                 properties=node["properties"],
                             )
-                        
+
             # Handle single edge cases
             if result.get("r") and isinstance(result["r"], dict):
                 edge_id = str(result["r"]["id"])
