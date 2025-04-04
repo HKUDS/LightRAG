@@ -104,6 +104,7 @@
         "metadata": "Métadonnées"
       },
       "status": {
+        "all": "Tous",
         "completed": "Terminé",
         "processing": "En traitement",
         "pending": "En attente",

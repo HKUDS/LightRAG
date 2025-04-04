@@ -104,6 +104,7 @@
         "metadata": "元数据"
       },
       "status": {
+        "all": "全部",
         "completed": "已完成",
         "processing": "处理中",
         "pending": "等待中",

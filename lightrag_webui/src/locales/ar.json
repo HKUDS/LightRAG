@@ -104,6 +104,7 @@
         "metadata": "البيانات الوصفية"
       },
       "status": {
+        "all": "الكل",
         "completed": "مكتمل",
         "processing": "قيد المعالجة",
         "pending": "معلق",
