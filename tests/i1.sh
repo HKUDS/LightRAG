@@ -1,1 +1,0 @@
-python import_to_memgraph.py output_merged.cypher 

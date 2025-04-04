@@ -623,8 +623,209 @@ def normalize_relation_type(raw_type: str, config: Config) -> str:
     return cleaned_type
 
 def escape_cypher_string(value: str) -> str:
-    """转义Cypher查询中的字符串值"""
-    return value.replace("\\", "\\\\").replace("'", "\\'")
+    """Escapes single quotes and backslashes for Cypher strings."""
+    if not isinstance(value, str):
+        return str(value) # Return as string if not already
+    return value.replace('\\', '\\\\').replace("'", "\\'")
+
+def parse_llm_response(response_text: Optional[str]) -> Optional[Dict[str, List[Dict[str, str]]]]:
+    """安全地解析LLM的JSON响应，处理各种格式和边缘情况。"""
+    if not response_text: 
+        return None
+    
+    # 记录原始响应的前100个字符，用于调试
+    logging.debug(f"解析LLM响应: {response_text[:100]}...")
+    
+    try:
+        # 1. 清理Markdown代码块标记
+        cleaned_text = response_text.strip()
+        
+        # 特别处理包含```json的代码块 (常见于大部分LLM响应)
+        json_block_pattern = r"```(?:json)?\s*([\s\S]*?)```"
+        json_blocks = re.findall(json_block_pattern, cleaned_text, re.DOTALL)
+        
+        if json_blocks:
+            # 如果有多个代码块，选择最长的一个
+            longest_block = max(json_blocks, key=len).strip()
+            logging.debug(f"从Markdown代码块提取JSON: {longest_block[:50]}...")
+            cleaned_text = longest_block
+        
+        # 2. 尝试直接解析清理后的文本
+        try:
+            parsed_data = json.loads(cleaned_text)
+            if isinstance(parsed_data, dict) and \
+               (('entities' in parsed_data and isinstance(parsed_data['entities'], list)) or \
+                ('relations' in parsed_data and isinstance(parsed_data['relations'], list))):
+                logging.debug("成功直接解析JSON响应")
+                return parsed_data
+        except json.JSONDecodeError as e:
+            # 如果直接解析失败，继续使用更复杂的方法
+            logging.debug(f"直接解析JSON失败: {e}，尝试修复...")
+        
+        # 3. 定位JSON对象的边界
+        # 查找第一个左大括号和最后一个右大括号
+        json_start = cleaned_text.find('{')
+        json_end = cleaned_text.rfind('}')
+        
+        if json_start != -1 and json_end != -1 and json_end > json_start:
+            # 提取潜在的JSON文本
+            json_text = cleaned_text[json_start:json_end + 1]
+            logging.debug(f"提取潜在JSON文本: {json_text[:50]}...")
+            
+            # 4. 尝试解析提取的JSON
+            try:
+                parsed_data = json.loads(json_text)
+                if isinstance(parsed_data, dict) and \
+                   (('entities' in parsed_data and isinstance(parsed_data['entities'], list)) or \
+                    ('relations' in parsed_data and isinstance(parsed_data['relations'], list))):
+                    logging.debug("成功解析提取的JSON文本")
+                    return parsed_data
+            except json.JSONDecodeError:
+                # 如果仍然失败，尝试更高级的修复
+                pass
+            
+            # 5. 尝试修复可能不完整的JSON
+            # 查找实体或关系数组
+            try:
+                if '"entities"' in json_text:
+                    entities_match = re.search(r'"entities"\s*:\s*\[(.*?)(?:\]|$)', json_text, re.DOTALL)
+                    if entities_match:
+                        entities_content = entities_match.group(1).strip()
+                        # 检查最后一个对象是否完整
+                        if entities_content.endswith(','):
+                            entities_content = entities_content[:-1]  # 移除尾部逗号
+                        
+                        # 确保JSON数组内容有效
+                        if not entities_content.endswith('}'):
+                            # 查找最后一个完整的对象
+                            last_complete_obj = entities_content.rfind('}')
+                            if last_complete_obj != -1:
+                                entities_content = entities_content[:last_complete_obj+1]
+                        
+                        # 构建完整的JSON字符串
+                        fixed_json = f'{{"entities": [{entities_content}]}}'
+                        try:
+                            parsed_data = json.loads(fixed_json)
+                            logging.debug(f"成功修复并解析entities JSON: {fixed_json[:50]}...")
+                            return parsed_data
+                        except json.JSONDecodeError as e:
+                            logging.warning(f"修复entities JSON失败: {e}")
+                
+                elif '"relations"' in json_text:
+                    relations_match = re.search(r'"relations"\s*:\s*\[(.*?)(?:\]|$)', json_text, re.DOTALL)
+                    if relations_match:
+                        relations_content = relations_match.group(1).strip()
+                        # 检查最后一个对象是否完整
+                        if relations_content.endswith(','):
+                            relations_content = relations_content[:-1]  # 移除尾部逗号
+                        
+                        # 处理可能存在问题的关系内容
+                        # 分析和提取每个完整的对象
+                        objects = []
+                        brace_count = 0
+                        start_pos = 0
+                        in_object = False
+                        
+                        for i, char in enumerate(relations_content):
+                            if char == '{':
+                                if brace_count == 0:
+                                    start_pos = i
+                                    in_object = True
+                                brace_count += 1
+                            elif char == '}':
+                                brace_count -= 1
+                                if brace_count == 0 and in_object:
+                                    # 找到一个完整的对象
+                                    obj_str = relations_content[start_pos:i+1]
+                                    try:
+                                        # 尝试解析单个对象
+                                        obj = json.loads(obj_str)
+                                        # 检查对象是否包含所有必要的字段
+                                        required_fields = ["source", "source_type", "target", "target_type", "type"]
+                                        if all(field in obj for field in required_fields):
+                                            objects.append(obj)
+                                    except json.JSONDecodeError:
+                                        pass  # 忽略无法解析的对象
+                                    in_object = False
+                        
+                        if objects:
+                            logging.debug(f"从关系内容中提取了 {len(objects)} 个完整的关系对象")
+                            return {"relations": objects}
+                            
+                        # 旧的方法如果上面方法提取不了单个对象
+                        # 构建完整的JSON字符串
+                        fixed_json = f'{{"relations": [{relations_content}]}}'
+                        try:
+                            parsed_data = json.loads(fixed_json)
+                            logging.debug(f"成功修复并解析relations JSON: {fixed_json[:50]}...")
+                            return parsed_data
+                        except json.JSONDecodeError as e:
+                            logging.warning(f"修复relations JSON失败: {e}")
+            except Exception as repair_error:
+                logging.error(f"尝试修复JSON时出错: {repair_error}")
+        
+        # 6. 使用正则表达式直接提取实体或关系对象
+        try:
+            # 匹配实体对象
+            entity_pattern = r'\{\s*"name"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"type"\s*:\s*"((?:\\.|[^"\\])*?)"\s*\}'
+            entities = re.findall(entity_pattern, cleaned_text)
+            if entities:
+                entity_objects = [{"name": name, "type": type_} for name, type_ in entities]
+                logging.debug(f"通过正则表达式提取了 {len(entity_objects)} 个实体")
+                return {"entities": entity_objects}
+            
+            # 匹配关系对象 - 使用非贪婪模式
+            relation_pattern = r'\{\s*"source"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"source_type"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"target"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"target_type"\s*:\s*"((?:\\.|[^"\\])*?)"\s*,\s*"type"\s*:\s*"((?:\\.|[^"\\])*?)"\s*\}'
+            relations = re.findall(relation_pattern, cleaned_text)
+            if relations:
+                relation_objects = [
+                    {
+                        "source": source, 
+                        "source_type": source_type, 
+                        "target": target, 
+                        "target_type": target_type, 
+                        "type": rel_type
+                    } 
+                    for source, source_type, target, target_type, rel_type in relations
+                ]
+                logging.debug(f"通过正则表达式提取了 {len(relation_objects)} 个关系")
+                return {"relations": relation_objects}
+                
+            # 尝试一种更灵活的关系模式，允许字段顺序不同
+            # 找到所有的JSON对象
+            obj_pattern = r'\{[^\{\}]+\}'
+            objs = re.findall(obj_pattern, cleaned_text)
+            relation_fields = ["source", "source_type", "target", "target_type", "type"]
+            relations_list = []
+            
+            for obj in objs:
+                # 检查是否包含所有关系字段
+                if all(f'"{field}"' in obj for field in relation_fields):
+                    # 提取每个字段
+                    relation = {}
+                    for field in relation_fields:
+                        match = re.search(f'"{field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*?)"', obj)
+                        if match:
+                            relation[field] = match.group(1)
+                    
+                    # 只有包含所有字段才添加
+                    if len(relation) == len(relation_fields):
+                        relations_list.append(relation)
+            
+            if relations_list:
+                logging.debug(f"通过灵活匹配提取了 {len(relations_list)} 个关系")
+                return {"relations": relations_list}
+                
+        except Exception as regex_error:
+            logging.error(f"使用正则表达式提取JSON时出错: {regex_error}")
+        
+        # 所有方法都失败，记录警告并输出完整响应
+        logging.warning(f"无法从LLM响应中提取有效的JSON结构:\n{response_text}")
+        return None
+    except Exception as e:
+        logging.error(f"解析LLM响应时发生未预期的错误: {e}")
+        logging.error(f"问题响应完整内容:\n{response_text}")
+        return None
 
 def create_entity_prompt(chunk_content: str, context: Dict[str, Any], config: Config) -> str:
     """创建实体提取的提示词"""
@@ -1105,7 +1306,19 @@ async def process_tasks(tasks: List[LLMTask]) -> List[LLMTask]:
 # --- Cypher Generation ---
 
 def generate_cypher_statements(entities: List[Entity], relations: List[Relation], config: Config) -> List[str]:
-    """根据实体和关系生成Cypher语句"""
+    """
+    使用配置的映射生成Memgraph/Neo4j Cypher MERGE语句。
+    
+    现在支持实体的context_id和entity_type属性，关系的context_id和relation_type属性。
+    
+    Args:
+        entities: Entity数据类对象列表
+        relations: Relation数据类对象列表
+        config: 配置对象
+        
+    Returns:
+        Cypher语句列表
+    """
     cypher_statements = []
 
     # 添加唯一性约束
@@ -1505,8 +1718,303 @@ async def extract_entities_and_relations(data: List[Dict[str, Any]]) -> Tuple[Se
     
     return entities_set, relations_set
 
+def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple[str, str, str]], 
+                            relations_set: Set[Tuple[str, str, str, str]]) -> int:
+    """
+    添加文档结构关系，优先使用结构化数据而非依赖LLM来创建文档结构
+    
+    1. 从结构化数据创建Document和Section节点
+    2. 从结构化数据建立HAS_SECTION和HAS_PARENT_SECTION关系 
+    3. 将LLM提取的实体与其源Section通过CONTAINS关系连接
+    
+    Args:
+        data: 包含多个文本块的列表或包含chunks和document_info的字典
+        entities_set: 实体集合，会被此函数修改
+        relations_set: 关系集合，会被此函数修改
+        
+    Returns:
+        添加的结构关系数量
+    """
+    logging.info("添加结构化关系，优先使用结构化数据...")
+    
+    # 处理不同的数据格式
+    chunks = []
+    document_info = {}
+    
+    if isinstance(data, dict):
+        chunks = data.get("chunks", [])
+        document_info = data.get("document_info", {})
+    else:
+        chunks = data
+    
+    chunk_map: Dict[str, Dict[str, Any]] = {chunk['chunk_id']: chunk for chunk in chunks}
+    
+    # 获取实体类型和关系类型映射
+    entity_type_map = config.entity_type_map_cypher
+    relation_type_map = config.relation_type_map_cypher
+    has_section_type = relation_type_map.get("HAS_SECTION", "HAS_SECTION")
+    has_parent_section_type = relation_type_map.get("HAS_PARENT_SECTION", "HAS_PARENT_SECTION")
+    contains_rel_type = relation_type_map.get("CONTAINS", "CONTAINS")
+    
+    # 计数器
+    document_nodes_added = 0
+    section_nodes_added = 0
+    has_section_relations_added = 0
+    has_parent_section_relations_added = 0
+    contains_relations_added = 0
+    
+    # --- 步骤1: 直接从结构化数据创建Document和Section节点 ---
+    document_entities = set()  # 存储文档实体 (name, chunk_id)
+    section_entities = {}  # chunk_id -> (name, type, chunk_id)
+    
+    # 查找文档级节点和信息
+    document_title = None
+    document_chunk_id = None
+    
+    # 1.1 首先查找文档信息 (通常位于根节点或有full_doc_id的节点)
+    for chunk in chunks:
+        # 查找文档标题
+        if 'full_doc_id' in chunk and chunk.get('full_doc_id') and 'heading' in chunk:
+            document_title = chunk.get('heading')
+            document_chunk_id = chunk.get('chunk_id')
+            break  # 找到文档信息就跳出
+    
+    # 如果没有找到明确的文档信息，尝试使用没有parent_id的根节点
+    if not document_title:
+        for chunk in chunks:
+            if not chunk.get('parent_id') and chunk.get('heading'):
+                document_title = chunk.get('heading')
+                document_chunk_id = chunk.get('chunk_id')
+                break
+    
+    # 如果仍然没有找到文档信息，使用文件名或默认名称
+    if not document_title:
+        if chunks and 'file_path' in chunks[0]:
+            # 从文件路径提取文件名
+            file_path = chunks[0].get('file_path')
+            document_title = os.path.basename(file_path) if file_path else "未知文档"
+        else:
+            document_title = "未知文档"
+        
+        document_chunk_id = "document_root"
+    
+    # 1.2 创建Document节点
+    normalized_document_type = normalize_entity_type("Document", config)
+    entities_set.add((document_title, normalized_document_type, document_chunk_id))
+    document_entities.add((document_title, document_chunk_id))
+    document_nodes_added += 1
+    logging.info(f"从结构化数据创建文档实体: '{document_title}' [chunk_id: {document_chunk_id}]")
+    
+    # 1.3 从结构化数据创建Section节点
+    for chunk in chunks:
+        chunk_id = chunk.get('chunk_id')
+        heading = chunk.get('heading')
+        
+        # 跳过非有效节点
+        if not chunk_id or not heading:
+            continue
+        
+        # 创建Section节点 (所有非文档根节点都视为章节)
+        if chunk_id != document_chunk_id:
+            normalized_section_type = normalize_entity_type("Section", config)
+            normalized_heading = normalize_entity_name(heading, config)
+            # 添加到实体集
+            entities_set.add((normalized_heading, normalized_section_type, chunk_id))
+            # 记录所有Section实体，用于后续创建关系
+            section_entities[chunk_id] = (normalized_heading, normalized_section_type, chunk_id)
+            section_nodes_added += 1
+    
+    logging.info(f"从结构化数据创建了 {section_nodes_added} 个章节实体")
+    
+    # --- 步骤2: 建立文档结构关系 (HAS_SECTION & HAS_PARENT_SECTION) ---
+    
+    # 2.1 建立Document -> Section (HAS_SECTION)关系
+    for chunk in chunks:
+        chunk_id = chunk.get('chunk_id')
+        parent_id = chunk.get('parent_id')
+        
+        # 跳过非有效节点
+        if chunk_id not in section_entities:
+            continue
+        
+        section_name = section_entities[chunk_id][0]
+        
+        # 如果父级是文档或没有父级(表示顶级章节)
+        if parent_id == document_chunk_id or not parent_id:
+            # 为所有顶级章节添加HAS_SECTION关系
+            has_section_relation = (document_title, section_name, has_section_type, document_chunk_id)
+            if has_section_relation not in relations_set:
+                relations_set.add(has_section_relation)
+                has_section_relations_added += 1
+    
+    # 2.2 建立Section -> Section (HAS_PARENT_SECTION)关系
+    for chunk in chunks:
+        chunk_id = chunk.get('chunk_id')
+        parent_id = chunk.get('parent_id')
+        
+        # 跳过非有效节点或没有父级的节点
+        if chunk_id not in section_entities or not parent_id or parent_id not in section_entities:
+            continue
+        
+        child_section_name = section_entities[chunk_id][0]
+        parent_section_name = section_entities[parent_id][0]
+        
+        # 添加HAS_PARENT_SECTION关系
+        has_parent_relation = (child_section_name, parent_section_name, has_parent_section_type, chunk_id)
+        if has_parent_relation not in relations_set:
+            relations_set.add(has_parent_relation)
+            has_parent_section_relations_added += 1
+    
+    logging.info(f"从结构化数据创建了 {has_section_relations_added} 个Document-Section HAS_SECTION关系")
+    logging.info(f"从结构化数据创建了 {has_parent_section_relations_added} 个Section-Section HAS_PARENT_SECTION关系")
+    
+    # --- 步骤3: 为LLM提取的实体添加CONTAINS关系 ---
+    
+    # 3.1 为每个非结构性实体(非Document/Section)添加与其所在Section的CONTAINS关系
+    processed_entity_section_pairs = set()  # 用于跟踪已处理的实体-章节对
+    
+    for name, entity_type, chunk_id in entities_set:
+        # 跳过Document和Section类型的实体
+        if entity_type.lower() in ["document", "section"]:
+            continue
+        
+        # 每个实体都应该与其所在的章节建立CONTAINS关系
+        entity_section_key = (name, chunk_id)
+        
+        if entity_section_key in processed_entity_section_pairs:
+            continue
+        
+        # 检查此实体是否已有CONTAINS关系
+        entity_has_contains_relation = False
+        for src, tgt, rel_type, rel_chunk_id in relations_set:
+            if tgt == name and rel_chunk_id == chunk_id and rel_type == contains_rel_type:
+                entity_has_contains_relation = True
+                processed_entity_section_pairs.add(entity_section_key)
+                break
+        
+        # 如果没有CONTAINS关系，则添加
+        if not entity_has_contains_relation:
+            # 找到实体所在chunk对应的Section
+            if chunk_id in section_entities:
+                # 当前chunk就是一个Section，直接关联
+                section_name = section_entities[chunk_id][0]
+                contains_relation = (section_name, name, contains_rel_type, chunk_id)
+                if contains_relation not in relations_set:
+                    relations_set.add(contains_relation)
+                    contains_relations_added += 1
+                    processed_entity_section_pairs.add(entity_section_key)
+            elif chunk_id in chunk_map:
+                # 查找当前chunk的父级，应该是一个Section
+                parent_id = chunk_map[chunk_id].get('parent_id')
+                if parent_id and parent_id in section_entities:
+                    section_name = section_entities[parent_id][0]
+                    contains_relation = (section_name, name, contains_rel_type, chunk_id)
+                    if contains_relation not in relations_set:
+                        relations_set.add(contains_relation)
+                        contains_relations_added += 1
+                        processed_entity_section_pairs.add(entity_section_key)
+                else:
+                    # 如果找不到父section，使用文档作为容器
+                    contains_relation = (document_title, name, contains_rel_type, chunk_id)
+                    if contains_relation not in relations_set:
+                        relations_set.add(contains_relation)
+                        contains_relations_added += 1
+                        processed_entity_section_pairs.add(entity_section_key)
+            else:
+                # 找不到chunk，使用文档作为容器
+                contains_relation = (document_title, name, contains_rel_type, chunk_id)
+                if contains_relation not in relations_set:
+                    relations_set.add(contains_relation)
+                    contains_relations_added += 1
+                    processed_entity_section_pairs.add(entity_section_key)
+    
+    logging.info(f"为LLM提取的实体添加了 {contains_relations_added} 个CONTAINS关系")
+    
+    # --- 步骤4: 最终检查，确保没有孤立实体 ---
+    all_entities_with_relations = set()
+    for src, tgt, rel_type, rel_chunk_id in relations_set:
+        # 找到源实体和目标实体
+        for name, entity_type, chunk_id in entities_set:
+            if name == src and chunk_id == rel_chunk_id:
+                all_entities_with_relations.add((name, entity_type, chunk_id))
+            if name == tgt and chunk_id == rel_chunk_id:
+                all_entities_with_relations.add((name, entity_type, chunk_id))
+    
+    # 找出所有仍然孤立的实体
+    isolated_entities = entities_set - all_entities_with_relations
+    
+    if isolated_entities:
+        logging.warning(f"发现 {len(isolated_entities)} 个仍然孤立的实体，将添加到文档的CONTAINS关系")
+        isolated_fixes = 0
+        
+        # 为每个孤立实体添加到文档的CONTAINS关系
+        for name, entity_type, chunk_id in isolated_entities:
+            contains_relation = (document_title, name, contains_rel_type, chunk_id)
+            
+            if contains_relation not in relations_set:
+                relations_set.add(contains_relation)
+                isolated_fixes += 1
+                contains_relations_added += isolated_fixes
+        
+        logging.info(f"为 {isolated_fixes} 个孤立实体添加了与文档的CONTAINS关系")
+    
+    # 返回所有添加的关系总数
+    total_relations_added = has_section_relations_added + has_parent_section_relations_added + contains_relations_added
+    
+    logging.info(f"总共添加了 {total_relations_added} 个结构化关系")
+    return total_relations_added
+
+def print_extraction_results(entities_set: Set[Tuple[str, str, str]], relations_set: Set[Tuple[str, str, str, str]]):
+    """
+    在控制台打印提取结果
+    
+    Args:
+        entities_set: 实体集合 (name, type, chunk_id)
+        relations_set: 关系集合 (source, target, type, chunk_id)
+    """
+    print("\n--- Final Extracted Entities ---")
+    # 按照实体类型和名称排序
+    sorted_entities = sorted(list(entities_set), key=lambda x: (x[1], x[0]))  # 按类型和名称排序
+    
+    for name, entity_type, chunk_id in sorted_entities:
+        print(f"- ({entity_type}) {name} [chunk_id: {chunk_id}]")
+    
+    print(f"\nTotal Unique Entities: {len(sorted_entities)}")
+
+    print("\n--- Final Extracted Relations ---")
+    # 按照关系类型和源实体名称排序
+    sorted_relations = sorted(list(relations_set), key=lambda x: (x[2], x[0]))  # 按关系类型和源实体排序
+    
+    for source, target, relation_type, chunk_id in sorted_relations:
+        print(f"- {source} --[{relation_type}]--> {target} [chunk_id: {chunk_id}]")
+    
+    print(f"\nTotal Unique Relations: {len(sorted_relations)}")
+
+def save_cypher_statements(entities_set: Set[Tuple[str, str, str]], relations_set: Set[Tuple[str, str, str, str]], 
+                          output_path: str):
+    """
+    生成并保存Cypher语句
+    
+    Args:
+        entities_set: 实体集合 (name, type, chunk_id)
+        relations_set: 关系集合 (source, target, type, chunk_id)
+        output_path: 输出文件路径
+    """
+    print(f"\n--- Generating Cypher Statements (Memgraph/Neo4j) ---")
+    cypher_statements = generate_cypher_statements(entities_set, relations_set, config)
+
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(";\n".join(cypher_statements) + ";\n")  # 每个语句后添加分号
+        print(f"\nCypher statements saved to: {output_path}")
+    except IOError as e:
+        print(f"\nError writing Cypher statements to file {output_path}: {e}")
+        print("\nCypher Statements:\n")
+        print(";\n".join(cypher_statements) + ";\n")  # 作为备选方案打印到控制台
+
+
 def create_contains_relations(section_entities: List[Entity], semantic_entities: List[Entity]) -> List[Relation]:
-    """创建CONTAINS关系，将语义实体连接到它们所属的章节实体"""
+    """为语义实体创建CONTAINS关系（Section -> 语义实体）"""
     contains_relations = []
     
     # 创建section_id到section实体的映射
