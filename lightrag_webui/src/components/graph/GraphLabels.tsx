@@ -63,9 +63,9 @@ const GraphLabels = () => {
     // 2. Current label is not the default '*'
     // 3. Current label doesn't exist in allDatabaseLabels
     if (
-      allDatabaseLabels.length > 1 && 
-      label && 
-      label !== '*' && 
+      allDatabaseLabels.length > 1 &&
+      label &&
+      label !== '*' &&
       !allDatabaseLabels.includes(label)
     ) {
       console.log(`Label "${label}" not found in available labels, resetting to default`);
