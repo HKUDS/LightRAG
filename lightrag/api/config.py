@@ -311,8 +311,8 @@ def parse_args() -> argparse.Namespace:
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
     args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
-    args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 4, int)
-    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 2, int)
+    args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
+    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, int)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
