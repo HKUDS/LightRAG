@@ -12,6 +12,7 @@ from typing import List, Dict, Set, Tuple, Optional, Any, NamedTuple, Union
 from dataclasses import dataclass, field  # 用于定义数据类
 from pathlib import Path  # 用于处理路径
 import argparse
+from datetime import datetime
 
 # --- 数据类定义 ---
 
@@ -21,6 +22,11 @@ class Entity:
     name: str  # 实体名称
     type: str  # 实体类型
     context_id: str  # 上下文ID（chunk_id 或 doc_id）
+    main_category: str = ""  # 实体的主类型，例如：客运管理、货运管理、财务管理等
+    description: str = ""  # 实体简述，将会被向量化用于语义检索
+    source: str = ""  # 实体的出处/来源
+    created_at: datetime = field(default_factory=lambda: datetime.now())  # 首次生成时间
+    updated_at: datetime = field(default_factory=lambda: datetime.now())  # 最后修改时间
     
     def __hash__(self):
         return hash((self.name, self.type, self.context_id))
@@ -2204,7 +2210,10 @@ async def process_document_structure(data: List[Dict[str, Any]], config: Config)
             document_entity = Entity(
                 name=doc_title,
                 type="Document",
-                context_id=doc_id
+                context_id=doc_id,
+                main_category="文档管理",
+                description=f"文档：{doc_title}",
+                source="系统自动生成"
             )
             document_entities.append(document_entity)
             id_to_entity_map[doc_id] = document_entity
@@ -2215,7 +2224,10 @@ async def process_document_structure(data: List[Dict[str, Any]], config: Config)
         section_entity = Entity(
             name=section_name,
             type="Section",
-            context_id=chunk_id
+            context_id=chunk_id,
+            main_category="内容结构",
+            description=f"章节：{section_name}",
+            source="系统自动生成"
         )
         section_entities.append(section_entity)
         id_to_entity_map[chunk_id] = section_entity
@@ -2313,7 +2325,10 @@ async def extract_semantic_info(data: List[Dict[str, Any]], section_entities: Li
                     entity = Entity(
                         name=normalized_name,
                         type=normalized_type,
-                        context_id=task.chunk_id
+                        context_id=task.chunk_id,
+                        main_category="实体概念",
+                        description=f"{normalized_type}：{normalized_name}",
+                        source="LLM提取"
                     )
                     semantic_entities.append(entity)
                     chunk_entities.append({"name": normalized_name, "type": raw_type})
@@ -2400,7 +2415,10 @@ async def extract_semantic_info(data: List[Dict[str, Any]], section_entities: Li
                         semantic_entities.append(Entity(
                             name=normalized_source,
                             type=normalized_source_type,
-                            context_id=task.chunk_id
+                            context_id=task.chunk_id,
+                            main_category="关系实体",
+                            description=f"{normalized_source_type}：{normalized_source}",
+                            source="关系提取"
                         ))
                     
                     if target_type and not target_exists:
@@ -2408,7 +2426,10 @@ async def extract_semantic_info(data: List[Dict[str, Any]], section_entities: Li
                         semantic_entities.append(Entity(
                             name=normalized_target,
                             type=normalized_target_type,
-                            context_id=task.chunk_id
+                            context_id=task.chunk_id,
+                            main_category="关系实体",
+                            description=f"{normalized_target_type}：{normalized_target}",
+                            source="关系提取"
                         ))
                 else:
                     logging.warning(f"LLM在chunk {task.chunk_id}中返回了无效的关系: {relation_dict}")
