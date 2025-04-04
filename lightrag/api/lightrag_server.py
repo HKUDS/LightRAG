@@ -19,10 +19,13 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from lightrag.api.utils_api import (
     get_combined_auth_dependency,
-    parse_args,
-    get_default_host,
     display_splash_screen,
     check_env_file,
+)
+from .config import (
+    global_args,
+    update_uvicorn_mode_config,
+    get_default_host,
 )
 import sys
 from lightrag import LightRAG, __version__ as core_version
@@ -490,7 +493,7 @@ def create_app(args):
 def get_application(args=None):
     """Factory function for creating the FastAPI application"""
     if args is None:
-        args = parse_args()
+        args = global_args
     return create_app(args)
 
 
@@ -611,30 +614,31 @@ def main():
 
     # Configure logging before parsing args
     configure_logging()
-
-    args = parse_args(is_uvicorn_mode=True)
-    display_splash_screen(args)
+    update_uvicorn_mode_config()
+    display_splash_screen(global_args)
 
     # Create application instance directly instead of using factory function
-    app = create_app(args)
+    app = create_app(global_args)
 
     # Start Uvicorn in single process mode
     uvicorn_config = {
         "app": app,  # Pass application instance directly instead of string path
-        "host": args.host,
-        "port": args.port,
+        "host": global_args.host,
+        "port": global_args.port,
         "log_config": None,  # Disable default config
     }
 
-    if args.ssl:
+    if global_args.ssl:
         uvicorn_config.update(
             {
-                "ssl_certfile": args.ssl_certfile,
-                "ssl_keyfile": args.ssl_keyfile,
+                "ssl_certfile": global_args.ssl_certfile,
+                "ssl_keyfile": global_args.ssl_keyfile,
             }
         )
 
-    print(f"Starting Uvicorn server in single-process mode on {args.host}:{args.port}")
+    print(
+        f"Starting Uvicorn server in single-process mode on {global_args.host}:{global_args.port}"
+    )
     uvicorn.run(**uvicorn_config)
 
 

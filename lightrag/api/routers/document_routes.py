@@ -16,10 +16,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
-from lightrag.api.utils_api import (
-    get_combined_auth_dependency,
-    global_args,
-)
+from lightrag.api.utils_api import get_combined_auth_dependency
+from ..config import global_args
 
 router = APIRouter(
     prefix="/documents",
@@ -472,7 +470,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     )
                     return False
             case ".pdf":
-                if global_args["main_args"].document_loading_engine == "DOCLING":
+                if global_args.document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter  # type: ignore
@@ -491,7 +489,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     for page in reader.pages:
                         content += page.extract_text() + "\n"
             case ".docx":
-                if global_args["main_args"].document_loading_engine == "DOCLING":
+                if global_args.document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter  # type: ignore
@@ -511,7 +509,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                         [paragraph.text for paragraph in doc.paragraphs]
                     )
             case ".pptx":
-                if global_args["main_args"].document_loading_engine == "DOCLING":
+                if global_args.document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter  # type: ignore
@@ -532,7 +530,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                             if hasattr(shape, "text"):
                                 content += shape.text + "\n"
             case ".xlsx":
-                if global_args["main_args"].document_loading_engine == "DOCLING":
+                if global_args.document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter  # type: ignore
@@ -673,8 +671,8 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         if not new_files:
             return
 
-        # Get MAX_PARALLEL_INSERT from global_args["main_args"]
-        max_parallel = global_args["main_args"].max_parallel_insert
+        # Get MAX_PARALLEL_INSERT from global_args
+        max_parallel = global_args.max_parallel_insert
         # Calculate batch size as 2 * MAX_PARALLEL_INSERT
         batch_size = 2 * max_parallel
 
