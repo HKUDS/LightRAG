@@ -46,6 +46,8 @@ export type LightragStatus = {
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
   pipeline_busy: boolean
+  webui_title?: string
+  webui_description?: string
 }
 
 export type LightragDocumentsScanProgress = {
@@ -140,6 +142,8 @@ export type AuthStatusResponse = {
   message?: string
   core_version?: string
   api_version?: string
+  webui_title?: string
+  webui_description?: string
 }
 
 export type PipelineStatusResponse = {
@@ -163,6 +167,8 @@ export type LoginResponse = {
   message?: string                    // Optional message
   core_version?: string
   api_version?: string
+  webui_title?: string
+  webui_description?: string
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -221,9 +227,9 @@ axiosInstance.interceptors.response.use(
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
-  minDegree: number
+  maxNodes: number
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&min_degree=${minDegree}`)
+  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
   return response.data
 }
 
@@ -379,6 +385,14 @@ export const batchUploadDocuments = async (
 
 export const clearDocuments = async (): Promise<DocActionResponse> => {
   const response = await axiosInstance.delete('/documents')
+  return response.data
+}
+
+export const clearCache = async (modes?: string[]): Promise<{
+  status: 'success' | 'fail'
+  message: string
+}> => {
+  const response = await axiosInstance.post('/documents/clear_cache', { modes })
   return response.data
 }
 

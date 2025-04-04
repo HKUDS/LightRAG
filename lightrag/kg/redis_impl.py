@@ -8,8 +8,8 @@ if not pm.is_installed("redis"):
     pm.install("redis")
 
 # aioredis is a depricated library, replaced with redis
-from redis.asyncio import Redis
-from lightrag.utils import logger, compute_mdhash_id
+from redis.asyncio import Redis  # type: ignore
+from lightrag.utils import logger
 from lightrag.base import BaseKVStorage
 import json
 
@@ -84,66 +84,50 @@ class RedisKVStorage(BaseKVStorage):
             f"Deleted {deleted_count} of {len(ids)} entries from {self.namespace}"
         )
 
-    async def delete_entity(self, entity_name: str) -> None:
-        """Delete an entity by name
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
+        """Delete specific records from storage by by cache mode
+
+        Importance notes for Redis storage:
+        1. This will immediately delete the specified cache modes from Redis
 
         Args:
-            entity_name: Name of the entity to delete
+            modes (list[str]): List of cache mode to be drop from storage
+
+        Returns:
+             True: if the cache drop successfully
+             False: if the cache drop failed
         """
+        if not modes:
+            return False
 
         try:
-            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            logger.debug(
-                f"Attempting to delete entity {entity_name} with ID {entity_id}"
-            )
+            await self.delete(modes)
+            return True
+        except Exception:
+            return False
 
-            # Delete the entity
-            result = await self._redis.delete(f"{self.namespace}:{entity_id}")
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage by removing all keys under the current namespace.
 
-            if result:
-                logger.debug(f"Successfully deleted entity {entity_name}")
-            else:
-                logger.debug(f"Entity {entity_name} not found in storage")
-        except Exception as e:
-            logger.error(f"Error deleting entity {entity_name}: {e}")
-
-    async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete all relations associated with an entity
-
-        Args:
-            entity_name: Name of the entity whose relations should be deleted
+        Returns:
+            dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
         try:
-            # Get all keys in this namespace
-            cursor = 0
-            relation_keys = []
-            pattern = f"{self.namespace}:*"
+            keys = await self._redis.keys(f"{self.namespace}:*")
 
-            while True:
-                cursor, keys = await self._redis.scan(cursor, match=pattern)
-
-                # For each key, get the value and check if it's related to entity_name
+            if keys:
+                pipe = self._redis.pipeline()
                 for key in keys:
-                    value = await self._redis.get(key)
-                    if value:
-                        data = json.loads(value)
-                        # Check if this is a relation involving the entity
-                        if (
-                            data.get("src_id") == entity_name
-                            or data.get("tgt_id") == entity_name
-                        ):
-                            relation_keys.append(key)
+                    pipe.delete(key)
+                results = await pipe.execute()
+                deleted_count = sum(results)
 
-                # Exit loop when cursor returns to 0
-                if cursor == 0:
-                    break
-
-            # Delete the relation keys
-            if relation_keys:
-                deleted = await self._redis.delete(*relation_keys)
-                logger.debug(f"Deleted {deleted} relations for {entity_name}")
+                logger.info(f"Dropped {deleted_count} keys from {self.namespace}")
+                return {"status": "success", "message": f"{deleted_count} keys dropped"}
             else:
-                logger.debug(f"No relations found for entity {entity_name}")
+                logger.info(f"No keys found to drop in {self.namespace}")
+                return {"status": "success", "message": "no keys to drop"}
 
         except Exception as e:
-            logger.error(f"Error deleting relations for {entity_name}: {e}")
+            logger.error(f"Error dropping keys from {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}
