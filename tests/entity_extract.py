@@ -27,6 +27,7 @@ class Entity:
     source: str = ""  # 实体的出处/来源
     created_at: datetime = field(default_factory=lambda: datetime.now())  # 首次生成时间
     updated_at: datetime = field(default_factory=lambda: datetime.now())  # 最后修改时间
+    issuing_authority: str = ""  # 颁发机构，修正拼写错误
     
     def __hash__(self):
         return hash((self.name, self.type, self.context_id))
@@ -493,21 +494,8 @@ def load_json_data(file_path: str) -> Optional[List[Dict[str, Any]]]:
             data = json.loads(file_content)
             logging.info(f"Successfully loaded data from {file_path}")
             
-            # 如果数据是一个包含 chunk 数组的对象，返回 chunk 数组
-            if isinstance(data, dict) and 'chunk' in data:
-                chunks = data['chunk']
-                logging.info(f"找到 {len(chunks)} 个 chunks")
-                return chunks
-            
-            # 如果数据本身就是一个数组，直接返回
-            elif isinstance(data, list):
-                logging.info(f"数据是列表格式，包含 {len(data)} 个项目")
-                return data
-            
-            else:
-                logging.error(f"Unexpected JSON format in {file_path}. Expected a list or an object with 'chunk' array.")
-                logging.debug(f"JSON 结构: {type(data)}")
-                return None
+            # 返回整个数据结构，包括document_info
+            return data
                 
         except json.JSONDecodeError as e:
             logging.error(f"Error: Could not decode JSON from {file_path}: {e}")
@@ -1356,11 +1344,26 @@ def generate_cypher_statements(entities: List[Entity], relations: List[Relation]
         entity_type_mapping[entity.name].add(entity.type)
         
         escaped_name = escape_cypher_string(entity.name)
-        # 添加唯一ID属性以提高唯一性识别能力，并添加chunk_id和entity_type属性
+        escaped_description = escape_cypher_string(entity.description)
+        escaped_source = escape_cypher_string(entity.source)
+        escaped_main_category = escape_cypher_string(entity.main_category)
+        escaped_issuing_authority = escape_cypher_string(entity.issuing_authority)
+        
+        # 格式化日期时间
+        created_at_str = entity.created_at.isoformat() if isinstance(entity.created_at, datetime) else str(entity.created_at)
+        updated_at_str = entity.updated_at.isoformat() if isinstance(entity.updated_at, datetime) else str(entity.updated_at)
+        
+        # 添加唯一ID属性以提高唯一性识别能力，并添加所有Entity属性
         cypher_statements.append(f"MERGE (n:`{entity.type}` {{name: '{escaped_name}'}}) "
-                                 f"ON CREATE SET n.uuid = '{entity.type}_' + timestamp() + '_' + toString(rand()), "
-                                 f"n.context_id = '{entity.context_id}', "
-                                 f"n.entity_type = '{entity.type}';")
+                               f"ON CREATE SET n.uuid = '{entity.type}_' + timestamp() + '_' + toString(rand()), "
+                               f"n.context_id = '{entity.context_id}', "
+                               f"n.entity_type = '{entity.type}', "
+                               f"n.main_category = '{escaped_main_category}', "
+                               f"n.description = '{escaped_description}', "
+                               f"n.source = '{escaped_source}', "
+                               f"n.created_at = '{created_at_str}', "
+                               f"n.updated_at = '{updated_at_str}', "
+                               f"n.issuing_authority = '{escaped_issuing_authority}';")
 
     cypher_statements.append("\n// --- Relationship Creation ---")
     # 记录无法匹配类型的关系数量
@@ -1725,7 +1728,7 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
     3. 将LLM提取的实体与其源Section通过CONTAINS关系连接
     
     Args:
-        data: 包含多个文本块的列表
+        data: 包含多个文本块的列表或包含chunks和document_info的字典
         entities_set: 实体集合，会被此函数修改
         relations_set: 关系集合，会被此函数修改
         
@@ -1733,7 +1736,18 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
         添加的结构关系数量
     """
     logging.info("添加结构化关系，优先使用结构化数据...")
-    chunk_map: Dict[str, Dict[str, Any]] = {chunk['chunk_id']: chunk for chunk in data}
+    
+    # 处理不同的数据格式
+    chunks = []
+    document_info = {}
+    
+    if isinstance(data, dict):
+        chunks = data.get("chunks", [])
+        document_info = data.get("document_info", {})
+    else:
+        chunks = data
+    
+    chunk_map: Dict[str, Dict[str, Any]] = {chunk['chunk_id']: chunk for chunk in chunks}
     
     # 获取实体类型和关系类型映射
     entity_type_map = config.entity_type_map_cypher
@@ -1758,7 +1772,7 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
     document_chunk_id = None
     
     # 1.1 首先查找文档信息 (通常位于根节点或有full_doc_id的节点)
-    for chunk in data:
+    for chunk in chunks:
         # 查找文档标题
         if 'full_doc_id' in chunk and chunk.get('full_doc_id') and 'heading' in chunk:
             document_title = chunk.get('heading')
@@ -1767,7 +1781,7 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
     
     # 如果没有找到明确的文档信息，尝试使用没有parent_id的根节点
     if not document_title:
-        for chunk in data:
+        for chunk in chunks:
             if not chunk.get('parent_id') and chunk.get('heading'):
                 document_title = chunk.get('heading')
                 document_chunk_id = chunk.get('chunk_id')
@@ -1775,9 +1789,9 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
     
     # 如果仍然没有找到文档信息，使用文件名或默认名称
     if not document_title:
-        if 'file_path' in data[0]:
+        if chunks and 'file_path' in chunks[0]:
             # 从文件路径提取文件名
-            file_path = data[0].get('file_path')
+            file_path = chunks[0].get('file_path')
             document_title = os.path.basename(file_path) if file_path else "未知文档"
         else:
             document_title = "未知文档"
@@ -1792,7 +1806,7 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
     logging.info(f"从结构化数据创建文档实体: '{document_title}' [chunk_id: {document_chunk_id}]")
     
     # 1.3 从结构化数据创建Section节点
-    for chunk in data:
+    for chunk in chunks:
         chunk_id = chunk.get('chunk_id')
         heading = chunk.get('heading')
         
@@ -1815,7 +1829,7 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
     # --- 步骤2: 建立文档结构关系 (HAS_SECTION & HAS_PARENT_SECTION) ---
     
     # 2.1 建立Document -> Section (HAS_SECTION)关系
-    for chunk in data:
+    for chunk in chunks:
         chunk_id = chunk.get('chunk_id')
         parent_id = chunk.get('parent_id')
         
@@ -1834,7 +1848,7 @@ def add_structural_relations(data: List[Dict[str, Any]], entities_set: Set[Tuple
                 has_section_relations_added += 1
     
     # 2.2 建立Section -> Section (HAS_PARENT_SECTION)关系
-    for chunk in data:
+    for chunk in chunks:
         chunk_id = chunk.get('chunk_id')
         parent_id = chunk.get('parent_id')
         
@@ -2045,10 +2059,29 @@ async def main_async(input_json_path: str, config_path: str, output_cypher_path:
 
         # 3. 加载输入数据
         logging.info(f"从 {input_json_path} 加载输入数据")
-        data = load_json_data(input_json_path)
-        if not data:
+        raw_data = load_json_data(input_json_path)
+        if not raw_data:
             logging.error("加载输入数据失败。退出。")
             return
+            
+        # 处理不同的数据格式
+        if isinstance(raw_data, dict):
+            # 如果是字典格式，提取chunks和document_info
+            chunks = raw_data.get("chunks", [])
+            document_info = raw_data.get("document_info", {})
+            
+            if not chunks:
+                logging.error("数据中没有找到chunks数组。退出。")
+                return
+                
+            logging.info(f"从数据中提取了 {len(chunks)} 个chunks和document_info")
+            data = raw_data  # 保留完整结构
+        else:
+            # 如果直接是chunks数组
+            chunks = raw_data
+            document_info = {}
+            logging.info(f"使用 {len(chunks)} 个chunks处理")
+            data = {"chunks": chunks, "document_info": document_info}  # 构建结构
         
         # 4. 处理文档结构
         logging.info("处理文档结构...")
@@ -2171,25 +2204,54 @@ async def process_document_structure(data: List[Dict[str, Any]], config: Config)
     # --- 文档标题启发式处理 ---
     # 尝试找到主文档标题
     doc_titles = {}
-    if data:
-        first_chunk = data[0]
-        doc_id = first_chunk.get("full_doc_id", "unknown_doc_0")
-        title = "未知文档"
+    document_info = {}
+    if isinstance(data, dict):
+        chunks = data.get("chunks", [])
+        document_info = data.get("document_info", {})
         
-        # 尝试从文件路径提取
-        if "file_path" in first_chunk:
-             # 从文件名中提取，可能需要进一步优化
-            title = Path(first_chunk["file_path"]).stem.split('-')[-1].replace('_', ' ')
-            # 应用规范化
-            title = normalize_entity_name(title, config)
-        
-        # 回退方案：如果标题看起来太过通用，尝试使用第一个chunk内容的第一行
-        if title == "未知文档" and "content" in first_chunk:
-             first_line = first_chunk["content"].split('\n')[0].strip()
-             if first_line and len(first_line) > 5: # 避免使用过短或通用的行
-                 title = normalize_entity_name(first_line, config)
+        if chunks:
+            first_chunk = chunks[0]
+            doc_id = first_chunk.get("full_doc_id", "unknown_doc_0")
+            title = "未知文档"
+            
+            # 尝试从文件路径提取
+            if "file_path" in first_chunk:
+                # 从文件名中提取，可能需要进一步优化
+                title = Path(first_chunk["file_path"]).stem.split('-')[-1].replace('_', ' ')
+                # 应用规范化
+                title = normalize_entity_name(title, config)
+            
+            # 回退方案：如果标题看起来太过通用，尝试使用第一个chunk内容的第一行
+            if title == "未知文档" and "content" in first_chunk:
+                first_line = first_chunk["content"].split('\n')[0].strip()
+                if first_line and len(first_line) > 5: # 避免使用过短或通用的行
+                    title = normalize_entity_name(first_line, config)
 
-        doc_titles[doc_id] = title
+            doc_titles[doc_id] = title
+            
+            # 使用chunks而不是data
+            data = chunks
+    else:
+        # 如果data不是字典而是列表，检查可能的情况
+        if data and isinstance(data[0], dict):
+            first_chunk = data[0]
+            doc_id = first_chunk.get("full_doc_id", "unknown_doc_0")
+            title = "未知文档"
+            
+            # 尝试从文件路径提取
+            if "file_path" in first_chunk:
+                # 从文件名中提取，可能需要进一步优化
+                title = Path(first_chunk["file_path"]).stem.split('-')[-1].replace('_', ' ')
+                # 应用规范化
+                title = normalize_entity_name(title, config)
+            
+            # 回退方案：如果标题看起来太过通用，尝试使用第一个chunk内容的第一行
+            if title == "未知文档" and "content" in first_chunk:
+                first_line = first_chunk["content"].split('\n')[0].strip()
+                if first_line and len(first_line) > 5: # 避免使用过短或通用的行
+                    title = normalize_entity_name(first_line, config)
+
+            doc_titles[doc_id] = title
     
     # --- 处理Chunks以获取章节和关系 ---
     for chunk in data:
@@ -2207,13 +2269,39 @@ async def process_document_structure(data: List[Dict[str, Any]], config: Config)
         
         # 创建文档实体
         if doc_id not in id_to_entity_map:
+            # 从document_info获取对应属性
+            main_category = document_info.get("main_category", "文档管理")
+            source = document_info.get("document_name", "系统自动生成")
+            description = document_info.get("document_summary", f"文档：{doc_title}")
+            created_at_str = document_info.get("created_at", "")
+            updated_at_str = document_info.get("updated_at", "")
+            issuing_authority = document_info.get("issuing_authority", "")
+            
+            # 处理日期字符串转换为datetime对象
+            created_at = datetime.now()
+            if created_at_str:
+                try:
+                    created_at = datetime.strptime(created_at_str, "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    pass
+                    
+            updated_at = datetime.now()
+            if updated_at_str:
+                try:
+                    updated_at = datetime.strptime(updated_at_str, "%Y-%m-%d")
+                except (ValueError, TypeError):
+                    pass
+            
             document_entity = Entity(
                 name=doc_title,
                 type="Document",
                 context_id=doc_id,
-                main_category="文档管理",
-                description=f"文档：{doc_title}",
-                source="系统自动生成"
+                main_category=document_info.get("main_category", ""),
+                description=description,
+                source=document_info.get("document_name", ""),
+                created_at=created_at,
+                updated_at=updated_at,
+                issuing_authority=issuing_authority
             )
             document_entities.append(document_entity)
             id_to_entity_map[doc_id] = document_entity
@@ -2221,13 +2309,22 @@ async def process_document_structure(data: List[Dict[str, Any]], config: Config)
 
         # 创建章节实体
         section_name = clean_heading(heading, config)
+        
+        # 从chunk的summary获取描述
+        section_description = chunk.get("summary", f"章节：{section_name}")
+        if not section_description or section_description == "无子文档内容，无法生成摘要":
+            section_description = f"章节：{section_name}"
+            
         section_entity = Entity(
             name=section_name,
             type="Section",
             context_id=chunk_id,
-            main_category="内容结构",
-            description=f"章节：{section_name}",
-            source="系统自动生成"
+            main_category=document_info.get("main_category", ""),
+            description=section_description,
+            source=document_info.get("document_name", ""),
+            created_at=created_at if 'created_at' in locals() else datetime.now(),
+            updated_at=updated_at if 'updated_at' in locals() else datetime.now(),
+            issuing_authority=document_info.get("issuing_authority", "")
         )
         section_entities.append(section_entity)
         id_to_entity_map[chunk_id] = section_entity
@@ -2270,9 +2367,46 @@ async def extract_semantic_info(data: List[Dict[str, Any]], section_entities: Li
     # 创建section_id到section实体的映射
     section_map = {entity.context_id: entity for entity in section_entities if entity.type == "Section"}
     
+    # 获取document_info，如果存在
+    document_info = {}
+    
+    # 检查data是否为dict类型（即与chunks同级的结构）
+    if isinstance(data, dict) and hasattr(data, "get") and callable(data.get):
+        document_info = data.get("document_info", {})
+        # 如果data是字典且包含chunks，则使用chunks
+        if "chunks" in data:
+            data = data.get("chunks", [])
+    
+    # 获取document_info中的属性，用于填充实体
+    main_category = document_info.get("main_category", "") 
+    source = document_info.get("document_name", "")
+    created_at_str = document_info.get("created_at", "")
+    updated_at_str = document_info.get("updated_at", "")
+    issuing_authority = document_info.get("issuing_authority", "")
+    
+    # 处理日期字符串转换为datetime对象
+    created_at = datetime.now()
+    if created_at_str:
+        try:
+            created_at = datetime.strptime(created_at_str, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            pass
+            
+    updated_at = datetime.now()
+    if updated_at_str:
+        try:
+            updated_at = datetime.strptime(updated_at_str, "%Y-%m-%d")
+        except (ValueError, TypeError):
+            pass
+    
     # --- 第1阶段: 实体提取 ---
     entity_tasks = []
     for i, chunk in enumerate(data):
+        # 确保chunk是字典类型
+        if not isinstance(chunk, dict):
+            logging.warning(f"数据项 {i} 不是字典类型，跳过处理: {type(chunk)}")
+            continue
+            
         chunk_id = chunk.get("chunk_id")
         content = chunk.get("content")
         doc_id = chunk.get("full_doc_id")
@@ -2326,12 +2460,15 @@ async def extract_semantic_info(data: List[Dict[str, Any]], section_entities: Li
                         name=normalized_name,
                         type=normalized_type,
                         context_id=task.chunk_id,
-                        main_category="实体概念",
+                        main_category=main_category,
                         description=f"{normalized_type}：{normalized_name}",
-                        source="LLM提取"
+                        source=source,
+                        created_at=created_at,
+                        updated_at=updated_at,
+                        issuing_authority=issuing_authority
                     )
                     semantic_entities.append(entity)
-                    chunk_entities.append({"name": normalized_name, "type": raw_type})
+                    chunk_entities.append(entity_dict)
                 else:
                     logging.warning(f"LLM在chunk {task.chunk_id}中返回了无效的实体: {entity_dict}")
             processed_chunk_entities[task.chunk_id] = chunk_entities
@@ -2339,6 +2476,11 @@ async def extract_semantic_info(data: List[Dict[str, Any]], section_entities: Li
     # --- 第2阶段: 关系提取 ---
     relation_tasks = []
     for i, chunk in enumerate(data):
+        # 确保chunk是字典类型
+        if not isinstance(chunk, dict):
+            logging.warning(f"关系提取：数据项 {i} 不是字典类型，跳过处理: {type(chunk)}")
+            continue
+            
         chunk_id = chunk.get("chunk_id")
         content = chunk.get("content")
         doc_id = chunk.get("full_doc_id")
@@ -2416,9 +2558,12 @@ async def extract_semantic_info(data: List[Dict[str, Any]], section_entities: Li
                             name=normalized_source,
                             type=normalized_source_type,
                             context_id=task.chunk_id,
-                            main_category="关系实体",
+                            main_category=main_category,
                             description=f"{normalized_source_type}：{normalized_source}",
-                            source="关系提取"
+                            source=source,
+                            created_at=created_at,
+                            updated_at=updated_at,
+                            issuing_authority=issuing_authority
                         ))
                     
                     if target_type and not target_exists:
@@ -2427,9 +2572,12 @@ async def extract_semantic_info(data: List[Dict[str, Any]], section_entities: Li
                             name=normalized_target,
                             type=normalized_target_type,
                             context_id=task.chunk_id,
-                            main_category="关系实体",
+                            main_category=main_category,
                             description=f"{normalized_target_type}：{normalized_target}",
-                            source="关系提取"
+                            source=source,
+                            created_at=created_at,
+                            updated_at=updated_at,
+                            issuing_authority=issuing_authority
                         ))
                 else:
                     logging.warning(f"LLM在chunk {task.chunk_id}中返回了无效的关系: {relation_dict}")

@@ -279,7 +279,20 @@ def summarize_level_2_chunks(chunks: List[Dict], chunk_map: Dict) -> None:
         
         # 如果没有子块，跳过
         if not child_chunks:
-            chunk['summary'] = "无子文档内容，无法生成摘要"
+            # 使用当前块的内容生成摘要
+            content = chunk.get('content', '')
+            if content:
+                try:
+                    summary = call_llm_for_summary(content)
+                    chunk['summary'] = summary
+                    logging.info(f"二级块无子文档，使用自身内容生成摘要: {chunk['chunk_id']}")
+                    # 避免API调用过快
+                    time.sleep(API_CALL_DELAY_SECONDS)
+                except Exception as e:
+                    logging.error(f"处理二级块{chunk['chunk_id']}时出错: {e}")
+                    chunk['summary'] = f"摘要生成失败: {str(e)}"
+            else:
+                chunk['summary'] = "无子文档内容且自身无内容，无法生成摘要"
             chunk_map[chunk['chunk_id']] = chunk
             continue
         
@@ -292,7 +305,7 @@ def summarize_level_2_chunks(chunks: List[Dict], chunk_map: Dict) -> None:
                 summary = child.get('summary', '')
                 
                 # 只使用有效的摘要
-                if summary and summary != "无内容，无法生成摘要" and not summary.startswith("摘要生成失败"):
+                if summary and summary != "无子文档内容且自身无内容，无法生成摘要" and not summary.startswith("摘要生成失败"):
                     if heading:
                         summaries_with_headings.append(f"【{heading}】\n{summary}")
                     else:
@@ -344,7 +357,20 @@ def summarize_level_1_chunks(chunks: List[Dict], chunk_map: Dict) -> None:
         
         # 如果没有子块，跳过
         if not child_chunks:
-            chunk['summary'] = "无子文档内容，无法生成摘要"
+            # 使用当前块的内容生成摘要
+            content = chunk.get('content', '')
+            if content:
+                try:
+                    summary = call_llm_for_summary(content)
+                    chunk['summary'] = summary
+                    logging.info(f"一级块无子文档，使用自身内容生成摘要: {chunk['chunk_id']}")
+                    # 避免API调用过快
+                    time.sleep(API_CALL_DELAY_SECONDS)
+                except Exception as e:
+                    logging.error(f"处理一级块{chunk['chunk_id']}时出错: {e}")
+                    chunk['summary'] = f"摘要生成失败: {str(e)}"
+            else:
+                chunk['summary'] = "无子文档内容且自身无内容，无法生成摘要"
             chunk_map[chunk['chunk_id']] = chunk
             continue
         
@@ -357,7 +383,7 @@ def summarize_level_1_chunks(chunks: List[Dict], chunk_map: Dict) -> None:
                 summary = child.get('summary', '')
                 
                 # 只使用有效的摘要
-                if summary and summary != "无子文档内容，无法生成摘要" and not summary.startswith("摘要生成失败"):
+                if summary and summary != "无子文档内容且自身无内容，无法生成摘要" and not summary.startswith("摘要生成失败"):
                     if heading:
                         summaries_with_headings.append(f"【{heading}】\n{summary}")
                     else:
@@ -470,7 +496,7 @@ def create_document_summary(chunks: List[Dict], data: Dict) -> None:
         summary = chunk.get('summary', '')
         
         # 只使用有效的摘要
-        if summary and summary != "无子文档内容，无法生成摘要" and not summary.startswith("摘要生成失败"):
+        if summary and summary != "无子文档内容且自身无内容，无法生成摘要" and not summary.startswith("摘要生成失败"):
             if heading:
                 summaries.append(f"【{heading}】\n{summary}")
             else:

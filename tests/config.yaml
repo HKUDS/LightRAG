@@ -17,6 +17,22 @@ schema:
     - Statement       # (What rule/req/def/goal?)
     - Topic           # (What predefined category/type of regulation?)
 
+  entity_types_llm:
+    - Document
+    - Section
+    - Organization
+    - Role
+    - Statement
+    - Topic
+  
+  all_entity_types:
+    - Document
+    - Section
+    - Organization
+    - Role
+    - Statement
+    - Topic
+
   # Mapping to Cypher labels
   entity_type_map_cypher:
     Document: Document
@@ -50,6 +66,32 @@ schema:
     # 通用关系
     - RELATED_TO      # (Entity -> Entity)
 
+  relation_types_llm:
+    - HAS_SECTION
+    - HAS_PARENT_SECTION
+    - CONTAINS
+    - RESPONSIBLE_FOR
+    - BELONGS_TO
+    - HAS_PURPOSE
+    - REFERENCES
+    - MENTIONS
+    - APPLIES_TO
+    - HAS_VERSION
+    - RELATED_TO
+  
+  all_relation_types:
+    - HAS_SECTION
+    - HAS_PARENT_SECTION
+    - CONTAINS
+    - RESPONSIBLE_FOR
+    - BELONGS_TO
+    - HAS_PURPOSE
+    - REFERENCES
+    - MENTIONS
+    - APPLIES_TO
+    - HAS_VERSION
+    - RELATED_TO
+    
   # Mapping to Cypher relationship types
   relation_type_map_cypher:
     HAS_SECTION: HAS_SECTION
