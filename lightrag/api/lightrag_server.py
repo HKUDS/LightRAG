@@ -55,6 +55,10 @@ from lightrag.api.auth import auth_handler
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
+
+webui_title = os.getenv("WEBUI_TITLE")
+webui_description = os.getenv("WEBUI_DESCRIPTION")
+
 # Initialize config parser
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -386,6 +390,8 @@ def create_app(args):
                 "message": "Authentication is disabled. Using guest access.",
                 "core_version": core_version,
                 "api_version": __api_version__,
+                "webui_title": webui_title,
+                "webui_description": webui_description,
             }
 
         return {
@@ -393,6 +399,8 @@ def create_app(args):
             "auth_mode": "enabled",
             "core_version": core_version,
             "api_version": __api_version__,
+            "webui_title": webui_title,
+            "webui_description": webui_description,
         }
 
     @app.post("/login")
@@ -409,6 +417,8 @@ def create_app(args):
                 "message": "Authentication is disabled. Using guest access.",
                 "core_version": core_version,
                 "api_version": __api_version__,
+                "webui_title": webui_title,
+                "webui_description": webui_description,
             }
         username = form_data.username
         if auth_handler.accounts.get(username) != form_data.password:
@@ -459,10 +469,12 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                 },
-                "core_version": core_version,
-                "api_version": __api_version__,
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
+                "core_version": core_version,
+                "api_version": __api_version__,
+                "webui_title": webui_title,
+                "webui_description": webui_description,
             }
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")
