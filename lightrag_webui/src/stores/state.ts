@@ -49,7 +49,7 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
           health.api_version || null
         );
       }
-      
+
       // Update custom title information if health check returns it
       if (health.webui_title || health.webui_description) {
         useAuthStore.getState().setCustomTitle(
@@ -232,7 +232,7 @@ export const useAuthStore = create<AuthState>(set => {
       } else {
         localStorage.removeItem('LIGHTRAG-WEBUI-TITLE');
       }
-      
+
       if (webuiDescription) {
         localStorage.setItem('LIGHTRAG-WEBUI-DESCRIPTION', webuiDescription);
       } else {
