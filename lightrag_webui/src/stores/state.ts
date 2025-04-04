@@ -171,11 +171,17 @@ export const useAuthStore = create<AuthState>(set => {
       if (apiVersion) {
         localStorage.setItem('LIGHTRAG-API-VERSION', apiVersion);
       }
+
       if (webuiTitle) {
         localStorage.setItem('LIGHTRAG-WEBUI-TITLE', webuiTitle);
+      } else {
+        localStorage.removeItem('LIGHTRAG-WEBUI-TITLE');
       }
+
       if (webuiDescription) {
         localStorage.setItem('LIGHTRAG-WEBUI-DESCRIPTION', webuiDescription);
+      } else {
+        localStorage.removeItem('LIGHTRAG-WEBUI-DESCRIPTION');
       }
 
       const username = getUsernameFromToken(token);

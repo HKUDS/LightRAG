@@ -3,7 +3,6 @@ import { backendBaseUrl } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { navigationService } from '@/services/navigation'
-import { useAuthStore } from '@/stores/state'
 
 // Types
 export type LightragNodeType = {
@@ -426,26 +425,12 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       // For unconfigured auth, ensure we have an access token
       if (!response.data.auth_configured) {
         if (response.data.access_token && typeof response.data.access_token === 'string') {
-          // Update custom title if available
-          if ('webui_title' in response.data || 'webui_description' in response.data) {
-            useAuthStore.getState().setCustomTitle(
-              'webui_title' in response.data ? (response.data.webui_title ?? null) : null,
-              'webui_description' in response.data ? (response.data.webui_description ?? null) : null
-            );
-          }
           return response.data;
         } else {
           console.warn('Auth not configured but no valid access token provided');
         }
       } else {
         // For configured auth, just return the data
-        // Update custom title if available
-        if ('webui_title' in response.data || 'webui_description' in response.data) {
-          useAuthStore.getState().setCustomTitle(
-            'webui_title' in response.data ? (response.data.webui_title ?? null) : null,
-            'webui_description' in response.data ? (response.data.webui_description ?? null) : null
-          );
-        }
         return response.data;
       }
     }
@@ -483,14 +468,6 @@ export const loginToServer = async (username: string, password: string): Promise
       'Content-Type': 'multipart/form-data'
     }
   });
-
-  // Update custom title if available
-  if ('webui_title' in response.data || 'webui_description' in response.data) {
-    useAuthStore.getState().setCustomTitle(
-      'webui_title' in response.data ? (response.data.webui_title ?? null) : null,
-      'webui_description' in response.data ? (response.data.webui_description ?? null) : null
-    );
-  }
 
   return response.data;
 }
