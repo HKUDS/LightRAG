@@ -3,6 +3,7 @@ import { backendBaseUrl } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { navigationService } from '@/services/navigation'
+import { useAuthStore } from '@/stores/state'
 
 // Types
 export type LightragNodeType = {
@@ -46,6 +47,8 @@ export type LightragStatus = {
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
   pipeline_busy: boolean
+  webui_title?: string
+  webui_description?: string
 }
 
 export type LightragDocumentsScanProgress = {
@@ -140,6 +143,8 @@ export type AuthStatusResponse = {
   message?: string
   core_version?: string
   api_version?: string
+  webui_title?: string
+  webui_description?: string
 }
 
 export type PipelineStatusResponse = {
@@ -163,6 +168,8 @@ export type LoginResponse = {
   message?: string                    // Optional message
   core_version?: string
   api_version?: string
+  webui_title?: string
+  webui_description?: string
 }
 
 export const InvalidApiKeyError = 'Invalid API Key'
@@ -221,9 +228,9 @@ axiosInstance.interceptors.response.use(
 export const queryGraphs = async (
   label: string,
   maxDepth: number,
-  minDegree: number
+  maxNodes: number
 ): Promise<LightragGraphType> => {
-  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&min_degree=${minDegree}`)
+  const response = await axiosInstance.get(`/graphs?label=${encodeURIComponent(label)}&max_depth=${maxDepth}&max_nodes=${maxNodes}`)
   return response.data
 }
 
@@ -382,6 +389,14 @@ export const clearDocuments = async (): Promise<DocActionResponse> => {
   return response.data
 }
 
+export const clearCache = async (modes?: string[]): Promise<{
+  status: 'success' | 'fail'
+  message: string
+}> => {
+  const response = await axiosInstance.post('/documents/clear_cache', { modes })
+  return response.data
+}
+
 export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
   try {
     // Add a timeout to the request to prevent hanging
@@ -411,12 +426,26 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       // For unconfigured auth, ensure we have an access token
       if (!response.data.auth_configured) {
         if (response.data.access_token && typeof response.data.access_token === 'string') {
+          // Update custom title if available
+          if ('webui_title' in response.data || 'webui_description' in response.data) {
+            useAuthStore.getState().setCustomTitle(
+              'webui_title' in response.data ? (response.data.webui_title ?? null) : null,
+              'webui_description' in response.data ? (response.data.webui_description ?? null) : null
+            );
+          }
           return response.data;
         } else {
           console.warn('Auth not configured but no valid access token provided');
         }
       } else {
         // For configured auth, just return the data
+        // Update custom title if available
+        if ('webui_title' in response.data || 'webui_description' in response.data) {
+          useAuthStore.getState().setCustomTitle(
+            'webui_title' in response.data ? (response.data.webui_title ?? null) : null,
+            'webui_description' in response.data ? (response.data.webui_description ?? null) : null
+          );
+        }
         return response.data;
       }
     }
@@ -454,6 +483,14 @@ export const loginToServer = async (username: string, password: string): Promise
       'Content-Type': 'multipart/form-data'
     }
   });
+
+  // Update custom title if available
+  if ('webui_title' in response.data || 'webui_description' in response.data) {
+    useAuthStore.getState().setCustomTitle(
+      'webui_title' in response.data ? (response.data.webui_title ?? null) : null,
+      'webui_description' in response.data ? (response.data.webui_description ?? null) : null
+    );
+  }
 
   return response.data;
 }

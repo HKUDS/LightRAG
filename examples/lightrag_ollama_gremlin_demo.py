@@ -1,3 +1,7 @@
+##############################################
+# Gremlin storage implementation is deprecated
+##############################################
+
 import asyncio
 import inspect
 import os

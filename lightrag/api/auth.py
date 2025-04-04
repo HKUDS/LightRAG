@@ -1,9 +1,11 @@
-import os
 from datetime import datetime, timedelta
+
 import jwt
+from dotenv import load_dotenv
 from fastapi import HTTPException, status
 from pydantic import BaseModel
-from dotenv import load_dotenv
+
+from .config import global_args
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -20,13 +22,12 @@ class TokenPayload(BaseModel):
 
 class AuthHandler:
     def __init__(self):
-        self.secret = os.getenv("TOKEN_SECRET", "4f85ds4f56dsf46")
-        self.algorithm = "HS256"
-        self.expire_hours = int(os.getenv("TOKEN_EXPIRE_HOURS", 4))
-        self.guest_expire_hours = int(os.getenv("GUEST_TOKEN_EXPIRE_HOURS", 2))
-
+        self.secret = global_args.token_secret
+        self.algorithm = global_args.jwt_algorithm
+        self.expire_hours = global_args.token_expire_hours
+        self.guest_expire_hours = global_args.guest_token_expire_hours
         self.accounts = {}
-        auth_accounts = os.getenv("AUTH_ACCOUNTS")
+        auth_accounts = global_args.auth_accounts
         if auth_accounts:
             for account in auth_accounts.split(","):
                 username, password = account.split(":", 1)

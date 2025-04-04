@@ -7,14 +7,9 @@ import os
 import sys
 import signal
 import pipmaster as pm
-from lightrag.api.utils_api import parse_args, display_splash_screen, check_env_file
+from lightrag.api.utils_api import display_splash_screen, check_env_file
 from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
-from dotenv import load_dotenv
-
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
+from .config import global_args
 
 
 def check_and_install_dependencies():
@@ -59,20 +54,17 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
     signal.signal(signal.SIGTERM, signal_handler)  # kill command
 
-    # Parse all arguments using parse_args
-    args = parse_args(is_uvicorn_mode=False)
-
     # Display startup information
-    display_splash_screen(args)
+    display_splash_screen(global_args)
 
     print("🚀 Starting LightRAG with Gunicorn")
-    print(f"🔄 Worker management: Gunicorn (workers={args.workers})")
+    print(f"🔄 Worker management: Gunicorn (workers={global_args.workers})")
     print("🔍 Preloading app: Enabled")
     print("📝 Note: Using Gunicorn's preload feature for shared data initialization")
     print("\n\n" + "=" * 80)
     print("MAIN PROCESS INITIALIZATION")
     print(f"Process ID: {os.getpid()}")
-    print(f"Workers setting: {args.workers}")
+    print(f"Workers setting: {global_args.workers}")
     print("=" * 80 + "\n")
 
     # Import Gunicorn's StandaloneApplication
@@ -128,31 +120,43 @@ def main():
 
             # Set configuration variables in gunicorn_config, prioritizing command line arguments
             gunicorn_config.workers = (
-                args.workers if args.workers else int(os.getenv("WORKERS", 1))
+                global_args.workers
+                if global_args.workers
+                else int(os.getenv("WORKERS", 1))
             )
 
             # Bind configuration prioritizes command line arguments
-            host = args.host if args.host != "0.0.0.0" else os.getenv("HOST", "0.0.0.0")
-            port = args.port if args.port != 9621 else int(os.getenv("PORT", 9621))
+            host = (
+                global_args.host
+                if global_args.host != "0.0.0.0"
+                else os.getenv("HOST", "0.0.0.0")
+            )
+            port = (
+                global_args.port
+                if global_args.port != 9621
+                else int(os.getenv("PORT", 9621))
+            )
             gunicorn_config.bind = f"{host}:{port}"
 
             # Log level configuration prioritizes command line arguments
             gunicorn_config.loglevel = (
-                args.log_level.lower()
-                if args.log_level
+                global_args.log_level.lower()
+                if global_args.log_level
                 else os.getenv("LOG_LEVEL", "info")
             )
 
             # Timeout configuration prioritizes command line arguments
             gunicorn_config.timeout = (
-                args.timeout if args.timeout * 2 else int(os.getenv("TIMEOUT", 150 * 2))
+                global_args.timeout
+                if global_args.timeout * 2
+                else int(os.getenv("TIMEOUT", 150 * 2))
             )
 
             # Keepalive configuration
             gunicorn_config.keepalive = int(os.getenv("KEEPALIVE", 5))
 
             # SSL configuration prioritizes command line arguments
-            if args.ssl or os.getenv("SSL", "").lower() in (
+            if global_args.ssl or os.getenv("SSL", "").lower() in (
                 "true",
                 "1",
                 "yes",
@@ -160,12 +164,14 @@ def main():
                 "on",
             ):
                 gunicorn_config.certfile = (
-                    args.ssl_certfile
-                    if args.ssl_certfile
+                    global_args.ssl_certfile
+                    if global_args.ssl_certfile
                     else os.getenv("SSL_CERTFILE")
                 )
                 gunicorn_config.keyfile = (
-                    args.ssl_keyfile if args.ssl_keyfile else os.getenv("SSL_KEYFILE")
+                    global_args.ssl_keyfile
+                    if global_args.ssl_keyfile
+                    else os.getenv("SSL_KEYFILE")
                 )
 
             # Set configuration options from the module
@@ -190,13 +196,13 @@ def main():
             # Import the application
             from lightrag.api.lightrag_server import get_application
 
-            return get_application(args)
+            return get_application(global_args)
 
     # Create the application
     app = GunicornApp("")
 
     # Force workers to be an integer and greater than 1 for multi-process mode
-    workers_count = int(args.workers)
+    workers_count = int(global_args.workers)
     if workers_count > 1:
         # Set a flag to indicate we're in the main process
         os.environ["LIGHTRAG_MAIN_PROCESS"] = "1"
