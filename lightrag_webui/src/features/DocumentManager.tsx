@@ -454,6 +454,9 @@ export default function DocumentManager() {
                     size="sm"
                     variant={statusFilter === 'all' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('all')}
+                    className={cn(
+                      statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
                   </Button>
@@ -461,7 +464,10 @@ export default function DocumentManager() {
                     size="sm"
                     variant={statusFilter === 'processed' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('processed')}
-                    className={documentCounts.processed > 0 ? 'text-green-600' : 'text-gray-500'}
+                    className={cn(
+                      documentCounts.processed > 0 ? 'text-green-600' : 'text-gray-500',
+                      statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/30 font-medium border border-green-400 dark:border-green-600 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
                   </Button>
@@ -469,7 +475,10 @@ export default function DocumentManager() {
                     size="sm"
                     variant={statusFilter === 'processing' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('processing')}
-                    className={documentCounts.processing > 0 ? 'text-blue-600' : 'text-gray-500'}
+                    className={cn(
+                      documentCounts.processing > 0 ? 'text-blue-600' : 'text-gray-500',
+                      statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/30 font-medium border border-blue-400 dark:border-blue-600 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
                   </Button>
@@ -477,7 +486,10 @@ export default function DocumentManager() {
                     size="sm"
                     variant={statusFilter === 'pending' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('pending')}
-                    className={documentCounts.pending > 0 ? 'text-yellow-600' : 'text-gray-500'}
+                    className={cn(
+                      documentCounts.pending > 0 ? 'text-yellow-600' : 'text-gray-500',
+                      statusFilter === 'pending' && 'bg-yellow-100 dark:bg-yellow-900/30 font-medium border border-yellow-400 dark:border-yellow-600 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
                   </Button>
@@ -485,7 +497,10 @@ export default function DocumentManager() {
                     size="sm"
                     variant={statusFilter === 'failed' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('failed')}
-                    className={documentCounts.failed > 0 ? 'text-red-600' : 'text-gray-500'}
+                    className={cn(
+                      documentCounts.failed > 0 ? 'text-red-600' : 'text-gray-500',
+                      statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/30 font-medium border border-red-400 dark:border-red-600 shadow-sm'
+                    )}
                   >
                     {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
                   </Button>
