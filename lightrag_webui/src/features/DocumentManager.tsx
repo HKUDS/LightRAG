@@ -167,7 +167,7 @@ export default function DocumentManager() {
   }
 
   // Sort documents based on current sort field and direction
-  const sortDocuments = (documents: DocStatusResponse[]) => {
+  const sortDocuments = useCallback((documents: DocStatusResponse[]) => {
     return [...documents].sort((a, b) => {
       let valueA, valueB;
 
@@ -194,7 +194,7 @@ export default function DocumentManager() {
         return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
       }
     });
-  }
+  }, [sortField, sortDirection, showFileName]);
 
   const filteredAndSortedDocs = useMemo(() => {
     if (!docs) return null;
@@ -223,7 +223,7 @@ export default function DocumentManager() {
     }, {} as DocsStatusesResponse['statuses']);
 
     return { ...filteredDocs, statuses: sortedStatuses };
-  }, [docs, sortField, sortDirection, statusFilter]);
+  }, [docs, sortField, sortDirection, statusFilter, sortDocuments]);
 
   // Calculate document counts for each status
   const documentCounts = useMemo(() => {
