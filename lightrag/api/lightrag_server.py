@@ -321,9 +321,7 @@ def create_app(args):
             # namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
-            addon_params={
-                "language": args.summary_language
-            },
+            addon_params={"language": args.summary_language},
         )
     else:  # azure_openai
         rag = LightRAG(
@@ -354,9 +352,7 @@ def create_app(args):
             # namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
-            addon_params={
-                "language": args.summary_language
-            },
+            addon_params={"language": args.summary_language},
         )
 
     # Add routes

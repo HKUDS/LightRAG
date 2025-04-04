@@ -120,12 +120,22 @@ def main():
 
             # Set configuration variables in gunicorn_config, prioritizing command line arguments
             gunicorn_config.workers = (
-                global_args.workers if global_args.workers else int(os.getenv("WORKERS", 1))
+                global_args.workers
+                if global_args.workers
+                else int(os.getenv("WORKERS", 1))
             )
 
             # Bind configuration prioritizes command line arguments
-            host = global_args.host if global_args.host != "0.0.0.0" else os.getenv("HOST", "0.0.0.0")
-            port = global_args.port if global_args.port != 9621 else int(os.getenv("PORT", 9621))
+            host = (
+                global_args.host
+                if global_args.host != "0.0.0.0"
+                else os.getenv("HOST", "0.0.0.0")
+            )
+            port = (
+                global_args.port
+                if global_args.port != 9621
+                else int(os.getenv("PORT", 9621))
+            )
             gunicorn_config.bind = f"{host}:{port}"
 
             # Log level configuration prioritizes command line arguments
@@ -137,7 +147,9 @@ def main():
 
             # Timeout configuration prioritizes command line arguments
             gunicorn_config.timeout = (
-                global_args.timeout if global_args.timeout * 2 else int(os.getenv("TIMEOUT", 150 * 2))
+                global_args.timeout
+                if global_args.timeout * 2
+                else int(os.getenv("TIMEOUT", 150 * 2))
             )
 
             # Keepalive configuration
@@ -157,7 +169,9 @@ def main():
                     else os.getenv("SSL_CERTFILE")
                 )
                 gunicorn_config.keyfile = (
-                    global_args.ssl_keyfile if global_args.ssl_keyfile else os.getenv("SSL_KEYFILE")
+                    global_args.ssl_keyfile
+                    if global_args.ssl_keyfile
+                    else os.getenv("SSL_KEYFILE")
                 )
 
             # Set configuration options from the module
