@@ -427,10 +427,10 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       if (!response.data.auth_configured) {
         if (response.data.access_token && typeof response.data.access_token === 'string') {
           // Update custom title if available
-          if (response.data.webui_title || response.data.webui_description) {
+          if ('webui_title' in response.data || 'webui_description' in response.data) {
             useAuthStore.getState().setCustomTitle(
-              response.data.webui_title || null,
-              response.data.webui_description || null
+              'webui_title' in response.data ? (response.data.webui_title ?? null) : null,
+              'webui_description' in response.data ? (response.data.webui_description ?? null) : null
             );
           }
           return response.data;
@@ -440,10 +440,10 @@ export const getAuthStatus = async (): Promise<AuthStatusResponse> => {
       } else {
         // For configured auth, just return the data
         // Update custom title if available
-        if (response.data.webui_title || response.data.webui_description) {
+        if ('webui_title' in response.data || 'webui_description' in response.data) {
           useAuthStore.getState().setCustomTitle(
-            response.data.webui_title || null,
-            response.data.webui_description || null
+            'webui_title' in response.data ? (response.data.webui_title ?? null) : null,
+            'webui_description' in response.data ? (response.data.webui_description ?? null) : null
           );
         }
         return response.data;
@@ -485,10 +485,10 @@ export const loginToServer = async (username: string, password: string): Promise
   });
 
   // Update custom title if available
-  if (response.data.webui_title || response.data.webui_description) {
+  if ('webui_title' in response.data || 'webui_description' in response.data) {
     useAuthStore.getState().setCustomTitle(
-      response.data.webui_title || null,
-      response.data.webui_description || null
+      'webui_title' in response.data ? (response.data.webui_title ?? null) : null,
+      'webui_description' in response.data ? (response.data.webui_description ?? null) : null
     );
   }
 

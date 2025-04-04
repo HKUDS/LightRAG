@@ -51,10 +51,10 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
       }
 
       // Update custom title information if health check returns it
-      if (health.webui_title || health.webui_description) {
+      if ('webui_title' in health || 'webui_description' in health) {
         useAuthStore.getState().setCustomTitle(
-          health.webui_title || null,
-          health.webui_description || null
+          'webui_title' in health ? (health.webui_title ?? null) : null,
+          'webui_description' in health ? (health.webui_description ?? null) : null
         );
       }
 
