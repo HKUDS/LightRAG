@@ -436,6 +436,8 @@ def create_app(args):
             "auth_mode": "enabled",
             "core_version": core_version,
             "api_version": __api_version__,
+            "webui_title": webui_title,
+            "webui_description": webui_description,
         }
 
     @app.get("/health", dependencies=[Depends(combined_auth)])
