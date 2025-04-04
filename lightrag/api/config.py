@@ -5,7 +5,12 @@ Configs for the LightRAG API.
 import os
 import argparse
 import logging
+from dotenv import load_dotenv
 
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 class OllamaServerInfos:
     # Constants for emulated Ollama model information
@@ -297,6 +302,11 @@ def parse_args() -> argparse.Namespace:
 
     # Select Document loading tool (DOCLING, DEFAULT)
     args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
+    
+    # Add environment variables that were previously read directly
+    args.cors_origins = get_env_value("CORS_ORIGINS", "*")
+    args.summary_language = get_env_value("SUMMARY_LANGUAGE", "en")
+    args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")

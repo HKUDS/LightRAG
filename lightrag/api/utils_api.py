@@ -10,12 +10,10 @@ from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__ as api_version
 from lightrag import __version__ as core_version
 from fastapi import HTTPException, Security, Request, status
-from dotenv import load_dotenv
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from .auth import auth_handler
-from .config import ollama_server_infos
-from ..prompt import PROMPTS
+from .config import ollama_server_infos, global_args
 
 
 def check_env_file():
@@ -36,14 +34,8 @@ def check_env_file():
     return True
 
 
-# use the .env that is inside the current folder
-# allows to use different .env file for each lightrag instance
-# the OS environment variables take precedence over the .env file
-load_dotenv(dotenv_path=".env", override=False)
-
-# Get whitelist paths from environment variable, only once during initialization
-default_whitelist = "/health,/api/*"
-whitelist_paths = os.getenv("WHITELIST_PATHS", default_whitelist).split(",")
+# Get whitelist paths from global_args, only once during initialization
+whitelist_paths = global_args.whitelist_paths.split(",")
 
 # Pre-compile path matching patterns
 whitelist_patterns: List[Tuple[str, bool]] = []
@@ -195,7 +187,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.white("    ├─ Workers: ", end="")
     ASCIIColors.yellow(f"{args.workers}")
     ASCIIColors.white("    ├─ CORS Origins: ", end="")
-    ASCIIColors.yellow(f"{os.getenv('CORS_ORIGINS', '*')}")
+    ASCIIColors.yellow(f"{args.cors_origins}")
     ASCIIColors.white("    ├─ SSL Enabled: ", end="")
     ASCIIColors.yellow(f"{args.ssl}")
     if args.ssl:
@@ -252,10 +244,9 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.embedding_dim}")
 
     # RAG Configuration
-    summary_language = os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"])
     ASCIIColors.magenta("\n⚙️ RAG Configuration:")
     ASCIIColors.white("    ├─ Summary Language: ", end="")
-    ASCIIColors.yellow(f"{summary_language}")
+    ASCIIColors.yellow(f"{args.summary_language}")
     ASCIIColors.white("    ├─ Max Parallel Insert: ", end="")
     ASCIIColors.yellow(f"{args.max_parallel_insert}")
     ASCIIColors.white("    ├─ Max Embed Tokens: ", end="")

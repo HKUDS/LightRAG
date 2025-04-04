@@ -167,10 +167,10 @@ def create_app(args):
     app = FastAPI(**app_kwargs)
 
     def get_cors_origins():
-        """Get allowed origins from environment variable
+        """Get allowed origins from global_args
         Returns a list of allowed origins, defaults to ["*"] if not set
         """
-        origins_str = os.getenv("CORS_ORIGINS", "*")
+        origins_str = global_args.cors_origins
         if origins_str == "*":
             return ["*"]
         return [origin.strip() for origin in origins_str.split(",")]
@@ -321,6 +321,9 @@ def create_app(args):
             # namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
+            addon_params={
+                "language": args.summary_language
+            },
         )
     else:  # azure_openai
         rag = LightRAG(
@@ -351,6 +354,9 @@ def create_app(args):
             # namespace_prefix=args.namespace_prefix,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
+            addon_params={
+                "language": args.summary_language
+            },
         )
 
     # Add routes
