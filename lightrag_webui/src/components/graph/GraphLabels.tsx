@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -55,6 +55,23 @@ const GraphLabels = () => {
     },
     [getSearchEngine]
   )
+
+  // Validate if current queryLabel exists in allDatabaseLabels
+  useEffect(() => {
+    // Only update label when all conditions are met:
+    // 1. allDatabaseLabels is loaded (length > 1, as it has at least '*' by default)
+    // 2. Current label is not the default '*'
+    // 3. Current label doesn't exist in allDatabaseLabels
+    if (
+      allDatabaseLabels.length > 1 && 
+      label && 
+      label !== '*' && 
+      !allDatabaseLabels.includes(label)
+    ) {
+      console.log(`Label "${label}" not found in available labels, resetting to default`);
+      useSettingsStore.getState().setQueryLabel('*');
+    }
+  }, [allDatabaseLabels, label]);
 
   const handleRefresh = useCallback(() => {
     // Reset fetch status flags
