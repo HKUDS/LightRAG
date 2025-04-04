@@ -63,14 +63,16 @@ function App() {
 
       try {
         const status = await getAuthStatus();
-        if (status.core_version || status.api_version) {
+        if (status.core_version || status.api_version || status.webui_title || status.webui_description) {
           const isGuestMode = status.auth_mode === 'disabled' || useAuthStore.getState().isGuestMode;
-          // Update version info while maintaining login state
+          // Update version info and webui title while maintaining login state
           useAuthStore.getState().login(
             token,
             isGuestMode,
             status.core_version,
-            status.api_version
+            status.api_version,
+            status.webui_title || null,
+            status.webui_description || null
           );
 
           // Set flag to indicate version info has been checked
