@@ -1745,7 +1745,7 @@ SQL_TEMPLATES = {
                                 FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
-                                chunk_order_index, full_doc_id
+                                chunk_order_index, full_doc_id, file_path
                                 FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
@@ -1758,7 +1758,7 @@ SQL_TEMPLATES = {
                                  FROM LIGHTRAG_DOC_FULL WHERE workspace=$1 AND id IN ({ids})
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
-                                  chunk_order_index, full_doc_id
+                                  chunk_order_index, full_doc_id, file_path
                                    FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id IN ({ids})
                                 """,
     "get_by_ids_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
