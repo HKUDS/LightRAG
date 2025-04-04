@@ -291,11 +291,9 @@ LightRAG 使用 4 种类型的存储用于不同目的：
 
 ```
 JsonKVStorage    JsonFile(默认)
-MongoKVStorage   MogonDB
-RedisKVStorage   Redis
-TiDBKVStorage    TiDB
 PGKVStorage      Postgres
-OracleKVStorage  Oracle
+RedisKVStorage   Redis
+MongoKVStorage   MogonDB
 ```
 
 * GRAPH_STORAGE 支持的实现名称
@@ -303,25 +301,19 @@ OracleKVStorage  Oracle
 ```
 NetworkXStorage      NetworkX(默认)
 Neo4JStorage         Neo4J
-MongoGraphStorage    MongoDB
-TiDBGraphStorage     TiDB
-AGEStorage           AGE
-GremlinStorage       Gremlin
 PGGraphStorage       Postgres
-OracleGraphStorage   Postgres
+AGEStorage           AGE
 ```
 
 * VECTOR_STORAGE 支持的实现名称
 
 ```
 NanoVectorDBStorage         NanoVector(默认)
+PGVectorStorage             Postgres
 MilvusVectorDBStorge        Milvus
 ChromaVectorDBStorage       Chroma
-TiDBVectorDBStorage         TiDB
-PGVectorStorage             Postgres
 FaissVectorDBStorage        Faiss
 QdrantVectorDBStorage       Qdrant
-OracleVectorDBStorage       Oracle
 MongoVectorDBStorage        MongoDB
 ```
 

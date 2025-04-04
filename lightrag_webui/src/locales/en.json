@@ -32,14 +32,23 @@
     "authDisabled": "Authentication is disabled. Using login free mode.",
     "guestMode": "Login Free"
   },
+  "common": {
+    "cancel": "Cancel"
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "Clear",
       "tooltip": "Clear documents",
       "title": "Clear Documents",
+      "warning": "WARNING: This action will permanently delete all documents and cannot be undone!",
       "confirm": "Do you really want to clear all documents?",
+      "confirmPrompt": "Type 'yes' to confirm this action",
+      "confirmPlaceholder": "Type yes to confirm",
+      "clearCache": "Clear LLM cache",
       "confirmButton": "YES",
       "success": "Documents cleared successfully",
+      "cacheCleared": "Cache cleared successfully",
+      "cacheClearFailed": "Failed to clear cache:\n{{error}}",
       "failed": "Clear Documents Failed:\n{{message}}",
       "error": "Clear Documents Failed:\n{{error}}"
     },
@@ -128,6 +137,10 @@
     }
   },
   "graphPanel": {
+    "dataIsTruncated": "Graph data is truncated to Max Nodes",
+    "statusDialog": {
+      "title": "LightRAG Server Settings"
+    },
     "sideBar": {
       "settings": {
         "settings": "Settings",
@@ -140,9 +153,11 @@
         "hideUnselectedEdges": "Hide Unselected Edges",
         "edgeEvents": "Edge Events",
         "maxQueryDepth": "Max Query Depth",
-        "minDegree": "Minimum Degree",
+        "maxNodes": "Max Nodes",
         "maxLayoutIterations": "Max Layout Iterations",
-        "depth": "Depth",
+        "resetToDefault": "Reset to default",
+        "depth": "D",
+        "max": "Max",
         "degree": "Degree",
         "apiKey": "API Key",
         "enterYourAPIkey": "Enter your API key",
