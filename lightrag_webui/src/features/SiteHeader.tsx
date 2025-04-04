@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { useTranslation } from 'react-i18next'
 import { navigationService } from '@/services/navigation'
 import { ZapIcon, GithubIcon, LogOutIcon } from 'lucide-react'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
 interface NavigationTabProps {
   value: string
@@ -55,7 +56,7 @@ function TabsNavigation() {
 
 export default function SiteHeader() {
   const { t } = useTranslation()
-  const { isGuestMode, coreVersion, apiVersion, username } = useAuthStore()
+  const { isGuestMode, coreVersion, apiVersion, username, webuiTitle, webuiDescription } = useAuthStore()
 
   const versionDisplay = (coreVersion && apiVersion)
     ? `${coreVersion}/${apiVersion}`
@@ -67,17 +68,31 @@ export default function SiteHeader() {
 
   return (
     <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
-      <div className="w-[200px] flex items-center">
+      <div className="min-w-[200px] w-auto flex items-center">
         <a href={webuiPrefix} className="flex items-center gap-2">
           <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
           {/* <img src='/logo.png' className="size-4" /> */}
           <span className="font-bold md:inline-block">{SiteInfo.name}</span>
-          {versionDisplay && (
-            <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
-              v{versionDisplay}
-            </span>
-          )}
         </a>
+        {webuiTitle && (
+          <div className="flex items-center">
+            <span className="mx-1 text-xs text-gray-500 dark:text-gray-400">|</span>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="font-medium text-sm cursor-default">
+                    {webuiTitle}
+                  </span>
+                </TooltipTrigger>
+                {webuiDescription && (
+                  <TooltipContent side="bottom">
+                    {webuiDescription}
+                  </TooltipContent>
+                )}
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+        )}
       </div>
 
       <div className="flex h-10 flex-1 items-center justify-center">
@@ -91,6 +106,11 @@ export default function SiteHeader() {
 
       <nav className="w-[200px] flex items-center justify-end">
         <div className="flex items-center gap-2">
+          {versionDisplay && (
+            <span className="text-xs text-gray-500 dark:text-gray-400 mr-1">
+              v{versionDisplay}
+            </span>
+          )}
           <Button variant="ghost" size="icon" side="bottom" tooltip={t('header.projectRepository')}>
             <a href={SiteInfo.github} target="_blank" rel="noopener noreferrer">
               <GithubIcon className="size-4" aria-hidden="true" />
