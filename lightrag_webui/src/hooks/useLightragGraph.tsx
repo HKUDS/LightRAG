@@ -11,6 +11,35 @@ import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
 
+// Helper function to generate a color based on type
+const getNodeColorByType = (nodeType: string | undefined): string => {
+  const defaultColor = '#CCCCCC'; // Default color for nodes without a type or undefined type
+  if (!nodeType) {
+    return defaultColor;
+  }
+
+  const typeColorMap = useGraphStore.getState().typeColorMap;
+
+  if (!typeColorMap.has(nodeType)) {
+    // Generate a color based on the type string itself for consistency
+    // Seed the global random number generator based on the node type
+    seedrandom(nodeType, { global: true });
+    // Call randomColor without arguments; it will use the globally seeded Math.random()
+    const newColor = randomColor();
+
+    const newMap = new Map(typeColorMap);
+    newMap.set(nodeType, newColor);
+    useGraphStore.setState({ typeColorMap: newMap });
+
+    return newColor;
+  }
+
+  // Restore the default random seed if necessary, though usually not required for this use case
+  // seedrandom(Date.now().toString(), { global: true });
+  return typeColorMap.get(nodeType) || defaultColor; // Add fallback just in case
+};
+
+
 const validateGraph = (graph: RawGraph) => {
   // Check if graph exists
   if (!graph) {
@@ -68,9 +97,15 @@ export type NodeType = {
   color: string
   highlighted?: boolean
 }
-export type EdgeType = { label: string }
+export type EdgeType = {
+  label: string
+  originalWeight?: number
+  size?: number
+  color?: string
+  hidden?: boolean
+}
 
-const fetchGraph = async (label: string, maxDepth: number, minDegree: number) => {
+const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
   let rawData: any = null;
 
   // Check if we need to fetch all database labels first
@@ -89,8 +124,8 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
   const queryLabel = label || '*';
 
   try {
-    console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, deg: ${minDegree}`);
-    rawData = await queryGraphs(queryLabel, maxDepth, minDegree);
+    console.log(`Fetching graph label: ${queryLabel}, depth: ${maxDepth}, nodes: ${maxNodes}`);
+    rawData = await queryGraphs(queryLabel, maxDepth, maxNodes);
   } catch (e) {
     useBackendState.getState().setErrorMessage(errorMessage(e), 'Query Graphs Error!');
     return null;
@@ -106,9 +141,6 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
       const node = rawData.nodes[i]
       nodeIdMap[node.id] = i
 
-      // const seed = node.labels.length > 0 ? node.labels[0] : node.id
-      seedrandom(node.id, { global: true })
-      node.color = randomColor()
       node.x = Math.random()
       node.y = Math.random()
       node.degree = 0
@@ -169,11 +201,14 @@ const fetchGraph = async (label: string, maxDepth: number, minDegree: number) =>
   }
 
   // console.debug({ data: JSON.parse(JSON.stringify(rawData)) })
-  return rawGraph
+  return { rawGraph, is_truncated: rawData.is_truncated }
 }
 
 // Create a new graph instance with the raw graph data
 const createSigmaGraph = (rawGraph: RawGraph | null) => {
+  // Get edge size settings from store
+  const minEdgeSize = useSettingsStore.getState().minEdgeSize
+  const maxEdgeSize = useSettingsStore.getState().maxEdgeSize
   // Skip graph creation if no data or empty nodes
   if (!rawGraph || !rawGraph.nodes.length) {
     console.log('No graph data available, skipping sigma graph creation');
@@ -204,8 +239,40 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
 
   // Add edges from raw graph data
   for (const rawEdge of rawGraph?.edges ?? []) {
+    // Get weight from edge properties or default to 1
+    const weight = rawEdge.properties?.weight !== undefined ? Number(rawEdge.properties.weight) : 1
+
     rawEdge.dynamicId = graph.addDirectedEdge(rawEdge.source, rawEdge.target, {
-      label: rawEdge.properties?.keywords || undefined
+      label: rawEdge.properties?.keywords || undefined,
+      size: weight, // Set initial size based on weight
+      originalWeight: weight, // Store original weight for recalculation
+    })
+  }
+
+  // Calculate edge size based on weight range, similar to node size calculation
+  let minWeight = Number.MAX_SAFE_INTEGER
+  let maxWeight = 0
+
+  // Find min and max weight values
+  graph.forEachEdge(edge => {
+    const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
+    minWeight = Math.min(minWeight, weight)
+    maxWeight = Math.max(maxWeight, weight)
+  })
+
+  // Scale edge sizes based on weight range
+  const weightRange = maxWeight - minWeight
+  if (weightRange > 0) {
+    const sizeScale = maxEdgeSize - minEdgeSize
+    graph.forEachEdge(edge => {
+      const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
+      const scaledSize = minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5)
+      graph.setEdgeAttribute(edge, 'size', scaledSize)
+    })
+  } else {
+    // If all weights are the same, use default size
+    graph.forEachEdge(edge => {
+      graph.setEdgeAttribute(edge, 'size', minEdgeSize)
     })
   }
 
@@ -218,10 +285,11 @@ const useLightrangeGraph = () => {
   const rawGraph = useGraphStore.use.rawGraph()
   const sigmaGraph = useGraphStore.use.sigmaGraph()
   const maxQueryDepth = useSettingsStore.use.graphQueryMaxDepth()
-  const minDegree = useSettingsStore.use.graphMinDegree()
+  const maxNodes = useSettingsStore.use.graphMaxNodes()
   const isFetching = useGraphStore.use.isFetching()
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
+
 
   // Use ref to track if data has been loaded and initial load
   const dataLoadedRef = useRef(false)
@@ -292,23 +360,37 @@ const useLightrangeGraph = () => {
       // Use a local copy of the parameters
       const currentQueryLabel = queryLabel
       const currentMaxQueryDepth = maxQueryDepth
-      const currentMinDegree = minDegree
+      const currentMaxNodes = maxNodes
 
       // Declare a variable to store data promise
-      let dataPromise;
+      let dataPromise: Promise<{ rawGraph: RawGraph | null; is_truncated: boolean | undefined } | null>;
 
       // 1. If query label is not empty, use fetchGraph
       if (currentQueryLabel) {
-        dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMinDegree);
+        dataPromise = fetchGraph(currentQueryLabel, currentMaxQueryDepth, currentMaxNodes);
       } else {
         // 2. If query label is empty, set data to null
         console.log('Query label is empty, show empty graph')
-        dataPromise = Promise.resolve(null);
+        dataPromise = Promise.resolve({ rawGraph: null, is_truncated: false });
       }
 
       // 3. Process data
-      dataPromise.then((data) => {
+      dataPromise.then((result) => {
         const state = useGraphStore.getState()
+        const data = result?.rawGraph;
+
+        // Assign colors based on entity_type *after* fetching
+        if (data && data.nodes) {
+          data.nodes.forEach(node => {
+            // Use entity_type instead of type
+            const nodeEntityType = node.properties?.entity_type as string | undefined;
+            node.color = getNodeColorByType(nodeEntityType);
+          });
+        }
+
+        if (result?.is_truncated) {
+          toast.info(t('graphPanel.dataIsTruncated', 'Graph data is truncated to Max Nodes'));
+        }
 
         // Reset state
         state.reset()
@@ -336,15 +418,23 @@ const useLightrangeGraph = () => {
           // Still mark graph as empty for other logic
           state.setGraphIsEmpty(true);
 
-          // Only clear current label if it's not already empty
-          if (currentQueryLabel) {
+          // Check if the empty graph is due to 401 authentication error
+          const errorMessage = useBackendState.getState().message;
+          const isAuthError = errorMessage && errorMessage.includes('Authentication required');
+
+          // Only clear queryLabel if it's not an auth error and current label is not empty
+          if (!isAuthError && currentQueryLabel) {
             useSettingsStore.getState().setQueryLabel('');
           }
 
-          // Clear last successful query label to ensure labels are fetched next time
-          state.setLastSuccessfulQueryLabel('');
+          // Only clear last successful query label if it's not an auth error
+          if (!isAuthError) {
+            state.setLastSuccessfulQueryLabel('');
+          } else {
+            console.log('Keep queryLabel for post-login reload');
+          }
 
-          console.log('Graph data is empty, created graph with empty graph node');
+          console.log(`Graph data is empty, created graph with empty graph node. Auth error: ${isAuthError}`);
         } else {
           // Create and set new graph
           const newSigmaGraph = createSigmaGraph(data);
@@ -384,7 +474,7 @@ const useLightrangeGraph = () => {
         state.setLastSuccessfulQueryLabel('') // Clear last successful query label on error
       })
     }
-  }, [queryLabel, maxQueryDepth, minDegree, isFetching, t])
+  }, [queryLabel, maxQueryDepth, maxNodes, isFetching, t])
 
   // Handle node expansion
   useEffect(() => {
@@ -407,7 +497,7 @@ const useLightrangeGraph = () => {
         }
 
         // Fetch the extended subgraph with depth 2
-        const extendedGraph = await queryGraphs(label, 2, 0);
+        const extendedGraph = await queryGraphs(label, 2, 1000);
 
         if (!extendedGraph || !extendedGraph.nodes || !extendedGraph.edges) {
           console.error('Failed to fetch extended graph');

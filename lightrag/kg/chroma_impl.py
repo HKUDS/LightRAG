@@ -1,4 +1,5 @@
 import asyncio
+import os
 from dataclasses import dataclass
 from typing import Any, final
 import numpy as np
@@ -10,8 +11,8 @@ import pipmaster as pm
 if not pm.is_installed("chromadb"):
     pm.install("chromadb")
 
-from chromadb import HttpClient, PersistentClient
-from chromadb.config import Settings
+from chromadb import HttpClient, PersistentClient  # type: ignore
+from chromadb.config import Settings  # type: ignore
 
 
 @final
@@ -335,3 +336,28 @@ class ChromaVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
+
+    async def drop(self) -> dict[str, str]:
+        """Drop all vector data from storage and clean up resources
+
+        This method will delete all documents from the ChromaDB collection.
+
+        Returns:
+            dict[str, str]: Operation status and message
+            - On success: {"status": "success", "message": "data dropped"}
+            - On failure: {"status": "error", "message": "<error details>"}
+        """
+        try:
+            # Get all IDs in the collection
+            result = self._collection.get(include=[])
+            if result and result["ids"] and len(result["ids"]) > 0:
+                # Delete all documents
+                self._collection.delete(ids=result["ids"])
+
+            logger.info(
+                f"Process {os.getpid()} drop ChromaDB collection {self.namespace}"
+            )
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping ChromaDB collection {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}

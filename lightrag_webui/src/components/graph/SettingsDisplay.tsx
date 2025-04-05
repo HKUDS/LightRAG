@@ -8,12 +8,12 @@ import { useTranslation } from 'react-i18next'
 const SettingsDisplay = () => {
   const { t } = useTranslation()
   const graphQueryMaxDepth = useSettingsStore.use.graphQueryMaxDepth()
-  const graphMinDegree = useSettingsStore.use.graphMinDegree()
+  const graphMaxNodes = useSettingsStore.use.graphMaxNodes()
 
   return (
     <div className="absolute bottom-4 left-[calc(1rem+2.5rem)] flex items-center gap-2 text-xs text-gray-400">
       <div>{t('graphPanel.sideBar.settings.depth')}: {graphQueryMaxDepth}</div>
-      <div>{t('graphPanel.sideBar.settings.degree')}: {graphMinDegree}</div>
+      <div>{t('graphPanel.sideBar.settings.max')}: {graphMaxNodes}</div>
     </div>
   )
 }

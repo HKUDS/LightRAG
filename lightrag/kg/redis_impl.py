@@ -12,6 +12,7 @@ if not pm.is_installed("redis"):
 from redis.asyncio import Redis, ConnectionPool
 from redis.exceptions import RedisError, ConnectionError
 from lightrag.utils import logger, compute_mdhash_id
+
 from lightrag.base import BaseKVStorage
 import json
 
@@ -121,7 +122,11 @@ class RedisKVStorage(BaseKVStorage):
             except json.JSONEncodeError as e:
                 logger.error(f"JSON encode error during upsert: {e}")
                 raise
-
+                
+    async def index_done_callback(self) -> None:
+        # Redis handles persistence automatically
+        pass
+      
     async def delete(self, ids: list[str]) -> None:
         """Delete entries with specified IDs"""
         if not ids:
@@ -138,71 +143,52 @@ class RedisKVStorage(BaseKVStorage):
                 f"Deleted {deleted_count} of {len(ids)} entries from {self.namespace}"
             )
 
-    async def delete_entity(self, entity_name: str) -> None:
-        """Delete an entity by name"""
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
+        """Delete specific records from storage by by cache mode
+
+        Importance notes for Redis storage:
+        1. This will immediately delete the specified cache modes from Redis
+
+        Args:
+            modes (list[str]): List of cache mode to be drop from storage
+
+        Returns:
+             True: if the cache drop successfully
+             False: if the cache drop failed
+        """
+        if not modes:
+            return False
+
         try:
-            entity_id = compute_mdhash_id(entity_name, prefix="ent-")
-            logger.debug(
-                f"Attempting to delete entity {entity_name} with ID {entity_id}"
-            )
+            await self.delete(modes)
+            return True
+        except Exception:
+            return False
 
-            async with self._get_redis_connection() as redis:
-                result = await redis.delete(f"{self.namespace}:{entity_id}")
+    async def drop(self) -> dict[str, str]:
+        """Drop the storage by removing all keys under the current namespace.
 
-                if result:
-                    logger.debug(f"Successfully deleted entity {entity_name}")
-                else:
-                    logger.debug(f"Entity {entity_name} not found in storage")
-        except Exception as e:
-            logger.error(f"Error deleting entity {entity_name}: {e}")
+        Returns:
+            dict[str, str]: Status of the operation with keys 'status' and 'message'
+        """
+        async with self._get_redis_connection() as redis:
+            try:
+                keys = await redis.keys(f"{self.namespace}:*")
 
-    async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete all relations associated with an entity"""
-        try:
-            async with self._get_redis_connection() as redis:
-                cursor = 0
-                relation_keys = []
-                pattern = f"{self.namespace}:*"
-
-                while True:
-                    cursor, keys = await redis.scan(cursor, match=pattern)
-                    
-                    # Process keys in batches
+                if keys:
                     pipe = redis.pipeline()
                     for key in keys:
-                        pipe.get(key)
-                    values = await pipe.execute()
-                    
-                    for key, value in zip(keys, values):
-                        if value:
-                            try:
-                                data = json.loads(value)
-                                if (
-                                    data.get("src_id") == entity_name
-                                    or data.get("tgt_id") == entity_name
-                                ):
-                                    relation_keys.append(key)
-                            except json.JSONDecodeError:
-                                logger.warning(f"Invalid JSON in key {key}")
-                                continue
+                        pipe.delete(key)
+                    results = await pipe.execute()
+                    deleted_count = sum(results)
 
-                    if cursor == 0:
-                        break
-
-                # Delete relations in batches
-                if relation_keys:
-                    # Delete in chunks to avoid too many arguments
-                    chunk_size = 1000
-                    for i in range(0, len(relation_keys), chunk_size):
-                        chunk = relation_keys[i:i + chunk_size]
-                        deleted = await redis.delete(*chunk)
-                        logger.debug(f"Deleted {deleted} relations for {entity_name} (batch {i//chunk_size + 1})")
+                    logger.info(f"Dropped {deleted_count} keys from {self.namespace}")
+                    return {"status": "success", "message": f"{deleted_count} keys dropped"}
                 else:
-                    logger.debug(f"No relations found for entity {entity_name}")
+                    logger.info(f"No keys found to drop in {self.namespace}")
+                    return {"status": "success", "message": "no keys to drop"}
 
-        except Exception as e:
-            logger.error(f"Error deleting relations for {entity_name}: {e}")
+            except Exception as e:
+                logger.error(f"Error dropping keys from {self.namespace}: {e}")
+                return {"status": "error", "message": str(e)}
 
-    async def index_done_callback(self) -> None:
-        # Redis handles persistence automatically
-        pass

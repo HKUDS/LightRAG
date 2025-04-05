@@ -32,14 +32,24 @@
     "authDisabled": "L'authentification est désactivée. Utilisation du mode sans connexion.",
     "guestMode": "Mode sans connexion"
   },
+  "common": {
+    "cancel": "Annuler"
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "Effacer",
       "tooltip": "Effacer les documents",
       "title": "Effacer les documents",
+      "description": "Cette action supprimera tous les documents du système",
+      "warning": "ATTENTION : Cette action supprimera définitivement tous les documents et ne peut pas être annulée !",
       "confirm": "Voulez-vous vraiment effacer tous les documents ?",
+      "confirmPrompt": "Tapez 'yes' pour confirmer cette action",
+      "confirmPlaceholder": "Tapez yes pour confirmer",
+      "clearCache": "Effacer le cache LLM",
       "confirmButton": "OUI",
       "success": "Documents effacés avec succès",
+      "cacheCleared": "Cache effacé avec succès",
+      "cacheClearFailed": "Échec de l'effacement du cache :\n{{error}}",
       "failed": "Échec de l'effacement des documents :\n{{message}}",
       "error": "Échec de l'effacement des documents :\n{{error}}"
     },
@@ -95,6 +105,7 @@
         "metadata": "Métadonnées"
       },
       "status": {
+        "all": "Tous",
         "completed": "Terminé",
         "processing": "En traitement",
         "pending": "En attente",
@@ -127,6 +138,11 @@
     }
   },
   "graphPanel": {
+    "dataIsTruncated": "Les données du graphe sont tronquées au nombre maximum de nœuds",
+    "statusDialog": {
+      "title": "Paramètres du Serveur LightRAG"
+    },
+    "legend": "Légende",
     "sideBar": {
       "settings": {
         "settings": "Paramètres",
@@ -139,9 +155,12 @@
         "hideUnselectedEdges": "Masquer les arêtes non sélectionnées",
         "edgeEvents": "Événements des arêtes",
         "maxQueryDepth": "Profondeur maximale de la requête",
-        "minDegree": "Degré minimum",
+        "maxNodes": "Nombre maximum de nœuds",
         "maxLayoutIterations": "Itérations maximales de mise en page",
-        "depth": "Profondeur",
+        "resetToDefault": "Réinitialiser par défaut",
+        "edgeSizeRange": "Plage de taille des arêtes",
+        "depth": "D",
+        "max": "Max",
         "degree": "Degré",
         "apiKey": "Clé API",
         "enterYourAPIkey": "Entrez votre clé API",
@@ -171,6 +190,9 @@
       "fullScreenControl": {
         "fullScreen": "Plein écran",
         "windowed": "Fenêtré"
+      },
+      "legendControl": {
+        "toggleLegend": "Basculer la légende"
       }
     },
     "statusIndicator": {

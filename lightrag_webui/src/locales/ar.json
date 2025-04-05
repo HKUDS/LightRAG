@@ -32,14 +32,24 @@
     "authDisabled": "تم تعطيل المصادقة. استخدام وضع بدون تسجيل دخول.",
     "guestMode": "وضع بدون تسجيل دخول"
   },
+  "common": {
+    "cancel": "إلغاء"
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "مسح",
       "tooltip": "مسح المستندات",
       "title": "مسح المستندات",
+      "description": "سيؤدي هذا إلى إزالة جميع المستندات من النظام",
+      "warning": "تحذير: سيؤدي هذا الإجراء إلى حذف جميع المستندات بشكل دائم ولا يمكن التراجع عنه!",
       "confirm": "هل تريد حقًا مسح جميع المستندات؟",
+      "confirmPrompt": "اكتب 'yes' لتأكيد هذا الإجراء",
+      "confirmPlaceholder": "اكتب yes للتأكيد",
+      "clearCache": "مسح كاش نموذج اللغة",
       "confirmButton": "نعم",
       "success": "تم مسح المستندات بنجاح",
+      "cacheCleared": "تم مسح ذاكرة التخزين المؤقت بنجاح",
+      "cacheClearFailed": "فشل مسح ذاكرة التخزين المؤقت:\n{{error}}",
       "failed": "فشل مسح المستندات:\n{{message}}",
       "error": "فشل مسح المستندات:\n{{error}}"
     },
@@ -95,6 +105,7 @@
         "metadata": "البيانات الوصفية"
       },
       "status": {
+        "all": "الكل",
         "completed": "مكتمل",
         "processing": "قيد المعالجة",
         "pending": "معلق",
@@ -127,6 +138,11 @@
     }
   },
   "graphPanel": {
+    "dataIsTruncated": "تم اقتصار بيانات الرسم البياني على الحد الأقصى للعقد",
+    "statusDialog": {
+      "title": "إعدادات خادم LightRAG"
+    },
+    "legend": "المفتاح",
     "sideBar": {
       "settings": {
         "settings": "الإعدادات",
@@ -139,9 +155,12 @@
         "hideUnselectedEdges": "إخفاء الحواف غير المحددة",
         "edgeEvents": "أحداث الحافة",
         "maxQueryDepth": "أقصى عمق للاستعلام",
-        "minDegree": "الدرجة الدنيا",
+        "maxNodes": "الحد الأقصى للعقد",
         "maxLayoutIterations": "أقصى تكرارات التخطيط",
-        "depth": "العمق",
+        "resetToDefault": "إعادة التعيين إلى الافتراضي",
+        "edgeSizeRange": "نطاق حجم الحافة",
+        "depth": "D",
+        "max": "Max",
         "degree": "الدرجة",
         "apiKey": "مفتاح واجهة برمجة التطبيقات",
         "enterYourAPIkey": "أدخل مفتاح واجهة برمجة التطبيقات الخاص بك",
@@ -171,6 +190,9 @@
       "fullScreenControl": {
         "fullScreen": "شاشة كاملة",
         "windowed": "نوافذ"
+      },
+      "legendControl": {
+        "toggleLegend": "تبديل المفتاح"
       }
     },
     "statusIndicator": {

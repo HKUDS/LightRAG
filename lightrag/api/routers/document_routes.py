@@ -10,16 +10,14 @@ import traceback
 import pipmaster as pm
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
-from lightrag.api.utils_api import (
-    get_combined_auth_dependency,
-    global_args,
-)
+from lightrag.api.utils_api import get_combined_auth_dependency
+from ..config import global_args
 
 router = APIRouter(
     prefix="/documents",
@@ -30,7 +28,37 @@ router = APIRouter(
 temp_prefix = "__tmp__"
 
 
+class ScanResponse(BaseModel):
+    """Response model for document scanning operation
+
+    Attributes:
+        status: Status of the scanning operation
+        message: Optional message with additional details
+    """
+
+    status: Literal["scanning_started"] = Field(
+        description="Status of the scanning operation"
+    )
+    message: Optional[str] = Field(
+        default=None, description="Additional details about the scanning operation"
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "scanning_started",
+                "message": "Scanning process has been initiated in the background",
+            }
+        }
+
+
 class InsertTextRequest(BaseModel):
+    """Request model for inserting a single text document
+
+    Attributes:
+        text: The text content to be inserted into the RAG system
+    """
+
     text: str = Field(
         min_length=1,
         description="The text to insert",
@@ -41,8 +69,21 @@ class InsertTextRequest(BaseModel):
     def strip_after(cls, text: str) -> str:
         return text.strip()
 
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "text": "This is a sample text to be inserted into the RAG system."
+            }
+        }
+
 
 class InsertTextsRequest(BaseModel):
+    """Request model for inserting multiple text documents
+
+    Attributes:
+        texts: List of text contents to be inserted into the RAG system
+    """
+
     texts: list[str] = Field(
         min_length=1,
         description="The texts to insert",
@@ -53,10 +94,115 @@ class InsertTextsRequest(BaseModel):
     def strip_after(cls, texts: list[str]) -> list[str]:
         return [text.strip() for text in texts]
 
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "texts": [
+                    "This is the first text to be inserted.",
+                    "This is the second text to be inserted.",
+                ]
+            }
+        }
+
 
 class InsertResponse(BaseModel):
-    status: str = Field(description="Status of the operation")
+    """Response model for document insertion operations
+
+    Attributes:
+        status: Status of the operation (success, duplicated, partial_success, failure)
+        message: Detailed message describing the operation result
+    """
+
+    status: Literal["success", "duplicated", "partial_success", "failure"] = Field(
+        description="Status of the operation"
+    )
     message: str = Field(description="Message describing the operation result")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "success",
+                "message": "File 'document.pdf' uploaded successfully. Processing will continue in background.",
+            }
+        }
+
+
+class ClearDocumentsResponse(BaseModel):
+    """Response model for document clearing operation
+
+    Attributes:
+        status: Status of the clear operation
+        message: Detailed message describing the operation result
+    """
+
+    status: Literal["success", "partial_success", "busy", "fail"] = Field(
+        description="Status of the clear operation"
+    )
+    message: str = Field(description="Message describing the operation result")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "success",
+                "message": "All documents cleared successfully. Deleted 15 files.",
+            }
+        }
+
+
+class ClearCacheRequest(BaseModel):
+    """Request model for clearing cache
+
+    Attributes:
+        modes: Optional list of cache modes to clear
+    """
+
+    modes: Optional[
+        List[Literal["default", "naive", "local", "global", "hybrid", "mix"]]
+    ] = Field(
+        default=None,
+        description="Modes of cache to clear. If None, clears all cache.",
+    )
+
+    class Config:
+        json_schema_extra = {"example": {"modes": ["default", "naive"]}}
+
+
+class ClearCacheResponse(BaseModel):
+    """Response model for cache clearing operation
+
+    Attributes:
+        status: Status of the clear operation
+        message: Detailed message describing the operation result
+    """
+
+    status: Literal["success", "fail"] = Field(
+        description="Status of the clear operation"
+    )
+    message: str = Field(description="Message describing the operation result")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "status": "success",
+                "message": "Successfully cleared cache for modes: ['default', 'naive']",
+            }
+        }
+
+
+"""Response model for document status
+
+Attributes:
+    id: Document identifier
+    content_summary: Summary of document content
+    content_length: Length of document content
+    status: Current processing status
+    created_at: Creation timestamp (ISO format string)
+    updated_at: Last update timestamp (ISO format string)
+    chunks_count: Number of chunks (optional)
+    error: Error message if any (optional)
+    metadata: Additional metadata (optional)
+    file_path: Path to the document file
+"""
 
 
 class DocStatusResponse(BaseModel):
@@ -68,34 +214,82 @@ class DocStatusResponse(BaseModel):
             return dt
         return dt.isoformat()
 
-    """Response model for document status
+    id: str = Field(description="Document identifier")
+    content_summary: str = Field(description="Summary of document content")
+    content_length: int = Field(description="Length of document content in characters")
+    status: DocStatus = Field(description="Current processing status")
+    created_at: str = Field(description="Creation timestamp (ISO format string)")
+    updated_at: str = Field(description="Last update timestamp (ISO format string)")
+    chunks_count: Optional[int] = Field(
+        default=None, description="Number of chunks the document was split into"
+    )
+    error: Optional[str] = Field(
+        default=None, description="Error message if processing failed"
+    )
+    metadata: Optional[dict[str, Any]] = Field(
+        default=None, description="Additional metadata about the document"
+    )
+    file_path: str = Field(description="Path to the document file")
 
-    Attributes:
-        id: Document identifier
-        content_summary: Summary of document content
-        content_length: Length of document content
-        status: Current processing status
-        created_at: Creation timestamp (ISO format string)
-        updated_at: Last update timestamp (ISO format string)
-        chunks_count: Number of chunks (optional)
-        error: Error message if any (optional)
-        metadata: Additional metadata (optional)
-    """
-
-    id: str
-    content_summary: str
-    content_length: int
-    status: DocStatus
-    created_at: str
-    updated_at: str
-    chunks_count: Optional[int] = None
-    error: Optional[str] = None
-    metadata: Optional[dict[str, Any]] = None
-    file_path: str
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "id": "doc_123456",
+                "content_summary": "Research paper on machine learning",
+                "content_length": 15240,
+                "status": "PROCESSED",
+                "created_at": "2025-03-31T12:34:56",
+                "updated_at": "2025-03-31T12:35:30",
+                "chunks_count": 12,
+                "error": None,
+                "metadata": {"author": "John Doe", "year": 2025},
+                "file_path": "research_paper.pdf",
+            }
+        }
 
 
 class DocsStatusesResponse(BaseModel):
-    statuses: Dict[DocStatus, List[DocStatusResponse]] = {}
+    """Response model for document statuses
+
+    Attributes:
+        statuses: Dictionary mapping document status to lists of document status responses
+    """
+
+    statuses: Dict[DocStatus, List[DocStatusResponse]] = Field(
+        default_factory=dict,
+        description="Dictionary mapping document status to lists of document status responses",
+    )
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "statuses": {
+                    "PENDING": [
+                        {
+                            "id": "doc_123",
+                            "content_summary": "Pending document",
+                            "content_length": 5000,
+                            "status": "PENDING",
+                            "created_at": "2025-03-31T10:00:00",
+                            "updated_at": "2025-03-31T10:00:00",
+                            "file_path": "pending_doc.pdf",
+                        }
+                    ],
+                    "PROCESSED": [
+                        {
+                            "id": "doc_456",
+                            "content_summary": "Processed document",
+                            "content_length": 8000,
+                            "status": "PROCESSED",
+                            "created_at": "2025-03-31T09:00:00",
+                            "updated_at": "2025-03-31T09:05:00",
+                            "chunks_count": 8,
+                            "file_path": "processed_doc.pdf",
+                        }
+                    ],
+                }
+            }
+        }
 
 
 class PipelineStatusResponse(BaseModel):
@@ -276,7 +470,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     )
                     return False
             case ".pdf":
-                if global_args["main_args"].document_loading_engine == "DOCLING":
+                if global_args.document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter  # type: ignore
@@ -295,7 +489,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                     for page in reader.pages:
                         content += page.extract_text() + "\n"
             case ".docx":
-                if global_args["main_args"].document_loading_engine == "DOCLING":
+                if global_args.document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter  # type: ignore
@@ -315,7 +509,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                         [paragraph.text for paragraph in doc.paragraphs]
                     )
             case ".pptx":
-                if global_args["main_args"].document_loading_engine == "DOCLING":
+                if global_args.document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter  # type: ignore
@@ -336,7 +530,7 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
                             if hasattr(shape, "text"):
                                 content += shape.text + "\n"
             case ".xlsx":
-                if global_args["main_args"].document_loading_engine == "DOCLING":
+                if global_args.document_loading_engine == "DOCLING":
                     if not pm.is_installed("docling"):  # type: ignore
                         pm.install("docling")
                     from docling.document_converter import DocumentConverter  # type: ignore
@@ -443,6 +637,7 @@ async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
     await rag.apipeline_process_enqueue_documents()
 
 
+# TODO: deprecate after /insert_file is removed
 async def save_temp_file(input_dir: Path, file: UploadFile = File(...)) -> Path:
     """Save the uploaded file to a temporary location
 
@@ -476,8 +671,8 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         if not new_files:
             return
 
-        # Get MAX_PARALLEL_INSERT from global_args["main_args"]
-        max_parallel = global_args["main_args"].max_parallel_insert
+        # Get MAX_PARALLEL_INSERT from global_args
+        max_parallel = global_args.max_parallel_insert
         # Calculate batch size as 2 * MAX_PARALLEL_INSERT
         batch_size = 2 * max_parallel
 
@@ -509,7 +704,9 @@ def create_document_routes(
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
 
-    @router.post("/scan", dependencies=[Depends(combined_auth)])
+    @router.post(
+        "/scan", response_model=ScanResponse, dependencies=[Depends(combined_auth)]
+    )
     async def scan_for_new_documents(background_tasks: BackgroundTasks):
         """
         Trigger the scanning process for new documents.
@@ -519,13 +716,18 @@ def create_document_routes(
         that fact.
 
         Returns:
-            dict: A dictionary containing the scanning status
+            ScanResponse: A response object containing the scanning status
         """
         # Start the scanning process in the background
         background_tasks.add_task(run_scanning_process, rag, doc_manager)
-        return {"status": "scanning_started"}
+        return ScanResponse(
+            status="scanning_started",
+            message="Scanning process has been initiated in the background",
+        )
 
-    @router.post("/upload", dependencies=[Depends(combined_auth)])
+    @router.post(
+        "/upload", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
+    )
     async def upload_to_input_dir(
         background_tasks: BackgroundTasks, file: UploadFile = File(...)
     ):
@@ -645,6 +847,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
+    # TODO: deprecated, use /upload instead
     @router.post(
         "/file", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
     )
@@ -688,6 +891,7 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
+    # TODO: deprecated, use /upload instead
     @router.post(
         "/file_batch",
         response_model=InsertResponse,
@@ -752,32 +956,186 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     @router.delete(
-        "", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
+        "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )
     async def clear_documents():
         """
         Clear all documents from the RAG system.
 
-        This endpoint deletes all text chunks, entities vector database, and relationships
-        vector database, effectively clearing all documents from the RAG system.
+        This endpoint deletes all documents, entities, relationships, and files from the system.
+        It uses the storage drop methods to properly clean up all data and removes all files
+        from the input directory.
 
         Returns:
-            InsertResponse: A response object containing the status and message.
+            ClearDocumentsResponse: A response object containing the status and message.
+                - status="success":           All documents and files were successfully cleared.
+                - status="partial_success":   Document clear job exit with some errors.
+                - status="busy":              Operation could not be completed because the pipeline is busy.
+                - status="fail":              All storage drop operations failed, with message
+                - message: Detailed information about the operation results, including counts
+                  of deleted files and any errors encountered.
 
         Raises:
-            HTTPException: If an error occurs during the clearing process (500).
+            HTTPException: Raised when a serious error occurs during the clearing process,
+                          with status code 500 and error details in the detail field.
         """
-        try:
-            rag.text_chunks = []
-            rag.entities_vdb = None
-            rag.relationships_vdb = None
-            return InsertResponse(
-                status="success", message="All documents cleared successfully"
+        from lightrag.kg.shared_storage import (
+            get_namespace_data,
+            get_pipeline_status_lock,
+        )
+
+        # Get pipeline status and lock
+        pipeline_status = await get_namespace_data("pipeline_status")
+        pipeline_status_lock = get_pipeline_status_lock()
+
+        # Check and set status with lock
+        async with pipeline_status_lock:
+            if pipeline_status.get("busy", False):
+                return ClearDocumentsResponse(
+                    status="busy",
+                    message="Cannot clear documents while pipeline is busy",
+                )
+            # Set busy to true
+            pipeline_status.update(
+                {
+                    "busy": True,
+                    "job_name": "Clearing Documents",
+                    "job_start": datetime.now().isoformat(),
+                    "docs": 0,
+                    "batchs": 0,
+                    "cur_batch": 0,
+                    "request_pending": False,  # Clear any previous request
+                    "latest_message": "Starting document clearing process",
+                }
             )
+            # Cleaning history_messages without breaking it as a shared list object
+            del pipeline_status["history_messages"][:]
+            pipeline_status["history_messages"].append(
+                "Starting document clearing process"
+            )
+
+        try:
+            # Use drop method to clear all data
+            drop_tasks = []
+            storages = [
+                rag.text_chunks,
+                rag.full_docs,
+                rag.entities_vdb,
+                rag.relationships_vdb,
+                rag.chunks_vdb,
+                rag.chunk_entity_relation_graph,
+                rag.doc_status,
+            ]
+
+            # Log storage drop start
+            if "history_messages" in pipeline_status:
+                pipeline_status["history_messages"].append(
+                    "Starting to drop storage components"
+                )
+
+            for storage in storages:
+                if storage is not None:
+                    drop_tasks.append(storage.drop())
+
+            # Wait for all drop tasks to complete
+            drop_results = await asyncio.gather(*drop_tasks, return_exceptions=True)
+
+            # Check for errors and log results
+            errors = []
+            storage_success_count = 0
+            storage_error_count = 0
+
+            for i, result in enumerate(drop_results):
+                storage_name = storages[i].__class__.__name__
+                if isinstance(result, Exception):
+                    error_msg = f"Error dropping {storage_name}: {str(result)}"
+                    errors.append(error_msg)
+                    logger.error(error_msg)
+                    storage_error_count += 1
+                else:
+                    logger.info(f"Successfully dropped {storage_name}")
+                    storage_success_count += 1
+
+            # Log storage drop results
+            if "history_messages" in pipeline_status:
+                if storage_error_count > 0:
+                    pipeline_status["history_messages"].append(
+                        f"Dropped {storage_success_count} storage components with {storage_error_count} errors"
+                    )
+                else:
+                    pipeline_status["history_messages"].append(
+                        f"Successfully dropped all {storage_success_count} storage components"
+                    )
+
+            # If all storage operations failed, return error status and don't proceed with file deletion
+            if storage_success_count == 0 and storage_error_count > 0:
+                error_message = "All storage drop operations failed. Aborting document clearing process."
+                logger.error(error_message)
+                if "history_messages" in pipeline_status:
+                    pipeline_status["history_messages"].append(error_message)
+                return ClearDocumentsResponse(status="fail", message=error_message)
+
+            # Log file deletion start
+            if "history_messages" in pipeline_status:
+                pipeline_status["history_messages"].append(
+                    "Starting to delete files in input directory"
+                )
+
+            # Delete all files in input_dir
+            deleted_files_count = 0
+            file_errors_count = 0
+
+            for file_path in doc_manager.input_dir.glob("**/*"):
+                if file_path.is_file():
+                    try:
+                        file_path.unlink()
+                        deleted_files_count += 1
+                    except Exception as e:
+                        logger.error(f"Error deleting file {file_path}: {str(e)}")
+                        file_errors_count += 1
+
+            # Log file deletion results
+            if "history_messages" in pipeline_status:
+                if file_errors_count > 0:
+                    pipeline_status["history_messages"].append(
+                        f"Deleted {deleted_files_count} files with {file_errors_count} errors"
+                    )
+                    errors.append(f"Failed to delete {file_errors_count} files")
+                else:
+                    pipeline_status["history_messages"].append(
+                        f"Successfully deleted {deleted_files_count} files"
+                    )
+
+            # Prepare final result message
+            final_message = ""
+            if errors:
+                final_message = f"Cleared documents with some errors. Deleted {deleted_files_count} files."
+                status = "partial_success"
+            else:
+                final_message = f"All documents cleared successfully. Deleted {deleted_files_count} files."
+                status = "success"
+
+            # Log final result
+            if "history_messages" in pipeline_status:
+                pipeline_status["history_messages"].append(final_message)
+
+            # Return response based on results
+            return ClearDocumentsResponse(status=status, message=final_message)
         except Exception as e:
-            logger.error(f"Error DELETE /documents: {str(e)}")
+            error_msg = f"Error clearing documents: {str(e)}"
+            logger.error(error_msg)
             logger.error(traceback.format_exc())
+            if "history_messages" in pipeline_status:
+                pipeline_status["history_messages"].append(error_msg)
             raise HTTPException(status_code=500, detail=str(e))
+        finally:
+            # Reset busy status after completion
+            async with pipeline_status_lock:
+                pipeline_status["busy"] = False
+                completion_msg = "Document clearing process completed"
+                pipeline_status["latest_message"] = completion_msg
+                if "history_messages" in pipeline_status:
+                    pipeline_status["history_messages"].append(completion_msg)
 
     @router.get(
         "/pipeline_status",
@@ -850,7 +1208,9 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
-    @router.get("", dependencies=[Depends(combined_auth)])
+    @router.get(
+        "", response_model=DocsStatusesResponse, dependencies=[Depends(combined_auth)]
+    )
     async def documents() -> DocsStatusesResponse:
         """
         Get the status of all documents in the system.
@@ -905,6 +1265,59 @@ def create_document_routes(
             return response
         except Exception as e:
             logger.error(f"Error GET /documents: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @router.post(
+        "/clear_cache",
+        response_model=ClearCacheResponse,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def clear_cache(request: ClearCacheRequest):
+        """
+        Clear cache data from the LLM response cache storage.
+
+        This endpoint allows clearing specific modes of cache or all cache if no modes are specified.
+        Valid modes include: "default", "naive", "local", "global", "hybrid", "mix".
+        - "default" represents extraction cache.
+        - Other modes correspond to different query modes.
+
+        Args:
+            request (ClearCacheRequest): The request body containing optional modes to clear.
+
+        Returns:
+            ClearCacheResponse: A response object containing the status and message.
+
+        Raises:
+            HTTPException: If an error occurs during cache clearing (400 for invalid modes, 500 for other errors).
+        """
+        try:
+            # Validate modes if provided
+            valid_modes = ["default", "naive", "local", "global", "hybrid", "mix"]
+            if request.modes and not all(mode in valid_modes for mode in request.modes):
+                invalid_modes = [
+                    mode for mode in request.modes if mode not in valid_modes
+                ]
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid mode(s): {invalid_modes}. Valid modes are: {valid_modes}",
+                )
+
+            # Call the aclear_cache method
+            await rag.aclear_cache(request.modes)
+
+            # Prepare success message
+            if request.modes:
+                message = f"Successfully cleared cache for modes: {request.modes}"
+            else:
+                message = "Successfully cleared all cache"
+
+            return ClearCacheResponse(status="success", message=message)
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except Exception as e:
+            logger.error(f"Error clearing cache: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 

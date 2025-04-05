@@ -8,17 +8,15 @@ import uuid
 from ..utils import logger
 from ..base import BaseVectorStorage
 import configparser
-
-
-config = configparser.ConfigParser()
-config.read("config.ini", "utf-8")
-
 import pipmaster as pm
 
 if not pm.is_installed("qdrant-client"):
     pm.install("qdrant-client")
 
-from qdrant_client import QdrantClient, models
+from qdrant_client import QdrantClient, models  # type: ignore
+
+config = configparser.ConfigParser()
+config.read("config.ini", "utf-8")
 
 
 def compute_mdhash_id_for_qdrant(
@@ -275,3 +273,92 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error searching for prefix '{prefix}': {e}")
             return []
+
+    async def get_by_id(self, id: str) -> dict[str, Any] | None:
+        """Get vector data by its ID
+
+        Args:
+            id: The unique identifier of the vector
+
+        Returns:
+            The vector data if found, or None if not found
+        """
+        try:
+            # Convert to Qdrant compatible ID
+            qdrant_id = compute_mdhash_id_for_qdrant(id)
+
+            # Retrieve the point by ID
+            result = self._client.retrieve(
+                collection_name=self.namespace,
+                ids=[qdrant_id],
+                with_payload=True,
+            )
+
+            if not result:
+                return None
+
+            return result[0].payload
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for ID {id}: {e}")
+            return None
+
+    async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
+        """Get multiple vector data by their IDs
+
+        Args:
+            ids: List of unique identifiers
+
+        Returns:
+            List of vector data objects that were found
+        """
+        if not ids:
+            return []
+
+        try:
+            # Convert to Qdrant compatible IDs
+            qdrant_ids = [compute_mdhash_id_for_qdrant(id) for id in ids]
+
+            # Retrieve the points by IDs
+            results = self._client.retrieve(
+                collection_name=self.namespace,
+                ids=qdrant_ids,
+                with_payload=True,
+            )
+
+            return [point.payload for point in results]
+        except Exception as e:
+            logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
+            return []
+
+    async def drop(self) -> dict[str, str]:
+        """Drop all vector data from storage and clean up resources
+
+        This method will delete all data from the Qdrant collection.
+
+        Returns:
+            dict[str, str]: Operation status and message
+            - On success: {"status": "success", "message": "data dropped"}
+            - On failure: {"status": "error", "message": "<error details>"}
+        """
+        try:
+            # Delete the collection and recreate it
+            if self._client.collection_exists(self.namespace):
+                self._client.delete_collection(self.namespace)
+
+            # Recreate the collection
+            QdrantVectorDBStorage.create_collection_if_not_exist(
+                self._client,
+                self.namespace,
+                vectors_config=models.VectorParams(
+                    size=self.embedding_func.embedding_dim,
+                    distance=models.Distance.COSINE,
+                ),
+            )
+
+            logger.info(
+                f"Process {os.getpid()} drop Qdrant collection {self.namespace}"
+            )
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping Qdrant collection {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}
