@@ -11,6 +11,35 @@ import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
 
+// Helper function to generate a color based on type
+const getNodeColorByType = (nodeType: string | undefined): string => {
+  const defaultColor = '#CCCCCC'; // Default color for nodes without a type or undefined type
+  if (!nodeType) {
+    return defaultColor;
+  }
+
+  const typeColorMap = useGraphStore.getState().typeColorMap;
+
+  if (!typeColorMap.has(nodeType)) {
+    // Generate a color based on the type string itself for consistency
+    // Seed the global random number generator based on the node type
+    seedrandom(nodeType, { global: true });
+    // Call randomColor without arguments; it will use the globally seeded Math.random()
+    const newColor = randomColor();
+
+    const newMap = new Map(typeColorMap);
+    newMap.set(nodeType, newColor);
+    useGraphStore.setState({ typeColorMap: newMap });
+
+    return newColor;
+  }
+
+  // Restore the default random seed if necessary, though usually not required for this use case
+  // seedrandom(Date.now().toString(), { global: true });
+  return typeColorMap.get(nodeType) || defaultColor; // Add fallback just in case
+};
+
+
 const validateGraph = (graph: RawGraph) => {
   // Check if graph exists
   if (!graph) {
@@ -112,9 +141,6 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
       const node = rawData.nodes[i]
       nodeIdMap[node.id] = i
 
-      // const seed = node.labels.length > 0 ? node.labels[0] : node.id
-      seedrandom(node.id, { global: true })
-      node.color = randomColor()
       node.x = Math.random()
       node.y = Math.random()
       node.degree = 0
@@ -264,6 +290,7 @@ const useLightrangeGraph = () => {
   const nodeToExpand = useGraphStore.use.nodeToExpand()
   const nodeToPrune = useGraphStore.use.nodeToPrune()
 
+
   // Use ref to track if data has been loaded and initial load
   const dataLoadedRef = useRef(false)
   const initialLoadRef = useRef(false)
@@ -336,7 +363,7 @@ const useLightrangeGraph = () => {
       const currentMaxNodes = maxNodes
 
       // Declare a variable to store data promise
-      let dataPromise;
+      let dataPromise: Promise<{ rawGraph: RawGraph | null; is_truncated: boolean | undefined } | null>;
 
       // 1. If query label is not empty, use fetchGraph
       if (currentQueryLabel) {
@@ -352,7 +379,15 @@ const useLightrangeGraph = () => {
         const state = useGraphStore.getState()
         const data = result?.rawGraph;
 
-        // Check if data is truncated
+        // Assign colors based on entity_type *after* fetching
+        if (data && data.nodes) {
+          data.nodes.forEach(node => {
+            // Use entity_type instead of type
+            const nodeEntityType = node.properties?.entity_type as string | undefined;
+            node.color = getNodeColorByType(nodeEntityType);
+          });
+        }
+
         if (result?.is_truncated) {
           toast.info(t('graphPanel.dataIsTruncated', 'Graph data is truncated to Max Nodes'));
         }
