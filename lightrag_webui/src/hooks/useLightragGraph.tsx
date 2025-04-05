@@ -68,7 +68,13 @@ export type NodeType = {
   color: string
   highlighted?: boolean
 }
-export type EdgeType = { label: string }
+export type EdgeType = {
+  label: string
+  originalWeight?: number
+  size?: number
+  color?: string
+  hidden?: boolean
+}
 
 const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => {
   let rawData: any = null;
@@ -174,6 +180,9 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
 
 // Create a new graph instance with the raw graph data
 const createSigmaGraph = (rawGraph: RawGraph | null) => {
+  // Get edge size settings from store
+  const minEdgeSize = useSettingsStore.getState().minEdgeSize
+  const maxEdgeSize = useSettingsStore.getState().maxEdgeSize
   // Skip graph creation if no data or empty nodes
   if (!rawGraph || !rawGraph.nodes.length) {
     console.log('No graph data available, skipping sigma graph creation');
@@ -204,8 +213,40 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
 
   // Add edges from raw graph data
   for (const rawEdge of rawGraph?.edges ?? []) {
+    // Get weight from edge properties or default to 1
+    const weight = rawEdge.properties?.weight !== undefined ? Number(rawEdge.properties.weight) : 1
+
     rawEdge.dynamicId = graph.addDirectedEdge(rawEdge.source, rawEdge.target, {
-      label: rawEdge.properties?.keywords || undefined
+      label: rawEdge.properties?.keywords || undefined,
+      size: weight, // Set initial size based on weight
+      originalWeight: weight, // Store original weight for recalculation
+    })
+  }
+
+  // Calculate edge size based on weight range, similar to node size calculation
+  let minWeight = Number.MAX_SAFE_INTEGER
+  let maxWeight = 0
+
+  // Find min and max weight values
+  graph.forEachEdge(edge => {
+    const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
+    minWeight = Math.min(minWeight, weight)
+    maxWeight = Math.max(maxWeight, weight)
+  })
+
+  // Scale edge sizes based on weight range
+  const weightRange = maxWeight - minWeight
+  if (weightRange > 0) {
+    const sizeScale = maxEdgeSize - minEdgeSize
+    graph.forEachEdge(edge => {
+      const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
+      const scaledSize = minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5)
+      graph.setEdgeAttribute(edge, 'size', scaledSize)
+    })
+  } else {
+    // If all weights are the same, use default size
+    graph.forEachEdge(edge => {
+      graph.setEdgeAttribute(edge, 'size', minEdgeSize)
     })
   }
 
