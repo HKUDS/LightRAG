@@ -24,6 +24,12 @@ interface SettingsState {
   enableHideUnselectedEdges: boolean
   enableEdgeEvents: boolean
 
+  minEdgeSize: number
+  setMinEdgeSize: (size: number) => void
+
+  maxEdgeSize: number
+  setMaxEdgeSize: (size: number) => void
+
   graphQueryMaxDepth: number
   setGraphQueryMaxDepth: (depth: number) => void
 
@@ -75,6 +81,9 @@ const useSettingsStoreBase = create<SettingsState>()(
       showEdgeLabel: false,
       enableHideUnselectedEdges: true,
       enableEdgeEvents: false,
+
+      minEdgeSize: 1,
+      maxEdgeSize: 1,
 
       graphQueryMaxDepth: 3,
       graphMaxNodes: 1000,
@@ -132,6 +141,10 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setGraphMaxNodes: (nodes: number) => set({ graphMaxNodes: nodes }),
 
+      setMinEdgeSize: (size: number) => set({ minEdgeSize: size }),
+
+      setMaxEdgeSize: (size: number) => set({ maxEdgeSize: size }),
+
       setEnableHealthCheck: (enable: boolean) => set({ enableHealthCheck: enable }),
 
       setApiKey: (apiKey: string | null) => set({ apiKey }),
@@ -150,7 +163,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 10,
+      version: 11,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -199,6 +212,10 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 10) {
           delete state.graphMinDegree // 删除废弃参数
           state.graphMaxNodes = 1000  // 添加新参数
+        }
+        if (version < 11) {
+          state.minEdgeSize = 1
+          state.maxEdgeSize = 1
         }
         return state
       }
