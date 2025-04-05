@@ -16,6 +16,8 @@ interface SettingsState {
   // Graph viewer settings
   showPropertyPanel: boolean
   showNodeSearchBar: boolean
+  showLegend: boolean
+  setShowLegend: (show: boolean) => void
 
   showNodeLabel: boolean
   enableNodeDrag: boolean
@@ -74,6 +76,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       language: 'en',
       showPropertyPanel: true,
       showNodeSearchBar: true,
+      showLegend: false,
 
       showNodeLabel: true,
       enableNodeDrag: true,
@@ -158,7 +161,8 @@ const useSettingsStoreBase = create<SettingsState>()(
           querySettings: { ...state.querySettings, ...settings }
         })),
 
-      setShowFileName: (show: boolean) => set({ showFileName: show })
+      setShowFileName: (show: boolean) => set({ showFileName: show }),
+      setShowLegend: (show: boolean) => set({ showLegend: show })
     }),
     {
       name: 'settings-storage',
