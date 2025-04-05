@@ -210,7 +210,7 @@ const GraphViewer = () => {
         )}
 
         {showLegend && (
-          <div className="absolute bottom-10 left-15">
+          <div className="absolute bottom-10 right-2">
             <Legend className="bg-background/60 backdrop-blur-lg" />
           </div>
         )}
