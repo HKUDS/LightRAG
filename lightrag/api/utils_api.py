@@ -173,7 +173,7 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     # Banner
     ASCIIColors.cyan(f"""
     ╔══════════════════════════════════════════════════════════════╗
-    ║                   🚀 LightRAG Server v{core_version}/{api_version}            ║
+    ║                  🚀 LightRAG Server v{core_version}/{api_version}              ║
     ║          Fast, Lightweight RAG Server Implementation         ║
     ╚══════════════════════════════════════════════════════════════╝
     """)
