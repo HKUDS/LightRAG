@@ -655,7 +655,7 @@ The `apipeline_enqueue_documents` and `apipeline_process_enqueue_documents` func
 
 This is useful for scenarios where you want to process documents in the background while still allowing the main thread to continue executing.
 
-And using a routine to process news documents.
+And using a routine to process new documents.
 
 ```python
 rag = LightRAG(..)
