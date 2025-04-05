@@ -310,7 +310,7 @@ export default function Settings() {
                   }}
                   className="h-6 w-16 min-w-0 pr-1"
                   min={1}
-                  max={maxEdgeSize}
+                  max={Math.min(maxEdgeSize, 10)}
                 />
                 <span>-</span>
                 <Input
@@ -318,12 +318,13 @@ export default function Settings() {
                   value={maxEdgeSize}
                   onChange={(e) => {
                     const newValue = Number(e.target.value);
-                    if (!isNaN(newValue) && newValue >= minEdgeSize && newValue >= 1) {
+                    if (!isNaN(newValue) && newValue >= minEdgeSize && newValue >= 1 && newValue <= 10) {
                       useSettingsStore.setState({ maxEdgeSize: newValue });
                     }
                   }}
                   className="h-6 w-16 min-w-0 pr-1"
                   min={minEdgeSize}
+                  max={10}
                 />
               </div>
             </div>
