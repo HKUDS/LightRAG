@@ -375,29 +375,28 @@ const useLightrangeGraph = () => {
       }
 
       // 3. Process data
-      dataPromise.then((data) => {
-        // 提取 rawGraph 数据
-        const rawGraphData = data?.rawGraph;
+      dataPromise.then((result) => {
+        const state = useGraphStore.getState()
+        const data = result?.rawGraph;
         
         // Assign colors based on entity_type *after* fetching
-        if (rawGraphData && rawGraphData.nodes) {
-          rawGraphData.nodes.forEach(node => {
+        if (data && data.nodes) {
+          data.nodes.forEach(node => {
             // Use entity_type instead of type
             const nodeEntityType = node.properties?.entity_type as string | undefined;
             node.color = getNodeColorByType(nodeEntityType);
           });
         }
 
-        if (data?.is_truncated) {
+        if (result?.is_truncated) {
           toast.info(t('graphPanel.dataIsTruncated', 'Graph data is truncated to Max Nodes'));
         }
 
         // Reset state
-        const state = useGraphStore.getState()
         state.reset()
 
         // Check if data is empty or invalid
-        if (!rawGraphData || !rawGraphData.nodes || rawGraphData.nodes.length === 0) {
+        if (!data || !data.nodes || data.nodes.length === 0) {
           // Create a graph with a single "Graph Is Empty" node
           const emptyGraph = new DirectedGraph();
 
@@ -438,12 +437,12 @@ const useLightrangeGraph = () => {
           console.log(`Graph data is empty, created graph with empty graph node. Auth error: ${isAuthError}`);
         } else {
           // Create and set new graph
-          const newSigmaGraph = createSigmaGraph(rawGraphData);
-          rawGraphData.buildDynamicMap();
+          const newSigmaGraph = createSigmaGraph(data);
+          data.buildDynamicMap();
 
           // Set new graph data
           state.setSigmaGraph(newSigmaGraph);
-          state.setRawGraph(rawGraphData);
+          state.setRawGraph(data);
           state.setGraphIsEmpty(false);
 
           // Update last successful query label
@@ -460,7 +459,7 @@ const useLightrangeGraph = () => {
         state.setIsFetching(false)
 
         // Mark empty data as handled if data is empty and query label is empty
-        if ((!rawGraphData || !rawGraphData.nodes || rawGraphData.nodes.length === 0) && !currentQueryLabel) {
+        if ((!data || !data.nodes || data.nodes.length === 0) && !currentQueryLabel) {
           emptyDataHandledRef.current = true;
         }
       }).catch((error) => {
@@ -508,9 +507,9 @@ const useLightrangeGraph = () => {
         // Process nodes to add required properties for RawNodeType
         const processedNodes: RawNodeType[] = [];
         for (const node of extendedGraph.nodes) {
-          // Get color based on entity_type using the helper function
-          const nodeEntityType = node.properties?.entity_type as string | undefined;
-          const color = getNodeColorByType(nodeEntityType);
+          // Generate random color values
+          seedrandom(node.id, { global: true });
+          const color = randomColor();
 
           // Create a properly typed RawNodeType
           processedNodes.push({
