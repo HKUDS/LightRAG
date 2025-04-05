@@ -378,7 +378,7 @@ const useLightrangeGraph = () => {
       dataPromise.then((result) => {
         const state = useGraphStore.getState()
         const data = result?.rawGraph;
-        
+
         // Assign colors based on entity_type *after* fetching
         if (data && data.nodes) {
           data.nodes.forEach(node => {
