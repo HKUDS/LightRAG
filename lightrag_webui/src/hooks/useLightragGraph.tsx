@@ -342,15 +342,23 @@ const useLightrangeGraph = () => {
           // Still mark graph as empty for other logic
           state.setGraphIsEmpty(true);
 
-          // Only clear current label if it's not already empty
-          if (currentQueryLabel) {
+          // Check if the empty graph is due to 401 authentication error
+          const errorMessage = useBackendState.getState().message;
+          const isAuthError = errorMessage && errorMessage.includes('Authentication required');
+
+          // Only clear queryLabel if it's not an auth error and current label is not empty
+          if (!isAuthError && currentQueryLabel) {
             useSettingsStore.getState().setQueryLabel('');
           }
 
-          // Clear last successful query label to ensure labels are fetched next time
-          state.setLastSuccessfulQueryLabel('');
+          // Only clear last successful query label if it's not an auth error
+          if (!isAuthError) {
+            state.setLastSuccessfulQueryLabel('');
+          } else {
+            console.log('Keep queryLabel for post-login reload');
+          }
 
-          console.log('Graph data is empty, created graph with empty graph node');
+          console.log(`Graph data is empty, created graph with empty graph node. Auth error: ${isAuthError}`);
         } else {
           // Create and set new graph
           const newSigmaGraph = createSigmaGraph(data);
