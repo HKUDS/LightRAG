@@ -313,19 +313,31 @@ export default function Settings() {
                   max={Math.min(maxEdgeSize, 10)}
                 />
                 <span>-</span>
-                <Input
-                  type="number"
-                  value={maxEdgeSize}
-                  onChange={(e) => {
-                    const newValue = Number(e.target.value);
-                    if (!isNaN(newValue) && newValue >= minEdgeSize && newValue >= 1 && newValue <= 10) {
-                      useSettingsStore.setState({ maxEdgeSize: newValue });
-                    }
-                  }}
-                  className="h-6 w-16 min-w-0 pr-1"
-                  min={minEdgeSize}
-                  max={10}
-                />
+                <div className="flex items-center gap-1">
+                  <Input
+                    type="number"
+                    value={maxEdgeSize}
+                    onChange={(e) => {
+                      const newValue = Number(e.target.value);
+                      if (!isNaN(newValue) && newValue >= minEdgeSize && newValue >= 1 && newValue <= 10) {
+                        useSettingsStore.setState({ maxEdgeSize: newValue });
+                      }
+                    }}
+                    className="h-6 w-16 min-w-0 pr-1"
+                    min={minEdgeSize}
+                    max={10}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 flex-shrink-0 hover:bg-muted text-muted-foreground hover:text-foreground"
+                    onClick={() => useSettingsStore.setState({ minEdgeSize: 1, maxEdgeSize: 5 })}
+                    type="button"
+                    title={t('graphPanel.sideBar.settings.resetToDefault')}
+                  >
+                    <Undo2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
               </div>
             </div>
 
