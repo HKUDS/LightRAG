@@ -103,14 +103,16 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
             {t('documentPanel.clearDocuments.title')}
           </DialogTitle>
           <DialogDescription className="pt-2">
-            <div className="text-red-500 dark:text-red-400 font-semibold mb-4">
-              {t('documentPanel.clearDocuments.warning')}
-            </div>
-            <div className="mb-4">
-              {t('documentPanel.clearDocuments.confirm')}
-            </div>
+            {t('documentPanel.clearDocuments.description')}
           </DialogDescription>
         </DialogHeader>
+
+        <div className="text-red-500 dark:text-red-400 font-semibold mb-4">
+          {t('documentPanel.clearDocuments.warning')}
+        </div>
+        <div className="mb-4">
+          {t('documentPanel.clearDocuments.confirm')}
+        </div>
 
         <div className="space-y-4">
           <div className="space-y-2">
