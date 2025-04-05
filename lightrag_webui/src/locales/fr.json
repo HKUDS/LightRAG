@@ -40,6 +40,7 @@
       "button": "Effacer",
       "tooltip": "Effacer les documents",
       "title": "Effacer les documents",
+      "description": "Cette action supprimera tous les documents du système",
       "warning": "ATTENTION : Cette action supprimera définitivement tous les documents et ne peut pas être annulée !",
       "confirm": "Voulez-vous vraiment effacer tous les documents ?",
       "confirmPrompt": "Tapez 'yes' pour confirmer cette action",

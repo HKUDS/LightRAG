@@ -40,6 +40,7 @@
       "button": "Clear",
       "tooltip": "Clear documents",
       "title": "Clear Documents",
+      "description": "This will remove all documents from the system",
       "warning": "WARNING: This action will permanently delete all documents and cannot be undone!",
       "confirm": "Do you really want to clear all documents?",
       "confirmPrompt": "Type 'yes' to confirm this action",
