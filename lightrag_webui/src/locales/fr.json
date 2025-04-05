@@ -157,6 +157,7 @@
         "maxNodes": "Nombre maximum de nœuds",
         "maxLayoutIterations": "Itérations maximales de mise en page",
         "resetToDefault": "Réinitialiser par défaut",
+        "edgeSizeRange": "Plage de taille des arêtes",
         "depth": "D",
         "max": "Max",
         "degree": "Degré",

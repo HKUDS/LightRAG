@@ -157,6 +157,7 @@
         "maxNodes": "الحد الأقصى للعقد",
         "maxLayoutIterations": "أقصى تكرارات التخطيط",
         "resetToDefault": "إعادة التعيين إلى الافتراضي",
+        "edgeSizeRange": "نطاق حجم الحافة",
         "depth": "D",
         "max": "Max",
         "degree": "الدرجة",

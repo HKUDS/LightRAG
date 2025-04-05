@@ -157,6 +157,7 @@
         "maxNodes": "Max Nodes",
         "maxLayoutIterations": "Max Layout Iterations",
         "resetToDefault": "Reset to default",
+        "edgeSizeRange": "Edge Size Range",
         "depth": "D",
         "max": "Max",
         "degree": "Degree",

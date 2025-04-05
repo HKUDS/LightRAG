@@ -144,6 +144,8 @@ export default function Settings() {
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
   const enableHideUnselectedEdges = useSettingsStore.use.enableHideUnselectedEdges()
   const showEdgeLabel = useSettingsStore.use.showEdgeLabel()
+  const minEdgeSize = useSettingsStore.use.minEdgeSize()
+  const maxEdgeSize = useSettingsStore.use.maxEdgeSize()
   const graphQueryMaxDepth = useSettingsStore.use.graphQueryMaxDepth()
   const graphMaxNodes = useSettingsStore.use.graphMaxNodes()
   const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
@@ -291,6 +293,40 @@ export default function Settings() {
               onCheckedChange={setEnableEdgeEvents}
               label={t('graphPanel.sideBar.settings.edgeEvents')}
             />
+
+            <div className="flex flex-col gap-2">
+              <label className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                {t('graphPanel.sideBar.settings.edgeSizeRange')}
+              </label>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  value={minEdgeSize}
+                  onChange={(e) => {
+                    const newValue = Number(e.target.value);
+                    if (!isNaN(newValue) && newValue >= 1 && newValue <= maxEdgeSize) {
+                      useSettingsStore.setState({ minEdgeSize: newValue });
+                    }
+                  }}
+                  className="h-6 w-16 min-w-0 pr-1"
+                  min={1}
+                  max={maxEdgeSize}
+                />
+                <span>-</span>
+                <Input
+                  type="number"
+                  value={maxEdgeSize}
+                  onChange={(e) => {
+                    const newValue = Number(e.target.value);
+                    if (!isNaN(newValue) && newValue >= minEdgeSize && newValue >= 1) {
+                      useSettingsStore.setState({ maxEdgeSize: newValue });
+                    }
+                  }}
+                  className="h-6 w-16 min-w-0 pr-1"
+                  min={minEdgeSize}
+                />
+              </div>
+            </div>
 
             <Separator />
             <LabeledNumberInput
