@@ -80,7 +80,12 @@ const AppRouter = () => {
     <ThemeProvider>
       <Router>
         <AppContent />
-        <Toaster position="bottom-center" />
+        <Toaster
+          position="bottom-center"
+          theme="system"
+          closeButton
+          richColors
+        />
       </Router>
     </ThemeProvider>
   )

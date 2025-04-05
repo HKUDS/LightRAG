@@ -32,14 +32,24 @@
     "authDisabled": "认证已禁用，使用无需登陆模式。",
     "guestMode": "无需登陆"
   },
+  "common": {
+    "cancel": "取消"
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "清空",
       "tooltip": "清空文档",
       "title": "清空文档",
+      "description": "此操作将从系统中移除所有文档",
+      "warning": "警告：此操作将永久删除所有文档，无法恢复！",
       "confirm": "确定要清空所有文档吗？",
+      "confirmPrompt": "请输入 yes 确认操作",
+      "confirmPlaceholder": "输入 yes 确认",
+      "clearCache": "清空LLM缓存",
       "confirmButton": "确定",
       "success": "文档清空成功",
+      "cacheCleared": "缓存清空成功",
+      "cacheClearFailed": "清空缓存失败：\n{{error}}",
       "failed": "清空文档失败：\n{{message}}",
       "error": "清空文档失败：\n{{error}}"
     },
@@ -95,6 +105,7 @@
         "metadata": "元数据"
       },
       "status": {
+        "all": "全部",
         "completed": "已完成",
         "processing": "处理中",
         "pending": "等待中",
@@ -127,6 +138,11 @@
     }
   },
   "graphPanel": {
+    "dataIsTruncated": "图数据已截断至最大返回节点数",
+    "statusDialog": {
+      "title": "LightRAG 服务器设置"
+    },
+    "legend": "图例",
     "sideBar": {
       "settings": {
         "settings": "设置",
@@ -139,9 +155,12 @@
         "hideUnselectedEdges": "隐藏未选中的边",
         "edgeEvents": "边事件",
         "maxQueryDepth": "最大查询深度",
-        "minDegree": "最小邻边数",
+        "maxNodes": "最大返回节点数",
         "maxLayoutIterations": "最大布局迭代次数",
-        "depth": "深度",
+        "resetToDefault": "重置为默认值",
+        "edgeSizeRange": "边粗细范围",
+        "depth": "深",
+        "max": "Max",
         "degree": "邻边",
         "apiKey": "API密钥",
         "enterYourAPIkey": "输入您的API密钥",
@@ -171,6 +190,9 @@
       "fullScreenControl": {
         "fullScreen": "全屏",
         "windowed": "窗口"
+      },
+      "legendControl": {
+        "toggleLegend": "切换图例显示"
       }
     },
     "statusIndicator": {

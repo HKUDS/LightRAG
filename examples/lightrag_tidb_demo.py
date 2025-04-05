@@ -1,3 +1,7 @@
+###########################################
+# TiDB storage implementation is deprecated
+###########################################
+
 import asyncio
 import os
 

@@ -16,6 +16,8 @@ interface SettingsState {
   // Graph viewer settings
   showPropertyPanel: boolean
   showNodeSearchBar: boolean
+  showLegend: boolean
+  setShowLegend: (show: boolean) => void
 
   showNodeLabel: boolean
   enableNodeDrag: boolean
@@ -24,11 +26,17 @@ interface SettingsState {
   enableHideUnselectedEdges: boolean
   enableEdgeEvents: boolean
 
+  minEdgeSize: number
+  setMinEdgeSize: (size: number) => void
+
+  maxEdgeSize: number
+  setMaxEdgeSize: (size: number) => void
+
   graphQueryMaxDepth: number
   setGraphQueryMaxDepth: (depth: number) => void
 
-  graphMinDegree: number
-  setGraphMinDegree: (degree: number) => void
+  graphMaxNodes: number
+  setGraphMaxNodes: (nodes: number) => void
 
   graphLayoutMaxIterations: number
   setGraphLayoutMaxIterations: (iterations: number) => void
@@ -68,6 +76,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       language: 'en',
       showPropertyPanel: true,
       showNodeSearchBar: true,
+      showLegend: false,
 
       showNodeLabel: true,
       enableNodeDrag: true,
@@ -76,8 +85,11 @@ const useSettingsStoreBase = create<SettingsState>()(
       enableHideUnselectedEdges: true,
       enableEdgeEvents: false,
 
+      minEdgeSize: 1,
+      maxEdgeSize: 1,
+
       graphQueryMaxDepth: 3,
-      graphMinDegree: 0,
+      graphMaxNodes: 1000,
       graphLayoutMaxIterations: 15,
 
       queryLabel: defaultQueryLabel,
@@ -130,7 +142,11 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setGraphQueryMaxDepth: (depth: number) => set({ graphQueryMaxDepth: depth }),
 
-      setGraphMinDegree: (degree: number) => set({ graphMinDegree: degree }),
+      setGraphMaxNodes: (nodes: number) => set({ graphMaxNodes: nodes }),
+
+      setMinEdgeSize: (size: number) => set({ minEdgeSize: size }),
+
+      setMaxEdgeSize: (size: number) => set({ maxEdgeSize: size }),
 
       setEnableHealthCheck: (enable: boolean) => set({ enableHealthCheck: enable }),
 
@@ -145,12 +161,13 @@ const useSettingsStoreBase = create<SettingsState>()(
           querySettings: { ...state.querySettings, ...settings }
         })),
 
-      setShowFileName: (show: boolean) => set({ showFileName: show })
+      setShowFileName: (show: boolean) => set({ showFileName: show }),
+      setShowLegend: (show: boolean) => set({ showLegend: show })
     }),
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 9,
+      version: 11,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -195,6 +212,14 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 9) {
           state.showFileName = false
+        }
+        if (version < 10) {
+          delete state.graphMinDegree // 删除废弃参数
+          state.graphMaxNodes = 1000  // 添加新参数
+        }
+        if (version < 11) {
+          state.minEdgeSize = 1
+          state.maxEdgeSize = 1
         }
         return state
       }

@@ -36,6 +36,8 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   const enableEdgeEvents = useSettingsStore.use.enableEdgeEvents()
   const renderEdgeLabels = useSettingsStore.use.showEdgeLabel()
   const renderLabels = useSettingsStore.use.showNodeLabel()
+  const minEdgeSize = useSettingsStore.use.minEdgeSize()
+  const maxEdgeSize = useSettingsStore.use.maxEdgeSize()
   const selectedNode = useGraphStore.use.selectedNode()
   const focusedNode = useGraphStore.use.focusedNode()
   const selectedEdge = useGraphStore.use.selectedEdge()
@@ -135,6 +137,51 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     // Register the events
     registerEvents(events)
   }, [registerEvents, enableEdgeEvents])
+
+  /**
+   * When edge size settings change, recalculate edge sizes and refresh the sigma instance
+   * to ensure changes take effect immediately
+   */
+  useEffect(() => {
+    if (sigma && sigmaGraph) {
+      // Get the graph from sigma
+      const graph = sigma.getGraph()
+
+      // Find min and max weight values
+      let minWeight = Number.MAX_SAFE_INTEGER
+      let maxWeight = 0
+
+      graph.forEachEdge(edge => {
+        // Get original weight (before scaling)
+        const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
+        if (typeof weight === 'number') {
+          minWeight = Math.min(minWeight, weight)
+          maxWeight = Math.max(maxWeight, weight)
+        }
+      })
+
+      // Scale edge sizes based on weight range and current min/max edge size settings
+      const weightRange = maxWeight - minWeight
+      if (weightRange > 0) {
+        const sizeScale = maxEdgeSize - minEdgeSize
+        graph.forEachEdge(edge => {
+          const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
+          if (typeof weight === 'number') {
+            const scaledSize = minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5)
+            graph.setEdgeAttribute(edge, 'size', scaledSize)
+          }
+        })
+      } else {
+        // If all weights are the same, use default size
+        graph.forEachEdge(edge => {
+          graph.setEdgeAttribute(edge, 'size', minEdgeSize)
+        })
+      }
+
+      // Refresh the sigma instance to apply changes
+      sigma.refresh()
+    }
+  }, [sigma, sigmaGraph, minEdgeSize, maxEdgeSize])
 
   /**
    * When component mount or hovered node change

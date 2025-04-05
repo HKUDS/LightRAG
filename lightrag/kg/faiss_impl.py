@@ -11,15 +11,19 @@ import pipmaster as pm
 from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
 
-if not pm.is_installed("faiss"):
-    pm.install("faiss")
-
-import faiss  # type: ignore
 from .shared_storage import (
     get_storage_lock,
     get_update_flag,
     set_all_update_flags,
 )
+
+import faiss  # type: ignore
+
+USE_GPU = os.getenv("FAISS_USE_GPU", "0") == "1"
+FAISS_PACKAGE = "faiss-gpu" if USE_GPU else "faiss-cpu"
+
+if not pm.is_installed(FAISS_PACKAGE):
+    pm.install(FAISS_PACKAGE)
 
 
 @final
@@ -217,6 +221,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def delete(self, ids: list[str]):
         """
         Delete vectors for the provided custom IDs.
+
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
         """
         logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
         to_remove = []
@@ -232,13 +241,22 @@ class FaissVectorDBStorage(BaseVectorStorage):
         )
 
     async def delete_entity(self, entity_name: str) -> None:
+        """
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
         entity_id = compute_mdhash_id(entity_name, prefix="ent-")
         logger.debug(f"Attempting to delete entity {entity_name} with ID {entity_id}")
         await self.delete([entity_id])
 
     async def delete_entity_relation(self, entity_name: str) -> None:
         """
-        Delete relations for a given entity by scanning metadata.
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
         """
         logger.debug(f"Searching relations for entity {entity_name}")
         relations = []
@@ -429,3 +447,44 @@ class FaissVectorDBStorage(BaseVectorStorage):
                     results.append({**metadata, "id": metadata.get("__id__")})
 
         return results
+
+    async def drop(self) -> dict[str, str]:
+        """Drop all vector data from storage and clean up resources
+
+        This method will:
+        1. Remove the vector database storage file if it exists
+        2. Reinitialize the vector database client
+        3. Update flags to notify other processes
+        4. Changes is persisted to disk immediately
+
+        This method will remove all vectors from the Faiss index and delete the storage files.
+
+        Returns:
+            dict[str, str]: Operation status and message
+            - On success: {"status": "success", "message": "data dropped"}
+            - On failure: {"status": "error", "message": "<error details>"}
+        """
+        try:
+            async with self._storage_lock:
+                # Reset the index
+                self._index = faiss.IndexFlatIP(self._dim)
+                self._id_to_meta = {}
+
+                # Remove storage files if they exist
+                if os.path.exists(self._faiss_index_file):
+                    os.remove(self._faiss_index_file)
+                if os.path.exists(self._meta_file):
+                    os.remove(self._meta_file)
+
+                self._id_to_meta = {}
+                self._load_faiss_index()
+
+                # Notify other processes
+                await set_all_update_flags(self.namespace)
+                self.storage_updated.value = False
+
+                logger.info(f"Process {os.getpid()} drop FAISS index {self.namespace}")
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping FAISS index {self.namespace}: {e}")
+            return {"status": "error", "message": str(e)}

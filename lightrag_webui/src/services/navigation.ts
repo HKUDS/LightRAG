@@ -32,7 +32,7 @@ class NavigationService {
     // Reset backend state
     useBackendState.getState().clear();
 
-    // Reset retrieval history while preserving other user preferences
+    // Reset retrieval history message while preserving other user preferences
     useSettingsStore.getState().setRetrievalHistory([]);
 
     // Clear authentication state
