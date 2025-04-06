@@ -140,7 +140,8 @@
   "graphPanel": {
     "dataIsTruncated": "Graph data is truncated to Max Nodes",
     "statusDialog": {
-      "title": "LightRAG Server Settings"
+      "title": "LightRAG Server Settings",
+      "description": "View current system status and connection information"
     },
     "legend": "Legend",
     "nodeTypes": {
