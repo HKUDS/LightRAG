@@ -20,7 +20,7 @@ const NODE_COLORS = [
   '#a64dff', // Purple - technology
   '#f46a9b', // Magenta
   '#00bfa0', // Turquoise
-  '#fdcce5', // Light Pink
+  '#fdcce5', // Pale Pink
   '#0f558a', // Blue - location
   '#b2e061', // Yellow Green
   '#bd7ebe', // Light Violet - event
@@ -40,7 +40,7 @@ const EXTENDED_COLORS = [
   '#996600', // Yellow Brown
   '#4421af', // Deep Purple
   '#E67E22', // Carrot
-  '#e61919', // Light Red
+  '#ff1a1a', // Pure Red
 ];
 
 // All available colors combined
