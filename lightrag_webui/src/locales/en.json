@@ -143,6 +143,19 @@
       "title": "LightRAG Server Settings"
     },
     "legend": "Legend",
+    "nodeTypes": {
+      "person": "Person",
+      "category": "Category",
+      "geo": "Geographic",
+      "location": "Location",
+      "organization": "Organization",
+      "event": "Event",
+      "equipment": "Equipment",
+      "weapon": "Weapon",
+      "animal": "Animal",
+      "unknown": "Unknown",
+      "technology": "Technology"
+    },
     "sideBar": {
       "settings": {
         "settings": "Settings",

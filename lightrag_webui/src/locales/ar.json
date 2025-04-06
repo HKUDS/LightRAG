@@ -143,6 +143,19 @@
       "title": "إعدادات خادم LightRAG"
     },
     "legend": "المفتاح",
+    "nodeTypes": {
+      "person": "شخص",
+      "category": "فئة",
+      "geo": "كيان جغرافي",
+      "location": "موقع",
+      "organization": "منظمة",
+      "event": "حدث",
+      "equipment": "معدات",
+      "weapon": "سلاح",
+      "animal": "حيوان",
+      "unknown": "غير معروف",
+      "technology": "العلوم"
+    },
     "sideBar": {
       "settings": {
         "settings": "الإعدادات",
