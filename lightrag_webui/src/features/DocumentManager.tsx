@@ -507,8 +507,8 @@ export default function DocumentManager() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <label 
-                  htmlFor="toggle-filename-btn" 
+                <label
+                  htmlFor="toggle-filename-btn"
                   className="text-sm text-gray-500"
                 >
                   {t('documentPanel.documentManager.fileNameLabel')}
