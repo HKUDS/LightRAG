@@ -24,6 +24,9 @@ DEFAULT_CONFIG = {
     "request_timeout": float(os.environ.get("REQUEST_TIMEOUT", "60.0")),
     "max_retries": int(os.environ.get("MAX_RETRIES", "3")),
     
+    # 嵌入向量设置
+    "generate_embeddings": os.environ.get("GENERATE_EMBEDDINGS", "true").lower() in ("true", "1", "yes"),
+    
     # 日志设置
     "log_level": os.environ.get("LOG_LEVEL", "INFO").upper(),
 }

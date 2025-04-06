@@ -9,14 +9,79 @@ import sys
 import logging
 import argparse
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, List
 
-from graph_tools.models import Config
+from graph_tools.models import Config, Entity
 from graph_tools.config_loader import load_app_config, setup_logging, load_schema_config
 from graph_tools.utils import load_json_data, save_cypher_to_file, normalize_data_format
 from graph_tools.processing import process_document_structure, extract_semantic_info, create_contains_relations
 from graph_tools.cypher_generator import generate_cypher_statements
 from graph_tools.llm_client import LLMClient
+from graph_tools.vector_service import get_embedding, SILICONFLOW_API_KEY
+
+# 用于格式化实体文本以生成嵌入
+def format_entity_text_for_embedding(entity: Entity) -> str:
+    """根据实体属性格式化文本用于嵌入"""
+    text_parts = []
+    
+    if entity.type:
+        text_parts.append(f"类型: {entity.type}")
+    if entity.name:
+        text_parts.append(f"名称: {entity.name}")
+    if entity.description and entity.description != entity.name:  # 避免重复
+        text_parts.append(f"描述: {entity.description}")
+    if entity.main_category:
+        text_parts.append(f"主分类: {entity.main_category}")
+    if entity.source:
+        text_parts.append(f"来源: {entity.source}")
+        
+    return ", ".join(text_parts)
+
+# 批量生成实体嵌入向量
+async def generate_entity_embeddings(entities: List[Entity], batch_size: int = 8) -> List[Entity]:
+    """
+    为实体生成嵌入向量
+    
+    Args:
+        entities: 实体列表
+        batch_size: 批处理大小
+        
+    Returns:
+        更新了嵌入向量的实体列表
+    """
+    updated_entities = []
+    total = len(entities)
+    
+    logging.info(f"开始为 {total} 个实体生成嵌入向量...")
+    
+    for i in range(0, total, batch_size):
+        batch = entities[i:i+batch_size]
+        batch_texts = [format_entity_text_for_embedding(entity) for entity in batch]
+        
+        try:
+            # 批量获取嵌入向量
+            embeddings = await get_embedding(batch_texts, SILICONFLOW_API_KEY)
+            
+            # 更新实体的嵌入向量
+            for j, entity in enumerate(batch):
+                entity.vector = embeddings[j]
+                updated_entities.append(entity)
+                
+            logging.info(f"已处理 {min(i+batch_size, total)}/{total} 个实体")
+            
+            # 添加延迟避免API请求过快
+            if i + batch_size < total:
+                await asyncio.sleep(0.5)
+                
+        except Exception as e:
+            logging.error(f"处理实体批次时出错: {str(e)}")
+            # 仍然添加未处理的实体以保持完整性
+            for entity in batch:
+                if entity.vector is None:
+                    updated_entities.append(entity)
+    
+    logging.info(f"嵌入向量生成完成，成功处理 {len([e for e in updated_entities if e.vector is not None])}/{total} 个实体")
+    return updated_entities
 
 async def main_async(input_json_path: str, config_path: str, output_cypher_path: str, app_config: Dict[str, Any]):
     """
@@ -78,7 +143,17 @@ async def main_async(input_json_path: str, config_path: str, output_cypher_path:
         
         logging.info(f"总共有 {len(all_entities)} 个实体和 {len(all_relations)} 个关系。")
         
-        # 8. 生成Cypher语句并保存
+        # 8. 为实体生成嵌入向量
+        logging.info("为实体生成嵌入向量...")
+        if app_config.get("generate_embeddings", True):
+            # 为所有实体生成嵌入向量，包括结构实体和语义实体
+            updated_entities = await generate_entity_embeddings(all_entities)
+            all_entities = updated_entities
+            logging.info(f"已为 {len([e for e in all_entities if e.vector is not None])} 个实体生成嵌入向量。")
+        else:
+            logging.info("嵌入向量生成已禁用。")
+        
+        # 9. 生成Cypher语句并保存
         logging.info("生成Cypher语句...")
         cypher_statements = generate_cypher_statements(all_entities, all_relations, schema_config)
         save_cypher_to_file(cypher_statements, output_cypher_path)
@@ -102,6 +177,8 @@ def main():
     parser.add_argument('-c', '--config', required=True, help='配置YAML文件路径 (必须)')
     parser.add_argument('-l', '--log-level', choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         default=None, help='日志级别，默认使用环境变量LOG_LEVEL或INFO')
+    parser.add_argument('--embeddings', action='store_true', help='为实体生成嵌入向量')
+    parser.add_argument('--no-embeddings', action='store_true', help='不为实体生成嵌入向量')
     
     args = parser.parse_args()
     
@@ -119,6 +196,14 @@ def main():
         }
         app_config["log_level"] = args.log_level
         app_config["logging_level"] = log_level_map.get(args.log_level, logging.INFO)
+    
+    # 处理嵌入向量生成设置
+    if args.embeddings and args.no_embeddings:
+        logging.warning("--embeddings和--no-embeddings选项不能同时使用，将使用默认设置。")
+    elif args.embeddings:
+        app_config["generate_embeddings"] = True
+    elif args.no_embeddings:
+        app_config["generate_embeddings"] = False
     
     # 设置日志
     setup_logging(app_config)
@@ -154,14 +239,21 @@ def main():
         logging.error(f"输入文件不存在: {input_path}")
         return
     
-    # 运行异步主函数
+    # 记录生成嵌入向量的设置
+    if app_config["generate_embeddings"]:
+        logging.info("将为实体生成嵌入向量")
+    else:
+        logging.info("不生成嵌入向量")
+    
+    # 启动异步处理流程
     try:
         asyncio.run(main_async(input_path, config_path, output_path, app_config))
     except KeyboardInterrupt:
-        logging.info("\n任务被用户中断。")
+        logging.info("用户中断程序")
     except Exception as e:
-        logging.error(f"执行过程中发生错误: {e}")
+        logging.error(f"程序执行过程中发生错误: {e}")
         logging.exception("详细错误信息:")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main() 

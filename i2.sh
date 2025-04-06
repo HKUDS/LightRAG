@@ -1,0 +1,1 @@
+python tests/import_to_memgraph.py tests/output.cypher 

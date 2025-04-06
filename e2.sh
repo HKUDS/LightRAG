@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 设置默认输入文件
-DEFAULT_INPUT_FILE="tests/demo3_merged_with_summary.json"
+DEFAULT_INPUT_FILE="tests/demo3_with_summary.json"
 
 # 检查是否提供了输入文件参数
 if [ $# -lt 1 ]; then
@@ -36,6 +36,7 @@ mkdir -p "$OUTPUT_DIR"
 # 构建输出文件路径
 OUTPUT_FILE="$OUTPUT_DIR/$FILENAME.cypher"
 
+
 # 运行实体提取工具
 if ! ./graph_tools/entity_extract -i "$INPUT_FILE" -o "$OUTPUT_FILE" -c "$CONFIG_FILE"; then
   echo "错误: 实体提取失败"
@@ -53,15 +54,16 @@ fi
 
 echo "导入数据到Memgraph..."
 # 检查Python脚本是否存在
-if [ ! -f "graph_tools/import_to_memgraph.py" ]; then
+if [ ! -f "tests/import_to_memgraph.py" ]; then
   echo "错误: 导入脚本 'tests/import_to_memgraph.py' 不存在"
   exit 1
 fi
 
 # 运行导入脚本
-if ! python graph_tools/import_to_memgraph.py "$OUTPUT_FILE"; then
+if ! python tests/import_to_memgraph.py "$OUTPUT_FILE"; then
   echo "错误: 数据导入失败"
   exit 1
 fi
 
-echo "处理完成!" 
+echo "处理完成!"
+

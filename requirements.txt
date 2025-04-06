@@ -1,6 +1,8 @@
-aiohttp
-configparser
-future
+numpy>=1.23.0
+python-dotenv>=0.20.0
+aiohttp>=3.8.0
+pymemgraph>=0.1.0
+python-json-logger>=2.0.4
 
 # Basic modules
 gensim
@@ -12,7 +14,6 @@ pandas>=2.0.0
 
 pipmaster
 pydantic
-python-dotenv
 
 setuptools
 tenacity

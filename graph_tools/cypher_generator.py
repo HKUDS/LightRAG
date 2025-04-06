@@ -5,6 +5,7 @@ Cypher 生成模块
 """
 
 import logging
+import json
 from typing import List, Dict, Set
 from datetime import datetime
 
@@ -57,6 +58,12 @@ def generate_cypher_statements(entities: List[Entity], relations: List[Relation]
         created_at_str = entity.created_at.isoformat() if isinstance(entity.created_at, datetime) else str(entity.created_at)
         updated_at_str = entity.updated_at.isoformat() if isinstance(entity.updated_at, datetime) else str(entity.updated_at)
         
+        # 处理embedding向量数据
+        embedding_str = "null"
+        if entity.vector is not None:
+            # 直接使用向量数组，无需转换为JSON字符串
+            embedding_str = str(entity.vector)
+        
         # 添加唯一ID属性以提高唯一性识别能力，并添加所有Entity属性
         cypher_statements.append(f"MERGE (n:`{entity.type}` {{name: '{escaped_name}'}}) "
                                f"ON CREATE SET n.uuid = '{entity.type}_' + timestamp() + '_' + toString(rand()), "
@@ -67,7 +74,8 @@ def generate_cypher_statements(entities: List[Entity], relations: List[Relation]
                                f"n.source = '{escaped_source}', "
                                f"n.created_at = '{created_at_str}', "
                                f"n.updated_at = '{updated_at_str}', "
-                               f"n.issuing_authority = '{escaped_issuing_authority}';")
+                               f"n.issuing_authority = '{escaped_issuing_authority}', "
+                               f"n.vector = {embedding_str};")
 
     cypher_statements.append("\n// --- Relationship Creation ---")
     # 记录无法匹配类型的关系数量
@@ -85,26 +93,11 @@ def generate_cypher_statements(entities: List[Entity], relations: List[Relation]
         source_types = entity_type_mapping.get(relation.source, set())
         target_types = entity_type_mapping.get(relation.target, set())
         
-        # 针对系统名称的特殊处理
-        # 处理源实体，如果是系统名称并且包含多个类型，优先使用Topic
-        if len(source_types) > 1 and "Topic" in source_types and "Section" in source_types:
-            if "系统" in relation.source or "12306" in relation.source:
-                source_type = "Topic"
-                logging.info(f"实体 '{relation.source}' 歧义解决为 Topic 类型（系统名称）")
-            else:
-                source_type = None
-        else:
-            source_type = next(iter(source_types)) if len(source_types) == 1 else None
+        # 针对源实体的处理
+        source_type = next(iter(source_types)) if len(source_types) == 1 else None
         
-        # 处理目标实体，如果是系统名称并且包含多个类型，优先使用Topic
-        if len(target_types) > 1 and "Topic" in target_types and "Section" in target_types:
-            if "系统" in relation.target or "12306" in relation.target:
-                target_type = "Topic"
-                logging.info(f"实体 '{relation.target}' 歧义解决为 Topic 类型（系统名称）")
-            else:
-                target_type = None
-        else:
-            target_type = next(iter(target_types)) if len(target_types) == 1 else None
+        # 针对目标实体的处理
+        target_type = next(iter(target_types)) if len(target_types) == 1 else None
         
         # 检查歧义
         source_ambiguous = len(source_types) > 1 and source_type is None

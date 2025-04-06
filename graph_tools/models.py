@@ -22,6 +22,7 @@ class Entity:
     created_at: datetime = field(default_factory=lambda: datetime.now())  # 首次生成时间
     updated_at: datetime = field(default_factory=lambda: datetime.now())  # 最后修改时间
     issuing_authority: str = ""  # 颁发机构
+    vector: Optional[List[float]] = None  # 实体嵌入向量
     
     def __hash__(self):
         return hash((self.name, self.type, self.context_id))
