@@ -43,8 +43,8 @@ const Legend: React.FC<LegendProps> = ({ className }) => {
                 style={{ backgroundColor: color }}
               />
               <span className="text-xs truncate" title={type}>
-                {PREDEFINED_TYPES.includes(type.toLowerCase()) 
-                  ? t(`graphPanel.nodeTypes.${type.toLowerCase()}`) 
+                {PREDEFINED_TYPES.includes(type.toLowerCase())
+                  ? t(`graphPanel.nodeTypes.${type.toLowerCase()}`)
                   : type}
               </span>
             </div>
