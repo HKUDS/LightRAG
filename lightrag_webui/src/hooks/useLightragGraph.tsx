@@ -647,17 +647,17 @@ const useLightrangeGraph = () => {
         // Get degree maxDegree from existing graph for size calculations
         const minDegree = 1;
         let maxDegree = 0;
-        
+
         // Initialize edge weight min and max values
         let minWeight = Number.MAX_SAFE_INTEGER;
         let maxWeight = 0;
-        
+
         // Calculate node degrees and edge weights from existing graph
         sigmaGraph.forEachNode(node => {
           const degree = sigmaGraph.degree(node);
           maxDegree = Math.max(maxDegree, degree);
         });
-        
+
         // Calculate edge weights from existing graph
         sigmaGraph.forEachEdge(edge => {
           const weight = sigmaGraph.getEdgeAttribute(edge, 'originalWeight') || 1;
@@ -756,7 +756,7 @@ const useLightrangeGraph = () => {
             }
           }
         };
-        
+
         // Helper function to update edge sizes
         const updateEdgeSizes = (
           sigmaGraph: UndirectedGraph,
@@ -768,7 +768,7 @@ const useLightrangeGraph = () => {
           const maxEdgeSize = useSettingsStore.getState().maxEdgeSize;
           const weightRange = maxWeight - minWeight || 1; // Avoid division by zero
           const sizeScale = maxEdgeSize - minEdgeSize;
-          
+
           sigmaGraph.forEachEdge(edge => {
             const weight = sigmaGraph.getEdgeAttribute(edge, 'originalWeight') || 1;
             const scaledSize = minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5);
@@ -870,7 +870,7 @@ const useLightrangeGraph = () => {
 
           // Get weight from edge properties or default to 1
           const weight = newEdge.properties?.weight !== undefined ? Number(newEdge.properties.weight) : 1;
-          
+
           // Update min and max weight values
           minWeight = Math.min(minWeight, weight);
           maxWeight = Math.max(maxWeight, weight);
