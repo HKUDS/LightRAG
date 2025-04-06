@@ -206,7 +206,7 @@ export function AsyncSelect<T>({
           tooltip={triggerTooltip}
           side="bottom"
         >
-          {selectedOption ? getDisplayValue(selectedOption) : (initialValueDisplay || placeholder)}
+          {value === '*' ? <div>*</div> : (selectedOption ? getDisplayValue(selectedOption) : (initialValueDisplay || placeholder))}
           <ChevronsUpDown className="opacity-50" size={10} />
         </Button>
       </PopoverTrigger>
