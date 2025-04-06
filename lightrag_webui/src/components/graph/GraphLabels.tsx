@@ -12,6 +12,7 @@ const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
   const allDatabaseLabels = useGraphStore.use.allDatabaseLabels()
+  const labelsFetchAttempted = useGraphStore.use.labelsFetchAttempted()
 
   // Remove initial label fetch effect as it's now handled by fetchGraph based on lastSuccessfulQueryLabel
 
@@ -56,22 +57,25 @@ const GraphLabels = () => {
     [getSearchEngine]
   )
 
-  // Validate if current queryLabel exists in allDatabaseLabels
+  // Validate label
   useEffect(() => {
-    // Only update label when all conditions are met:
-    // 1. allDatabaseLabels is loaded (length > 1, as it has at least '*' by default)
-    // 2. Current label is not the default '*'
-    // 3. Current label doesn't exist in allDatabaseLabels
-    if (
-      allDatabaseLabels.length > 1 &&
-      label &&
-      label !== '*' &&
-      !allDatabaseLabels.includes(label)
-    ) {
-      console.log(`Label "${label}" not found in available labels, resetting to default`);
-      useSettingsStore.getState().setQueryLabel('*');
+
+    if (labelsFetchAttempted) {
+      if (allDatabaseLabels.length > 1) {
+        if (label && label !== '*' && !allDatabaseLabels.includes(label)) {
+          console.log(`Label "${label}" not in available labels, setting to "*"`);
+          useSettingsStore.getState().setQueryLabel('*');
+        } else {
+          console.log(`Label "${label}" is valid`);
+        }
+      } else if (label && allDatabaseLabels.length <= 1 && label && label !== '*') {
+        console.log('Available labels list is empty, setting label to empty');
+        useSettingsStore.getState().setQueryLabel('');
+      }
+      useGraphStore.getState().setLabelsFetchAttempted(false)
     }
-  }, [allDatabaseLabels, label]);
+
+  }, [allDatabaseLabels, label, labelsFetchAttempted]);
 
   const handleRefresh = useCallback(() => {
     // Reset fetch status flags

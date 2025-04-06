@@ -96,11 +96,23 @@ export function AsyncSelect<T>({
   const [searchTerm, setSearchTerm] = useState('')
   const debouncedSearchTerm = useDebounce(searchTerm, preload ? 0 : 150)
   const [originalOptions, setOriginalOptions] = useState<T[]>([])
+  const [initialValueDisplay, setInitialValueDisplay] = useState<React.ReactNode | null>(null)
 
   useEffect(() => {
     setMounted(true)
     setSelectedValue(value)
   }, [value])
+
+  // Add an effect to handle initial value display
+  useEffect(() => {
+    if (value && (!options.length || !selectedOption)) {
+      // Create a temporary display until options are loaded
+      setInitialValueDisplay(<div>{value}</div>)
+    } else if (selectedOption) {
+      // Once we find the actual selectedOption, clear the temporary display
+      setInitialValueDisplay(null)
+    }
+  }, [value, options.length, selectedOption])
 
   // Initialize selectedOption when options are loaded and value exists
   useEffect(() => {
@@ -194,7 +206,7 @@ export function AsyncSelect<T>({
           tooltip={triggerTooltip}
           side="bottom"
         >
-          {selectedOption ? getDisplayValue(selectedOption) : placeholder}
+          {value === '*' ? <div>*</div> : (selectedOption ? getDisplayValue(selectedOption) : (initialValueDisplay || placeholder))}
           <ChevronsUpDown className="opacity-50" size={10} />
         </Button>
       </PopoverTrigger>

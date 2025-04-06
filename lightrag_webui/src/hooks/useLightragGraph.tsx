@@ -120,6 +120,10 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
     }
   }
 
+  // Trigger GraphLabels component to check if the label is valid
+  // console.log('Setting labelsFetchAttempted to true');
+  useGraphStore.getState().setLabelsFetchAttempted(true)
+
   // If label is empty, use default label '*'
   const queryLabel = label || '*';
 
@@ -326,7 +330,7 @@ const useLightrangeGraph = () => {
     }
   }, [queryLabel, rawGraph, sigmaGraph])
 
-  // Data fetching logic
+  // Graph data fetching logic
   useEffect(() => {
     // Skip if fetch is already in progress
     if (fetchInProgressRef.current) {
@@ -339,6 +343,7 @@ const useLightrangeGraph = () => {
     }
 
     // Only fetch data when graphDataFetchAttempted is false (avoids re-fetching on vite dev mode)
+    // GraphDataFetchAttempted must set to false when queryLabel is changed
     if (!isFetching && !useGraphStore.getState().graphDataFetchAttempted) {
       // Set flags
       fetchInProgressRef.current = true
@@ -509,7 +514,8 @@ const useLightrangeGraph = () => {
         for (const node of extendedGraph.nodes) {
           // Generate random color values
           seedrandom(node.id, { global: true });
-          const color = randomColor();
+          const nodeEntityType = node.properties?.entity_type as string | undefined;
+          const color = getNodeColorByType(nodeEntityType);
 
           // Create a properly typed RawNodeType
           processedNodes.push({
