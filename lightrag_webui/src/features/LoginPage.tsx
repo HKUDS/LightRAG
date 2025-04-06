@@ -148,11 +148,11 @@ const LoginPage = () => {
         <CardContent className="px-8 pb-8">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="flex items-center gap-4">
-              <label htmlFor="username" className="text-sm font-medium w-16 shrink-0">
+              <label htmlFor="username-input" className="text-sm font-medium w-16 shrink-0">
                 {t('login.username')}
               </label>
               <Input
-                id="username"
+                id="username-input"
                 placeholder={t('login.usernamePlaceholder')}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -161,11 +161,11 @@ const LoginPage = () => {
               />
             </div>
             <div className="flex items-center gap-4">
-              <label htmlFor="password" className="text-sm font-medium w-16 shrink-0">
+              <label htmlFor="password-input" className="text-sm font-medium w-16 shrink-0">
                 {t('login.password')}
               </label>
               <Input
-                id="password"
+                id="password-input"
                 type="password"
                 placeholder={t('login.passwordPlaceholder')}
                 value={password}
