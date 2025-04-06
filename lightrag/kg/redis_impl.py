@@ -9,8 +9,8 @@ if not pm.is_installed("redis"):
     pm.install("redis")
 
 # aioredis is a depricated library, replaced with redis
-from redis.asyncio import Redis, ConnectionPool # type: ignore
-from redis.exceptions import RedisError, ConnectionError # type: ignore
+from redis.asyncio import Redis, ConnectionPool  # type: ignore
+from redis.exceptions import RedisError, ConnectionError  # type: ignore
 from lightrag.utils import logger
 
 from lightrag.base import BaseKVStorage
@@ -39,10 +39,12 @@ class RedisKVStorage(BaseKVStorage):
             max_connections=MAX_CONNECTIONS,
             decode_responses=True,
             socket_timeout=SOCKET_TIMEOUT,
-            socket_connect_timeout=SOCKET_CONNECT_TIMEOUT
+            socket_connect_timeout=SOCKET_CONNECT_TIMEOUT,
         )
         self._redis = Redis(connection_pool=self._pool)
-        logger.info(f"Initialized Redis connection pool for {self.namespace} with max {MAX_CONNECTIONS} connections")
+        logger.info(
+            f"Initialized Redis connection pool for {self.namespace} with max {MAX_CONNECTIONS} connections"
+        )
 
     @asynccontextmanager
     async def _get_redis_connection(self):
@@ -56,12 +58,14 @@ class RedisKVStorage(BaseKVStorage):
             logger.error(f"Redis operation error in {self.namespace}: {e}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error in Redis operation for {self.namespace}: {e}")
+            logger.error(
+                f"Unexpected error in Redis operation for {self.namespace}: {e}"
+            )
             raise
 
     async def close(self):
         """Close the Redis connection pool to prevent resource leaks."""
-        if hasattr(self, '_redis') and self._redis:
+        if hasattr(self, "_redis") and self._redis:
             await self._redis.close()
             await self._pool.disconnect()
             logger.debug(f"Closed Redis connection pool for {self.namespace}")
@@ -108,7 +112,7 @@ class RedisKVStorage(BaseKVStorage):
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not data:
             return
-            
+
         logger.info(f"Inserting {len(data)} items to {self.namespace}")
         async with self._get_redis_connection() as redis:
             try:
@@ -122,11 +126,11 @@ class RedisKVStorage(BaseKVStorage):
             except json.JSONEncodeError as e:
                 logger.error(f"JSON encode error during upsert: {e}")
                 raise
-                
+
     async def index_done_callback(self) -> None:
         # Redis handles persistence automatically
         pass
-      
+
     async def delete(self, ids: list[str]) -> None:
         """Delete entries with specified IDs"""
         if not ids:
@@ -183,7 +187,10 @@ class RedisKVStorage(BaseKVStorage):
                     deleted_count = sum(results)
 
                     logger.info(f"Dropped {deleted_count} keys from {self.namespace}")
-                    return {"status": "success", "message": f"{deleted_count} keys dropped"}
+                    return {
+                        "status": "success",
+                        "message": f"{deleted_count} keys dropped",
+                    }
                 else:
                     logger.info(f"No keys found to drop in {self.namespace}")
                     return {"status": "success", "message": "no keys to drop"}
@@ -191,4 +198,3 @@ class RedisKVStorage(BaseKVStorage):
             except Exception as e:
                 logger.error(f"Error dropping keys from {self.namespace}: {e}")
                 return {"status": "error", "message": str(e)}
-
