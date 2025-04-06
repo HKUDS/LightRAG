@@ -119,7 +119,7 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
       // Continue with graph fetch even if labels fetch fails
     }
   }
-  
+
   // Trigger GraphLabels component to check if the label is valid
   // console.log('Setting labelsFetchAttempted to true');
   useGraphStore.getState().setLabelsFetchAttempted(true)

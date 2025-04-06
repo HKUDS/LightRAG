@@ -13,7 +13,7 @@ const GraphLabels = () => {
   const label = useSettingsStore.use.queryLabel()
   const allDatabaseLabels = useGraphStore.use.allDatabaseLabels()
   const labelsFetchAttempted = useGraphStore.use.labelsFetchAttempted()
-  
+
   // Remove initial label fetch effect as it's now handled by fetchGraph based on lastSuccessfulQueryLabel
 
   const getSearchEngine = useCallback(() => {
@@ -59,8 +59,8 @@ const GraphLabels = () => {
 
   // Show queryLabel validation status
   useEffect(() => {
-    
-    if (labelsFetchAttempted) {      
+
+    if (labelsFetchAttempted) {
       if (allDatabaseLabels.length > 1) {
         if (label && label !== '*' && !allDatabaseLabels.includes(label)) {
           console.log(`Label "${label}" not in available labels`);
