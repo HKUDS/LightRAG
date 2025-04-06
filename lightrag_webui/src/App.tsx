@@ -35,18 +35,18 @@ function App() {
 
   // Track component mount status with useRef
   const isMountedRef = useRef(true);
-  
+
   // Set up mount/unmount status tracking
   useEffect(() => {
     isMountedRef.current = true;
-    
+
     // Handle page reload/unload
     const handleBeforeUnload = () => {
       isMountedRef.current = false;
     };
-    
+
     window.addEventListener('beforeunload', handleBeforeUnload);
-    
+
     return () => {
       isMountedRef.current = false;
       window.removeEventListener('beforeunload', handleBeforeUnload);

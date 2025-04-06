@@ -210,7 +210,7 @@ function FileUploader(props: FileUploaderProps) {
           if (!file.name) {
             return false;
           }
-          
+
           // Check if file type is accepted
           const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
           const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
@@ -269,14 +269,14 @@ function FileUploader(props: FileUploaderProps) {
           if (!file.name) {
             return {
               code: 'invalid-file-name',
-              message: t('documentPanel.uploadDocuments.fileUploader.invalidFileName', 
+              message: t('documentPanel.uploadDocuments.fileUploader.invalidFileName',
                 { fallback: 'Invalid file name' })
             };
           }
-          
+
           // Safely extract file extension
           const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
-          
+
           // Ensure accept object exists and has correct format
           const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
             // Ensure extensions is an array before calling includes

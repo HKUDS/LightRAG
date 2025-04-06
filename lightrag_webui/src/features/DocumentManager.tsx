@@ -139,24 +139,24 @@ type SortDirection = 'asc' | 'desc';
 export default function DocumentManager() {
   // Track component mount status
   const isMountedRef = useRef(true);
-  
+
   // Set up mount/unmount status tracking
   useEffect(() => {
     isMountedRef.current = true;
-    
+
     // Handle page reload/unload
     const handleBeforeUnload = () => {
       isMountedRef.current = false;
     };
-    
+
     window.addEventListener('beforeunload', handleBeforeUnload);
-    
+
     return () => {
       isMountedRef.current = false;
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
   }, []);
-  
+
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t } = useTranslation()
   const health = useBackendState.use.health()
@@ -346,9 +346,9 @@ export default function DocumentManager() {
     try {
       // Check if component is still mounted before starting the request
       if (!isMountedRef.current) return;
-      
+
       const docs = await getDocuments();
-      
+
       // Check again if component is still mounted after the request completes
       if (!isMountedRef.current) return;
 
@@ -409,12 +409,12 @@ export default function DocumentManager() {
     try {
       // Check if component is still mounted before starting the request
       if (!isMountedRef.current) return;
-      
+
       const { status } = await scanNewDocuments();
-      
+
       // Check again if component is still mounted after the request completes
       if (!isMountedRef.current) return;
-      
+
       toast.message(status);
     } catch (err) {
       // Only show error if component is still mounted
