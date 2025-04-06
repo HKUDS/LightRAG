@@ -450,13 +450,6 @@ const useLightrangeGraph = () => {
           state.setRawGraph(data);
           state.setGraphIsEmpty(false);
 
-          // ensusre GraphLabels show the current label on first load
-          const lastSuccessfulQueryLabel = useGraphStore.getState().lastSuccessfulQueryLabel;
-          if (!lastSuccessfulQueryLabel){
-            useSettingsStore.getState().setQueryLabel('');
-            useSettingsStore.getState().setQueryLabel(queryLabel);
-            console.log('Set queryLabel after query on page first load');
-          }
           // Update last successful query label
           state.setLastSuccessfulQueryLabel(currentQueryLabel);
 
