@@ -330,7 +330,7 @@ const useLightrangeGraph = () => {
     }
   }, [queryLabel, rawGraph, sigmaGraph])
 
-  // Data fetching logic
+  // Graph data fetching logic
   useEffect(() => {
     // Skip if fetch is already in progress
     if (fetchInProgressRef.current) {
@@ -514,7 +514,8 @@ const useLightrangeGraph = () => {
         for (const node of extendedGraph.nodes) {
           // Generate random color values
           seedrandom(node.id, { global: true });
-          const color = randomColor();
+          const nodeEntityType = node.properties?.entity_type as string | undefined;
+          const color = getNodeColorByType(nodeEntityType);
 
           // Create a properly typed RawNodeType
           processedNodes.push({
