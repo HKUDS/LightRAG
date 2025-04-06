@@ -693,6 +693,7 @@ class EmergencyResponseKG:
               OR st.name CONTAINS "应急处置" OR st.name CONTAINS "恢复"
         RETURN st.name AS 故障相关规定
         """
+        print(query)
         results = self.execute_query(query)
         self.display_results(results, "故障相关规定", export)
         
@@ -720,13 +721,14 @@ class EmergencyResponseKG:
         MATCH (st:Statement)
         WITH st, [(st)<-[:RESPONSIBLE_FOR]-(o:Organization) | o.name] AS responsible_orgs
         WHERE size(responsible_orgs) > 1
-        RETURN st.name AS 协作程序, responsible_orgs AS 负责部门
+        RETURN st.name AS 协作程序, responsible_orgs AS 相关部门
         UNION
         MATCH (st:Statement)
         WITH st, [(st)-[:APPLIES_TO]->(o:Organization) | o.name] AS applicable_orgs
         WHERE size(applicable_orgs) > 1
-        RETURN st.name AS 协作程序, applicable_orgs AS 适用部门
+        RETURN st.name AS 协作程序, applicable_orgs AS 相关部门
         """
+        print(query)
         results = self.execute_query(query)
         self.display_results(results, "跨部门协作程序", export)
         
@@ -769,6 +771,7 @@ class EmergencyResponseKG:
         RETURN o.name AS 部门名称, count(st) AS 负责规定数量
         ORDER BY 负责规定数量 DESC
         """
+        print(query)
         results = self.execute_query(query)
         self.display_results(results, "各部门职责统计", export)
         
@@ -802,6 +805,7 @@ class EmergencyResponseKG:
         WHERE actor:Organization
         RETURN st.name AS 系统恢复规定, collect(DISTINCT actor.name) AS 责任部门
         """
+        print(query)
         results = self.execute_query(query)
         self.display_results(results, "系统恢复相关流程", export)
     
@@ -825,6 +829,7 @@ class EmergencyResponseKG:
         RETURN d.title AS 文档标题, s.id AS 章节ID, s.title AS 章节标题
         ORDER BY d.title, s.id
         """
+        print(query)
         sections = self.execute_query(query)
         self.display_results(sections, "文档章节结构", export)
         
@@ -837,6 +842,7 @@ class EmergencyResponseKG:
                    parent.id AS 父章节ID, parent.title AS 父章节标题
             ORDER BY s.id
             """
+            print(query)
             all_sections = self.execute_query(query)
             self.display_results(all_sections, "所有章节信息", export)
     
@@ -856,6 +862,7 @@ class EmergencyResponseKG:
               OR st.name CONTAINS "较大" OR st.name CONTAINS "一般"
         RETURN st.name AS 应急级别描述
         """
+        print(query)
         level_results = self.execute_query(query)
         self.display_results(level_results, "应急级别定义", export)
         
@@ -868,6 +875,7 @@ class EmergencyResponseKG:
               OR st.name CONTAINS "先" OR st.name CONTAINS "后"
         RETURN st.name AS 响应步骤描述
         """
+        print(query)
         step_results = self.execute_query(query)
         self.display_results(step_results, "应急响应步骤", export)
     
@@ -910,6 +918,8 @@ class EmergencyResponseKG:
         WHERE d.title CONTAINS "{keyword}"
         RETURN "Document" AS 实体类型, d.title AS 内容
         """
+
+        print(query)
         results = self.execute_query(query)
         self.display_results(results, f"关键词'{keyword}'搜索结果", export)
         
@@ -929,8 +939,80 @@ class EmergencyResponseKG:
                 WHERE org:Organization
                 RETURN st.name AS 内容, s.title AS 所在章节, collect(DISTINCT org.name) AS 负责部门
                 """
+                print(query)
                 detail_results = self.execute_query(detail_query)
                 self.display_results(detail_results, f"关键词'{keyword}'详细信息", export)
+
+    # ========== 新增场景12: 查询特定故障的处理链条 ==========
+    def find_fault_handling_chain(self, fault_keyword: str, export: bool = False) -> None:
+        """查询特定故障相关的章节、恢复步骤及责任人
+        
+        应用场景: 快速定位某个故障的处理上下文、恢复方法及负责人
+        
+        Args:
+            fault_keyword: 描述故障的关键词 (例如 "数据库连接", "网络中断")
+            export: 是否导出结果
+        """
+        print(f"{Fore.CYAN}正在查询与故障 '{fault_keyword}' 相关的处理链条...{Style.RESET_ALL}")
+        
+        # 查找包含关键词的故障Statement，找到其所在Section，再找Section下的恢复Statement及其责任人
+        query = """
+        MATCH (fault_st:Statement)
+        WHERE fault_st.name CONTAINS $fault_keyword
+        WITH fault_st LIMIT 5 // 限制初始故障Statement数量，防止结果过多
+        
+        MATCH (s:Section)-[:CONTAINS]->(fault_st) // 找到故障所在章节
+        MATCH (s)-[:CONTAINS]->(recovery_st:Statement) // 找到同章节下其他Statement
+        WHERE (recovery_st.name CONTAINS "恢复" OR recovery_st.name CONTAINS "修复" 
+               OR recovery_st.name CONTAINS "启动" OR recovery_st.name CONTAINS "处理") // 筛选恢复相关的步骤
+          AND recovery_st <> fault_st // 排除故障本身
+        
+        OPTIONAL MATCH (actor)-[:RESPONSIBLE_FOR]->(recovery_st) // 找到恢复步骤的责任人
+        WHERE actor:Organization OR actor:Role
+        
+        RETURN fault_st.name AS 相关故障描述, 
+               s.title AS 所在章节, 
+               recovery_st.name AS 相关恢复步骤, 
+               labels(actor)[0] AS 责任主体类型, 
+               actor.name AS 责任主体名称
+        ORDER BY s.title, recovery_st.name
+        LIMIT 30 // 限制最终结果数量
+        """
+        print(query)
+        results = self.execute_query(query, params={"fault_keyword": fault_keyword})
+        self.display_results(results, f"故障 '{fault_keyword}' 的处理链条", export)
+
+    # ========== 新增场景13: 查询共同负责领域事务的部门与章节 ==========
+    def find_shared_responsibility_areas(self, domain_keyword: str, export: bool = False) -> None:
+        """查询共同负责特定领域事务的部门与章节
+        
+        应用场景: 识别跨部门协作的关键领域和相关文档章节
+        
+        Args:
+            domain_keyword: 描述事务领域的关键词 (例如 "恢复", "备份", "投诉")
+            export: 是否导出结果
+        """
+        print(f"{Fore.CYAN}正在查询负责 '{domain_keyword}' 事务的部门与章节...{Style.RESET_ALL}")
+        
+        # 查找包含领域关键词的Statement，通过CONTAINS找到Section，通过RESPONSIBLE_FOR找到Organization
+        # 然后按Section和Organization分组，聚合共同负责的Statement
+        query = """
+        MATCH (s:Section)-[:CONTAINS]->(st:Statement)<-[:RESPONSIBLE_FOR]-(o:Organization)
+        WHERE st.name CONTAINS $domain_keyword // 筛选特定领域的Statement
+        
+        WITH s, o, collect(st.name) AS procedures // 按章节和部门聚合规定
+        WHERE size(procedures) >= 1 // 确保至少有一个相关规定
+        
+        RETURN s.title AS 章节标题, 
+               o.name AS 负责部门, 
+               size(procedures) AS 相关规定数量,
+               procedures AS 相关规定列表 // 显示具体规定列表
+        ORDER BY size(procedures) DESC, s.title, o.name
+        LIMIT 30 // 限制结果数量
+        """
+        print(query)
+        results = self.execute_query(query, params={"domain_keyword": domain_keyword})
+        self.display_results(results, f"共同负责 '{domain_keyword}' 事务的部门与章节", export)
 
 async def main():
     """主函数: 解析命令行参数并执行相应的查询"""
@@ -943,12 +1025,14 @@ async def main():
     parser.add_argument("--export", action="store_true", help="是否导出查询结果为CSV文件")
     parser.add_argument("--export-dir", default="./kg_exports", help="导出目录")
     
-    # 添加查询场景选择
-    parser.add_argument("--scenario", type=int, choices=range(1, 12), 
-                        help="要执行的场景编号(1-11)，不提供则执行所有场景")
+    # 添加查询场景选择 (范围更新到13)
+    parser.add_argument("--scenario", type=int, choices=range(1, 14), 
+                        help="要执行的场景编号(1-13)，不提供则执行所有场景")
     
-    # 添加关键词搜索参数
-    parser.add_argument("--keyword", type=str, help="关键词搜索(用于场景10或11)")
+    # 添加关键词搜索参数 (需要为新场景指定关键词)
+    parser.add_argument("--keyword", type=str, help="关键词搜索(用于场景10, 11)")
+    parser.add_argument("--fault-keyword", type=str, help="故障关键词(用于场景12)")
+    parser.add_argument("--domain-keyword", type=str, help="领域关键词(用于场景13)")
     parser.add_argument("--semantic", action="store_true", help="使用语义向量搜索(用于场景11)")
     
     args = parser.parse_args()
@@ -957,7 +1041,7 @@ async def main():
     kg = EmergencyResponseKG(uri=args.uri, user=args.user, password=args.password, 
                             export_dir=args.export_dir)
     
-    # 定义所有场景
+    # 定义所有场景 (增加12, 13)
     scenarios = {
         1: (kg.find_system_maintainers, "查询系统故障责任主体"),
         2: (kg.find_complaint_procedures, "查询旅客投诉处理相关规定"),
@@ -969,54 +1053,86 @@ async def main():
         8: (kg.browse_document_structure, "浏览预案结构"),
         9: (kg.extract_emergency_levels_and_steps, "抽取应急级别与响应步骤"),
         10: (lambda: kg.keyword_search(args.keyword or "应急", args.export), "关键词搜索"),
-        11: (kg.semantic_keyword_search, "语义向量搜索")
+        11: (kg.semantic_keyword_search, "语义向量搜索"),
+        12: (lambda: kg.find_fault_handling_chain(args.fault_keyword or "数据库", args.export), "查询特定故障处理链条"),
+        13: (lambda: kg.find_shared_responsibility_areas(args.domain_keyword or "恢复售票", args.export), "查询共同负责领域事务的部门与章节")
     }
     
     # 执行选定的场景或所有场景
     if args.scenario:
+        # 为需要关键词的场景获取输入
         if args.scenario == 10 and not args.keyword:
-            print(f"{Fore.YELLOW}关键词搜索需要提供--keyword参数{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}场景10需要提供 --keyword 参数{Style.RESET_ALL}")
             args.keyword = input("请输入搜索关键词: ")
         elif args.scenario == 11 and not args.keyword:
-            print(f"{Fore.YELLOW}语义向量搜索需要提供--keyword参数{Style.RESET_ALL}")
-            args.keyword = input("请输入搜索关键词: ")
+            print(f"{Fore.YELLOW}场景11需要提供 --keyword 参数{Style.RESET_ALL}")
+            args.keyword = input("请输入语义搜索关键词: ")
+        elif args.scenario == 12 and not args.fault_keyword:
+            print(f"{Fore.YELLOW}场景12需要提供 --fault-keyword 参数{Style.RESET_ALL}")
+            args.fault_keyword = input("请输入故障关键词 (例如 '数据库', '网络'): ")
+        elif args.scenario == 13 and not args.domain_keyword:
+            print(f"{Fore.YELLOW}场景13需要提供 --domain-keyword 参数{Style.RESET_ALL}")
+            args.domain_keyword = input("请输入领域关键词 (例如 '恢复', '备份'): ")
             
         func, desc = scenarios[args.scenario]
         print(f"{Fore.YELLOW}执行场景 {args.scenario}: {desc}{Style.RESET_ALL}")
         
-        # 执行异步函数
+        # 处理同步/异步函数调用
+        # 注意: 需要将新场景的 lambda 包装改为非异步，因为新添加的方法是同步的
+        # 或者将新方法改为 async (如果它们内部有 await 调用，但目前没有)
+        # 这里我们假设新方法是同步的
         if asyncio.iscoroutinefunction(func):
+             # 异步场景调用 (目前只有1, 2, 11是异步的)
             if args.scenario == 11:
-                # 为场景11传递参数
-                await func(args.keyword or "应急处置", args.export)
+                 await func(args.keyword, args.export) # 场景11需要keyword
             else:
-                await func()
+                 await func(args.export) # 场景1和2需要export参数
         else:
-            func()
+             # 同步场景调用
+             func() # 其他场景包括新的12, 13
     else:
-        print(f"{Fore.YELLOW}执行所有应用场景{Style.RESET_ALL}")
-        # 简化为仅执行几个核心场景，避免代码过长
-        core_scenarios = [1, 2, 11]
+        print(f"{Fore.YELLOW}执行所有应用场景 (1-13){Style.RESET_ALL}")
+        # 简化为仅执行几个核心场景 + 新场景，避免输出过多
+        # core_scenarios = [1, 5, 11, 12, 13] # 选择部分场景执行
+        core_scenarios = list(scenarios.keys()) # 或者执行全部
+        
+        default_keyword = "应急"
+        default_fault_keyword = "数据库"
+        default_domain_keyword = "恢复"
+        
         for i in core_scenarios:
-            if i == 10 and not args.keyword:
-                args.keyword = "应急"
-            elif i == 11 and not args.keyword:
-                args.keyword = "应急处置"
-                
             func, desc = scenarios[i]
-            print(f"{Fore.YELLOW}执行场景 {i}: {desc}{Style.RESET_ALL}")
+            print(f"\n{Fore.MAGENTA}--- 执行场景 {i}: {desc} ---{Style.RESET_ALL}")
             
-            # 执行异步函数
-            if asyncio.iscoroutinefunction(func):
-                if i == 11:
-                    # 为场景11传递参数
-                    await func(args.keyword, args.export)
-                else:
-                    await func()
-            else:
-                func()
-    
+            try:
+                 if asyncio.iscoroutinefunction(func):
+                     # 异步场景调用
+                     if i == 11:
+                         await func(args.keyword or default_keyword, args.export)
+                     else:
+                         await func(args.export)
+                 else:
+                     # 同步场景调用 (包括 10, 12, 13 等)
+                     if i == 10:
+                         func() # 使用默认关键词或命令行参数
+                     elif i == 12:
+                          # 需要正确调用lambda
+                         scenarios[i][0]() # 调用lambda (使用默认或命令行参数)
+                     elif i == 13:
+                          # 需要正确调用lambda
+                         scenarios[i][0]() # 调用lambda (使用默认或命令行参数)
+                     else:
+                         func() # 其他同步场景
+            except Exception as e:
+                print(f"{Fore.RED}执行场景 {i} 时出错: {e}{Style.RESET_ALL}")
+
     print(f"\n{Fore.GREEN}所有查询已完成{Style.RESET_ALL}")
 
 if __name__ == "__main__":
+    # 注意：如果KG类中有async方法，并且main中有同步方法调用async方法，
+    # 或者反之，可能需要调整事件循环的处理。
+    # 目前的设计是main是async，它调用同步或异步的KG方法。
+    # 调用同步方法没问题，调用异步方法用 await。
+    # 在同步方法中如果需要调用异步方法，则需要特殊处理（如 asyncio.run_coroutine_threadsafe）。
+    # 目前添加的方法是同步的，应该没问题。
     asyncio.run(main())
