@@ -119,6 +119,10 @@ const fetchGraph = async (label: string, maxDepth: number, maxNodes: number) => 
       // Continue with graph fetch even if labels fetch fails
     }
   }
+  
+  // Trigger GraphLabels component to check if the label is valid
+  // console.log('Setting labelsFetchAttempted to true');
+  useGraphStore.getState().setLabelsFetchAttempted(true)
 
   // If label is empty, use default label '*'
   const queryLabel = label || '*';
@@ -339,6 +343,7 @@ const useLightrangeGraph = () => {
     }
 
     // Only fetch data when graphDataFetchAttempted is false (avoids re-fetching on vite dev mode)
+    // GraphDataFetchAttempted must set to false when queryLabel is changed
     if (!isFetching && !useGraphStore.getState().graphDataFetchAttempted) {
       // Set flags
       fetchInProgressRef.current = true
@@ -445,6 +450,13 @@ const useLightrangeGraph = () => {
           state.setRawGraph(data);
           state.setGraphIsEmpty(false);
 
+          // ensusre GraphLabels show the current label on first load
+          const lastSuccessfulQueryLabel = useGraphStore.getState().lastSuccessfulQueryLabel;
+          if (!lastSuccessfulQueryLabel){
+            useSettingsStore.getState().setQueryLabel('');
+            useSettingsStore.getState().setQueryLabel(queryLabel);
+            console.log('Set queryLabel after query on page first load');
+          }
           // Update last successful query label
           state.setLastSuccessfulQueryLabel(currentQueryLabel);
 
