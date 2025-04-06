@@ -31,7 +31,7 @@ import '@react-sigma/graph-search/lib/style.css'
 const defaultSigmaSettings: Partial<SigmaSettings> = {
   allowInvalidContainer: true,
   defaultNodeType: 'default',
-  defaultEdgeType: 'curvedArrow',
+  defaultEdgeType: 'curvedNoArrow',
   renderEdgeLabels: false,
   edgeProgramClasses: {
     arrow: EdgeArrowProgram,
