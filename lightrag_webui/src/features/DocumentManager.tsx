@@ -507,8 +507,14 @@ export default function DocumentManager() {
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <span className="text-sm text-gray-500">{t('documentPanel.documentManager.fileNameLabel')}</span>
+                <label 
+                  htmlFor="toggle-filename-btn" 
+                  className="text-sm text-gray-500"
+                >
+                  {t('documentPanel.documentManager.fileNameLabel')}
+                </label>
                 <Button
+                  id="toggle-filename-btn"
                   variant="outline"
                   size="sm"
                   onClick={() => setShowFileName(!showFileName)}

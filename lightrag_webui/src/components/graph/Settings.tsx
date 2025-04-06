@@ -23,11 +23,14 @@ const LabeledCheckBox = ({
   onCheckedChange: () => void
   label: string
 }) => {
+  // Create unique ID using the label text converted to lowercase with spaces removed
+  const id = `checkbox-${label.toLowerCase().replace(/\s+/g, '-')}`;
+  
   return (
     <div className="flex items-center gap-2">
-      <Checkbox checked={checked} onCheckedChange={onCheckedChange} />
+      <Checkbox id={id} checked={checked} onCheckedChange={onCheckedChange} />
       <label
-        htmlFor="terms"
+        htmlFor={id}
         className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
       >
         {label}
@@ -56,6 +59,8 @@ const LabeledNumberInput = ({
 }) => {
   const { t } = useTranslation();
   const [currentValue, setCurrentValue] = useState<number | null>(value)
+  // Create unique ID using the label text converted to lowercase with spaces removed
+  const id = `input-${label.toLowerCase().replace(/\s+/g, '-')}`;
 
   const onValueChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -94,13 +99,14 @@ const LabeledNumberInput = ({
   return (
     <div className="flex flex-col gap-2">
       <label
-        htmlFor="terms"
+        htmlFor={id}
         className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
       >
         {label}
       </label>
       <div className="flex items-center gap-1">
         <Input
+          id={id}
           type="number"
           value={currentValue === null ? '' : currentValue}
           onChange={onValueChange}
@@ -295,11 +301,12 @@ export default function Settings() {
             />
 
             <div className="flex flex-col gap-2">
-              <label className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+              <label htmlFor="edge-size-min" className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
                 {t('graphPanel.sideBar.settings.edgeSizeRange')}
               </label>
               <div className="flex items-center gap-2">
                 <Input
+                  id="edge-size-min"
                   type="number"
                   value={minEdgeSize}
                   onChange={(e) => {
@@ -315,6 +322,7 @@ export default function Settings() {
                 <span>-</span>
                 <div className="flex items-center gap-1">
                   <Input
+                    id="edge-size-max"
                     type="number"
                     value={maxEdgeSize}
                     onChange={(e) => {
