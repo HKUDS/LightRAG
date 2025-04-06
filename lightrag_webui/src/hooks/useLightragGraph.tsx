@@ -1,7 +1,7 @@
 import Graph, { DirectedGraph } from 'graphology'
 import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
-import { randomColor, errorMessage } from '@/lib/utils'
+import { errorMessage } from '@/lib/utils'
 import * as Constants from '@/lib/constants'
 import { useGraphStore, RawGraph, RawNodeType, RawEdgeType } from '@/stores/graph'
 import { toast } from 'sonner'
@@ -11,32 +11,115 @@ import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
 
-// Helper function to generate a color based on type
+// Predefined node colors - Primary colors
+const NODE_COLORS = [
+  '#0f5870', // Deep Cyan
+  '#e3493b', // Google Red - geo
+  '#fdd868', // Yellow - UNKNOWN
+  '#34A853', // Google Green
+  '#a64dff', // Purple
+  '#F39C12', // Orange
+  '#1ABC9C', // Turquoise - organization
+  '#1f42ad', // Blue
+  '#ee8377', // Light Red
+  '#bf95d0', // Light Violet
+  '#99cc00', // Yellow Green - tecknology
+  '#0f705d', // Deep Turquoise
+  '#E67E22', // Carrot - category
+  '#568be1', // Light Blue - person
+  '#803300'  // Deep Brown
+];
+
+// Extended colors - Used when node types exceed primary colors
+const EXTENDED_COLORS = [
+  '#ff4da6', // Magenta
+  '#094338', // Deep Green
+  '#D35400', // Pumpkin
+  '#002699', // Deep Blue
+  '#5a2c6d', // Deep Violet
+  '#996600', // Brown
+  '#2574A9', // Steel Blue
+  '#912c21', // Deep Red
+  '#293618'  // Dark Green
+];
+
+// All available colors combined
+const ALL_COLORS = [...NODE_COLORS, ...EXTENDED_COLORS];
+
+// Helper function to get color based on node type
 const getNodeColorByType = (nodeType: string | undefined): string => {
-  const defaultColor = '#CCCCCC'; // Default color for nodes without a type or undefined type
+  const defaultColor = '#5D6D7E'; // Default color for nodes without a type or undefined type
+
+  // Return default color if node type is undefined
   if (!nodeType) {
     return defaultColor;
   }
 
+  // Get type color map from store
   const typeColorMap = useGraphStore.getState().typeColorMap;
 
-  if (!typeColorMap.has(nodeType)) {
-    // Generate a color based on the type string itself for consistency
-    // Seed the global random number generator based on the node type
-    seedrandom(nodeType, { global: true });
-    // Call randomColor without arguments; it will use the globally seeded Math.random()
-    const newColor = randomColor();
-
-    const newMap = new Map(typeColorMap);
-    newMap.set(nodeType, newColor);
-    useGraphStore.setState({ typeColorMap: newMap });
-
-    return newColor;
+  // If this type already has an assigned color, return it
+  if (typeColorMap.has(nodeType)) {
+    return typeColorMap.get(nodeType) || defaultColor;
   }
 
-  // Restore the default random seed if necessary, though usually not required for this use case
-  // seedrandom(Date.now().toString(), { global: true });
-  return typeColorMap.get(nodeType) || defaultColor; // Add fallback just in case
+  // Get all currently used colors
+  const usedColors = new Set<string>();
+  typeColorMap.forEach(color => {
+    usedColors.add(color);
+  });
+
+  // Assign color for new node type
+  // Use a simple hash function to map node type to color index
+  const getColorIndex = (str: string): number => {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = ((hash << 5) - hash) + str.charCodeAt(i);
+      hash |= 0; // Convert to 32bit integer
+    }
+    // Ensure result is positive and within NODE_COLORS range only
+    return Math.abs(hash) % NODE_COLORS.length;
+  };
+
+  // Get initial color index from hash
+  const colorIndex = getColorIndex(nodeType);
+  let newColor = NODE_COLORS[colorIndex];
+
+  // If the color is already used, find the next available color
+  if (usedColors.has(newColor) && usedColors.size < ALL_COLORS.length) {
+    // First try to find an unused color in NODE_COLORS
+    let foundUnused = false;
+    for (let i = 0; i < NODE_COLORS.length; i++) {
+      const candidateColor = NODE_COLORS[i];
+      if (!usedColors.has(candidateColor)) {
+        newColor = candidateColor;
+        foundUnused = true;
+        break;
+      }
+    }
+
+    // If all NODE_COLORS are used, then try EXTENDED_COLORS
+    if (!foundUnused) {
+      newColor = defaultColor;
+      for (let i = 0; i < EXTENDED_COLORS.length; i++) {
+        const candidateColor = EXTENDED_COLORS[i];
+        if (!usedColors.has(candidateColor)) {
+          newColor = candidateColor;
+          break;
+        }
+      }
+    }
+  }
+
+  // If all colors are used, we'll still use the hashed color
+  // In a more advanced implementation, we could create color variants here
+
+  // Update color mapping
+  const newMap = new Map(typeColorMap);
+  newMap.set(nodeType, newColor);
+  useGraphStore.setState({ typeColorMap: newMap });
+
+  return newColor;
 };
 
 
@@ -408,7 +491,7 @@ const useLightrangeGraph = () => {
           // Add a single node with "Graph Is Empty" label
           emptyGraph.addNode('empty-graph-node', {
             label: t('graphPanel.emptyGraph'),
-            color: '#cccccc', // gray color
+            color: '#5D6D7E', // gray color
             x: 0.5,
             y: 0.5,
             size: 15,
@@ -836,25 +919,25 @@ const useLightrangeGraph = () => {
       try {
         const state = useGraphStore.getState();
 
-        // 1. 检查节点是否存在
+        // 1. Check if node exists
         if (!sigmaGraph.hasNode(nodeId)) {
           console.error('Node not found:', nodeId);
           return;
         }
 
-        // 2. 获取要删除的节点
+        // 2. Get nodes to delete
         const nodesToDelete = getNodesThatWillBeDeleted(nodeId, sigmaGraph);
 
-        // 3. 检查是否会删除所有节点
+        // 3. Check if this would delete all nodes
         if (nodesToDelete.size === sigmaGraph.nodes().length) {
           toast.error(t('graphPanel.propertiesView.node.deleteAllNodesError'));
           return;
         }
 
-        // 4. 清除选中状态 - 这会导致PropertiesView立即关闭
+        // 4. Clear selection - this will cause PropertiesView to close immediately
         state.clearSelection();
 
-        // 5. 删除节点和相关边
+        // 5. Delete nodes and related edges
         for (const nodeToDelete of nodesToDelete) {
           // Remove the node from the sigma graph (this will also remove connected edges)
           sigmaGraph.dropNode(nodeToDelete);
