@@ -143,6 +143,19 @@
       "title": "Paramètres du Serveur LightRAG"
     },
     "legend": "Légende",
+    "nodeTypes": {
+      "person": "Personne",
+      "category": "Catégorie",
+      "geo": "Géographique",
+      "location": "Emplacement",
+      "organization": "Organisation",
+      "event": "Événement",
+      "equipment": "Équipement",
+      "weapon": "Arme",
+      "animal": "Animal",
+      "unknown": "Inconnu",
+      "technology": "Technologie"
+    },
     "sideBar": {
       "settings": {
         "settings": "Paramètres",

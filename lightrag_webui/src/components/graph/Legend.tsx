@@ -4,6 +4,21 @@ import { useGraphStore } from '@/stores/graph'
 import { Card } from '@/components/ui/Card'
 import { ScrollArea } from '@/components/ui/ScrollArea'
 
+// Predefined node types list
+const PREDEFINED_TYPES = [
+  'person',
+  'category',
+  'geo',
+  'location',
+  'organization',
+  'event',
+  'equipment',
+  'weapon',
+  'animal',
+  'unknown',
+  'technology'
+]
+
 interface LegendProps {
   className?: string
 }
@@ -28,7 +43,9 @@ const Legend: React.FC<LegendProps> = ({ className }) => {
                 style={{ backgroundColor: color }}
               />
               <span className="text-xs truncate" title={type}>
-                {type}
+                {PREDEFINED_TYPES.includes(type.toLowerCase())
+                  ? t(`graphPanel.nodeTypes.${type.toLowerCase()}`)
+                  : type}
               </span>
             </div>
           ))}

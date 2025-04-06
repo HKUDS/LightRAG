@@ -143,6 +143,19 @@
       "title": "LightRAG 服务器设置"
     },
     "legend": "图例",
+    "nodeTypes": {
+      "person": "人物",
+      "category": "类别",
+      "geo": "地理名称",
+      "location": "位置",
+      "organization": "组织机构",
+      "event": "事件",
+      "equipment": "装备",
+      "weapon": "武器",
+      "animal": "动物",
+      "unknown": "未知",
+      "technology": "技术"
+    },
     "sideBar": {
       "settings": {
         "settings": "设置",
