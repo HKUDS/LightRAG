@@ -137,6 +137,26 @@ type SortField = 'created_at' | 'updated_at' | 'id';
 type SortDirection = 'asc' | 'desc';
 
 export default function DocumentManager() {
+  // Track component mount status
+  const isMountedRef = useRef(true);
+  
+  // Set up mount/unmount status tracking
+  useEffect(() => {
+    isMountedRef.current = true;
+    
+    // Handle page reload/unload
+    const handleBeforeUnload = () => {
+      isMountedRef.current = false;
+    };
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      isMountedRef.current = false;
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+  
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t } = useTranslation()
   const health = useBackendState.use.health()
@@ -324,7 +344,13 @@ export default function DocumentManager() {
 
   const fetchDocuments = useCallback(async () => {
     try {
-      const docs = await getDocuments()
+      // Check if component is still mounted before starting the request
+      if (!isMountedRef.current) return;
+      
+      const docs = await getDocuments();
+      
+      // Check again if component is still mounted after the request completes
+      if (!isMountedRef.current) return;
 
       // Get new status counts (treat null as all zeros)
       const newStatusCounts = {
@@ -339,30 +365,36 @@ export default function DocumentManager() {
         status => newStatusCounts[status] !== prevStatusCounts.current[status]
       )
 
-      // Trigger health check if changes detected
-      if (hasStatusCountChange) {
+      // Trigger health check if changes detected and component is still mounted
+      if (hasStatusCountChange && isMountedRef.current) {
         useBackendState.getState().check()
       }
 
-      // Update previous status counts
-      prevStatusCounts.current = newStatusCounts
+      // Only update state if component is still mounted
+      if (isMountedRef.current) {
+        // Update previous status counts
+        prevStatusCounts.current = newStatusCounts
 
-      // Update docs state
-      if (docs && docs.statuses) {
-        const numDocuments = Object.values(docs.statuses).reduce(
-          (acc, status) => acc + status.length,
-          0
-        )
-        if (numDocuments > 0) {
-          setDocs(docs)
+        // Update docs state
+        if (docs && docs.statuses) {
+          const numDocuments = Object.values(docs.statuses).reduce(
+            (acc, status) => acc + status.length,
+            0
+          )
+          if (numDocuments > 0) {
+            setDocs(docs)
+          } else {
+            setDocs(null)
+          }
         } else {
           setDocs(null)
         }
-      } else {
-        setDocs(null)
       }
     } catch (err) {
-      toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
+      // Only show error if component is still mounted
+      if (isMountedRef.current) {
+        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
+      }
     }
   }, [setDocs, t])
 
@@ -375,10 +407,20 @@ export default function DocumentManager() {
 
   const scanDocuments = useCallback(async () => {
     try {
-      const { status } = await scanNewDocuments()
-      toast.message(status)
+      // Check if component is still mounted before starting the request
+      if (!isMountedRef.current) return;
+      
+      const { status } = await scanNewDocuments();
+      
+      // Check again if component is still mounted after the request completes
+      if (!isMountedRef.current) return;
+      
+      toast.message(status);
     } catch (err) {
-      toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }))
+      // Only show error if component is still mounted
+      if (isMountedRef.current) {
+        toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
+      }
     }
   }, [t])
 
@@ -390,13 +432,21 @@ export default function DocumentManager() {
 
     const interval = setInterval(async () => {
       try {
-        await fetchDocuments()
+        // Only perform fetch if component is still mounted
+        if (isMountedRef.current) {
+          await fetchDocuments()
+        }
       } catch (err) {
-        toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
+        // Only show error if component is still mounted
+        if (isMountedRef.current) {
+          toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
+        }
       }
     }, 5000)
 
-    return () => clearInterval(interval)
+    return () => {
+      clearInterval(interval)
+    }
   }, [health, fetchDocuments, t, currentTab])
 
   // Add dependency on sort state to re-render when sort changes
