@@ -25,7 +25,7 @@ const LabeledCheckBox = ({
 }) => {
   // Create unique ID using the label text converted to lowercase with spaces removed
   const id = `checkbox-${label.toLowerCase().replace(/\s+/g, '-')}`;
-  
+
   return (
     <div className="flex items-center gap-2">
       <Checkbox id={id} checked={checked} onCheckedChange={onCheckedChange} />
