@@ -1397,9 +1397,9 @@ async def _find_most_related_text_unit_from_entities(
     # Process in batches of 25 tasks at a time to avoid overwhelming resources
     batch_size = 5
     results = []
-    
+
     for i in range(0, len(tasks), batch_size):
-        batch_tasks = tasks[i:i + batch_size]
+        batch_tasks = tasks[i : i + batch_size]
         batch_results = await asyncio.gather(
             *[text_chunks_db.get_by_id(c_id) for c_id, _, _ in batch_tasks]
         )
