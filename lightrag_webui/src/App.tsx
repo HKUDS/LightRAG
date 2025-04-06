@@ -33,6 +33,26 @@ function App() {
     }
   }, [])
 
+  // Track component mount status with useRef
+  const isMountedRef = useRef(true);
+  
+  // Set up mount/unmount status tracking
+  useEffect(() => {
+    isMountedRef.current = true;
+    
+    // Handle page reload/unload
+    const handleBeforeUnload = () => {
+      isMountedRef.current = false;
+    };
+    
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    
+    return () => {
+      isMountedRef.current = false;
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
+
   // Health check - can be disabled
   useEffect(() => {
     // Only execute if health check is enabled and ApiKeyAlert is closed
@@ -40,7 +60,14 @@ function App() {
 
     // Health check function
     const performHealthCheck = async () => {
-      await useBackendState.getState().check();
+      try {
+        // Only perform health check if component is still mounted
+        if (isMountedRef.current) {
+          await useBackendState.getState().check();
+        }
+      } catch (error) {
+        console.error('Health check error:', error);
+      }
     };
 
     // Set interval for periodic execution
