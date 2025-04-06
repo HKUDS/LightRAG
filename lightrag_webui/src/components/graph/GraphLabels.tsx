@@ -57,20 +57,20 @@ const GraphLabels = () => {
     [getSearchEngine]
   )
 
-  // Show queryLabel validation status
+  // Validate label
   useEffect(() => {
 
     if (labelsFetchAttempted) {
       if (allDatabaseLabels.length > 1) {
         if (label && label !== '*' && !allDatabaseLabels.includes(label)) {
-          console.log(`Label "${label}" not in available labels`);
-          // useSettingsStore.getState().setQueryLabel('*');
+          console.log(`Label "${label}" not in available labels, setting to "*"`);
+          useSettingsStore.getState().setQueryLabel('*');
         } else {
           console.log(`Label "${label}" is valid`);
         }
-      } else if (allDatabaseLabels.length <= 1 && label && label !== '*') {
-        console.log('Available labels list is empty');
-        // useSettingsStore.getState().setQueryLabel('');
+      } else if (label && allDatabaseLabels.length <= 1 && label && label !== '*') {
+        console.log('Available labels list is empty, setting label to empty');
+        useSettingsStore.getState().setQueryLabel('');
       }
       useGraphStore.getState().setLabelsFetchAttempted(false)
     }
