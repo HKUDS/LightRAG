@@ -13,34 +13,34 @@ import seedrandom from 'seedrandom'
 
 // Predefined node colors - Primary colors
 const NODE_COLORS = [
-  '#0f5870', // Deep Cyan
-  '#e3493b', // Google Red - geo
   '#fdd868', // Yellow - UNKNOWN
-  '#34A853', // Google Green
-  '#a64dff', // Purple
-  '#F39C12', // Orange
-  '#1ABC9C', // Turquoise - organization
-  '#1f42ad', // Blue
-  '#ee8377', // Light Red
-  '#bf95d0', // Light Violet
-  '#99cc00', // Yellow Green - tecknology
-  '#0f705d', // Deep Turquoise
-  '#E67E22', // Carrot - category
-  '#568be1', // Light Blue - person
-  '#803300'  // Deep Brown
+  '#e3493b', // Google Red - geo
+  '#1212a1', // Deep Cyan - weapon
+  '#0f705d', // Green - organization
+  '#a64dff', // Purple - technology
+  '#f46a9b', // Magenta
+  '#00bfa0', // Turquoise
+  '#fdcce5', // Light Pink
+  '#0f558a', // Blue - location
+  '#b2e061', // Yellow Green
+  '#bd7ebe', // Light Violet - event
+  '#439bd6', // Cyan - person
+  '#094338', // Deep Green
+  '#dc0ab4', // Pink Red
+  '#fd7f6f', // Light Red - category
+  '#b04238', // Brown
 ];
 
 // Extended colors - Used when node types exceed primary colors
 const EXTENDED_COLORS = [
-  '#ff4da6', // Magenta
-  '#094338', // Deep Green
-  '#D35400', // Pumpkin
-  '#002699', // Deep Blue
+  '#5ad45a', // Light Green
   '#5a2c6d', // Deep Violet
-  '#996600', // Brown
-  '#2574A9', // Steel Blue
-  '#912c21', // Deep Red
-  '#293618'  // Dark Green
+  '#6c1313', // Dark Red
+  '#184868', // Dark Cyan
+  '#996600', // Yellow Brown
+  '#4421af', // Deep Purple
+  '#E67E22', // Carrot
+  '#e61919', // Light Red
 ];
 
 // All available colors combined
