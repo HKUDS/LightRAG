@@ -1,4 +1,4 @@
-import Graph, { DirectedGraph } from 'graphology'
+import Graph, { UndirectedGraph } from 'graphology'
 import { useCallback, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { errorMessage } from '@/lib/utils'
@@ -303,7 +303,7 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
   }
 
   // Create new graph instance
-  const graph = new DirectedGraph()
+  const graph = new UndirectedGraph()
 
   // Add nodes from raw graph data
   for (const rawNode of rawGraph?.nodes ?? []) {
@@ -329,10 +329,11 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
     // Get weight from edge properties or default to 1
     const weight = rawEdge.properties?.weight !== undefined ? Number(rawEdge.properties.weight) : 1
 
-    rawEdge.dynamicId = graph.addDirectedEdge(rawEdge.source, rawEdge.target, {
+    rawEdge.dynamicId = graph.addEdge(rawEdge.source, rawEdge.target, {
       label: rawEdge.properties?.keywords || undefined,
       size: weight, // Set initial size based on weight
       originalWeight: weight, // Store original weight for recalculation
+      type: 'curvedNoArrow' // Explicitly set edge type to no arrow
     })
   }
 
@@ -486,7 +487,7 @@ const useLightrangeGraph = () => {
         // Check if data is empty or invalid
         if (!data || !data.nodes || data.nodes.length === 0) {
           // Create a graph with a single "Graph Is Empty" node
-          const emptyGraph = new DirectedGraph();
+          const emptyGraph = new UndirectedGraph();
 
           // Add a single node with "Graph Is Empty" label
           emptyGraph.addNode('empty-graph-node', {
@@ -726,7 +727,7 @@ const useLightrangeGraph = () => {
 
         // Helper function to update node sizes
         const updateNodeSizes = (
-          sigmaGraph: DirectedGraph,
+          sigmaGraph: UndirectedGraph,
           nodesWithDiscardedEdges: Set<string>,
           minDegree: number,
           maxDegree: number
@@ -758,7 +759,7 @@ const useLightrangeGraph = () => {
         
         // Helper function to update edge sizes
         const updateEdgeSizes = (
-          sigmaGraph: DirectedGraph,
+          sigmaGraph: UndirectedGraph,
           minWeight: number,
           maxWeight: number
         ) => {
@@ -866,9 +867,6 @@ const useLightrangeGraph = () => {
           if (sigmaGraph.hasEdge(newEdge.source, newEdge.target)) {
             continue;
           }
-          if (sigmaGraph.hasEdge(newEdge.target, newEdge.source)) {
-            continue;
-          }
 
           // Get weight from edge properties or default to 1
           const weight = newEdge.properties?.weight !== undefined ? Number(newEdge.properties.weight) : 1;
@@ -878,10 +876,11 @@ const useLightrangeGraph = () => {
           maxWeight = Math.max(maxWeight, weight);
 
           // Add the edge to the sigma graph
-          newEdge.dynamicId = sigmaGraph.addDirectedEdge(newEdge.source, newEdge.target, {
+          newEdge.dynamicId = sigmaGraph.addEdge(newEdge.source, newEdge.target, {
             label: newEdge.properties?.keywords || undefined,
             size: weight, // Set initial size based on weight
-            originalWeight: weight // Store original weight for recalculation
+            originalWeight: weight, // Store original weight for recalculation
+            type: 'curvedNoArrow' // Explicitly set edge type to no arrow
           });
 
           // Add the edge to the raw graph
@@ -935,7 +934,7 @@ const useLightrangeGraph = () => {
   }, [nodeToExpand, sigmaGraph, rawGraph, t]);
 
   // Helper function to get all nodes that will be deleted
-  const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: DirectedGraph) => {
+  const getNodesThatWillBeDeleted = useCallback((nodeId: string, graph: UndirectedGraph) => {
     const nodesToDelete = new Set<string>([nodeId]);
 
     // Find all nodes that would become isolated after deletion
@@ -1063,7 +1062,7 @@ const useLightrangeGraph = () => {
 
     // If no graph exists yet, create a new one and store it
     console.log('Creating new Sigma graph instance')
-    const graph = new DirectedGraph()
+    const graph = new UndirectedGraph()
     useGraphStore.getState().setSigmaGraph(graph)
     return graph as Graph<NodeType, EdgeType>
   }, [sigmaGraph])
