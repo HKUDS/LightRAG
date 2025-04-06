@@ -1395,7 +1395,7 @@ async def _find_most_related_text_unit_from_entities(
                 tasks.append((c_id, index, this_edges))
 
     # Process in batches of 25 tasks at a time to avoid overwhelming resources
-    batch_size = 25
+    batch_size = 5
     results = []
     
     for i in range(0, len(tasks), batch_size):
