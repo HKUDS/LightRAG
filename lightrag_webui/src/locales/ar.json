@@ -140,7 +140,8 @@
   "graphPanel": {
     "dataIsTruncated": "تم اقتصار بيانات الرسم البياني على الحد الأقصى للعقد",
     "statusDialog": {
-      "title": "إعدادات خادم LightRAG"
+      "title": "إعدادات خادم LightRAG",
+      "description": "عرض حالة النظام الحالية ومعلومات الاتصال"
     },
     "legend": "المفتاح",
     "nodeTypes": {

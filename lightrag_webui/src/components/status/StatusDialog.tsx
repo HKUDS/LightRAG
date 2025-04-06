@@ -5,6 +5,7 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
 } from '@/components/ui/Dialog'
 import StatusCard from './StatusCard'
 
@@ -22,6 +23,9 @@ const StatusDialog = ({ open, onOpenChange, status }: StatusDialogProps) => {
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle>{t('graphPanel.statusDialog.title')}</DialogTitle>
+          <DialogDescription>
+            {t('graphPanel.statusDialog.description')}
+          </DialogDescription>
         </DialogHeader>
         <StatusCard status={status} />
       </DialogContent>
