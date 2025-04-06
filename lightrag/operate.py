@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 import json
 import re
 import os
@@ -1002,6 +1003,7 @@ async def mix_kg_vector_query(
 
         except Exception as e:
             logger.error(f"Error in get_kg_context: {str(e)}")
+            traceback.print_exc()
             return None
 
     async def get_vector_context():
@@ -1392,9 +1394,16 @@ async def _find_most_related_text_unit_from_entities(
                 all_text_units_lookup[c_id] = index
                 tasks.append((c_id, index, this_edges))
 
-    results = await asyncio.gather(
-        *[text_chunks_db.get_by_id(c_id) for c_id, _, _ in tasks]
-    )
+    # Process in batches of 25 tasks at a time to avoid overwhelming resources
+    batch_size = 5
+    results = []
+
+    for i in range(0, len(tasks), batch_size):
+        batch_tasks = tasks[i : i + batch_size]
+        batch_results = await asyncio.gather(
+            *[text_chunks_db.get_by_id(c_id) for c_id, _, _ in batch_tasks]
+        )
+        results.extend(batch_results)
 
     for (c_id, index, this_edges), data in zip(tasks, results):
         all_text_units_lookup[c_id] = {
