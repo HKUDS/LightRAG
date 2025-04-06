@@ -296,11 +296,11 @@
       "queryMode": "查询模式",
       "queryModeTooltip": "选择检索策略：\n• Naive：基础搜索，无高级技术\n• Local：上下文相关信息检索\n• Global：利用全局知识库\n• Hybrid：结合本地和全局检索\n• Mix：整合知识图谱和向量检索",
       "queryModeOptions": {
-        "naive": "朴素",
-        "local": "本地",
-        "global": "全局",
-        "hybrid": "混合",
-        "mix": "混合"
+        "naive": "Naive",
+        "local": "Local",
+        "global": "Global",
+        "hybrid": "Hybrid",
+        "mix": "Mix"
       },
       "responseFormat": "响应格式",
       "responseFormatTooltip": "定义响应格式。例如：\n• 多段落\n• 单段落\n• 要点",
