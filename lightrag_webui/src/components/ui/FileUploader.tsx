@@ -206,10 +206,15 @@ function FileUploader(props: FileUploaderProps) {
       if (onUpload && acceptedFiles.length > 0) {
         // Filter out any files that might have been rejected by our custom validator
         const validFiles = acceptedFiles.filter(file => {
+          // Skip files without a name
+          if (!file.name) {
+            return false;
+          }
+
           // Check if file type is accepted
           const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
           const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
-            return file.type === mimeType || extensions.includes(fileExt);
+            return file.type === mimeType || (Array.isArray(extensions) && extensions.includes(fileExt));
           });
 
           // Check file size
@@ -260,10 +265,22 @@ function FileUploader(props: FileUploaderProps) {
         multiple={maxFileCount > 1 || multiple}
         disabled={isDisabled}
         validator={(file) => {
-          // Check if file type is accepted
+          // Ensure file name exists
+          if (!file.name) {
+            return {
+              code: 'invalid-file-name',
+              message: t('documentPanel.uploadDocuments.fileUploader.invalidFileName',
+                { fallback: 'Invalid file name' })
+            };
+          }
+
+          // Safely extract file extension
           const fileExt = `.${file.name.split('.').pop()?.toLowerCase() || ''}`;
+
+          // Ensure accept object exists and has correct format
           const isAccepted = Object.entries(accept || {}).some(([mimeType, extensions]) => {
-            return file.type === mimeType || extensions.includes(fileExt);
+            // Ensure extensions is an array before calling includes
+            return file.type === mimeType || (Array.isArray(extensions) && extensions.includes(fileExt));
           });
 
           if (!isAccepted) {
