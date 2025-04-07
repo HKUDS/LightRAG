@@ -1337,7 +1337,7 @@ class LightRAG:
         # If a custom model is provided in param, temporarily update global config
         global_config = asdict(self)
 
-        if param.mode in ["local", "global", "hybrid"]:
+        if param.mode in ["local", "global", "hybrid", "context"]:
             response = await kg_query(
                 query.strip(),
                 self.chunk_entity_relation_graph,

@@ -23,6 +23,7 @@ class SearchMode(str, Enum):
     hybrid = "hybrid"
     mix = "mix"
     bypass = "bypass"
+    context = "context"
 
 
 class OllamaMessage(BaseModel):
@@ -111,6 +112,7 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode]:
         "/hybrid ": SearchMode.hybrid,
         "/mix ": SearchMode.mix,
         "/bypass ": SearchMode.bypass,
+        "/context": SearchMode.context,
     }
 
     for prefix, mode in mode_map.items():
@@ -336,6 +338,26 @@ class OllamaAPI:
             Detects and forwards OpenWebUI session-related requests (for meta data generation task) directly to LLM.
             """
             try:
+                if True:
+                    # 打印完整请求体
+                    request_body = await raw_request.body()
+                    try:
+                        request_json = json.loads(request_body.decode("utf-8"))
+                        logging.info(
+                            f"Full chat request body: {json.dumps(request_json, indent=2, ensure_ascii=False)}"
+                        )
+                    except json.JSONDecodeError:
+                        logging.warning(
+                            f"Could not decode request body: {request_body}"
+                        )
+
+                    # 获取所有消息
+                    messages = request.messages
+                    if not messages:
+                        raise HTTPException(
+                            status_code=400, detail="No messages provided"
+                        )
+
                 # Get all messages
                 messages = request.messages
                 if not messages:

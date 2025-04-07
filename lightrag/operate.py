@@ -736,6 +736,9 @@ async def kg_query(
         query_param,
     )
 
+    if query_param.mode == "context":
+        return context
+
     if query_param.only_need_context:
         return context
     if context is None:
@@ -766,6 +769,7 @@ async def kg_query(
         system_prompt=sys_prompt,
         stream=query_param.stream,
     )
+
     if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
             response.replace(sys_prompt, "")
