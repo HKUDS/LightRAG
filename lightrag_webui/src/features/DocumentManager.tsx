@@ -158,7 +158,7 @@ export default function DocumentManager() {
   }, []);
 
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
   const health = useBackendState.use.health()
   const pipelineBusy = useBackendState.use.pipelineBusy()
   const [docs, setDocs] = useState<DocsStatusesResponse | null>(null)
@@ -499,7 +499,7 @@ export default function DocumentManager() {
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
               <div className="flex items-center gap-2">
                 <FilterIcon className="h-4 w-4" />
-                <div className="flex gap-1">
+                <div className="flex gap-1" dir={i18n.dir()}>
                   <Button
                     size="sm"
                     variant={statusFilter === 'all' ? 'secondary' : 'outline'}
