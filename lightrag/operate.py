@@ -1031,6 +1031,7 @@ async def mix_kg_vector_query(
                     chunk_with_time = {
                         "content": chunk["content"],
                         "created_at": result.get("created_at", None),
+                        "file_path": result.get("file_path", None),
                     }
                     valid_chunks.append(chunk_with_time)
 
