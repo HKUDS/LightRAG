@@ -1368,9 +1368,12 @@ async def _find_most_related_text_unit_from_entities(
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
         for dp in node_datas
     ]
-    edges = await asyncio.gather(
-        *[knowledge_graph_inst.get_node_edges(dp["entity_name"]) for dp in node_datas]
-    )
+    
+    node_names = [dp["entity_name"] for dp in node_datas]
+    batch_edges_dict = await knowledge_graph_inst.get_nodes_edges_batch(node_names)
+    # Build the edges list in the same order as node_datas.
+    edges = [batch_edges_dict.get(name, []) for name in node_names]
+
     all_one_hop_nodes = set()
     for this_edges in edges:
         if not this_edges:
@@ -1472,17 +1475,31 @@ async def _find_most_related_edges_from_entities(
                 seen.add(sorted_edge)
                 all_edges.append(sorted_edge)
 
-    all_edges_pack, all_edges_degree = await asyncio.gather(
-        asyncio.gather(*[knowledge_graph_inst.get_edge(e[0], e[1]) for e in all_edges]),
-        asyncio.gather(
-            *[knowledge_graph_inst.edge_degree(e[0], e[1]) for e in all_edges]
-        ),
+    # Prepare edge pairs in two forms:
+    # For the batch edge properties function, use dicts.
+    edge_pairs_dicts = [{"src": e[0], "tgt": e[1]} for e in all_edges]
+    # For edge degrees, use tuples.
+    edge_pairs_tuples = list(all_edges)  # all_edges is already a list of tuples
+    
+    # Call the batched functions concurrently.
+    edge_data_dict, edge_degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_edges_batch(edge_pairs_dicts),
+        knowledge_graph_inst.edge_degrees_batch(edge_pairs_tuples)
     )
-    all_edges_data = [
-        {"src_tgt": k, "rank": d, **v}
-        for k, v, d in zip(all_edges, all_edges_pack, all_edges_degree)
-        if v is not None
-    ]
+    
+    # Reconstruct edge_datas list in the same order as the deduplicated results.
+    all_edges_data = []
+    for pair in all_edges:
+        edge_props = edge_data_dict.get(pair)
+        if edge_props is not None:
+            combined = {
+                "src_tgt": pair,
+                "rank": edge_degrees_dict.get(pair, 0),
+                **edge_props,
+            }
+            all_edges_data.append(combined)
+
+
     all_edges_data = sorted(
         all_edges_data, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
@@ -1526,7 +1543,7 @@ async def _get_edge_data(
     # Call the batched functions concurrently.
     edge_data_dict, edge_degrees_dict = await asyncio.gather(
         knowledge_graph_inst.get_edges_batch(edge_pairs_dicts),
-        knowledge_graph_inst.get_edges_degree_batch(edge_pairs_tuples)
+        knowledge_graph_inst.edge_degrees_batch(edge_pairs_tuples)
     )
 
     # Reconstruct edge_datas list in the same order as results.
@@ -1653,7 +1670,7 @@ async def _find_most_related_entities_from_relationships(
     # Batch approach: Retrieve nodes and their degrees concurrently with one query each.
     nodes_dict, degrees_dict = await asyncio.gather(
         knowledge_graph_inst.get_nodes_batch(entity_names),
-        knowledge_graph_inst.get_node_degrees_batch(entity_names)
+        knowledge_graph_inst.node_degrees_batch(entity_names)
     )
 
     # Rebuild the list in the same order as entity_names
