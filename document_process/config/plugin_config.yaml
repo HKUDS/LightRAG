@@ -1,0 +1,17 @@
+# 定义插件的执行顺序
+# 主程序将按照这个列表的顺序加载和执行启用的插件
+plugin_order:
+  - empty_line_remover        # 先移除空行
+  - heading_level_detector    # 然后检测标题级别
+  - article_level_adjuster    # 最后根据章节结构调整"条"的级别
+  # - auto_sublevel_generator # (如果实现) 可以加在这里
+  # - other_plugin_name
+
+# 控制每个插件是否启用
+# 只有值为 true 的插件才会被加载和执行
+enabled_plugins:
+  empty_line_remover: true
+  heading_level_detector: true
+  article_level_adjuster: true
+  # auto_sublevel_generator: false # 默认禁用，需要时再开启
+  # other_plugin_name: true 
