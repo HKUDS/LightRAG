@@ -348,7 +348,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                     degree = record["degree"]
                     logger.debug(
-                        "Neo4j query node degree for {node_id} return: {degree}"
+                        f"Neo4j query node degree for {node_id} return: {degree}"
                     )
                     return degree
                 finally:
