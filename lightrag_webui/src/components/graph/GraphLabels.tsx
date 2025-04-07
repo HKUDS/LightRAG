@@ -108,12 +108,12 @@ const GraphLabels = () => {
         variant={controlButtonVariant}
         onClick={handleRefresh}
         tooltip={t('graphPanel.graphLabels.refreshTooltip')}
-        className="mr-1"
+        className="mr-2"
       >
         <RefreshCw className="h-4 w-4" />
       </Button>
       <AsyncSelect<string>
-        className="ml-2"
+        className="min-w-[300px]"
         triggerClassName="max-h-8"
         searchInputClassName="max-h-8"
         triggerTooltip={t('graphPanel.graphLabels.selectTooltip')}
