@@ -210,7 +210,13 @@ export function AsyncSelect<T>({
           <ChevronsUpDown className="opacity-50" size={10} />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className={cn('p-0', className)} onCloseAutoFocus={(e) => e.preventDefault()}>
+      <PopoverContent
+        className={cn('p-0', className)}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        align="start"
+        sideOffset={8}
+        collisionPadding={5}
+      >
         <Command shouldFilter={false}>
           <div className="relative w-full border-b">
             <CommandInput
