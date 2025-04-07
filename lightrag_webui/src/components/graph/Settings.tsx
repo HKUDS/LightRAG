@@ -8,7 +8,7 @@ import Input from '@/components/ui/Input'
 import { controlButtonVariant } from '@/lib/constants'
 import { useSettingsStore } from '@/stores/settings'
 
-import { SettingsIcon } from 'lucide-react'
+import { SettingsIcon, Undo2 } from 'lucide-react'
 import { useTranslation } from 'react-i18next';
 
 /**
@@ -23,11 +23,14 @@ const LabeledCheckBox = ({
   onCheckedChange: () => void
   label: string
 }) => {
+  // Create unique ID using the label text converted to lowercase with spaces removed
+  const id = `checkbox-${label.toLowerCase().replace(/\s+/g, '-')}`;
+
   return (
     <div className="flex items-center gap-2">
-      <Checkbox checked={checked} onCheckedChange={onCheckedChange} />
+      <Checkbox id={id} checked={checked} onCheckedChange={onCheckedChange} />
       <label
-        htmlFor="terms"
+        htmlFor={id}
         className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
       >
         {label}
@@ -44,15 +47,20 @@ const LabeledNumberInput = ({
   onEditFinished,
   label,
   min,
-  max
+  max,
+  defaultValue
 }: {
   value: number
   onEditFinished: (value: number) => void
   label: string
   min: number
   max?: number
+  defaultValue?: number
 }) => {
+  const { t } = useTranslation();
   const [currentValue, setCurrentValue] = useState<number | null>(value)
+  // Create unique ID using the label text converted to lowercase with spaces removed
+  const id = `input-${label.toLowerCase().replace(/\s+/g, '-')}`;
 
   const onValueChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -81,28 +89,50 @@ const LabeledNumberInput = ({
     }
   }, [value, currentValue, onEditFinished])
 
+  const handleReset = useCallback(() => {
+    if (defaultValue !== undefined && value !== defaultValue) {
+      setCurrentValue(defaultValue)
+      onEditFinished(defaultValue)
+    }
+  }, [defaultValue, value, onEditFinished])
+
   return (
     <div className="flex flex-col gap-2">
       <label
-        htmlFor="terms"
+        htmlFor={id}
         className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
       >
         {label}
       </label>
-      <Input
-        type="number"
-        value={currentValue === null ? '' : currentValue}
-        onChange={onValueChange}
-        className="h-6 w-full min-w-0 pr-1"
-        min={min}
-        max={max}
-        onBlur={onBlur}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') {
-            onBlur()
-          }
-        }}
-      />
+      <div className="flex items-center gap-1">
+        <Input
+          id={id}
+          type="number"
+          value={currentValue === null ? '' : currentValue}
+          onChange={onValueChange}
+          className="h-6 w-full min-w-0 pr-1"
+          min={min}
+          max={max}
+          onBlur={onBlur}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              onBlur()
+            }
+          }}
+        />
+        {defaultValue !== undefined && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-6 w-6 flex-shrink-0 hover:bg-muted text-muted-foreground hover:text-foreground"
+            onClick={handleReset}
+            type="button"
+            title={t('graphPanel.sideBar.settings.resetToDefault')}
+          >
+            <Undo2 className="h-3.5 w-3.5" />
+          </Button>
+        )}
+      </div>
     </div>
   )
 }
@@ -120,8 +150,10 @@ export default function Settings() {
   const enableNodeDrag = useSettingsStore.use.enableNodeDrag()
   const enableHideUnselectedEdges = useSettingsStore.use.enableHideUnselectedEdges()
   const showEdgeLabel = useSettingsStore.use.showEdgeLabel()
+  const minEdgeSize = useSettingsStore.use.minEdgeSize()
+  const maxEdgeSize = useSettingsStore.use.maxEdgeSize()
   const graphQueryMaxDepth = useSettingsStore.use.graphQueryMaxDepth()
-  const graphMinDegree = useSettingsStore.use.graphMinDegree()
+  const graphMaxNodes = useSettingsStore.use.graphMaxNodes()
   const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
@@ -180,15 +212,14 @@ export default function Settings() {
     }, 300)
   }, [])
 
-  const setGraphMinDegree = useCallback((degree: number) => {
-    if (degree < 0) return
-    useSettingsStore.setState({ graphMinDegree: degree })
+  const setGraphMaxNodes = useCallback((nodes: number) => {
+    if (nodes < 1 || nodes > 1000) return
+    useSettingsStore.setState({ graphMaxNodes: nodes })
     const currentLabel = useSettingsStore.getState().queryLabel
     useSettingsStore.getState().setQueryLabel('')
     setTimeout(() => {
       useSettingsStore.getState().setQueryLabel(currentLabel)
     }, 300)
-
   }, [])
 
   const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
@@ -269,24 +300,77 @@ export default function Settings() {
               label={t('graphPanel.sideBar.settings.edgeEvents')}
             />
 
+            <div className="flex flex-col gap-2">
+              <label htmlFor="edge-size-min" className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70">
+                {t('graphPanel.sideBar.settings.edgeSizeRange')}
+              </label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="edge-size-min"
+                  type="number"
+                  value={minEdgeSize}
+                  onChange={(e) => {
+                    const newValue = Number(e.target.value);
+                    if (!isNaN(newValue) && newValue >= 1 && newValue <= maxEdgeSize) {
+                      useSettingsStore.setState({ minEdgeSize: newValue });
+                    }
+                  }}
+                  className="h-6 w-16 min-w-0 pr-1"
+                  min={1}
+                  max={Math.min(maxEdgeSize, 10)}
+                />
+                <span>-</span>
+                <div className="flex items-center gap-1">
+                  <Input
+                    id="edge-size-max"
+                    type="number"
+                    value={maxEdgeSize}
+                    onChange={(e) => {
+                      const newValue = Number(e.target.value);
+                      if (!isNaN(newValue) && newValue >= minEdgeSize && newValue >= 1 && newValue <= 10) {
+                        useSettingsStore.setState({ maxEdgeSize: newValue });
+                      }
+                    }}
+                    className="h-6 w-16 min-w-0 pr-1"
+                    min={minEdgeSize}
+                    max={10}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-6 w-6 flex-shrink-0 hover:bg-muted text-muted-foreground hover:text-foreground"
+                    onClick={() => useSettingsStore.setState({ minEdgeSize: 1, maxEdgeSize: 5 })}
+                    type="button"
+                    title={t('graphPanel.sideBar.settings.resetToDefault')}
+                  >
+                    <Undo2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              </div>
+            </div>
+
             <Separator />
             <LabeledNumberInput
               label={t('graphPanel.sideBar.settings.maxQueryDepth')}
               min={1}
               value={graphQueryMaxDepth}
+              defaultValue={3}
               onEditFinished={setGraphQueryMaxDepth}
             />
             <LabeledNumberInput
-              label={t('graphPanel.sideBar.settings.minDegree')}
-              min={0}
-              value={graphMinDegree}
-              onEditFinished={setGraphMinDegree}
+              label={t('graphPanel.sideBar.settings.maxNodes')}
+              min={1}
+              max={1000}
+              value={graphMaxNodes}
+              defaultValue={1000}
+              onEditFinished={setGraphMaxNodes}
             />
             <LabeledNumberInput
               label={t('graphPanel.sideBar.settings.maxLayoutIterations')}
               min={1}
               max={30}
               value={graphLayoutMaxIterations}
+              defaultValue={15}
               onEditFinished={setGraphLayoutMaxIterations}
             />
             <Separator />

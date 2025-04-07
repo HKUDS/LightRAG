@@ -51,7 +51,7 @@ const LoginPage = () => {
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token and redirect
-          login(status.access_token, true, status.core_version, status.api_version)
+          login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
           if (status.message) {
             toast.info(status.message)
           }
@@ -96,7 +96,7 @@ const LoginPage = () => {
 
       // Check authentication mode
       const isGuestMode = response.auth_mode === 'disabled'
-      login(response.access_token, isGuestMode, response.core_version, response.api_version)
+      login(response.access_token, isGuestMode, response.core_version, response.api_version, response.webui_title || null, response.webui_description || null)
 
       // Set session flag for version check
       if (response.core_version || response.api_version) {
@@ -148,11 +148,11 @@ const LoginPage = () => {
         <CardContent className="px-8 pb-8">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="flex items-center gap-4">
-              <label htmlFor="username" className="text-sm font-medium w-16 shrink-0">
+              <label htmlFor="username-input" className="text-sm font-medium w-16 shrink-0">
                 {t('login.username')}
               </label>
               <Input
-                id="username"
+                id="username-input"
                 placeholder={t('login.usernamePlaceholder')}
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -161,11 +161,11 @@ const LoginPage = () => {
               />
             </div>
             <div className="flex items-center gap-4">
-              <label htmlFor="password" className="text-sm font-medium w-16 shrink-0">
+              <label htmlFor="password-input" className="text-sm font-medium w-16 shrink-0">
                 {t('login.password')}
               </label>
               <Input
-                id="password"
+                id="password-input"
                 type="password"
                 placeholder={t('login.passwordPlaceholder')}
                 value={password}

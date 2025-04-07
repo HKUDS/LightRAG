@@ -26,3 +26,4 @@ class KnowledgeGraphEdge(BaseModel):
 class KnowledgeGraph(BaseModel):
     nodes: list[KnowledgeGraphNode] = []
     edges: list[KnowledgeGraphEdge] = []
+    is_truncated: bool = False

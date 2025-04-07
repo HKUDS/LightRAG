@@ -77,6 +77,8 @@ interface GraphState {
   graphIsEmpty: boolean
   lastSuccessfulQueryLabel: string
 
+  typeColorMap: Map<string, string>
+
   // Global flags to track data fetching attempts
   graphDataFetchAttempted: boolean
   labelsFetchAttempted: boolean
@@ -136,6 +138,8 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   sigmaInstance: null,
   allDatabaseLabels: ['*'],
 
+  typeColorMap: new Map<string, string>(),
+
   searchEngine: null,
 
   setGraphIsEmpty: (isEmpty: boolean) => set({ graphIsEmpty: isEmpty }),
@@ -166,7 +170,6 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
       searchEngine: null,
       moveToSelectedNode: false,
       graphIsEmpty: false
-      // Do not reset lastSuccessfulQueryLabel here as it's used to track query history
     });
   },
 
@@ -198,6 +201,8 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   setMoveToSelectedNode: (moveToSelectedNode?: boolean) => set({ moveToSelectedNode }),
 
   setSigmaInstance: (instance: any) => set({ sigmaInstance: instance }),
+
+  setTypeColorMap: (typeColorMap: Map<string, string>) => set({ typeColorMap }),
 
   setSearchEngine: (engine: MiniSearch | null) => set({ searchEngine: engine }),
   resetSearchEngine: () => set({ searchEngine: null }),

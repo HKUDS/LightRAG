@@ -112,6 +112,32 @@ class StorageNameSpace(ABC):
     async def index_done_callback(self) -> None:
         """Commit the storage operations after indexing"""
 
+    @abstractmethod
+    async def drop(self) -> dict[str, str]:
+        """Drop all data from storage and clean up resources
+
+        This abstract method defines the contract for dropping all data from a storage implementation.
+        Each storage type must implement this method to:
+        1. Clear all data from memory and/or external storage
+        2. Remove any associated storage files if applicable
+        3. Reset the storage to its initial state
+        4. Handle cleanup of any resources
+        5. Notify other processes if necessary
+        6. This action should persistent the data to disk immediately.
+
+        Returns:
+            dict[str, str]: Operation status and message with the following format:
+                {
+                    "status": str,  # "success" or "error"
+                    "message": str  # "data dropped" on success, error details on failure
+                }
+
+        Implementation specific:
+        - On success: return {"status": "success", "message": "data dropped"}
+        - On failure: return {"status": "error", "message": "<error details>"}
+        - If not supported: return {"status": "error", "message": "unsupported"}
+        """
+
 
 @dataclass
 class BaseVectorStorage(StorageNameSpace, ABC):
@@ -127,15 +153,33 @@ class BaseVectorStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Insert or update vectors in the storage."""
+        """Insert or update vectors in the storage.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
 
     @abstractmethod
     async def delete_entity(self, entity_name: str) -> None:
-        """Delete a single entity by its name."""
+        """Delete a single entity by its name.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
 
     @abstractmethod
     async def delete_entity_relation(self, entity_name: str) -> None:
-        """Delete relations for a given entity."""
+        """Delete relations for a given entity.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
 
     @abstractmethod
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
@@ -161,6 +205,19 @@ class BaseVectorStorage(StorageNameSpace, ABC):
         """
         pass
 
+    @abstractmethod
+    async def delete(self, ids: list[str]):
+        """Delete vectors with specified IDs
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+
+        Args:
+            ids: List of vector IDs to be deleted
+        """
+
 
 @dataclass
 class BaseKVStorage(StorageNameSpace, ABC):
@@ -180,7 +237,42 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        """Upsert data"""
+        """Upsert data
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed
+        """
+
+    @abstractmethod
+    async def delete(self, ids: list[str]) -> None:
+        """Delete specific records from storage by their IDs
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed
+
+        Args:
+            ids (list[str]): List of document IDs to be deleted from storage
+
+        Returns:
+            None
+        """
+
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
+        """Delete specific records from storage by cache mode
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed
+
+        Args:
+            modes (list[str]): List of cache modes to be dropped from storage
+
+        Returns:
+             True: if the cache drop successfully
+             False: if the cache drop failed, or the cache mode is not supported
+        """
 
 
 @dataclass
@@ -205,13 +297,13 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        """Get an edge by its source and target node ids."""
+        """Get node by its label identifier, return only node properties"""
 
     @abstractmethod
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        """Get all edges connected to a node."""
+        """Get edge properties between two nodes"""
 
     @abstractmethod
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -225,7 +317,13 @@ class BaseGraphStorage(StorageNameSpace, ABC):
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        """Delete a node from the graph."""
+        """Delete a node from the graph.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+        """
 
     @abstractmethod
     async def delete_node(self, node_id: str) -> None:
@@ -243,9 +341,20 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 3
+        self, node_label: str, max_depth: int = 3, max_nodes: int = 1000
     ) -> KnowledgeGraph:
-        """Retrieve a subgraph of the knowledge graph starting from a given node."""
+        """
+        Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
+
+        Args:
+            node_label: Label of the starting node，* means all nodes
+            max_depth: Maximum depth of the subgraph, Defaults to 3
+            max_nodes: Maxiumu nodes to return, Defaults to 1000（BFS if possible)
+
+        Returns:
+            KnowledgeGraph object containing nodes and edges, with an is_truncated flag
+            indicating whether the graph was truncated due to max_nodes limit
+        """
 
 
 class DocStatus(str, Enum):
@@ -296,6 +405,10 @@ class DocStatusStorage(BaseKVStorage, ABC):
         self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
+
+    async def drop_cache_by_modes(self, modes: list[str] | None = None) -> bool:
+        """Drop cache is not supported for Doc Status storage"""
+        return False
 
 
 class StoragesStatus(str, Enum):

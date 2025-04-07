@@ -93,14 +93,19 @@ export default function QuerySettings() {
                 tooltip={t('retrievePanel.querySettings.topKTooltip')}
                 side="left"
               />
-              <NumberInput
-                id="top_k"
-                stepper={1}
-                value={querySettings.top_k}
-                onValueChange={(v) => handleChange('top_k', v)}
-                min={1}
-                placeholder={t('retrievePanel.querySettings.topKPlaceholder')}
-              />
+              <div>
+                <label htmlFor="top_k" className="sr-only">
+                  {t('retrievePanel.querySettings.topK')}
+                </label>
+                <NumberInput
+                  id="top_k"
+                  stepper={1}
+                  value={querySettings.top_k}
+                  onValueChange={(v) => handleChange('top_k', v)}
+                  min={1}
+                  placeholder={t('retrievePanel.querySettings.topKPlaceholder')}
+                />
+              </div>
             </>
 
             {/* Max Tokens */}
@@ -112,14 +117,19 @@ export default function QuerySettings() {
                   tooltip={t('retrievePanel.querySettings.maxTokensTextUnitTooltip')}
                   side="left"
                 />
-                <NumberInput
-                  id="max_token_for_text_unit"
-                  stepper={500}
-                  value={querySettings.max_token_for_text_unit}
-                  onValueChange={(v) => handleChange('max_token_for_text_unit', v)}
-                  min={1}
-                  placeholder={t('retrievePanel.querySettings.maxTokensTextUnit')}
-                />
+                <div>
+                  <label htmlFor="max_token_for_text_unit" className="sr-only">
+                    {t('retrievePanel.querySettings.maxTokensTextUnit')}
+                  </label>
+                  <NumberInput
+                    id="max_token_for_text_unit"
+                    stepper={500}
+                    value={querySettings.max_token_for_text_unit}
+                    onValueChange={(v) => handleChange('max_token_for_text_unit', v)}
+                    min={1}
+                    placeholder={t('retrievePanel.querySettings.maxTokensTextUnit')}
+                  />
+                </div>
               </>
 
               <>
@@ -128,14 +138,19 @@ export default function QuerySettings() {
                   tooltip={t('retrievePanel.querySettings.maxTokensGlobalContextTooltip')}
                   side="left"
                 />
-                <NumberInput
-                  id="max_token_for_global_context"
-                  stepper={500}
-                  value={querySettings.max_token_for_global_context}
-                  onValueChange={(v) => handleChange('max_token_for_global_context', v)}
-                  min={1}
-                  placeholder={t('retrievePanel.querySettings.maxTokensGlobalContext')}
-                />
+                <div>
+                  <label htmlFor="max_token_for_global_context" className="sr-only">
+                    {t('retrievePanel.querySettings.maxTokensGlobalContext')}
+                  </label>
+                  <NumberInput
+                    id="max_token_for_global_context"
+                    stepper={500}
+                    value={querySettings.max_token_for_global_context}
+                    onValueChange={(v) => handleChange('max_token_for_global_context', v)}
+                    min={1}
+                    placeholder={t('retrievePanel.querySettings.maxTokensGlobalContext')}
+                  />
+                </div>
               </>
 
               <>
@@ -145,14 +160,19 @@ export default function QuerySettings() {
                   tooltip={t('retrievePanel.querySettings.maxTokensLocalContextTooltip')}
                   side="left"
                 />
-                <NumberInput
-                  id="max_token_for_local_context"
-                  stepper={500}
-                  value={querySettings.max_token_for_local_context}
-                  onValueChange={(v) => handleChange('max_token_for_local_context', v)}
-                  min={1}
-                  placeholder={t('retrievePanel.querySettings.maxTokensLocalContext')}
-                />
+                <div>
+                  <label htmlFor="max_token_for_local_context" className="sr-only">
+                    {t('retrievePanel.querySettings.maxTokensLocalContext')}
+                  </label>
+                  <NumberInput
+                    id="max_token_for_local_context"
+                    stepper={500}
+                    value={querySettings.max_token_for_local_context}
+                    onValueChange={(v) => handleChange('max_token_for_local_context', v)}
+                    min={1}
+                    placeholder={t('retrievePanel.querySettings.maxTokensLocalContext')}
+                  />
+                </div>
               </>
             </>
 
@@ -164,16 +184,21 @@ export default function QuerySettings() {
                 tooltip={t('retrievePanel.querySettings.historyTurnsTooltip')}
                 side="left"
               />
-              <NumberInput
-                className="!border-input"
-                id="history_turns"
-                stepper={1}
-                type="text"
-                value={querySettings.history_turns}
-                onValueChange={(v) => handleChange('history_turns', v)}
-                min={0}
-                placeholder={t('retrievePanel.querySettings.historyTurnsPlaceholder')}
-              />
+              <div>
+                <label htmlFor="history_turns" className="sr-only">
+                  {t('retrievePanel.querySettings.historyTurns')}
+                </label>
+                <NumberInput
+                  className="!border-input"
+                  id="history_turns"
+                  stepper={1}
+                  type="text"
+                  value={querySettings.history_turns}
+                  onValueChange={(v) => handleChange('history_turns', v)}
+                  min={0}
+                  placeholder={t('retrievePanel.querySettings.historyTurnsPlaceholder')}
+                />
+              </div>
             </>
 
             {/* Keywords */}
@@ -185,19 +210,24 @@ export default function QuerySettings() {
                   tooltip={t('retrievePanel.querySettings.hlKeywordsTooltip')}
                   side="left"
                 />
-                <Input
-                  id="hl_keywords"
-                  type="text"
-                  value={querySettings.hl_keywords?.join(', ')}
-                  onChange={(e) => {
-                    const keywords = e.target.value
-                      .split(',')
-                      .map((k) => k.trim())
-                      .filter((k) => k !== '')
-                    handleChange('hl_keywords', keywords)
-                  }}
-                  placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
-                />
+                <div>
+                  <label htmlFor="hl_keywords" className="sr-only">
+                    {t('retrievePanel.querySettings.hlKeywords')}
+                  </label>
+                  <Input
+                    id="hl_keywords"
+                    type="text"
+                    value={querySettings.hl_keywords?.join(', ')}
+                    onChange={(e) => {
+                      const keywords = e.target.value
+                        .split(',')
+                        .map((k) => k.trim())
+                        .filter((k) => k !== '')
+                      handleChange('hl_keywords', keywords)
+                    }}
+                    placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
+                  />
+                </div>
               </>
 
               <>
@@ -207,32 +237,38 @@ export default function QuerySettings() {
                   tooltip={t('retrievePanel.querySettings.llKeywordsTooltip')}
                   side="left"
                 />
-                <Input
-                  id="ll_keywords"
-                  type="text"
-                  value={querySettings.ll_keywords?.join(', ')}
-                  onChange={(e) => {
-                    const keywords = e.target.value
-                      .split(',')
-                      .map((k) => k.trim())
-                      .filter((k) => k !== '')
-                    handleChange('ll_keywords', keywords)
-                  }}
-                  placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
-                />
+                <div>
+                  <label htmlFor="ll_keywords" className="sr-only">
+                    {t('retrievePanel.querySettings.llKeywords')}
+                  </label>
+                  <Input
+                    id="ll_keywords"
+                    type="text"
+                    value={querySettings.ll_keywords?.join(', ')}
+                    onChange={(e) => {
+                      const keywords = e.target.value
+                        .split(',')
+                        .map((k) => k.trim())
+                        .filter((k) => k !== '')
+                      handleChange('ll_keywords', keywords)
+                    }}
+                    placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
+                  />
+                </div>
               </>
             </>
 
             {/* Toggle Options */}
             <>
               <div className="flex items-center gap-2">
-                <Text
-                  className="ml-1"
-                  text={t('retrievePanel.querySettings.onlyNeedContext')}
-                  tooltip={t('retrievePanel.querySettings.onlyNeedContextTooltip')}
-                  side="left"
-                />
-                <div className="grow" />
+                <label htmlFor="only_need_context" className="flex-1">
+                  <Text
+                    className="ml-1"
+                    text={t('retrievePanel.querySettings.onlyNeedContext')}
+                    tooltip={t('retrievePanel.querySettings.onlyNeedContextTooltip')}
+                    side="left"
+                  />
+                </label>
                 <Checkbox
                   className="mr-1 cursor-pointer"
                   id="only_need_context"
@@ -242,13 +278,14 @@ export default function QuerySettings() {
               </div>
 
               <div className="flex items-center gap-2">
-                <Text
-                  className="ml-1"
-                  text={t('retrievePanel.querySettings.onlyNeedPrompt')}
-                  tooltip={t('retrievePanel.querySettings.onlyNeedPromptTooltip')}
-                  side="left"
-                />
-                <div className="grow" />
+                <label htmlFor="only_need_prompt" className="flex-1">
+                  <Text
+                    className="ml-1"
+                    text={t('retrievePanel.querySettings.onlyNeedPrompt')}
+                    tooltip={t('retrievePanel.querySettings.onlyNeedPromptTooltip')}
+                    side="left"
+                  />
+                </label>
                 <Checkbox
                   className="mr-1 cursor-pointer"
                   id="only_need_prompt"
@@ -258,13 +295,14 @@ export default function QuerySettings() {
               </div>
 
               <div className="flex items-center gap-2">
-                <Text
-                  className="ml-1"
-                  text={t('retrievePanel.querySettings.streamResponse')}
-                  tooltip={t('retrievePanel.querySettings.streamResponseTooltip')}
-                  side="left"
-                />
-                <div className="grow" />
+                <label htmlFor="stream" className="flex-1">
+                  <Text
+                    className="ml-1"
+                    text={t('retrievePanel.querySettings.streamResponse')}
+                    tooltip={t('retrievePanel.querySettings.streamResponseTooltip')}
+                    side="left"
+                  />
+                </label>
                 <Checkbox
                   className="mr-1 cursor-pointer"
                   id="stream"

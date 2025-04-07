@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect } from 'react'
 import { AsyncSelect } from '@/components/ui/AsyncSelect'
 import { useSettingsStore } from '@/stores/settings'
 import { useGraphStore } from '@/stores/graph'
@@ -12,6 +12,7 @@ const GraphLabels = () => {
   const { t } = useTranslation()
   const label = useSettingsStore.use.queryLabel()
   const allDatabaseLabels = useGraphStore.use.allDatabaseLabels()
+  const labelsFetchAttempted = useGraphStore.use.labelsFetchAttempted()
 
   // Remove initial label fetch effect as it's now handled by fetchGraph based on lastSuccessfulQueryLabel
 
@@ -55,6 +56,26 @@ const GraphLabels = () => {
     },
     [getSearchEngine]
   )
+
+  // Validate label
+  useEffect(() => {
+
+    if (labelsFetchAttempted) {
+      if (allDatabaseLabels.length > 1) {
+        if (label && label !== '*' && !allDatabaseLabels.includes(label)) {
+          console.log(`Label "${label}" not in available labels, setting to "*"`);
+          useSettingsStore.getState().setQueryLabel('*');
+        } else {
+          console.log(`Label "${label}" is valid`);
+        }
+      } else if (label && allDatabaseLabels.length <= 1 && label && label !== '*') {
+        console.log('Available labels list is empty, setting label to empty');
+        useSettingsStore.getState().setQueryLabel('');
+      }
+      useGraphStore.getState().setLabelsFetchAttempted(false)
+    }
+
+  }, [allDatabaseLabels, label, labelsFetchAttempted]);
 
   const handleRefresh = useCallback(() => {
     // Reset fetch status flags

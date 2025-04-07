@@ -17,7 +17,11 @@ import { uploadDocument } from '@/api/lightrag'
 import { UploadIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
-export default function UploadDocumentsDialog() {
+interface UploadDocumentsDialogProps {
+  onDocumentsUploaded?: () => Promise<void>
+}
+
+export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDocumentsDialogProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
@@ -55,6 +59,7 @@ export default function UploadDocumentsDialog() {
   const handleDocumentsUpload = useCallback(
     async (filesToUpload: File[]) => {
       setIsUploading(true)
+      let hasSuccessfulUpload = false
 
       // Only clear errors for files that are being uploaded, keep errors for rejected files
       setFileErrors(prev => {
@@ -101,6 +106,9 @@ export default function UploadDocumentsDialog() {
                   ...prev,
                   [file.name]: result.message
                 }))
+              } else {
+                // Mark that we had at least one successful upload
+                hasSuccessfulUpload = true
               }
             } catch (err) {
               console.error(`Upload failed for ${file.name}:`, err)
@@ -142,6 +150,16 @@ export default function UploadDocumentsDialog() {
         } else {
           toast.success(t('documentPanel.uploadDocuments.batch.success'), { id: toastId })
         }
+
+        // Only update if at least one file was uploaded successfully
+        if (hasSuccessfulUpload) {
+          // Refresh document list
+          if (onDocumentsUploaded) {
+            onDocumentsUploaded().catch(err => {
+              console.error('Error refreshing documents:', err)
+            })
+          }
+        }
       } catch (err) {
         console.error('Unexpected error during upload:', err)
         toast.error(t('documentPanel.uploadDocuments.generalError', { error: errorMessage(err) }), { id: toastId })
@@ -149,7 +167,7 @@ export default function UploadDocumentsDialog() {
         setIsUploading(false)
       }
     },
-    [setIsUploading, setProgresses, setFileErrors, t]
+    [setIsUploading, setProgresses, setFileErrors, t, onDocumentsUploaded]
   )
 
   return (
