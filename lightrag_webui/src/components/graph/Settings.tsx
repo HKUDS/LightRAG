@@ -245,8 +245,10 @@ export default function Settings() {
         </PopoverTrigger>
         <PopoverContent
           side="right"
-          align="start"
-          className="mb-2 p-2"
+          align="end"
+          sideOffset={8}
+          collisionPadding={5}
+          className="p-2 max-w-[200px]"
           onCloseAutoFocus={(e) => e.preventDefault()}
         >
           <div className="flex flex-col gap-2">
