@@ -17,29 +17,29 @@ const NODE_COLORS = [
   '#e3493b', // Google Red - geo
   '#1212a1', // Deep Cyan - weapon
   '#0f705d', // Green - organization
-  '#a64dff', // Purple - technology
+  '#b300b3', // Purple - technology
   '#f46a9b', // Magenta
-  '#00bfa0', // Turquoise
-  '#fdcce5', // Pale Pink
+  '#bd7ebe', // Light Violet
+  '#fdcce5', // Pale Pink - category
   '#0f558a', // Blue - location
   '#b2e061', // Yellow Green
-  '#bd7ebe', // Light Violet - event
+  '#00bfa0', // Turquoise - event
   '#439bd6', // Cyan - person
   '#094338', // Deep Green
-  '#dc0ab4', // Pink Red
-  '#fd7f6f', // Light Red - category
-  '#b04238', // Brown
+  '#5a2c6d', // Deep Violet
+  '#fd7f6f', // Light Brown - location
+  '#adc2eb', // Sky Blue - animal
 ];
 
 // Extended colors - Used when node types exceed primary colors
 const EXTENDED_COLORS = [
-  '#5ad45a', // Light Green
-  '#5a2c6d', // Deep Violet
-  '#6c1313', // Dark Red
-  '#184868', // Dark Cyan
+  '#742b25', // Dark Brown
+  '#9efacc', // Light Green
+  '#ffbf80', // Light Brown
+  '#003366', // Dark Blue
   '#996600', // Yellow Brown
   '#4421af', // Deep Purple
-  '#E67E22', // Carrot
+  '#cf6d17', // Carrot
   '#ff1a1a', // Pure Red
 ];
 
