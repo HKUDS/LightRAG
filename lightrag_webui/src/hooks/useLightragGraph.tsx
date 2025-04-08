@@ -11,20 +11,16 @@ import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
 
-// 同义词列表 - 用于快速查找节点类型
 const TYPE_SYNONYMS: Record<string, string> = {
-  // unknown 类型及其同义词
   'unknown': 'unknown',
   '未知': 'unknown',
   'other': 'unknown',
 
-  // category 类型及其同义词
   'category': 'category',
   '类别': 'category',
   'type': 'category',
   '分类': 'category',
 
-  // organization 类型及其同义词
   'organization': 'organization',
   '组织': 'organization',
   'org': 'organization',
@@ -32,32 +28,27 @@ const TYPE_SYNONYMS: Record<string, string> = {
   '公司': 'organization',
   '机构': 'organization',
 
-  // event 类型及其同义词
   'event': 'event',
   '事件': 'event',
   'activity': 'event',
   '活动': 'event',
 
-  // person 类型及其同义词
   'person': 'person',
   '人物': 'person',
   'people': 'person',
   'human': 'person',
   '人': 'person',
 
-  // animal 类型及其同义词
   'animal': 'animal',
   '动物': 'animal',
   'creature': 'animal',
   '生物': 'animal',
 
-  // geo 类型及其同义词
   'geo': 'geo',
   '地理': 'geo',
   'geography': 'geo',
   '地域': 'geo',
 
-  // location 类型及其同义词
   'location': 'location',
   '地点': 'location',
   'place': 'location',
@@ -65,23 +56,25 @@ const TYPE_SYNONYMS: Record<string, string> = {
   '位置': 'location',
   '地址': 'location',
 
-  // technology 类型及其同义词
   'technology': 'technology',
   '技术': 'technology',
   'tech': 'technology',
   '科技': 'technology',
 
-  // equipment 类型及其同义词
   'equipment': 'equipment',
   '设备': 'equipment',
   'device': 'equipment',
   '装备': 'equipment',
 
-  // weapon 类型及其同义词
   'weapon': 'weapon',
   '武器': 'weapon',
   'arms': 'weapon',
-  '军火': 'weapon'
+  '军火': 'weapon',
+
+  'object': 'object',
+  '物品': 'object',
+  'stuff': 'object',
+  '物体': 'object'
 };
 
 // 节点类型到颜色的映射
@@ -97,16 +90,16 @@ const NODE_TYPE_COLORS: Record<string, string> = {
   'technology': '#b300b3', // Purple
   'equipment': '#2F4F4F', // DarkSlateGray
   'weapon': '#4421af', // DeepPurple
+  'object': '#00cc00', // Green
 };
 
 // Extended colors pool - Used for unknown node types
 const EXTENDED_COLORS = [
-  '#0f558a', // NavyBlue
   '#cd071e', // ChinaRed
-  '#5a2c6d', // DeepViolet
   '#0000ff', // Blue
-  '#00cc00', // Green
   '#9b3a31', // DarkBrown
+  '#0f558a', // NavyBlue
+  '#5a2c6d', // DeepViolet
   '#003366', // DarkBlue
   '#00CED1', // DarkTurquoise
   '#DEB887', // BurlyWood
