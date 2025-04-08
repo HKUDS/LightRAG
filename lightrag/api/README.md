@@ -168,13 +168,15 @@ We provide an Ollama-compatible interfaces for LightRAG, aiming to emulate Light
 
 ### Connect Open WebUI to LightRAG
 
-After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named lightrag:latest will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You'd better install LightRAG as service for this use case.
+After starting the lightrag-server, you can add an Ollama-type connection in the Open WebUI admin pannel. And then a model named `lightrag:latest` will appear in Open WebUI's model management interface. Users can then send queries to LightRAG through the chat interface. You'd better install LightRAG as service for this use case.
 
 Open WebUI's use LLM to do the session title and session keyword generation task. So the Ollama chat chat completion API detects and forwards OpenWebUI session-related requests directly to underlying LLM. Screen shot from Open WebUI:
 
 ![image-20250323194750379](./README.assets/image-20250323194750379.png)
 
 ### Choose Query mode in chat
+
+The defautl query mode is `hybrid` if you send a message(query) from Ollama interface of LightRAG. You can select query mode by sending a message with query prefix.
 
 A query prefix in the query string can determines which LightRAG query mode is used to generate the respond for the query. The supported prefixes include:
 
@@ -184,12 +186,21 @@ A query prefix in the query string can determines which LightRAG query mode is u
 /hybrid
 /naive
 /mix
+
 /bypass
+/context
+/localcontext
+/globalcontext
+/hybridcontext
+/naivecontext
+/mixcontext
 ```
 
-For example, chat message "/mix 唐僧有几个徒弟" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default。
+For example, chat message "/mix What's LightRag" will trigger a mix mode query for LighRAG. A chat message without query prefix will trigger a hybrid mode query by default.
 
-"/bypass" is not a LightRAG query mode, it will tell API Server to pass the query directly to the underlying LLM with chat history. So user can use LLM to answer question base on the chat history. If you are using Open WebUI as front end, you can just switch the model to a normal LLM instead of using /bypass prefix.
+"/bypass" not a LightRAG query mode, it will tell API Server to pass the query directly to the underlying LLM with chat history. So user can use LLM to answer question base on the chat history. If you are using Open WebUI as front end, you can just switch the model to a normal LLM instead of using /bypass prefix.
+
+"/context" is not a LightRAG query mode neither, it will tell LightRAG to return only the context information prepared for LLM. You can check the context if it's want you want, or process the conext by your self.
 
 
 
