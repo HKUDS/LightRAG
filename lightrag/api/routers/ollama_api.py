@@ -105,9 +105,7 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool]:
     """Parse query prefix to determine search mode
     Returns tuple of (cleaned_query, search_mode, only_need_context)
     """
-    # 定义前缀映射，包含模式和是否只需要上下文
     mode_map = {
-        # 原有的前缀
         "/local ": (SearchMode.local, False),
         "/global ": (
             SearchMode.global_,
@@ -120,8 +118,7 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool]:
         "/context": (
             SearchMode.hybrid,
             True,
-        ),  # context模式使用hybrid模式，并设置only_need_context为True
-        # 新增的前缀
+        ),
         "/localcontext": (SearchMode.local, True),
         "/globalcontext": (SearchMode.global_, True),
         "/hybridcontext": (SearchMode.hybrid, True),
@@ -135,7 +132,6 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool]:
             cleaned_query = query[len(prefix) :].lstrip()
             return cleaned_query, mode, only_need_context
 
-    # 默认使用hybrid模式，不需要上下文
     return query, SearchMode.hybrid, False
 
 
