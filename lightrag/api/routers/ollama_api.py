@@ -23,6 +23,7 @@ class SearchMode(str, Enum):
     hybrid = "hybrid"
     mix = "mix"
     bypass = "bypass"
+    context = "context"
 
 
 class OllamaMessage(BaseModel):
@@ -111,6 +112,7 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode]:
         "/hybrid ": SearchMode.hybrid,
         "/mix ": SearchMode.mix,
         "/bypass ": SearchMode.bypass,
+        "/context": SearchMode.context,
     }
 
     for prefix, mode in mode_map.items():
@@ -354,10 +356,16 @@ class OllamaAPI:
                 start_time = time.time_ns()
                 prompt_tokens = estimate_tokens(cleaned_query)
 
+                if mode == SearchMode.context:
+                    mode = SearchMode.hybrid
+                    only_need_context = True
+                else:
+                    only_need_context = False
+
                 param_dict = {
                     "mode": mode,
                     "stream": request.stream,
-                    "only_need_context": False,
+                    "only_need_context": only_need_context,
                     "conversation_history": conversation_history,
                     "top_k": self.top_k,
                 }
