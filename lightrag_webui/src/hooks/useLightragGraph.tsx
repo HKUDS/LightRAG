@@ -11,112 +11,148 @@ import { useSettingsStore } from '@/stores/settings'
 
 import seedrandom from 'seedrandom'
 
-// Predefined node colors - Primary colors
-const NODE_COLORS = [
-  '#fdd868', // Yellow - UNKNOWN
-  '#e3493b', // Google Red - geo
-  '#1212a1', // Deep Cyan - weapon
-  '#0f705d', // Green - organization
-  '#b300b3', // Purple - technology
-  '#f46a9b', // Magenta
-  '#bd7ebe', // Light Violet
-  '#fdcce5', // Pale Pink - category
-  '#0f558a', // Blue - location
-  '#b2e061', // Yellow Green
-  '#00bfa0', // Turquoise - event
-  '#439bd6', // Cyan - person
-  '#094338', // Deep Green
-  '#5a2c6d', // Deep Violet
-  '#fd7f6f', // Light Brown - location
-  '#adc2eb', // Sky Blue - animal
-];
+// 同义词列表 - 用于快速查找节点类型
+const TYPE_SYNONYMS: Record<string, string> = {
+  // unknown 类型及其同义词
+  'unknown': 'unknown',
+  '未知': 'unknown',
+  'other': 'unknown',
+  
+  // category 类型及其同义词
+  'category': 'category',
+  '类别': 'category',
+  'type': 'category',
+  '分类': 'category',
+  
+  // organization 类型及其同义词
+  'organization': 'organization',
+  '组织': 'organization',
+  'org': 'organization',
+  'company': 'organization',
+  '公司': 'organization',
+  '机构': 'organization',
+  
+  // event 类型及其同义词
+  'event': 'event',
+  '事件': 'event',
+  'activity': 'event',
+  '活动': 'event',
+  
+  // person 类型及其同义词
+  'person': 'person',
+  '人物': 'person',
+  'people': 'person',
+  'human': 'person',
+  '人': 'person',
+  
+  // animal 类型及其同义词
+  'animal': 'animal',
+  '动物': 'animal',
+  'creature': 'animal',
+  '生物': 'animal',
+  
+  // geo 类型及其同义词
+  'geo': 'geo',
+  '地理': 'geo',
+  'geography': 'geo',
+  '地域': 'geo',
+  
+  // location 类型及其同义词
+  'location': 'location',
+  '地点': 'location',
+  'place': 'location',
+  'address': 'location',
+  '位置': 'location',
+  '地址': 'location',
+  
+  // technology 类型及其同义词
+  'technology': 'technology',
+  '技术': 'technology',
+  'tech': 'technology',
+  '科技': 'technology',
+  
+  // equipment 类型及其同义词
+  'equipment': 'equipment',
+  '设备': 'equipment',
+  'device': 'equipment',
+  '装备': 'equipment',
+  
+  // weapon 类型及其同义词
+  'weapon': 'weapon',
+  '武器': 'weapon',
+  'arms': 'weapon',
+  '军火': 'weapon'
+};
 
-// Extended colors - Used when node types exceed primary colors
+// 节点类型到颜色的映射
+const NODE_TYPE_COLORS: Record<string, string> = {
+  'unknown': '#f4d371', // Yellow
+  'category': '#e3493b', // GoogleRed
+  'organization': '#0f705d', // Green
+  'event': '#00bfa0', // Turquoise
+  'person': '#4169E1', // RoyalBlue
+  'animal': '#84a3e1', // SkyBlue
+  'geo': '#ff99cc', // Pale Pink
+  'location': '#cf6d17', // Carrot
+  'technology': '#b300b3', // Purple
+  'equipment': '#2F4F4F', // DarkSlateGray
+  'weapon': '#0f558a', // NavyBlue
+};
+
+// Extended colors pool - Used for unknown node types
 const EXTENDED_COLORS = [
-  '#742b25', // Dark Brown
-  '#9efacc', // Light Green
-  '#ffbf80', // Light Brown
-  '#003366', // Dark Blue
-  '#996600', // Yellow Brown
-  '#4421af', // Deep Purple
-  '#cf6d17', // Carrot
-  '#ff1a1a', // Pure Red
+  '#4421af', // DeepPurple
+  '#cd071e', // ChinaRed
+  '#5a2c6d', // DeepViolet
+  '#0000ff', // Blue
+  '#00cc00', // Green
+  '#9b3a31', // DarkBrown
+  '#003366', // DarkBlue
+  '#00CED1', // DarkTurquoise
+  '#DEB887', // BurlyWood
+  '#bd7ebe', // LightViolet
+  '#b2e061', // YellowGreen
+  '#6ef7b3', // LightGreen
 ];
 
-// All available colors combined
-const ALL_COLORS = [...NODE_COLORS, ...EXTENDED_COLORS];
-
-// Helper function to get color based on node type
+// Select color based on node type
 const getNodeColorByType = (nodeType: string | undefined): string => {
-  const defaultColor = '#5D6D7E'; // Default color for nodes without a type or undefined type
+  
+  const defaultColor = '#5D6D7E';
 
-  // Return default color if node type is undefined
-  if (!nodeType) {
-    return defaultColor;
-  }
-
-  // Get type color map from store
+  const normalizedType = nodeType ? nodeType.toLowerCase() : 'unknown';
   const typeColorMap = useGraphStore.getState().typeColorMap;
 
-  // If this type already has an assigned color, return it
-  if (typeColorMap.has(nodeType)) {
-    return typeColorMap.get(nodeType) || defaultColor;
+  // Return previous color if already mapped
+  if (typeColorMap.has(normalizedType)) {
+    return typeColorMap.get(normalizedType) || defaultColor;
   }
 
-  // Get all currently used colors
-  const usedColors = new Set<string>();
-  typeColorMap.forEach(color => {
-    usedColors.add(color);
-  });
-
-  // Assign color for new node type
-  // Use a simple hash function to map node type to color index
-  const getColorIndex = (str: string): number => {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      hash = ((hash << 5) - hash) + str.charCodeAt(i);
-      hash |= 0; // Convert to 32bit integer
-    }
-    // Ensure result is positive and within NODE_COLORS range only
-    return Math.abs(hash) % NODE_COLORS.length;
-  };
-
-  // Get initial color index from hash
-  const colorIndex = getColorIndex(nodeType);
-  let newColor = NODE_COLORS[colorIndex];
-
-  // If the color is already used, find the next available color
-  if (usedColors.has(newColor) && usedColors.size < ALL_COLORS.length) {
-    // First try to find an unused color in NODE_COLORS
-    let foundUnused = false;
-    for (let i = 0; i < NODE_COLORS.length; i++) {
-      const candidateColor = NODE_COLORS[i];
-      if (!usedColors.has(candidateColor)) {
-        newColor = candidateColor;
-        foundUnused = true;
-        break;
-      }
-    }
-
-    // If all NODE_COLORS are used, then try EXTENDED_COLORS
-    if (!foundUnused) {
-      newColor = defaultColor;
-      for (let i = 0; i < EXTENDED_COLORS.length; i++) {
-        const candidateColor = EXTENDED_COLORS[i];
-        if (!usedColors.has(candidateColor)) {
-          newColor = candidateColor;
-          break;
-        }
-      }
-    }
+  const standardType = TYPE_SYNONYMS[normalizedType];
+  if (standardType) {
+    const color = NODE_TYPE_COLORS[standardType];
+    // Update color mapping
+    const newMap = new Map(typeColorMap);
+    newMap.set(normalizedType, color);
+    useGraphStore.setState({ typeColorMap: newMap });
+    return color;
   }
 
-  // If all colors are used, we'll still use the hashed color
-  // In a more advanced implementation, we could create color variants here
-
+  // For unpredefind nodeTypes, use extended colors
+  // Find used extended colors
+  const usedExtendedColors = new Set(
+    Array.from(typeColorMap.entries())
+      .filter(([, color]) => !Object.values(NODE_TYPE_COLORS).includes(color))
+      .map(([, color]) => color)
+  );
+  
+  // Find and use the first unused extended color
+  const unusedColor = EXTENDED_COLORS.find(color => !usedExtendedColors.has(color));
+  const newColor = unusedColor || defaultColor;
+  
   // Update color mapping
   const newMap = new Map(typeColorMap);
-  newMap.set(nodeType, newColor);
+  newMap.set(normalizedType, newColor);
   useGraphStore.setState({ typeColorMap: newMap });
 
   return newColor;
