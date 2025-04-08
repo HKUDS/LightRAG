@@ -155,6 +155,7 @@
       "weapon": "Weapon",
       "animal": "Animal",
       "unknown": "Unknown",
+      "object": "Object",
       "technology": "Technology"
     },
     "sideBar": {
