@@ -17,13 +17,13 @@ const TYPE_SYNONYMS: Record<string, string> = {
   'unknown': 'unknown',
   '未知': 'unknown',
   'other': 'unknown',
-  
+
   // category 类型及其同义词
   'category': 'category',
   '类别': 'category',
   'type': 'category',
   '分类': 'category',
-  
+
   // organization 类型及其同义词
   'organization': 'organization',
   '组织': 'organization',
@@ -31,32 +31,32 @@ const TYPE_SYNONYMS: Record<string, string> = {
   'company': 'organization',
   '公司': 'organization',
   '机构': 'organization',
-  
+
   // event 类型及其同义词
   'event': 'event',
   '事件': 'event',
   'activity': 'event',
   '活动': 'event',
-  
+
   // person 类型及其同义词
   'person': 'person',
   '人物': 'person',
   'people': 'person',
   'human': 'person',
   '人': 'person',
-  
+
   // animal 类型及其同义词
   'animal': 'animal',
   '动物': 'animal',
   'creature': 'animal',
   '生物': 'animal',
-  
+
   // geo 类型及其同义词
   'geo': 'geo',
   '地理': 'geo',
   'geography': 'geo',
   '地域': 'geo',
-  
+
   // location 类型及其同义词
   'location': 'location',
   '地点': 'location',
@@ -64,19 +64,19 @@ const TYPE_SYNONYMS: Record<string, string> = {
   'address': 'location',
   '位置': 'location',
   '地址': 'location',
-  
+
   // technology 类型及其同义词
   'technology': 'technology',
   '技术': 'technology',
   'tech': 'technology',
   '科技': 'technology',
-  
+
   // equipment 类型及其同义词
   'equipment': 'equipment',
   '设备': 'equipment',
   'device': 'equipment',
   '装备': 'equipment',
-  
+
   // weapon 类型及其同义词
   'weapon': 'weapon',
   '武器': 'weapon',
@@ -96,12 +96,12 @@ const NODE_TYPE_COLORS: Record<string, string> = {
   'location': '#cf6d17', // Carrot
   'technology': '#b300b3', // Purple
   'equipment': '#2F4F4F', // DarkSlateGray
-  'weapon': '#0f558a', // NavyBlue
+  'weapon': '#4421af', // DeepPurple
 };
 
 // Extended colors pool - Used for unknown node types
 const EXTENDED_COLORS = [
-  '#4421af', // DeepPurple
+  '#0f558a', // NavyBlue
   '#cd071e', // ChinaRed
   '#5a2c6d', // DeepViolet
   '#0000ff', // Blue
@@ -117,7 +117,7 @@ const EXTENDED_COLORS = [
 
 // Select color based on node type
 const getNodeColorByType = (nodeType: string | undefined): string => {
-  
+
   const defaultColor = '#5D6D7E';
 
   const normalizedType = nodeType ? nodeType.toLowerCase() : 'unknown';
@@ -145,11 +145,11 @@ const getNodeColorByType = (nodeType: string | undefined): string => {
       .filter(([, color]) => !Object.values(NODE_TYPE_COLORS).includes(color))
       .map(([, color]) => color)
   );
-  
+
   // Find and use the first unused extended color
   const unusedColor = EXTENDED_COLORS.find(color => !usedExtendedColors.has(color));
   const newColor = unusedColor || defaultColor;
-  
+
   // Update color mapping
   const newMap = new Map(typeColorMap);
   newMap.set(normalizedType, newColor);
