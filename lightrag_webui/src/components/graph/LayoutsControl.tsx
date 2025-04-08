@@ -289,7 +289,7 @@ const LayoutsControl = () => {
   )
 
   return (
-    <>
+    <div>
       <div>
         {layouts[layout] && 'worker' in layouts[layout] && (
           <WorkerLayoutControl
@@ -310,7 +310,14 @@ const LayoutsControl = () => {
               <GripIcon />
             </Button>
           </PopoverTrigger>
-          <PopoverContent side="right" align="center" className="p-1">
+          <PopoverContent
+            side="right"
+            align="start"
+            sideOffset={8}
+            collisionPadding={5}
+            sticky="always"
+            className="p-1 min-w-auto"
+          >
             <Command>
               <CommandList>
                 <CommandGroup>
@@ -331,7 +338,7 @@ const LayoutsControl = () => {
           </PopoverContent>
         </Popover>
       </div>
-    </>
+    </div>
   )
 }
 
