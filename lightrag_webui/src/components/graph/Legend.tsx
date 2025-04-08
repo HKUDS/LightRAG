@@ -16,7 +16,9 @@ const PREDEFINED_TYPES = [
   'weapon',
   'animal',
   'unknown',
-  'technology'
+  'object',
+  'group',
+  'technology',
 ]
 
 interface LegendProps {

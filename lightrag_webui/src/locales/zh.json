@@ -156,6 +156,7 @@
       "animal": "动物",
       "unknown": "未知",
       "object": "物品",
+      "group": "群组",
       "technology": "技术"
     },
     "sideBar": {

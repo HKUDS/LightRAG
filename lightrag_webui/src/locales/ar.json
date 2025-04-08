@@ -155,7 +155,8 @@
       "weapon": "سلاح",
       "animal": "حيوان",
       "unknown": "غير معروف",
-      "object": "مادة",
+      "object": "مصنوع",
+      "group": "مجموعة",
       "technology": "العلوم"
     },
     "sideBar": {
