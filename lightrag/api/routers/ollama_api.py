@@ -109,13 +109,18 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool]:
     mode_map = {
         # 原有的前缀
         "/local ": (SearchMode.local, False),
-        "/global ": (SearchMode.global_, False),  # global_ is used because 'global' is a Python keyword
+        "/global ": (
+            SearchMode.global_,
+            False,
+        ),  # global_ is used because 'global' is a Python keyword
         "/naive ": (SearchMode.naive, False),
         "/hybrid ": (SearchMode.hybrid, False),
         "/mix ": (SearchMode.mix, False),
         "/bypass ": (SearchMode.bypass, False),
-        "/context": (SearchMode.hybrid, True),  # context模式使用hybrid模式，并设置only_need_context为True
-        
+        "/context": (
+            SearchMode.hybrid,
+            True,
+        ),  # context模式使用hybrid模式，并设置only_need_context为True
         # 新增的前缀
         "/localcontext": (SearchMode.local, True),
         "/globalcontext": (SearchMode.global_, True),
