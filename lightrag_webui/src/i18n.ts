@@ -29,11 +29,14 @@ i18n
       fr: { translation: fr },
       ar: { translation: ar }
     },
-    lng: getStoredLanguage(), // 使用存储的语言设置
+    lng: getStoredLanguage(), // Use stored language settings
     fallbackLng: 'en',
     interpolation: {
       escapeValue: false
-    }
+    },
+    // Configuration to handle missing translations
+    returnEmptyString: false,
+    returnNull: false,
   })
 
 // Subscribe to language changes
