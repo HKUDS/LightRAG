@@ -74,7 +74,12 @@ const TYPE_SYNONYMS: Record<string, string> = {
   'object': 'object',
   '物品': 'object',
   'stuff': 'object',
-  '物体': 'object'
+  '物体': 'object',
+
+  'group': 'group',
+  '群组': 'group',
+  'community': 'group',
+  '社区': 'group'
 };
 
 // 节点类型到颜色的映射
@@ -91,21 +96,21 @@ const NODE_TYPE_COLORS: Record<string, string> = {
   'equipment': '#2F4F4F', // DarkSlateGray
   'weapon': '#4421af', // DeepPurple
   'object': '#00cc00', // Green
+  'group': '#0f558a', // NavyBlue
 };
 
 // Extended colors pool - Used for unknown node types
 const EXTENDED_COLORS = [
-  '#cd071e', // ChinaRed
-  '#0000ff', // Blue
-  '#9b3a31', // DarkBrown
-  '#0f558a', // NavyBlue
   '#5a2c6d', // DeepViolet
-  '#003366', // DarkBlue
+  '#0000ff', // Blue
+  '#cd071e', // ChinaRed
   '#00CED1', // DarkTurquoise
-  '#DEB887', // BurlyWood
-  '#bd7ebe', // LightViolet
+  '#9b3a31', // DarkBrown
   '#b2e061', // YellowGreen
+  '#bd7ebe', // LightViolet
   '#6ef7b3', // LightGreen
+  '#003366', // DarkBlue
+  '#DEB887', // BurlyWood
 ];
 
 // Select color based on node type
