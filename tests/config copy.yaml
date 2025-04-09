@@ -1,0 +1,492 @@
+# config.yaml (Simplified - Topic redefined as Regulation Category)
+# Schema and Normalization for Corporate Regulations KG
+
+# LightRAG 知识图谱提取配置文件
+
+# 图谱模式定义
+schema:
+  # Entity types based on the provided list
+  entity_types:
+    - Document
+    - Section
+    - Organization
+    - Role
+    - System
+    - Process
+    - Event
+    - EventLevel
+    - WarningLevel
+    - Location
+    - Resource
+    - ContactInfo
+    - DocumentReference
+    - TimeConstraint
+    # Note: Adding potential auxiliary types if needed by relations
+    - Task # Used in RESPONSIBLE_FOR
+    - Factor # Used in CAUSED_BY (as String initially)
+    - Condition # Used in HAS_CRITERIA (as String initially)
+    - TrainingActivity # Used in REQUIRES_TRAINING
+    - DrillActivity # Used in REQUIRES_DRILL
+    - BusinessType # Used in INVOLVES_BUSINESS_TYPE (as String initially)
+
+
+  entity_types_llm: # Types for LLM extraction
+    - Document
+    - Section
+    - Organization
+    - Role
+    - System
+    - Process
+    - Event
+    - EventLevel
+    - WarningLevel
+    - Location
+    - Resource
+    - ContactInfo
+    - DocumentReference
+    - TimeConstraint
+
+  all_entity_types: # All defined types including auxiliaries
+    - Document
+    - Section
+    - Organization
+    - Role
+    - System
+    - Process
+    - Event
+    - EventLevel
+    - WarningLevel
+    - Location
+    - Resource
+    - ContactInfo
+    - DocumentReference
+    - TimeConstraint
+    - Task
+    - Factor
+    - Condition
+    - TrainingActivity
+    - DrillActivity
+    - BusinessType
+
+  # Mapping to Cypher labels
+  entity_type_map_cypher:
+    Document: Document
+    Section: Section
+    Organization: Organization
+    Role: Role
+    System: System
+    Process: Process
+    Event: Event
+    EventLevel: EventLevel
+    WarningLevel: WarningLevel
+    Location: Location
+    Resource: Resource
+    ContactInfo: ContactInfo
+    DocumentReference: DocumentReference
+    TimeConstraint: TimeConstraint
+    Task: Task
+    Factor: Factor
+    Condition: Condition
+    TrainingActivity: TrainingActivity
+    DrillActivity: DrillActivity
+    BusinessType: BusinessType
+
+  # Relation types based on the provided list
+  relation_types:
+    - HAS_SECTION
+    - HAS_PARENT_SECTION
+    - DEFINES
+    - BASED_ON
+    - REFERENCES
+    - APPLIES_TO
+    - RESPONSIBLE_FOR
+    - PART_OF
+    - MEMBER_OF
+    - REPORTS_TO
+    - TRIGGERS
+    - CLASSIFIED_AS
+    - CORRESPONDS_TO
+    - REQUIRES
+    - AFFECTS
+    - USES
+    - LOCATED_AT
+    - HAS_CONTACT
+    - HAS_MEMBER_UNIT
+    - HAS_OFFICE
+    - LED_BY
+    - PERFORMS
+    - AFFECTED_BY
+    - CAUSED_BY
+    - HAS_CRITERIA
+    - HAS_ATTACHMENT
+    - CONTAINS_INFO
+    - REQUIRES_TRAINING
+    - REQUIRES_DRILL
+    - HAS_FREQUENCY
+    - HAS_DURATION
+    - HAS_IMPACT_SCOPE
+    - INVOLVES_BUSINESS_TYPE
+    - SUPERSEDES
+    - CONTAINS
+
+  relation_types_llm: # Types for LLM extraction
+    - HAS_SECTION
+    - HAS_PARENT_SECTION
+    - DEFINES
+    - BASED_ON
+    - REFERENCES
+    - APPLIES_TO
+    - RESPONSIBLE_FOR
+    - PART_OF
+    - MEMBER_OF
+    - REPORTS_TO
+    - TRIGGERS
+    - CLASSIFIED_AS
+    - CORRESPONDS_TO
+    - REQUIRES
+    - AFFECTS
+    - USES
+    - LOCATED_AT
+    - HAS_CONTACT
+    - HAS_MEMBER_UNIT
+    - HAS_OFFICE
+    - LED_BY
+    - PERFORMS
+    - AFFECTED_BY
+    - CAUSED_BY
+    - HAS_CRITERIA
+    - HAS_ATTACHMENT
+    - CONTAINS_INFO
+    - REQUIRES_TRAINING
+    - REQUIRES_DRILL
+    - HAS_FREQUENCY
+    - HAS_DURATION
+    - HAS_IMPACT_SCOPE
+    - INVOLVES_BUSINESS_TYPE
+    - SUPERSEDES
+    - CONTAINS
+
+  all_relation_types: # All defined relation types
+    - HAS_SECTION
+    - HAS_PARENT_SECTION
+    - DEFINES
+    - BASED_ON
+    - REFERENCES
+    - APPLIES_TO
+    - RESPONSIBLE_FOR
+    - PART_OF
+    - MEMBER_OF
+    - REPORTS_TO
+    - TRIGGERS
+    - CLASSIFIED_AS
+    - CORRESPONDS_TO
+    - REQUIRES
+    - AFFECTS
+    - USES
+    - LOCATED_AT
+    - HAS_CONTACT
+    - HAS_MEMBER_UNIT
+    - HAS_OFFICE
+    - LED_BY
+    - PERFORMS
+    - AFFECTED_BY
+    - CAUSED_BY
+    - HAS_CRITERIA
+    - HAS_ATTACHMENT
+    - CONTAINS_INFO
+    - REQUIRES_TRAINING
+    - REQUIRES_DRILL
+    - HAS_FREQUENCY
+    - HAS_DURATION
+    - HAS_IMPACT_SCOPE
+    - INVOLVES_BUSINESS_TYPE
+    - SUPERSEDES
+    - CONTAINS
+
+  # Mapping to Cypher relationship types
+  relation_type_map_cypher:
+    HAS_SECTION: HAS_SECTION
+    HAS_PARENT_SECTION: HAS_PARENT_SECTION
+    DEFINES: DEFINES
+    BASED_ON: BASED_ON
+    REFERENCES: REFERENCES
+    APPLIES_TO: APPLIES_TO
+    RESPONSIBLE_FOR: RESPONSIBLE_FOR
+    PART_OF: PART_OF
+    MEMBER_OF: MEMBER_OF
+    REPORTS_TO: REPORTS_TO
+    TRIGGERS: TRIGGERS
+    CLASSIFIED_AS: CLASSIFIED_AS
+    CORRESPONDS_TO: CORRESPONDS_TO
+    REQUIRES: REQUIRES
+    AFFECTS: AFFECTS
+    USES: USES
+    LOCATED_AT: LOCATED_AT
+    HAS_CONTACT: HAS_CONTACT
+    HAS_MEMBER_UNIT: HAS_MEMBER_UNIT
+    HAS_OFFICE: HAS_OFFICE
+    LED_BY: LED_BY
+    PERFORMS: PERFORMS
+    AFFECTED_BY: AFFECTED_BY
+    CAUSED_BY: CAUSED_BY
+    HAS_CRITERIA: HAS_CRITERIA
+    HAS_ATTACHMENT: HAS_ATTACHMENT
+    CONTAINS_INFO: CONTAINS_INFO
+    REQUIRES_TRAINING: REQUIRES_TRAINING
+    REQUIRES_DRILL: REQUIRES_DRILL
+    HAS_FREQUENCY: HAS_FREQUENCY
+    HAS_DURATION: HAS_DURATION
+    HAS_IMPACT_SCOPE: HAS_IMPACT_SCOPE
+    INVOLVES_BUSINESS_TYPE: INVOLVES_BUSINESS_TYPE
+    SUPERSEDES: SUPERSEDES
+    CONTAINS: CONTAINS
+
+normalization:
+  # (保持不变 - 但可能需要根据新的实体类型进行审查和扩展)
+  canonical_map:
+    客运部: 集团公司客运部
+    信息技术所: 集团公司信息技术所
+    科信部: 集团公司科信部
+    财务部: 集团公司财务部
+    计统部: 集团公司计统部
+    电务部: 集团公司电务部
+    供电部: 集团公司供电部
+    宣传部: 集团公司宣传部
+    调度所: 集团公司调度所
+    集团公司应急领导小组办公室: 集团公司应急领导小组办公室
+    集团公司应急领导小组: 集团公司应急领导小组
+    国铁集团应急领导小组办公室: 国铁集团应急领导小组办公室
+    国铁集团应急领导小组: 国铁集团应急领导小组
+    国铁集团客运部: 国铁集团客运部
+    12306科创中心: 12306科创中心
+    广铁集团: 中国铁路广州局集团有限公司
+    集团公司: 中国铁路广州局集团有限公司
+    本预案: 《广州局集团公司客票发售和预订系统（含互联网售票部分）应急预案》
+    客票系统: 客票发售和预订系统
+    # --- 需要根据新实体类型（如System, Process, Event等）审查并添加标准化映射 ---
+    # 例如:
+    # 互联网售票系统: 互联网售票
+    # 故障排查流程: 故障排查
+    # ... (根据实际情况扩展)
+
+# Prompt 模板配置 (根据新Schema更新)
+prompts:
+  entity_extraction:
+    definitions: |
+      实体类型定义 (请在返回结果中使用括号中的英文类型名称):
+      - Document (文档): 整个应急预案文档本身。提取完整的文档标题，包括文号。示例: "《广州局集团公司客票发售和预订系统应急预案》", "广铁客发[2022]114号"。
+      - Section (章节): 文档中的章节或条款。示例: "1 总则", "3.2 监测预警"。
+      - Organization (组织): 涉及的组织或部门。示例: "集团公司应急领导小组", "客运部", "信息技术所", "维保单位"。
+      - Role (角色): 特定的角色或职位。示例: "组长", "办公室主任", "售票员", "技术维护人员"。
+      - System (系统): 涉及的 IT 系统或设备。示例: "客票系统", "互联网售票", "12306手机客户端", "车站应急售票系统", "柱式检票闸机"。
+      - Process (流程): 一个流程、活动或操作。示例: "应急处置", "监测预警", "信息报告", "售票", "退票", "故障排查", "应急演练"。
+      - Event (事件): 可能发生的事件或故障。示例: "客票系统突发事件", "网络故障", "设备故障", "售票故障"。
+      - EventLevel (事件等级): 事件的严重等级。示例: "特别重大", "重大", "较大", "一般", "较小"。
+      - WarningLevel (预警等级): 预警的等级。示例: "红色", "橙色", "黄色", "蓝色", "白色"。
+      - Location (地点): 地点。示例: "客运车站", "售票窗口", "集团信息技术所机房", "广州南"。
+      - Resource (资源): 应急所需的资源。示例: "人员", "设备", "票据", "技术支持专家库", "通信", "电力"。
+      - ContactInfo (联系信息): 联系方式。示例: "客运部 057-22632", "信息技术处 057-21116"。
+      - DocumentReference (文档引用): 引用的外部文件或附件。示例: "铁办客〔2021〕92号", "附件4"。
+      - TimeConstraint (时间约束): 时间相关的要求或限制。示例: "4小时", "10分钟", "每年3、6、9月", "每30分钟"。
+
+    template: |
+      请从以下文本中提取定义的实体类型。尽可能完整提取每个实体，确保不遗漏文本中的关键实体。
+
+      {definitions}
+
+      预定义的实体类型列表: {entity_types}
+
+      文档信息：
+      文档标题: {document_title}
+      当前章节: {current_heading}
+      章节路径: {section_path}
+      父章节内容摘要: {parent_section_summary} # (如果可用)
+
+      文本：
+      """
+      {content}
+      """
+
+      【重要】：必须使用英文实体类型！返回的JSON中，实体类型必须为英文，绝对不要使用中文实体类型。
+
+      请以严格的 JSON 格式输出，包含一个名为 "entities" 的列表，其中每个对象包含 "name" (实体名称) 和 "type" (实体类型)。确保实体名称是文本中实际出现的词语。
+
+      注意事项：
+      1. 确保每个实体完整识别。
+      2. 识别实体时考虑缩写和全称。
+      3. 保留相同实体的不同表述。
+      4. 确保每个实体都准确分配了正确的英文实体类型。
+      5. 严格使用以下英文类型名：Document, Section, Organization, Role, System, Process, Event, EventLevel, WarningLevel, Location, Resource, ContactInfo, DocumentReference, TimeConstraint
+      6. 类型区分指南：
+         - Organization (组织) vs Role (角色): 组织是单位/部门, 角色是职位/职责。
+         - Event (事件) vs Process (流程): 事件是发生的事情(通常是问题), 流程是为应对事件或常规操作而采取的步骤。
+         - EventLevel (事件等级) vs WarningLevel (预警等级): 事件等级描述事件本身的严重性，预警等级是为应对可能事件而发布的警告级别。
+         - Document (文档) vs DocumentReference (文档引用): Document是当前处理的文档，DocumentReference是文本中引用的其他文件或附件。
+      7. 利用文档上下文信息辅助判断。
+
+      例如:
+      {
+        "entities": [
+          {"name": "集团公司应急领导小组", "type": "Organization"},
+          {"name": "《广州局集团公司客票发售和预订系统应急预案》", "type": "Document"},
+          {"name": "3.2 监测预警", "type": "Section"},
+          {"name": "办公室主任", "type": "Role"},
+          {"name": "客票系统", "type": "System"},
+          {"name": "信息报告", "type": "Process"},
+          {"name": "网络故障", "type": "Event"},
+          {"name": "较大", "type": "EventLevel"},
+          {"name": "黄色", "type": "WarningLevel"},
+          {"name": "客运车站", "type": "Location"},
+          {"name": "技术支持专家库", "type": "Resource"},
+          {"name": "客运部 057-22632", "type": "ContactInfo"},
+          {"name": "附件4", "type": "DocumentReference"},
+          {"name": "每30分钟", "type": "TimeConstraint"}
+        ]
+      }
+
+  relation_extraction:
+    definitions: |
+      关系类型定义 (请在返回结果中使用括号中的英文关系类型):
+      - HAS_SECTION (包含章节): Document -> Section
+      - HAS_PARENT_SECTION (父章节): Section -> Section
+      - DEFINES (定义): Section -> (Process | Event | Organization | Role | System | Location | Resource | EventLevel | WarningLevel | TimeConstraint | ContactInfo)
+      - BASED_ON (基于): (Document | Section) -> DocumentReference
+      - REFERENCES (引用): Section -> (DocumentReference | Section)
+      - APPLIES_TO (适用于): (Document | Section | Process) -> (Organization | Location | System)
+      - RESPONSIBLE_FOR (负责): (Organization | Role) -> (Process | Section | System | Task)
+      - PART_OF (属于): Organization -> Organization
+      - MEMBER_OF (成员): Organization -> Organization
+      - REPORTS_TO (汇报给): (Organization | Role | Section) -> (Organization | Role)
+      - TRIGGERS (触发): (Event | EventLevel | WarningLevel) -> (Process | WarningLevel | EventLevel)
+      - CLASSIFIED_AS (分类为): Event -> EventLevel
+      - CORRESPONDS_TO (对应): WarningLevel -> EventLevel
+      - REQUIRES (需要): (Process | Event) -> (Resource | Action | Approval | System | TimeConstraint | ContactInfo) # Action 和 Approval 可能需要进一步定义或视为 Process/String
+      - AFFECTS (影响): (Event | Change) -> (System | Process | Location | Role | Resource) # Change 可能需要定义或视为 Event/String
+      - USES (使用): (Process | Role | Organization) -> (System | Resource | DocumentReference | ContactInfo)
+      - LOCATED_AT (位于): (System | Organization | Event) -> Location
+      - HAS_CONTACT (有联系方式): Organization -> ContactInfo
+      - HAS_MEMBER_UNIT (有成员单位): Organization -> Organization
+      - HAS_OFFICE (设有办公室): Organization -> Organization
+      - LED_BY (由...领导): Organization -> Role
+      - PERFORMS (执行): (Role | Organization) -> (Process | Task)
+      - AFFECTED_BY (受...影响): (System | Process | Location) -> Event
+      - CAUSED_BY (由...引起): Event -> (Factor | Event)
+      - HAS_CRITERIA (有标准): (EventLevel | WarningLevel) -> Condition
+      - HAS_ATTACHMENT (有附件): (Document | Section) -> DocumentReference
+      - CONTAINS_INFO (包含信息): DocumentReference -> (ContactInfo | Location | Process)
+      - REQUIRES_TRAINING (要求培训): (Process | Role) -> TrainingActivity
+      - REQUIRES_DRILL (要求演练): (Process | Organization) -> DrillActivity
+      - HAS_FREQUENCY (有频率): (DrillActivity | Process) -> TimeConstraint
+      - HAS_DURATION (持续时间): (Event | Process) -> TimeConstraint
+      - HAS_IMPACT_SCOPE (影响范围): (Event | EventLevel) -> Location
+      - INVOLVES_BUSINESS_TYPE (涉及业务类型): (Event | EventLevel) -> BusinessType
+      - SUPERSEDES (取代): Document -> DocumentReference
+      - CONTAINS (包含): 章节包含的实体，用于连接章节和其包含的语义实体。(Section -> Entity)
+
+    template: |
+      请从以下文本中，根据预定义的实体列表，提取这些实体之间符合定义的关系类型。请专注于在文本段落中**直接陈述**的关系。
+
+      {definitions}
+
+      预定义的关系类型列表: {relation_types}
+      预定义的实体类型列表: {entity_types}
+
+      文档信息：
+      文档标题: {document_title}
+      当前章节: {current_heading}
+      章节路径: {section_path}
+
+      文本：
+      """
+      {content}
+      """
+
+      文本中已识别的实体列表:
+      """
+      {entities_json}
+      """
+
+      【重要】：必须使用英文实体类型和关系类型！
+
+      请以严格的 JSON 格式输出，包含一个名为 "relations" 的列表，其中每个对象必须包含 "source", "source_type", "target", "target_type", "type" 字段。
+
+      注意事项:
+      1. 关系必须连接上面实体列表中的实体。
+      2. source_type 和 target_type 必须是上面定义的英文实体类型之一。
+      3. 关系类型必须是预定义的英文类型之一。
+      4. 仔细检查关系的方向和允许的源/目标实体类型。
+
+      例如 (基于上面实体提取的例子):
+      {
+        "relations": [
+          {
+            "source": "集团公司应急领导小组",
+            "source_type": "Organization",
+            "target": "办公室主任",
+            "target_type": "Role",
+            "type": "LED_BY" # 假设领导小组由主任领导 (或者反过来，主任属于小组 PART_OF) - 取决于文本
+          },
+          {
+            "source": "办公室主任",
+            "source_type": "Role",
+            "target": "信息报告",
+            "target_type": "Process",
+            "type": "RESPONSIBLE_FOR"
+           },
+          {
+             "source": "3.2 监测预警",
+             "source_type": "Section",
+             "target": "信息报告",
+             "target_type": "Process",
+             "type": "DEFINES"
+          },
+          {
+             "source": "网络故障",
+             "source_type": "Event",
+             "target": "客票系统",
+             "target_type": "System",
+             "type": "AFFECTS"
+          },
+          {
+             "source": "网络故障",
+             "source_type": "Event",
+             "target": "较大",
+             "target_type": "EventLevel",
+             "type": "CLASSIFIED_AS"
+          },
+          {
+             "source": "黄色",
+             "source_type": "WarningLevel",
+             "target": "较大",
+             "target_type": "EventLevel",
+             "type": "CORRESPONDS_TO"
+          },
+          {
+             "source": "信息报告",
+             "source_type": "Process",
+             "target": "每30分钟",
+             "target_type": "TimeConstraint",
+             "type": "REQUIRES" # 或 HAS_FREQUENCY，取决于具体文本
+          },
+          {
+             "source": "《广州局集团公司客票发售和预订系统应急预案》",
+             "source_type": "Document",
+             "target": "3.2 监测预警",
+             "target_type": "Section",
+             "type": "HAS_SECTION"
+          }
+        ]
+      }
+
+# 图数据库配置 (保持不变)
+database:
+  enable_uniqueness_constraints: true
+  enable_relation_metadata: true
+
+# 实现建议：
+# 1. (保持不变)
+# 2. (保持不变)
+# 3. (保持不变)
+# 4. 新增的实体类型如 System, Process, Event 等可能需要在 normalization.canonical_map 中添加常见的缩写或别名映射。
+# 5. 关系定义中的 Action, Approval, Change, Factor, Condition, BusinessType 等在 schema 中未定义为独立实体类型，Prompt 中将其视为 Process 或 String。如果需要更结构化的表示，可以将其添加为新的实体类型。
+# 6. 确保 LLM 能够根据新的、更详细的定义准确区分实体和关系类型。

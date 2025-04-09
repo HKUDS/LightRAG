@@ -72,11 +72,37 @@ def setup_logging(config: Dict[str, Any]) -> None:
     Args:
         config: 应用程序配置字典
     """
-    logging.basicConfig(
-        level=config["logging_level"], 
-        format='%(asctime)s - %(levelname)s - %(message)s'
-    )
+    # 创建日志目录
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # 设置日志文件名
+    log_file = os.path.join(log_dir, "graph_tools.log")
+    
+    # 创建格式化器
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    
+    # 创建文件处理器
+    file_handler = logging.FileHandler(log_file, encoding='utf-8')
+    file_handler.setFormatter(formatter)
+    
+    # 创建控制台处理器
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    
+    # 获取根日志记录器
+    logger = logging.getLogger()
+    logger.setLevel(config["logging_level"])
+    
+    # 清除现有的处理器
+    logger.handlers = []
+    
+    # 添加处理器
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
     logging.info(f"日志级别设置为: {config['log_level']}")
+    logging.info(f"日志文件保存在: {log_file}")
 
 def load_schema_config(config_path: str) -> Config:
     """
