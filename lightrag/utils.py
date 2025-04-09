@@ -334,6 +334,7 @@ def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]
     """Split a string by multiple markers"""
     if not markers:
         return [content]
+    content = content if content is not None else ""
     results = re.split("|".join(re.escape(marker) for marker in markers), content)
     return [r.strip() for r in results if r.strip()]
 
