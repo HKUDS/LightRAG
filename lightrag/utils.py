@@ -913,18 +913,18 @@ def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any
 
 
 async def use_llm_func_with_cache(
-    input_text: str, 
+    input_text: str,
     use_llm_func: callable,
-    llm_response_cache: 'BaseKVStorage | None' = None,
+    llm_response_cache: "BaseKVStorage | None" = None,
     max_tokens: int = None,
     history_messages: list[dict[str, str]] = None,
-    cache_type: str = "extract"
+    cache_type: str = "extract",
 ) -> str:
     """Call LLM function with cache support
-    
+
     If cache is available and enabled (determined by handle_cache based on mode),
     retrieve result from cache; otherwise call LLM function and save result to cache.
-    
+
     Args:
         input_text: Input text to send to LLM
         use_llm_func: LLM function to call
@@ -932,7 +932,7 @@ async def use_llm_func_with_cache(
         max_tokens: Maximum tokens for generation
         history_messages: History messages list
         cache_type: Type of cache
-        
+
     Returns:
         LLM response text
     """
