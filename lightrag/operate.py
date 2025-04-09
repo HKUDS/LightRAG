@@ -245,7 +245,7 @@ async def _merge_nodes_then_upsert(
     already_node = await knowledge_graph_inst.get_node(entity_name)
     if already_node is not None:
         # Update pipeline status when a node that needs merging is found
-        status_message = f"Merging entities: {entity_name}"
+        status_message = f"Merging entity: {entity_name}"
         logger.info(status_message)
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
@@ -320,7 +320,7 @@ async def _merge_edges_then_upsert(
 
     if await knowledge_graph_inst.has_edge(src_id, tgt_id):
         # Update pipeline status when an edge that needs merging is found
-        status_message = f"Merging edges:    {src_id} - {tgt_id}"
+        status_message = f"Merging edge::: {src_id} - {tgt_id}"
         logger.info(status_message)
         if pipeline_status is not None and pipeline_status_lock is not None:
             async with pipeline_status_lock:
