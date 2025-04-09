@@ -46,8 +46,30 @@ const GraphLabels = () => {
 
       let result: string[] = labels
       if (query) {
-        // Search labels
+        // Search labels using MiniSearch
         result = searchEngine.search(query).map((r: { id: number }) => labels[r.id])
+
+        // Add middle-content matching if results are few
+        // This enables matching content in the middle of text, not just from the beginning
+        if (result.length < 5) {
+          // Get already matched labels to avoid duplicates
+          const matchedLabels = new Set(result)
+
+          // Perform middle-content matching on all labels
+          const middleMatchResults = labels.filter(label => {
+            // Skip already matched labels
+            if (matchedLabels.has(label)) return false
+
+            // Match if label contains query string but doesn't start with it
+            return label &&
+                   typeof label === 'string' &&
+                   !label.toLowerCase().startsWith(query.toLowerCase()) &&
+                   label.toLowerCase().includes(query.toLowerCase())
+          })
+
+          // Merge results
+          result = [...result, ...middleMatchResults]
+        }
       }
 
       return result.length <= labelListLimit
