@@ -297,6 +297,7 @@ def parse_args() -> argparse.Namespace:
     args.enable_llm_cache_for_extract = get_env_value(
         "ENABLE_LLM_CACHE_FOR_EXTRACT", True, bool
     )
+    args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
 
     # Inject LLM temperature configuration
     args.temperature = get_env_value("TEMPERATURE", 0.5, float)

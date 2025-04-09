@@ -157,7 +157,6 @@ def create_app(args):
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
         "docs_url": "/docs",  # Explicitly set docs URL
         "redoc_url": "/redoc",  # Explicitly set redoc URL
-        "openapi_tags": [{"name": "api"}],
         "lifespan": lifespan,
     }
 
@@ -317,6 +316,7 @@ def create_app(args):
                 "cosine_better_than_threshold": args.cosine_threshold
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+            enable_llm_cache=args.enable_llm_cache,
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
@@ -348,6 +348,7 @@ def create_app(args):
                 "cosine_better_than_threshold": args.cosine_threshold
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+            enable_llm_cache=args.enable_llm_cache,
             embedding_cache_config={
                 "enabled": True,
                 "similarity_threshold": 0.95,
@@ -470,6 +471,7 @@ def create_app(args):
                     "graph_storage": args.graph_storage,
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
+                    "enable_llm_cache": args.enable_llm_cache,
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
