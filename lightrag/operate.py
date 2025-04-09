@@ -1072,7 +1072,14 @@ async def mix_kg_vector_query(
         return PROMPTS["fail_response"]
 
     if query_param.only_need_context:
-        return {"kg_context": kg_context, "vector_context": vector_context}
+        context_str = f"""
+        -----Knowledge Graph Context-----
+        {kg_context if kg_context else "No relevant knowledge graph information found"}
+        
+        -----Vector Context-----
+        {vector_context if vector_context else "No relevant text information found"}
+        """.strip()
+        return context_str
 
     # 5. Construct hybrid prompt
     sys_prompt = (
