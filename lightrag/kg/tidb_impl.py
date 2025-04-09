@@ -23,6 +23,14 @@ if not pm.is_installed("sqlalchemy"):
 from sqlalchemy import create_engine, text  # type: ignore
 
 
+def sanitize_sensitive_info(data: dict) -> dict:
+    sanitized_data = data.copy()
+    sensitive_fields = ['password', 'user', 'host', 'database']
+    for field in sensitive_fields:
+        if field in sanitized_data:
+            sanitized_data[field] = '***'
+    return sanitized_data
+
 class TiDB:
     def __init__(self, config, **kwargs):
         self.host = config.get("host", None)
@@ -69,7 +77,8 @@ class TiDB:
             try:
                 result = conn.execute(text(sql), params)
             except Exception as e:
-                logger.error(f"Tidb database,\nsql:{sql},\nparams:{params},\nerror:{e}")
+                sanitized_params = sanitize_sensitive_info(params)
+                logger.error(f"Tidb database,\nsql:{sql},\nparams:{sanitized_params},\nerror:{sanitize_sensitive_info({'error': str(e)})}")
                 raise
             if multirows:
                 rows = result.all()
@@ -94,7 +103,8 @@ class TiDB:
                 else:
                     conn.execute(text(sql), parameters=data)
         except Exception as e:
-            logger.error(f"Tidb database,\nsql:{sql},\ndata:{data},\nerror:{e}")
+            sanitized_data = sanitize_sensitive_info(data) if data else None
+            logger.error(f"Tidb database,\nsql:{sql},\ndata:{sanitized_data},\nerror:{sanitize_sensitive_info({'error': str(e)})}")
             raise
 
 
