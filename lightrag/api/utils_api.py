@@ -229,8 +229,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.max_async}")
     ASCIIColors.white("    ├─ Max Tokens: ", end="")
     ASCIIColors.yellow(f"{args.max_tokens}")
-    ASCIIColors.white("    └─ Timeout: ", end="")
+    ASCIIColors.white("    ├─ Timeout: ", end="")
     ASCIIColors.yellow(f"{args.timeout if args.timeout else 'None (infinite)'}")
+    ASCIIColors.white("    ├─ LLM Cache Enabled: ", end="")
+    ASCIIColors.yellow(f"{args.enable_llm_cache}")
+    ASCIIColors.white("    └─ LLM Cache for Extraction Enabled: ", end="")
+    ASCIIColors.yellow(f"{args.enable_llm_cache_for_extract}")
 
     # Embedding Configuration
     ASCIIColors.magenta("\n📊 Embedding Configuration:")
@@ -257,10 +261,8 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.chunk_overlap_size}")
     ASCIIColors.white("    ├─ Cosine Threshold: ", end="")
     ASCIIColors.yellow(f"{args.cosine_threshold}")
-    ASCIIColors.white("    ├─ Top-K: ", end="")
+    ASCIIColors.white("    └─ Top-K: ", end="")
     ASCIIColors.yellow(f"{args.top_k}")
-    ASCIIColors.white("    └─ LLM Cache for Extraction Enabled: ", end="")
-    ASCIIColors.yellow(f"{args.enable_llm_cache_for_extract}")
 
     # System Configuration
     ASCIIColors.magenta("\n💾 Storage Configuration:")
