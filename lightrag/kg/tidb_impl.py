@@ -25,7 +25,7 @@ from sqlalchemy import create_engine, text  # type: ignore
 
 def sanitize_sensitive_info(data: dict) -> dict:
     sanitized_data = data.copy()
-    sensitive_fields = ['password', 'user', 'host', 'database']
+    sensitive_fields = ['password', 'user', 'host', 'database', 'port', 'ssl_verify_cert', 'ssl_verify_identity']
     for field in sensitive_fields:
         if field in sanitized_data:
             sanitized_data[field] = '***'
