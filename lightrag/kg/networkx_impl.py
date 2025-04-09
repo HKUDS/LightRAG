@@ -392,7 +392,7 @@ class NetworkXStorage(BaseGraphStorage):
             # Check if storage was updated by another process
             if self.storage_updated.value:
                 # Storage was updated by another process, reload data instead of saving
-                logger.warning(
+                logger.info(
                     f"Graph for {self.namespace} was updated by another process, reloading..."
                 )
                 self._graph = (
