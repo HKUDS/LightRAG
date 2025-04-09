@@ -1,4 +1,5 @@
 <center><h2>🚀 LightRAG: Simple and Fast Retrieval-Augmented Generation</h2></center>
+
 <div align="center">
 <table border="0" width="100%">
 <tr>
@@ -6,6 +7,7 @@
 <img src="./assets/logo.png" width="80" height="80" alt="lightrag">
 </td>
 <td>
+    
 <div>
     <p>
         <a href='https://lightrag.github.io'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
@@ -32,7 +34,9 @@
 
 </div>
 
-<a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS%2FLightRAG | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+<div align="center">
+    <a href="https://trendshift.io/repositories/13043" target="_blank"><img src="https://trendshift.io/api/badge/repositories/13043" alt="HKUDS%2FLightRAG | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+</div>
 
 ## 🎉 News
 
