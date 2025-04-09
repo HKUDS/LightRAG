@@ -7,7 +7,7 @@
 <img src="./assets/logo.png" width="80" height="80" alt="lightrag">
 </td>
 <td>
-    
+
 <div>
     <p>
         <a href='https://lightrag.github.io'><img src='https://img.shields.io/badge/Project-Page-Green'></a>
