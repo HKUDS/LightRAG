@@ -72,6 +72,9 @@ class Config:
     # 提示词模板
     prompt_templates: Dict[str, Any]
     
+    # 分类配置
+    category_configs: Dict[str, Any] = field(default_factory=dict)  # 各分类的特定配置
+    
     @classmethod
     def from_yaml(cls, config_path: str) -> 'Config':
         """从YAML文件加载配置"""
@@ -97,7 +100,8 @@ class Config:
                 all_relation_types=schema.get('all_relation_types', []),
                 relation_type_map_cypher=schema.get('relation_type_map_cypher', {}),
                 canonical_map=((data.get('normalization') or {}).get('canonical_map')) or {},
-                prompt_templates=data.get('prompts', {})
+                prompt_templates=data.get('prompts', {}),
+                category_configs=data.get('category_configs', {})
             )
             
             # 验证必要的配置项
@@ -112,6 +116,8 @@ class Config:
             logging.info(f"加载了 {len(config.entity_types_llm)} 个LLM抽取的实体类型和 {len(config.relation_types_llm)} 个LLM抽取的关系类型")
             logging.info(f"概念模型中共有 {len(config.all_entity_types)} 个实体类型和 {len(config.all_relation_types)} 个关系类型")
             logging.info(f"加载了 {len(config.canonical_map)} 个规范化映射条目")
+            if config.category_configs:
+                logging.info(f"加载了 {len(config.category_configs)} 个分类配置")
             
             return config
             
