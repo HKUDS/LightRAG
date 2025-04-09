@@ -25,8 +25,10 @@ from sqlalchemy import create_engine, text  # type: ignore
 
 def sanitize_sensitive_info(data: dict) -> dict:
     sanitized_data = data.copy()
-    if 'password' in sanitized_data:
-        sanitized_data['password'] = '***'
+    sensitive_fields = ['password', 'user', 'host', 'database']
+    for field in sensitive_fields:
+        if field in sanitized_data:
+            sanitized_data[field] = '***'
     return sanitized_data
 
 class TiDB:
@@ -76,7 +78,7 @@ class TiDB:
                 result = conn.execute(text(sql), params)
             except Exception as e:
                 sanitized_params = sanitize_sensitive_info(params)
-                logger.error(f"Tidb database,\nsql:{sql},\nparams:{sanitized_params},\nerror:{e}")
+                logger.error(f"Tidb database,\nsql:{sql},\nparams:{sanitized_params},\nerror:{sanitize_sensitive_info({'error': str(e)})}")
                 raise
             if multirows:
                 rows = result.all()
@@ -102,7 +104,7 @@ class TiDB:
                     conn.execute(text(sql), parameters=data)
         except Exception as e:
             sanitized_data = sanitize_sensitive_info(data) if data else None
-            logger.error(f"Tidb database,\nsql:{sql},\ndata:{sanitized_data},\nerror:{e}")
+            logger.error(f"Tidb database,\nsql:{sql},\ndata:{sanitized_data},\nerror:{sanitize_sensitive_info({'error': str(e)})}")
             raise
 
 
