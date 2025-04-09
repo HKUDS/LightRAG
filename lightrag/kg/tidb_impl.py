@@ -46,9 +46,9 @@ class TiDB:
 
         try:
             self.engine = create_engine(connection_string)
-            logger.info(f"Connected to TiDB database at {self.database}")
+            logger.info("Connected to TiDB database")
         except Exception as e:
-            logger.error(f"Failed to connect to TiDB database at {self.database}")
+            logger.error("Failed to connect to TiDB database")
             logger.error(f"TiDB database error: {e}")
             raise
 
@@ -57,13 +57,13 @@ class TiDB:
             try:
                 await self.query(f"SELECT 1 FROM {k}".format(k=k))
             except Exception as e:
-                logger.error(f"Failed to check table {k} in TiDB database")
+                logger.error("Failed to check table in TiDB database")
                 logger.error(f"TiDB database error: {e}")
                 try:
                     await self.execute(v["ddl"])
-                    logger.info(f"Created table {k} in TiDB database")
+                    logger.info("Created table in TiDB database")
                 except Exception as e:
-                    logger.error(f"Failed to create table {k} in TiDB database")
+                    logger.error("Failed to create table in TiDB database")
                     logger.error(f"TiDB database error: {e}")
 
     async def query(
@@ -105,7 +105,7 @@ class TiDB:
                     conn.execute(text(sql), parameters=data)
         except Exception as e:
             sanitized_data = sanitize_sensitive_info(data) if data else None
-            logger.error(f"Tidb database,\nsql:{sql},\ndata:{sanitized_data},\nerror:{sanitize_sensitive_info({'error': str(e)})}")
+            logger.error(f"Tidb database error: {sanitize_sensitive_info({'error': str(e)})}")
             raise
 
 
