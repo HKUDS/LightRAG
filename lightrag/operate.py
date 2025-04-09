@@ -148,7 +148,7 @@ async def _handle_entity_relation_summary(
 
     # Use LLM function with cache
     summary = await use_llm_func_with_cache(
-        use_prompt, 
+        use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
         max_tokens=summary_max_tokens,
@@ -446,7 +446,6 @@ async def extract_entities(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
 ) -> None:
-
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
