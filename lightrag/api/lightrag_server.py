@@ -157,7 +157,6 @@ def create_app(args):
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
         "docs_url": "/docs",  # Explicitly set docs URL
         "redoc_url": "/redoc",  # Explicitly set redoc URL
-        "openapi_tags": [{"name": "api"}],
         "lifespan": lifespan,
     }
 
