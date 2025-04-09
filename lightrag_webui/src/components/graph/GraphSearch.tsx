@@ -123,12 +123,41 @@ export const GraphSearchInput = ({
       }
 
       // If has query, search nodes and verify they still exist
-      const result: OptionItem[] = searchEngine.search(query)
+      let result: OptionItem[] = searchEngine.search(query)
         .filter((r: { id: string }) => graph.hasNode(r.id))
         .map((r: { id: string }) => ({
           id: r.id,
           type: 'nodes'
         }))
+
+      // Add middle-content matching if results are few
+      // This enables matching content in the middle of text, not just from the beginning
+      if (result.length < 5) {
+        // Get already matched IDs to avoid duplicates
+        const matchedIds = new Set(result.map(item => item.id))
+
+        // Perform middle-content matching on all nodes
+        const middleMatchResults = graph.nodes()
+          .filter(id => {
+            // Skip already matched nodes
+            if (matchedIds.has(id)) return false
+
+            // Get node label
+            const label = graph.getNodeAttribute(id, 'label')
+            // Match if label contains query string but doesn't start with it
+            return label &&
+                   typeof label === 'string' &&
+                   !label.toLowerCase().startsWith(query.toLowerCase()) &&
+                   label.toLowerCase().includes(query.toLowerCase())
+          })
+          .map(id => ({
+            id,
+            type: 'nodes' as const
+          }))
+
+        // Merge results
+        result = [...result, ...middleMatchResults]
+      }
 
       // prettier-ignore
       return result.length <= searchResultLimit
