@@ -1075,7 +1075,7 @@ async def mix_kg_vector_query(
         context_str = f"""
         -----Knowledge Graph Context-----
         {kg_context if kg_context else "No relevant knowledge graph information found"}
-        
+
         -----Vector Context-----
         {vector_context if vector_context else "No relevant text information found"}
         """.strip()
