@@ -78,6 +78,7 @@ class TiDB:
                 result = conn.execute(text(sql), params)
             except Exception as e:
                 sanitized_params = sanitize_sensitive_info(params)
+                sanitized_params = sanitize_sensitive_info(params)
                 logger.error(f"Tidb database,\nsql:{sql},\nparams:{sanitized_params},\nerror:{sanitize_sensitive_info({'error': str(e)})}")
                 raise
             if multirows:
