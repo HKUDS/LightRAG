@@ -1363,6 +1363,7 @@ async def _find_most_related_text_unit_from_entities(
     text_units = [
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
         for dp in node_datas
+        if dp["source_id"] is not None
     ]
     edges = await asyncio.gather(
         *[knowledge_graph_inst.get_node_edges(dp["entity_name"]) for dp in node_datas]
@@ -1657,6 +1658,7 @@ async def _find_most_related_entities_from_relationships(
     node_datas = [
         {**n, "entity_name": k, "rank": d}
         for k, n, d in zip(entity_names, node_datas, node_degrees)
+        if n is not None
     ]
 
     len_node_datas = len(node_datas)
@@ -1681,6 +1683,7 @@ async def _find_related_text_unit_from_relationships(
     text_units = [
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
         for dp in edge_datas
+        if dp["source_id"] is not None
     ]
     all_text_units_lookup = {}
 
