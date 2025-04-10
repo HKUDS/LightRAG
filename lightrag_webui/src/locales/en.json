@@ -301,7 +301,8 @@
         "local": "Local",
         "global": "Global",
         "hybrid": "Hybrid",
-        "mix": "Mix"
+        "mix": "Mix",
+        "bypass": "Bypass"
       },
       "responseFormat": "Response Format",
       "responseFormatTooltip": "Defines the response format. Examples:\n• Multiple Paragraphs\n• Single Paragraph\n• Bullet Points",
