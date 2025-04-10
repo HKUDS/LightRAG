@@ -117,15 +117,13 @@ async def _handle_entity_relation_summary(
     use_llm_func: callable = global_config["llm_model_func"]
     llm_max_tokens = global_config["llm_model_max_token_size"]
     tiktoken_model_name = global_config["tiktoken_model_name"]
-    summary_max_tokens = global_config["entity_summary_to_max_tokens"]
+    summary_max_tokens = global_config["summary_to_max_tokens"]
+
     language = global_config["addon_params"].get(
         "language", PROMPTS["DEFAULT_LANGUAGE"]
     )
 
     tokens = encode_string_by_tiktoken(description, model_name=tiktoken_model_name)
-    if len(tokens) < summary_max_tokens:  # No need for summary
-        return description
-
     prompt_template = PROMPTS["summarize_entity_descriptions"]
     use_description = decode_tokens_by_tiktoken(
         tokens[:llm_max_tokens], model_name=tiktoken_model_name
@@ -137,14 +135,6 @@ async def _handle_entity_relation_summary(
     )
     use_prompt = prompt_template.format(**context_base)
     logger.debug(f"Trigger summary: {entity_or_relation_name}")
-
-    # Update pipeline status when LLM summary is needed
-    status_message = " == Use LLM == to re-summary description..."
-    logger.info(status_message)
-    if pipeline_status is not None and pipeline_status_lock is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = status_message
-            pipeline_status["history_messages"].append(status_message)
 
     # Use LLM function with cache
     summary = await use_llm_func_with_cache(
@@ -270,23 +260,34 @@ async def _merge_nodes_then_upsert(
         set([dp["file_path"] for dp in nodes_data] + already_file_paths)
     )
 
-    if len(nodes_data) > 1 or len(already_entity_types) > 0:
-        # Update pipeline status when a node that needs merging
-        status_message = f"Merging entity: {entity_name} | {len(nodes_data)}+{len(already_entity_types)}"
-        logger.info(status_message)
-        if pipeline_status is not None and pipeline_status_lock is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
+    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
 
-        description = await _handle_entity_relation_summary(
-            entity_name,
-            description,
-            global_config,
-            pipeline_status,
-            pipeline_status_lock,
-            llm_response_cache,
-        )
+    num_fragment = description.count(GRAPH_FIELD_SEP) + 1
+    num_new_fragment = len(set([dp["description"] for dp in nodes_data]))
+
+    if num_fragment > 1:
+        if num_fragment >= force_llm_summary_on_merge:
+            status_message = f"LLM merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+            logger.info(status_message)
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
+            description = await _handle_entity_relation_summary(
+                entity_name,
+                description,
+                global_config,
+                pipeline_status,
+                pipeline_status_lock,
+                llm_response_cache,
+            )
+        else:
+            status_message = f"Merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+            logger.info(status_message)
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
 
     node_data = dict(
         entity_id=entity_name,
@@ -398,23 +399,36 @@ async def _merge_edges_then_upsert(
                 },
             )
 
-    if len(edges_data) > 1 or len(already_weights) > 0:
-        # Update pipeline status when a edge that needs merging
-        status_message = f"Merging edge::: {src_id} - {tgt_id} | {len(edges_data)}+{len(already_weights)}"
-        logger.info(status_message)
-        if pipeline_status is not None and pipeline_status_lock is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = status_message
-                pipeline_status["history_messages"].append(status_message)
+    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
 
-        description = await _handle_entity_relation_summary(
-            f"({src_id}, {tgt_id})",
-            description,
-            global_config,
-            pipeline_status,
-            pipeline_status_lock,
-            llm_response_cache,
-        )
+    num_fragment = description.count(GRAPH_FIELD_SEP) + 1
+    num_new_fragment = len(
+        set([dp["description"] for dp in edges_data if dp.get("description")])
+    )
+
+    if num_fragment > 1:
+        if num_fragment >= force_llm_summary_on_merge:
+            status_message = f"LLM merge E: {src_id} - {tgt_id} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+            logger.info(status_message)
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
+            description = await _handle_entity_relation_summary(
+                f"({src_id}, {tgt_id})",
+                description,
+                global_config,
+                pipeline_status,
+                pipeline_status_lock,
+                llm_response_cache,
+            )
+        else:
+            status_message = f"Merge E: {src_id} - {tgt_id} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+            logger.info(status_message)
+            if pipeline_status is not None and pipeline_status_lock is not None:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = status_message
+                    pipeline_status["history_messages"].append(status_message)
 
     await knowledge_graph_inst.upsert_edge(
         src_id,
