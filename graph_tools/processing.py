@@ -87,6 +87,7 @@ async def process_document_structure(data: Dict[str, Any], config: Config) -> Tu
             description = document_info.get("document_summary", f"文档：{doc_title}")
             created_at_str = document_info.get("created_at", "")
             updated_at_str = document_info.get("updated_at", "")
+            issuing_authority = document_info.get("issuing_authority", "")
             
               
             # 处理日期字符串转换为datetime对象
@@ -203,19 +204,9 @@ async def extract_semantic_info(data: Dict[str, Any], section_entities: List[Ent
     created_at_str = document_info.get("created_at", "")
     updated_at_str = document_info.get("updated_at", "")
     
-    # 处理issuing_authority拼写不一致问题
-    issuing_authority = ""
-    if "issuing_authority" in document_info:
-        issuing_authority = document_info.get("issuing_authority", "")
-    elif "issuin_authority" in document_info:
-        # 处理拼写错误的情况
-        issuing_authority = document_info.get("issuin_authority", "")
-        logging.warning("extract_semantic_info: 检测到document_info中的'issuin_authority'拼写错误，已自动处理")
-    elif "IssuingAuthority" in document_info:
-        # 处理大写开头的情况
-        issuing_authority = document_info.get("IssuingAuthority", "")
-        logging.warning("extract_semantic_info: 检测到document_info中的'IssuingAuthority'大小写不一致，已自动处理")
     
+    issuing_authority = document_info.get("issuing_authority", "")
+ 
     # 处理日期字符串转换为datetime对象
     created_at = datetime.now()
     if created_at_str:
