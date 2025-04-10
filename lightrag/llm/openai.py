@@ -81,6 +81,8 @@ def create_openai_async_client(
 
     if base_url is not None:
         merged_configs["base_url"] = base_url
+    else:
+        merged_configs["base_url"] = os.environ["OPENAI_API_BASE"]
 
     return AsyncOpenAI(**merged_configs)
 
