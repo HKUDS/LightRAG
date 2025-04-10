@@ -60,6 +60,7 @@ export default function RetrievalTesting() {
           }
           return newMessages
         })
+        scrollToBottom()
       }
 
       // Prepare query parameters
