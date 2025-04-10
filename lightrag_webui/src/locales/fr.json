@@ -302,7 +302,8 @@
         "local": "Local",
         "global": "Global",
         "hybrid": "Hybride",
-        "mix": "Mixte"
+        "mix": "Mixte",
+        "bypass": "Bypass"
       },
       "responseFormat": "Format de réponse",
       "responseFormatTooltip": "Définit le format de la réponse. Exemples :\n• Plusieurs paragraphes\n• Paragraphe unique\n• Points à puces",
