@@ -613,11 +613,17 @@ async def extract_entities(
                 glean_result, chunk_key, file_path
             )
 
-            # Merge results
+            # Merge results - only add entities and edges with new names
             for entity_name, entities in glean_nodes.items():
-                maybe_nodes[entity_name].extend(entities)
+                if (
+                    entity_name not in maybe_nodes
+                ):  # Only accetp entities with new name in gleaning stage
+                    maybe_nodes[entity_name].extend(entities)
             for edge_key, edges in glean_edges.items():
-                maybe_edges[edge_key].extend(edges)
+                if (
+                    edge_key not in maybe_edges
+                ):  # Only accetp edges with new name in gleaning stage
+                    maybe_edges[edge_key].extend(edges)
 
             if now_glean_index == entity_extract_max_gleaning - 1:
                 break
@@ -636,7 +642,7 @@ async def extract_entities(
         processed_chunks += 1
         entities_count = len(maybe_nodes)
         relations_count = len(maybe_edges)
-        log_message = f"  Chk {processed_chunks}/{total_chunks}: extracted {entities_count} Ent + {relations_count} Rel (deduplicated)"
+        log_message = f"Chk {processed_chunks}/{total_chunks}: extracted {entities_count} Ent + {relations_count} Rel (deduplicated)"
         logger.info(log_message)
         if pipeline_status is not None:
             async with pipeline_status_lock:

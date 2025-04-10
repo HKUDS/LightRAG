@@ -902,6 +902,13 @@ class LightRAG:
                         # Get file path from status document
                         file_path = getattr(status_doc, "file_path", "unknown_source")
 
+                        async with pipeline_status_lock:
+                            log_message = f"Processing file: {file_path}"
+                            pipeline_status["history_messages"].append(log_message)
+                            log_message = f"Processing d-id: {doc_id}"
+                            pipeline_status["latest_message"] = log_message
+                            pipeline_status["history_messages"].append(log_message)
+
                         # Generate chunks from document
                         chunks: dict[str, Any] = {
                             compute_mdhash_id(dp["content"], prefix="chunk-"): {
