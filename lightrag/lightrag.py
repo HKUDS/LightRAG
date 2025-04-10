@@ -1381,6 +1381,14 @@ class LightRAG:
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
             )
+        elif param.mode == "bypass":
+            # Bypass mode: directly use LLM without knowledge retrieval
+            use_llm_func = param.model_func or global_config["llm_model_func"]
+            response = await use_llm_func(
+                query.strip(),
+                system_prompt=system_prompt,
+                history_messages=param.conversation_history,
+            )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
         await self._query_done()

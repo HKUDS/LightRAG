@@ -65,8 +65,9 @@ export type LightragDocumentsScanProgress = {
  * - "global": Utilizes global knowledge.
  * - "hybrid": Combines local and global retrieval methods.
  * - "mix": Integrates knowledge graph and vector retrieval.
+ * - "bypass": Bypasses knowledge retrieval and directly uses the LLM.
  */
-export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix'
+export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
 
 export type Message = {
   role: 'user' | 'assistant' | 'system'
