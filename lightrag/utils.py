@@ -967,7 +967,7 @@ async def use_llm_func_with_cache(
         res: str = await use_llm_func(input_text, **kwargs)
 
         # Save to cache
-        logger.info(f"Saving LLM cache for {arg_hash}")
+        logger.info(f" == LLM cache == saving {arg_hash}")
         await save_to_cache(
             llm_response_cache,
             CacheData(
