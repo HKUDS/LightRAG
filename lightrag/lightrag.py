@@ -103,8 +103,10 @@ class LightRAG:
     entity_extract_max_gleaning: int = field(default=1)
     """Maximum number of entity extraction attempts for ambiguous content."""
 
-    entity_summary_to_max_tokens: int = field(
-        default=int(os.getenv("MAX_TOKEN_SUMMARY", 500))
+    summary_to_max_tokens: int = field(default=int(os.getenv("MAX_TOKEN_SUMMARY", 500)))
+
+    force_llm_summary_on_merge: int = field(
+        default=int(os.getenv("FORCE_LLM_SUMMARY_ON_MERGE", 6))
     )
 
     # Text chunking
