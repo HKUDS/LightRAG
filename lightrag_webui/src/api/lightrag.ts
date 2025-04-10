@@ -277,65 +277,101 @@ export const queryTextStream = async (
   onChunk: (chunk: string) => void,
   onError?: (error: string) => void
 ) => {
+  const apiKey = useSettingsStore.getState().apiKey;
+  const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
+  const headers: HeadersInit = {
+    'Content-Type': 'application/json',
+    'Accept': 'application/x-ndjson',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  if (apiKey) {
+    headers['X-API-Key'] = apiKey;
+  }
+
   try {
-    let buffer = ''
-    await axiosInstance
-      .post('/query/stream', request, {
-        responseType: 'text',
-        headers: {
-          Accept: 'application/x-ndjson'
-        },
-        transformResponse: [
-          (data: string) => {
-            // Accumulate the data and process complete lines
-            buffer += data
-            const lines = buffer.split('\n')
-            // Keep the last potentially incomplete line in the buffer
-            buffer = lines.pop() || ''
+    const response = await fetch(`${backendBaseUrl}/query/stream`, {
+      method: 'POST',
+      headers: headers,
+      body: JSON.stringify(request),
+    });
 
-            for (const line of lines) {
-              if (line.trim()) {
-                try {
-                  const parsed = JSON.parse(line)
-                  if (parsed.response) {
-                    onChunk(parsed.response)
-                  } else if (parsed.error && onError) {
-                    onError(parsed.error)
-                  }
-                } catch (e) {
-                  console.error('Error parsing stream chunk:', e)
-                  if (onError) onError('Error parsing server response')
-                }
-              }
-            }
-            return data
-          }
-        ]
-      })
-      .catch((error) => {
-        if (onError) onError(errorMessage(error))
-      })
-
-    // Process any remaining data in the buffer
-    if (buffer.trim()) {
+    if (!response.ok) {
+      // Handle HTTP errors (e.g., 4xx, 5xx)
+      let errorBody = 'Unknown error';
       try {
-        const parsed = JSON.parse(buffer)
-        if (parsed.response) {
-          onChunk(parsed.response)
-        } else if (parsed.error && onError) {
-          onError(parsed.error)
+        errorBody = await response.text(); // Try to get error details from body
+      } catch (e) { /* ignore */ }
+      throw new Error(`HTTP error ${response.status}: ${response.statusText}\n${errorBody}`);
+    }
+
+    if (!response.body) {
+      throw new Error('Response body is null');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break; // Stream finished
+      }
+
+      // Decode the chunk and add to buffer
+      buffer += decoder.decode(value, { stream: true }); // stream: true handles multi-byte chars split across chunks
+
+      // Process complete lines (NDJSON)
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep potentially incomplete line in buffer
+
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const parsed = JSON.parse(line);
+            if (parsed.response) {
+              console.log('Received chunk:', parsed.response); // Log for debugging
+              onChunk(parsed.response);
+            } else if (parsed.error && onError) {
+              onError(parsed.error);
+            }
+          } catch (e) {
+            console.error('Error parsing stream chunk:', line, e);
+            if (onError) onError(`Error parsing server response: ${line}`);
+          }
         }
-      } catch (e) {
-        console.error('Error parsing final chunk:', e)
-        if (onError) onError('Error parsing server response')
       }
     }
+
+    // Process any remaining data in the buffer after the stream ends
+    if (buffer.trim()) {
+      try {
+        const parsed = JSON.parse(buffer);
+        if (parsed.response) {
+          onChunk(parsed.response);
+        } else if (parsed.error && onError) {
+          onError(parsed.error);
+        }
+      } catch (e) {
+        console.error('Error parsing final chunk:', buffer, e);
+        if (onError) onError(`Error parsing final server response: ${buffer}`);
+      }
+    }
+
   } catch (error) {
-    const message = errorMessage(error)
-    console.error('Stream request failed:', message)
-    if (onError) onError(message)
+    const message = errorMessage(error);
+    console.error('Stream request failed:', message);
+    if (onError) {
+      onError(message);
+    } else {
+      // If no specific onError handler, maybe throw or log more prominently
+      console.error("Unhandled stream error:", message);
+    }
   }
-}
+};
 
 export const insertText = async (text: string): Promise<DocActionResponse> => {
   const response = await axiosInstance.post('/documents/text', { text })
