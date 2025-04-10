@@ -244,10 +244,10 @@ export const checkHealth = async (): Promise<
   try {
     const response = await axiosInstance.get('/health')
     return response.data
-  } catch (e) {
+  } catch (error) {
     return {
       status: 'error',
-      message: errorMessage(e)
+      message: errorMessage(error)
     }
   }
 }
@@ -302,7 +302,7 @@ export const queryTextStream = async (
       let errorBody = 'Unknown error';
       try {
         errorBody = await response.text(); // Try to get error details from body
-      } catch (e) { /* ignore */ }
+      } catch { /* ignore */ }
       throw new Error(`HTTP error ${response.status}: ${response.statusText}\n${errorBody}`);
     }
 
@@ -314,7 +314,6 @@ export const queryTextStream = async (
     const decoder = new TextDecoder();
     let buffer = '';
 
-    // eslint-disable-next-line no-constant-condition
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
@@ -338,8 +337,8 @@ export const queryTextStream = async (
             } else if (parsed.error && onError) {
               onError(parsed.error);
             }
-          } catch (e) {
-            console.error('Error parsing stream chunk:', line, e);
+          } catch (error) {
+            console.error('Error parsing stream chunk:', line, error);
             if (onError) onError(`Error parsing server response: ${line}`);
           }
         }
@@ -355,8 +354,8 @@ export const queryTextStream = async (
         } else if (parsed.error && onError) {
           onError(parsed.error);
         }
-      } catch (e) {
-        console.error('Error parsing final chunk:', buffer, e);
+      } catch (error) {
+        console.error('Error parsing final chunk:', buffer, error);
         if (onError) onError(`Error parsing final server response: ${buffer}`);
       }
     }
@@ -368,7 +367,7 @@ export const queryTextStream = async (
       onError(message);
     } else {
       // If no specific onError handler, maybe throw or log more prominently
-      console.error("Unhandled stream error:", message);
+      console.error('Unhandled stream error:', message);
     }
   }
 };
