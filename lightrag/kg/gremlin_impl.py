@@ -69,11 +69,6 @@ class GremlinStorage(BaseGraphStorage):
             transport_factory=lambda: AiohttpTransport(call_from_event_loop=True),
         )
 
-    def __post_init__(self):
-        self._node_embed_algorithms = {
-            "node2vec": self._node2vec_embed,
-        }
-
     async def close(self):
         if self._driver:
             self._driver.close()
@@ -388,9 +383,6 @@ class GremlinStorage(BaseGraphStorage):
         except Exception as e:
             logger.error("Error during edge upsert: {%s}", e)
             raise
-
-    async def _node2vec_embed(self):
-        print("Implemented but never called.")
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node with the specified entity_name

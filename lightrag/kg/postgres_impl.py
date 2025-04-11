@@ -1021,9 +1021,6 @@ class PGGraphQueryException(Exception):
 class PGGraphStorage(BaseGraphStorage):
     def __post_init__(self):
         self.graph_name = self.namespace or os.environ.get("AGE_GRAPH_NAME", "lightrag")
-        self._node_embed_algorithms = {
-            "node2vec": self._node2vec_embed,
-        }
         self.db: PostgreSQLDB | None = None
 
     async def initialize(self):
@@ -1395,9 +1392,6 @@ class PGGraphStorage(BaseGraphStorage):
                 f"POSTGRES, upsert_edge error on edge: `{source_node_id}`-`{target_node_id}`"
             )
             raise
-
-    async def _node2vec_embed(self):
-        print("Implemented but never called.")
 
     async def delete_node(self, node_id: str) -> None:
         """
