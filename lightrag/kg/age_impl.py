@@ -88,11 +88,6 @@ class AGEStorage(BaseGraphStorage):
 
         return None
 
-    def __post_init__(self):
-        self._node_embed_algorithms = {
-            "node2vec": self._node2vec_embed,
-        }
-
     async def close(self):
         if self._driver:
             await self._driver.close()
@@ -591,9 +586,6 @@ class AGEStorage(BaseGraphStorage):
         except Exception as e:
             logger.error("Error during edge upsert: {%s}", e)
             raise
-
-    async def _node2vec_embed(self):
-        print("Implemented but never called.")
 
     @asynccontextmanager
     async def _get_pool_connection(self, timeout: Optional[float] = None):

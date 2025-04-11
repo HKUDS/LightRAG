@@ -58,10 +58,6 @@ class NetworkXStorage(BaseGraphStorage):
             logger.info("Created new empty graph")
         self._graph = preloaded_graph or nx.Graph()
 
-        self._node_embed_algorithms = {
-            "node2vec": self._node2vec_embed,
-        }
-
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
