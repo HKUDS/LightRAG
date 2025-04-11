@@ -54,7 +54,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     # Graph Storage Implementations
     "NetworkXStorage": [],
-    "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
+    "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD", "NEO4J_DATABASE"],
     "MongoGraphStorage": [],
     # "TiDBGraphStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "AGEStorage": [
