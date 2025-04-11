@@ -2,12 +2,19 @@
 This module contains all graph-related routes for the LightRAG API.
 """
 
-from typing import Optional
-from fastapi import APIRouter, Depends, Query
+from typing import Optional, Dict, Any
+from fastapi import APIRouter, Depends, Query, HTTPException
+from pydantic import BaseModel
 
 from ..utils_api import get_combined_auth_dependency
 
 router = APIRouter(tags=["graph"])
+
+
+class EntityUpdateRequest(BaseModel):
+    entity_name: str
+    updated_data: Dict[str, Any]
+    allow_rename: bool = False
 
 
 def create_graph_routes(rag, api_key: Optional[str] = None):
@@ -48,5 +55,56 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             max_depth=max_depth,
             max_nodes=max_nodes,
         )
+
+    @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
+    async def check_entity_exists(
+        name: str = Query(..., description="Entity name to check"),
+    ):
+        """
+        Check if an entity with the given name exists in the knowledge graph
+
+        Args:
+            name (str): Name of the entity to check
+
+        Returns:
+            Dict[str, bool]: Dictionary with 'exists' key indicating if entity exists
+        """
+        try:
+            exists = await rag.chunk_entity_relation_graph.has_node(name)
+            return {"exists": exists}
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Error checking entity existence: {str(e)}"
+            )
+
+    @router.post("/graph/entity/edit", dependencies=[Depends(combined_auth)])
+    async def update_entity(request: EntityUpdateRequest):
+        """
+        Update an entity's properties in the knowledge graph
+
+        Args:
+            request (EntityUpdateRequest): Request containing entity name, updated data, and rename flag
+
+        Returns:
+            Dict: Updated entity information
+        """
+        try:
+            print(request.entity_name, request.updated_data, request.allow_rename)
+            result = await rag.aedit_entity(
+                entity_name=request.entity_name,
+                updated_data=request.updated_data,
+                allow_rename=request.allow_rename,
+            )
+            return {
+                "status": "success",
+                "message": "Entity updated successfully",
+                "data": result,
+            }
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Error updating entity: {str(e)}"
+            )
 
     return router
