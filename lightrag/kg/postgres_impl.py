@@ -1485,24 +1485,6 @@ class PGGraphStorage(BaseGraphStorage):
         labels = [result["label"] for result in results]
         return labels
 
-    async def embed_nodes(
-        self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        """
-        Generate node embeddings using the specified algorithm.
-
-        Args:
-            algorithm (str): The name of the embedding algorithm to use.
-
-        Returns:
-            tuple[np.ndarray[Any, Any], list[str]]: A tuple containing the embeddings and the corresponding node IDs.
-        """
-        if algorithm not in self._node_embed_algorithms:
-            raise ValueError(f"Unsupported embedding algorithm: {algorithm}")
-
-        embed_func = self._node_embed_algorithms[algorithm]
-        return await embed_func()
-
     async def get_knowledge_graph(
         self,
         node_label: str,

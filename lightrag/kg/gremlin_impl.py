@@ -6,9 +6,6 @@ import pipmaster as pm
 from dataclasses import dataclass
 from typing import Any, Dict, List, final
 
-import numpy as np
-
-
 from tenacity import (
     retry,
     retry_if_exception_type,
@@ -418,27 +415,6 @@ class GremlinStorage(BaseGraphStorage):
         except Exception as e:
             logger.error(f"Error during node deletion: {str(e)}")
             raise
-
-    async def embed_nodes(
-        self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        """
-        Embed nodes using the specified algorithm.
-        Currently, only node2vec is supported but never called.
-
-        Args:
-            algorithm: The name of the embedding algorithm to use
-
-        Returns:
-            A tuple of (embeddings, node_ids)
-
-        Raises:
-            NotImplementedError: If the specified algorithm is not supported
-            ValueError: If the algorithm is not supported
-        """
-        if algorithm not in self._node_embed_algorithms:
-            raise ValueError(f"Node embedding algorithm {algorithm} not supported")
-        return await self._node_embed_algorithms[algorithm]()
 
     async def get_all_labels(self) -> list[str]:
         """

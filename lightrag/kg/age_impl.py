@@ -6,7 +6,6 @@ import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional, Union, final
-import numpy as np
 import pipmaster as pm
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 
@@ -667,21 +666,6 @@ class AGEStorage(BaseGraphStorage):
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")
                 raise
-
-    async def embed_nodes(
-        self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        """Embed nodes using the specified algorithm
-
-        Args:
-            algorithm: Name of the embedding algorithm
-
-        Returns:
-            tuple: (embedding matrix, list of node identifiers)
-        """
-        if algorithm not in self._node_embed_algorithms:
-            raise ValueError(f"Node embedding algorithm {algorithm} not supported")
-        return await self._node_embed_algorithms[algorithm]()
 
     async def get_all_labels(self) -> list[str]:
         """Get all node labels in the database
