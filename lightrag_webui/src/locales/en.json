@@ -295,7 +295,7 @@
       "parametersTitle": "Parameters",
       "parametersDescription": "Configure your query parameters",
       "queryMode": "Query Mode",
-      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval",
+      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval\n• Bypass: Passes query directly to LLM without retrieval",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
