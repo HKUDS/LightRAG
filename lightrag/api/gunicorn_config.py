@@ -95,8 +95,9 @@ def on_starting(server):
     Executed when Gunicorn starts, before forking the first worker processes
     You can use this function to do more initialization tasks for all processes
     """
+    actual_workers = server.cfg.workers
     print("=" * 80)
-    print(f"GUNICORN MASTER PROCESS: on_starting jobs for {workers} worker(s)")
+    print(f"GUNICORN MASTER PROCESS: on_starting jobs for {actual_workers} worker(s)")
     print(f"Process ID: {os.getpid()}")
     print("=" * 80)
 
