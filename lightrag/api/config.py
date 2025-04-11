@@ -27,10 +27,10 @@ ollama_server_infos = OllamaServerInfos()
 
 
 class DefaultRAGStorageConfig:
-    KV_STORAGE = "JsonKVStorage"
-    VECTOR_STORAGE = "NanoVectorDBStorage"
-    GRAPH_STORAGE = "NetworkXStorage"
-    DOC_STATUS_STORAGE = "JsonDocStatusStorage"
+    KV_STORAGE = "PGKVStorage"
+    VECTOR_STORAGE = "PGVectorStorage"
+    GRAPH_STORAGE = "PGGraphStorage"
+    DOC_STATUS_STORAGE = "PGDocStatusStorage"
 
 
 def get_default_host(binding_type: str) -> str:
