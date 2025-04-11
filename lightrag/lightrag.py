@@ -1384,10 +1384,12 @@ class LightRAG:
         elif param.mode == "bypass":
             # Bypass mode: directly use LLM without knowledge retrieval
             use_llm_func = param.model_func or global_config["llm_model_func"]
+            param.stream = True if param.stream is None else param.stream
             response = await use_llm_func(
                 query.strip(),
                 system_prompt=system_prompt,
                 history_messages=param.conversation_history,
+                stream=param.stream,
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")
