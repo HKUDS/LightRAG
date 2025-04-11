@@ -2,8 +2,7 @@ import inspect
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, final
-import numpy as np
+from typing import final
 import configparser
 
 
@@ -1125,11 +1124,6 @@ class Neo4JStorage(BaseGraphStorage):
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")
                 raise
-
-    async def embed_nodes(
-        self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError
 
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
