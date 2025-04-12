@@ -35,32 +35,7 @@
   "common": {
     "cancel": "Annuler"
   },
-  "graphPanel": {
-    "propertiesView": {
-      "errors": {
-        "duplicateName": "Le nom du nœud existe déjà",
-        "updateFailed": "Échec de la mise à jour du nœud",
-        "tryAgainLater": "Veuillez réessayer plus tard"
-      },
-      "success": {
-        "entityUpdated": "Nœud mis à jour avec succès",
-        "relationUpdated": "Relation mise à jour avec succès"
-      },
-      "node": {
-        "title": "Nœud",
-        "id": "ID",
-        "labels": "Étiquettes",
-        "degree": "Degré",
-        "properties": "Propriétés",
-        "relationships": "Relations(dans le sous-graphe)",
-        "expandNode": "Développer le nœud",
-        "pruneNode": "Élaguer le nœud",
-        "deleteAllNodesError": "Refus de supprimer tous les nœuds du graphe",
-        "nodesRemoved": "{{count}} nœuds supprimés, y compris les nœuds orphelins",
-        "noNewNodes": "Aucun nœud extensible trouvé"
-      }
-    }
-  },
+
   "documentPanel": {
     "clearDocuments": {
       "button": "Effacer",
@@ -262,6 +237,16 @@
       "vectorStorage": "Stockage vectoriel"
     },
     "propertiesView": {
+      "errors": {
+        "duplicateName": "Le nom du nœud existe déjà",
+        "updateFailed": "Échec de la mise à jour du nœud",
+        "tryAgainLater": "Veuillez réessayer plus tard"
+      },
+      "doubleClickToEdit": "Double-cliquez pour modifier",
+      "success": {
+        "entityUpdated": "Nœud mis à jour avec succès",
+        "relationUpdated": "Relation mise à jour avec succès"
+      },
       "node": {
         "title": "Nœud",
         "id": "ID",
