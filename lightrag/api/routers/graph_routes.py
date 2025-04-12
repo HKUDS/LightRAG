@@ -17,6 +17,12 @@ class EntityUpdateRequest(BaseModel):
     allow_rename: bool = False
 
 
+class RelationUpdateRequest(BaseModel):
+    source_id: str
+    target_id: str
+    updated_data: Dict[str, Any]
+
+
 def create_graph_routes(rag, api_key: Optional[str] = None):
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -105,6 +111,34 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             raise HTTPException(
                 status_code=500, detail=f"Error updating entity: {str(e)}"
+            )
+
+    @router.post("/graph/relation/edit", dependencies=[Depends(combined_auth)])
+    async def update_relation(request: RelationUpdateRequest):
+        """Update a relation's properties in the knowledge graph
+
+        Args:
+            request (RelationUpdateRequest): Request containing source ID, target ID and updated data
+
+        Returns:
+            Dict: Updated relation information
+        """
+        try:
+            result = await rag.aedit_relation(
+                source_entity=request.source_id,
+                target_entity=request.target_id,
+                updated_data=request.updated_data,
+            )
+            return {
+                "status": "success",
+                "message": "Relation updated successfully",
+                "data": result,
+            }
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+        except Exception as e:
+            raise HTTPException(
+                status_code=500, detail=f"Error updating relation: {str(e)}"
             )
 
     return router
