@@ -1006,7 +1006,7 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
-def normalize_extracted_info(name: str, is_entity = False) -> str:
+def normalize_extracted_info(name: str, is_entity=False) -> str:
     """Normalize entity/relation names and description with the following rules:
     1. Remove spaces between Chinese characters
     2. Remove spaces between Chinese characters and English letters/numbers
