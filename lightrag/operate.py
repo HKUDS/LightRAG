@@ -16,6 +16,7 @@ from .utils import (
     encode_string_by_tiktoken,
     is_float_regex,
     list_of_list_to_csv,
+    normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -163,6 +164,9 @@ async def _handle_single_entity_extraction(
         )
         return None
 
+    # Normalize entity name
+    entity_name = normalize_extracted_info(entity_name)
+
     # Clean and validate entity type
     entity_type = clean_str(record_attributes[2]).strip('"')
     if not entity_type.strip() or entity_type.startswith('("'):
@@ -173,6 +177,8 @@ async def _handle_single_entity_extraction(
 
     # Clean and validate description
     entity_description = clean_str(record_attributes[3]).strip('"')
+    entity_description = normalize_extracted_info(entity_description)
+
     if not entity_description.strip():
         logger.warning(
             f"Entity extraction error: empty description for entity '{entity_name}' of type '{entity_type}'"
@@ -198,7 +204,14 @@ async def _handle_single_relationship_extraction(
     # add this record as edge
     source = clean_str(record_attributes[1]).strip('"')
     target = clean_str(record_attributes[2]).strip('"')
+
+    # Normalize source and target entity names
+    source = normalize_extracted_info(source)
+    target = normalize_extracted_info(target)
+
     edge_description = clean_str(record_attributes[3]).strip('"')
+    edge_description = normalize_extracted_info(edge_description)
+
     edge_keywords = clean_str(record_attributes[4]).strip('"')
     edge_source_id = chunk_key
     weight = (
