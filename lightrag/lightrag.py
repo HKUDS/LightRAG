@@ -879,8 +879,10 @@ class LightRAG:
 
                         async with pipeline_status_lock:
                             log_message = f"Processing file: {file_path}"
+                            logger.info(log_message)
                             pipeline_status["history_messages"].append(log_message)
                             log_message = f"Processing d-id: {doc_id}"
+                            logger.info(log_message)
                             pipeline_status["latest_message"] = log_message
                             pipeline_status["history_messages"].append(log_message)
 
