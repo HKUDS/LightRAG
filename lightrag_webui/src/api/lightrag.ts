@@ -540,8 +540,8 @@ export const updateRelation = async (
   updatedData: Record<string, any>
 ): Promise<DocActionResponse> => {
   const response = await axiosInstance.post('/graph/relation/edit', {
-    source_entity: sourceEntity,
-    target_entity: targetEntity,
+    source_id: sourceEntity,
+    target_id: targetEntity,
     updated_data: updatedData
   })
   return response.data

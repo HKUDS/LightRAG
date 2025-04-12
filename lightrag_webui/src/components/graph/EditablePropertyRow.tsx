@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
 import { PencilIcon } from 'lucide-react'
+import { tr } from '@faker-js/faker'
 
 interface EditablePropertyRowProps {
   name: string
@@ -26,7 +27,7 @@ interface EditablePropertyRowProps {
  */
 const EditablePropertyRow = ({
   name,
-  value,
+  value: initialValue,
   onClick,
   tooltip,
   entityId,
@@ -40,12 +41,18 @@ const EditablePropertyRow = ({
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [currentValue, setCurrentValue] = useState(initialValue)
   const inputRef = useRef<HTMLInputElement>(null)
+
+  // Update currentValue when initialValue changes
+  useEffect(() => {
+    setCurrentValue(initialValue)
+  }, [initialValue])
 
   // Initialize edit value when entering edit mode
   useEffect(() => {
     if (isEditing) {
-      setEditValue(String(value))
+      setEditValue(String(currentValue))
       // Focus the input element when entering edit mode
       setTimeout(() => {
         if (inputRef.current) {
@@ -54,7 +61,7 @@ const EditablePropertyRow = ({
         }
       }, 50)
     }
-  }, [isEditing, value])
+  }, [isEditing, currentValue])
 
   const getPropertyNameTranslation = (propName: string) => {
     const translationKey = `graphPanel.propertiesView.node.propertyNames.${propName}`
@@ -91,10 +98,34 @@ const EditablePropertyRow = ({
       if (propertyName === 'entity_id') {
         sigmaGraph.addNode(newValue, { ...nodeAttributes, label: newValue })
 
+        interface EdgeToUpdate {
+          originalDynamicId: string;
+          newEdgeId: string;
+          edgeIndex: number;
+        }
+
+        const edgesToUpdate: EdgeToUpdate[] = [];
+
         sigmaGraph.forEachEdge(String(nodeId), (edge, attributes, source, target) => {
           const otherNode = source === String(nodeId) ? target : source
           const isOutgoing = source === String(nodeId)
-          sigmaGraph.addEdge(isOutgoing ? newValue : otherNode, isOutgoing ? otherNode : newValue, attributes)
+
+          // 获取原始边的dynamicId，以便后续更新edgeDynamicIdMap
+          const originalEdgeDynamicId = edge
+          const edgeIndexInRawGraph = rawGraph.edgeDynamicIdMap[originalEdgeDynamicId]
+
+          // 创建新边并获取新边的ID
+          const newEdgeId = sigmaGraph.addEdge(isOutgoing ? newValue : otherNode, isOutgoing ? otherNode : newValue, attributes)
+
+          // 存储需要更新的边信息
+          if (edgeIndexInRawGraph !== undefined) {
+            edgesToUpdate.push({
+              originalDynamicId: originalEdgeDynamicId,
+              newEdgeId: newEdgeId,
+              edgeIndex: edgeIndexInRawGraph
+            })
+          }
+
           sigmaGraph.dropEdge(edge)
         })
 
@@ -107,42 +138,112 @@ const EditablePropertyRow = ({
           delete rawGraph.nodeIdMap[String(nodeId)]
           rawGraph.nodeIdMap[newValue] = nodeIndex
         }
-      } else {
-        const updatedAttributes = { ...nodeAttributes }
-        if (propertyName === 'description') {
-          updatedAttributes.description = newValue
-        }
-        Object.entries(updatedAttributes).forEach(([key, value]) => {
-          sigmaGraph.setNodeAttribute(String(nodeId), key, value)
+
+        // 更新边的引用关系
+        edgesToUpdate.forEach(({ originalDynamicId, newEdgeId, edgeIndex }) => {
+          // 更新边的source和target
+          if (rawGraph.edges[edgeIndex]) {
+            if (rawGraph.edges[edgeIndex].source === String(nodeId)) {
+              rawGraph.edges[edgeIndex].source = newValue
+            }
+            if (rawGraph.edges[edgeIndex].target === String(nodeId)) {
+              rawGraph.edges[edgeIndex].target = newValue
+            }
+
+            // 更新dynamicId映射
+            rawGraph.edges[edgeIndex].dynamicId = newEdgeId
+            delete rawGraph.edgeDynamicIdMap[originalDynamicId]
+            rawGraph.edgeDynamicIdMap[newEdgeId] = edgeIndex
+          }
         })
+
+        useGraphStore.getState().setSelectedNode(editValue)
+      } else {
+        // const updatedAttributes = { ...nodeAttributes }
+        // if (propertyName === 'description') {
+        //   updatedAttributes.description = newValue
+        // }
+        // Object.entries(updatedAttributes).forEach(([key, value]) => {
+        //   sigmaGraph.setNodeAttribute(String(nodeId), key, value)
+        // })
 
         const nodeIndex = rawGraph.nodeIdMap[String(nodeId)]
         if (nodeIndex !== undefined) {
           rawGraph.nodes[nodeIndex].properties[propertyName] = newValue
         }
       }
-
-      const selectedNode = useGraphStore.getState().selectedNode
-      if (selectedNode === String(nodeId)) {
-        useGraphStore.getState().setSelectedNode(newValue)
-      }
-
-      const focusedNode = useGraphStore.getState().focusedNode
-      if (focusedNode === String(nodeId)) {
-        useGraphStore.getState().setFocusedNode(newValue)
-      }
-
-      sigmaInstance.refresh()
     } catch (error) {
       console.error('Error updating node in graph:', error)
       throw new Error('Failed to update node in graph')
     }
   }
 
+  const updateGraphEdge = async (sourceId: string, targetId: string, propertyName: string, newValue: string) => {
+    const sigmaInstance = useGraphStore.getState().sigmaInstance
+    const sigmaGraph = useGraphStore.getState().sigmaGraph
+    const rawGraph = useGraphStore.getState().rawGraph
+
+    if (!sigmaInstance || !sigmaGraph || !rawGraph) {
+      return
+    }
+
+    try {
+      const allEdges = sigmaGraph.edges()
+      let keyToUse = null
+
+      for (const edge of allEdges) {
+        const edgeSource = sigmaGraph.source(edge)
+        const edgeTarget = sigmaGraph.target(edge)
+
+        if ((edgeSource === sourceId && edgeTarget === targetId) ||
+            (edgeSource === targetId && edgeTarget === sourceId)) {
+          keyToUse = edge
+          break
+        }
+      }
+
+      if (keyToUse !== null) {
+        if(propertyName === 'keywords') {
+          sigmaGraph.setEdgeAttribute(keyToUse, 'label', newValue);
+        } else {
+          sigmaGraph.setEdgeAttribute(keyToUse, propertyName, newValue);
+        }
+
+        if (keyToUse && rawGraph.edgeDynamicIdMap[keyToUse] !== undefined) {
+           const edgeIndex = rawGraph.edgeDynamicIdMap[keyToUse];
+           if (rawGraph.edges[edgeIndex]) {
+               rawGraph.edges[edgeIndex].properties[propertyName] = newValue;
+           } else {
+               console.warn(`Edge index ${edgeIndex} found but edge data missing in rawGraph for dynamicId ${entityId}`);
+           }
+        } else {
+             console.warn(`Could not find edge with dynamicId ${entityId} in rawGraph.edgeDynamicIdMap to update properties.`);
+             if (keyToUse !== null) {
+               const edgeIndexByKey = rawGraph.edgeIdMap[keyToUse];
+               if (edgeIndexByKey !== undefined && rawGraph.edges[edgeIndexByKey]) {
+                   rawGraph.edges[edgeIndexByKey].properties[propertyName] = newValue;
+                   console.log(`Updated rawGraph edge using constructed key ${keyToUse}`);
+               } else {
+                   console.warn(`Could not find edge in rawGraph using key ${keyToUse} either.`);
+               }
+             } else {
+               console.warn('Cannot update edge properties: edge key is null');
+             }
+        }
+      } else {
+        console.warn(`Edge not found in sigmaGraph with key ${keyToUse}`);
+      }
+    } catch (error) {
+      // Log the specific edge key that caused the error if possible
+      console.error(`Error updating edge ${sourceId}->${targetId} in graph:`, error);
+      throw new Error('Failed to update edge in graph')
+    }
+  }
+
   const handleSave = async () => {
     if (isSubmitting) return
 
-    if (editValue === String(value)) {
+    if (editValue === String(currentValue)) {
       setIsEditing(false)
       return
     }
@@ -150,112 +251,71 @@ const EditablePropertyRow = ({
     setIsSubmitting(true)
 
     try {
-      const updatedData: Record<string, any> = {}
-
       if (entityType === 'node' && entityId) {
+        let updatedData = { [name]: editValue }
+
         if (name === 'entity_id') {
-          if (editValue !== String(value)) {
-            const exists = await checkEntityNameExists(editValue)
-            if (exists) {
-              toast.error(t('graphPanel.propertiesView.errors.duplicateName'))
-              return
-            }
+          const exists = await checkEntityNameExists(editValue)
+          if (exists) {
+            toast.error(t('graphPanel.propertiesView.errors.duplicateName'))
+            setIsSubmitting(false)
+            return
           }
-          updatedData['entity_name'] = editValue
-          await updateEntity(String(value), updatedData, true)
-          await updateGraphNode(String(value), 'entity_id', editValue)
-        } else {
-          updatedData[name] = editValue
-          await updateEntity(entityId, updatedData)
-          if (name === 'description') {
-            await updateGraphNode(entityId, name, editValue)
-          }
+          updatedData = { 'entity_name': editValue }
         }
+        await updateEntity(entityId, updatedData, true)
+        await updateGraphNode(entityId, name, editValue)
         toast.success(t('graphPanel.propertiesView.success.entityUpdated'))
       } else if (entityType === 'edge' && sourceId && targetId) {
-        updatedData[name] = editValue
+        const updatedData = { [name]: editValue }
         await updateRelation(sourceId, targetId, updatedData)
+        await updateGraphEdge(sourceId, targetId, name, editValue)
         toast.success(t('graphPanel.propertiesView.success.relationUpdated'))
       }
 
-      if (onValueChange) {
-        onValueChange(editValue)
-      }
-
-      useGraphStore.getState().setGraphDataFetchAttempted(false)
-      useGraphStore.getState().setLabelsFetchAttempted(false)
-
-      const currentNodeId = name === 'entity_id' ? editValue : (entityId || '')
-      useGraphStore.getState().setSelectedNode(null)
-      useGraphStore.getState().setSelectedNode(currentNodeId)
-    } catch (error: any) {
+      setIsEditing(false)
+      setCurrentValue(editValue)
+    } catch (error) {
       console.error('Error updating property:', error)
-      let detailMessage = t('graphPanel.propertiesView.errors.updateFailed')
-
-      if (error.response?.data?.detail) {
-        detailMessage = error.response.data.detail
-      } else if (error.response?.data?.message) {
-        detailMessage = error.response.data.message
-      } else if (error.message) {
-        detailMessage = error.message
-      }
-
-      console.error('Update failed:', {
-        entityType,
-        entityId,
-        propertyName: name,
-        newValue: editValue,
-        error: error.response?.data || error.message
-      })
-
-      toast.error(detailMessage, {
-        description: t('graphPanel.propertiesView.errors.tryAgainLater')
-      })
+      toast.error(t('graphPanel.propertiesView.errors.updateFailed'))
     } finally {
       setIsSubmitting(false)
-      setIsEditing(false)
     }
   }
 
-  // Determine if this property should be editable
-  // Currently only 'description' and 'entity_id' fields are editable
-  const isEditableField = isEditable && (name === 'description' || name === 'entity_id')
-
+  // Always render the property name label and edit icon, regardless of edit state
   return (
-    <div className="flex items-center gap-2">
-      <div className="flex items-center gap-1 text-primary/60 tracking-wide whitespace-nowrap">
-        {getPropertyNameTranslation(name)}
-        {isEditableField && (
-          <div className="group relative">
-            <PencilIcon className="w-3 h-3 opacity-50 hover:opacity-100" />
-            <div className="absolute left-5 transform -translate-y-full -top-2 bg-primary/90 text-white text-xs px-3 py-1.5 rounded shadow-lg border border-primary/20 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-[100]">
-              {t('graphPanel.propertiesView.doubleClickToEdit')}
-            </div>
-          </div>
-        )}
+    <div className="flex items-center gap-1" onDoubleClick={handleDoubleClick}>
+      <span className="text-primary/60 tracking-wide whitespace-nowrap">{getPropertyNameTranslation(name)}</span>
+      <div className="group relative">
+        <PencilIcon
+          className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer"
+          onClick={() => setIsEditing(true)}
+        />
+        <div className="absolute left-5 transform -translate-y-full -top-2 bg-primary/90 text-white text-xs px-3 py-1.5 rounded shadow-lg border border-primary/20 opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-[100]">
+          {t('graphPanel.propertiesView.doubleClickToEdit')}
+        </div>
       </div>:
       {isEditing ? (
-        <div className="flex-1">
-          <Input
-            ref={inputRef}
-            className="h-7 text-xs w-full"
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onBlur={handleSave}
-            onKeyDown={handleKeyDown}
-            disabled={isSubmitting}
-          />
-        </div>
+        // Render input field when editing
+        <Input
+          ref={inputRef}
+          type="text"
+          value={editValue}
+          onChange={(e) => setEditValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onBlur={handleSave}
+          className="h-6 text-xs"
+          disabled={isSubmitting}
+        />
       ) : (
-        <div
-          className={`flex-1 overflow-hidden ${isEditableField ? 'cursor-text' : ''}`}
-          onDoubleClick={isEditableField ? handleDoubleClick : undefined}
-        >
+        // Render text component when not editing
+        <div className="flex items-center gap-1">
           <Text
-            className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis block w-full"
+            className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
             tooltipClassName="max-w-80"
-            text={String(value)}
-            tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
+            text={currentValue}
+            tooltip={tooltip || (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))}
             side="left"
             onClick={onClick}
           />

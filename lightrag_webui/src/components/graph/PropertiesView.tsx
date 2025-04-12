@@ -195,8 +195,8 @@ const PropertyRow = ({
     return translation === translationKey ? name : translation
   }
 
-  // Use EditablePropertyRow for editable fields (description and entity_id)
-  if (isEditable && (name === 'description' || name === 'entity_id')) {
+  // Use EditablePropertyRow for editable fields (description, entity_id and keywords)
+  if (isEditable && (name === 'description' || name === 'entity_id' || name === 'keywords')) {
     return (
       <EditablePropertyRow
         name={name}
@@ -352,9 +352,9 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
                 value={edge.properties[name]}
                 entityId={edge.id}
                 entityType="edge"
-                sourceId={edge.sourceNode?.properties['entity_id'] || edge.source}
-                targetId={edge.targetNode?.properties['entity_id'] || edge.target}
-                isEditable={name === 'description'}
+                sourceId={edge.source}
+                targetId={edge.target}
+                isEditable={name === 'description' || name === 'keywords'}
               />
             )
           })}
