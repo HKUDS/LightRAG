@@ -1006,6 +1006,43 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
+def normalize_extracted_info(name: str) -> str:
+    """Normalize entity/relation names and description with the following rules:
+    1. Remove spaces between Chinese characters
+    2. Remove spaces between Chinese characters and English letters/numbers
+    3. Preserve spaces within English text and numbers
+    4. Replace Chinese parentheses with English parentheses
+    5. Replace Chinese dash with English dash
+
+    Args:
+        name: Entity name to normalize
+
+    Returns:
+        Normalized entity name
+    """
+    # Replace Chinese parentheses with English parentheses
+    name = name.replace("（", "(").replace("）", ")")
+
+    # Replace Chinese dash with English dash
+    name = name.replace("—", "-").replace("－", "-")
+
+    # Use regex to remove spaces between Chinese characters
+    # Regex explanation:
+    # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
+    # \s+: One or more whitespace characters
+    # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
+    name = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])", "", name)
+
+    # Remove spaces between Chinese and English/numbers
+    name = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[a-zA-Z0-9])", "", name)
+    name = re.sub(r"(?<=[a-zA-Z0-9])\s+(?=[\u4e00-\u9fa5])", "", name)
+
+    # Remove English quotation marks from the beginning and end
+    name = name.strip('"').strip("'")
+
+    return name
+
+
 def clean_text(text: str) -> str:
     """Clean text by removing null bytes (0x00) and whitespace
 
