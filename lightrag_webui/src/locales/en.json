@@ -235,6 +235,15 @@
       "vectorStorage": "Vector Storage"
     },
     "propertiesView": {
+      "errors": {
+        "duplicateName": "Node name already exists",
+        "updateFailed": "Failed to update node",
+        "tryAgainLater": "Please try again later"
+      },
+      "success": {
+        "entityUpdated": "Node updated successfully",
+        "relationUpdated": "Relation updated successfully"
+      },
       "node": {
         "title": "Node",
         "id": "ID",
