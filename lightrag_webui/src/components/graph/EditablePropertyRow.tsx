@@ -5,7 +5,6 @@ import Input from '@/components/ui/Input'
 import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
-import { useSettingsStore } from '@/stores/settings'
 
 interface EditablePropertyRowProps {
   name: string
@@ -76,10 +75,72 @@ const EditablePropertyRow = ({
     }
   }
 
+  const updateGraphNode = async (nodeId: string, propertyName: string, newValue: string) => {
+    const sigmaInstance = useGraphStore.getState().sigmaInstance
+    const sigmaGraph = useGraphStore.getState().sigmaGraph
+    const rawGraph = useGraphStore.getState().rawGraph
+
+    if (!sigmaInstance || !sigmaGraph || !rawGraph || !sigmaGraph.hasNode(String(nodeId))) {
+      return
+    }
+
+    try {
+      const nodeAttributes = sigmaGraph.getNodeAttributes(String(nodeId))
+
+      if (propertyName === 'entity_id') {
+        sigmaGraph.addNode(newValue, { ...nodeAttributes, label: newValue })
+
+        sigmaGraph.forEachEdge(String(nodeId), (edge, attributes, source, target) => {
+          const otherNode = source === String(nodeId) ? target : source
+          const isOutgoing = source === String(nodeId)
+          sigmaGraph.addEdge(isOutgoing ? newValue : otherNode, isOutgoing ? otherNode : newValue, attributes)
+          sigmaGraph.dropEdge(edge)
+        })
+
+        sigmaGraph.dropNode(String(nodeId))
+
+        const nodeIndex = rawGraph.nodeIdMap[String(nodeId)]
+        if (nodeIndex !== undefined) {
+          rawGraph.nodes[nodeIndex].id = newValue
+          rawGraph.nodes[nodeIndex].properties.entity_id = newValue
+          delete rawGraph.nodeIdMap[String(nodeId)]
+          rawGraph.nodeIdMap[newValue] = nodeIndex
+        }
+      } else {
+        const updatedAttributes = { ...nodeAttributes }
+        if (propertyName === 'description') {
+          updatedAttributes.description = newValue
+        }
+        Object.entries(updatedAttributes).forEach(([key, value]) => {
+          sigmaGraph.setNodeAttribute(String(nodeId), key, value)
+        })
+
+        const nodeIndex = rawGraph.nodeIdMap[String(nodeId)]
+        if (nodeIndex !== undefined) {
+          rawGraph.nodes[nodeIndex].properties[propertyName] = newValue
+        }
+      }
+
+      const selectedNode = useGraphStore.getState().selectedNode
+      if (selectedNode === String(nodeId)) {
+        useGraphStore.getState().setSelectedNode(newValue)
+      }
+
+      const focusedNode = useGraphStore.getState().focusedNode
+      if (focusedNode === String(nodeId)) {
+        useGraphStore.getState().setFocusedNode(newValue)
+      }
+
+      sigmaInstance.refresh()
+    } catch (error) {
+      console.error('Error updating node in graph:', error)
+      throw new Error('Failed to update node in graph')
+    }
+  }
+
   const handleSave = async () => {
     if (isSubmitting) return
 
-    // Don't save if value hasn't changed
     if (editValue === String(value)) {
       setIsEditing(false)
       return
@@ -88,157 +149,68 @@ const EditablePropertyRow = ({
     setIsSubmitting(true)
 
     try {
-      // Special handling for entity_id (name) field to check for duplicates
-      if (name === 'entity_id' && entityType === 'node') {
-        // Ensure we are not checking the original name against itself if it's protected
-        if (editValue !== String(value)) {
-            const exists = await checkEntityNameExists(editValue);
-            if (exists) {
-                toast.error(t('graphPanel.propertiesView.errors.duplicateName'));
-                setIsSubmitting(false);
-                return;
-            }
-        }
-      }
+      const updatedData: Record<string, any> = {}
 
-      // Update the entity or relation in the database
       if (entityType === 'node' && entityId) {
-        // For nodes, we need to determine if we're updating the name or description
-        const updatedData: Record<string, any> = {}
-
         if (name === 'entity_id') {
-          // For entity name updates
-          updatedData['entity_name'] = editValue
-          await updateEntity(String(value), updatedData, true) // Pass original name (value) as identifier
-
-          // Update node label in the graph directly instead of reloading the entire graph
-          const sigmaInstance = useGraphStore.getState().sigmaInstance
-          const sigmaGraph = useGraphStore.getState().sigmaGraph
-          const rawGraph = useGraphStore.getState().rawGraph
-
-          if (sigmaInstance && sigmaGraph && rawGraph) {
-            // Update the node in sigma graph
-            if (sigmaGraph.hasNode(String(value))) {
-              try {
-                // Create a new node with the updated ID
-                const oldNodeAttributes = sigmaGraph.getNodeAttributes(String(value))
-
-                // Add a new node with the new ID but keep all other attributes
-                sigmaGraph.addNode(editValue, {
-                  ...oldNodeAttributes,
-                  label: editValue
-                })
-
-                // Copy all edges from the old node to the new node
-                sigmaGraph.forEachEdge(String(value), (edge, attributes, source, target) => {
-                  const otherNode = source === String(value) ? target : source
-                  const isOutgoing = source === String(value)
-
-                  // Create a new edge with the same attributes but connected to the new node ID
-                  if (isOutgoing) {
-                    sigmaGraph.addEdge(editValue, otherNode, attributes)
-                  } else {
-                    sigmaGraph.addEdge(otherNode, editValue, attributes)
-                  }
-
-                  // Remove the old edge
-                  sigmaGraph.dropEdge(edge)
-                })
-
-                // Remove the old node after all edges have been transferred
-                sigmaGraph.dropNode(String(value))
-
-                // Also update the node in the raw graph
-                const nodeIndex = rawGraph.nodeIdMap[String(value)]
-                if (nodeIndex !== undefined) {
-                  rawGraph.nodes[nodeIndex].id = editValue
-                  // Update the node ID map
-                  delete rawGraph.nodeIdMap[String(value)]
-                  rawGraph.nodeIdMap[editValue] = nodeIndex
-                }
-
-                // Refresh the sigma instance to reflect changes
-                sigmaInstance.refresh()
-
-                // Update selected node ID if it was the edited node
-                const selectedNode = useGraphStore.getState().selectedNode
-                if (selectedNode === String(value)) {
-                  useGraphStore.getState().setSelectedNode(editValue)
-                }
-
-                // Update focused node ID if it was the edited node
-                const focusedNode = useGraphStore.getState().focusedNode
-                if (focusedNode === String(value)) {
-                  useGraphStore.getState().setFocusedNode(editValue)
-                }
-              } catch (error) {
-                console.error('Error updating node ID in graph:', error)
-                throw new Error('Failed to update node ID in graph')
-              }
+          if (editValue !== String(value)) {
+            const exists = await checkEntityNameExists(editValue)
+            if (exists) {
+              toast.error(t('graphPanel.propertiesView.errors.duplicateName'))
+              return
             }
           }
-        } else if (name === 'description') {
-          // For description updates
-          updatedData['description'] = editValue
-          await updateEntity(entityId, updatedData) // Pass entityId as identifier
+          updatedData['entity_name'] = editValue
+          await updateEntity(String(value), updatedData, true)
+          await updateGraphNode(String(value), 'entity_id', editValue)
         } else {
-          // For other property updates
           updatedData[name] = editValue
-          await updateEntity(entityId, updatedData) // Pass entityId as identifier
+          await updateEntity(entityId, updatedData)
+          if (name === 'description') {
+            await updateGraphNode(entityId, name, editValue)
+          }
         }
-
         toast.success(t('graphPanel.propertiesView.success.entityUpdated'))
       } else if (entityType === 'edge' && sourceId && targetId) {
-        // For edges, update the relation
-        const updatedData: Record<string, any> = {}
         updatedData[name] = editValue
         await updateRelation(sourceId, targetId, updatedData)
         toast.success(t('graphPanel.propertiesView.success.relationUpdated'))
       }
 
-      // Notify parent component about the value change
       if (onValueChange) {
         onValueChange(editValue)
       }
-    } catch (error: any) {
-      console.error('Error updating property:', error);
 
-      // 尝试提取更具体的错误信息
-      let detailMessage = t('graphPanel.propertiesView.errors.updateFailed');
+      useGraphStore.getState().setGraphDataFetchAttempted(false)
+      useGraphStore.getState().setLabelsFetchAttempted(false)
+
+      const currentNodeId = name === 'entity_id' ? editValue : (entityId || '')
+      useGraphStore.getState().setSelectedNode(null)
+      useGraphStore.getState().setSelectedNode(currentNodeId)
+    } catch (error: any) {
+      console.error('Error updating property:', error)
+      let detailMessage = t('graphPanel.propertiesView.errors.updateFailed')
 
       if (error.response?.data?.detail) {
-        detailMessage = error.response.data.detail;
+        detailMessage = error.response.data.detail
       } else if (error.response?.data?.message) {
-        detailMessage = error.response.data.message;
+        detailMessage = error.response.data.message
       } else if (error.message) {
-        detailMessage = error.message;
+        detailMessage = error.message
       }
 
-      // 记录详细的错误信息以便调试
       console.error('Update failed:', {
         entityType,
         entityId,
         propertyName: name,
         newValue: editValue,
         error: error.response?.data || error.message
-      });
+      })
 
       toast.error(detailMessage, {
         description: t('graphPanel.propertiesView.errors.tryAgainLater')
-      });
-
+      })
     } finally {
-      // Update the value immediately in the UI
-      if (onValueChange) {
-        onValueChange(editValue);
-      }
-      // Trigger graph data refresh
-      useGraphStore.getState().setGraphDataFetchAttempted(false);
-      useGraphStore.getState().setLabelsFetchAttempted(false);
-      // Re-select the node to refresh properties panel
-      const currentNodeId = name === 'entity_id' ? editValue : (entityId || '');
-      useGraphStore.getState().setSelectedNode(null);
-      useGraphStore.getState().setSelectedNode(currentNodeId);
       setIsSubmitting(false)
       setIsEditing(false)
     }
