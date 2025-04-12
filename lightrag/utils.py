@@ -1006,7 +1006,7 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     return content[:max_length] + "..."
 
 
-def normalize_extracted_info(name: str) -> str:
+def normalize_extracted_info(name: str, is_entity = False) -> str:
     """Normalize entity/relation names and description with the following rules:
     1. Remove spaces between Chinese characters
     2. Remove spaces between Chinese characters and English letters/numbers
@@ -1039,6 +1039,13 @@ def normalize_extracted_info(name: str) -> str:
 
     # Remove English quotation marks from the beginning and end
     name = name.strip('"').strip("'")
+
+    if is_entity:
+        # remove Chinese quotes
+        name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
+        # remove English queotes in and around chinese
+        name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
+        name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
 
     return name
 

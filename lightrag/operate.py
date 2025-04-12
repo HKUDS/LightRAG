@@ -165,7 +165,7 @@ async def _handle_single_entity_extraction(
         return None
 
     # Normalize entity name
-    entity_name = normalize_extracted_info(entity_name)
+    entity_name = normalize_extracted_info(entity_name, is_entity=True)
 
     # Clean and validate entity type
     entity_type = clean_str(record_attributes[2]).strip('"')
@@ -176,7 +176,7 @@ async def _handle_single_entity_extraction(
         return None
 
     # Clean and validate description
-    entity_description = clean_str(record_attributes[3]).strip('"')
+    entity_description = clean_str(record_attributes[3])
     entity_description = normalize_extracted_info(entity_description)
 
     if not entity_description.strip():
@@ -202,20 +202,20 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
         return None
     # add this record as edge
-    source = clean_str(record_attributes[1]).strip('"')
-    target = clean_str(record_attributes[2]).strip('"')
+    source = clean_str(record_attributes[1])
+    target = clean_str(record_attributes[2])
 
     # Normalize source and target entity names
-    source = normalize_extracted_info(source)
-    target = normalize_extracted_info(target)
+    source = normalize_extracted_info(source, is_entity=True)
+    target = normalize_extracted_info(target, is_entity=True)
 
-    edge_description = clean_str(record_attributes[3]).strip('"')
+    edge_description = clean_str(record_attributes[3])
     edge_description = normalize_extracted_info(edge_description)
 
-    edge_keywords = clean_str(record_attributes[4]).strip('"')
+    edge_keywords = clean_str(record_attributes[4]).strip('"').strip("'")
     edge_source_id = chunk_key
     weight = (
-        float(record_attributes[-1].strip('"'))
+        float(record_attributes[-1].strip('"').strip("'"))
         if is_float_regex(record_attributes[-1])
         else 1.0
     )
