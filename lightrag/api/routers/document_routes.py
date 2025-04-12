@@ -63,6 +63,10 @@ class InsertTextRequest(BaseModel):
         min_length=1,
         description="The text to insert",
     )
+    file_name: Optional[str] = Field(
+        default=None,
+        description="Virtual filename to associate with this text"
+    )
 
     @field_validator("text", mode="after")
     @classmethod
@@ -78,15 +82,15 @@ class InsertTextRequest(BaseModel):
 
 
 class InsertTextsRequest(BaseModel):
-    """Request model for inserting multiple text documents
-
-    Attributes:
-        texts: List of text contents to be inserted into the RAG system
-    """
+    """Request model for inserting multiple text documents"""
 
     texts: list[str] = Field(
         min_length=1,
         description="The texts to insert",
+    )
+    file_names: Optional[List[str]] = Field( # <--- 添加此字段
+        default=None,
+        description="Optional list of virtual filenames corresponding to each text"
     )
 
     @field_validator("texts", mode="after")
@@ -94,12 +98,23 @@ class InsertTextsRequest(BaseModel):
     def strip_after(cls, texts: list[str]) -> list[str]:
         return [text.strip() for text in texts]
 
+    # 可选：添加校验器确保 texts 和 file_names 长度一致（如果提供 file_names）
+    @field_validator('file_names')
+    def check_lengths_match(cls, v, values):
+        if v is not None and 'texts' in values.data and len(v) != len(values.data['texts']):
+            raise ValueError('The number of file_names must match the number of texts')
+        return v
+
     class Config:
         json_schema_extra = {
             "example": {
                 "texts": [
                     "This is the first text to be inserted.",
                     "This is the second text to be inserted.",
+                ],
+                "file_names": [ # <--- 示例中添加
+                    "s3_file_1.md",
+                    "s3_file_2.md"
                 ]
             }
         }
@@ -624,17 +639,20 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
-    """Index a list of texts
-
-    Args:
-        rag: LightRAG instance
-        texts: The texts to index
-    """
-    if not texts:
-        return
-    await rag.apipeline_enqueue_documents(texts)
-    await rag.apipeline_process_enqueue_documents()
+async def pipeline_index_texts(rag: LightRAG, texts: List[str], file_names: Optional[List[str]] = None, metadata_list: Optional[List[Dict]] = None):
+    """Process a list of texts through the RAG pipeline."""
+    try:
+        logger.info(f"Starting processing of {len(texts)} text(s)")
+        # 第一步：入队文档
+        await rag.apipeline_enqueue_documents(texts, file_paths=file_names)
+        # 第二步：处理队列中的文档
+        await rag.apipeline_process_enqueue_documents()
+        logger.info(f"Successfully processed {len(texts)} text(s)")
+        return True
+    except Exception as e:
+        logger.error(f"Error processing texts: {str(e)}")
+        logger.error(traceback.format_exc())
+        return False
 
 
 # TODO: deprecate after /insert_file is removed
@@ -786,26 +804,26 @@ def create_document_routes(
         request: InsertTextRequest, background_tasks: BackgroundTasks
     ):
         """
-        Insert text into the RAG system.
+        Insert a text directly into the RAG system.
 
-        This endpoint allows you to insert text data into the RAG system for later retrieval
-        and use in generating responses.
-
-        Args:
-            request (InsertTextRequest): The request body containing the text to be inserted.
-            background_tasks: FastAPI BackgroundTasks for async processing
-
-        Returns:
-            InsertResponse: A response object containing the status of the operation.
-
-        Raises:
-            HTTPException: If an error occurs during text processing (500).
+        This endpoint accepts a text string and processes it for inclusion in the RAG system.
+        Optional metadata and virtual file name can be provided.
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, [request.text])
+            # 准备参数
+            file_names = [request.file_name] if request.file_name else None
+
+            # 添加到后台任务
+            background_tasks.add_task(
+                pipeline_index_texts, 
+                rag, 
+                [request.text], 
+                file_names=file_names
+            )
+
             return InsertResponse(
                 status="success",
-                message="Text successfully received. Processing will continue in background.",
+                message="Text saved successfully. Processing will continue in background.",
             )
         except Exception as e:
             logger.error(f"Error /documents/text: {str(e)}")
@@ -837,7 +855,7 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, request.texts)
+            background_tasks.add_task(pipeline_index_texts, rag, request.texts,file_names=request.file_names)
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
@@ -1226,6 +1244,7 @@ def create_document_routes(
         Raises:
             HTTPException: If an error occurs while retrieving document statuses (500).
         """
+        logger.info(f"有人正在查询 文档状态")
         try:
             statuses = (
                 DocStatus.PENDING,
