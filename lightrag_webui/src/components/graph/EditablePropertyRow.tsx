@@ -119,40 +119,62 @@ const EditablePropertyRow = ({
           if (sigmaInstance && sigmaGraph && rawGraph) {
             // Update the node in sigma graph
             if (sigmaGraph.hasNode(String(value))) {
-              // Update the node label in the sigma graph
-              sigmaGraph.setNodeAttribute(String(value), 'label', editValue)
+              try {
+                // Create a new node with the updated ID
+                const oldNodeAttributes = sigmaGraph.getNodeAttributes(String(value))
 
-              // Also update the node in the raw graph
-              const nodeIndex = rawGraph.nodeIdMap[String(value)]
-              if (nodeIndex !== undefined) {
-                rawGraph.nodes[nodeIndex].id = editValue
-                // Update the node ID map
-                delete rawGraph.nodeIdMap[String(value)]
-                rawGraph.nodeIdMap[editValue] = nodeIndex
+                // Add a new node with the new ID but keep all other attributes
+                sigmaGraph.addNode(editValue, {
+                  ...oldNodeAttributes,
+                  label: editValue
+                })
+
+                // Copy all edges from the old node to the new node
+                sigmaGraph.forEachEdge(String(value), (edge, attributes, source, target) => {
+                  const otherNode = source === String(value) ? target : source
+                  const isOutgoing = source === String(value)
+
+                  // Create a new edge with the same attributes but connected to the new node ID
+                  if (isOutgoing) {
+                    sigmaGraph.addEdge(editValue, otherNode, attributes)
+                  } else {
+                    sigmaGraph.addEdge(otherNode, editValue, attributes)
+                  }
+
+                  // Remove the old edge
+                  sigmaGraph.dropEdge(edge)
+                })
+
+                // Remove the old node after all edges have been transferred
+                sigmaGraph.dropNode(String(value))
+
+                // Also update the node in the raw graph
+                const nodeIndex = rawGraph.nodeIdMap[String(value)]
+                if (nodeIndex !== undefined) {
+                  rawGraph.nodes[nodeIndex].id = editValue
+                  // Update the node ID map
+                  delete rawGraph.nodeIdMap[String(value)]
+                  rawGraph.nodeIdMap[editValue] = nodeIndex
+                }
+
+                // Refresh the sigma instance to reflect changes
+                sigmaInstance.refresh()
+
+                // Update selected node ID if it was the edited node
+                const selectedNode = useGraphStore.getState().selectedNode
+                if (selectedNode === String(value)) {
+                  useGraphStore.getState().setSelectedNode(editValue)
+                }
+
+                // Update focused node ID if it was the edited node
+                const focusedNode = useGraphStore.getState().focusedNode
+                if (focusedNode === String(value)) {
+                  useGraphStore.getState().setFocusedNode(editValue)
+                }
+              } catch (error) {
+                console.error('Error updating node ID in graph:', error)
+                throw new Error('Failed to update node ID in graph')
               }
-
-              // Refresh the sigma instance to reflect changes
-              sigmaInstance.refresh()
-
-              // Update selected node ID if it was the edited node
-              const selectedNode = useGraphStore.getState().selectedNode
-              if (selectedNode === String(value)) {
-                useGraphStore.getState().setSelectedNode(editValue)
-              }
-            }
-          } else {
-            // Fallback to full graph reload if direct update is not possible
-            useGraphStore.getState().setGraphDataFetchAttempted(false)
-            useGraphStore.getState().setLabelsFetchAttempted(false)
-
-            // Get current label to trigger reload
-            const currentLabel = useSettingsStore.getState().queryLabel
-            if (currentLabel) {
-              // Trigger data reload by temporarily clearing and resetting the label
-              useSettingsStore.getState().setQueryLabel('')
-              setTimeout(() => {
-                useSettingsStore.getState().setQueryLabel(currentLabel)
-              }, 0)
             }
           }
         } else if (name === 'description') {
@@ -178,22 +200,45 @@ const EditablePropertyRow = ({
       if (onValueChange) {
         onValueChange(editValue)
       }
-    } catch (error: any) { // Keep type as any to access potential response properties
+    } catch (error: any) {
       console.error('Error updating property:', error);
 
-      // Attempt to extract a more specific error message
-      let detailMessage = t('graphPanel.propertiesView.errors.updateFailed'); // Default message
+      // 尝试提取更具体的错误信息
+      let detailMessage = t('graphPanel.propertiesView.errors.updateFailed');
+
       if (error.response?.data?.detail) {
-          // Use the detailed message from the backend response if available
-          detailMessage = error.response.data.detail;
+        detailMessage = error.response.data.detail;
+      } else if (error.response?.data?.message) {
+        detailMessage = error.response.data.message;
       } else if (error.message) {
-          // Use the error object's message if no backend detail
-          detailMessage = error.message;
+        detailMessage = error.message;
       }
 
-      toast.error(detailMessage); // Show the determined error message
+      // 记录详细的错误信息以便调试
+      console.error('Update failed:', {
+        entityType,
+        entityId,
+        propertyName: name,
+        newValue: editValue,
+        error: error.response?.data || error.message
+      });
+
+      toast.error(detailMessage, {
+        description: t('graphPanel.propertiesView.errors.tryAgainLater')
+      });
 
     } finally {
+      // Update the value immediately in the UI
+      if (onValueChange) {
+        onValueChange(editValue);
+      }
+      // Trigger graph data refresh
+      useGraphStore.getState().setGraphDataFetchAttempted(false);
+      useGraphStore.getState().setLabelsFetchAttempted(false);
+      // Re-select the node to refresh properties panel
+      const currentNodeId = name === 'entity_id' ? editValue : (entityId || '');
+      useGraphStore.getState().setSelectedNode(null);
+      useGraphStore.getState().setSelectedNode(currentNodeId);
       setIsSubmitting(false)
       setIsEditing(false)
     }

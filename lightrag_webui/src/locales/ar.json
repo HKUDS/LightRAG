@@ -35,6 +35,32 @@
   "common": {
     "cancel": "إلغاء"
   },
+  "graphPanel": {
+    "propertiesView": {
+      "errors": {
+        "duplicateName": "اسم العقدة موجود بالفعل",
+        "updateFailed": "فشل تحديث العقدة",
+        "tryAgainLater": "يرجى المحاولة مرة أخرى لاحقاً"
+      },
+      "success": {
+        "entityUpdated": "تم تحديث العقدة بنجاح",
+        "relationUpdated": "تم تحديث العلاقة بنجاح"
+      },
+      "node": {
+        "title": "عقدة",
+        "id": "المعرف",
+        "labels": "التسميات",
+        "degree": "الدرجة",
+        "properties": "الخصائص",
+        "relationships": "العلاقات (ضمن الرسم البياني الفرعي)",
+        "expandNode": "توسيع العقدة",
+        "pruneNode": "تقليم العقدة",
+        "deleteAllNodesError": "رفض حذف جميع العقد في الرسم البياني",
+        "nodesRemoved": "تم حذف {{count}} عقدة، بما في ذلك العقد اليتيمة",
+        "noNewNodes": "لم يتم العثور على عقد قابلة للتوسيع"
+      }
+    }
+  },
   "documentPanel": {
     "clearDocuments": {
       "button": "مسح",

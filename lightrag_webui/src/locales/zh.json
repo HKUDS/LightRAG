@@ -236,6 +236,15 @@
       "vectorStorage": "向量存储"
     },
     "propertiesView": {
+      "errors": {
+        "duplicateName": "节点名称已存在",
+        "updateFailed": "更新节点失败",
+        "tryAgainLater": "请稍后重试"
+      },
+      "success": {
+        "entityUpdated": "节点更新成功",
+        "relationUpdated": "关系更新成功"
+      },
       "node": {
         "title": "节点",
         "id": "ID",
