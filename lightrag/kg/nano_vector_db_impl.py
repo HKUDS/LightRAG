@@ -85,7 +85,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
            KG-storage-log should be used to avoid data corruption
         """
 
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 

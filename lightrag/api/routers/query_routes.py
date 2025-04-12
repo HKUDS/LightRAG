@@ -22,7 +22,7 @@ class QueryRequest(BaseModel):
         description="The query text",
     )
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix"] = Field(
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
         default="hybrid",
         description="Query mode",
     )

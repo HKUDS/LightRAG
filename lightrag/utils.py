@@ -12,12 +12,16 @@ import re
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
 import xml.etree.ElementTree as ET
 import numpy as np
 import tiktoken
 from lightrag.prompt import PROMPTS
 from dotenv import load_dotenv
+
+# Use TYPE_CHECKING to avoid circular imports
+if TYPE_CHECKING:
+    from lightrag.base import BaseKVStorage
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -334,6 +338,7 @@ def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]
     """Split a string by multiple markers"""
     if not markers:
         return [content]
+    content = content if content is not None else ""
     results = re.split("|".join(re.escape(marker) for marker in markers), content)
     return [r.strip() for r in results if r.strip()]
 
@@ -907,6 +912,84 @@ def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any
     return import_class
 
 
+async def use_llm_func_with_cache(
+    input_text: str,
+    use_llm_func: callable,
+    llm_response_cache: "BaseKVStorage | None" = None,
+    max_tokens: int = None,
+    history_messages: list[dict[str, str]] = None,
+    cache_type: str = "extract",
+) -> str:
+    """Call LLM function with cache support
+
+    If cache is available and enabled (determined by handle_cache based on mode),
+    retrieve result from cache; otherwise call LLM function and save result to cache.
+
+    Args:
+        input_text: Input text to send to LLM
+        use_llm_func: LLM function to call
+        llm_response_cache: Cache storage instance
+        max_tokens: Maximum tokens for generation
+        history_messages: History messages list
+        cache_type: Type of cache
+
+    Returns:
+        LLM response text
+    """
+    if llm_response_cache:
+        if history_messages:
+            history = json.dumps(history_messages, ensure_ascii=False)
+            _prompt = history + "\n" + input_text
+        else:
+            _prompt = input_text
+
+        arg_hash = compute_args_hash(_prompt)
+        cached_return, _1, _2, _3 = await handle_cache(
+            llm_response_cache,
+            arg_hash,
+            _prompt,
+            "default",
+            cache_type=cache_type,
+        )
+        if cached_return:
+            logger.debug(f"Found cache for {arg_hash}")
+            statistic_data["llm_cache"] += 1
+            return cached_return
+        statistic_data["llm_call"] += 1
+
+        # Call LLM
+        kwargs = {}
+        if history_messages:
+            kwargs["history_messages"] = history_messages
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+
+        res: str = await use_llm_func(input_text, **kwargs)
+
+        # Save to cache
+        logger.info(f" == LLM cache == saving {arg_hash}")
+        await save_to_cache(
+            llm_response_cache,
+            CacheData(
+                args_hash=arg_hash,
+                content=res,
+                prompt=_prompt,
+                cache_type=cache_type,
+            ),
+        )
+        return res
+
+    # When cache is disabled, directly call LLM
+    kwargs = {}
+    if history_messages:
+        kwargs["history_messages"] = history_messages
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+
+    logger.info(f"Call LLM function with query text lenght: {len(input_text)}")
+    return await use_llm_func(input_text, **kwargs)
+
+
 def get_content_summary(content: str, max_length: int = 250) -> str:
     """Get summary of document content
 
@@ -921,6 +1004,50 @@ def get_content_summary(content: str, max_length: int = 250) -> str:
     if len(content) <= max_length:
         return content
     return content[:max_length] + "..."
+
+
+def normalize_extracted_info(name: str, is_entity=False) -> str:
+    """Normalize entity/relation names and description with the following rules:
+    1. Remove spaces between Chinese characters
+    2. Remove spaces between Chinese characters and English letters/numbers
+    3. Preserve spaces within English text and numbers
+    4. Replace Chinese parentheses with English parentheses
+    5. Replace Chinese dash with English dash
+
+    Args:
+        name: Entity name to normalize
+
+    Returns:
+        Normalized entity name
+    """
+    # Replace Chinese parentheses with English parentheses
+    name = name.replace("（", "(").replace("）", ")")
+
+    # Replace Chinese dash with English dash
+    name = name.replace("—", "-").replace("－", "-")
+
+    # Use regex to remove spaces between Chinese characters
+    # Regex explanation:
+    # (?<=[\u4e00-\u9fa5]): Positive lookbehind for Chinese character
+    # \s+: One or more whitespace characters
+    # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
+    name = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])", "", name)
+
+    # Remove spaces between Chinese and English/numbers
+    name = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[a-zA-Z0-9])", "", name)
+    name = re.sub(r"(?<=[a-zA-Z0-9])\s+(?=[\u4e00-\u9fa5])", "", name)
+
+    # Remove English quotation marks from the beginning and end
+    name = name.strip('"').strip("'")
+
+    if is_entity:
+        # remove Chinese quotes
+        name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
+        # remove English queotes in and around chinese
+        name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
+        name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
+
+    return name
 
 
 def clean_text(text: str) -> str:

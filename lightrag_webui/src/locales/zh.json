@@ -145,8 +145,8 @@
     },
     "legend": "图例",
     "nodeTypes": {
-      "person": "人物",
-      "category": "类别",
+      "person": "人物角色",
+      "category": "分类",
       "geo": "地理名称",
       "location": "位置",
       "organization": "组织机构",
@@ -155,6 +155,8 @@
       "weapon": "武器",
       "animal": "动物",
       "unknown": "未知",
+      "object": "物品",
+      "group": "群组",
       "technology": "技术"
     },
     "sideBar": {
@@ -294,13 +296,14 @@
       "parametersTitle": "参数",
       "parametersDescription": "配置查询参数",
       "queryMode": "查询模式",
-      "queryModeTooltip": "选择检索策略：\n• Naive：基础搜索，无高级技术\n• Local：上下文相关信息检索\n• Global：利用全局知识库\n• Hybrid：结合本地和全局检索\n• Mix：整合知识图谱和向量检索",
+      "queryModeTooltip": "选择检索策略：\n• Naive：基础搜索，无高级技术\n• Local：上下文相关信息检索\n• Global：利用全局知识库\n• Hybrid：结合本地和全局检索\n• Mix：整合知识图谱和向量检索\n• Bypass：直接传递查询到LLM，不进行检索",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
         "global": "Global",
         "hybrid": "Hybrid",
-        "mix": "Mix"
+        "mix": "Mix",
+        "bypass": "Bypass"
       },
       "responseFormat": "响应格式",
       "responseFormatTooltip": "定义响应格式。例如：\n• 多段落\n• 单段落\n• 要点",

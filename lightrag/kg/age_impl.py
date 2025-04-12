@@ -6,7 +6,6 @@ import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional, Union, final
-import numpy as np
 import pipmaster as pm
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 
@@ -88,11 +87,6 @@ class AGEStorage(BaseGraphStorage):
         self._driver = AsyncConnectionPool(connection_string, open=False)
 
         return None
-
-    def __post_init__(self):
-        self._node_embed_algorithms = {
-            "node2vec": self._node2vec_embed,
-        }
 
     async def close(self):
         if self._driver:
@@ -593,9 +587,6 @@ class AGEStorage(BaseGraphStorage):
             logger.error("Error during edge upsert: {%s}", e)
             raise
 
-    async def _node2vec_embed(self):
-        print("Implemented but never called.")
-
     @asynccontextmanager
     async def _get_pool_connection(self, timeout: Optional[float] = None):
         """Workaround for a psycopg_pool bug"""
@@ -667,21 +658,6 @@ class AGEStorage(BaseGraphStorage):
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")
                 raise
-
-    async def embed_nodes(
-        self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        """Embed nodes using the specified algorithm
-
-        Args:
-            algorithm: Name of the embedding algorithm
-
-        Returns:
-            tuple: (embedding matrix, list of node identifiers)
-        """
-        if algorithm not in self._node_embed_algorithms:
-            raise ValueError(f"Node embedding algorithm {algorithm} not supported")
-        return await self._node_embed_algorithms[algorithm]()
 
     async def get_all_labels(self) -> list[str]:
         """Get all node labels in the database

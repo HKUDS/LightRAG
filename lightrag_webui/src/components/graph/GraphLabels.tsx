@@ -46,8 +46,30 @@ const GraphLabels = () => {
 
       let result: string[] = labels
       if (query) {
-        // Search labels
+        // Search labels using MiniSearch
         result = searchEngine.search(query).map((r: { id: number }) => labels[r.id])
+
+        // Add middle-content matching if results are few
+        // This enables matching content in the middle of text, not just from the beginning
+        if (result.length < 5) {
+          // Get already matched labels to avoid duplicates
+          const matchedLabels = new Set(result)
+
+          // Perform middle-content matching on all labels
+          const middleMatchResults = labels.filter(label => {
+            // Skip already matched labels
+            if (matchedLabels.has(label)) return false
+
+            // Match if label contains query string but doesn't start with it
+            return label &&
+                   typeof label === 'string' &&
+                   !label.toLowerCase().startsWith(query.toLowerCase()) &&
+                   label.toLowerCase().includes(query.toLowerCase())
+          })
+
+          // Merge results
+          result = [...result, ...middleMatchResults]
+        }
       }
 
       return result.length <= labelListLimit
@@ -108,12 +130,12 @@ const GraphLabels = () => {
         variant={controlButtonVariant}
         onClick={handleRefresh}
         tooltip={t('graphPanel.graphLabels.refreshTooltip')}
-        className="mr-1"
+        className="mr-2"
       >
         <RefreshCw className="h-4 w-4" />
       </Button>
       <AsyncSelect<string>
-        className="ml-2"
+        className="min-w-[300px]"
         triggerClassName="max-h-8"
         searchInputClassName="max-h-8"
         triggerTooltip={t('graphPanel.graphLabels.selectTooltip')}
