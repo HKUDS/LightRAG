@@ -16,6 +16,7 @@ from .utils import (
     encode_string_by_tiktoken,
     is_float_regex,
     list_of_list_to_csv,
+    normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -163,6 +164,9 @@ async def _handle_single_entity_extraction(
         )
         return None
 
+    # Normalize entity name
+    entity_name = normalize_extracted_info(entity_name, is_entity=True)
+
     # Clean and validate entity type
     entity_type = clean_str(record_attributes[2]).strip('"')
     if not entity_type.strip() or entity_type.startswith('("'):
@@ -172,7 +176,9 @@ async def _handle_single_entity_extraction(
         return None
 
     # Clean and validate description
-    entity_description = clean_str(record_attributes[3]).strip('"')
+    entity_description = clean_str(record_attributes[3])
+    entity_description = normalize_extracted_info(entity_description)
+
     if not entity_description.strip():
         logger.warning(
             f"Entity extraction error: empty description for entity '{entity_name}' of type '{entity_type}'"
@@ -196,13 +202,20 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
         return None
     # add this record as edge
-    source = clean_str(record_attributes[1]).strip('"')
-    target = clean_str(record_attributes[2]).strip('"')
-    edge_description = clean_str(record_attributes[3]).strip('"')
-    edge_keywords = clean_str(record_attributes[4]).strip('"')
+    source = clean_str(record_attributes[1])
+    target = clean_str(record_attributes[2])
+
+    # Normalize source and target entity names
+    source = normalize_extracted_info(source, is_entity=True)
+    target = normalize_extracted_info(target, is_entity=True)
+
+    edge_description = clean_str(record_attributes[3])
+    edge_description = normalize_extracted_info(edge_description)
+
+    edge_keywords = clean_str(record_attributes[4]).strip('"').strip("'")
     edge_source_id = chunk_key
     weight = (
-        float(record_attributes[-1].strip('"'))
+        float(record_attributes[-1].strip('"').strip("'"))
         if is_float_regex(record_attributes[-1])
         else 1.0
     )
