@@ -5,6 +5,7 @@ import Input from '@/components/ui/Input'
 import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
+import { PencilIcon } from 'lucide-react'
 
 interface EditablePropertyRowProps {
   name: string
@@ -222,9 +223,17 @@ const EditablePropertyRow = ({
 
   return (
     <div className="flex items-center gap-2">
-      <span className="text-primary/60 tracking-wide whitespace-nowrap">
+      <div className="flex items-center gap-1 text-primary/60 tracking-wide whitespace-nowrap">
         {getPropertyNameTranslation(name)}
-      </span>:
+        {isEditableField && (
+          <div className="group relative">
+            <PencilIcon className="w-3 h-3 opacity-50 hover:opacity-100" />
+            <div className="absolute left-5 transform -translate-y-full -top-2 bg-primary/90 text-white text-xs px-3 py-1.5 rounded shadow-lg border border-primary/20 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap z-[100]">
+              {t('graphPanel.propertiesView.doubleClickToEdit')}
+            </div>
+          </div>
+        )}
+      </div>:
       {isEditing ? (
         <div className="flex-1">
           <Input
@@ -238,20 +247,17 @@ const EditablePropertyRow = ({
           />
         </div>
       ) : (
-        // Wrap Text component in a div to handle onDoubleClick
         <div
-          className={`flex-1 overflow-hidden ${isEditableField ? 'cursor-text' : ''}`} // Apply cursor style to wrapper
+          className={`flex-1 overflow-hidden ${isEditableField ? 'cursor-text' : ''}`}
           onDoubleClick={isEditableField ? handleDoubleClick : undefined}
         >
           <Text
-            className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis block w-full" // Ensure Text fills the div
+            className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis block w-full"
             tooltipClassName="max-w-80"
-            // Ensure the text prop always receives a string representation
             text={String(value)}
             tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
             side="left"
             onClick={onClick}
-            // Removed onDoubleClick from Text component
           />
         </div>
       )}

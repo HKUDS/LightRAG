@@ -241,6 +241,7 @@
         "updateFailed": "更新节点失败",
         "tryAgainLater": "请稍后重试"
       },
+      "doubleClickToEdit": "双击编辑",
       "success": {
         "entityUpdated": "节点更新成功",
         "relationUpdated": "关系更新成功"

@@ -240,6 +240,7 @@
         "updateFailed": "Failed to update node",
         "tryAgainLater": "Please try again later"
       },
+      "doubleClickToEdit": "Double click to edit",
       "success": {
         "entityUpdated": "Node updated successfully",
         "relationUpdated": "Relation updated successfully"
