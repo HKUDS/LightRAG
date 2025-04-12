@@ -362,6 +362,26 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         """
 
     @abstractmethod
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+        """Get nodes as a batch using UNWIND"""
+
+    @abstractmethod
+    async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
+        """Node degrees as a batch using UNWIND"""
+
+    @abstractmethod
+    async def edge_degrees_batch(self, edge_pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+        """Edge degrees as a batch using UNWIND also uses node_degrees_batch"""
+
+    @abstractmethod
+    async def get_edges_batch(self, pairs: list[dict[str, str]]) -> dict[tuple[str, str], dict]:
+        """Get edges as a batch using UNWIND"""
+
+    @abstractmethod
+    async def get_nodes_edges_batch(self, node_ids: list[str]) -> dict[str, list[tuple[str, str]]]:
+        """"Get nodes edges as a batch using UNWIND"""
+
+    @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert a new node or update an existing node in the graph.
 
