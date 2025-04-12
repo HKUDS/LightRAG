@@ -155,6 +155,8 @@
       "weapon": "Arme",
       "animal": "Animal",
       "unknown": "Inconnu",
+      "object": "Objet",
+      "group": "Groupe",
       "technology": "Technologie"
     },
     "sideBar": {
@@ -294,13 +296,14 @@
       "parametersTitle": "Paramètres",
       "parametersDescription": "Configurez vos paramètres de requête",
       "queryMode": "Mode de requête",
-      "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Recherche de base sans techniques avancées\n• Local : Récupération d'informations dépendante du contexte\n• Global : Utilise une base de connaissances globale\n• Hybride : Combine récupération locale et globale\n• Mixte : Intègre le graphe de connaissances avec la récupération vectorielle",
+      "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Recherche de base sans techniques avancées\n• Local : Récupération d'informations dépendante du contexte\n• Global : Utilise une base de connaissances globale\n• Hybride : Combine récupération locale et globale\n• Mixte : Intègre le graphe de connaissances avec la récupération vectorielle\n• Bypass : Transmet directement la requête au LLM sans récupération",
       "queryModeOptions": {
         "naive": "Naïf",
         "local": "Local",
         "global": "Global",
         "hybrid": "Hybride",
-        "mix": "Mixte"
+        "mix": "Mixte",
+        "bypass": "Bypass"
       },
       "responseFormat": "Format de réponse",
       "responseFormatTooltip": "Définit le format de la réponse. Exemples :\n• Plusieurs paragraphes\n• Paragraphe unique\n• Points à puces",

@@ -103,8 +103,10 @@ class LightRAG:
     entity_extract_max_gleaning: int = field(default=1)
     """Maximum number of entity extraction attempts for ambiguous content."""
 
-    entity_summary_to_max_tokens: int = field(
-        default=int(os.getenv("MAX_TOKEN_SUMMARY", 500))
+    summary_to_max_tokens: int = field(default=int(os.getenv("MAX_TOKEN_SUMMARY", 500)))
+
+    force_llm_summary_on_merge: int = field(
+        default=int(os.getenv("FORCE_LLM_SUMMARY_ON_MERGE", 6))
     )
 
     # Text chunking
@@ -151,31 +153,6 @@ class LightRAG:
         - `content`: The text content of the chunk.
 
     Defaults to `chunking_by_token_size` if not specified.
-    """
-
-    # Node embedding
-    # ---
-
-    node_embedding_algorithm: str = field(default="node2vec")
-    """Algorithm used for node embedding in knowledge graphs."""
-
-    node2vec_params: dict[str, int] = field(
-        default_factory=lambda: {
-            "dimensions": 1536,
-            "num_walks": 10,
-            "walk_length": 40,
-            "window_size": 2,
-            "iterations": 3,
-            "random_seed": 3,
-        }
-    )
-    """Configuration for the node2vec embedding algorithm:
-    - dimensions: Number of dimensions for embeddings.
-    - num_walks: Number of random walks per node.
-    - walk_length: Number of steps per random walk.
-    - window_size: Context window size for training.
-    - iterations: Number of iterations for training.
-    - random_seed: Seed value for reproducibility.
     """
 
     # Embedding
@@ -900,6 +877,15 @@ class LightRAG:
                         # Get file path from status document
                         file_path = getattr(status_doc, "file_path", "unknown_source")
 
+                        async with pipeline_status_lock:
+                            log_message = f"Processing file: {file_path}"
+                            logger.info(log_message)
+                            pipeline_status["history_messages"].append(log_message)
+                            log_message = f"Processing d-id: {doc_id}"
+                            logger.info(log_message)
+                            pipeline_status["latest_message"] = log_message
+                            pipeline_status["history_messages"].append(log_message)
+
                         # Generate chunks from document
                         chunks: dict[str, Any] = {
                             compute_mdhash_id(dp["content"], prefix="chunk-"): {
@@ -1371,6 +1357,16 @@ class LightRAG:
                 global_config,
                 hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
                 system_prompt=system_prompt,
+            )
+        elif param.mode == "bypass":
+            # Bypass mode: directly use LLM without knowledge retrieval
+            use_llm_func = param.model_func or global_config["llm_model_func"]
+            param.stream = True if param.stream is None else param.stream
+            response = await use_llm_func(
+                query.strip(),
+                system_prompt=system_prompt,
+                history_messages=param.conversation_history,
+                stream=param.stream,
             )
         else:
             raise ValueError(f"Unknown mode {param.mode}")

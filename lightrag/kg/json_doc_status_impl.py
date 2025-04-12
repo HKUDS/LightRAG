@@ -116,7 +116,7 @@ class JsonDocStatusStorage(DocStatusStorage):
         """
         if not data:
             return
-        logger.info(f"Inserting {len(data)} records to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} records to {self.namespace}")
         async with self._storage_lock:
             self._data.update(data)
             await set_all_update_flags(self.namespace)
