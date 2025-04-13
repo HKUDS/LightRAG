@@ -116,6 +116,10 @@ interface GraphState {
   // Node operation state
   nodeToExpand: string | null
   nodeToPrune: string | null
+
+  // Version counter to trigger data refresh
+  graphDataVersion: number
+  incrementGraphDataVersion: () => void
 }
 
 const useGraphStoreBase = create<GraphState>()((set) => ({
@@ -218,6 +222,10 @@ const useGraphStoreBase = create<GraphState>()((set) => ({
   // Event trigger methods for node operations
   triggerNodeExpand: (nodeId: string | null) => set({ nodeToExpand: nodeId }),
   triggerNodePrune: (nodeId: string | null) => set({ nodeToPrune: nodeId }),
+
+  // Version counter implementation
+  graphDataVersion: 0,
+  incrementGraphDataVersion: () => set((state) => ({ graphDataVersion: state.graphDataVersion + 1 })),
 
 }))
 
