@@ -60,6 +60,7 @@ export default function RetrievalTesting() {
           }
           return newMessages
         })
+        scrollToBottom()
       }
 
       // Prepare query parameters
@@ -69,6 +70,7 @@ export default function RetrievalTesting() {
         query: userMessage.content,
         conversation_history: prevMessages
           .filter((m) => m.isError !== true)
+          .slice(-(state.querySettings.history_turns || 0) * 2)
           .map((m) => ({ role: m.role, content: m.content }))
       }
 

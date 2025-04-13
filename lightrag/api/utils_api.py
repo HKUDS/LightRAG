@@ -261,8 +261,12 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.chunk_overlap_size}")
     ASCIIColors.white("    ├─ Cosine Threshold: ", end="")
     ASCIIColors.yellow(f"{args.cosine_threshold}")
-    ASCIIColors.white("    └─ Top-K: ", end="")
+    ASCIIColors.white("    ├─ Top-K: ", end="")
     ASCIIColors.yellow(f"{args.top_k}")
+    ASCIIColors.white("    ├─ Max Token Summary: ", end="")
+    ASCIIColors.yellow(f"{int(os.getenv('MAX_TOKEN_SUMMARY', 500))}")
+    ASCIIColors.white("    └─ Force LLM Summary on Merge: ", end="")
+    ASCIIColors.yellow(f"{int(os.getenv('FORCE_LLM_SUMMARY_ON_MERGE', 6))}")
 
     # System Configuration
     ASCIIColors.magenta("\n💾 Storage Configuration:")

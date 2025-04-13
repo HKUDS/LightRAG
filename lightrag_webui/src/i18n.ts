@@ -6,6 +6,7 @@ import en from './locales/en.json'
 import zh from './locales/zh.json'
 import fr from './locales/fr.json'
 import ar from './locales/ar.json'
+import zh_TW from './locales/zh_TW.json'
 
 const getStoredLanguage = () => {
   try {
@@ -27,7 +28,8 @@ i18n
       en: { translation: en },
       zh: { translation: zh },
       fr: { translation: fr },
-      ar: { translation: ar }
+      ar: { translation: ar },
+      zh_TW: { translation: zh_TW }
     },
     lng: getStoredLanguage(), // Use stored language settings
     fallbackLng: 'en',
