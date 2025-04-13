@@ -33,7 +33,8 @@
     "guestMode": "وضع بدون تسجيل دخول"
   },
   "common": {
-    "cancel": "إلغاء"
+    "cancel": "إلغاء",
+    "save": "حفظ"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -236,12 +237,14 @@
       "vectorStorage": "تخزين المتجهات"
     },
     "propertiesView": {
+      "editProperty": "تعديل {{property}}",
+      "editPropertyDescription": "قم بتحرير قيمة الخاصية في منطقة النص أدناه.",
       "errors": {
         "duplicateName": "اسم العقدة موجود بالفعل",
         "updateFailed": "فشل تحديث العقدة",
         "tryAgainLater": "يرجى المحاولة مرة أخرى لاحقًا"
       },
-      "doubleClickToEdit": "انقر نقرًا مزدوجًا للتعديل",
+
       "success": {
         "entityUpdated": "تم تحديث العقدة بنجاح",
         "relationUpdated": "تم تحديث العلاقة بنجاح"

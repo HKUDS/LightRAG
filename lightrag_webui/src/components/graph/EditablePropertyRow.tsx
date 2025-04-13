@@ -1,12 +1,12 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
+import { useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import Text from '@/components/ui/Text'
-import Input from '@/components/ui/Input'
 import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
 import { PencilIcon } from 'lucide-react'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
+import PropertyEditDialog from './PropertyEditDialog'
 
 /**
  * Interface for the EditablePropertyRow component props
@@ -44,7 +44,6 @@ const EditablePropertyRow = ({
   name,
   value: initialValue,
   onClick,
-  tooltip,
   entityId,
   entityType,
   sourceId,
@@ -55,10 +54,10 @@ const EditablePropertyRow = ({
   // Component state
   const { t } = useTranslation()
   const [isEditing, setIsEditing] = useState(false)
-  const [editValue, setEditValue] = useState('')
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [currentValue, setCurrentValue] = useState(initialValue)
   const inputRef = useRef<HTMLInputElement>(null)
+
 
   /**
    * Update currentValue when initialValue changes from parent
@@ -72,7 +71,6 @@ const EditablePropertyRow = ({
    */
   useEffect(() => {
     if (isEditing) {
-      setEditValue(String(currentValue))
       // Focus the input element when entering edit mode with a small delay
       // to ensure the input is rendered before focusing
       setTimeout(() => {
@@ -82,7 +80,7 @@ const EditablePropertyRow = ({
         }
       }, 50)
     }
-  }, [isEditing, currentValue])
+  }, [isEditing])
 
   /**
    * Get translated property name from i18n
@@ -95,25 +93,19 @@ const EditablePropertyRow = ({
   }
 
   /**
-   * Handle double-click event to enter edit mode
+   * Handle edit icon click to open dialog
    */
-  const handleDoubleClick = () => {
+  const handleEditClick = () => {
     if (isEditable && !isEditing) {
       setIsEditing(true)
     }
   }
 
   /**
-   * Handle keyboard events in the input field
-   * - Enter: Save changes
-   * - Escape: Cancel editing
+   * Handle dialog close without saving
    */
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      handleSave()
-    } else if (e.key === 'Escape') {
-      setIsEditing(false)
-    }
+  const handleCancel = () => {
+    setIsEditing(false)
   }
 
   /**
@@ -300,12 +292,12 @@ const EditablePropertyRow = ({
    * Save changes to the property value
    * Updates both the API and the graph visualization
    */
-  const handleSave = async () => {
+  const handleSave = async (value: string) => {
     // Prevent duplicate submissions
     if (isSubmitting) return
 
     // Skip if value hasn't changed
-    if (editValue === String(currentValue)) {
+    if (value === String(currentValue)) {
       setIsEditing(false)
       return
     }
@@ -315,44 +307,44 @@ const EditablePropertyRow = ({
     try {
       // Handle node property updates
       if (entityType === 'node' && entityId) {
-        let updatedData = { [name]: editValue }
+        let updatedData = { [name]: value }
 
         // Special handling for entity_id (name) changes
         if (name === 'entity_id') {
           // Check if the new name already exists
-          const exists = await checkEntityNameExists(editValue)
+          const exists = await checkEntityNameExists(value)
           if (exists) {
             toast.error(t('graphPanel.propertiesView.errors.duplicateName'))
             setIsSubmitting(false)
             return
           }
           // For entity_id, we update entity_name in the API
-          updatedData = { 'entity_name': editValue }
+          updatedData = { 'entity_name': value }
         }
 
         // Update entity in API
         await updateEntity(entityId, updatedData, true)
         // Update graph visualization
-        await updateGraphNode(entityId, name, editValue)
+        await updateGraphNode(entityId, name, value)
         toast.success(t('graphPanel.propertiesView.success.entityUpdated'))
       }
       // Handle edge property updates
       else if (entityType === 'edge' && sourceId && targetId) {
-        const updatedData = { [name]: editValue }
+        const updatedData = { [name]: value }
         // Update relation in API
         await updateRelation(sourceId, targetId, updatedData)
         // Update graph visualization
-        await updateGraphEdge(sourceId, targetId, name, editValue)
+        await updateGraphEdge(sourceId, targetId, name, value)
         toast.success(t('graphPanel.propertiesView.success.relationUpdated'))
       }
 
       // Update local state
       setIsEditing(false)
-      setCurrentValue(editValue)
+      setCurrentValue(value)
 
       // Notify parent component if callback provided
       if (onValueChange) {
-        onValueChange(editValue)
+        onValueChange(value)
       }
     } catch (error) {
       console.error('Error updating property:', error)
@@ -364,58 +356,43 @@ const EditablePropertyRow = ({
 
   /**
    * Render the property row with edit functionality
-   * Shows property name, edit icon, and either the editable input or the current value
+   * Shows property name, edit icon, and the current value
    */
   return (
-    <div className="flex items-center gap-1" onDoubleClick={handleDoubleClick}>
+    <div className="flex items-center gap-1">
       {/* Property name with translation */}
       <span className="text-primary/60 tracking-wide whitespace-nowrap">
         {getPropertyNameTranslation(name)}
       </span>
 
-      {/* Edit icon with tooltip */}
-      <TooltipProvider delayDuration={200}>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div>
-              <PencilIcon
-                className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer"
-                onClick={() => setIsEditing(true)}
-              />
-            </div>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            {t('graphPanel.propertiesView.doubleClickToEdit')}
-          </TooltipContent>
-        </Tooltip>
-      </TooltipProvider>:
-
-      {/* Conditional rendering based on edit state */}
-      {isEditing ? (
-        // Input field for editing
-        <Input
-          ref={inputRef}
-          type="text"
-          value={editValue}
-          onChange={(e) => setEditValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          onBlur={handleSave}
-          className="h-6 text-xs"
-          disabled={isSubmitting}
+      {/* Edit icon without tooltip */}
+      <div>
+        <PencilIcon
+          className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer"
+          onClick={handleEditClick}
         />
-      ) : (
-        // Text display when not editing
-        <div className="flex items-center gap-1">
-          <Text
-            className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
-            tooltipClassName="max-w-80"
-            text={currentValue}
-            tooltip={tooltip || (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))}
-            side="left"
-            onClick={onClick}
-          />
-        </div>
-      )}
+      </div>:
+
+      {/* Text display */}
+      <div className="flex items-center gap-1">
+        <Text
+          className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
+          tooltipClassName="max-w-80"
+          text={currentValue}
+          side="left"
+          onClick={onClick}
+        />
+      </div>
+
+      {/* Edit dialog */}
+      <PropertyEditDialog
+        isOpen={isEditing}
+        onClose={handleCancel}
+        onSave={handleSave}
+        propertyName={name}
+        initialValue={String(currentValue)}
+        isSubmitting={isSubmitting}
+      />
     </div>
   )
 }
