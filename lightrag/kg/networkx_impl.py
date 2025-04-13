@@ -1,7 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Any, final
-import numpy as np
+from typing import final
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
@@ -16,7 +15,6 @@ if not pm.is_installed("graspologic"):
     pm.install("graspologic")
 
 import networkx as nx
-from graspologic import embed
 from .shared_storage import (
     get_storage_lock,
     get_update_flag,
@@ -42,40 +40,6 @@ class NetworkXStorage(BaseGraphStorage):
         )
         nx.write_graphml(graph, file_name)
 
-    # TODO：deprecated, remove later
-    @staticmethod
-    def _stabilize_graph(graph: nx.Graph) -> nx.Graph:
-        """Refer to https://github.com/microsoft/graphrag/index/graph/utils/stable_lcc.py
-        Ensure an undirected graph with the same relationships will always be read the same way.
-        """
-        fixed_graph = nx.DiGraph() if graph.is_directed() else nx.Graph()
-
-        sorted_nodes = graph.nodes(data=True)
-        sorted_nodes = sorted(sorted_nodes, key=lambda x: x[0])
-
-        fixed_graph.add_nodes_from(sorted_nodes)
-        edges = list(graph.edges(data=True))
-
-        if not graph.is_directed():
-
-            def _sort_source_target(edge):
-                source, target, edge_data = edge
-                if source > target:
-                    temp = source
-                    source = target
-                    target = temp
-                return source, target, edge_data
-
-            edges = [_sort_source_target(edge) for edge in edges]
-
-        def _get_edge_key(source: Any, target: Any) -> str:
-            return f"{source} -> {target}"
-
-        edges = sorted(edges, key=lambda x: _get_edge_key(x[0], x[1]))
-
-        fixed_graph.add_edges_from(edges)
-        return fixed_graph
-
     def __post_init__(self):
         self._graphml_xml_file = os.path.join(
             self.global_config["working_dir"], f"graph_{self.namespace}.graphml"
@@ -93,10 +57,6 @@ class NetworkXStorage(BaseGraphStorage):
         else:
             logger.info("Created new empty graph")
         self._graph = preloaded_graph or nx.Graph()
-
-        self._node_embed_algorithms = {
-            "node2vec": self._node2vec_embed,
-        }
 
     async def initialize(self):
         """Initialize storage data"""
@@ -190,24 +150,6 @@ class NetworkXStorage(BaseGraphStorage):
             logger.debug(f"Node {node_id} deleted from the graph.")
         else:
             logger.warning(f"Node {node_id} not found in the graph for deletion.")
-
-    # TODO: NOT USED
-    async def embed_nodes(
-        self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        if algorithm not in self._node_embed_algorithms:
-            raise ValueError(f"Node embedding algorithm {algorithm} not supported")
-        return await self._node_embed_algorithms[algorithm]()
-
-    # TODO: NOT USED
-    async def _node2vec_embed(self):
-        graph = await self._get_graph()
-        embeddings, nodes = embed.node2vec_embed(
-            graph,
-            **self.global_config["node2vec_params"],
-        )
-        nodes_ids = [graph.nodes[node_id]["id"] for node_id in nodes]
-        return embeddings, nodes_ids
 
     async def remove_nodes(self, nodes: list[str]):
         """Delete multiple nodes
