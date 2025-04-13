@@ -2,8 +2,7 @@ import inspect
 import os
 import re
 from dataclasses import dataclass
-from typing import Any, final
-import numpy as np
+from typing import final
 import configparser
 
 
@@ -50,11 +49,6 @@ class Neo4JStorage(BaseGraphStorage):
             embedding_func=embedding_func,
         )
         self._driver = None
-
-    def __post_init__(self):
-        self._node_embed_algorithms = {
-            "node2vec": self._node2vec_embed,
-        }
 
     async def initialize(self):
         URI = os.environ.get("NEO4J_URI", config.get("neo4j", "uri", fallback=None))
@@ -635,9 +629,6 @@ class Neo4JStorage(BaseGraphStorage):
             logger.error(f"Error during edge upsert: {str(e)}")
             raise
 
-    async def _node2vec_embed(self):
-        print("Implemented but never called.")
-
     async def get_knowledge_graph(
         self,
         node_label: str,
@@ -1125,11 +1116,6 @@ class Neo4JStorage(BaseGraphStorage):
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")
                 raise
-
-    async def embed_nodes(
-        self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError
 
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources

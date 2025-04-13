@@ -106,6 +106,8 @@ Here are some commonly used startup parameters:
 
 > The requirement for the .env file to be in the startup directory is intentionally designed this way. The purpose is to support users in launching multiple LightRAG instances simultaneously, allowing different .env files for different instances.
 
+> **After changing the .env file, you need to open a new terminal to make  the new settings take effect.** This because the LightRAG Server will load the environment variables from .env into the system environment variables each time it starts, and LightRAG Server will prioritize the settings in the system environment variables.
+
 ### Auto scan on startup
 
 When starting any of the servers with the `--auto-scan-at-startup` parameter, the system will automatically:

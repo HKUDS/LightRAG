@@ -308,7 +308,7 @@ class OllamaAPI:
                             "Cache-Control": "no-cache",
                             "Connection": "keep-alive",
                             "Content-Type": "application/x-ndjson",
-                            "X-Accel-Buffering": "no",  # 确保在Nginx代理时正确处理流式响应
+                            "X-Accel-Buffering": "no",  # Ensure proper handling of streaming responses in Nginx proxy
                         },
                     )
                 else:
