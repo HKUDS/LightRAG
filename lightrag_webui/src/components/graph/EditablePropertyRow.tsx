@@ -6,24 +6,39 @@ import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
 import { useGraphStore } from '@/stores/graph'
 import { PencilIcon } from 'lucide-react'
-import { tr } from '@faker-js/faker'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
+/**
+ * Interface for the EditablePropertyRow component props
+ * Defines all possible properties that can be passed to the component
+ */
 interface EditablePropertyRowProps {
-  name: string
-  value: any
-  onClick?: () => void
-  tooltip?: string
-  entityId?: string
-  entityType?: 'node' | 'edge'
-  sourceId?: string
-  targetId?: string
-  onValueChange?: (newValue: any) => void
-  isEditable?: boolean
+  name: string                  // Property name to display and edit
+  value: any                    // Initial value of the property
+  onClick?: () => void          // Optional click handler for the property value
+  tooltip?: string              // Optional tooltip text
+  entityId?: string             // ID of the entity (for node type)
+  entityType?: 'node' | 'edge'  // Type of graph entity
+  sourceId?: string            // Source node ID (for edge type)
+  targetId?: string            // Target node ID (for edge type)
+  onValueChange?: (newValue: any) => void  // Optional callback when value changes
+  isEditable?: boolean         // Whether this property can be edited
+}
+
+/**
+ * Interface for tracking edges that need updating when a node ID changes
+ */
+interface EdgeToUpdate {
+  originalDynamicId: string;
+  newEdgeId: string;
+  edgeIndex: number;
 }
 
 /**
  * EditablePropertyRow component that supports double-click to edit property values
- * Specifically designed for editing 'description' and entity name fields
+ * This component is used in the graph properties panel to display and edit entity properties
+ *
+ * @component
  */
 const EditablePropertyRow = ({
   name,
@@ -37,6 +52,7 @@ const EditablePropertyRow = ({
   onValueChange,
   isEditable = false
 }: EditablePropertyRowProps) => {
+  // Component state
   const { t } = useTranslation()
   const [isEditing, setIsEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
@@ -44,16 +60,21 @@ const EditablePropertyRow = ({
   const [currentValue, setCurrentValue] = useState(initialValue)
   const inputRef = useRef<HTMLInputElement>(null)
 
-  // Update currentValue when initialValue changes
+  /**
+   * Update currentValue when initialValue changes from parent
+   */
   useEffect(() => {
     setCurrentValue(initialValue)
   }, [initialValue])
 
-  // Initialize edit value when entering edit mode
+  /**
+   * Initialize edit value and focus input when entering edit mode
+   */
   useEffect(() => {
     if (isEditing) {
       setEditValue(String(currentValue))
-      // Focus the input element when entering edit mode
+      // Focus the input element when entering edit mode with a small delay
+      // to ensure the input is rendered before focusing
       setTimeout(() => {
         if (inputRef.current) {
           inputRef.current.focus()
@@ -63,18 +84,30 @@ const EditablePropertyRow = ({
     }
   }, [isEditing, currentValue])
 
+  /**
+   * Get translated property name from i18n
+   * Falls back to the original name if no translation is found
+   */
   const getPropertyNameTranslation = (propName: string) => {
     const translationKey = `graphPanel.propertiesView.node.propertyNames.${propName}`
     const translation = t(translationKey)
     return translation === translationKey ? propName : translation
   }
 
+  /**
+   * Handle double-click event to enter edit mode
+   */
   const handleDoubleClick = () => {
     if (isEditable && !isEditing) {
       setIsEditing(true)
     }
   }
 
+  /**
+   * Handle keyboard events in the input field
+   * - Enter: Save changes
+   * - Escape: Cancel editing
+   */
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
       handleSave()
@@ -83,11 +116,21 @@ const EditablePropertyRow = ({
     }
   }
 
+  /**
+   * Update node in the graph visualization after API update
+   * Handles both property updates and entity ID changes
+   *
+   * @param nodeId - ID of the node to update
+   * @param propertyName - Name of the property being updated
+   * @param newValue - New value for the property
+   */
   const updateGraphNode = async (nodeId: string, propertyName: string, newValue: string) => {
+    // Get graph state from store
     const sigmaInstance = useGraphStore.getState().sigmaInstance
     const sigmaGraph = useGraphStore.getState().sigmaGraph
     const rawGraph = useGraphStore.getState().rawGraph
 
+    // Validate graph state
     if (!sigmaInstance || !sigmaGraph || !rawGraph || !sigmaGraph.hasNode(String(nodeId))) {
       return
     }
@@ -95,29 +138,30 @@ const EditablePropertyRow = ({
     try {
       const nodeAttributes = sigmaGraph.getNodeAttributes(String(nodeId))
 
+      // Special handling for entity_id changes (node renaming)
       if (propertyName === 'entity_id') {
+        // Create new node with updated ID but same attributes
         sigmaGraph.addNode(newValue, { ...nodeAttributes, label: newValue })
-
-        interface EdgeToUpdate {
-          originalDynamicId: string;
-          newEdgeId: string;
-          edgeIndex: number;
-        }
 
         const edgesToUpdate: EdgeToUpdate[] = [];
 
+        // Process all edges connected to this node
         sigmaGraph.forEachEdge(String(nodeId), (edge, attributes, source, target) => {
           const otherNode = source === String(nodeId) ? target : source
           const isOutgoing = source === String(nodeId)
 
-          // 获取原始边的dynamicId，以便后续更新edgeDynamicIdMap
+          // Get original edge dynamic ID for later reference
           const originalEdgeDynamicId = edge
           const edgeIndexInRawGraph = rawGraph.edgeDynamicIdMap[originalEdgeDynamicId]
 
-          // 创建新边并获取新边的ID
-          const newEdgeId = sigmaGraph.addEdge(isOutgoing ? newValue : otherNode, isOutgoing ? otherNode : newValue, attributes)
+          // Create new edge with updated node reference
+          const newEdgeId = sigmaGraph.addEdge(
+            isOutgoing ? newValue : otherNode,
+            isOutgoing ? otherNode : newValue,
+            attributes
+          )
 
-          // 存储需要更新的边信息
+          // Track edges that need updating in the raw graph
           if (edgeIndexInRawGraph !== undefined) {
             edgesToUpdate.push({
               originalDynamicId: originalEdgeDynamicId,
@@ -126,11 +170,14 @@ const EditablePropertyRow = ({
             })
           }
 
+          // Remove the old edge
           sigmaGraph.dropEdge(edge)
         })
 
+        // Remove the old node after all edges are processed
         sigmaGraph.dropNode(String(nodeId))
 
+        // Update node reference in raw graph data
         const nodeIndex = rawGraph.nodeIdMap[String(nodeId)]
         if (nodeIndex !== undefined) {
           rawGraph.nodes[nodeIndex].id = newValue
@@ -139,10 +186,10 @@ const EditablePropertyRow = ({
           rawGraph.nodeIdMap[newValue] = nodeIndex
         }
 
-        // 更新边的引用关系
+        // Update all edge references in raw graph data
         edgesToUpdate.forEach(({ originalDynamicId, newEdgeId, edgeIndex }) => {
-          // 更新边的source和target
           if (rawGraph.edges[edgeIndex]) {
+            // Update source/target references
             if (rawGraph.edges[edgeIndex].source === String(nodeId)) {
               rawGraph.edges[edgeIndex].source = newValue
             }
@@ -150,23 +197,17 @@ const EditablePropertyRow = ({
               rawGraph.edges[edgeIndex].target = newValue
             }
 
-            // 更新dynamicId映射
+            // Update dynamic ID mappings
             rawGraph.edges[edgeIndex].dynamicId = newEdgeId
             delete rawGraph.edgeDynamicIdMap[originalDynamicId]
             rawGraph.edgeDynamicIdMap[newEdgeId] = edgeIndex
           }
         })
 
-        useGraphStore.getState().setSelectedNode(editValue)
+        // Update selected node in store
+        useGraphStore.getState().setSelectedNode(newValue)
       } else {
-        // const updatedAttributes = { ...nodeAttributes }
-        // if (propertyName === 'description') {
-        //   updatedAttributes.description = newValue
-        // }
-        // Object.entries(updatedAttributes).forEach(([key, value]) => {
-        //   sigmaGraph.setNodeAttribute(String(nodeId), key, value)
-        // })
-
+        // For other properties, just update the property in raw graph
         const nodeIndex = rawGraph.nodeIdMap[String(nodeId)]
         if (nodeIndex !== undefined) {
           rawGraph.nodes[nodeIndex].properties[propertyName] = newValue
@@ -178,16 +219,27 @@ const EditablePropertyRow = ({
     }
   }
 
+  /**
+   * Update edge in the graph visualization after API update
+   *
+   * @param sourceId - ID of the source node
+   * @param targetId - ID of the target node
+   * @param propertyName - Name of the property being updated
+   * @param newValue - New value for the property
+   */
   const updateGraphEdge = async (sourceId: string, targetId: string, propertyName: string, newValue: string) => {
+    // Get graph state from store
     const sigmaInstance = useGraphStore.getState().sigmaInstance
     const sigmaGraph = useGraphStore.getState().sigmaGraph
     const rawGraph = useGraphStore.getState().rawGraph
 
+    // Validate graph state
     if (!sigmaInstance || !sigmaGraph || !rawGraph) {
       return
     }
 
     try {
+      // Find the edge between source and target nodes
       const allEdges = sigmaGraph.edges()
       let keyToUse = null
 
@@ -195,6 +247,7 @@ const EditablePropertyRow = ({
         const edgeSource = sigmaGraph.source(edge)
         const edgeTarget = sigmaGraph.target(edge)
 
+        // Match edge in either direction (undirected graph support)
         if ((edgeSource === sourceId && edgeTarget === targetId) ||
             (edgeSource === targetId && edgeTarget === sourceId)) {
           keyToUse = edge
@@ -203,12 +256,14 @@ const EditablePropertyRow = ({
       }
 
       if (keyToUse !== null) {
+        // Special handling for keywords property (updates edge label)
         if(propertyName === 'keywords') {
           sigmaGraph.setEdgeAttribute(keyToUse, 'label', newValue);
         } else {
           sigmaGraph.setEdgeAttribute(keyToUse, propertyName, newValue);
         }
 
+        // Update edge in raw graph data using dynamic ID mapping
         if (keyToUse && rawGraph.edgeDynamicIdMap[keyToUse] !== undefined) {
            const edgeIndex = rawGraph.edgeDynamicIdMap[keyToUse];
            if (rawGraph.edges[edgeIndex]) {
@@ -217,32 +272,39 @@ const EditablePropertyRow = ({
                console.warn(`Edge index ${edgeIndex} found but edge data missing in rawGraph for dynamicId ${entityId}`);
            }
         } else {
-             console.warn(`Could not find edge with dynamicId ${entityId} in rawGraph.edgeDynamicIdMap to update properties.`);
-             if (keyToUse !== null) {
-               const edgeIndexByKey = rawGraph.edgeIdMap[keyToUse];
-               if (edgeIndexByKey !== undefined && rawGraph.edges[edgeIndexByKey]) {
-                   rawGraph.edges[edgeIndexByKey].properties[propertyName] = newValue;
-                   console.log(`Updated rawGraph edge using constructed key ${keyToUse}`);
-               } else {
-                   console.warn(`Could not find edge in rawGraph using key ${keyToUse} either.`);
-               }
-             } else {
-               console.warn('Cannot update edge properties: edge key is null');
-             }
+          // Fallback: try to find edge by key in edge ID map
+          console.warn(`Could not find edge with dynamicId ${entityId} in rawGraph.edgeDynamicIdMap to update properties.`);
+          if (keyToUse !== null) {
+            const edgeIndexByKey = rawGraph.edgeIdMap[keyToUse];
+            if (edgeIndexByKey !== undefined && rawGraph.edges[edgeIndexByKey]) {
+                rawGraph.edges[edgeIndexByKey].properties[propertyName] = newValue;
+                console.log(`Updated rawGraph edge using constructed key ${keyToUse}`);
+            } else {
+                console.warn(`Could not find edge in rawGraph using key ${keyToUse} either.`);
+            }
+          } else {
+            console.warn('Cannot update edge properties: edge key is null');
+          }
         }
       } else {
         console.warn(`Edge not found in sigmaGraph with key ${keyToUse}`);
       }
     } catch (error) {
-      // Log the specific edge key that caused the error if possible
+      // Log the specific edge key that caused the error
       console.error(`Error updating edge ${sourceId}->${targetId} in graph:`, error);
       throw new Error('Failed to update edge in graph')
     }
   }
 
+  /**
+   * Save changes to the property value
+   * Updates both the API and the graph visualization
+   */
   const handleSave = async () => {
+    // Prevent duplicate submissions
     if (isSubmitting) return
 
+    // Skip if value hasn't changed
     if (editValue === String(currentValue)) {
       setIsEditing(false)
       return
@@ -251,30 +313,47 @@ const EditablePropertyRow = ({
     setIsSubmitting(true)
 
     try {
+      // Handle node property updates
       if (entityType === 'node' && entityId) {
         let updatedData = { [name]: editValue }
 
+        // Special handling for entity_id (name) changes
         if (name === 'entity_id') {
+          // Check if the new name already exists
           const exists = await checkEntityNameExists(editValue)
           if (exists) {
             toast.error(t('graphPanel.propertiesView.errors.duplicateName'))
             setIsSubmitting(false)
             return
           }
+          // For entity_id, we update entity_name in the API
           updatedData = { 'entity_name': editValue }
         }
+
+        // Update entity in API
         await updateEntity(entityId, updatedData, true)
+        // Update graph visualization
         await updateGraphNode(entityId, name, editValue)
         toast.success(t('graphPanel.propertiesView.success.entityUpdated'))
-      } else if (entityType === 'edge' && sourceId && targetId) {
+      }
+      // Handle edge property updates
+      else if (entityType === 'edge' && sourceId && targetId) {
         const updatedData = { [name]: editValue }
+        // Update relation in API
         await updateRelation(sourceId, targetId, updatedData)
+        // Update graph visualization
         await updateGraphEdge(sourceId, targetId, name, editValue)
         toast.success(t('graphPanel.propertiesView.success.relationUpdated'))
       }
 
+      // Update local state
       setIsEditing(false)
       setCurrentValue(editValue)
+
+      // Notify parent component if callback provided
+      if (onValueChange) {
+        onValueChange(editValue)
+      }
     } catch (error) {
       console.error('Error updating property:', error)
       toast.error(t('graphPanel.propertiesView.errors.updateFailed'))
@@ -283,21 +362,37 @@ const EditablePropertyRow = ({
     }
   }
 
-  // Always render the property name label and edit icon, regardless of edit state
+  /**
+   * Render the property row with edit functionality
+   * Shows property name, edit icon, and either the editable input or the current value
+   */
   return (
     <div className="flex items-center gap-1" onDoubleClick={handleDoubleClick}>
-      <span className="text-primary/60 tracking-wide whitespace-nowrap">{getPropertyNameTranslation(name)}</span>
-      <div className="group relative">
-        <PencilIcon
-          className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer"
-          onClick={() => setIsEditing(true)}
-        />
-        <div className="absolute left-5 transform -translate-y-full -top-2 bg-primary/90 text-white text-xs px-3 py-1.5 rounded shadow-lg border border-primary/20 opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-[100]">
-          {t('graphPanel.propertiesView.doubleClickToEdit')}
-        </div>
-      </div>:
+      {/* Property name with translation */}
+      <span className="text-primary/60 tracking-wide whitespace-nowrap">
+        {getPropertyNameTranslation(name)}
+      </span>
+
+      {/* Edit icon with tooltip */}
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div>
+              <PencilIcon
+                className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer"
+                onClick={() => setIsEditing(true)}
+              />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            {t('graphPanel.propertiesView.doubleClickToEdit')}
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>:
+
+      {/* Conditional rendering based on edit state */}
       {isEditing ? (
-        // Render input field when editing
+        // Input field for editing
         <Input
           ref={inputRef}
           type="text"
@@ -309,7 +404,7 @@ const EditablePropertyRow = ({
           disabled={isSubmitting}
         />
       ) : (
-        // Render text component when not editing
+        // Text display when not editing
         <div className="flex items-center gap-1">
           <Text
             className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
