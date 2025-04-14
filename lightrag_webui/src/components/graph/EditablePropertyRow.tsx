@@ -19,6 +19,7 @@ interface EditablePropertyRowProps {
   targetId?: string            // Target node ID (for edge type)
   onValueChange?: (newValue: any) => void  // Optional callback when value changes
   isEditable?: boolean         // Whether this property can be edited
+  tooltip?: string             // Optional tooltip to display on hover
 }
 
 /**
@@ -34,7 +35,8 @@ const EditablePropertyRow = ({
   sourceId,
   targetId,
   onValueChange,
-  isEditable = false
+  isEditable = false,
+  tooltip
 }: EditablePropertyRowProps) => {
   const { t } = useTranslation()
   const [isEditing, setIsEditing] = useState(false)
@@ -101,7 +103,11 @@ const EditablePropertyRow = ({
     <div className="flex items-center gap-1">
       <PropertyName name={name} />
       <EditIcon onClick={handleEditClick} />:
-      <PropertyValue value={currentValue} onClick={onClick} />
+      <PropertyValue 
+        value={currentValue} 
+        onClick={onClick} 
+        tooltip={tooltip || (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))}
+      />
       <PropertyEditDialog
         isOpen={isEditing}
         onClose={handleCancel}
