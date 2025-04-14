@@ -41,7 +41,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             logger.error(f"Error getting graph labels: {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=f"Error getting graph labels: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error getting graph labels: {str(e)}"
+            )
 
     @router.get("/graphs", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
@@ -72,7 +74,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         except Exception as e:
             logger.error(f"Error getting knowledge graph for label '{label}': {str(e)}")
             logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=f"Error getting knowledge graph: {str(e)}")
+            raise HTTPException(
+                status_code=500, detail=f"Error getting knowledge graph: {str(e)}"
+            )
 
     @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
     async def check_entity_exists(
@@ -120,7 +124,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "data": result,
             }
         except ValueError as ve:
-            logger.error(f"Validation error updating entity '{request.entity_name}': {str(ve)}")
+            logger.error(
+                f"Validation error updating entity '{request.entity_name}': {str(ve)}"
+            )
             raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
             logger.error(f"Error updating entity '{request.entity_name}': {str(e)}")
@@ -151,10 +157,14 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "data": result,
             }
         except ValueError as ve:
-            logger.error(f"Validation error updating relation between '{request.source_id}' and '{request.target_id}': {str(ve)}")
+            logger.error(
+                f"Validation error updating relation between '{request.source_id}' and '{request.target_id}': {str(ve)}"
+            )
             raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
-            logger.error(f"Error updating relation between '{request.source_id}' and '{request.target_id}': {str(e)}")
+            logger.error(
+                f"Error updating relation between '{request.source_id}' and '{request.target_id}': {str(e)}"
+            )
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error updating relation: {str(e)}"
