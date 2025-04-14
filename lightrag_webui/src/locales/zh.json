@@ -33,7 +33,8 @@
     "guestMode": "无需登陆"
   },
   "common": {
-    "cancel": "取消"
+    "cancel": "取消",
+    "save": "保存"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -236,6 +237,17 @@
       "vectorStorage": "向量存储"
     },
     "propertiesView": {
+      "editProperty": "编辑{{property}}",
+      "editPropertyDescription": "在下方文本区域编辑属性值。",
+      "errors": {
+        "duplicateName": "节点名称已存在",
+        "updateFailed": "更新节点失败",
+        "tryAgainLater": "请稍后重试"
+      },
+      "success": {
+        "entityUpdated": "节点更新成功",
+        "relationUpdated": "关系更新成功"
+      },
       "node": {
         "title": "节点",
         "id": "ID",

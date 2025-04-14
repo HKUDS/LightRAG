@@ -507,3 +507,58 @@ export const loginToServer = async (username: string, password: string): Promise
 
   return response.data;
 }
+
+/**
+ * Updates an entity's properties in the knowledge graph
+ * @param entityName The name of the entity to update
+ * @param updatedData Dictionary containing updated attributes
+ * @param allowRename Whether to allow renaming the entity (default: false)
+ * @returns Promise with the updated entity information
+ */
+export const updateEntity = async (
+  entityName: string,
+  updatedData: Record<string, any>,
+  allowRename: boolean = false
+): Promise<DocActionResponse> => {
+  const response = await axiosInstance.post('/graph/entity/edit', {
+    entity_name: entityName,
+    updated_data: updatedData,
+    allow_rename: allowRename
+  })
+  return response.data
+}
+
+/**
+ * Updates a relation's properties in the knowledge graph
+ * @param sourceEntity The source entity name
+ * @param targetEntity The target entity name
+ * @param updatedData Dictionary containing updated attributes
+ * @returns Promise with the updated relation information
+ */
+export const updateRelation = async (
+  sourceEntity: string,
+  targetEntity: string,
+  updatedData: Record<string, any>
+): Promise<DocActionResponse> => {
+  const response = await axiosInstance.post('/graph/relation/edit', {
+    source_id: sourceEntity,
+    target_id: targetEntity,
+    updated_data: updatedData
+  })
+  return response.data
+}
+
+/**
+ * Checks if an entity name already exists in the knowledge graph
+ * @param entityName The entity name to check
+ * @returns Promise with boolean indicating if the entity exists
+ */
+export const checkEntityNameExists = async (entityName: string): Promise<boolean> => {
+  try {
+    const response = await axiosInstance.get(`/graph/entity/exists?name=${encodeURIComponent(entityName)}`)
+    return response.data.exists
+  } catch (error) {
+    console.error('Error checking entity name:', error)
+    return false
+  }
+}
