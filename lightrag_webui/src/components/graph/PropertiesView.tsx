@@ -207,6 +207,7 @@ const PropertyRow = ({
         sourceId={sourceId}
         targetId={targetId}
         isEditable={true}
+        tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
       />
     )
   }
