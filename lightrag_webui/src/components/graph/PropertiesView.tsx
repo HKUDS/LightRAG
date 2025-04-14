@@ -202,7 +202,6 @@ const PropertyRow = ({
         name={name}
         value={value}
         onClick={onClick}
-        tooltip={tooltip}
         entityId={entityId}
         entityType={entityType}
         sourceId={sourceId}
