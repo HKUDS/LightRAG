@@ -5,7 +5,8 @@ from typing import Any, cast
 
 from .kg.shared_storage import get_graph_db_lock
 from .prompt import GRAPH_FIELD_SEP
-from .utils import compute_mdhash_id, logger, StorageNameSpace
+from .utils import compute_mdhash_id, logger
+from .base import StorageNameSpace
 
 
 async def adelete_by_entity(
