@@ -48,6 +48,40 @@ const PropertyEditDialog = ({
     return translation === translationKey ? name : translation
   }
 
+  // Get textarea configuration based on property name
+  const getTextareaConfig = (propertyName: string) => {
+    switch (propertyName) {
+    case 'description':
+      return {
+        // No rows attribute for description to allow auto-sizing
+        className: 'max-h-[50vh] min-h-[10em] resize-y', // Maximum height 70% of viewport, minimum height ~20 lines, allow vertical resizing
+        style: {
+          height: '70vh', // Set initial height to 70% of viewport
+          minHeight: '20em', // Minimum height ~20 lines
+          resize: 'vertical' as const // Allow vertical resizing, using 'as const' to fix type
+        }
+      };
+    case 'entity_id':
+      return {
+        rows: 2,
+        className: '',
+        style: {}
+      };
+    case 'keywords':
+      return {
+        rows: 4,
+        className: '',
+        style: {}
+      };
+    default:
+      return {
+        rows: 5,
+        className: '',
+        style: {}
+      };
+    }
+  };
+
   const handleSave = () => {
     if (value.trim() !== '') {
       onSave(value)
@@ -71,13 +105,26 @@ const PropertyEditDialog = ({
 
         {/* Multi-line text input using textarea */}
         <div className="grid gap-4 py-4">
-          <textarea
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            rows={5}
-            className="border-input focus-visible:ring-ring flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={isSubmitting}
-          />
+          {(() => {
+            const config = getTextareaConfig(propertyName);
+            return propertyName === 'description' ? (
+              <textarea
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                className={`border-input focus-visible:ring-ring flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${config.className}`}
+                style={config.style}
+                disabled={isSubmitting}
+              />
+            ) : (
+              <textarea
+                value={value}
+                onChange={(e) => setValue(e.target.value)}
+                rows={config.rows}
+                className={`border-input focus-visible:ring-ring flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-sm transition-colors focus-visible:ring-1 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${config.className}`}
+                disabled={isSubmitting}
+              />
+            );
+          })()}
         </div>
 
         <DialogFooter>
