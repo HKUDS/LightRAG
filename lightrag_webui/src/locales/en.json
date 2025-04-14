@@ -33,7 +33,8 @@
     "guestMode": "Login Free"
   },
   "common": {
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "save": "Save"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -156,6 +157,7 @@
       "animal": "Animal",
       "unknown": "Unknown",
       "object": "Object",
+      "group": "Group",
       "technology": "Technology"
     },
     "sideBar": {
@@ -235,6 +237,17 @@
       "vectorStorage": "Vector Storage"
     },
     "propertiesView": {
+      "editProperty": "Edit {{property}}",
+      "editPropertyDescription": "Edit the property value in the text area below.",
+      "errors": {
+        "duplicateName": "Node name already exists",
+        "updateFailed": "Failed to update node",
+        "tryAgainLater": "Please try again later"
+      },
+      "success": {
+        "entityUpdated": "Node updated successfully",
+        "relationUpdated": "Relation updated successfully"
+      },
       "node": {
         "title": "Node",
         "id": "ID",
