@@ -103,9 +103,9 @@ const EditablePropertyRow = ({
     <div className="flex items-center gap-1">
       <PropertyName name={name} />
       <EditIcon onClick={handleEditClick} />:
-      <PropertyValue 
-        value={currentValue} 
-        onClick={onClick} 
+      <PropertyValue
+        value={currentValue}
+        onClick={onClick}
         tooltip={tooltip || (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))}
       />
       <PropertyEditDialog
