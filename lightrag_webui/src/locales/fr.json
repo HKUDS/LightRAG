@@ -33,7 +33,8 @@
     "guestMode": "Mode sans connexion"
   },
   "common": {
-    "cancel": "Annuler"
+    "cancel": "Annuler",
+    "save": "Sauvegarder"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -236,6 +237,8 @@
       "vectorStorage": "Stockage vectoriel"
     },
     "propertiesView": {
+      "editProperty": "Modifier {{property}}",
+      "editPropertyDescription": "Modifiez la valeur de la propriété dans la zone de texte ci-dessous.",
       "errors": {
         "duplicateName": "Le nom du nœud existe déjà",
         "updateFailed": "Échec de la mise à jour du nœud",

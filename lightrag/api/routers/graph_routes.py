@@ -95,7 +95,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             Dict: Updated entity information
         """
         try:
-            print(request.entity_name, request.updated_data, request.allow_rename)
             result = await rag.aedit_entity(
                 entity_name=request.entity_name,
                 updated_data=request.updated_data,

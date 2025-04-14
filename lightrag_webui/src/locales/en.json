@@ -33,7 +33,8 @@
     "guestMode": "Login Free"
   },
   "common": {
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "save": "Save"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -235,12 +236,14 @@
       "vectorStorage": "Vector Storage"
     },
     "propertiesView": {
+      "editProperty": "Edit {{property}}",
+      "editPropertyDescription": "Edit the property value in the text area below.",
       "errors": {
         "duplicateName": "Node name already exists",
         "updateFailed": "Failed to update node",
         "tryAgainLater": "Please try again later"
       },
-      "doubleClickToEdit": "Double click to edit",
+
       "success": {
         "entityUpdated": "Node updated successfully",
         "relationUpdated": "Relation updated successfully"
