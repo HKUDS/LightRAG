@@ -38,14 +38,16 @@ export const EditIcon = ({ onClick }: EditIconProps) => (
 interface PropertyValueProps {
   value: any
   onClick?: () => void
+  tooltip?: string
 }
 
-export const PropertyValue = ({ value, onClick }: PropertyValueProps) => (
+export const PropertyValue = ({ value, onClick, tooltip }: PropertyValueProps) => (
   <div className="flex items-center gap-1">
     <Text
       className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
       tooltipClassName="max-w-80"
       text={value}
+      tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
       side="left"
       onClick={onClick}
     />
