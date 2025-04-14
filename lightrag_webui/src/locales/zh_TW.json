@@ -33,7 +33,8 @@
       "guestMode": "免登入"
     },
     "common": {
-      "cancel": "取消"
+      "cancel": "取消",
+      "save": "儲存"
     },
     "documentPanel": {
       "clearDocuments": {
@@ -236,6 +237,17 @@
         "vectorStorage": "向量儲存"
       },
       "propertiesView": {
+        "editProperty": "編輯{{property}}",
+        "editPropertyDescription": "在下方文字區域編輯屬性值。",
+        "errors": {
+          "duplicateName": "節點名稱已存在",
+          "updateFailed": "更新節點失敗",
+          "tryAgainLater": "請稍後重試"
+        },
+        "success": {
+          "entityUpdated": "節點更新成功",
+          "relationUpdated": "關係更新成功"
+        },
         "node": {
           "title": "節點",
           "id": "ID",
@@ -296,13 +308,14 @@
         "parametersTitle": "參數",
         "parametersDescription": "設定查詢參數",
         "queryMode": "查詢模式",
-        "queryModeTooltip": "選擇檢索策略：\n• Naive：基礎搜尋，無進階技術\n• Local：上下文相關資訊檢索\n• Global：利用全域知識庫\n• Hybrid：結合本地和全域檢索\n• Mix：整合知識圖譜和向量檢索",
+        "queryModeTooltip": "選擇檢索策略：\n• Naive：基礎搜尋，無進階技術\n• Local：上下文相關資訊檢索\n• Global：利用全域知識庫\n• Hybrid：結合本地和全域檢索\n• Mix：整合知識圖譜和向量檢索\n• Bypass：直接傳遞查詢到LLM，不進行檢索",
         "queryModeOptions": {
           "naive": "Naive",
           "local": "Local",
           "global": "Global",
           "hybrid": "Hybrid",
-          "mix": "Mix"
+          "mix": "Mix",
+          "bypass": "Bypass"
         },
         "responseFormat": "回應格式",
         "responseFormatTooltip": "定義回應格式。例如：\n• 多段落\n• 單段落\n• 重點",

@@ -157,6 +157,7 @@
       "animal": "Animal",
       "unknown": "Unknown",
       "object": "Object",
+      "group": "Group",
       "technology": "Technology"
     },
     "sideBar": {
@@ -243,7 +244,6 @@
         "updateFailed": "Failed to update node",
         "tryAgainLater": "Please try again later"
       },
-
       "success": {
         "entityUpdated": "Node updated successfully",
         "relationUpdated": "Relation updated successfully"

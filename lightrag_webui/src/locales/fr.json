@@ -244,7 +244,6 @@
         "updateFailed": "Échec de la mise à jour du nœud",
         "tryAgainLater": "Veuillez réessayer plus tard"
       },
-      "doubleClickToEdit": "Double-cliquez pour modifier",
       "success": {
         "entityUpdated": "Nœud mis à jour avec succès",
         "relationUpdated": "Relation mise à jour avec succès"
