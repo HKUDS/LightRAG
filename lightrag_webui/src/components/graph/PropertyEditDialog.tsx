@@ -5,10 +5,10 @@ import {
   DialogContent,
   DialogHeader,
   DialogTitle,
-  DialogFooter
+  DialogFooter,
+  DialogDescription
 } from '@/components/ui/Dialog'
 import Button from '@/components/ui/Button'
-import Input from '@/components/ui/Input'
 
 interface PropertyEditDialogProps {
   isOpen: boolean
@@ -53,20 +53,20 @@ const PropertyEditDialog = ({
       onSave(value)
       onClose()
     }
-}
+  }
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-md" aria-describedby="property-edit-description">
+      <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>
             {t('graphPanel.propertiesView.editProperty', {
               property: getPropertyNameTranslation(propertyName)
             })}
           </DialogTitle>
-          <p id="property-edit-description" className="text-sm text-muted-foreground">
+          <DialogDescription>
             {t('graphPanel.propertiesView.editPropertyDescription')}
-          </p>
+          </DialogDescription>
         </DialogHeader>
 
         {/* Multi-line text input using textarea */}
