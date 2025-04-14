@@ -3,9 +3,11 @@ This module contains all graph-related routes for the LightRAG API.
 """
 
 from typing import Optional, Dict, Any
+import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 
+from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
 
 router = APIRouter(tags=["graph"])
@@ -34,7 +36,12 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         Returns:
             List[str]: List of graph labels
         """
-        return await rag.get_graph_labels()
+        try:
+            return await rag.get_graph_labels()
+        except Exception as e:
+            logger.error(f"Error getting graph labels: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Error getting graph labels: {str(e)}")
 
     @router.get("/graphs", dependencies=[Depends(combined_auth)])
     async def get_knowledge_graph(
@@ -56,11 +63,16 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         Returns:
             Dict[str, List[str]]: Knowledge graph for label
         """
-        return await rag.get_knowledge_graph(
-            node_label=label,
-            max_depth=max_depth,
-            max_nodes=max_nodes,
-        )
+        try:
+            return await rag.get_knowledge_graph(
+                node_label=label,
+                max_depth=max_depth,
+                max_nodes=max_nodes,
+            )
+        except Exception as e:
+            logger.error(f"Error getting knowledge graph for label '{label}': {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Error getting knowledge graph: {str(e)}")
 
     @router.get("/graph/entity/exists", dependencies=[Depends(combined_auth)])
     async def check_entity_exists(
@@ -79,6 +91,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             exists = await rag.chunk_entity_relation_graph.has_node(name)
             return {"exists": exists}
         except Exception as e:
+            logger.error(f"Error checking entity existence for '{name}': {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error checking entity existence: {str(e)}"
             )
@@ -106,8 +120,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "data": result,
             }
         except ValueError as ve:
+            logger.error(f"Validation error updating entity '{request.entity_name}': {str(ve)}")
             raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
+            logger.error(f"Error updating entity '{request.entity_name}': {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error updating entity: {str(e)}"
             )
@@ -134,8 +151,11 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 "data": result,
             }
         except ValueError as ve:
+            logger.error(f"Validation error updating relation between '{request.source_id}' and '{request.target_id}': {str(ve)}")
             raise HTTPException(status_code=400, detail=str(ve))
         except Exception as e:
+            logger.error(f"Error updating relation between '{request.source_id}' and '{request.target_id}': {str(e)}")
+            logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error updating relation: {str(e)}"
             )
