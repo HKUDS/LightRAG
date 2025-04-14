@@ -1425,7 +1425,6 @@ class LightRAG:
     async def _query_done(self):
         await self.llm_response_cache.index_done_callback()
 
-
     async def aclear_cache(self, modes: list[str] | None = None) -> None:
         """Clear cache data from the LLM response cache storage.
 
@@ -1478,7 +1477,6 @@ class LightRAG:
     def clear_cache(self, modes: list[str] | None = None) -> None:
         """Synchronous version of aclear_cache."""
         return always_get_an_event_loop().run_until_complete(self.aclear_cache(modes))
-
 
     async def get_docs_by_status(
         self, status: DocStatus
@@ -1748,7 +1746,6 @@ class LightRAG:
         except Exception as e:
             logger.error(f"Error while deleting document {doc_id}: {e}")
 
-
     async def adelete_by_entity(self, entity_name: str) -> None:
         """Asynchronously delete an entity and all its relationships.
 
@@ -1756,11 +1753,12 @@ class LightRAG:
             entity_name: Name of the entity to delete
         """
         from .utils_graph import adelete_by_entity
+
         return await adelete_by_entity(
             self.chunk_entity_relation_graph,
             self.entities_vdb,
             self.relationships_vdb,
-            entity_name
+            entity_name,
         )
 
     def delete_by_entity(self, entity_name: str) -> None:
@@ -1775,16 +1773,19 @@ class LightRAG:
             target_entity: Name of the target entity
         """
         from .utils_graph import adelete_by_relation
+
         return await adelete_by_relation(
             self.chunk_entity_relation_graph,
             self.relationships_vdb,
             source_entity,
-            target_entity
+            target_entity,
         )
 
     def delete_by_relation(self, source_entity: str, target_entity: str) -> None:
         loop = always_get_an_event_loop()
-        return loop.run_until_complete(self.adelete_by_relation(source_entity, target_entity))
+        return loop.run_until_complete(
+            self.adelete_by_relation(source_entity, target_entity)
+        )
 
     async def get_processing_status(self) -> dict[str, int]:
         """Get current document processing status counts
@@ -1799,11 +1800,12 @@ class LightRAG:
     ) -> dict[str, str | None | dict[str, str]]:
         """Get detailed information of an entity"""
         from .utils_graph import get_entity_info
+
         return await get_entity_info(
             self.chunk_entity_relation_graph,
             self.entities_vdb,
             entity_name,
-            include_vector_data
+            include_vector_data,
         )
 
     async def get_relation_info(
@@ -1811,12 +1813,13 @@ class LightRAG:
     ) -> dict[str, str | None | dict[str, str]]:
         """Get detailed information of a relationship"""
         from .utils_graph import get_relation_info
+
         return await get_relation_info(
             self.chunk_entity_relation_graph,
             self.relationships_vdb,
             src_entity,
             tgt_entity,
-            include_vector_data
+            include_vector_data,
         )
 
     async def aedit_entity(
@@ -1835,13 +1838,14 @@ class LightRAG:
             Dictionary containing updated entity information
         """
         from .utils_graph import aedit_entity
+
         return await aedit_entity(
             self.chunk_entity_relation_graph,
             self.entities_vdb,
             self.relationships_vdb,
             entity_name,
             updated_data,
-            allow_rename
+            allow_rename,
         )
 
     def edit_entity(
@@ -1868,13 +1872,14 @@ class LightRAG:
             Dictionary containing updated relation information
         """
         from .utils_graph import aedit_relation
+
         return await aedit_relation(
             self.chunk_entity_relation_graph,
             self.entities_vdb,
             self.relationships_vdb,
             source_entity,
             target_entity,
-            updated_data
+            updated_data,
         )
 
     def edit_relation(
@@ -1900,12 +1905,13 @@ class LightRAG:
             Dictionary containing created entity information
         """
         from .utils_graph import acreate_entity
+
         return await acreate_entity(
             self.chunk_entity_relation_graph,
             self.entities_vdb,
             self.relationships_vdb,
             entity_name,
-            entity_data
+            entity_data,
         )
 
     def create_entity(
@@ -1930,13 +1936,14 @@ class LightRAG:
             Dictionary containing created relation information
         """
         from .utils_graph import acreate_relation
+
         return await acreate_relation(
             self.chunk_entity_relation_graph,
             self.entities_vdb,
             self.relationships_vdb,
             source_entity,
             target_entity,
-            relation_data
+            relation_data,
         )
 
     def create_relation(
@@ -1975,6 +1982,7 @@ class LightRAG:
             Dictionary containing the merged entity information
         """
         from .utils_graph import amerge_entities
+
         return await amerge_entities(
             self.chunk_entity_relation_graph,
             self.entities_vdb,
@@ -1982,7 +1990,7 @@ class LightRAG:
             source_entities,
             target_entity,
             merge_strategy,
-            target_entity_data
+            target_entity_data,
         )
 
     def merge_entities(
@@ -2018,14 +2026,14 @@ class LightRAG:
             include_vector_data: Whether to include data from the vector database.
         """
         from .utils import aexport_data as utils_aexport_data
-        
+
         await utils_aexport_data(
             self.chunk_entity_relation_graph,
             self.entities_vdb,
             self.relationships_vdb,
             output_path,
             file_format,
-            include_vector_data
+            include_vector_data,
         )
 
     def export_data(

@@ -903,7 +903,7 @@ async def aexport_data(
 ) -> None:
     """
     Asynchronously exports all entities, relations, and relationships to various formats.
-    
+
     Args:
         chunk_entity_relation_graph: Graph storage instance for entities and relations
         entities_vdb: Vector database storage for entities
@@ -927,22 +927,24 @@ async def aexport_data(
         # Get entity information from graph
         node_data = await chunk_entity_relation_graph.get_node(entity_name)
         source_id = node_data.get("source_id") if node_data else None
-        
+
         entity_info = {
             "graph_data": node_data,
             "source_id": source_id,
         }
-        
+
         # Optional: Get vector database information
         if include_vector_data:
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             vector_data = await entities_vdb.get_by_id(entity_id)
             entity_info["vector_data"] = vector_data
-            
+
         entity_row = {
             "entity_name": entity_name,
             "source_id": source_id,
-            "graph_data": str(entity_info["graph_data"]),  # Convert to string to ensure compatibility
+            "graph_data": str(
+                entity_info["graph_data"]
+            ),  # Convert to string to ensure compatibility
         }
         if include_vector_data and "vector_data" in entity_info:
             entity_row["vector_data"] = str(entity_info["vector_data"])
@@ -963,18 +965,18 @@ async def aexport_data(
                     src_entity, tgt_entity
                 )
                 source_id = edge_data.get("source_id") if edge_data else None
-                
+
                 relation_info = {
                     "graph_data": edge_data,
                     "source_id": source_id,
                 }
-                
+
                 # Optional: Get vector database information
                 if include_vector_data:
                     rel_id = compute_mdhash_id(src_entity + tgt_entity, prefix="rel-")
                     vector_data = await relationships_vdb.get_by_id(rel_id)
                     relation_info["vector_data"] = vector_data
-                
+
                 relation_row = {
                     "src_entity": src_entity,
                     "tgt_entity": tgt_entity,
@@ -1010,9 +1012,7 @@ async def aexport_data(
             # Relations
             if relations_data:
                 csvfile.write("# RELATIONS\n")
-                writer = csv.DictWriter(
-                    csvfile, fieldnames=relations_data[0].keys()
-                )
+                writer = csv.DictWriter(csvfile, fieldnames=relations_data[0].keys())
                 writer.writeheader()
                 writer.writerows(relations_data)
                 csvfile.write("\n\n")
@@ -1029,17 +1029,13 @@ async def aexport_data(
     elif file_format == "excel":
         # Excel export
         import pandas as pd
-        
-        entities_df = (
-            pd.DataFrame(entities_data) if entities_data else pd.DataFrame()
-        )
+
+        entities_df = pd.DataFrame(entities_data) if entities_data else pd.DataFrame()
         relations_df = (
             pd.DataFrame(relations_data) if relations_data else pd.DataFrame()
         )
         relationships_df = (
-            pd.DataFrame(relationships_data)
-            if relationships_data
-            else pd.DataFrame()
+            pd.DataFrame(relationships_data) if relationships_data else pd.DataFrame()
         )
 
         with pd.ExcelWriter(output_path, engine="xlsxwriter") as writer:
@@ -1063,9 +1059,7 @@ async def aexport_data(
                 # Write header
                 mdfile.write("| " + " | ".join(entities_data[0].keys()) + " |\n")
                 mdfile.write(
-                    "| "
-                    + " | ".join(["---"] * len(entities_data[0].keys()))
-                    + " |\n"
+                    "| " + " | ".join(["---"] * len(entities_data[0].keys())) + " |\n"
                 )
 
                 # Write rows
@@ -1083,17 +1077,13 @@ async def aexport_data(
                 # Write header
                 mdfile.write("| " + " | ".join(relations_data[0].keys()) + " |\n")
                 mdfile.write(
-                    "| "
-                    + " | ".join(["---"] * len(relations_data[0].keys()))
-                    + " |\n"
+                    "| " + " | ".join(["---"] * len(relations_data[0].keys())) + " |\n"
                 )
 
                 # Write rows
                 for relation in relations_data:
                     mdfile.write(
-                        "| "
-                        + " | ".join(str(v) for v in relation.values())
-                        + " |\n"
+                        "| " + " | ".join(str(v) for v in relation.values()) + " |\n"
                     )
                 mdfile.write("\n\n")
             else:
@@ -1103,9 +1093,7 @@ async def aexport_data(
             mdfile.write("## Relationships\n\n")
             if relationships_data:
                 # Write header
-                mdfile.write(
-                    "| " + " | ".join(relationships_data[0].keys()) + " |\n"
-                )
+                mdfile.write("| " + " | ".join(relationships_data[0].keys()) + " |\n")
                 mdfile.write(
                     "| "
                     + " | ".join(["---"] * len(relationships_data[0].keys()))
@@ -1160,9 +1148,7 @@ async def aexport_data(
                     k: max(len(k), max(len(str(r[k])) for r in relations_data))
                     for k in relations_data[0]
                 }
-                header = "  ".join(
-                    k.ljust(col_widths[k]) for k in relations_data[0]
-                )
+                header = "  ".join(k.ljust(col_widths[k]) for k in relations_data[0])
                 txtfile.write(header + "\n")
                 txtfile.write("-" * len(header) + "\n")
 
@@ -1221,7 +1207,7 @@ def export_data(
 ) -> None:
     """
     Synchronously exports all entities, relations, and relationships to various formats.
-    
+
     Args:
         chunk_entity_relation_graph: Graph storage instance for entities and relations
         entities_vdb: Vector database storage for entities
@@ -1247,7 +1233,7 @@ def export_data(
             relationships_vdb,
             output_path,
             file_format,
-            include_vector_data
+            include_vector_data,
         )
     )
 
