@@ -16,10 +16,12 @@ const PropertiesView = () => {
   const focusedNode = useGraphStore.use.focusedNode()
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
+  const graphDataVersion = useGraphStore.use.graphDataVersion()
 
   const [currentElement, setCurrentElement] = useState<NodeType | EdgeType | null>(null)
   const [currentType, setCurrentType] = useState<'node' | 'edge' | null>(null)
 
+  // This effect will run when selection changes or when graph data is updated
   useEffect(() => {
     let type: 'node' | 'edge' | null = null
     let element: RawNodeType | RawEdgeType | null = null
@@ -53,6 +55,7 @@ const PropertiesView = () => {
     selectedNode,
     focusedEdge,
     selectedEdge,
+    graphDataVersion, // Add dependency on graphDataVersion to refresh when data changes
     setCurrentElement,
     setCurrentType,
     getNode,
