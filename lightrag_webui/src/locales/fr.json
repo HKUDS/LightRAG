@@ -266,7 +266,9 @@
           "entity_type": "Type",
           "source_id": "ID source",
           "Neighbour": "Voisin",
-          "file_path": "Source"
+          "file_path": "Source",
+          "keywords": "Keys",
+          "weight": "Poids"
         }
       },
       "edge": {

@@ -266,7 +266,9 @@
           "entity_type": "النوع",
           "source_id": "معرف المصدر",
           "Neighbour": "الجار",
-          "file_path": "المصدر"
+          "file_path": "المصدر",
+          "keywords": "الكلمات الرئيسية",
+          "weight": "الوزن"
         }
       },
       "edge": {

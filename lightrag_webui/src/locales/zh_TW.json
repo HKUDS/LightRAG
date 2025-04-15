@@ -266,8 +266,10 @@
             "entity_type": "類型",
             "source_id": "來源ID",
             "Neighbour": "鄰接",
-            "file_path": "來源"
-          }
+            "file_path": "來源",
+            "keywords": "Keys",
+            "weight": "權重"
+            }
         },
         "edge": {
           "title": "關係",

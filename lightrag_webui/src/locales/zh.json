@@ -266,7 +266,10 @@
           "entity_type": "类型",
           "source_id": "信源ID",
           "Neighbour": "邻接",
-          "file_path": "信源"
+          "file_path": "信源",
+          "keywords": "Keys",
+          "weight": "权重"
+
         }
       },
       "edge": {
