@@ -116,7 +116,7 @@ const EditablePropertyRow = ({
   }
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex items-center gap-1 overflow-hidden">
       <PropertyName name={name} />
       <EditIcon onClick={handleEditClick} />:
       <PropertyValue
