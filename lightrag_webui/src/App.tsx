@@ -76,7 +76,7 @@ function App() {
     if (!healthCheckInitializedRef.current) {
       healthCheckInitializedRef.current = true;
       // Immediate health check on first load
-      // performHealthCheck();
+      performHealthCheck();
     }
 
     // Set interval for periodic execution
