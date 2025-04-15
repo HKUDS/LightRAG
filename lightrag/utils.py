@@ -731,6 +731,9 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         hashing_kv: The key-value storage for caching
         cache_data: The cache data to save
     """
+    if not hashing_kv.global_config.get("enable_llm_cache"):
+        return
+
     # Skip if storage is None or content is a streaming response
     if hashing_kv is None or not cache_data.content:
         return
