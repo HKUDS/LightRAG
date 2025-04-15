@@ -311,10 +311,10 @@ class Neo4JStorage(BaseGraphStorage):
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         """
         Retrieve multiple nodes in one query using UNWIND.
-        
+
         Args:
             node_ids: List of node entity IDs to fetch.
-            
+
         Returns:
             A dictionary mapping each node_id to its node data (or None if not found).
         """
@@ -334,7 +334,9 @@ class Neo4JStorage(BaseGraphStorage):
                 node_dict = dict(node)
                 # Remove the 'base' label if present in a 'labels' property
                 if "labels" in node_dict:
-                    node_dict["labels"] = [label for label in node_dict["labels"] if label != "base"]
+                    node_dict["labels"] = [
+                        label for label in node_dict["labels"] if label != "base"
+                    ]
                 nodes[entity_id] = node_dict
             await result.consume()  # Make sure to consume the result fully
             return nodes
@@ -385,12 +387,12 @@ class Neo4JStorage(BaseGraphStorage):
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """
         Retrieve the degree for multiple nodes in a single query using UNWIND.
-        
+
         Args:
             node_ids: List of node labels (entity_id values) to look up.
-        
+
         Returns:
-            A dictionary mapping each node_id to its degree (number of relationships). 
+            A dictionary mapping each node_id to its degree (number of relationships).
             If a node is not found, its degree will be set to 0.
         """
         async with self._driver.session(
@@ -407,13 +409,13 @@ class Neo4JStorage(BaseGraphStorage):
                 entity_id = record["entity_id"]
                 degrees[entity_id] = record["degree"]
             await result.consume()  # Ensure result is fully consumed
-            
+
             # For any node_id that did not return a record, set degree to 0.
             for nid in node_ids:
                 if nid not in degrees:
                     logger.warning(f"No node found with label '{nid}'")
                     degrees[nid] = 0
-            
+
             logger.debug(f"Neo4j batch node degree query returned: {degrees}")
             return degrees
 
@@ -436,25 +438,27 @@ class Neo4JStorage(BaseGraphStorage):
 
         degrees = int(src_degree) + int(trg_degree)
         return degrees
-    
-    async def edge_degrees_batch(self, edge_pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
         """
         Calculate the combined degree for each edge (sum of the source and target node degrees)
         in batch using the already implemented node_degrees_batch.
-        
+
         Args:
             edge_pairs: List of (src, tgt) tuples.
-        
+
         Returns:
             A dictionary mapping each (src, tgt) tuple to the sum of their degrees.
         """
         # Collect unique node IDs from all edge pairs.
         unique_node_ids = {src for src, _ in edge_pairs}
         unique_node_ids.update({tgt for _, tgt in edge_pairs})
-        
+
         # Get degrees for all nodes in one go.
         degrees = await self.node_degrees_batch(list(unique_node_ids))
-        
+
         # Sum up degrees for each edge pair.
         edge_degrees = {}
         for src, tgt in edge_pairs:
@@ -547,13 +551,15 @@ class Neo4JStorage(BaseGraphStorage):
             )
             raise
 
-    async def get_edges_batch(self, pairs: list[dict[str, str]]) -> dict[tuple[str, str], dict]:
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
         """
         Retrieve edge properties for multiple (src, tgt) pairs in one query.
-        
+
         Args:
             pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
-        
+
         Returns:
             A dictionary mapping (src, tgt) tuples to their edge properties.
         """
@@ -574,13 +580,23 @@ class Neo4JStorage(BaseGraphStorage):
                 if edges and len(edges) > 0:
                     edge_props = edges[0]  # choose the first if multiple exist
                     # Ensure required keys exist with defaults
-                    for key, default in {"weight": 0.0, "source_id": None, "description": None, "keywords": None}.items():
+                    for key, default in {
+                        "weight": 0.0,
+                        "source_id": None,
+                        "description": None,
+                        "keywords": None,
+                    }.items():
                         if key not in edge_props:
                             edge_props[key] = default
                     edges_dict[(src, tgt)] = edge_props
                 else:
                     # No edge found – set default edge properties
-                    edges_dict[(src, tgt)] = {"weight": 0.0, "source_id": None, "description": None, "keywords": None}
+                    edges_dict[(src, tgt)] = {
+                        "weight": 0.0,
+                        "source_id": None,
+                        "description": None,
+                        "keywords": None,
+                    }
             await result.consume()
             return edges_dict
 
@@ -644,17 +660,21 @@ class Neo4JStorage(BaseGraphStorage):
             logger.error(f"Error in get_node_edges for {source_node_id}: {str(e)}")
             raise
 
-    async def get_nodes_edges_batch(self, node_ids: list[str]) -> dict[str, list[tuple[str, str]]]:
+    async def get_nodes_edges_batch(
+        self, node_ids: list[str]
+    ) -> dict[str, list[tuple[str, str]]]:
         """
         Batch retrieve edges for multiple nodes in one query using UNWIND.
-        
+
         Args:
             node_ids: List of node IDs (entity_id) for which to retrieve edges.
-            
+
         Returns:
             A dictionary mapping each node ID to its list of edge tuples (source, target).
         """
-        async with self._driver.session(database=self._DATABASE, default_access_mode="READ") as session:
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
             query = """
                 UNWIND $node_ids AS id
                 MATCH (n:base {entity_id: id})

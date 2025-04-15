@@ -510,35 +510,66 @@ async def test_graph_batch_operations(storage):
         assert node1_id in nodes_dict, f"{node1_id} 应在返回结果中"
         assert node2_id in nodes_dict, f"{node2_id} 应在返回结果中"
         assert node3_id in nodes_dict, f"{node3_id} 应在返回结果中"
-        assert nodes_dict[node1_id]["description"] == node1_data["description"], f"{node1_id} 描述不匹配"
-        assert nodes_dict[node2_id]["description"] == node2_data["description"], f"{node2_id} 描述不匹配"
-        assert nodes_dict[node3_id]["description"] == node3_data["description"], f"{node3_id} 描述不匹配"
+        assert (
+            nodes_dict[node1_id]["description"] == node1_data["description"]
+        ), f"{node1_id} 描述不匹配"
+        assert (
+            nodes_dict[node2_id]["description"] == node2_data["description"]
+        ), f"{node2_id} 描述不匹配"
+        assert (
+            nodes_dict[node3_id]["description"] == node3_data["description"]
+        ), f"{node3_id} 描述不匹配"
 
         # 3. 测试 node_degrees_batch - 批量获取多个节点的度数
         print("== 测试 node_degrees_batch")
         node_degrees = await storage.node_degrees_batch(node_ids)
         print(f"批量获取节点度数结果: {node_degrees}")
-        assert len(node_degrees) == 3, f"应返回3个节点的度数，实际返回 {len(node_degrees)} 个"
+        assert (
+            len(node_degrees) == 3
+        ), f"应返回3个节点的度数，实际返回 {len(node_degrees)} 个"
         assert node1_id in node_degrees, f"{node1_id} 应在返回结果中"
         assert node2_id in node_degrees, f"{node2_id} 应在返回结果中"
         assert node3_id in node_degrees, f"{node3_id} 应在返回结果中"
-        assert node_degrees[node1_id] == 3, f"{node1_id} 度数应为3，实际为 {node_degrees[node1_id]}"
-        assert node_degrees[node2_id] == 2, f"{node2_id} 度数应为2，实际为 {node_degrees[node2_id]}"
-        assert node_degrees[node3_id] == 3, f"{node3_id} 度数应为3，实际为 {node_degrees[node3_id]}"
+        assert (
+            node_degrees[node1_id] == 3
+        ), f"{node1_id} 度数应为3，实际为 {node_degrees[node1_id]}"
+        assert (
+            node_degrees[node2_id] == 2
+        ), f"{node2_id} 度数应为2，实际为 {node_degrees[node2_id]}"
+        assert (
+            node_degrees[node3_id] == 3
+        ), f"{node3_id} 度数应为3，实际为 {node_degrees[node3_id]}"
 
         # 4. 测试 edge_degrees_batch - 批量获取多个边的度数
         print("== 测试 edge_degrees_batch")
         edges = [(node1_id, node2_id), (node2_id, node3_id), (node3_id, node4_id)]
         edge_degrees = await storage.edge_degrees_batch(edges)
         print(f"批量获取边度数结果: {edge_degrees}")
-        assert len(edge_degrees) == 3, f"应返回3条边的度数，实际返回 {len(edge_degrees)} 条"
-        assert (node1_id, node2_id) in edge_degrees, f"边 {node1_id} -> {node2_id} 应在返回结果中"
-        assert (node2_id, node3_id) in edge_degrees, f"边 {node2_id} -> {node3_id} 应在返回结果中"
-        assert (node3_id, node4_id) in edge_degrees, f"边 {node3_id} -> {node4_id} 应在返回结果中"
+        assert (
+            len(edge_degrees) == 3
+        ), f"应返回3条边的度数，实际返回 {len(edge_degrees)} 条"
+        assert (
+            node1_id,
+            node2_id,
+        ) in edge_degrees, f"边 {node1_id} -> {node2_id} 应在返回结果中"
+        assert (
+            node2_id,
+            node3_id,
+        ) in edge_degrees, f"边 {node2_id} -> {node3_id} 应在返回结果中"
+        assert (
+            node3_id,
+            node4_id,
+        ) in edge_degrees, f"边 {node3_id} -> {node4_id} 应在返回结果中"
         # 验证边的度数是否正确（源节点度数 + 目标节点度数）
-        assert edge_degrees[(node1_id, node2_id)] == 5, f"边 {node1_id} -> {node2_id} 度数应为5，实际为 {edge_degrees[(node1_id, node2_id)]}"
-        assert edge_degrees[(node2_id, node3_id)] == 5, f"边 {node2_id} -> {node3_id} 度数应为5，实际为 {edge_degrees[(node2_id, node3_id)]}"
-        assert edge_degrees[(node3_id, node4_id)] == 5, f"边 {node3_id} -> {node4_id} 度数应为5，实际为 {edge_degrees[(node3_id, node4_id)]}"
+        assert (
+            edge_degrees[(node1_id, node2_id)] == 5
+        ), f"边 {node1_id} -> {node2_id} 度数应为5，实际为 {edge_degrees[(node1_id, node2_id)]}"
+        assert (
+            edge_degrees[(node2_id, node3_id)] == 5
+        ), f"边 {node2_id} -> {node3_id} 度数应为5，实际为 {edge_degrees[(node2_id, node3_id)]}"
+        assert (
+            edge_degrees[(node3_id, node4_id)] == 5
+        ), f"边 {node3_id} -> {node4_id} 度数应为5，实际为 {edge_degrees[(node3_id, node4_id)]}"
 
         # 5. 测试 get_edges_batch - 批量获取多个边的属性
         print("== 测试 get_edges_batch")
@@ -547,28 +578,54 @@ async def test_graph_batch_operations(storage):
         edges_dict = await storage.get_edges_batch(edge_dicts)
         print(f"批量获取边属性结果: {edges_dict.keys()}")
         assert len(edges_dict) == 3, f"应返回3条边的属性，实际返回 {len(edges_dict)} 条"
-        assert (node1_id, node2_id) in edges_dict, f"边 {node1_id} -> {node2_id} 应在返回结果中"
-        assert (node2_id, node3_id) in edges_dict, f"边 {node2_id} -> {node3_id} 应在返回结果中"
-        assert (node3_id, node4_id) in edges_dict, f"边 {node3_id} -> {node4_id} 应在返回结果中"
-        assert edges_dict[(node1_id, node2_id)]["relationship"] == edge1_data["relationship"], f"边 {node1_id} -> {node2_id} 关系不匹配"
-        assert edges_dict[(node2_id, node3_id)]["relationship"] == edge2_data["relationship"], f"边 {node2_id} -> {node3_id} 关系不匹配"
-        assert edges_dict[(node3_id, node4_id)]["relationship"] == edge5_data["relationship"], f"边 {node3_id} -> {node4_id} 关系不匹配"
+        assert (
+            node1_id,
+            node2_id,
+        ) in edges_dict, f"边 {node1_id} -> {node2_id} 应在返回结果中"
+        assert (
+            node2_id,
+            node3_id,
+        ) in edges_dict, f"边 {node2_id} -> {node3_id} 应在返回结果中"
+        assert (
+            node3_id,
+            node4_id,
+        ) in edges_dict, f"边 {node3_id} -> {node4_id} 应在返回结果中"
+        assert (
+            edges_dict[(node1_id, node2_id)]["relationship"]
+            == edge1_data["relationship"]
+        ), f"边 {node1_id} -> {node2_id} 关系不匹配"
+        assert (
+            edges_dict[(node2_id, node3_id)]["relationship"]
+            == edge2_data["relationship"]
+        ), f"边 {node2_id} -> {node3_id} 关系不匹配"
+        assert (
+            edges_dict[(node3_id, node4_id)]["relationship"]
+            == edge5_data["relationship"]
+        ), f"边 {node3_id} -> {node4_id} 关系不匹配"
 
         # 6. 测试 get_nodes_edges_batch - 批量获取多个节点的所有边
         print("== 测试 get_nodes_edges_batch")
         nodes_edges = await storage.get_nodes_edges_batch([node1_id, node3_id])
         print(f"批量获取节点边结果: {nodes_edges.keys()}")
-        assert len(nodes_edges) == 2, f"应返回2个节点的边，实际返回 {len(nodes_edges)} 个"
+        assert (
+            len(nodes_edges) == 2
+        ), f"应返回2个节点的边，实际返回 {len(nodes_edges)} 个"
         assert node1_id in nodes_edges, f"{node1_id} 应在返回结果中"
         assert node3_id in nodes_edges, f"{node3_id} 应在返回结果中"
-        assert len(nodes_edges[node1_id]) == 3, f"{node1_id} 应有3条边，实际有 {len(nodes_edges[node1_id])} 条"
-        assert len(nodes_edges[node3_id]) == 3, f"{node3_id} 应有3条边，实际有 {len(nodes_edges[node3_id])} 条"
+        assert (
+            len(nodes_edges[node1_id]) == 3
+        ), f"{node1_id} 应有3条边，实际有 {len(nodes_edges[node1_id])} 条"
+        assert (
+            len(nodes_edges[node3_id]) == 3
+        ), f"{node3_id} 应有3条边，实际有 {len(nodes_edges[node3_id])} 条"
 
         # 7. 清理数据
         print("== 测试 drop")
         result = await storage.drop()
         print(f"清理结果: {result}")
-        assert result["status"] == "success", f"清理应成功，实际状态为 {result['status']}"
+        assert (
+            result["status"] == "success"
+        ), f"清理应成功，实际状态为 {result['status']}"
 
         print("\n批量操作测试完成")
         return True
@@ -630,7 +687,7 @@ async def main():
             if basic_result:
                 ASCIIColors.cyan("\n=== 开始高级测试 ===")
                 advanced_result = await test_graph_advanced(storage)
-                
+
                 if advanced_result:
                     ASCIIColors.cyan("\n=== 开始批量操作测试 ===")
                     await test_graph_batch_operations(storage)

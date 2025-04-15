@@ -3,7 +3,7 @@ import { useGraphStore } from '@/stores/graph'
 /**
  * Update node in the graph visualization
  * This function is now a wrapper around the store's updateNodeAndSelect method
- * 
+ *
  * @param nodeId - ID of the node to update
  * @param entityId - ID of the entity
  * @param propertyName - Name of the property being updated

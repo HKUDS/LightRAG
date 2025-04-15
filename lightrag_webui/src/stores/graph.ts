@@ -136,7 +136,7 @@ interface GraphState {
   // Version counter to trigger data refresh
   graphDataVersion: number
   incrementGraphDataVersion: () => void
-  
+
   // Methods for updating graph elements and UI state together
   updateNodeAndSelect: (nodeId: string, entityId: string, propertyName: string, newValue: string) => Promise<void>
   updateEdgeAndSelect: (edgeId: string, dynamicId: string, sourceId: string, targetId: string, propertyName: string, newValue: string) => Promise<void>
@@ -252,40 +252,40 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
     // Get current state
     const state = get()
     const { sigmaGraph, rawGraph } = state
-    
+
     // Validate graph state
     if (!sigmaGraph || !rawGraph || !sigmaGraph.hasNode(nodeId)) {
       return
     }
-    
+
     try {
       const nodeAttributes = sigmaGraph.getNodeAttributes(nodeId)
-      
+
       console.log('updateNodeAndSelect', nodeId, entityId, propertyName, newValue)
-      
+
       // For entity_id changes (node renaming) with NetworkX graph storage
       if ((nodeId === entityId) && (propertyName === 'entity_id')) {
         // Create new node with updated ID but same attributes
         sigmaGraph.addNode(newValue, { ...nodeAttributes, label: newValue })
-        
+
         const edgesToUpdate: EdgeToUpdate[] = []
-        
+
         // Process all edges connected to this node
         sigmaGraph.forEachEdge(nodeId, (edge, attributes, source, target) => {
           const otherNode = source === nodeId ? target : source
           const isOutgoing = source === nodeId
-          
+
           // Get original edge dynamic ID for later reference
           const originalEdgeDynamicId = edge
           const edgeIndexInRawGraph = rawGraph.edgeDynamicIdMap[originalEdgeDynamicId]
-          
+
           // Create new edge with updated node reference
           const newEdgeId = sigmaGraph.addEdge(
             isOutgoing ? newValue : otherNode,
             isOutgoing ? otherNode : newValue,
             attributes
           )
-          
+
           // Track edges that need updating in the raw graph
           if (edgeIndexInRawGraph !== undefined) {
             edgesToUpdate.push({
@@ -294,14 +294,14 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
               edgeIndex: edgeIndexInRawGraph
             })
           }
-          
+
           // Remove the old edge
           sigmaGraph.dropEdge(edge)
         })
-        
+
         // Remove the old node after all edges are processed
         sigmaGraph.dropNode(nodeId)
-        
+
         // Update node reference in raw graph data
         const nodeIndex = rawGraph.nodeIdMap[nodeId]
         if (nodeIndex !== undefined) {
@@ -311,7 +311,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
           delete rawGraph.nodeIdMap[nodeId]
           rawGraph.nodeIdMap[newValue] = nodeIndex
         }
-        
+
         // Update all edge references in raw graph data
         edgesToUpdate.forEach(({ originalDynamicId, newEdgeId, edgeIndex }) => {
           if (rawGraph.edges[edgeIndex]) {
@@ -322,14 +322,14 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
             if (rawGraph.edges[edgeIndex].target === nodeId) {
               rawGraph.edges[edgeIndex].target = newValue
             }
-            
+
             // Update dynamic ID mappings
             rawGraph.edges[edgeIndex].dynamicId = newEdgeId
             delete rawGraph.edgeDynamicIdMap[originalDynamicId]
             rawGraph.edgeDynamicIdMap[newEdgeId] = edgeIndex
           }
         })
-        
+
         // Update selected node in store
         set({ selectedNode: newValue, moveToSelectedNode: true })
       } else {
@@ -342,7 +342,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
             sigmaGraph.setNodeAttribute(String(nodeId), 'label', newValue)
           }
         }
-        
+
         // Trigger a re-render by incrementing the version counter
         set((state) => ({ graphDataVersion: state.graphDataVersion + 1 }))
       }
@@ -351,17 +351,17 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       throw new Error('Failed to update node in graph')
     }
   },
-  
+
   updateEdgeAndSelect: async (edgeId: string, dynamicId: string, sourceId: string, targetId: string, propertyName: string, newValue: string) => {
     // Get current state
     const state = get()
     const { sigmaGraph, rawGraph } = state
-    
+
     // Validate graph state
     if (!sigmaGraph || !rawGraph) {
       return
     }
-    
+
     try {
       const edgeIndex = rawGraph.edgeIdMap[String(edgeId)]
       if (edgeIndex !== undefined && rawGraph.edges[edgeIndex]) {
@@ -370,10 +370,10 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
           sigmaGraph.setEdgeAttribute(dynamicId, 'label', newValue)
         }
       }
-      
+
       // Trigger a re-render by incrementing the version counter
       set((state) => ({ graphDataVersion: state.graphDataVersion + 1 }))
-      
+
       // Update selected edge in store to ensure UI reflects changes
       set({ selectedEdge: dynamicId })
     } catch (error) {
