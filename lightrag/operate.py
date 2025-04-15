@@ -859,20 +859,22 @@ async def kg_query(
             .strip()
         )
 
-    # Save to cache
-    await save_to_cache(
-        hashing_kv,
-        CacheData(
-            args_hash=args_hash,
-            content=response,
-            prompt=query,
-            quantized=quantized,
-            min_val=min_val,
-            max_val=max_val,
-            mode=query_param.mode,
-            cache_type="query",
-        ),
-    )
+    if hashing_kv.global_config.get("enable_llm_cache"):
+        # Save to cache
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=response,
+                prompt=query,
+                quantized=quantized,
+                min_val=min_val,
+                max_val=max_val,
+                mode=query_param.mode,
+                cache_type="query",
+            ),
+        )
+
     return response
 
 
@@ -989,19 +991,21 @@ async def extract_keywords_only(
             "high_level_keywords": hl_keywords,
             "low_level_keywords": ll_keywords,
         }
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=json.dumps(cache_data),
-                prompt=text,
-                quantized=quantized,
-                min_val=min_val,
-                max_val=max_val,
-                mode=param.mode,
-                cache_type="keywords",
-            ),
-        )
+        if hashing_kv.global_config.get("enable_llm_cache"):
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=json.dumps(cache_data),
+                    prompt=text,
+                    quantized=quantized,
+                    min_val=min_val,
+                    max_val=max_val,
+                    mode=param.mode,
+                    cache_type="keywords",
+                ),
+            )
+
     return hl_keywords, ll_keywords
 
 
@@ -1205,20 +1209,21 @@ async def mix_kg_vector_query(
             .strip()
         )
 
-        # 7. Save cache - Only cache after collecting complete response
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=response,
-                prompt=query,
-                quantized=quantized,
-                min_val=min_val,
-                max_val=max_val,
-                mode="mix",
-                cache_type="query",
-            ),
-        )
+        if hashing_kv.global_config.get("enable_llm_cache"):
+            # 7. Save cache - Only cache after collecting complete response
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=response,
+                    prompt=query,
+                    quantized=quantized,
+                    min_val=min_val,
+                    max_val=max_val,
+                    mode="mix",
+                    cache_type="query",
+                ),
+            )
 
     return response
 
@@ -1945,20 +1950,21 @@ async def naive_query(
             .strip()
         )
 
-    # Save to cache
-    await save_to_cache(
-        hashing_kv,
-        CacheData(
-            args_hash=args_hash,
-            content=response,
-            prompt=query,
-            quantized=quantized,
-            min_val=min_val,
-            max_val=max_val,
-            mode=query_param.mode,
-            cache_type="query",
-        ),
-    )
+    if hashing_kv.global_config.get("enable_llm_cache"):
+        # Save to cache
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=response,
+                prompt=query,
+                quantized=quantized,
+                min_val=min_val,
+                max_val=max_val,
+                mode=query_param.mode,
+                cache_type="query",
+            ),
+        )
 
     return response
 
@@ -2093,20 +2099,21 @@ async def kg_query_with_keywords(
             .strip()
         )
 
-        # 7. Save cache - 只有在收集完整响应后才缓存
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=response,
-                prompt=query,
-                quantized=quantized,
-                min_val=min_val,
-                max_val=max_val,
-                mode=query_param.mode,
-                cache_type="query",
-            ),
-        )
+        if hashing_kv.global_config.get("enable_llm_cache"):
+            # 7. Save cache - 只有在收集完整响应后才缓存
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=response,
+                    prompt=query,
+                    quantized=quantized,
+                    min_val=min_val,
+                    max_val=max_val,
+                    mode=query_param.mode,
+                    cache_type="query",
+                ),
+            )
 
     return response
 
