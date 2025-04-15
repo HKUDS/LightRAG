@@ -1027,6 +1027,15 @@ class PGGraphStorage(BaseGraphStorage):
         if self.db is None:
             self.db = await ClientManager.get_client()
 
+        query = """CREATE INDEX entity_id_gin_idxSELECT ON %s."base" USING gin (properties);""" % (self.graph_name)
+
+        await self.db.execute(
+            query,
+            upsert=True,
+            with_age=True,
+            graph_name=self.graph_name,
+        )
+
     async def finalize(self):
         if self.db is not None:
             await ClientManager.release_client(self.db)
