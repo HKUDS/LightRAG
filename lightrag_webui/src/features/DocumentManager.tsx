@@ -361,20 +361,8 @@ export default function DocumentManager() {
       // Check again if component is still mounted after the request completes
       if (!isMountedRef.current) return;
 
-      // Get new status counts (treat null as all zeros)
-      const newStatusCounts = {
-        processed: docs?.statuses?.processed?.length || 0,
-        processing: docs?.statuses?.processing?.length || 0,
-        pending: docs?.statuses?.pending?.length || 0,
-        failed: docs?.statuses?.failed?.length || 0
-      }
-
-
       // Only update state if component is still mounted
       if (isMountedRef.current) {
-        // Update previous status counts
-        prevStatusCounts.current = newStatusCounts
-
         // Update docs state
         if (docs && docs.statuses) {
           const numDocuments = Object.values(docs.statuses).reduce(
@@ -448,6 +436,32 @@ export default function DocumentManager() {
       clearInterval(interval)
     }
   }, [health, fetchDocuments, t, currentTab])
+
+  // Monitor docs changes to check status counts and trigger health check if needed
+  useEffect(() => {
+    if (!docs) return;
+
+    // Get new status counts
+    const newStatusCounts = {
+      processed: docs?.statuses?.processed?.length || 0,
+      processing: docs?.statuses?.processing?.length || 0,
+      pending: docs?.statuses?.pending?.length || 0,
+      failed: docs?.statuses?.failed?.length || 0
+    }
+
+    // Check if any status count has changed
+    const hasStatusCountChange = (Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>).some(
+      status => newStatusCounts[status] !== prevStatusCounts.current[status]
+    )
+
+    // Trigger health check if changes detected and component is still mounted
+    if (hasStatusCountChange && isMountedRef.current) {
+      useBackendState.getState().check()
+    }
+
+    // Update previous status counts
+    prevStatusCounts.current = newStatusCounts
+  }, [docs]);
 
   // Add dependency on sort state to re-render when sort changes
   useEffect(() => {
