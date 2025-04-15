@@ -266,7 +266,9 @@
           "entity_type": "Type",
           "source_id": "SrcID",
           "Neighbour": "Neigh",
-          "file_path": "Source"
+          "file_path": "Source",
+          "keywords": "Keys",
+          "weight": "Weight"
         }
       },
       "edge": {
