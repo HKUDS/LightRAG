@@ -369,15 +369,6 @@ export default function DocumentManager() {
         failed: docs?.statuses?.failed?.length || 0
       }
 
-      // Check if any status count has changed
-      const hasStatusCountChange = (Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>).some(
-        status => newStatusCounts[status] !== prevStatusCounts.current[status]
-      )
-
-      // Trigger health check if changes detected and component is still mounted
-      if (hasStatusCountChange && isMountedRef.current) {
-        useBackendState.getState().check()
-      }
 
       // Only update state if component is still mounted
       if (isMountedRef.current) {
