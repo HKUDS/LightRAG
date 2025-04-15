@@ -363,7 +363,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         """Get nodes as a batch using UNWIND
-        
+
         Default implementation fetches nodes one by one.
         Override this method for better performance in storage backends
         that support batch operations.
@@ -377,7 +377,7 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """Node degrees as a batch using UNWIND
-        
+
         Default implementation fetches node degrees one by one.
         Override this method for better performance in storage backends
         that support batch operations.
@@ -388,9 +388,11 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             result[node_id] = degree
         return result
 
-    async def edge_degrees_batch(self, edge_pairs: list[tuple[str, str]]) -> dict[tuple[str, str], int]:
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
         """Edge degrees as a batch using UNWIND also uses node_degrees_batch
-        
+
         Default implementation calculates edge degrees one by one.
         Override this method for better performance in storage backends
         that support batch operations.
@@ -401,9 +403,11 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             result[(src_id, tgt_id)] = degree
         return result
 
-    async def get_edges_batch(self, pairs: list[dict[str, str]]) -> dict[tuple[str, str], dict]:
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
         """Get edges as a batch using UNWIND
-        
+
         Default implementation fetches edges one by one.
         Override this method for better performance in storage backends
         that support batch operations.
@@ -417,9 +421,11 @@ class BaseGraphStorage(StorageNameSpace, ABC):
                 result[(src_id, tgt_id)] = edge
         return result
 
-    async def get_nodes_edges_batch(self, node_ids: list[str]) -> dict[str, list[tuple[str, str]]]:
+    async def get_nodes_edges_batch(
+        self, node_ids: list[str]
+    ) -> dict[str, list[tuple[str, str]]]:
         """Get nodes edges as a batch using UNWIND
-        
+
         Default implementation fetches node edges one by one.
         Override this method for better performance in storage backends
         that support batch operations.
