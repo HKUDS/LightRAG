@@ -16,10 +16,12 @@ const PropertiesView = () => {
   const focusedNode = useGraphStore.use.focusedNode()
   const selectedEdge = useGraphStore.use.selectedEdge()
   const focusedEdge = useGraphStore.use.focusedEdge()
+  const graphDataVersion = useGraphStore.use.graphDataVersion()
 
   const [currentElement, setCurrentElement] = useState<NodeType | EdgeType | null>(null)
   const [currentType, setCurrentType] = useState<'node' | 'edge' | null>(null)
 
+  // This effect will run when selection changes or when graph data is updated
   useEffect(() => {
     let type: 'node' | 'edge' | null = null
     let element: RawNodeType | RawEdgeType | null = null
@@ -53,6 +55,7 @@ const PropertiesView = () => {
     selectedNode,
     focusedEdge,
     selectedEdge,
+    graphDataVersion, // Add dependency on graphDataVersion to refresh when data changes
     setCurrentElement,
     setCurrentType,
     getNode,
@@ -93,6 +96,7 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
   if (state.sigmaGraph && state.rawGraph) {
     try {
       if (!state.sigmaGraph.hasNode(node.id)) {
+        console.warn('Node not found in sigmaGraph:', node.id)
         return {
           ...node,
           relationships: []
@@ -139,7 +143,8 @@ const refineEdgeProperties = (edge: RawEdgeType): EdgeType => {
 
   if (state.sigmaGraph && state.rawGraph) {
     try {
-      if (!state.sigmaGraph.hasEdge(edge.id)) {
+      if (!state.sigmaGraph.hasEdge(edge.dynamicId)) {
+        console.warn('Edge not found in sigmaGraph:', edge.id, 'dynamicId:', edge.dynamicId)
         return {
           ...edge,
           sourceNode: undefined,
@@ -171,6 +176,9 @@ const PropertyRow = ({
   value,
   onClick,
   tooltip,
+  nodeId,
+  edgeId,
+  dynamicId,
   entityId,
   entityType,
   sourceId,
@@ -181,7 +189,10 @@ const PropertyRow = ({
   value: any
   onClick?: () => void
   tooltip?: string
+  nodeId?: string
   entityId?: string
+  edgeId?: string
+  dynamicId?: string
   entityType?: 'node' | 'edge'
   sourceId?: string
   targetId?: string
@@ -202,7 +213,10 @@ const PropertyRow = ({
         name={name}
         value={value}
         onClick={onClick}
+        nodeId={nodeId}
         entityId={entityId}
+        edgeId={edgeId}
+        dynamicId={dynamicId}
         entityType={entityType}
         sourceId={sourceId}
         targetId={targetId}
@@ -265,7 +279,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
         </div>
       </div>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
-        <PropertyRow name={t('graphPanel.propertiesView.node.id')} value={node.id} />
+        <PropertyRow name={t('graphPanel.propertiesView.node.id')} value={String(node.id)} />
         <PropertyRow
           name={t('graphPanel.propertiesView.node.labels')}
           value={node.labels.join(', ')}
@@ -285,7 +299,8 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
                 key={name}
                 name={name}
                 value={node.properties[name]}
-                entityId={node.properties['entity_id'] || node.id}
+                nodeId={String(node.id)}
+                entityId={node.properties['entity_id']}
                 entityType="node"
                 isEditable={name === 'description' || name === 'entity_id'}
               />
@@ -350,10 +365,11 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
                 key={name}
                 name={name}
                 value={edge.properties[name]}
-                entityId={edge.id}
+                edgeId={String(edge.id)}
+                dynamicId={String(edge.dynamicId)}
                 entityType="edge"
-                sourceId={edge.source}
-                targetId={edge.target}
+                sourceId={edge.sourceNode?.properties['entity_id'] || edge.source}
+                targetId={edge.targetNode?.properties['entity_id'] || edge.target}
                 isEditable={name === 'description' || name === 'keywords'}
               />
             )

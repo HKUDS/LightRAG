@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
-import { updateGraphNode, updateGraphEdge } from '@/utils/graphOperations'
+import { useGraphStore } from '@/stores/graph'
 import { PropertyName, EditIcon, PropertyValue } from './PropertyRowComponents'
 import PropertyEditDialog from './PropertyEditDialog'
 
@@ -13,7 +13,10 @@ interface EditablePropertyRowProps {
   name: string                  // Property name to display and edit
   value: any                    // Initial value of the property
   onClick?: () => void          // Optional click handler for the property value
+  nodeId?: string               // ID of the node (for node type)
   entityId?: string             // ID of the entity (for node type)
+  edgeId?: string               // ID of the edge (for edge type)
+  dynamicId?: string
   entityType?: 'node' | 'edge'  // Type of graph entity
   sourceId?: string            // Source node ID (for edge type)
   targetId?: string            // Target node ID (for edge type)
@@ -30,7 +33,10 @@ const EditablePropertyRow = ({
   name,
   value: initialValue,
   onClick,
+  nodeId,
+  edgeId,
   entityId,
+  dynamicId,
   entityType,
   sourceId,
   targetId,
@@ -66,7 +72,7 @@ const EditablePropertyRow = ({
     setIsSubmitting(true)
 
     try {
-      if (entityType === 'node' && entityId) {
+      if (entityType === 'node' && entityId && nodeId) {
         let updatedData = { [name]: value }
 
         if (name === 'entity_id') {
@@ -79,12 +85,22 @@ const EditablePropertyRow = ({
         }
 
         await updateEntity(entityId, updatedData, true)
-        await updateGraphNode(entityId, name, value)
+        try {
+          await useGraphStore.getState().updateNodeAndSelect(nodeId, entityId, name, value)
+        } catch (error) {
+          console.error('Error updating node in graph:', error)
+          throw new Error('Failed to update node in graph')
+        }
         toast.success(t('graphPanel.propertiesView.success.entityUpdated'))
-      } else if (entityType === 'edge' && sourceId && targetId) {
+      } else if (entityType === 'edge' && sourceId && targetId && edgeId && dynamicId) {
         const updatedData = { [name]: value }
         await updateRelation(sourceId, targetId, updatedData)
-        await updateGraphEdge(sourceId, targetId, name, value)
+        try {
+          await useGraphStore.getState().updateEdgeAndSelect(edgeId, dynamicId, sourceId, targetId, name, value)
+        } catch (error) {
+          console.error(`Error updating edge ${sourceId}->${targetId} in graph:`, error)
+          throw new Error('Failed to update edge in graph')
+        }
         toast.success(t('graphPanel.propertiesView.success.relationUpdated'))
       }
 
