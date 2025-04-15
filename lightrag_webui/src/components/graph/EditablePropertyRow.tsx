@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { updateEntity, updateRelation, checkEntityNameExists } from '@/api/lightrag'
-import { updateGraphNode, updateGraphEdge } from '@/utils/graphOperations'
+import { useGraphStore } from '@/stores/graph'
 import { PropertyName, EditIcon, PropertyValue } from './PropertyRowComponents'
 import PropertyEditDialog from './PropertyEditDialog'
 
@@ -85,12 +85,22 @@ const EditablePropertyRow = ({
         }
 
         await updateEntity(entityId, updatedData, true)
-        await updateGraphNode(nodeId, entityId, name, value)
+        try {
+          await useGraphStore.getState().updateNodeAndSelect(nodeId, entityId, name, value)
+        } catch (error) {
+          console.error('Error updating node in graph:', error)
+          throw new Error('Failed to update node in graph')
+        }
         toast.success(t('graphPanel.propertiesView.success.entityUpdated'))
       } else if (entityType === 'edge' && sourceId && targetId && edgeId && dynamicId) {
         const updatedData = { [name]: value }
         await updateRelation(sourceId, targetId, updatedData)
-        await updateGraphEdge(edgeId, dynamicId, sourceId, targetId, name, value)
+        try {
+          await useGraphStore.getState().updateEdgeAndSelect(edgeId, dynamicId, sourceId, targetId, name, value)
+        } catch (error) {
+          console.error(`Error updating edge ${sourceId}->${targetId} in graph:`, error)
+          throw new Error('Failed to update edge in graph')
+        }
         toast.success(t('graphPanel.propertiesView.success.relationUpdated'))
       }
 
