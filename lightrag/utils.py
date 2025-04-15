@@ -731,9 +731,6 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         hashing_kv: The key-value storage for caching
         cache_data: The cache data to save
     """
-    if not hashing_kv.global_config.get("enable_llm_cache"):
-        return
-
     # Skip if storage is None or content is a streaming response
     if hashing_kv is None or not cache_data.content:
         return
@@ -775,6 +772,8 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         "embedding_max": cache_data.max_val,
         "original_prompt": cache_data.prompt,
     }
+
+    logger.info(f" == LLM cache == saving {cache_data.mode}: {cache_data.args_hash}")
 
     # Only upsert if there's actual new content
     await hashing_kv.upsert({cache_data.mode: mode_cache})
@@ -1314,17 +1313,17 @@ async def use_llm_func_with_cache(
 
         res: str = await use_llm_func(input_text, **kwargs)
 
-        # Save to cache
-        logger.info(f" == LLM cache == saving {arg_hash}")
-        await save_to_cache(
-            llm_response_cache,
-            CacheData(
-                args_hash=arg_hash,
-                content=res,
-                prompt=_prompt,
-                cache_type=cache_type,
-            ),
-        )
+        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+            await save_to_cache(
+                llm_response_cache,
+                CacheData(
+                    args_hash=arg_hash,
+                    content=res,
+                    prompt=_prompt,
+                    cache_type=cache_type,
+                ),
+            )
+
         return res
 
     # When cache is disabled, directly call LLM
