@@ -5,6 +5,8 @@ import { getGraphLabels } from '@/api/lightrag'
 import MiniSearch from 'minisearch'
 
 export type RawNodeType = {
+  // for NetworkX: id is identical to properties['entity_id']
+  // for Neo4j: id is unique identifier for each node
   id: string
   labels: string[]
   properties: Record<string, any>
@@ -18,20 +20,25 @@ export type RawNodeType = {
 }
 
 export type RawEdgeType = {
+  // for NetworkX: id is "source-target"
+  // for Neo4j: id is unique identifier for each edge
   id: string
   source: string
   target: string
   type?: string
   properties: Record<string, any>
-
+  // dynamicId: key for sigmaGraph
   dynamicId: string
 }
 
 export class RawGraph {
   nodes: RawNodeType[] = []
   edges: RawEdgeType[] = []
+  // nodeIDMap: map node id to index in nodes array (SigmaGraph has nodeId as key)
   nodeIdMap: Record<string, number> = {}
+  // edgeIDMap: map edge id to index in edges array (SigmaGraph not use id as key)
   edgeIdMap: Record<string, number> = {}
+  // edgeDynamicIdMap: map edge dynamic id to index in edges array (SigmaGraph has DynamicId as key)
   edgeDynamicIdMap: Record<string, number> = {}
 
   getNode = (nodeId: string) => {
