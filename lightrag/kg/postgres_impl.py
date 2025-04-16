@@ -1037,7 +1037,10 @@ class PGGraphStorage(BaseGraphStorage):
         await self.upsert_node(node1_id, node1_data)
         await self.delete_node(node1_id)
 
-        query = """CREATE INDEX entity_id_gin_idxSELECT ON %s."base" USING gin (properties);""" % (self.graph_name)
+        query = (
+            """CREATE INDEX entity_id_gin_idxSELECT ON %s."base" USING gin (properties);"""
+            % (self.graph_name)
+        )
 
         await self.db.execute(
             query,
@@ -1563,15 +1566,15 @@ class PGGraphStorage(BaseGraphStorage):
 
         out_degrees = {}
         in_degrees = {}
-        
+
         for result in outgoing_results:
             if result["node_id"] is not None:
                 out_degrees[result["node_id"]] = int(result["out_degree"])
-        
+
         for result in incoming_results:
             if result["node_id"] is not None:
                 in_degrees[result["node_id"]] = int(result["in_degree"])
-        
+
         degrees_dict = {}
         for node_id in node_ids:
             out_degree = out_degrees.get(node_id, 0)
@@ -1659,11 +1662,15 @@ class PGGraphStorage(BaseGraphStorage):
 
         for result in forward_results:
             if result["source"] and result["target"] and result["edge_properties"]:
-                edges_dict[(result["source"], result["target"])] = result["edge_properties"]
-        
+                edges_dict[(result["source"], result["target"])] = result[
+                    "edge_properties"
+                ]
+
         for result in backward_results:
             if result["source"] and result["target"] and result["edge_properties"]:
-                edges_dict[(result["source"], result["target"])] = result["edge_properties"]
+                edges_dict[(result["source"], result["target"])] = result[
+                    "edge_properties"
+                ]
 
         return edges_dict
 
@@ -1711,13 +1718,13 @@ class PGGraphStorage(BaseGraphStorage):
         incoming_results = await self._query(incoming_query)
 
         nodes_edges_dict = {node_id: [] for node_id in node_ids}
-        
+
         for result in outgoing_results:
             if result["node_id"] and result["connected_id"]:
                 nodes_edges_dict[result["node_id"]].append(
                     (result["node_id"], result["connected_id"])
                 )
-        
+
         for result in incoming_results:
             if result["node_id"] and result["connected_id"]:
                 nodes_edges_dict[result["node_id"]].append(
