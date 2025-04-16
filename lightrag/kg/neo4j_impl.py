@@ -29,11 +29,19 @@ from neo4j import (  # type: ignore
     AsyncManagedTransaction,
 )
 
-config = configparser.ConfigParser()
-config.read("config.ini", "utf-8")
+from dotenv import load_dotenv
+
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
 
 # Get maximum number of graph nodes from environment variable, default is 1000
 MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
+
+config = configparser.ConfigParser()
+config.read("config.ini", "utf-8")
+
 
 # Set neo4j logger level to ERROR to suppress warning logs
 logging.getLogger("neo4j").setLevel(logging.ERROR)

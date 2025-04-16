@@ -35,6 +35,13 @@ if not pm.is_installed("asyncpg"):
 import asyncpg  # type: ignore
 from asyncpg import Pool  # type: ignore
 
+from dotenv import load_dotenv
+
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
+
 # Get maximum number of graph nodes from environment variable, default is 1000
 MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
 

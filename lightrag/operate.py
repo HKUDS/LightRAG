@@ -1560,7 +1560,7 @@ async def _find_most_related_edges_from_entities(
 ):
     node_names = [dp["entity_name"] for dp in node_datas]
     batch_edges_dict = await knowledge_graph_inst.get_nodes_edges_batch(node_names)
-    
+
     all_edges = []
     seen = set()
 
