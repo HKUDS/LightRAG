@@ -1720,8 +1720,8 @@ class PGGraphStorage(BaseGraphStorage):
             strip_label = node_label.strip('"')
             count_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
                     MATCH (n:base {{entity_id: "{strip_label}"}})
-                    OPTIONAL MATCH p = (n:base)-[*..{max_depth}]->(m:base)
-                    RETURN count(distinct m) AS total_nodes
+                    OPTIONAL MATCH p = (n)-[*..{max_depth}]-()
+                    RETURN count(nodes(p)) AS total_nodes
                     $$) AS (total_nodes bigint)"""
 
         count_result = await self._query(count_query)
@@ -1731,19 +1731,25 @@ class PGGraphStorage(BaseGraphStorage):
         # Now get the actual data with limit
         if node_label == "*":
             query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                    MATCH (n:base)
-                    OPTIONAL MATCH (n:base)-[r]->(target:base)
-                    RETURN collect(distinct n) AS n, collect(distinct r) AS r
+                    MATCH (node:base)
+                    OPTIONAL MATCH (node)-[r]->()
+                    RETURN collect(distinct node) AS n, collect(distinct r) AS r
                     LIMIT {max_nodes}
                     $$) AS (n agtype, r agtype)"""
         else:
             strip_label = node_label.strip('"')
-            query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                    MATCH (n:base {{entity_id: "{strip_label}"}})
-                    OPTIONAL MATCH p = (n:base)-[*..{max_depth}]->(m:base)
-                    RETURN nodes(p) AS n, relationships(p) AS r
-                    LIMIT {max_nodes}
-                    $$) AS (n agtype, r agtype)"""
+            if total_nodes > 0:
+                query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                        MATCH (node:base {{entity_id: "{strip_label}"}})
+                        OPTIONAL MATCH p = (node)-[*..{max_depth}]-()
+                        RETURN nodes(p) AS n, relationships(p) AS r
+                        LIMIT {max_nodes}
+                        $$) AS (n agtype, r agtype)"""
+            else:
+                query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                        MATCH (node:base {{entity_id: "{strip_label}"}})
+                        RETURN node AS n
+                        $$) AS (n agtype)"""
 
         results = await self._query(query)
 
