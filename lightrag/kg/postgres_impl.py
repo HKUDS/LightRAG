@@ -142,6 +142,9 @@ class PostgreSQLDB:
         with_age: bool = False,
         graph_name: str | None = None,
     ) -> dict[str, Any] | None | list[dict[str, Any]]:
+        # start_time = time.time()
+        # logger.info(f"PostgreSQL, Querying:\n{sql}")
+
         async with self.pool.acquire() as connection:  # type: ignore
             if with_age and graph_name:
                 await self.configure_age(connection, graph_name)  # type: ignore
@@ -166,6 +169,11 @@ class PostgreSQLDB:
                         data = dict(zip(columns, rows[0]))
                     else:
                         data = None
+
+                # query_time = time.time() - start_time
+                # logger.info(f"PostgreSQL, Query result len: {len(data)}")
+                # logger.info(f"PostgreSQL, Query execution time: {query_time:.4f}s")
+
                 return data
             except Exception as e:
                 logger.error(f"PostgreSQL database, error:{e}")
