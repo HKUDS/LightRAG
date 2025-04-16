@@ -1027,6 +1027,16 @@ class PGGraphStorage(BaseGraphStorage):
         if self.db is None:
             self.db = await ClientManager.get_client()
 
+        node1_id = "dummy_entity"
+        node1_data = {
+            "entity_id": node1_id,
+            "description": "dummy description",
+            "keywords": "dummy,keywords",
+            "entity_type": "dummy_type",
+        }
+        await self.upsert_node(node1_id, node1_data)
+        await self.delete_node(node1_id)
+
         query = """CREATE INDEX entity_id_gin_idxSELECT ON %s."base" USING gin (properties);""" % (self.graph_name)
 
         await self.db.execute(
