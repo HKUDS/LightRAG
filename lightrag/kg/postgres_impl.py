@@ -1027,6 +1027,28 @@ class PGGraphStorage(BaseGraphStorage):
         if self.db is None:
             self.db = await ClientManager.get_client()
 
+        node1_id = "dummy_entity"
+        node1_data = {
+            "entity_id": node1_id,
+            "description": "dummy description",
+            "keywords": "dummy,keywords",
+            "entity_type": "dummy_type",
+        }
+        await self.upsert_node(node1_id, node1_data)
+        await self.delete_node(node1_id)
+
+        query = (
+            """CREATE INDEX entity_id_gin_idxSELECT ON %s."base" USING gin (properties);"""
+            % (self.graph_name)
+        )
+
+        await self.db.execute(
+            query,
+            upsert=True,
+            with_age=True,
+            graph_name=self.graph_name,
+        )
+
     async def finalize(self):
         if self.db is not None:
             await ClientManager.release_client(self.db)
@@ -1233,8 +1255,8 @@ class PGGraphStorage(BaseGraphStorage):
         label = node_id.strip('"')
 
         query = """SELECT * FROM cypher('%s', $$
-                     MATCH (n:base {entity_id: "%s"})-[]-(x)
-                     RETURN count(x) AS total_edge_count
+                     MATCH (n:base {entity_id: "%s"})-[r]-()
+                     RETURN count(r) AS total_edge_count
                    $$) AS (total_edge_count integer)""" % (self.graph_name, label)
         record = (await self._query(query))[0]
         if record:
@@ -1262,7 +1284,7 @@ class PGGraphStorage(BaseGraphStorage):
         tgt_label = target_node_id.strip('"')
 
         query = """SELECT * FROM cypher('%s', $$
-                     MATCH (a:base {entity_id: "%s"})-[r]->(b:base {entity_id: "%s"})
+                     MATCH (a:base {entity_id: "%s"})-[r]-(b:base {entity_id: "%s"})
                      RETURN properties(r) as edge_properties
                      LIMIT 1
                    $$) AS (edge_properties agtype)""" % (
@@ -1285,7 +1307,7 @@ class PGGraphStorage(BaseGraphStorage):
 
         query = """SELECT * FROM cypher('%s', $$
                       MATCH (n:base {entity_id: "%s"})
-                      OPTIONAL MATCH (n)-[]-(connected:base)
+                      OPTIONAL MATCH (n)-[]-(connected)
                       RETURN n, connected
                     $$) AS (n agtype, connected agtype)""" % (
             self.graph_name,
@@ -1374,7 +1396,7 @@ class PGGraphStorage(BaseGraphStorage):
                      MATCH (source:base {entity_id: "%s"})
                      WITH source
                      MATCH (target:base {entity_id: "%s"})
-                     MERGE (source)-[r:DIRECTED]->(target)
+                     MERGE (source)-[r:DIRECTED]-(target)
                      SET r += %s
                      RETURN r
                    $$) AS (r agtype)""" % (
@@ -1447,7 +1469,7 @@ class PGGraphStorage(BaseGraphStorage):
             tgt_label = target.strip('"')
 
             query = """SELECT * FROM cypher('%s', $$
-                         MATCH (a:base {entity_id: "%s"})-[r]->(b:base {entity_id: "%s"})
+                         MATCH (a:base {entity_id: "%s"})-[r]-(b:base {entity_id: "%s"})
                          DELETE r
                        $$) AS (r agtype)""" % (self.graph_name, src_label, tgt_label)
 
@@ -1457,6 +1479,259 @@ class PGGraphStorage(BaseGraphStorage):
             except Exception as e:
                 logger.error(f"Error during edge deletion: {str(e)}")
                 raise
+
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+        """
+        Retrieve multiple nodes in one query using UNWIND.
+
+        Args:
+            node_ids: List of node entity IDs to fetch.
+
+        Returns:
+            A dictionary mapping each node_id to its node data (or None if not found).
+        """
+        if not node_ids:
+            return {}
+
+        # Format node IDs for the query
+        formatted_ids = ", ".join(
+            ['"' + node_id.replace('"', "") + '"' for node_id in node_ids]
+        )
+
+        query = """SELECT * FROM cypher('%s', $$
+                     UNWIND [%s] AS node_id
+                     MATCH (n:base {entity_id: node_id})
+                     RETURN node_id, n
+                   $$) AS (node_id text, n agtype)""" % (self.graph_name, formatted_ids)
+
+        results = await self._query(query)
+
+        # Build result dictionary
+        nodes_dict = {}
+        for result in results:
+            if result["node_id"] and result["n"]:
+                node_dict = result["n"]["properties"]
+                # Remove the 'base' label if present in a 'labels' property
+                if "labels" in node_dict:
+                    node_dict["labels"] = [
+                        label for label in node_dict["labels"] if label != "base"
+                    ]
+                nodes_dict[result["node_id"]] = node_dict
+
+        return nodes_dict
+
+    async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
+        """
+        Retrieve the degree for multiple nodes in a single query using UNWIND.
+        Calculates the total degree by counting distinct relationships.
+        Uses separate queries for outgoing and incoming edges.
+
+        Args:
+            node_ids: List of node labels (entity_id values) to look up.
+
+        Returns:
+            A dictionary mapping each node_id to its degree (total number of relationships).
+            If a node is not found, its degree will be set to 0.
+        """
+        if not node_ids:
+            return {}
+
+        # Format node IDs for the query
+        formatted_ids = ", ".join(
+            ['"' + node_id.replace('"', "") + '"' for node_id in node_ids]
+        )
+
+        outgoing_query = """SELECT * FROM cypher('%s', $$
+                     UNWIND [%s] AS node_id
+                     MATCH (n:base {entity_id: node_id})
+                     OPTIONAL MATCH (n)-[r]->(a)
+                     RETURN node_id, count(a) AS out_degree
+                   $$) AS (node_id text, out_degree bigint)""" % (
+            self.graph_name,
+            formatted_ids,
+        )
+
+        incoming_query = """SELECT * FROM cypher('%s', $$
+                     UNWIND [%s] AS node_id
+                     MATCH (n:base {entity_id: node_id})
+                     OPTIONAL MATCH (n)<-[r]-(b)
+                     RETURN node_id, count(b) AS in_degree
+                   $$) AS (node_id text, in_degree bigint)""" % (
+            self.graph_name,
+            formatted_ids,
+        )
+
+        outgoing_results = await self._query(outgoing_query)
+        incoming_results = await self._query(incoming_query)
+
+        out_degrees = {}
+        in_degrees = {}
+
+        for result in outgoing_results:
+            if result["node_id"] is not None:
+                out_degrees[result["node_id"]] = int(result["out_degree"])
+
+        for result in incoming_results:
+            if result["node_id"] is not None:
+                in_degrees[result["node_id"]] = int(result["in_degree"])
+
+        degrees_dict = {}
+        for node_id in node_ids:
+            out_degree = out_degrees.get(node_id, 0)
+            in_degree = in_degrees.get(node_id, 0)
+            degrees_dict[node_id] = out_degree + in_degree
+
+        return degrees_dict
+
+    async def edge_degrees_batch(
+        self, edges: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """
+        Calculate the combined degree for each edge (sum of the source and target node degrees)
+        in batch using the already implemented node_degrees_batch.
+
+        Args:
+            edges: List of (source_node_id, target_node_id) tuples
+
+        Returns:
+            Dictionary mapping edge tuples to their combined degrees
+        """
+        if not edges:
+            return {}
+
+        # Use node_degrees_batch to get all node degrees efficiently
+        all_nodes = set()
+        for src, tgt in edges:
+            all_nodes.add(src)
+            all_nodes.add(tgt)
+
+        node_degrees = await self.node_degrees_batch(list(all_nodes))
+
+        # Calculate edge degrees
+        edge_degrees_dict = {}
+        for src, tgt in edges:
+            src_degree = node_degrees.get(src, 0)
+            tgt_degree = node_degrees.get(tgt, 0)
+            edge_degrees_dict[(src, tgt)] = src_degree + tgt_degree
+
+        return edge_degrees_dict
+
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """
+        Retrieve edge properties for multiple (src, tgt) pairs in one query.
+        Get forward and backward edges seperately and merge them before return
+
+        Args:
+            pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
+
+        Returns:
+            A dictionary mapping (src, tgt) tuples to their edge properties.
+        """
+        if not pairs:
+            return {}
+
+        src_nodes = []
+        tgt_nodes = []
+        for pair in pairs:
+            src_nodes.append(pair["src"].replace('"', ""))
+            tgt_nodes.append(pair["tgt"].replace('"', ""))
+
+        src_array = ", ".join([f'"{src}"' for src in src_nodes])
+        tgt_array = ", ".join([f'"{tgt}"' for tgt in tgt_nodes])
+
+        forward_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                     WITH [{src_array}] AS sources, [{tgt_array}] AS targets
+                     UNWIND range(0, size(sources)-1) AS i
+                     MATCH (a:base {{entity_id: sources[i]}})-[r:DIRECTED]->(b:base {{entity_id: targets[i]}})
+                     RETURN sources[i] AS source, targets[i] AS target, properties(r) AS edge_properties
+                   $$) AS (source text, target text, edge_properties agtype)"""
+
+        backward_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                     WITH [{src_array}] AS sources, [{tgt_array}] AS targets
+                     UNWIND range(0, size(sources)-1) AS i
+                     MATCH (a:base {{entity_id: sources[i]}})<-[r:DIRECTED]-(b:base {{entity_id: targets[i]}})
+                     RETURN sources[i] AS source, targets[i] AS target, properties(r) AS edge_properties
+                   $$) AS (source text, target text, edge_properties agtype)"""
+
+        forward_results = await self._query(forward_query)
+        backward_results = await self._query(backward_query)
+
+        edges_dict = {}
+
+        for result in forward_results:
+            if result["source"] and result["target"] and result["edge_properties"]:
+                edges_dict[(result["source"], result["target"])] = result[
+                    "edge_properties"
+                ]
+
+        for result in backward_results:
+            if result["source"] and result["target"] and result["edge_properties"]:
+                edges_dict[(result["source"], result["target"])] = result[
+                    "edge_properties"
+                ]
+
+        return edges_dict
+
+    async def get_nodes_edges_batch(
+        self, node_ids: list[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """
+        Get all edges (both outgoing and incoming) for multiple nodes in a single batch operation.
+
+        Args:
+            node_ids: List of node IDs to get edges for
+
+        Returns:
+            Dictionary mapping node IDs to lists of (source, target) edge tuples
+        """
+        if not node_ids:
+            return {}
+
+        # Format node IDs for the query
+        formatted_ids = ", ".join(
+            ['"' + node_id.replace('"', "") + '"' for node_id in node_ids]
+        )
+
+        outgoing_query = """SELECT * FROM cypher('%s', $$
+                     UNWIND [%s] AS node_id
+                     MATCH (n:base {entity_id: node_id})
+                     OPTIONAL MATCH (n:base)-[]->(connected:base)
+                     RETURN node_id, connected.entity_id AS connected_id
+                   $$) AS (node_id text, connected_id text)""" % (
+            self.graph_name,
+            formatted_ids,
+        )
+
+        incoming_query = """SELECT * FROM cypher('%s', $$
+                     UNWIND [%s] AS node_id
+                     MATCH (n:base {entity_id: node_id})
+                     OPTIONAL MATCH (n:base)<-[]-(connected:base)
+                     RETURN node_id, connected.entity_id AS connected_id
+                   $$) AS (node_id text, connected_id text)""" % (
+            self.graph_name,
+            formatted_ids,
+        )
+
+        outgoing_results = await self._query(outgoing_query)
+        incoming_results = await self._query(incoming_query)
+
+        nodes_edges_dict = {node_id: [] for node_id in node_ids}
+
+        for result in outgoing_results:
+            if result["node_id"] and result["connected_id"]:
+                nodes_edges_dict[result["node_id"]].append(
+                    (result["node_id"], result["connected_id"])
+                )
+
+        for result in incoming_results:
+            if result["node_id"] and result["connected_id"]:
+                nodes_edges_dict[result["node_id"]].append(
+                    (result["connected_id"], result["node_id"])
+                )
+
+        return nodes_edges_dict
 
     async def get_all_labels(self) -> list[str]:
         """
@@ -1507,8 +1782,8 @@ class PGGraphStorage(BaseGraphStorage):
             strip_label = node_label.strip('"')
             count_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
                     MATCH (n:base {{entity_id: "{strip_label}"}})
-                    OPTIONAL MATCH p = (n)-[*..{max_depth}]-(m)
-                    RETURN count(distinct m) AS total_nodes
+                    OPTIONAL MATCH p = (n)-[*..{max_depth}]-()
+                    RETURN count(nodes(p)) AS total_nodes
                     $$) AS (total_nodes bigint)"""
 
         count_result = await self._query(count_query)
@@ -1518,19 +1793,25 @@ class PGGraphStorage(BaseGraphStorage):
         # Now get the actual data with limit
         if node_label == "*":
             query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                    MATCH (n:base)
-                    OPTIONAL MATCH (n)-[r]->(target:base)
-                    RETURN collect(distinct n) AS n, collect(distinct r) AS r
+                    MATCH (node:base)
+                    OPTIONAL MATCH (node)-[r]->()
+                    RETURN collect(distinct node) AS n, collect(distinct r) AS r
                     LIMIT {max_nodes}
                     $$) AS (n agtype, r agtype)"""
         else:
             strip_label = node_label.strip('"')
-            query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                    MATCH (n:base {{entity_id: "{strip_label}"}})
-                    OPTIONAL MATCH p = (n)-[*..{max_depth}]-(m)
-                    RETURN nodes(p) AS n, relationships(p) AS r
-                    LIMIT {max_nodes}
-                    $$) AS (n agtype, r agtype)"""
+            if total_nodes > 0:
+                query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                        MATCH (node:base {{entity_id: "{strip_label}"}})
+                        OPTIONAL MATCH p = (node)-[*..{max_depth}]-()
+                        RETURN nodes(p) AS n, relationships(p) AS r
+                        LIMIT {max_nodes}
+                        $$) AS (n agtype, r agtype)"""
+            else:
+                query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                        MATCH (node:base {{entity_id: "{strip_label}"}})
+                        RETURN node AS n
+                        $$) AS (n agtype)"""
 
         results = await self._query(query)
 
