@@ -319,9 +319,10 @@ MongoKVStorage   MongoDB
 ```
 NetworkXStorage      NetworkX (default)
 Neo4JStorage         Neo4J
-PGGraphStorage       Postgres
-AGEStorage           AGE
+PGGraphStorage       PostgreSQL with AGE plugin
 ```
+
+> Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
 
 *   VECTOR_STORAGE supported implementations:
 

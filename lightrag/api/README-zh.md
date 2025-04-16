@@ -316,9 +316,10 @@ MongoKVStorage   MogonDB
 ```
 NetworkXStorage      NetworkX(默认)
 Neo4JStorage         Neo4J
-PGGraphStorage       Postgres
-AGEStorage           AGE
+PGGraphStorage       PostgreSQL with AGE plugin
 ```
+
+> 在测试中Neo4j图形数据库相比PostgreSQL AGE有更好的性能表现。
 
 * VECTOR_STORAGE 支持的实现名称
 
