@@ -1160,6 +1160,9 @@ class PGGraphStorage(BaseGraphStorage):
         Returns:
             list[dict[str, Any]]: a list of dictionaries containing the result set
         """
+
+        logger.info(f"Executing graph query: {query}")
+
         try:
             if readonly:
                 data = await self.db.query(
@@ -1210,7 +1213,7 @@ class PGGraphStorage(BaseGraphStorage):
         tgt_label = target_node_id.strip('"')
 
         query = """SELECT * FROM cypher('%s', $$
-                     MATCH (a:base {entity_id: "%s"})-[r]->(b:base {entity_id: "%s"})
+                     MATCH (a:base {entity_id: "%s"})-[r]-(b:base {entity_id: "%s"})
                      RETURN COUNT(r) > 0 AS edge_exists
                    $$) AS (edge_exists bool)""" % (
             self.graph_name,
@@ -1242,7 +1245,7 @@ class PGGraphStorage(BaseGraphStorage):
         label = node_id.strip('"')
 
         query = """SELECT * FROM cypher('%s', $$
-                     MATCH (n:base {entity_id: "%s"})-[]->(x)
+                     MATCH (n:base {entity_id: "%s"})-[]-(x)
                      RETURN count(x) AS total_edge_count
                    $$) AS (total_edge_count integer)""" % (self.graph_name, label)
         record = (await self._query(query))[0]
@@ -1271,7 +1274,7 @@ class PGGraphStorage(BaseGraphStorage):
         tgt_label = target_node_id.strip('"')
 
         query = """SELECT * FROM cypher('%s', $$
-                     MATCH (a:base {entity_id: "%s"})-[r]->(b:base {entity_id: "%s"})
+                     MATCH (a:base {entity_id: "%s"})-[r]-(b:base {entity_id: "%s"})
                      RETURN properties(r) as edge_properties
                      LIMIT 1
                    $$) AS (edge_properties agtype)""" % (
@@ -1294,7 +1297,7 @@ class PGGraphStorage(BaseGraphStorage):
 
         query = """SELECT * FROM cypher('%s', $$
                       MATCH (n:base {entity_id: "%s"})
-                      OPTIONAL MATCH (n)-[]->(connected:base)
+                      OPTIONAL MATCH (n)-[]-(connected)
                       RETURN n, connected
                     $$) AS (n agtype, connected agtype)""" % (
             self.graph_name,
@@ -1529,7 +1532,7 @@ class PGGraphStorage(BaseGraphStorage):
         query = """SELECT * FROM cypher('%s', $$
                      UNWIND [%s] AS node_id
                      MATCH (n:base {entity_id: node_id})
-                     OPTIONAL MATCH (n)-[r]-()
+                     OPTIONAL MATCH (n)-[r]->()
                      RETURN node_id, count(r) AS degree
                    $$) AS (node_id text, degree bigint)""" % (
             self.graph_name,
