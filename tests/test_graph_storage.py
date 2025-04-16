@@ -746,23 +746,30 @@ async def test_graph_batch_operations(storage):
 
         # 检查是否包含与机器学习、自然语言处理和计算机视觉的连接（忽略方向）
         has_connection_with_node2 = any(
-            (src == node2_id and tgt == node3_id) or (src == node3_id and tgt == node2_id)
+            (src == node2_id and tgt == node3_id)
+            or (src == node3_id and tgt == node2_id)
             for src, tgt in nodes_edges[node3_id]
         )
         has_connection_with_node4 = any(
-            (src == node3_id and tgt == node4_id) or (src == node4_id and tgt == node3_id)
+            (src == node3_id and tgt == node4_id)
+            or (src == node4_id and tgt == node3_id)
             for src, tgt in nodes_edges[node3_id]
         )
         has_connection_with_node5 = any(
-            (src == node3_id and tgt == node5_id) or (src == node5_id and tgt == node3_id)
+            (src == node3_id and tgt == node5_id)
+            or (src == node5_id and tgt == node3_id)
             for src, tgt in nodes_edges[node3_id]
         )
 
         assert (
             has_connection_with_node2
         ), f"节点 {node3_id} 的边列表中应包含与 {node2_id} 的连接"
-        assert has_connection_with_node4, f"节点 {node3_id} 的边列表中应包含与 {node4_id} 的连接"
-        assert has_connection_with_node5, f"节点 {node3_id} 的边列表中应包含与 {node5_id} 的连接"
+        assert (
+            has_connection_with_node4
+        ), f"节点 {node3_id} 的边列表中应包含与 {node4_id} 的连接"
+        assert (
+            has_connection_with_node5
+        ), f"节点 {node3_id} 的边列表中应包含与 {node5_id} 的连接"
 
         print("无向图特性验证成功：批量获取的节点边包含所有相关的边（无论方向）")
 
