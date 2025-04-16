@@ -1819,10 +1819,10 @@ SQL_TEMPLATES = {
                 FROM LIGHTRAG_VDB_ENTITY e
                 JOIN relevant_chunks c ON c.chunk_id = ANY(e.chunk_ids)
                 WHERE e.workspace=$1
-            )
-        WHERE distance>$2
-        ORDER BY distance DESC
-        LIMIT $3
+            ) as chunk_distances
+            WHERE distance>$2
+            ORDER BY distance DESC
+            LIMIT $3
     """,
     "chunks": """
         WITH relevant_chunks AS (
