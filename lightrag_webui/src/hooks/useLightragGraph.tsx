@@ -782,11 +782,7 @@ const useLightrangeGraph = () => {
                 Constants.minNodeSize + scale * Math.pow((limitedDegree - minDegree) / range, 0.5)
               );
 
-              const currentSize = sigmaGraph.getNodeAttribute(nodeId, 'size');
-
-              if (newSize > currentSize) {
-                sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
-              }
+              sigmaGraph.setNodeAttribute(nodeId, 'size', newSize);
             }
           }
         };
