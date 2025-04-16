@@ -1037,15 +1037,15 @@ class PGGraphStorage(BaseGraphStorage):
     def __post_init__(self):
         self.graph_name = self.namespace or os.environ.get("AGE_GRAPH_NAME", "lightrag")
         self.db: PostgreSQLDB | None = None
-        
+
     @staticmethod
     def _normalize_node_id(node_id: str) -> str:
         """
         Normalize node ID to ensure special characters are properly handled in Cypher queries.
-        
+
         Args:
             node_id: The original node ID
-            
+
         Returns:
             Normalized node ID suitable for Cypher queries
         """
