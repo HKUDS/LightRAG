@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import traceback
 import asyncio
 import configparser
 import os
@@ -959,7 +960,8 @@ class LightRAG:
                         )
                     except Exception as e:
                         # Log error and update pipeline status
-                        error_msg = f"Failed to process document {doc_id}: {str(e)}"
+                        error_msg = f"Failed to process document {doc_id}: {traceback.format_exc()}"
+
                         logger.error(error_msg)
                         async with pipeline_status_lock:
                             pipeline_status["latest_message"] = error_msg
@@ -1076,7 +1078,9 @@ class LightRAG:
                 llm_response_cache=self.llm_response_cache,
             )
         except Exception as e:
-            logger.error("Failed to extract entities and relationships")
+            logger.error(
+                f"Failed to extract entities and relationships : {traceback.format_exc()} 。"
+            )
             raise e
 
     async def _insert_done(
