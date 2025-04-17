@@ -157,8 +157,8 @@ async def _handle_single_entity_extraction(
         return None
 
     # Clean and validate entity name
-    entity_name = clean_str(record_attributes[1]).strip('"')
-    if not entity_name.strip():
+    entity_name = clean_str(record_attributes[1]).strip()
+    if not entity_name:
         logger.warning(
             f"Entity extraction error: empty entity name in: {record_attributes}"
         )
