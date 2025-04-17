@@ -78,7 +78,7 @@ def create_openai_async_client(
         "default_headers": default_headers,
         "api_key": api_key,
     }
-
+    os.environ["OPENAI_API_BASE"] = "https://api.openai.com/v1"
     if base_url is not None:
         merged_configs["base_url"] = base_url
     else:
@@ -102,8 +102,9 @@ async def openai_complete_if_cache(
     base_url: str | None = None,
     api_key: str | None = None,
     token_tracker: Any | None = None,
+    extract_reasoning: bool = False,
     **kwargs: Any,
-) -> str:
+) -> str | tuple[str, str]:
     """Complete a prompt using OpenAI's API with caching support.
 
     Args:
@@ -113,6 +114,7 @@ async def openai_complete_if_cache(
         history_messages: Optional list of previous messages in the conversation.
         base_url: Optional base URL for the OpenAI API.
         api_key: Optional OpenAI API key. If None, uses the OPENAI_API_KEY environment variable.
+        extract_reasoning: Whether to extract and return reasoning content when available.
         **kwargs: Additional keyword arguments to pass to the OpenAI API.
             Special kwargs:
             - openai_client_configs: Dict of configuration options for the AsyncOpenAI client.
@@ -122,7 +124,8 @@ async def openai_complete_if_cache(
             - keyword_extraction: Will be removed from kwargs before passing to OpenAI.
 
     Returns:
-        The completed text or an async iterator of text chunks if streaming.
+        Either the completed text string, or a tuple of (completed_text, reasoning_content)
+        if extract_reasoning is True or the model supports reasoning.
 
     Raises:
         InvalidResponseError: If the response from OpenAI is invalid or empty.
@@ -235,6 +238,30 @@ async def openai_complete_if_cache(
         logger.debug(f"Response content len: {len(content)}")
         verbose_debug(f"Response: {response}")
 
+        # Try to extract reasoning_content if requested or if model supports it
+        reasoning_content = ""
+
+        # First check: look for reasoning_content in the message object's attributes or _kwargs
+        try:
+            # Look directly in the message object
+            if hasattr(response.choices[0].message, "reasoning_content"):
+                reasoning_content = response.choices[0].message.reasoning_content
+                logger.info("Found reasoning_content in message attributes")
+        except Exception as e:
+            logger.warning(f"Error checking for reasoning_content: {e}")
+
+        # Log the reasoning content if found
+        if reasoning_content:
+            logger.info("Successfully extracted chain of thought reasoning")
+            logger.debug(f"Reasoning content: {reasoning_content}")
+            print(f"==========Reasoning content==========: {reasoning_content}")
+        elif extract_reasoning:
+            logger.info("No reasoning content found, but extraction was requested")
+
+        # Return tuple if reasoning was requested or found
+        if extract_reasoning or reasoning_content:
+            return content, reasoning_content
+
         return content
 
 
@@ -323,6 +350,133 @@ async def nvidia_openai_complete(
     if keyword_extraction:  # TODO: use JSON API
         return locate_json_string_body_from_string(result)
     return result
+
+
+async def deepseek_r1_complete(
+    prompt,
+    system_prompt=None,
+    history_messages=None,
+    keyword_extraction=False,
+    **kwargs,
+) -> tuple[str, str]:
+    """Complete a prompt using DeepSeek Reasoning-1 model.
+
+    This model is specialized for reasoning and analytical tasks, making it
+    useful for tasks like node re-ranking in knowledge graphs where reasoning
+    about relevance and importance is required.
+
+    Args:
+        prompt: The prompt to complete.
+        system_prompt: Optional system prompt to include.
+        history_messages: Optional list of previous messages in the conversation.
+        keyword_extraction: Whether to extract keywords from the response.
+        **kwargs: Additional keyword arguments to pass to the OpenAI API.
+
+    Returns:
+        A tuple containing (completed_text, reasoning_content) where reasoning_content
+        contains the chain of thought reasoning if available, otherwise empty string.
+    """
+    if history_messages is None:
+        history_messages = []
+    keyword_extraction = kwargs.pop("keyword_extraction", None)
+
+    # Ensure we have the right configuration for DeepSeek API
+    base_url = os.environ.get("DEEPSEEK_API_BASE", "https://api.deepseek.com/v1")
+    api_key = os.environ.get("DEEPSEEK_API_KEY", None)
+
+    # Create the OpenAI client directly to get more control over the response
+    print("\n===== CALLING DEEPSEEK REASONING MODEL =====")
+    client = create_openai_async_client(
+        api_key=api_key,
+        base_url=base_url,
+        client_configs=kwargs.pop("openai_client_configs", {}),
+    )
+
+    # Prepare messages
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.extend(history_messages)
+    messages.append({"role": "user", "content": prompt})
+
+    # Make direct API call to get full response
+    try:
+        response = await client.chat.completions.create(
+            model="deepseek-reasoner", messages=messages, **kwargs
+        )
+
+        # Extract the content from the response
+        content = (
+            response.choices[0].message.content
+            if response.choices and hasattr(response.choices[0].message, "content")
+            else ""
+        )
+
+        # Try to extract reasoning content
+        reasoning_content = ""
+
+        # Print the entire response for debugging
+        print("\n===== DEEPSEEK API RESPONSE STRUCTURE =====")
+        print(f"Response type: {type(response)}")
+        print(f"Response attributes: {dir(response)}")
+        if hasattr(response, "choices") and response.choices:
+            print(f"Message attributes: {dir(response.choices[0].message)}")
+
+        # Try various ways to access reasoning_content
+        try:
+            # Direct access
+            if hasattr(response.choices[0].message, "reasoning_content"):
+                reasoning_content = response.choices[0].message.reasoning_content
+                print("\n===== FOUND REASONING CONTENT DIRECTLY =====")
+
+            # Look in _kwargs dictionary
+            elif hasattr(response.choices[0].message, "_kwargs"):
+                kwargs_dict = response.choices[0].message._kwargs
+                if "reasoning_content" in kwargs_dict:
+                    reasoning_content = kwargs_dict["reasoning_content"]
+                    print("\n===== FOUND REASONING CONTENT IN _KWARGS =====")
+
+            # Check if it's in the model_dump
+            elif hasattr(response, "model_dump"):
+                dump = response.model_dump()
+                print(f"\n===== MODEL DUMP KEYS =====\n{list(dump.keys())}")
+                if "choices" in dump and dump["choices"]:
+                    choice = dump["choices"][0]
+                    if "message" in choice:
+                        message = choice["message"]
+                        if "reasoning_content" in message:
+                            reasoning_content = message["reasoning_content"]
+                            print("\n===== FOUND REASONING CONTENT IN MODEL_DUMP =====")
+
+            # If we have reasoning content, print it
+            if reasoning_content:
+                print("\n===== CHAIN OF THOUGHT REASONING FROM DEEPSEEK =====")
+                print(reasoning_content)
+            else:
+                # Try to extract reasoning from the content itself
+                # If the content includes reasoning before JSON, try to separate it
+                if not content.startswith("[") and "[" in content:
+                    parts = content.split("[", 1)
+                    if parts[0].strip():
+                        reasoning_content = parts[0].strip()
+                        content = "[" + parts[1]
+                        print("\n===== EXTRACTED REASONING FROM CONTENT =====")
+                        print(reasoning_content)
+
+                if not reasoning_content:
+                    print("\n===== NO REASONING CONTENT FOUND =====")
+        except Exception as e:
+            print(f"\n===== ERROR EXTRACTING REASONING CONTENT =====\n{str(e)}")
+
+        if keyword_extraction and content:
+            return locate_json_string_body_from_string(content), reasoning_content
+
+        return content, reasoning_content
+
+    except Exception as e:
+        print(f"\n===== ERROR CALLING DEEPSEEK API =====\n{str(e)}")
+        logger.error(f"Error calling DeepSeek API: {e}")
+        return f"Error: {str(e)}", ""
 
 
 @wrap_embedding_func_with_attrs(embedding_dim=1536, max_token_size=8192)

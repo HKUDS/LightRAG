@@ -88,6 +88,16 @@ class QueryRequest(BaseModel):
         description="Number of complete conversation turns (user-assistant pairs) to consider in the response context.",
     )
 
+    use_reasoning_reranking: Optional[bool] = Field(
+        default=None,
+        description="Whether to use reasoning model-based re-ranking for nodes. When enabled, a reasoning model will evaluate query-node relevance beyond vector similarity.",
+    )
+
+    reasoning_model_name: Optional[str] = Field(
+        default=None,
+        description="The name of the reasoning model to use for node re-ranking. Options: 'deepseek_r1', 'gpt_4o', 'gpt_4o_mini', or any other model supported by the system.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:

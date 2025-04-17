@@ -280,7 +280,7 @@ async def _merge_nodes_then_upsert(
 
     if num_fragment > 1:
         if num_fragment >= force_llm_summary_on_merge:
-            status_message = f"LLM merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+            status_message = f"LLM merge N: {entity_name} | {num_new_fragment}+{num_fragment - num_new_fragment}"
             logger.info(status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:
                 async with pipeline_status_lock:
@@ -295,7 +295,7 @@ async def _merge_nodes_then_upsert(
                 llm_response_cache,
             )
         else:
-            status_message = f"Merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+            status_message = f"Merge N: {entity_name} | {num_new_fragment}+{num_fragment - num_new_fragment}"
             logger.info(status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:
                 async with pipeline_status_lock:
@@ -421,7 +421,7 @@ async def _merge_edges_then_upsert(
 
     if num_fragment > 1:
         if num_fragment >= force_llm_summary_on_merge:
-            status_message = f"LLM merge E: {src_id} - {tgt_id} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+            status_message = f"LLM merge E: {src_id} - {tgt_id} | {num_new_fragment}+{num_fragment - num_new_fragment}"
             logger.info(status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:
                 async with pipeline_status_lock:
@@ -436,7 +436,7 @@ async def _merge_edges_then_upsert(
                 llm_response_cache,
             )
         else:
-            status_message = f"Merge E: {src_id} - {tgt_id} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+            status_message = f"Merge E: {src_id} - {tgt_id} | {num_new_fragment}+{num_fragment - num_new_fragment}"
             logger.info(status_message)
             if pipeline_status is not None and pipeline_status_lock is not None:
                 async with pipeline_status_lock:
@@ -1372,7 +1372,15 @@ async def _get_node_data(
         {**n, "entity_name": k["entity_name"], "rank": d}
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
-    ]  # what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
+    ]
+
+    # Apply reasoning-based re-ranking if enabled
+    if query_param.use_reasoning_reranking and len(node_datas) > 1:
+        node_datas = await _rerank_nodes_with_reasoning(
+            query, node_datas, query_param.reasoning_model_name
+        )
+        logger.info(f"Re-ranked {len(node_datas)} nodes using reasoning model")
+
     # get entitytext chunk
     use_text_units = await _find_most_related_text_unit_from_entities(
         node_datas, query_param, text_chunks_db, knowledge_graph_inst
@@ -1472,6 +1480,174 @@ async def _get_node_data(
         )
     text_units_context = list_of_list_to_csv(text_units_section_list)
     return entities_context, relations_context, text_units_context
+
+
+async def _rerank_nodes_with_reasoning(
+    query: str, node_datas: list[dict], model_name: str = "deepseek_r1"
+) -> list[dict]:
+    """Re-rank nodes using a reasoning model based on their relevance to the query.
+
+    Args:
+        query: The user's query
+        node_datas: List of node data dictionaries with entity information
+        model_name: Name of the reasoning model to use (defaults to DeepSeek R1)
+
+    Returns:
+        Re-ordered list of node data based on reasoning model's ranking
+    """
+    from lightrag.llm.openai import deepseek_r1_complete
+
+    # Don't re-rank if we have 0 or 1 nodes (nothing to reorder)
+    if len(node_datas) <= 1:
+        return node_datas
+
+    logger.info(
+        f"Re-ranking {len(node_datas)} nodes using reasoning model: {model_name}"
+    )
+
+    # Print original ranking order to terminal
+    print("\n===== ORIGINAL NODE RANKING =====")
+    for i, node in enumerate(node_datas[:10]):  # Show top 10 for brevity
+        print(f"  {i + 1}. {node['entity_name']} (degree: {node.get('rank', 0)})")
+        desc = node.get("description", "")
+        if desc and len(desc) > 100:
+            desc = desc[:100] + "..."
+        print(f"     Description: {desc}")
+
+    # Log original ranking order
+    logger.info("Original node ranking:")
+    for i, node in enumerate(node_datas):
+        logger.info(f"  {i + 1}. {node['entity_name']} (degree: {node.get('rank', 0)})")
+
+    logger.debug("Original node ranking (top 10):")
+    for i, node in enumerate(node_datas[:10]):
+        logger.debug(
+            f"  {i + 1}. {node['entity_name']} (degree: {node.get('rank', 0)})"
+        )
+
+    # Prepare nodes for reasoning model in a simplified format
+    nodes_for_ranking = []
+    for node in node_datas:
+        nodes_for_ranking.append(
+            {
+                "entity_name": node["entity_name"],
+                "description": node.get("description", ""),
+                "entity_type": node.get("entity_type", "UNKNOWN"),
+                "degree": node.get("rank", 0),  # Using the node degree as 'rank' here
+            }
+        )
+
+    # Get the reasoning prompt template from PROMPTS
+    reasoning_prompt = PROMPTS["node_reasoning_rerank"].format(
+        query=query, nodes=json.dumps(nodes_for_ranking, indent=2)
+    )
+
+    # Print that we're calling the reasoning model
+    print("\n===== CALLING REASONING MODEL =====")
+    print(f"Query: {query}")
+    print(f"Using model: {model_name}")
+
+    try:
+        # Call the reasoning model
+        logger.info(f"Calling {model_name} for re-ranking...")
+
+        response, reasoning_content = await deepseek_r1_complete(
+            prompt=reasoning_prompt,
+            system_prompt=PROMPTS["node_reasoning_system_prompt"],
+        )
+
+        # Print the chain of thought reasoning if available
+        if reasoning_content:
+            print("\n===== CHAIN OF THOUGHT REASONING =====")
+            print(reasoning_content)
+            logger.info("Chain of thought reasoning:")
+            logger.info(reasoning_content)
+        else:
+            print("\n===== NO CHAIN OF THOUGHT REASONING AVAILABLE =====")
+
+        logger.debug(f"Raw reasoning model response: {response}")
+
+        try:
+            # Parse the JSON response to get the ordered entity names
+            if not response.startswith("["):
+                # Try to find and extract the JSON array from the response
+                json_match = re.search(r"\[(.*?)\]", response, re.DOTALL)
+                if json_match:
+                    array_str = json_match.group(0)
+                    ranked_entities = json.loads(array_str)
+                    logger.debug(f"Extracted JSON array: {array_str}")
+                else:
+                    logger.warning(
+                        "Could not extract JSON array from reasoning model response"
+                    )
+                    print("\n===== COULD NOT EXTRACT RANKING FROM RESPONSE =====")
+                    print("Using original ranking order")
+                    return node_datas  # Return original ranking if parsing fails
+            else:
+                ranked_entities = json.loads(response)
+                logger.debug(f"Parsed JSON response: {ranked_entities}")
+
+            # Reorder node_datas based on the reasoning model's ranking
+            reordered_node_datas = []
+
+            # First add nodes in the order specified by the reasoning model
+            for entity_name in ranked_entities:
+                for node in node_datas:
+                    if (
+                        node["entity_name"] == entity_name
+                        and node not in reordered_node_datas
+                    ):
+                        reordered_node_datas.append(node)
+                        logger.debug(f"Added {entity_name} to re-ranked list")
+
+            # Then add any remaining nodes that weren't ranked (shouldn't happen, but as a fallback)
+            for node in node_datas:
+                if node not in reordered_node_datas:
+                    reordered_node_datas.append(node)
+                    logger.debug(
+                        f"Added missing node {node['entity_name']} to re-ranked list"
+                    )
+
+            # Log the new ranking order
+            logger.info("Re-ranked nodes (reasoning model order):")
+            for i, node in enumerate(reordered_node_datas):
+                logger.info(
+                    f"  {i + 1}. {node['entity_name']} (degree: {node.get('rank', 0)})"
+                )
+
+            # Print the re-ranked order to terminal
+            print("\n===== RE-RANKED NODE ORDER =====")
+            for i, node in enumerate(
+                reordered_node_datas[:10]
+            ):  # Show top 10 for brevity
+                print(
+                    f"  {i + 1}. {node['entity_name']} (degree: {node.get('rank', 0)})"
+                )
+                desc = node.get("description", "")
+                if desc and len(desc) > 100:
+                    desc = desc[:100] + "..."
+                print(f"     Description: {desc}")
+
+            logger.debug("Re-ranked nodes - top 10:")
+            for i, node in enumerate(reordered_node_datas[:10]):
+                logger.debug(
+                    f"  {i + 1}. {node['entity_name']} (degree: {node.get('rank', 0)})"
+                )
+
+            return reordered_node_datas
+
+        except (json.JSONDecodeError, TypeError) as e:
+            logger.warning(f"Error parsing reasoning model response: {e}")
+            logger.debug(f"Raw response: {response}")
+            print("\n===== ERROR PARSING REASONING MODEL RESPONSE =====")
+            print(f"Error: {e}")
+            return node_datas  # Return original ranking if parsing fails
+
+    except Exception as e:
+        logger.warning(f"Error calling reasoning model for node re-ranking: {e}")
+        print("\n===== ERROR CALLING REASONING MODEL =====")
+        print(f"Error: {e}")
+        return node_datas  # Return original ranking if reasoning model fails
 
 
 async def _find_most_related_text_unit_from_entities(
