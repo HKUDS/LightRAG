@@ -297,6 +297,36 @@ class PGKVStorage(BaseKVStorage):
             self.db = None
 
     ################ QUERY METHODS ################
+    async def get_all(self) -> dict[str, Any]:
+        """Get all data from storage
+
+        Returns:
+            Dictionary containing all stored data
+        """
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(f"Unknown namespace for get_all: {self.namespace}")
+            return {}
+
+        sql = f"SELECT * FROM {table_name} WHERE workspace=$1"
+        params = {"workspace": self.db.workspace}
+
+        try:
+            results = await self.db.query(sql, params, multirows=True)
+
+            if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
+                result_dict = {}
+                for row in results:
+                    mode = row["mode"]
+                    if mode not in result_dict:
+                        result_dict[mode] = {}
+                    result_dict[mode][row["id"]] = row
+                return result_dict
+            else:
+                return {row["id"]: row for row in results}
+        except Exception as e:
+            logger.error(f"Error retrieving all data from {self.namespace}: {e}")
+            return {}
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get doc_full data by id."""
