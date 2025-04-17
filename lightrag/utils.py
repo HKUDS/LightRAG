@@ -1385,11 +1385,7 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
     name = re.sub(r"(?<=[a-zA-Z0-9])\s+(?=[\u4e00-\u9fa5])", "", name)
 
     # Remove English quotation marks from the beginning and end
-    if (
-        len(name) >= 2
-        and name.startswith('"')
-        and name.endswith('"')
-    ):
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
         name = name[1:-1]
 
     if is_entity:
