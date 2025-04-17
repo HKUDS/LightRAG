@@ -1049,10 +1049,10 @@ class PGGraphStorage(BaseGraphStorage):
         Returns:
             Normalized node ID suitable for Cypher queries
         """
-        # Remove quotes
-        normalized_id = node_id.strip('"')
         # Escape backslashes
+        normalized_id = node_id
         normalized_id = normalized_id.replace("\\", "\\\\")
+        normalized_id = normalized_id.replace('"', '\\"')
         return normalized_id
 
     async def initialize(self):
