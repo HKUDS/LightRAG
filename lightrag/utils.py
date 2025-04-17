@@ -634,7 +634,10 @@ async def get_best_cached_response(
             and best_prompt
             and best_response is not None
         ):
-            compare_prompt = PROMPTS["similarity_check"].format(
+            similarity_check = hashing_kv.global_config["addon_params"].get(
+                "similarity_check", PROMPTS["similarity_check"]
+            )
+            compare_prompt = similarity_check.format(
                 original_prompt=original_prompt, cached_prompt=best_prompt
             )
 
