@@ -133,10 +133,6 @@ async def test_graph_basic(storage):
     4. 使用 get_edge 读取一条边
     """
     try:
-        # 清理之前的测试数据
-        print("清理之前的测试数据...")
-        await storage.drop()
-
         # 1. 插入第一个节点
         node1_id = "人工智能"
         node1_data = {
@@ -251,10 +247,6 @@ async def test_graph_advanced(storage):
     9. 使用 drop 清理数据
     """
     try:
-        # 清理之前的测试数据
-        print("清理之前的测试数据...\n")
-        await storage.drop()
-
         # 1. 插入测试数据
         # 插入节点1: 人工智能
         node1_id = "人工智能"
@@ -445,10 +437,6 @@ async def test_graph_batch_operations(storage):
     5. 使用 get_nodes_edges_batch 批量获取多个节点的所有边
     """
     try:
-        # 清理之前的测试数据
-        print("清理之前的测试数据...\n")
-        await storage.drop()
-
         # 1. 插入测试数据
         # 插入节点1: 人工智能
         node1_id = "人工智能"
@@ -776,10 +764,6 @@ async def test_graph_special_characters(storage):
     3. 验证特殊字符是否被正确保存和检索
     """
     try:
-        # 清理之前的测试数据
-        print("清理之前的测试数据...\n")
-        await storage.drop()
-
         # 1. 测试节点名称中的特殊字符
         node1_id = "包含'单引号'的节点"
         node1_data = {
@@ -792,7 +776,7 @@ async def test_graph_special_characters(storage):
         await storage.upsert_node(node1_id, node1_data)
 
         # 2. 测试节点名称中的双引号
-        node2_id = "包含\"双引号\"的节点"
+        node2_id = '包含"双引号"的节点'
         node2_data = {
             "entity_id": node2_id,
             "description": "这个描述同时包含'单引号'和\"双引号\"以及\\反斜杠\\路径",
@@ -824,7 +808,7 @@ async def test_graph_special_characters(storage):
 
         # 5. 测试边描述中的更复杂特殊字符组合
         edge2_data = {
-            "relationship": "复杂\"关系\"\\类型",
+            "relationship": '复杂"关系"\\类型',
             "weight": 0.8,
             "description": "包含SQL注入尝试: SELECT * FROM users WHERE name='admin'--",
         }
@@ -842,13 +826,17 @@ async def test_graph_special_characters(storage):
             if node_props:
                 print(f"成功读取节点: {node_id}")
                 print(f"节点描述: {node_props.get('description', '无描述')}")
-                
+
                 # 验证节点ID是否正确保存
-                assert node_props.get("entity_id") == node_id, f"节点ID不匹配: 期望 {node_id}, 实际 {node_props.get('entity_id')}"
-                
+                assert (
+                    node_props.get("entity_id") == node_id
+                ), f"节点ID不匹配: 期望 {node_id}, 实际 {node_props.get('entity_id')}"
+
                 # 验证描述是否正确保存
-                assert node_props.get("description") == original_data["description"], f"节点描述不匹配: 期望 {original_data['description']}, 实际 {node_props.get('description')}"
-                
+                assert (
+                    node_props.get("description") == original_data["description"]
+                ), f"节点描述不匹配: 期望 {original_data['description']}, 实际 {node_props.get('description')}"
+
                 print(f"节点 {node_id} 特殊字符验证成功")
             else:
                 print(f"读取节点属性失败: {node_id}")
@@ -861,13 +849,17 @@ async def test_graph_special_characters(storage):
             print(f"成功读取边: {node1_id} -> {node2_id}")
             print(f"边关系: {edge1_props.get('relationship', '无关系')}")
             print(f"边描述: {edge1_props.get('description', '无描述')}")
-            
+
             # 验证边关系是否正确保存
-            assert edge1_props.get("relationship") == edge1_data["relationship"], f"边关系不匹配: 期望 {edge1_data['relationship']}, 实际 {edge1_props.get('relationship')}"
-            
+            assert (
+                edge1_props.get("relationship") == edge1_data["relationship"]
+            ), f"边关系不匹配: 期望 {edge1_data['relationship']}, 实际 {edge1_props.get('relationship')}"
+
             # 验证边描述是否正确保存
-            assert edge1_props.get("description") == edge1_data["description"], f"边描述不匹配: 期望 {edge1_data['description']}, 实际 {edge1_props.get('description')}"
-            
+            assert (
+                edge1_props.get("description") == edge1_data["description"]
+            ), f"边描述不匹配: 期望 {edge1_data['description']}, 实际 {edge1_props.get('description')}"
+
             print(f"边 {node1_id} -> {node2_id} 特殊字符验证成功")
         else:
             print(f"读取边属性失败: {node1_id} -> {node2_id}")
@@ -878,13 +870,17 @@ async def test_graph_special_characters(storage):
             print(f"成功读取边: {node2_id} -> {node3_id}")
             print(f"边关系: {edge2_props.get('relationship', '无关系')}")
             print(f"边描述: {edge2_props.get('description', '无描述')}")
-            
+
             # 验证边关系是否正确保存
-            assert edge2_props.get("relationship") == edge2_data["relationship"], f"边关系不匹配: 期望 {edge2_data['relationship']}, 实际 {edge2_props.get('relationship')}"
-            
+            assert (
+                edge2_props.get("relationship") == edge2_data["relationship"]
+            ), f"边关系不匹配: 期望 {edge2_data['relationship']}, 实际 {edge2_props.get('relationship')}"
+
             # 验证边描述是否正确保存
-            assert edge2_props.get("description") == edge2_data["description"], f"边描述不匹配: 期望 {edge2_data['description']}, 实际 {edge2_props.get('description')}"
-            
+            assert (
+                edge2_props.get("description") == edge2_data["description"]
+            ), f"边描述不匹配: 期望 {edge2_data['description']}, 实际 {edge2_props.get('description')}"
+
             print(f"边 {node2_id} -> {node3_id} 特殊字符验证成功")
         else:
             print(f"读取边属性失败: {node2_id} -> {node3_id}")
@@ -907,10 +903,6 @@ async def test_graph_undirected_property(storage):
     4. 验证批量操作中的无向图特性
     """
     try:
-        # 清理之前的测试数据
-        print("清理之前的测试数据...\n")
-        await storage.drop()
-
         # 1. 插入测试数据
         # 插入节点1: 计算机科学
         node1_id = "计算机科学"
@@ -1131,6 +1123,12 @@ async def main():
 
         choice = input("\n请输入选项 (1/2/3/4/5/6): ")
 
+        # 在执行测试前清理数据
+        if choice in ["1", "2", "3", "4", "5", "6"]:
+            ASCIIColors.yellow("\n执行测试前清理数据...")
+            await storage.drop()
+            ASCIIColors.green("数据清理完成\n")
+
         if choice == "1":
             await test_graph_basic(storage)
         elif choice == "2":
@@ -1155,8 +1153,10 @@ async def main():
 
                     if batch_result:
                         ASCIIColors.cyan("\n=== 开始无向图特性测试 ===")
-                        undirected_result = await test_graph_undirected_property(storage)
-                        
+                        undirected_result = await test_graph_undirected_property(
+                            storage
+                        )
+
                         if undirected_result:
                             ASCIIColors.cyan("\n=== 开始特殊字符测试 ===")
                             await test_graph_special_characters(storage)
