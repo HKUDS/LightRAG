@@ -582,6 +582,7 @@ class LightRAG:
             # Clean input texts
             full_text = clean_text(full_text)
             text_chunks = [clean_text(chunk) for chunk in text_chunks]
+            file_path = ""
 
             # Process cleaned texts
             if doc_id is None:
@@ -600,12 +601,19 @@ class LightRAG:
             logger.info(f"Inserting {len(new_docs)} docs")
 
             inserting_chunks: dict[str, Any] = {}
-            for chunk_text in text_chunks:
+            for index, chunk_text in enumerate(text_chunks):
                 chunk_key = compute_mdhash_id(chunk_text, prefix="chunk-")
-
+                tokens = len(
+                    encode_string_by_tiktoken(
+                        chunk_text, model_name=self.tiktoken_model_name
+                    )
+                )
                 inserting_chunks[chunk_key] = {
                     "content": chunk_text,
                     "full_doc_id": doc_key,
+                    "tokens": tokens,
+                    "chunk_order_index": index,
+                    "file_path": file_path,
                 }
 
             doc_ids = set(inserting_chunks.keys())
