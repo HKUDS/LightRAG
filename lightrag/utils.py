@@ -424,7 +424,7 @@ def is_float_regex(value: str) -> bool:
 
 
 def truncate_list_by_token_size(
-    list_data: list[Any], key: Callable[[Any], str], max_token_size: int
+    list_data: list[Any], key: Callable[[Any], str], max_token_size: int, tokenizer: Tokenizer
 ) -> list[int]:
     """Truncate a list of data by token size"""
     if max_token_size <= 0:
