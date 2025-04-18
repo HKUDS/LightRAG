@@ -290,7 +290,7 @@
         "label": "標籤",
         "placeholder": "搜尋標籤...",
         "andOthers": "還有 {count} 個",
-        "refreshTooltip": "重新載入圖形資料"
+        "refreshTooltip": "重載圖形數據(新增檔案後需重載)"
       },
       "emptyGraph": "圖譜資料為空"
     },

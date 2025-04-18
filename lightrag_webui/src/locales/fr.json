@@ -290,7 +290,7 @@
       "label": "Étiquette",
       "placeholder": "Rechercher des étiquettes...",
       "andOthers": "Et {{count}} autres",
-      "refreshTooltip": "Recharger les données du graphe"
+      "refreshTooltip": "Recharger les données (Après l'ajout de fichier)"
     },
     "emptyGraph": "Vide (Essayez de recharger)"
   },
