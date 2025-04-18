@@ -293,7 +293,7 @@
       "andOthers": "还有 {count} 个",
       "refreshTooltip": "重新加载图形数据"
     },
-    "emptyGraph": "图谱数据为空"
+    "emptyGraph": "無數據(請重新載入)"
   },
   "retrievePanel": {
     "chatMessage": {
