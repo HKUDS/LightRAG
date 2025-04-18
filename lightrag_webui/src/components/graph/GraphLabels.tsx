@@ -51,7 +51,7 @@ const GraphLabels = () => {
 
         // Add middle-content matching if results are few
         // This enables matching content in the middle of text, not just from the beginning
-        if (result.length < 5) {
+        if (result.length < 15) {
           // Get already matched labels to avoid duplicates
           const matchedLabels = new Set(result)
 
