@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
-from lightrag.utils import TiktokenTokenizer 
+from lightrag.utils import TiktokenTokenizer
 from lightrag.api.utils_api import ollama_server_infos, get_combined_auth_dependency
 from fastapi import Depends
 
