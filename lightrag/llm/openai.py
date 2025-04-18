@@ -37,6 +37,13 @@ from lightrag.api import __api_version__
 import numpy as np
 from typing import Any, Union
 
+from dotenv import load_dotenv
+
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
+
 
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""

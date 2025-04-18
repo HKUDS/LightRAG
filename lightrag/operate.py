@@ -16,6 +16,7 @@ from .utils import (
     encode_string_by_tiktoken,
     is_float_regex,
     list_of_list_to_csv,
+    normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
     truncate_list_by_token_size,
@@ -156,12 +157,15 @@ async def _handle_single_entity_extraction(
         return None
 
     # Clean and validate entity name
-    entity_name = clean_str(record_attributes[1]).strip('"')
-    if not entity_name.strip():
+    entity_name = clean_str(record_attributes[1]).strip()
+    if not entity_name:
         logger.warning(
             f"Entity extraction error: empty entity name in: {record_attributes}"
         )
         return None
+
+    # Normalize entity name
+    entity_name = normalize_extracted_info(entity_name, is_entity=True)
 
     # Clean and validate entity type
     entity_type = clean_str(record_attributes[2]).strip('"')
@@ -172,7 +176,9 @@ async def _handle_single_entity_extraction(
         return None
 
     # Clean and validate description
-    entity_description = clean_str(record_attributes[3]).strip('"')
+    entity_description = clean_str(record_attributes[3])
+    entity_description = normalize_extracted_info(entity_description)
+
     if not entity_description.strip():
         logger.warning(
             f"Entity extraction error: empty description for entity '{entity_name}' of type '{entity_type}'"
@@ -196,13 +202,20 @@ async def _handle_single_relationship_extraction(
     if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
         return None
     # add this record as edge
-    source = clean_str(record_attributes[1]).strip('"')
-    target = clean_str(record_attributes[2]).strip('"')
-    edge_description = clean_str(record_attributes[3]).strip('"')
-    edge_keywords = clean_str(record_attributes[4]).strip('"')
+    source = clean_str(record_attributes[1])
+    target = clean_str(record_attributes[2])
+
+    # Normalize source and target entity names
+    source = normalize_extracted_info(source, is_entity=True)
+    target = normalize_extracted_info(target, is_entity=True)
+
+    edge_description = clean_str(record_attributes[3])
+    edge_description = normalize_extracted_info(edge_description)
+
+    edge_keywords = clean_str(record_attributes[4]).strip('"').strip("'")
     edge_source_id = chunk_key
     weight = (
-        float(record_attributes[-1].strip('"'))
+        float(record_attributes[-1].strip('"').strip("'"))
         if is_float_regex(record_attributes[-1])
         else 1.0
     )
@@ -642,7 +655,7 @@ async def extract_entities(
         processed_chunks += 1
         entities_count = len(maybe_nodes)
         relations_count = len(maybe_edges)
-        log_message = f"Chk {processed_chunks}/{total_chunks}: extracted {entities_count} Ent + {relations_count} Rel (deduplicated)"
+        log_message = f"Chk {processed_chunks}/{total_chunks}: extracted {entities_count} Ent + {relations_count} Rel"
         logger.info(log_message)
         if pipeline_status is not None:
             async with pipeline_status_lock:
@@ -653,8 +666,33 @@ async def extract_entities(
         return maybe_nodes, maybe_edges
 
     # Handle all chunks in parallel and collect results
-    tasks = [_process_single_content(c) for c in ordered_chunks]
-    chunk_results = await asyncio.gather(*tasks)
+    # Create tasks for all chunks
+    tasks = []
+    for c in ordered_chunks:
+        task = asyncio.create_task(_process_single_content(c))
+        tasks.append(task)
+
+    # Wait for tasks to complete or for the first exception to occur
+    # This allows us to cancel remaining tasks if any task fails
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+    # Check if any task raised an exception
+    for task in done:
+        if task.exception():
+            # If a task failed, cancel all pending tasks
+            # This prevents unnecessary processing since the parent function will abort anyway
+            for pending_task in pending:
+                pending_task.cancel()
+
+            # Wait for cancellation to complete
+            if pending:
+                await asyncio.wait(pending)
+
+            # Re-raise the exception to notify the caller
+            raise task.exception()
+
+    # If all tasks completed successfully, collect results
+    chunk_results = [task.result() for task in tasks]
 
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
@@ -846,20 +884,22 @@ async def kg_query(
             .strip()
         )
 
-    # Save to cache
-    await save_to_cache(
-        hashing_kv,
-        CacheData(
-            args_hash=args_hash,
-            content=response,
-            prompt=query,
-            quantized=quantized,
-            min_val=min_val,
-            max_val=max_val,
-            mode=query_param.mode,
-            cache_type="query",
-        ),
-    )
+    if hashing_kv.global_config.get("enable_llm_cache"):
+        # Save to cache
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=response,
+                prompt=query,
+                quantized=quantized,
+                min_val=min_val,
+                max_val=max_val,
+                mode=query_param.mode,
+                cache_type="query",
+            ),
+        )
+
     return response
 
 
@@ -976,19 +1016,21 @@ async def extract_keywords_only(
             "high_level_keywords": hl_keywords,
             "low_level_keywords": ll_keywords,
         }
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=json.dumps(cache_data),
-                prompt=text,
-                quantized=quantized,
-                min_val=min_val,
-                max_val=max_val,
-                mode=param.mode,
-                cache_type="keywords",
-            ),
-        )
+        if hashing_kv.global_config.get("enable_llm_cache"):
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=json.dumps(cache_data),
+                    prompt=text,
+                    quantized=quantized,
+                    min_val=min_val,
+                    max_val=max_val,
+                    mode=param.mode,
+                    cache_type="keywords",
+                ),
+            )
+
     return hl_keywords, ll_keywords
 
 
@@ -1192,20 +1234,21 @@ async def mix_kg_vector_query(
             .strip()
         )
 
-        # 7. Save cache - Only cache after collecting complete response
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=response,
-                prompt=query,
-                quantized=quantized,
-                min_val=min_val,
-                max_val=max_val,
-                mode="mix",
-                cache_type="query",
-            ),
-        )
+        if hashing_kv.global_config.get("enable_llm_cache"):
+            # 7. Save cache - Only cache after collecting complete response
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=response,
+                    prompt=query,
+                    quantized=quantized,
+                    min_val=min_val,
+                    max_val=max_val,
+                    mode="mix",
+                    cache_type="query",
+                ),
+            )
 
     return response
 
@@ -1237,21 +1280,19 @@ async def _build_query_context(
             query_param,
         )
     else:  # hybrid mode
-        ll_data, hl_data = await asyncio.gather(
-            _get_node_data(
-                ll_keywords,
-                knowledge_graph_inst,
-                entities_vdb,
-                text_chunks_db,
-                query_param,
-            ),
-            _get_edge_data(
-                hl_keywords,
-                knowledge_graph_inst,
-                relationships_vdb,
-                text_chunks_db,
-                query_param,
-            ),
+        ll_data = await _get_node_data(
+            ll_keywords,
+            knowledge_graph_inst,
+            entities_vdb,
+            text_chunks_db,
+            query_param,
+        )
+        hl_data = await _get_edge_data(
+            hl_keywords,
+            knowledge_graph_inst,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
         )
 
         (
@@ -1310,15 +1351,19 @@ async def _get_node_data(
 
     if not len(results):
         return "", "", ""
-    # get entity information
-    node_datas, node_degrees = await asyncio.gather(
-        asyncio.gather(
-            *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
-        ),
-        asyncio.gather(
-            *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
-        ),
+
+    # Extract all entity IDs from your results list
+    node_ids = [r["entity_name"] for r in results]
+
+    # Call the batch node retrieval and degree functions concurrently.
+    nodes_dict, degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_nodes_batch(node_ids),
+        knowledge_graph_inst.node_degrees_batch(node_ids),
     )
+
+    # Now, if you need the node data and degree in order:
+    node_datas = [nodes_dict.get(nid) for nid in node_ids]
+    node_degrees = [degrees_dict.get(nid, 0) for nid in node_ids]
 
     if not all([n is not None for n in node_datas]):
         logger.warning("Some nodes are missing, maybe the storage is damaged")
@@ -1329,13 +1374,11 @@ async def _get_node_data(
         if n is not None
     ]  # what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
     # get entitytext chunk
-    use_text_units, use_relations = await asyncio.gather(
-        _find_most_related_text_unit_from_entities(
-            node_datas, query_param, text_chunks_db, knowledge_graph_inst
-        ),
-        _find_most_related_edges_from_entities(
-            node_datas, query_param, knowledge_graph_inst
-        ),
+    use_text_units = await _find_most_related_text_unit_from_entities(
+        node_datas, query_param, text_chunks_db, knowledge_graph_inst
+    )
+    use_relations = await _find_most_related_edges_from_entities(
+        node_datas, query_param, knowledge_graph_inst
     )
 
     len_node_datas = len(node_datas)
@@ -1442,9 +1485,12 @@ async def _find_most_related_text_unit_from_entities(
         for dp in node_datas
         if dp["source_id"] is not None
     ]
-    edges = await asyncio.gather(
-        *[knowledge_graph_inst.get_node_edges(dp["entity_name"]) for dp in node_datas]
-    )
+
+    node_names = [dp["entity_name"] for dp in node_datas]
+    batch_edges_dict = await knowledge_graph_inst.get_nodes_edges_batch(node_names)
+    # Build the edges list in the same order as node_datas.
+    edges = [batch_edges_dict.get(name, []) for name in node_names]
+
     all_one_hop_nodes = set()
     for this_edges in edges:
         if not this_edges:
@@ -1452,9 +1498,14 @@ async def _find_most_related_text_unit_from_entities(
         all_one_hop_nodes.update([e[1] for e in this_edges])
 
     all_one_hop_nodes = list(all_one_hop_nodes)
-    all_one_hop_nodes_data = await asyncio.gather(
-        *[knowledge_graph_inst.get_node(e) for e in all_one_hop_nodes]
+
+    # Batch retrieve one-hop node data using get_nodes_batch
+    all_one_hop_nodes_data_dict = await knowledge_graph_inst.get_nodes_batch(
+        all_one_hop_nodes
     )
+    all_one_hop_nodes_data = [
+        all_one_hop_nodes_data_dict.get(e) for e in all_one_hop_nodes
+    ]
 
     # Add null check for node data
     all_one_hop_text_units_lookup = {
@@ -1472,7 +1523,7 @@ async def _find_most_related_text_unit_from_entities(
                 all_text_units_lookup[c_id] = index
                 tasks.append((c_id, index, this_edges))
 
-    # Process in batches of 25 tasks at a time to avoid overwhelming resources
+    # Process in batches tasks at a time to avoid overwhelming resources
     batch_size = 5
     results = []
 
@@ -1532,30 +1583,44 @@ async def _find_most_related_edges_from_entities(
     query_param: QueryParam,
     knowledge_graph_inst: BaseGraphStorage,
 ):
-    all_related_edges = await asyncio.gather(
-        *[knowledge_graph_inst.get_node_edges(dp["entity_name"]) for dp in node_datas]
-    )
+    node_names = [dp["entity_name"] for dp in node_datas]
+    batch_edges_dict = await knowledge_graph_inst.get_nodes_edges_batch(node_names)
+
     all_edges = []
     seen = set()
 
-    for this_edges in all_related_edges:
+    for node_name in node_names:
+        this_edges = batch_edges_dict.get(node_name, [])
         for e in this_edges:
             sorted_edge = tuple(sorted(e))
             if sorted_edge not in seen:
                 seen.add(sorted_edge)
                 all_edges.append(sorted_edge)
 
-    all_edges_pack, all_edges_degree = await asyncio.gather(
-        asyncio.gather(*[knowledge_graph_inst.get_edge(e[0], e[1]) for e in all_edges]),
-        asyncio.gather(
-            *[knowledge_graph_inst.edge_degree(e[0], e[1]) for e in all_edges]
-        ),
+    # Prepare edge pairs in two forms:
+    # For the batch edge properties function, use dicts.
+    edge_pairs_dicts = [{"src": e[0], "tgt": e[1]} for e in all_edges]
+    # For edge degrees, use tuples.
+    edge_pairs_tuples = list(all_edges)  # all_edges is already a list of tuples
+
+    # Call the batched functions concurrently.
+    edge_data_dict, edge_degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_edges_batch(edge_pairs_dicts),
+        knowledge_graph_inst.edge_degrees_batch(edge_pairs_tuples),
     )
-    all_edges_data = [
-        {"src_tgt": k, "rank": d, **v}
-        for k, v, d in zip(all_edges, all_edges_pack, all_edges_degree)
-        if v is not None
-    ]
+
+    # Reconstruct edge_datas list in the same order as the deduplicated results.
+    all_edges_data = []
+    for pair in all_edges:
+        edge_props = edge_data_dict.get(pair)
+        if edge_props is not None:
+            combined = {
+                "src_tgt": pair,
+                "rank": edge_degrees_dict.get(pair, 0),
+                **edge_props,
+            }
+            all_edges_data.append(combined)
+
     all_edges_data = sorted(
         all_edges_data, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
@@ -1590,29 +1655,34 @@ async def _get_edge_data(
     if not len(results):
         return "", "", ""
 
-    edge_datas, edge_degree = await asyncio.gather(
-        asyncio.gather(
-            *[knowledge_graph_inst.get_edge(r["src_id"], r["tgt_id"]) for r in results]
-        ),
-        asyncio.gather(
-            *[
-                knowledge_graph_inst.edge_degree(r["src_id"], r["tgt_id"])
-                for r in results
-            ]
-        ),
+    # Prepare edge pairs in two forms:
+    # For the batch edge properties function, use dicts.
+    edge_pairs_dicts = [{"src": r["src_id"], "tgt": r["tgt_id"]} for r in results]
+    # For edge degrees, use tuples.
+    edge_pairs_tuples = [(r["src_id"], r["tgt_id"]) for r in results]
+
+    # Call the batched functions concurrently.
+    edge_data_dict, edge_degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_edges_batch(edge_pairs_dicts),
+        knowledge_graph_inst.edge_degrees_batch(edge_pairs_tuples),
     )
 
-    edge_datas = [
-        {
-            "src_id": k["src_id"],
-            "tgt_id": k["tgt_id"],
-            "rank": d,
-            "created_at": k.get("__created_at__", None),
-            **v,
-        }
-        for k, v, d in zip(results, edge_datas, edge_degree)
-        if v is not None
-    ]
+    # Reconstruct edge_datas list in the same order as results.
+    edge_datas = []
+    for k in results:
+        pair = (k["src_id"], k["tgt_id"])
+        edge_props = edge_data_dict.get(pair)
+        if edge_props is not None:
+            # Use edge degree from the batch as rank.
+            combined = {
+                "src_id": k["src_id"],
+                "tgt_id": k["tgt_id"],
+                "rank": edge_degrees_dict.get(pair, k.get("rank", 0)),
+                "created_at": k.get("__created_at__", None),
+                **edge_props,
+            }
+            edge_datas.append(combined)
+
     edge_datas = sorted(
         edge_datas, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
@@ -1718,25 +1788,23 @@ async def _find_most_related_entities_from_relationships(
             entity_names.append(e["tgt_id"])
             seen.add(e["tgt_id"])
 
-    node_datas, node_degrees = await asyncio.gather(
-        asyncio.gather(
-            *[
-                knowledge_graph_inst.get_node(entity_name)
-                for entity_name in entity_names
-            ]
-        ),
-        asyncio.gather(
-            *[
-                knowledge_graph_inst.node_degree(entity_name)
-                for entity_name in entity_names
-            ]
-        ),
+    # Batch approach: Retrieve nodes and their degrees concurrently with one query each.
+    nodes_dict, degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_nodes_batch(entity_names),
+        knowledge_graph_inst.node_degrees_batch(entity_names),
     )
-    node_datas = [
-        {**n, "entity_name": k, "rank": d}
-        for k, n, d in zip(entity_names, node_datas, node_degrees)
-        if n is not None
-    ]
+
+    # Rebuild the list in the same order as entity_names
+    node_datas = []
+    for entity_name in entity_names:
+        node = nodes_dict.get(entity_name)
+        degree = degrees_dict.get(entity_name, 0)
+        if node is None:
+            logger.warning(f"Node '{entity_name}' not found in batch retrieval.")
+            continue
+        # Combine the node data with the entity name and computed degree (as rank)
+        combined = {**node, "entity_name": entity_name, "rank": degree}
+        node_datas.append(combined)
 
     len_node_datas = len(node_datas)
     node_datas = truncate_list_by_token_size(
@@ -1932,20 +2000,21 @@ async def naive_query(
             .strip()
         )
 
-    # Save to cache
-    await save_to_cache(
-        hashing_kv,
-        CacheData(
-            args_hash=args_hash,
-            content=response,
-            prompt=query,
-            quantized=quantized,
-            min_val=min_val,
-            max_val=max_val,
-            mode=query_param.mode,
-            cache_type="query",
-        ),
-    )
+    if hashing_kv.global_config.get("enable_llm_cache"):
+        # Save to cache
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=response,
+                prompt=query,
+                quantized=quantized,
+                min_val=min_val,
+                max_val=max_val,
+                mode=query_param.mode,
+                cache_type="query",
+            ),
+        )
 
     return response
 
@@ -2080,20 +2149,21 @@ async def kg_query_with_keywords(
             .strip()
         )
 
-        # 7. Save cache - 只有在收集完整响应后才缓存
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=response,
-                prompt=query,
-                quantized=quantized,
-                min_val=min_val,
-                max_val=max_val,
-                mode=query_param.mode,
-                cache_type="query",
-            ),
-        )
+        if hashing_kv.global_config.get("enable_llm_cache"):
+            # 7. Save cache - 只有在收集完整响应后才缓存
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=response,
+                    prompt=query,
+                    quantized=quantized,
+                    min_val=min_val,
+                    max_val=max_val,
+                    mode=query_param.mode,
+                    cache_type="query",
+                ),
+            )
 
     return response
 
