@@ -88,9 +88,7 @@ def chunking_by_token_size(
         for index, start in enumerate(
             range(0, len(tokens), max_token_size - overlap_token_size)
         ):
-            chunk_content = tokenizer.decode(
-                tokens[start : start + max_token_size]
-            )
+            chunk_content = tokenizer.decode(tokens[start : start + max_token_size])
             results.append(
                 {
                     "tokens": min(max_token_size, len(tokens) - start),
@@ -126,9 +124,7 @@ async def _handle_entity_relation_summary(
     if len(tokens) < summary_max_tokens:  # No need for summary
         return description
     prompt_template = PROMPTS["summarize_entity_descriptions"]
-    use_description = tokenizer.decode(
-        tokens[:llm_max_tokens]
-    )
+    use_description = tokenizer.decode(tokens[:llm_max_tokens])
     context_base = dict(
         entity_name=entity_or_relation_name,
         description_list=use_description.split(GRAPH_FIELD_SEP),
@@ -1378,10 +1374,15 @@ async def _get_node_data(
     ]  # what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
     # get entitytext chunk
     use_text_units = await _find_most_related_text_unit_from_entities(
-        node_datas, query_param, text_chunks_db, knowledge_graph_inst,
+        node_datas,
+        query_param,
+        text_chunks_db,
+        knowledge_graph_inst,
     )
     use_relations = await _find_most_related_edges_from_entities(
-        node_datas, query_param, knowledge_graph_inst,
+        node_datas,
+        query_param,
+        knowledge_graph_inst,
     )
 
     tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
@@ -1703,10 +1704,15 @@ async def _get_edge_data(
     )
     use_entities, use_text_units = await asyncio.gather(
         _find_most_related_entities_from_relationships(
-            edge_datas, query_param, knowledge_graph_inst,
+            edge_datas,
+            query_param,
+            knowledge_graph_inst,
         ),
         _find_related_text_unit_from_relationships(
-            edge_datas, query_param, text_chunks_db, knowledge_graph_inst,
+            edge_datas,
+            query_param,
+            text_chunks_db,
+            knowledge_graph_inst,
         ),
     )
     logger.info(

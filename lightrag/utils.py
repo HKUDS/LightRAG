@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
-from typing import Any, Protocol, Callable, TYPE_CHECKING, List, Optional, Union
+from typing import Any, Protocol, Callable, TYPE_CHECKING, List
 import xml.etree.ElementTree as ET
 import numpy as np
 from lightrag.prompt import PROMPTS
@@ -311,6 +311,7 @@ class TokenizerInterface(Protocol):
     """
     Defines the interface for a tokenizer, requiring encode and decode methods.
     """
+
     def encode(self, content: str) -> List[int]:
         """Encodes a string into a list of tokens."""
         ...
@@ -319,10 +320,12 @@ class TokenizerInterface(Protocol):
         """Decodes a list of tokens into a string."""
         ...
 
+
 class Tokenizer:
     """
     A wrapper around a tokenizer to provide a consistent interface for encoding and decoding.
     """
+
     def __init__(self, model_name: str, tokenizer: TokenizerInterface):
         """
         Initializes the Tokenizer with a tokenizer model name and a tokenizer instance.
@@ -363,6 +366,7 @@ class TiktokenTokenizer(Tokenizer):
     """
     A Tokenizer implementation using the tiktoken library.
     """
+
     def __init__(self, model_name: str = "gpt-4o-mini"):
         """
         Initializes the TiktokenTokenizer with a specified model name.
@@ -385,9 +389,7 @@ class TiktokenTokenizer(Tokenizer):
             tokenizer = tiktoken.encoding_for_model(model_name)
             super().__init__(model_name=model_name, tokenizer=tokenizer)
         except KeyError:
-            raise ValueError(
-                f"Invalid model_name: {model_name}."
-            )
+            raise ValueError(f"Invalid model_name: {model_name}.")
 
 
 def pack_user_ass_to_openai_messages(*args: str):
@@ -424,7 +426,10 @@ def is_float_regex(value: str) -> bool:
 
 
 def truncate_list_by_token_size(
-    list_data: list[Any], key: Callable[[Any], str], max_token_size: int, tokenizer: Tokenizer
+    list_data: list[Any],
+    key: Callable[[Any], str],
+    max_token_size: int,
+    tokenizer: Tokenizer,
 ) -> list[int]:
     """Truncate a list of data by token size"""
     if max_token_size <= 0:

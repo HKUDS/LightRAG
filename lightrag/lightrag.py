@@ -7,7 +7,18 @@ import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, AsyncIterator, Callable, Iterator, cast, final, Literal, Optional, List, Dict
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Iterator,
+    cast,
+    final,
+    Literal,
+    Optional,
+    List,
+    Dict,
+)
 
 from lightrag.kg import (
     STORAGES,
@@ -1147,11 +1158,7 @@ class LightRAG:
             for chunk_data in custom_kg.get("chunks", []):
                 chunk_content = clean_text(chunk_data["content"])
                 source_id = chunk_data["source_id"]
-                tokens = len(
-                    self.tokenizer.encode(
-                        chunk_content
-                    )
-                )
+                tokens = len(self.tokenizer.encode(chunk_content))
                 chunk_order_index = (
                     0
                     if "chunk_order_index" not in chunk_data.keys()
