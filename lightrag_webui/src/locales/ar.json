@@ -292,7 +292,7 @@
       "andOthers": "و {{count}} آخرون",
       "refreshTooltip": "إعادة تحميل بيانات الرسم البياني"
     },
-    "emptyGraph": "الرسم البياني فارغ"
+    "emptyGraph": "فارغ (حاول إعادة التحميل)"
   },
   "retrievePanel": {
     "chatMessage": {

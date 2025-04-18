@@ -292,7 +292,7 @@
       "andOthers": "Et {{count}} autres",
       "refreshTooltip": "Recharger les données du graphe"
     },
-    "emptyGraph": "Le graphe est vide"
+    "emptyGraph": "Vide (Essayez de recharger)"
   },
   "retrievePanel": {
     "chatMessage": {

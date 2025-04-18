@@ -292,7 +292,7 @@
       "andOthers": "And {count} others",
       "refreshTooltip": "Reload graph data"
     },
-    "emptyGraph": "Graph Is Empty"
+    "emptyGraph": "Empty(Try Reload Again)"
   },
   "retrievePanel": {
     "chatMessage": {
