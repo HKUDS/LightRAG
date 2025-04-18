@@ -628,11 +628,7 @@ class LightRAG:
             inserting_chunks: dict[str, Any] = {}
             for index, chunk_text in enumerate(text_chunks):
                 chunk_key = compute_mdhash_id(chunk_text, prefix="chunk-")
-                tokens = len(
-                    encode_string_by_tiktoken(
-                        chunk_text, model_name=self.tiktoken_model_name
-                    )
-                )
+                tokens = len(self.tokenizer.encode(chunk_text))
                 inserting_chunks[chunk_key] = {
                     "content": chunk_text,
                     "full_doc_id": doc_key,
