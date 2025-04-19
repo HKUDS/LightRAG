@@ -7,7 +7,18 @@ import warnings
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from functools import partial
-from typing import Any, AsyncIterator, Callable, Iterator, cast, final, Literal
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Iterator,
+    cast,
+    final,
+    Literal,
+    Optional,
+    List,
+    Dict,
+)
 
 from lightrag.kg import (
     STORAGES,
@@ -41,11 +52,12 @@ from .operate import (
 )
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
 from .utils import (
+    Tokenizer,
+    TiktokenTokenizer,
     EmbeddingFunc,
     always_get_an_event_loop,
     compute_mdhash_id,
     convert_response_to_json,
-    encode_string_by_tiktoken,
     lazy_external_import,
     limit_async_func_call,
     get_content_summary,
@@ -122,33 +134,38 @@ class LightRAG:
     )
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
 
-    tiktoken_model_name: str = field(default="gpt-4o-mini")
-    """Model name used for tokenization when chunking text."""
+    tokenizer: Optional[Tokenizer] = field(default=None)
+    """
+    A function that returns a Tokenizer instance.
+    If None, and a `tiktoken_model_name` is provided, a TiktokenTokenizer will be created.
+    If both are None, the default TiktokenTokenizer is used.
+    """
 
-    """Maximum number of tokens used for summarizing extracted entities."""
+    tiktoken_model_name: str = field(default="gpt-4o-mini")
+    """Model name used for tokenization when chunking text with tiktoken. Defaults to `gpt-4o-mini`."""
 
     chunking_func: Callable[
         [
+            Tokenizer,
             str,
-            str | None,
+            Optional[str],
             bool,
             int,
             int,
-            str,
         ],
-        list[dict[str, Any]],
+        List[Dict[str, Any]],
     ] = field(default_factory=lambda: chunking_by_token_size)
     """
     Custom chunking function for splitting text into chunks before processing.
 
     The function should take the following parameters:
 
+        - `tokenizer`: A Tokenizer instance to use for tokenization.
         - `content`: The text to be split into chunks.
         - `split_by_character`: The character to split the text on. If None, the text is split into chunks of `chunk_token_size` tokens.
         - `split_by_character_only`: If True, the text is split only on the specified character.
         - `chunk_token_size`: The maximum number of tokens per chunk.
         - `chunk_overlap_token_size`: The number of overlapping tokens between consecutive chunks.
-        - `tiktoken_model_name`: The name of the tiktoken model to use for tokenization.
 
     The function should return a list of dictionaries, where each dictionary contains the following keys:
         - `tokens`: The number of tokens in the chunk.
@@ -310,7 +327,15 @@ class LightRAG:
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
-        # Init LLM
+        # Init Tokenizer
+        # Post-initialization hook to handle backward compatabile tokenizer initialization based on provided parameters
+        if self.tokenizer is None:
+            if self.tiktoken_model_name:
+                self.tokenizer = TiktokenTokenizer(self.tiktoken_model_name)
+            else:
+                self.tokenizer = TiktokenTokenizer()
+
+        # Init Embedding
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(  # type: ignore
             self.embedding_func
         )
@@ -603,11 +628,7 @@ class LightRAG:
             inserting_chunks: dict[str, Any] = {}
             for index, chunk_text in enumerate(text_chunks):
                 chunk_key = compute_mdhash_id(chunk_text, prefix="chunk-")
-                tokens = len(
-                    encode_string_by_tiktoken(
-                        chunk_text, model_name=self.tiktoken_model_name
-                    )
-                )
+                tokens = len(self.tokenizer.encode(chunk_text))
                 inserting_chunks[chunk_key] = {
                     "content": chunk_text,
                     "full_doc_id": doc_key,
@@ -900,12 +921,12 @@ class LightRAG:
                                 "file_path": file_path,  # Add file path to each chunk
                             }
                             for dp in self.chunking_func(
+                                self.tokenizer,
                                 status_doc.content,
                                 split_by_character,
                                 split_by_character_only,
                                 self.chunk_overlap_token_size,
                                 self.chunk_token_size,
-                                self.tiktoken_model_name,
                             )
                         }
 
@@ -1133,11 +1154,7 @@ class LightRAG:
             for chunk_data in custom_kg.get("chunks", []):
                 chunk_content = clean_text(chunk_data["content"])
                 source_id = chunk_data["source_id"]
-                tokens = len(
-                    encode_string_by_tiktoken(
-                        chunk_content, model_name=self.tiktoken_model_name
-                    )
-                )
+                tokens = len(self.tokenizer.encode(chunk_content))
                 chunk_order_index = (
                     0
                     if "chunk_order_index" not in chunk_data.keys()

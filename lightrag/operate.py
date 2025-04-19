@@ -12,8 +12,7 @@ from .utils import (
     logger,
     clean_str,
     compute_mdhash_id,
-    decode_tokens_by_tiktoken,
-    encode_string_by_tiktoken,
+    Tokenizer,
     is_float_regex,
     list_of_list_to_csv,
     normalize_extracted_info,
@@ -46,32 +45,31 @@ load_dotenv(dotenv_path=".env", override=False)
 
 
 def chunking_by_token_size(
+    tokenizer: Tokenizer,
     content: str,
     split_by_character: str | None = None,
     split_by_character_only: bool = False,
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
-    tiktoken_model: str = "gpt-4o",
 ) -> list[dict[str, Any]]:
-    tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
+    tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
     if split_by_character:
         raw_chunks = content.split(split_by_character)
         new_chunks = []
         if split_by_character_only:
             for chunk in raw_chunks:
-                _tokens = encode_string_by_tiktoken(chunk, model_name=tiktoken_model)
+                _tokens = tokenizer.encode(chunk)
                 new_chunks.append((len(_tokens), chunk))
         else:
             for chunk in raw_chunks:
-                _tokens = encode_string_by_tiktoken(chunk, model_name=tiktoken_model)
+                _tokens = tokenizer.encode(chunk)
                 if len(_tokens) > max_token_size:
                     for start in range(
                         0, len(_tokens), max_token_size - overlap_token_size
                     ):
-                        chunk_content = decode_tokens_by_tiktoken(
-                            _tokens[start : start + max_token_size],
-                            model_name=tiktoken_model,
+                        chunk_content = tokenizer.decode(
+                            _tokens[start : start + max_token_size]
                         )
                         new_chunks.append(
                             (min(max_token_size, len(_tokens) - start), chunk_content)
@@ -90,9 +88,7 @@ def chunking_by_token_size(
         for index, start in enumerate(
             range(0, len(tokens), max_token_size - overlap_token_size)
         ):
-            chunk_content = decode_tokens_by_tiktoken(
-                tokens[start : start + max_token_size], model_name=tiktoken_model
-            )
+            chunk_content = tokenizer.decode(tokens[start : start + max_token_size])
             results.append(
                 {
                     "tokens": min(max_token_size, len(tokens) - start),
@@ -116,19 +112,19 @@ async def _handle_entity_relation_summary(
     If too long, use LLM to summarize.
     """
     use_llm_func: callable = global_config["llm_model_func"]
+    tokenizer: Tokenizer = global_config["tokenizer"]
     llm_max_tokens = global_config["llm_model_max_token_size"]
-    tiktoken_model_name = global_config["tiktoken_model_name"]
     summary_max_tokens = global_config["summary_to_max_tokens"]
 
     language = global_config["addon_params"].get(
         "language", PROMPTS["DEFAULT_LANGUAGE"]
     )
 
-    tokens = encode_string_by_tiktoken(description, model_name=tiktoken_model_name)
+    tokens = tokenizer.encode(description)
+    if len(tokens) < summary_max_tokens:  # No need for summary
+        return description
     prompt_template = PROMPTS["summarize_entity_descriptions"]
-    use_description = decode_tokens_by_tiktoken(
-        tokens[:llm_max_tokens], model_name=tiktoken_model_name
-    )
+    use_description = tokenizer.decode(tokens[:llm_max_tokens])
     context_base = dict(
         entity_name=entity_or_relation_name,
         description_list=use_description.split(GRAPH_FIELD_SEP),
@@ -865,7 +861,8 @@ async def kg_query(
     if query_param.only_need_prompt:
         return sys_prompt
 
-    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    tokenizer: Tokenizer = global_config["tokenizer"]
+    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
     response = await use_model_func(
@@ -987,7 +984,8 @@ async def extract_keywords_only(
         query=text, examples=examples, language=language, history=history_context
     )
 
-    len_of_prompts = len(encode_string_by_tiktoken(kw_prompt))
+    tokenizer: Tokenizer = global_config["tokenizer"]
+    len_of_prompts = len(tokenizer.encode(kw_prompt))
     logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
     # 5. Call the LLM for keyword extraction
@@ -1054,6 +1052,8 @@ async def mix_kg_vector_query(
     2. Retrieving relevant text chunks through vector similarity
     3. Combining both results for comprehensive answer generation
     """
+    # get tokenizer
+    tokenizer: Tokenizer = global_config["tokenizer"]
     # 1. Cache handling
     use_model_func = (
         query_param.model_func
@@ -1153,6 +1153,7 @@ async def mix_kg_vector_query(
                 valid_chunks,
                 key=lambda x: x["content"],
                 max_token_size=query_param.max_token_for_text_unit,
+                tokenizer=tokenizer,
             )
 
             if not maybe_trun_chunks:
@@ -1210,7 +1211,7 @@ async def mix_kg_vector_query(
     if query_param.only_need_prompt:
         return sys_prompt
 
-    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(f"[mix_kg_vector_query]Prompt Tokens: {len_of_prompts}")
 
     # 6. Generate response
@@ -1373,17 +1374,24 @@ async def _get_node_data(
     ]  # what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
     # get entitytext chunk
     use_text_units = await _find_most_related_text_unit_from_entities(
-        node_datas, query_param, text_chunks_db, knowledge_graph_inst
+        node_datas,
+        query_param,
+        text_chunks_db,
+        knowledge_graph_inst,
     )
     use_relations = await _find_most_related_edges_from_entities(
-        node_datas, query_param, knowledge_graph_inst
+        node_datas,
+        query_param,
+        knowledge_graph_inst,
     )
 
+    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
     len_node_datas = len(node_datas)
     node_datas = truncate_list_by_token_size(
         node_datas,
         key=lambda x: x["description"] if x["description"] is not None else "",
         max_token_size=query_param.max_token_for_local_context,
+        tokenizer=tokenizer,
     )
     logger.debug(
         f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
@@ -1558,14 +1566,15 @@ async def _find_most_related_text_unit_from_entities(
         logger.warning("No valid text units found")
         return []
 
+    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
     all_text_units = sorted(
         all_text_units, key=lambda x: (x["order"], -x["relation_counts"])
     )
-
     all_text_units = truncate_list_by_token_size(
         all_text_units,
         key=lambda x: x["data"]["content"],
         max_token_size=query_param.max_token_for_text_unit,
+        tokenizer=tokenizer,
     )
 
     logger.debug(
@@ -1619,6 +1628,7 @@ async def _find_most_related_edges_from_entities(
             }
             all_edges_data.append(combined)
 
+    tokenizer: Tokenizer = knowledge_graph_inst.global_config.get("tokenizer")
     all_edges_data = sorted(
         all_edges_data, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
@@ -1626,6 +1636,7 @@ async def _find_most_related_edges_from_entities(
         all_edges_data,
         key=lambda x: x["description"] if x["description"] is not None else "",
         max_token_size=query_param.max_token_for_global_context,
+        tokenizer=tokenizer,
     )
 
     logger.debug(
@@ -1681,6 +1692,7 @@ async def _get_edge_data(
             }
             edge_datas.append(combined)
 
+    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
     edge_datas = sorted(
         edge_datas, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
@@ -1688,13 +1700,19 @@ async def _get_edge_data(
         edge_datas,
         key=lambda x: x["description"] if x["description"] is not None else "",
         max_token_size=query_param.max_token_for_global_context,
+        tokenizer=tokenizer,
     )
     use_entities, use_text_units = await asyncio.gather(
         _find_most_related_entities_from_relationships(
-            edge_datas, query_param, knowledge_graph_inst
+            edge_datas,
+            query_param,
+            knowledge_graph_inst,
         ),
         _find_related_text_unit_from_relationships(
-            edge_datas, query_param, text_chunks_db, knowledge_graph_inst
+            edge_datas,
+            query_param,
+            text_chunks_db,
+            knowledge_graph_inst,
         ),
     )
     logger.info(
@@ -1804,11 +1822,13 @@ async def _find_most_related_entities_from_relationships(
         combined = {**node, "entity_name": entity_name, "rank": degree}
         node_datas.append(combined)
 
+    tokenizer: Tokenizer = knowledge_graph_inst.global_config.get("tokenizer")
     len_node_datas = len(node_datas)
     node_datas = truncate_list_by_token_size(
         node_datas,
         key=lambda x: x["description"] if x["description"] is not None else "",
         max_token_size=query_param.max_token_for_local_context,
+        tokenizer=tokenizer,
     )
     logger.debug(
         f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
@@ -1863,10 +1883,12 @@ async def _find_related_text_unit_from_relationships(
         logger.warning("No valid text chunks after filtering")
         return []
 
+    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
     truncated_text_units = truncate_list_by_token_size(
         valid_text_units,
         key=lambda x: x["data"]["content"],
         max_token_size=query_param.max_token_for_text_unit,
+        tokenizer=tokenizer,
     )
 
     logger.debug(
@@ -1937,10 +1959,12 @@ async def naive_query(
         logger.warning("No valid chunks found after filtering")
         return PROMPTS["fail_response"]
 
+    tokenizer: Tokenizer = global_config["tokenizer"]
     maybe_trun_chunks = truncate_list_by_token_size(
         valid_chunks,
         key=lambda x: x["content"],
         max_token_size=query_param.max_token_for_text_unit,
+        tokenizer=tokenizer,
     )
 
     if not maybe_trun_chunks:
@@ -1978,7 +2002,7 @@ async def naive_query(
     if query_param.only_need_prompt:
         return sys_prompt
 
-    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(f"[naive_query]Prompt Tokens: {len_of_prompts}")
 
     response = await use_model_func(
@@ -2125,7 +2149,8 @@ async def kg_query_with_keywords(
     if query_param.only_need_prompt:
         return sys_prompt
 
-    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    tokenizer: Tokenizer = global_config["tokenizer"]
+    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(f"[kg_query_with_keywords]Prompt Tokens: {len_of_prompts}")
 
     # 6. Generate response
