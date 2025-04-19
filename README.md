@@ -106,7 +106,7 @@ pip install -e ".[api]"
 
 **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
 
-## Quick Start
+## Quick Start for LightRAG core only
 
 * [Video demo](https://www.youtube.com/watch?v=g21royNJ4fw) of running LightRAG locally.
 * All the code can be found in the `examples`.

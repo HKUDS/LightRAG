@@ -35,7 +35,7 @@
 
 ## 安装
 
-### 安装LightRAG核心
+### 安装LightRAG Core
 
 * 从源代码安装（推荐）
 
@@ -70,7 +70,7 @@ pip install -e ".[api]"
 
 **有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。**
 
-## 快速开始
+## 快速开始 (仅对LightRAG Core)
 
 * [视频演示](https://www.youtube.com/watch?v=g21royNJ4fw)展示如何在本地运行LightRAG。
 * 所有代码都可以在`examples`中找到。
