@@ -1316,15 +1316,15 @@ async def _build_query_context(
 
     result = f"""
     -----Entities-----
-    ```csv
+    ```json
     {entities_context}
     ```
     -----Relationships-----
-    ```csv
+    ```json
     {relations_context}
     ```
     -----Sources-----
-    ```csv
+    ```json
     {text_units_context}
     ```
     """.strip()
