@@ -93,6 +93,16 @@ class QueryParam:
     This allows using different models for different query modes.
     """
 
+    use_reasoning_reranking: bool = False
+    """Whether to use reasoning model-based re-ranking for nodes.
+    When enabled, a reasoning model will evaluate query-node relevance beyond vector similarity.
+    """
+
+    reasoning_model_name: str = "deepseek_r1"
+    """The name of the reasoning model to use for node re-ranking.
+    Options: "deepseek_r1", "gpt_4o", "gpt_4o_mini", or any other model supported by the system.
+    """
+
 
 @dataclass
 class StorageNameSpace(ABC):

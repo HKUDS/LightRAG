@@ -385,3 +385,28 @@ When handling information with timestamps:
 - List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path if available, in the following format: [KG/DC] file_path
 - If you don't know the answer, just say so. Do not make anything up.
 - Do not include information not provided by the Data Sources."""
+
+# Node re-ranking with reasoning model
+PROMPTS["node_reasoning_system_prompt"] = (
+    "You are a reasoning assistant that analyzes and ranks knowledge graph nodes based on their relevance to a query. Your responses must be in valid JSON format."
+)
+
+PROMPTS["node_reasoning_rerank"] = """
+Query: {query}
+
+I need to determine which of the following knowledge graph nodes are most relevant and important
+for answering this query. Please analyze each node and re-rank them from most to least relevant,
+considering:
+
+1. Semantic relevance to the query
+2. Information richness and completeness
+3. How central this node is to addressing the query's needs
+4. The node's relationships (higher degree nodes may contain more useful context)
+
+Nodes:
+{nodes}
+
+YOUR RESPONSE MUST BE VALID JSON. Return an array of entity_name strings, ordered from most to least relevant.
+Format your entire response as a valid JSON array like this: ["most_relevant_entity", "second_most_relevant", ...].
+Do not include any explanations or text outside the JSON array.
+"""
