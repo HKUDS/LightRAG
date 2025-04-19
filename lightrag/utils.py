@@ -473,40 +473,50 @@ def xml_to_json(xml_file):
 
 
 def process_combine_contexts(hl: str, ll: str):
-    header = None
-    list_hl = csv_string_to_list(hl.strip())
-    list_ll = csv_string_to_list(ll.strip())
+    list_hl = csv_string_to_list(hl.strip()) if hl.strip() else []
+    list_ll = csv_string_to_list(ll.strip()) if ll.strip() else []
 
-    if list_hl:
+    if not list_hl and not list_ll:
+        return json.dumps([], ensure_ascii=False)
+
+    header = None
+    if list_hl and len(list_hl) > 0:
         header = list_hl[0]
         list_hl = list_hl[1:]
-    if list_ll:
-        header = list_ll[0]
+    if list_ll and len(list_ll) > 0:
+        if header is None:
+            header = list_ll[0]
         list_ll = list_ll[1:]
+
     if header is None:
-        return ""
+        return json.dumps([], ensure_ascii=False)
 
-    if list_hl:
-        list_hl = [",".join(item[1:]) for item in list_hl if item]
-    if list_ll:
-        list_ll = [",".join(item[1:]) for item in list_ll if item]
-
-    combined_sources = []
+    combined_data = []
     seen = set()
 
-    for item in list_hl + list_ll:
-        if item and item not in seen:
-            combined_sources.append(item)
-            seen.add(item)
+    def process_row(row):
+        if len(row) < 2:
+            return None
 
-    combined_sources_result = [",\t".join(header)]
+        item_data = {}
 
-    for i, item in enumerate(combined_sources, start=1):
-        combined_sources_result.append(f"{i},\t{item}")
+        for i, field_name in enumerate(header):
+            item_data[field_name] = row[i]
 
-    combined_sources_result = "\n".join(combined_sources_result)
+        return item_data
 
-    return combined_sources_result
+    for row in list_hl + list_ll:
+        # 创建内容的标识符用于去重（跳过第一列的索引）
+        if len(row) >= 2:
+            row_identifier = json.dumps(row[1:])
+
+            if row_identifier not in seen:
+                seen.add(row_identifier)
+                item = process_row(row)
+                if item:
+                    combined_data.append(item)
+
+    return json.dumps(combined_data, ensure_ascii=False)
 
 
 async def get_best_cached_response(
