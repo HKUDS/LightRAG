@@ -494,9 +494,7 @@ async def extract_entities(
         "entity_extraction_examples", PROMPTS["entity_extraction_examples"]
     )
     if example_number and example_number < len(entity_extraction_examples):
-        examples = "\n".join(
-            entity_extraction_examples[: int(example_number)]
-        )
+        examples = "\n".join(entity_extraction_examples[: int(example_number)])
     else:
         examples = "\n".join(entity_extraction_examples)
 
@@ -993,9 +991,7 @@ async def extract_keywords_only(
         "keywords_extraction_examples", PROMPTS["keywords_extraction_examples"]
     )
     if example_number and example_number < len(keywords_extraction_examples):
-        examples = "\n".join(
-            keywords_extraction_examples[: int(example_number)]
-        )
+        examples = "\n".join(keywords_extraction_examples[: int(example_number)])
     else:
         examples = "\n".join(keywords_extraction_examples)
 
