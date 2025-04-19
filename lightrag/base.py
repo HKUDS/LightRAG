@@ -42,6 +42,7 @@ class QueryParam:
     - "hybrid": Combines local and global retrieval methods.
     - "naive": Performs a basic search without advanced techniques.
     - "mix": Integrates knowledge graph and vector retrieval.
+    - "bypass": Bypasses retrieval mechanisms and directly use LLM without grounding.
     """
 
     only_need_context: bool = False
@@ -58,6 +59,12 @@ class QueryParam:
 
     top_k: int = int(os.getenv("TOP_K", "60"))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
+
+    reranker_func: Callable[[str, list[str]], list[str]] | None = None
+    """Optional function for reranking the retrieved results.
+    Expected signature is a query string and list of chunks as input and returns a reranked list.
+    This function should handle the reranking logic based on the provided query and chunks.
+    """
 
     max_token_for_text_unit: int = int(os.getenv("MAX_TOKEN_TEXT_CHUNK", "4000"))
     """Maximum number of tokens allowed for each retrieved text chunk."""

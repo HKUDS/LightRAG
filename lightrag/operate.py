@@ -1937,8 +1937,24 @@ async def naive_query(
         logger.warning("No valid chunks found after filtering")
         return PROMPTS["fail_response"]
 
+    # Default to valid chunks if no reranker
+    reranked_chunks = valid_chunks
+
+    # reranking feature
+    if query_param.reranker_func is not None:
+        logger.debug(f"Applying reranker function: {query_param.reranker_func}")
+        try:
+            reranked_chunks = await query_param.reranker_func(
+                chunks=valid_chunks, query=query
+            )
+        except Exception as e:
+            logger.error(f"Error during reranking: {e}", exc_info=True)
+            reranked_chunks = valid_chunks  # Fallback to non-reranked chunks
+
+    # logger.debug(f"Reranked chunks from {valid_chunks} to {reranked_chunks}")
+
     maybe_trun_chunks = truncate_list_by_token_size(
-        valid_chunks,
+        reranked_chunks,
         key=lambda x: x["content"],
         max_token_size=query_param.max_token_for_text_unit,
     )
@@ -1948,7 +1964,7 @@ async def naive_query(
         return PROMPTS["fail_response"]
 
     logger.debug(
-        f"Truncate chunks from {len(chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+        f"Truncate chunks from {len(reranked_chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
     )
 
     section = "\n--New Chunk--\n".join(
