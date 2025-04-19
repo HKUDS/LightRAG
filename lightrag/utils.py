@@ -506,9 +506,8 @@ def process_combine_contexts(hl: str, ll: str):
         return item_data
 
     for row in list_hl + list_ll:
-        # 创建内容的标识符用于去重（跳过第一列的索引）
         if len(row) >= 2:
-            row_identifier = json.dumps(row[1:])
+            row_identifier = json.dumps(row[1:], ensure_ascii=False)
 
             if row_identifier not in seen:
                 seen.add(row_identifier)
