@@ -830,9 +830,7 @@ async def kg_query(
     logger.debug(f"High-level keywords: {hl_keywords}")
     logger.debug(f"Low-level  keywords: {ll_keywords}")
 
-    fail_response = global_config["addon_params"].get(
-        "fail_response", PROMPTS["fail_response"]
-    )
+    fail_response = query_param.get("fail_response", PROMPTS["fail_response"])
     # Handle empty keywords
     if hl_keywords == [] and ll_keywords == []:
         logger.warning("low_level_keywords and high_level_keywords is empty")
@@ -1208,9 +1206,7 @@ async def mix_kg_vector_query(
 
     # 4. Merge contexts
     if kg_context is None and vector_context is None:
-        fail_response = global_config["addon_params"].get(
-            "fail_response", PROMPTS["fail_response"]
-        )
+        fail_response = query_param.get("fail_response", PROMPTS["fail_response"])
         return fail_response
 
     if query_param.only_need_context:
@@ -1973,9 +1969,7 @@ async def naive_query(
     results = await chunks_vdb.query(
         query, top_k=query_param.top_k, ids=query_param.ids
     )
-    fail_response = global_config["addon_params"].get(
-        "fail_response", PROMPTS["fail_response"]
-    )
+    fail_response = query_param.get("fail_response", PROMPTS["fail_response"])
     if not len(results):
         return fail_response
 
@@ -2083,6 +2077,7 @@ async def kg_query_with_keywords(
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     """
     Refactored kg_query that does NOT extract keywords by itself.
@@ -2113,9 +2108,7 @@ async def kg_query_with_keywords(
     hl_keywords = getattr(query_param, "hl_keywords", []) or []
     ll_keywords = getattr(query_param, "ll_keywords", []) or []
 
-    fail_response = global_config["addon_params"].get(
-        "fail_response", PROMPTS["fail_response"]
-    )
+    fail_response = query_param.get("fail_response", PROMPTS["fail_response"])
     # If neither has any keywords, you could handle that logic here.
     if not hl_keywords and not ll_keywords:
         logger.warning(
@@ -2175,9 +2168,7 @@ async def kg_query_with_keywords(
             query_param.conversation_history, query_param.history_turns
         )
 
-    sys_prompt_temp = global_config["addon_params"].get(
-        "rag_response", PROMPTS["rag_response"]
-    )
+    sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
         context_data=context,
         response_type=query_param.response_type,
@@ -2240,6 +2231,7 @@ async def query_with_keywords(
     text_chunks_db: BaseKVStorage,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,
+    system_prompt: str | None = None,
 ) -> str | AsyncIterator[str]:
     """
     Extract keywords from the query and then use them for retrieving information.
@@ -2259,6 +2251,7 @@ async def query_with_keywords(
         text_chunks_db: Text chunks storage
         global_config: Global configuration
         hashing_kv: Cache storage
+        system_prompt: System prompt to use to build context and final LLM response (optional)
 
     Returns:
         Query response or async iterator
@@ -2287,6 +2280,7 @@ async def query_with_keywords(
             param,
             global_config,
             hashing_kv=hashing_kv,
+            system_prompt=system_prompt,
         )
     elif param.mode == "naive":
         return await naive_query(
@@ -2296,6 +2290,7 @@ async def query_with_keywords(
             param,
             global_config,
             hashing_kv=hashing_kv,
+            system_prompt=system_prompt,
         )
     elif param.mode == "mix":
         return await mix_kg_vector_query(
@@ -2308,6 +2303,7 @@ async def query_with_keywords(
             param,
             global_config,
             hashing_kv=hashing_kv,
+            system_prompt=system_prompt,
         )
     else:
         raise ValueError(f"Unknown mode {param.mode}")
