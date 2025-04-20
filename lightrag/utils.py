@@ -374,37 +374,24 @@ def truncate_list_by_token_size(
     return list_data
 
 
-def list_of_list_to_csv(data: list[list[str]]) -> str:
-    output = io.StringIO()
-    writer = csv.writer(
-        output,
-        quoting=csv.QUOTE_ALL,  # Quote all fields
-        escapechar="\\",  # Use backslash as escape character
-        quotechar='"',  # Use double quotes
-        lineterminator="\n",  # Explicit line terminator
-    )
-    writer.writerows(data)
-    return output.getvalue()
+def list_of_list_to_json(data: list[list[str]]) -> list[dict[str, str]]:
+    if not data or len(data) <= 1:
+        return []
 
+    header = data[0]
+    result = []
 
-def csv_string_to_list(csv_string: str) -> list[list[str]]:
-    # Clean the string by removing NUL characters
-    cleaned_string = csv_string.replace("\0", "")
+    for row in data[1:]:
+        if len(row) >= 2:
+            item = {}
+            for i, field_name in enumerate(header):
+                if i < len(row):
+                    item[field_name] = row[i]
+                else:
+                    item[field_name] = ""
+            result.append(item)
 
-    output = io.StringIO(cleaned_string)
-    reader = csv.reader(
-        output,
-        quoting=csv.QUOTE_ALL,  # Match the writer configuration
-        escapechar="\\",  # Use backslash as escape character
-        quotechar='"',  # Use double quotes
-    )
-
-    try:
-        return [row for row in reader]
-    except csv.Error as e:
-        raise ValueError(f"Failed to parse CSV string: {str(e)}")
-    finally:
-        output.close()
+    return result
 
 
 def save_data_to_file(data, file_name):
@@ -472,50 +459,21 @@ def xml_to_json(xml_file):
         return None
 
 
-def process_combine_contexts(hl: str, ll: str):
-    list_hl = csv_string_to_list(hl.strip()) if hl.strip() else []
-    list_ll = csv_string_to_list(ll.strip()) if ll.strip() else []
-
-    if not list_hl and not list_ll:
-        return json.dumps([], ensure_ascii=False)
-
-    header = None
-    if list_hl and len(list_hl) > 0:
-        header = list_hl[0]
-        list_hl = list_hl[1:]
-    if list_ll and len(list_ll) > 0:
-        if header is None:
-            header = list_ll[0]
-        list_ll = list_ll[1:]
-
-    if header is None:
-        return json.dumps([], ensure_ascii=False)
-
+def process_combine_contexts(hl_context: dict, ll_context: dict):
+    seen_content = {}
     combined_data = []
-    seen = set()
 
-    def process_row(row):
-        if len(row) < 2:
-            return None
+    for item in hl_context + ll_context:
+        content_key = {k: v for k, v in item.items() if k != 'id'}
+        content_key_str = str(content_key)
+        if content_key_str not in seen_content:
+            seen_content[content_key_str] = item
+            combined_data.append(item)
 
-        item_data = {}
+    for i, item in enumerate(combined_data):
+        item['id'] = i
 
-        for i, field_name in enumerate(header):
-            item_data[field_name] = row[i]
-
-        return item_data
-
-    for row in list_hl + list_ll:
-        if len(row) >= 2:
-            row_identifier = json.dumps(row[1:], ensure_ascii=False)
-
-            if row_identifier not in seen:
-                seen.add(row_identifier)
-                item = process_row(row)
-                if item:
-                    combined_data.append(item)
-
-    return json.dumps(combined_data, ensure_ascii=False)
+    return combined_data
 
 
 async def get_best_cached_response(
