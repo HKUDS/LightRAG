@@ -9,9 +9,10 @@ from lightrag.utils import logger, set_verbose_debug
 
 WORKING_DIR = "./dickens"
 
+
 def configure_logging():
     """Configure logging for the application"""
-    
+
     # Reset any existing handlers to ensure clean configuration
     for logger_name in ["uvicorn", "uvicorn.access", "uvicorn.error", "lightrag"]:
         logger_instance = logging.getLogger(logger_name)
@@ -65,11 +66,12 @@ def configure_logging():
             },
         }
     )
-    
+
     # Set the logger level to INFO
     logger.setLevel(logging.INFO)
     # Enable verbose debug if needed
     set_verbose_debug(os.getenv("VERBOSE_DEBUG", "false").lower() == "true")
+
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -97,6 +99,9 @@ async def main():
         await rag.ainsert(f.read())
 
     # Perform naive search
+    print("\n=====================")
+    print("Query mode: naive")
+    print("=====================")
     print(
         await rag.aquery(
             "What are the top themes in this story?", param=QueryParam(mode="naive")
@@ -104,6 +109,9 @@ async def main():
     )
 
     # Perform local search
+    print("\n=====================")
+    print("Query mode: local")
+    print("=====================")
     print(
         await rag.aquery(
             "What are the top themes in this story?", param=QueryParam(mode="local")
@@ -111,6 +119,9 @@ async def main():
     )
 
     # Perform global search
+    print("\n=====================")
+    print("Query mode: global")
+    print("=====================")
     print(
         await rag.aquery(
             "What are the top themes in this story?", param=QueryParam(mode="global")
@@ -118,6 +129,9 @@ async def main():
     )
 
     # Perform hybrid search
+    print("\n=====================")
+    print("Query mode: hybrid")
+    print("=====================")
     print(
         await rag.aquery(
             "What are the top themes in this story?", param=QueryParam(mode="hybrid")
