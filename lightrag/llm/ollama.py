@@ -129,4 +129,4 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     kwargs["headers"] = headers
     ollama_client = ollama.Client(**kwargs)
     data = ollama_client.embed(model=embed_model, input=texts)
-    return data["embeddings"]
+    return np.array(data["embeddings"])
