@@ -107,42 +107,42 @@ from lightrag.utils import setup_logger
 
 setup_logger("lightrag", level="INFO")
 
+if not os.path.exists(WORKING_DIR):
+    os.mkdir(WORKING_DIR)
+
 async def initialize_rag():
     rag = LightRAG(
-        working_dir="your/path",
+        working_dir=WORKING_DIR,
         embedding_func=openai_embed,
-        llm_model_func=gpt_4o_mini_complete
+        llm_model_func=gpt_4o_mini_complete,
     )
-
     await rag.initialize_storages()
     await initialize_pipeline_status()
-
     return rag
 
 def main():
-    # 初始化RAG实例
-    rag = asyncio.run(initialize_rag())
-    # 插入文本
-    rag.insert("Your text")
+    try:
+        # Initialize RAG instance
+        rag = await initialize_rag()
+		    rag.insert("Your text")
+  
+        # Perform hybrid search
+        mode="hybrid"
+        print(
+          await rag.query(
+              "What are the top themes in this story?",
+              param=QueryParam(mode=mode)
+          )
+        )
 
-    # 执行朴素搜索
-    mode="naive"
-    # 执行本地搜索
-    mode="local"
-    # 执行全局搜索
-    mode="global"
-    # 执行混合搜索
-    mode="hybrid"
-    # 混合模式集成知识图谱和向量检索
-    mode="mix"
-
-    rag.query(
-        "这个故事的主要主题是什么？",
-        param=QueryParam(mode=mode)
-    )
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if rag:
+            await rag.finalize_storages()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
 ```
 
 ### 查询参数

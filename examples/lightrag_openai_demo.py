@@ -82,7 +82,6 @@ async def initialize_rag():
         working_dir=WORKING_DIR,
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
-        # llm_model_func=gpt_4o_complete
     )
 
     await rag.initialize_storages()
@@ -92,7 +91,6 @@ async def initialize_rag():
 
 
 async def main():
-    rag = None
     try:
         # Initialize RAG instance
         rag = await initialize_rag()

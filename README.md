@@ -143,42 +143,42 @@ from lightrag.utils import setup_logger
 
 setup_logger("lightrag", level="INFO")
 
+if not os.path.exists(WORKING_DIR):
+    os.mkdir(WORKING_DIR)
+
 async def initialize_rag():
     rag = LightRAG(
-        working_dir="your/path",
+        working_dir=WORKING_DIR,
         embedding_func=openai_embed,
-        llm_model_func=gpt_4o_mini_complete
+        llm_model_func=gpt_4o_mini_complete,
     )
-
     await rag.initialize_storages()
     await initialize_pipeline_status()
-
     return rag
 
 def main():
-    # Initialize RAG instance
-    rag = asyncio.run(initialize_rag())
-    # Insert text
-    rag.insert("Your text")
+    try:
+        # Initialize RAG instance
+        rag = await initialize_rag()
+		    rag.insert("Your text")
+  
+        # Perform hybrid search
+        mode="hybrid"
+        print(
+          await rag.query(
+              "What are the top themes in this story?",
+              param=QueryParam(mode=mode)
+          )
+        )
 
-    # Perform naive search
-    mode="naive"
-    # Perform local search
-    mode="local"
-    # Perform global search
-    mode="global"
-    # Perform hybrid search
-    mode="hybrid"
-    # Mix mode Integrates knowledge graph and vector retrieval.
-    mode="mix"
-
-    rag.query(
-        "What are the top themes in this story?",
-        param=QueryParam(mode=mode)
-    )
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if rag:
+            await rag.finalize_storages()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
 ```
 
 ### Query Param
