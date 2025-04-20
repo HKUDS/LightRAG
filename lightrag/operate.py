@@ -15,7 +15,6 @@ from .utils import (
     decode_tokens_by_tiktoken,
     encode_string_by_tiktoken,
     is_float_regex,
-    list_of_list_to_csv,
     normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
@@ -27,6 +26,7 @@ from .utils import (
     CacheData,
     get_conversation_turns,
     use_llm_func_with_cache,
+    list_of_list_to_json,
 )
 from .base import (
     BaseGraphStorage,
@@ -1311,21 +1311,26 @@ async def _build_query_context(
             [hl_text_units_context, ll_text_units_context],
         )
     # not necessary to use LLM to generate a response
-    if not entities_context.strip() and not relations_context.strip():
+    if not entities_context and not relations_context:
         return None
+
+    # 转换为 JSON 字符串
+    entities_str = json.dumps(entities_context, ensure_ascii=False)
+    relations_str = json.dumps(relations_context, ensure_ascii=False)
+    text_units_str = json.dumps(text_units_context, ensure_ascii=False)
 
     result = f"""
     -----Entities-----
     ```json
-    {entities_context}
+    {entities_str}
     ```
     -----Relationships-----
     ```json
-    {relations_context}
+    {relations_str}
     ```
     -----Sources-----
     ```json
-    {text_units_context}
+    {text_units_str}
     ```
     """.strip()
     return result
@@ -1424,7 +1429,7 @@ async def _get_node_data(
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
+    entities_context = list_of_list_to_json(entites_section_list)
 
     relations_section_list = [
         [
@@ -1461,14 +1466,14 @@ async def _get_node_data(
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
+    relations_context = list_of_list_to_json(relations_section_list)
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
         text_units_section_list.append(
             [i, t["content"], t.get("file_path", "unknown_source")]
         )
-    text_units_context = list_of_list_to_csv(text_units_section_list)
+    text_units_context = list_of_list_to_json(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 
@@ -1736,7 +1741,7 @@ async def _get_edge_data(
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
+    relations_context = list_of_list_to_json(relations_section_list)
 
     entites_section_list = [
         ["id", "entity", "type", "description", "rank", "created_at", "file_path"]
@@ -1761,12 +1766,12 @@ async def _get_edge_data(
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
+    entities_context = list_of_list_to_json(entites_section_list)
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
         text_units_section_list.append([i, t["content"], t.get("file_path", "unknown")])
-    text_units_context = list_of_list_to_csv(text_units_section_list)
+    text_units_context = list_of_list_to_json(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 
