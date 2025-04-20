@@ -92,54 +92,62 @@ async def initialize_rag():
 
 
 async def main():
-    # Initialize RAG instance
-    rag = await initialize_rag()
+    rag = None
+    try:
+        # Initialize RAG instance
+        rag = await initialize_rag()
 
-    with open("./book.txt", "r", encoding="utf-8") as f:
-        await rag.ainsert(f.read())
+        with open("./book.txt", "r", encoding="utf-8") as f:
+            await rag.ainsert(f.read())
 
-    # Perform naive search
-    print("\n=====================")
-    print("Query mode: naive")
-    print("=====================")
-    print(
-        await rag.aquery(
-            "What are the top themes in this story?", param=QueryParam(mode="naive")
+        # Perform naive search
+        print("\n=====================")
+        print("Query mode: naive")
+        print("=====================")
+        print(
+            await rag.aquery(
+                "What are the top themes in this story?", param=QueryParam(mode="naive")
+            )
         )
-    )
 
-    # Perform local search
-    print("\n=====================")
-    print("Query mode: local")
-    print("=====================")
-    print(
-        await rag.aquery(
-            "What are the top themes in this story?", param=QueryParam(mode="local")
+        # Perform local search
+        print("\n=====================")
+        print("Query mode: local")
+        print("=====================")
+        print(
+            await rag.aquery(
+                "What are the top themes in this story?", param=QueryParam(mode="local")
+            )
         )
-    )
 
-    # Perform global search
-    print("\n=====================")
-    print("Query mode: global")
-    print("=====================")
-    print(
-        await rag.aquery(
-            "What are the top themes in this story?", param=QueryParam(mode="global")
+        # Perform global search
+        print("\n=====================")
+        print("Query mode: global")
+        print("=====================")
+        print(
+            await rag.aquery(
+                "What are the top themes in this story?", param=QueryParam(mode="global")
+            )
         )
-    )
 
-    # Perform hybrid search
-    print("\n=====================")
-    print("Query mode: hybrid")
-    print("=====================")
-    print(
-        await rag.aquery(
-            "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+        # Perform hybrid search
+        print("\n=====================")
+        print("Query mode: hybrid")
+        print("=====================")
+        print(
+            await rag.aquery(
+                "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+            )
         )
-    )
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if rag:
+            await rag.finalize_storages()
 
 
 if __name__ == "__main__":
     # Configure logging before running the main function
     configure_logging()
     asyncio.run(main())
+    print("\nDone!")
