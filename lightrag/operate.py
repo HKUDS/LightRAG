@@ -121,8 +121,11 @@ async def _handle_entity_relation_summary(
     )
 
     tokens = tokenizer.encode(description)
-    if len(tokens) < summary_max_tokens:  # No need for summary
-        return description
+
+    ### summarize is not determined here anymore (It's determined by num_fragment now)
+    # if len(tokens) < summary_max_tokens:  # No need for summary
+    #     return description
+
     prompt_template = PROMPTS["summarize_entity_descriptions"]
     use_description = tokenizer.decode(tokens[:llm_max_tokens])
     context_base = dict(
