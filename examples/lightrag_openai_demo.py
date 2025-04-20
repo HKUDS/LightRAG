@@ -124,7 +124,8 @@ async def main():
         print("=====================")
         print(
             await rag.aquery(
-                "What are the top themes in this story?", param=QueryParam(mode="global")
+                "What are the top themes in this story?",
+                param=QueryParam(mode="global"),
             )
         )
 
@@ -134,7 +135,8 @@ async def main():
         print("=====================")
         print(
             await rag.aquery(
-                "What are the top themes in this story?", param=QueryParam(mode="hybrid")
+                "What are the top themes in this story?",
+                param=QueryParam(mode="hybrid"),
             )
         )
     except Exception as e:

@@ -161,7 +161,7 @@ def main():
         # Initialize RAG instance
         rag = await initialize_rag()
 		    rag.insert("Your text")
-  
+
         # Perform hybrid search
         mode="hybrid"
         print(
@@ -842,7 +842,7 @@ For production level scenarios you will most likely want to leverage an enterpri
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-  
+
   -- drop if necessary
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
