@@ -322,11 +322,6 @@ class LightRAG:
             **self.vector_db_storage_cls_kwargs,
         }
 
-        # Show config
-        global_config = asdict(self)
-        _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
-        logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
-
         # Init Tokenizer
         # Post-initialization hook to handle backward compatabile tokenizer initialization based on provided parameters
         if self.tokenizer is None:
@@ -334,6 +329,11 @@ class LightRAG:
                 self.tokenizer = TiktokenTokenizer(self.tiktoken_model_name)
             else:
                 self.tokenizer = TiktokenTokenizer()
+
+        # Fix global_config now
+        global_config = asdict(self)
+        _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
+        logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
         # Init Embedding
         self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(  # type: ignore
