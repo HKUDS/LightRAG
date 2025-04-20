@@ -35,21 +35,6 @@
 
 ## 安装
 
-### 安装LightRAG Core
-
-* 从源代码安装（推荐）
-
-```bash
-cd LightRAG
-pip install -e .
-```
-
-* 从PyPI安装
-
-```bash
-pip install lightrag-hku
-```
-
 ### 安装LightRAG服务器
 
 LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知识图谱探索和简单的RAG查询界面。LightRAG服务器还提供兼容Ollama的接口，旨在将LightRAG模拟为Ollama聊天模型。这使得AI聊天机器人（如Open WebUI）可以轻松访问LightRAG。
@@ -68,17 +53,40 @@ pip install "lightrag-hku[api]"
 pip install -e ".[api]"
 ```
 
-**有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。**
+### 安装LightRAG Core
 
-## 快速开始 (仅对LightRAG Core)
-
-* [视频演示](https://www.youtube.com/watch?v=g21royNJ4fw)展示如何在本地运行LightRAG。
-* 所有代码都可以在`examples`中找到。
-* 如果使用OpenAI模型，请在环境中设置OpenAI API密钥：`export OPENAI_API_KEY="sk-..."`。
-* 下载演示文本"狄更斯的圣诞颂歌"：
+* 从源代码安装（推荐）
 
 ```bash
+cd LightRAG
+pip install -e .
+```
+
+* 从PyPI安装
+
+```bash
+pip install lightrag-hku
+```
+
+## 快速开始
+
+### 使用LightRAG服务器
+
+**有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。**
+
+## 使用LightRAG Core
+
+LightRAG核心功能的示例代码请参见`examples`目录。您还可参照[视频](https://www.youtube.com/watch?v=g21royNJ4fw)视频完成环境配置。若已持有OpenAI API密钥，可以通过以下命令运行演示代码：
+
+```bash
+### you should run the demo code with project folder
+cd LightRAG
+### provide your API-KEY for OpenAI
+export OPENAI_API_KEY="sk-...your_opeai_key..."
+### download the demo document of "A Christmas Carol" by Charles Dickens
 curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./book.txt
+### run the demo code
+python examples/lightrag_openai_demo.py
 ```
 
 ## 查询
@@ -815,7 +823,7 @@ rag = LightRAG(
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- 如有必要可以删除
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;

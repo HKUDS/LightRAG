@@ -71,21 +71,6 @@
 
 ## Installation
 
-### Install  LightRAG Core
-
-* Install from source (Recommend)
-
-```bash
-cd LightRAG
-pip install -e .
-```
-
-* Install from PyPI
-
-```bash
-pip install lightrag-hku
-```
-
 ### Install LightRAG Server
 
 The LightRAG Server is designed to provide Web UI and API support. The Web UI facilitates document indexing, knowledge graph exploration, and a simple RAG query interface. LightRAG Server also provide an Ollama compatible interfaces, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat bot, such as Open WebUI, to access LightRAG easily.
@@ -104,17 +89,40 @@ pip install "lightrag-hku[api]"
 pip install -e ".[api]"
 ```
 
-**For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
+### Install  LightRAG Core
 
-## Quick Start for LightRAG core only
-
-* [Video demo](https://www.youtube.com/watch?v=g21royNJ4fw) of running LightRAG locally.
-* All the code can be found in the `examples`.
-* Set OpenAI API key in environment if using OpenAI models: `export OPENAI_API_KEY="sk-...".`
-* Download the demo text "A Christmas Carol by Charles Dickens":
+* Install from source (Recommend)
 
 ```bash
+cd LightRAG
+pip install -e .
+```
+
+* Install from PyPI
+
+```bash
+pip install lightrag-hku
+```
+
+## Quick Start
+
+### Quick Start for LightRAG Server
+
+For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).
+
+### Quick Start for LightRAG core
+
+To get started with LightRAG core, refer to the sample codes available in the `examples` folder. Additionally, a [video demo](https://www.youtube.com/watch?v=g21royNJ4fw) demonstration is provided to guide you through the local setup process. If you already possess an OpenAI API key, you can run the demo right away:
+
+```bash
+### you should run the demo code with project folder
+cd LightRAG
+### provide your API-KEY for OpenAI
+export OPENAI_API_KEY="sk-...your_opeai_key..."
+### download the demo document of "A Christmas Carol" by Charles Dickens
 curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./book.txt
+### run the demo code
+python examples/lightrag_openai_demo.py
 ```
 
 ## Query
@@ -836,7 +844,7 @@ For production level scenarios you will most likely want to leverage an enterpri
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- drop if necessary
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
