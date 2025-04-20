@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import io
 import csv
 import json
 import logging
@@ -464,14 +463,14 @@ def process_combine_contexts(hl_context: dict, ll_context: dict):
     combined_data = []
 
     for item in hl_context + ll_context:
-        content_key = {k: v for k, v in item.items() if k != 'id'}
+        content_key = {k: v for k, v in item.items() if k != "id"}
         content_key_str = str(content_key)
         if content_key_str not in seen_content:
             seen_content[content_key_str] = item
             combined_data.append(item)
 
     for i, item in enumerate(combined_data):
-        item['id'] = i
+        item["id"] = i
 
     return combined_data
 
