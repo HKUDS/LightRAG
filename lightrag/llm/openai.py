@@ -201,14 +201,18 @@ async def openai_complete_if_cache(
             try:
                 async for chunk in response:
                     # Check if choices exists and is not empty
-                    if not hasattr(chunk, 'choices') or not chunk.choices:
+                    if not hasattr(chunk, "choices") or not chunk.choices:
                         logger.warning(f"Received chunk without choices: {chunk}")
                         continue
-                    
+
                     # Check if delta exists and has content
-                    if not hasattr(chunk.choices[0], 'delta') or not hasattr(chunk.choices[0].delta, 'content'):
-                        logger.warning(f"Received chunk without delta content: {chunk.choices[0]}")
-                        continue                    
+                    if not hasattr(chunk.choices[0], "delta") or not hasattr(
+                        chunk.choices[0].delta, "content"
+                    ):
+                        logger.warning(
+                            f"Received chunk without delta content: {chunk.choices[0]}"
+                        )
+                        continue
                     content = chunk.choices[0].delta.content
                     if content is None:
                         continue
