@@ -385,7 +385,7 @@ def list_of_list_to_json(data: list[list[str]]) -> list[dict[str, str]]:
             item = {}
             for i, field_name in enumerate(header):
                 if i < len(row):
-                    item[field_name] = row[i]
+                    item[field_name] = str(row[i])
                 else:
                     item[field_name] = ""
             result.append(item)
@@ -458,19 +458,21 @@ def xml_to_json(xml_file):
         return None
 
 
-def process_combine_contexts(hl_context: dict, ll_context: dict):
+def process_combine_contexts(
+    hl_context: list[dict[str, str]], ll_context: list[dict[str, str]]
+):
     seen_content = {}
     combined_data = []
 
     for item in hl_context + ll_context:
-        content_key = {k: v for k, v in item.items() if k != "id"}
-        content_key_str = str(content_key)
-        if content_key_str not in seen_content:
-            seen_content[content_key_str] = item
+        content_dict = {k: v for k, v in item.items() if k != "id"}
+        content_key = tuple(sorted(content_dict.items()))
+        if content_key not in seen_content:
+            seen_content[content_key] = item
             combined_data.append(item)
 
     for i, item in enumerate(combined_data):
-        item["id"] = i
+        item["id"] = str(i)
 
     return combined_data
 
