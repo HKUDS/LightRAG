@@ -730,6 +730,7 @@ async def handle_cache(
         if not hashing_kv.global_config.get("enable_llm_cache"):
             return None, None, None, None
 
+        # TODO: deprecated (PostgreSQL cache not implemented yet)
         # Get embedding cache configuration
         embedding_cache_config = hashing_kv.global_config.get(
             "embedding_cache_config",
