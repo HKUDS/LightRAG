@@ -400,6 +400,16 @@ async def _merge_edges_then_upsert(
 
     for need_insert_id in [src_id, tgt_id]:
         if not (await knowledge_graph_inst.has_node(need_insert_id)):
+            # # Discard this edge if the node does not exist
+            # if need_insert_id == src_id:
+            #     logger.warning(
+            #         f"Discard edge: {src_id} - {tgt_id} | Source node missing"
+            #     )
+            # else:
+            #     logger.warning(
+            #         f"Discard edge: {src_id} - {tgt_id} | Target node missing"
+            #     )
+            # return None
             await knowledge_graph_inst.upsert_node(
                 need_insert_id,
                 node_data={
@@ -738,7 +748,8 @@ async def extract_entities(
                 pipeline_status_lock,
                 llm_response_cache,
             )
-            relationships_data.append(edge_data)
+            if edge_data is not None:
+                relationships_data.append(edge_data)
 
         # Update vector databases with all collected data
         if entity_vdb is not None and entities_data:
