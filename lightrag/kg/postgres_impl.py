@@ -2131,7 +2131,7 @@ SQL_TEMPLATES = {
     WITH relevant_chunks AS (
         SELECT id as chunk_id
         FROM LIGHTRAG_DOC_CHUNKS
-        WHERE $2::text[] IS NULL OR full_doc_id = ANY($2::text[])
+        WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
     )
     SELECT source_id as src_id, target_id as tgt_id
     FROM (
@@ -2148,7 +2148,7 @@ SQL_TEMPLATES = {
         WITH relevant_chunks AS (
             SELECT id as chunk_id
             FROM LIGHTRAG_DOC_CHUNKS
-            WHERE $2::text[] IS NULL OR full_doc_id = ANY($2::text[])
+            WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
         )
         SELECT entity_name FROM
             (
@@ -2165,7 +2165,7 @@ SQL_TEMPLATES = {
         WITH relevant_chunks AS (
             SELECT id as chunk_id
             FROM LIGHTRAG_DOC_CHUNKS
-            WHERE $2::text[] IS NULL OR full_doc_id = ANY($2::text[])
+            WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
         )
         SELECT id, content, file_path FROM
             (
