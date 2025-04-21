@@ -18,6 +18,7 @@ from .utils import (
     normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
+    extract_fixed_parenthesized_content,
     truncate_list_by_token_size,
     process_combine_contexts,
     compute_args_hash,
@@ -215,7 +216,7 @@ async def _handle_single_relationship_extraction(
     edge_source_id = chunk_key
     weight = (
         float(record_attributes[-1].strip('"').strip("'"))
-        if is_float_regex(record_attributes[-1])
+        if is_float_regex(record_attributes[-1].strip('"').strip("'"))
         else 1.0
     )
     return dict(
@@ -548,6 +549,8 @@ async def extract_entities(
             result,
             [context_base["record_delimiter"], context_base["completion_delimiter"]],
         )
+
+        records = extract_fixed_parenthesized_content(records)
 
         for record in records:
             record = re.search(r"\((.*)\)", record)
