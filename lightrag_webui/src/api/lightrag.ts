@@ -333,7 +333,6 @@ export const queryTextStream = async (
           try {
             const parsed = JSON.parse(line);
             if (parsed.response) {
-              console.log('Received chunk:', parsed.response); // Log for debugging
               onChunk(parsed.response);
             } else if (parsed.error && onError) {
               onError(parsed.error);
