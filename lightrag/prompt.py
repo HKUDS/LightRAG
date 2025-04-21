@@ -5,12 +5,12 @@ GRAPH_FIELD_SEP = "<SEP>"
 
 PROMPTS: dict[str, Any] = {}
 
-PROMPTS["DEFAULT_LANGUAGE"] = "English"
-PROMPTS["DEFAULT_TUPLE_DELIMITER"] = "<|>"
-PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
-PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
+PROMPTS["language"] = "English"
+PROMPTS["tuple_delimiter"] = "<|>"
+PROMPTS["record_delimiter"] = "##"
+PROMPTS["completion_delimiter"] = "<|COMPLETE|>"
 
-PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "category"]
+PROMPTS["entity_types"] = ["organization", "person", "geo", "event", "category"]
 
 PROMPTS["entity_extraction"] = """---Goal---
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.

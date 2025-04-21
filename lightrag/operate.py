@@ -26,6 +26,7 @@ from .utils import (
     CacheData,
     get_conversation_turns,
     use_llm_func_with_cache,
+    get_and_validate_prompt_template,
 )
 from .base import (
     BaseGraphStorage,
@@ -116,8 +117,9 @@ async def _handle_entity_relation_summary(
     llm_max_tokens = global_config["llm_model_max_token_size"]
     summary_max_tokens = global_config["summary_to_max_tokens"]
 
-    language = global_config["addon_params"].get(
-        "language", PROMPTS["DEFAULT_LANGUAGE"]
+    language = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "language",
     )
 
     tokens = tokenizer.encode(description)
@@ -126,8 +128,10 @@ async def _handle_entity_relation_summary(
     # if len(tokens) < summary_max_tokens:  # No need for summary
     #     return description
 
-    prompt_template = global_config["addon_params"].get(
-        "summarize_entity_descriptions", PROMPTS["summarize_entity_descriptions"]
+    prompt_template = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "summarize_entity_descriptions",
+        error_if_not_found=True,
     )
     use_description = tokenizer.decode(tokens[:llm_max_tokens])
     context_base = dict(
@@ -483,29 +487,36 @@ async def extract_entities(
 
     ordered_chunks = list(chunks.items())
     # add language and example number params to prompt
-    language = global_config["addon_params"].get(
-        "language", PROMPTS["DEFAULT_LANGUAGE"]
+    language = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "language",
     )
-    entity_types = global_config["addon_params"].get(
-        "entity_types", PROMPTS["DEFAULT_ENTITY_TYPES"]
+    entity_types = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "entity_types",
     )
     example_number = global_config["addon_params"].get("example_number", None)
-    entity_extraction_examples = global_config["addon_params"].get(
-        "entity_extraction_examples", PROMPTS["entity_extraction_examples"]
+    entity_extraction_examples = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "entity_extraction_examples",
+        error_if_not_found=True,
     )
     if example_number and example_number < len(entity_extraction_examples):
         examples = "\n".join(entity_extraction_examples[: int(example_number)])
     else:
         examples = "\n".join(entity_extraction_examples)
 
-    tuple_delimiter = global_config["addon_params"].get(
-        "tuple_delimiter", PROMPTS["DEFAULT_TUPLE_DELIMITER"]
+    tuple_delimiter = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "tuple_delimiter",
     )
-    record_delimiter = global_config["addon_params"].get(
-        "record_delimiter", PROMPTS["DEFAULT_RECORD_DELIMITER"]
+    record_delimiter = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "record_delimiter",
     )
-    completion_delimiter = global_config["addon_params"].get(
-        "completion_delimiter", PROMPTS["DEFAULT_COMPLETION_DELIMITER"]
+    completion_delimiter = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "completion_delimiter",
     )
     example_context_base = dict(
         tuple_delimiter=tuple_delimiter,
@@ -517,8 +528,9 @@ async def extract_entities(
     # add example's format
     examples = examples.format(**example_context_base)
 
-    entity_extract_prompt = global_config["addon_params"].get(
-        "entity_extraction", PROMPTS["entity_extraction"]
+    entity_extract_prompt = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "entity_extraction",
     )
     context_base = dict(
         tuple_delimiter=tuple_delimiter,
@@ -529,12 +541,14 @@ async def extract_entities(
         language=language,
     )
 
-    entity_continue_extraction = global_config["addon_params"].get(
-        "entity_continue_extraction", PROMPTS["entity_continue_extraction"]
+    entity_continue_extraction = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "entity_continue_extraction",
     )
     continue_prompt = entity_continue_extraction.format(**context_base)
-    if_loop_prompt = global_config["addon_params"].get(
-        "entity_if_loop_extraction", PROMPTS["entity_if_loop_extraction"]
+    if_loop_prompt = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "entity_if_loop_extraction",
     )
 
     processed_chunks = 0
@@ -830,7 +844,10 @@ async def kg_query(
     logger.debug(f"High-level keywords: {hl_keywords}")
     logger.debug(f"Low-level  keywords: {ll_keywords}")
 
-    fail_response = query_param.get("fail_response", PROMPTS["fail_response"])
+    fail_response = get_and_validate_prompt_template(
+        query_param,
+        "fail_response",
+    )
     # Handle empty keywords
     if hl_keywords == [] and ll_keywords == []:
         logger.warning("low_level_keywords and high_level_keywords is empty")
@@ -985,8 +1002,10 @@ async def extract_keywords_only(
 
     # 2. Build the examples
     example_number = global_config["addon_params"].get("example_number", None)
-    keywords_extraction_examples = global_config["addon_params"].get(
-        "keywords_extraction_examples", PROMPTS["keywords_extraction_examples"]
+
+    keywords_extraction_examples = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "keywords_extraction_examples",
     )
     if example_number and example_number < len(keywords_extraction_examples):
         examples = "\n".join(keywords_extraction_examples[: int(example_number)])
@@ -1001,8 +1020,9 @@ async def extract_keywords_only(
         )
 
     # 4. Build the keyword-extraction prompt
-    keywords_extraction = global_config["addon_params"].get(
-        "keywords_extraction", PROMPTS["keywords_extraction"]
+    keywords_extraction = get_and_validate_prompt_template(
+        global_config["addon_params"],
+        "keywords_extraction",
     )
     kw_prompt = keywords_extraction.format(
         query=text, examples=examples, history=history_context
@@ -1206,7 +1226,10 @@ async def mix_kg_vector_query(
 
     # 4. Merge contexts
     if kg_context is None and vector_context is None:
-        fail_response = query_param.get("fail_response", PROMPTS["fail_response"])
+        fail_response = get_and_validate_prompt_template(
+            query_param,
+            "fail_response",
+        )
         return fail_response
 
     if query_param.only_need_context:
@@ -1969,7 +1992,10 @@ async def naive_query(
     results = await chunks_vdb.query(
         query, top_k=query_param.top_k, ids=query_param.ids
     )
-    fail_response = query_param.get("fail_response", PROMPTS["fail_response"])
+    fail_response = get_and_validate_prompt_template(
+        query_param,
+        "fail_response",
+    )
     if not len(results):
         return fail_response
 
@@ -2108,7 +2134,10 @@ async def kg_query_with_keywords(
     hl_keywords = getattr(query_param, "hl_keywords", []) or []
     ll_keywords = getattr(query_param, "ll_keywords", []) or []
 
-    fail_response = query_param.get("fail_response", PROMPTS["fail_response"])
+    fail_response = get_and_validate_prompt_template(
+        query_param,
+        "fail_response",
+    )
     # If neither has any keywords, you could handle that logic here.
     if not hl_keywords and not ll_keywords:
         logger.warning(

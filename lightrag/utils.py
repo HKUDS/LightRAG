@@ -577,6 +577,51 @@ def process_combine_contexts(hl: str, ll: str):
     return combined_sources_result
 
 
+def get_and_validate_prompt_template(
+    params: dict, prompt_type: str, error_if_not_found: bool = False
+) -> list | str:
+    """
+    Get default prompt template. If custom template provided,
+    check if all placeholders in the default prompt template are present in the custom prompt template.
+    """
+    default_template = PROMPTS.get(prompt_type)
+    if default_template is None:
+        logger.error(f"Prompt type '{prompt_type}' not found in default prompts.")
+        raise ValueError(f"Prompt type '{prompt_type}' not found in default prompts.")
+    custom_template = params.get(prompt_type, default_template)
+    if not isinstance(custom_template, type(default_template)) or not isinstance(
+        custom_template, (list, str)
+    ):
+        logger.error(
+            f"Prompt '{prompt_type}' must be of the type str or list and of same type as the default template."
+        )
+        raise ValueError(
+            f"Prompt '{prompt_type}' must be of the type str or list and of same type as the default template."
+        )
+
+    # Skip placeholder check if custom template is a list or if string matches the default template
+    skip_placeholder_check = isinstance(custom_template, list) or (
+        isinstance(custom_template, str) and custom_template == default_template
+    )
+    if not skip_placeholder_check:
+        custom_placeholders = set(re.findall(r"\{(\w+)\}", custom_template))
+        default_placeholders = set(re.findall(r"\{(\w+)\}", default_template))
+        missing = default_placeholders - custom_placeholders
+        if missing:
+            msg = (
+                f"Prompt '{prompt_type}' requires placeholders not found in custom prompt template: {missing}. "
+                f"Available placeholders: {custom_placeholders}"
+            )
+            if error_if_not_found:
+                logger.error(msg)
+                raise ValueError(
+                    f"Custom prompt template for '{prompt_type}' is missing required placeholders: {missing}"
+                )
+            else:
+                logger.warning(msg)
+    return custom_template
+
+
 async def get_best_cached_response(
     hashing_kv,
     current_embedding,
@@ -634,8 +679,10 @@ async def get_best_cached_response(
             and best_prompt
             and best_response is not None
         ):
-            similarity_check = hashing_kv.global_config["addon_params"].get(
-                "similarity_check", PROMPTS["similarity_check"]
+            similarity_check = get_and_validate_prompt_template(
+                hashing_kv.global_config["addon_params"],
+                "similarity_check",
+                error_if_not_found=True,
             )
             compare_prompt = similarity_check.format(
                 original_prompt=original_prompt, cached_prompt=best_prompt

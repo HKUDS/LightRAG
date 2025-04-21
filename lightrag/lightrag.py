@@ -242,19 +242,20 @@ class LightRAG:
     max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 2)))
     """Maximum number of parallel insert operations."""
 
-    addon_params: dict[str, Any] = field(
-        default_factory=lambda: {
-            "language": os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"])
-        }
-    )
+    addon_params: Optional[Dict[str, Any]] = field(default=None)
+    """
+    Additional parameters can be different insert prompt templates and `example_number` to limit amount of few-shot examples.
+
+    The default prompt templates are defined in `.prompt.py` and no limit of few-shot examples.
+    """
 
     # Storages Management
     # ---
 
     auto_manage_storages_states: bool = field(default=True)
-    """If True, lightrag will automatically calls initialize_storages and finalize_storages at the appropriate times."""
+    """If True, lightrag will automatically call initialize_storages and finalize_storages at the appropriate times."""
 
-    # Storages Management
+    # Response
     # ---
 
     convert_response_to_json_func: Callable[[str], dict[str, Any]] = field(
@@ -330,6 +331,14 @@ class LightRAG:
                 self.tokenizer = TiktokenTokenizer(self.tiktoken_model_name)
             else:
                 self.tokenizer = TiktokenTokenizer()
+
+        # Determine the default language value
+        default_language = os.getenv("SUMMARY_LANGUAGE", PROMPTS["language"])
+        if self.addon_params is None:
+            self.addon_params = {"language": default_language}
+        else:
+            if "language" not in self.addon_params:
+                self.addon_params["language"] = default_language
 
         # Fix global_config now
         global_config = asdict(self)
@@ -1320,7 +1329,7 @@ class LightRAG:
         Args:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
-            prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
+            system_prompt (Optional[str]): Custom system_prompt for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["*_response"] depending on query mode.
 
         Returns:
             str: The result of the query execution.
@@ -1342,7 +1351,7 @@ class LightRAG:
             query (str): The query to be executed.
             param (QueryParam): Configuration parameters for query execution.
                 If param.model_func is provided, it will be used instead of the global model.
-            prompt (Optional[str]): Custom prompts for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["rag_response"].
+            system_prompt (Optional[str]): Custom system_prompt for fine-tuned control over the system's behavior. Defaults to None, which uses PROMPTS["*_response"] depending on query mode.
 
         Returns:
             str: The result of the query execution.
