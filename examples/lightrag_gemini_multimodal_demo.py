@@ -1,6 +1,6 @@
 import base64
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 from google import genai
 from google.genai import types
 from lightrag.utils import create_meta_text
@@ -10,12 +10,10 @@ logger = logging.getLogger(__name__)  # Example logger
 
 async def use_google_gemini_multimodal(
     input_text: str,
-    images: Optional[List[Dict]] = None,
     max_tokens: Optional[int] = None,
-    history_messages: Optional[
-        List[Dict]
-    ] = None,  # Keep for signature consistency, though not used directly here
-) -> Any:  # Return the raw response object or string
+    history_messages: Optional[List[Dict]] = None,
+    images: Optional[List[Dict]] = None,
+) -> str:
     """
     Calls the Google Gemini multimodal API.
 
@@ -28,7 +26,7 @@ async def use_google_gemini_multimodal(
     Returns:
         The response object from the Gemini API or an error string.
     """
-    content_list = [input_text]  # Start with base text
+    content_list = [input_text]
 
     if images:
         for img_data in images:
@@ -70,9 +68,8 @@ async def use_google_gemini_multimodal(
         response = await client.generate_content_async(
             contents=content_list,
             generation_config=generation_config,
-            # Add safety_settings if needed
         )
-        return response  # Return the whole response object
+        return response.text  # Return the whole response object
     except Exception as e:
         logger.error(f"Error calling Google Gemini API: {e}")
         # Return an error string or re-raise
