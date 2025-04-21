@@ -1302,8 +1302,8 @@ class LightRAG:
             await self.relationships_vdb.upsert(data_for_vdb)
 
         except Exception as e:
-            logger.error(f"Error in ainsert_custom_kg: {e}")
-            raise
+            logger.error(f"Error in ainsert_custom_kg: {traceback.format_exc()}")
+            raise e
         finally:
             if update_storage:
                 await self._insert_done()
@@ -1501,7 +1501,8 @@ class LightRAG:
             await self.llm_response_cache.index_done_callback()
 
         except Exception as e:
-            logger.error(f"Error while clearing cache: {e}")
+            logger.error(f"Error while clearing cache: {traceback.format_exc()}")
+            raise e
 
     def clear_cache(self, modes: list[str] | None = None) -> None:
         """Synchronous version of aclear_cache."""
@@ -1773,7 +1774,10 @@ class LightRAG:
             await verify_deletion()
 
         except Exception as e:
-            logger.error(f"Error while deleting document {doc_id}: {e}")
+            logger.error(
+                f"Error while deleting document {doc_id}: {traceback.format_exc()}"
+            )
+            raise e
 
     async def adelete_by_entity(self, entity_name: str) -> None:
         """Asynchronously delete an entity and all its relationships.

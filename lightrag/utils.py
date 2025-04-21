@@ -12,11 +12,15 @@ import re
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
-from typing import Any, Protocol, Callable, TYPE_CHECKING, List
+from typing import Any, Protocol, Callable, TYPE_CHECKING, List, Optional, Dict
 import xml.etree.ElementTree as ET
 import numpy as np
 from lightrag.prompt import PROMPTS
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
+import traceback
+import mimetypes
+import base64
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
@@ -236,7 +240,7 @@ def convert_response_to_json(response: str) -> dict[str, Any]:
         data = json.loads(json_str)
         return data
     except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse JSON: {json_str}")
+        logger.error(f"Failed to parse JSON {json_str}: {traceback.format_exc()}")
         raise e from None
 
 
@@ -532,12 +536,181 @@ def xml_to_json(xml_file):
         print(f"Found {len(data['nodes'])} nodes and {len(data['edges'])} edges")
 
         return data
-    except ET.ParseError as e:
-        print(f"Error parsing XML file: {e}")
+    except ET.ParseError:
+        print(f"Error parsing XML file: {traceback.format_exc()}")
         return None
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    except Exception:
+        print(f"An error occurred: {traceback.format_exc()}")
         return None
+
+
+def create_image_meta_text(meta):
+    """Creates a descriptive string from image meta tags."""
+    parts = []
+    alt = meta.get("alt", "").strip()
+    title = meta.get("title", "").strip()
+    if alt:
+        parts.append(f'Alt text: "{alt}"')
+    if title:
+        parts.append(f'Title: "{title}"')
+    if not parts:
+        return "[Image with no description]"  # Default if no meta
+    return f"Image description - {' '.join(parts)}"
+
+
+def process_image_src(img_src: str) -> tuple[str, str] | None:
+    """
+    Processes an image src attribute to extract MIME type and Base64 data string.
+
+    Args:
+        img_src: The string value from the src attribute of an <img> tag.
+
+    Returns:
+        A tuple containing (mime_type, base64 string) if the src is a
+        valid Base64 data URI or a readable local image file (returning its encoded string).
+        Returns None otherwise (e.g., for URLs, non-image files,
+        unreadable files, non-data URIs).
+    """
+    DATA_URI_REGEX = re.compile(
+        r"data:image/(png|jpe?g|gif|webp|svg\+xml|bmp|avif)(?:;charset=[\w-]+)?;base64,(.*)",
+        re.IGNORECASE | re.DOTALL,
+    )
+    # Define allowed image MIME types for local file validation
+    ALLOWED_IMAGE_MIME_TYPES = {
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/svg+xml",
+        "image/bmp",
+        "image/avif",
+    }
+    if not img_src:
+        return None
+
+    # 1. Check for Base64 Data URI
+    match = DATA_URI_REGEX.match(img_src)
+    if match:
+        mime_subtype = match.group(1).lower()
+        # Standardize mime subtype if needed (e.g., jpg -> jpeg)
+        if mime_subtype == "jpg":
+            mime_subtype = "jpeg"
+        # Reconstruct full MIME type
+        mime_type = f"image/{mime_subtype}"
+        # Correct SVG mime type which includes '+'
+        if mime_subtype == "svg+xml":
+            mime_type = "image/svg+xml"
+
+        base64_string = match.group(2).strip()
+
+        # Optional: Add a quick validation check for base64 validity if desired
+        try:
+            base64.b64decode(base64_string, validate=True)
+        except (TypeError, base64.binascii.Error):
+            logger.warning(
+                f"Invalid base64 string detected in data URI for {mime_type}"
+            )
+            return None
+
+        return mime_type, base64_string
+
+    # 2. Check for URLs (and skip processing as requested by prior constraints)
+    if img_src.startswith("http://") or img_src.startswith("https://"):
+        # No network check allowed/needed based on previous discussion
+        # If fetching URLs were desired, it would happen here with requests library
+        # For now, returning None as per original constraints.
+        return None
+
+    # 3. Assume it's a local path
+    try:
+        if os.path.isfile(img_src):
+            # Guess MIME type based on file extension
+            mime_type, _ = mimetypes.guess_type(img_src)
+
+            if mime_type and mime_type in ALLOWED_IMAGE_MIME_TYPES:
+                # Try to read the file bytes directly
+                try:
+                    with open(img_src, "rb") as f:
+                        file_bytes = f.read()
+                    # Encode the file bytes into base64 bytes
+                    base64_bytes = base64.b64encode(file_bytes)
+                    # Decode the base64 bytes into a string
+                    base64_string = base64_bytes.decode("utf-8")
+                    return mime_type, base64_string
+                except IOError:
+                    print(
+                        f"Warning: Could not read file {img_src}: {traceback.format_exc()}"
+                    )
+                    return None  # File exists but couldn't be read
+                except Exception:
+                    print(
+                        f"Warning: Error reading file {img_src}: {traceback.format_exc()}"
+                    )
+                    return None
+            else:
+                # It's a file, but not an allowed image type or type couldn't be guessed
+                logger.info(
+                    f"Skipped file {img_src}, MIME type ({mime_type}) not allowed or not guessable."
+                )
+                return None
+        else:
+            # Path doesn't exist or is not a file
+            logger.info(
+                f"Skipped file {img_src}, path {img_src} doesn't exist or is not a file."
+            )
+            return None
+    except Exception:
+        logger.warning(f"Error processing path '{img_src}': {traceback.format_exc()}")
+        return None
+
+    return None
+
+
+def extract_images_from_content(content: str) -> list[dict]:
+    """
+    Extracts images from HTML content, processes them, and returns a list
+    of dictionaries containing image data, MIME type, and metadata.
+    Designed to be generally applicable for various multimodal models.
+
+    Args:
+        content: The HTML/Markdown string potentially containing <img> tags.
+
+    Returns:
+        A list of dictionaries. Each dictionary represents a successfully
+        processed image and has the keys:
+        - 'mime_type': str (e.g., 'image/png')
+        - 'data': bytes (the raw image data)
+        - 'meta': dict {'alt': str, 'title': str}
+    """
+    images = []
+    try:
+        soup = BeautifulSoup(content, "html.parser")
+        img_tags = soup.find_all("img")
+
+        for img_tag in img_tags:
+            img_src = img_tag.get("src")
+            if img_src:
+                processed_result = process_image_src(img_src)
+
+                if processed_result:
+                    mime_type, base64_data_string = processed_result
+
+                    # Extract metadata from the tag
+                    alt_text = img_tag.get("alt", "")
+                    title_text = img_tag.get("title", "")
+
+                    # Create the dictionary with base64 string in 'data' field
+                    image_dict = {
+                        "mime_type": mime_type,
+                        "data": base64_data_string,
+                        "meta": {"alt": alt_text, "title": title_text},
+                    }
+                    images.append(image_dict)
+    except Exception:
+        logger.warning(
+            f"Error during HTML parsing or image extraction: {traceback.format_exc()}"
+        )
+    return images
 
 
 def process_combine_contexts(hl: str, ll: str):
@@ -662,8 +835,8 @@ async def get_best_cached_response(
                     logger.debug(json.dumps(log_data, ensure_ascii=False))
                     logger.info(f"Cache rejected by LLM(mode:{mode} tpye:{cache_type})")
                     return None
-            except Exception as e:  # Catch all possible exceptions
-                logger.warning(f"LLM similarity check failed: {e}")
+            except Exception:  # Catch all possible exceptions
+                logger.warning(f"LLM similarity check failed: {traceback.format_exc()}")
                 return None  # Return None directly when LLM check fails
 
         prompt_display = (
@@ -1329,34 +1502,56 @@ def lazy_external_import(module_name: str, class_name: str) -> Callable[..., Any
 
 async def use_llm_func_with_cache(
     input_text: str,
-    use_llm_func: callable,
+    use_llm_func: Callable[..., Any],
     llm_response_cache: "BaseKVStorage | None" = None,
     max_tokens: int = None,
     history_messages: list[dict[str, str]] = None,
     cache_type: str = "extract",
+    images: Optional[List[Dict[str, Any]]] = None,
+    **additional_llm_kwargs,
 ) -> str:
-    """Call LLM function with cache support
+    """Call LLM function (text or multimodal) with cache support.
 
     If cache is available and enabled (determined by handle_cache based on mode),
     retrieve result from cache; otherwise call LLM function and save result to cache.
 
     Args:
         input_text: Input text to send to LLM
-        use_llm_func: LLM function to call
+        use_llm_func: Async LLM function to call.
+                      Expected signature: async func(input_text: str, **kwargs)
+                      where kwargs might include 'images', 'max_tokens', 'history_messages'.
         llm_response_cache: Cache storage instance
         max_tokens: Maximum tokens for generation
         history_messages: History messages list
         cache_type: Type of cache
+        images: Optional list of image dictionaries (e.g., {'mime_type': ..., 'data': ..., 'meta': ...}).
 
     Returns:
-        LLM response text
+        LLM response text (str)
     """
     if llm_response_cache:
+        _prompt = ""
         if history_messages:
-            history = json.dumps(history_messages, ensure_ascii=False)
-            _prompt = history + "\n" + input_text
-        else:
-            _prompt = input_text
+            history = json.dumps(history_messages, sort_keys=True, ensure_ascii=False)
+            _prompt += history + "\n"
+
+        _prompt += input_text
+
+        if images:
+            image_parts_repr = []
+            for idx, img_data in enumerate(images):
+                # Include essential parts that define the image input for caching
+                # Using the base64 data ensures uniqueness for different images
+                # Add mime_type as well. Meta could be added if relevant for caching.
+                img_repr = (
+                    f"IMAGE_{idx}<"
+                    f"mime:{img_data.get('mime_type', 'unknown')},"
+                    # Optionally add meta: f"meta:{json.dumps(img_data.get('meta', {}), sort_keys=True)},"
+                    f"data:{img_data.get('data', '')}"  # Include base64 data in hash key
+                    f">"
+                )
+                image_parts_repr.append(img_repr)
+            _prompt += "\n".join(image_parts_repr)
 
         arg_hash = compute_args_hash(_prompt)
         cached_return, _1, _2, _3 = await handle_cache(
@@ -1368,41 +1563,44 @@ async def use_llm_func_with_cache(
         )
         if cached_return:
             logger.debug(f"Found cache for {arg_hash}")
-            statistic_data["llm_cache"] += 1
+            # statistic_data["llm_cache"] += 1
             return cached_return
-        statistic_data["llm_call"] += 1
+        # statistic_data["llm_call"] += 1
 
-        # Call LLM
-        kwargs = {}
-        if history_messages:
-            kwargs["history_messages"] = history_messages
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
-
-        res: str = await use_llm_func(input_text, **kwargs)
-
-        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
-            await save_to_cache(
-                llm_response_cache,
-                CacheData(
-                    args_hash=arg_hash,
-                    content=res,
-                    prompt=_prompt,
-                    cache_type=cache_type,
-                ),
-            )
-
-        return res
-
+    # --- Prepare and Call LLM ---
     # When cache is disabled, directly call LLM
     kwargs = {}
     if history_messages:
         kwargs["history_messages"] = history_messages
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    if images:
+        kwargs["images"] = images
 
+    kwargs.update(additional_llm_kwargs)
     logger.info(f"Call LLM function with query text lenght: {len(input_text)}")
-    return await use_llm_func(input_text, **kwargs)
+    res: str = await use_llm_func(input_text, **kwargs)
+
+    # --- Save to Cache ---
+    if llm_response_cache:
+        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
+            try:
+                await save_to_cache(
+                    llm_response_cache,
+                    CacheData(
+                        args_hash=arg_hash,
+                        content=res,
+                        prompt=_prompt,
+                        cache_type=cache_type,
+                    ),
+                )
+                logger.debug(f"Saved to cache for hash {arg_hash}")
+            except Exception:
+                logger.error(
+                    f"Failed to save result to cache for hash {arg_hash}: {traceback.format_exc()}"
+                )
+
+    return res
 
 
 def get_content_summary(content: str, max_length: int = 250) -> str:
