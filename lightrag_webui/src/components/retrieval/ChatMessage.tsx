@@ -1,4 +1,4 @@
-import { ReactNode, useCallback, useEffect, useState, useRef } from 'react'
+import { ReactNode, useCallback, useEffect, useRef } from 'react'
 import { Message } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
 import Button from '@/components/ui/Button'
@@ -24,6 +24,8 @@ export type MessageWithError = Message & {
 
 export const ChatMessage = ({ message }: { message: MessageWithError }) => {
   const { t } = useTranslation()
+  // Remove extra spaces around bold text
+  message.content = message.content.replace(/\*\ {3}/g, '').replace(/\ {4}\*\*/g, '**')
 
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
@@ -47,9 +49,9 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
     >
       <pre className="relative break-words whitespace-pre-wrap">
         <ReactMarkdown
-          className="dark:prose-invert max-w-none text-sm" // Removed text-base as it might conflict
+          className="dark:prose-invert max-w-none text-base text-sm"
           remarkPlugins={[remarkGfm, remarkMath]}
-          // Removed rehypeReact as it's often not needed with custom components and can cause issues
+          rehypePlugins={[rehypeReact]}
           skipHtml={false}
           components={{
             code: CodeHighlight
@@ -167,8 +169,6 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
             })
             .filter(line => !line.trim().startsWith('linkStyle')) // Keep filtering linkStyle
             .join('\n');
-
-          console.log("Rendering Mermaid with debounced, filtered content:", processedContent);
 
           const mermaidId = `mermaid-${Date.now()}`;
           mermaid.render(mermaidId, processedContent)
