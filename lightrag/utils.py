@@ -417,21 +417,21 @@ def extract_fixed_parenthesized_content(records: list[str]) -> list[str]:
 
     for record in records:
         # First, extract properly matched pairs
-        balanced_matches = re.findall(r'\((.*?)\)', record)
+        balanced_matches = re.findall(r"\((.*?)\)", record)
         for match in balanced_matches:
             result.append(f"({match})")
-        
+
         # Process string to handle unbalanced parentheses
         # For opening without closing
-        open_matches = re.findall(r'\(([^()]*?)$', record)
+        open_matches = re.findall(r"\(([^()]*?)$", record)
         for match in open_matches:
             result.append(f"({match})")
-        
+
         # For closing without opening
-        close_matches = re.findall(r'^([^()]*?)\)', record)
+        close_matches = re.findall(r"^([^()]*?)\)", record)
         for match in close_matches:
             result.append(f"({match})")
-    
+
     return result
 
 
