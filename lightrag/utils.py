@@ -599,6 +599,15 @@ def get_and_validate_prompt_template(
             f"Prompt '{prompt_type}' must be of the type str or list and of same type as the default template."
         )
 
+    if prompt_type == "entity_types" and (
+        not isinstance(custom_template, list) or not len(custom_template)
+    ):
+        logger.error(
+            f"Prompt '{prompt_type}' must be a list of strings and cannot be empty."
+        )
+        raise ValueError(
+            f"Prompt '{prompt_type}' must be a list of strings and cannot be empty."
+        )
     # Skip placeholder check if custom template is a list or if string matches the default template
     skip_placeholder_check = isinstance(custom_template, list) or (
         isinstance(custom_template, str) and custom_template == default_template

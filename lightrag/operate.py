@@ -531,6 +531,7 @@ async def extract_entities(
     entity_extract_prompt = get_and_validate_prompt_template(
         global_config["addon_params"],
         "entity_extraction",
+        error_if_not_found=True,
     )
     context_base = dict(
         tuple_delimiter=tuple_delimiter,
@@ -544,6 +545,7 @@ async def extract_entities(
     entity_continue_extraction = get_and_validate_prompt_template(
         global_config["addon_params"],
         "entity_continue_extraction",
+        error_if_not_found=True,
     )
     continue_prompt = entity_continue_extraction.format(**context_base)
     if_loop_prompt = get_and_validate_prompt_template(
@@ -1023,6 +1025,7 @@ async def extract_keywords_only(
     keywords_extraction = get_and_validate_prompt_template(
         global_config["addon_params"],
         "keywords_extraction",
+        error_if_not_found=True,
     )
     kw_prompt = keywords_extraction.format(
         query=text, examples=examples, history=history_context
