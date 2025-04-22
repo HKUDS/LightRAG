@@ -303,8 +303,10 @@
       "startPrompt": "Start a retrieval by typing your query below",
       "clear": "Clear",
       "send": "Send",
-      "placeholder": "Type your query...",
-      "error": "Error: Failed to get response"
+      "placeholder": "Type your query... (Query mode prefix: /<Query Mode>)",
+      "error": "Error: Failed to get response",
+      "queryModeError": "Only supports the following query modes: {{modes}}",
+      "queryModePrefixInvalid": "Invalid query mode prefix. Use: /<mode> [space] your query"
     },
     "querySettings": {
       "parametersTitle": "Parameters",
