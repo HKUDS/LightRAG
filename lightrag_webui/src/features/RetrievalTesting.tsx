@@ -17,6 +17,10 @@ export default function RetrievalTesting() {
   )
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
+  const shouldFollowScrollRef = useRef(true)
+  // Reference to track if this is the first chunk of a streaming response
+  const isFirstChunkRef = useRef(true)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
 
@@ -61,6 +65,11 @@ export default function RetrievalTesting() {
       // Add messages to chatbox
       setMessages([...prevMessages, userMessage, assistantMessage])
       
+      // Reset first chunk flag for new streaming response
+      isFirstChunkRef.current = true
+      // Enable follow scroll for new query
+      shouldFollowScrollRef.current = true
+      
       // Force scroll to bottom after messages are rendered
       setTimeout(() => {
         scrollToBottom(true)
@@ -72,6 +81,17 @@ export default function RetrievalTesting() {
 
       // Create a function to update the assistant's message
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
+        // Check if this is the first chunk of the streaming response
+        if (isFirstChunkRef.current) {
+          // Determine scroll behavior based on initial position
+          shouldFollowScrollRef.current = isNearBottom();
+          isFirstChunkRef.current = false;
+        }
+        
+        // Save current scroll position before updating content
+        const container = messagesContainerRef.current;
+        const currentScrollPosition = container ? container.scrollTop : 0;
+        
         assistantMessage.content += chunk
         setMessages((prev) => {
           const newMessages = [...prev]
@@ -82,8 +102,20 @@ export default function RetrievalTesting() {
           }
           return newMessages
         })
-        // Don't force scroll when updating with new chunks
-        scrollToBottom(false)
+        
+        // After updating content, check if we should scroll
+        // Use consistent scrolling behavior throughout the streaming response
+        if (shouldFollowScrollRef.current) {
+          scrollToBottom(true);
+        } else if (container) {
+          // If user was not near bottom, restore their scroll position
+          // This needs to be in a setTimeout to work after React updates the DOM
+          setTimeout(() => {
+            if (container) {
+              container.scrollTop = currentScrollPosition;
+            }
+          }, 0);
+        }
       }
 
       // Prepare query parameters
@@ -127,6 +159,28 @@ export default function RetrievalTesting() {
     },
     [inputValue, isLoading, messages, setMessages, t, scrollToBottom]
   )
+
+  // Add scroll event listener to detect when user manually scrolls
+  useEffect(() => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    
+    const handleScroll = () => {
+      const isNearBottomNow = isNearBottom();
+      
+      // If user scrolls away from bottom while in auto-scroll mode, disable it
+      if (shouldFollowScrollRef.current && !isNearBottomNow) {
+        shouldFollowScrollRef.current = false;
+      }
+      // If user scrolls back to bottom while not in auto-scroll mode, re-enable it
+      else if (!shouldFollowScrollRef.current && isNearBottomNow) {
+        shouldFollowScrollRef.current = true;
+      }
+    };
+    
+    container.addEventListener('scroll', handleScroll);
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [isNearBottom]); // Remove shouldFollowScroll from dependencies since we're using ref now
 
   const debouncedMessages = useDebounce(messages, 100)
   useEffect(() => scrollToBottom(false), [debouncedMessages, scrollToBottom])
