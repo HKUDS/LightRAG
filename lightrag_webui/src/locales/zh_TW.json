@@ -303,7 +303,7 @@
         "startPrompt": "輸入查詢開始檢索",
         "clear": "清空",
         "send": "送出",
-        "placeholder": "輸入查詢...(查詢模式前綴：/<Query Mode>)",
+        "placeholder": "輸入查詢內容 (支援模式前綴：/<Query Mode>)",
         "error": "錯誤：取得回應失敗",
         "queryModeError": "僅支援以下查詢模式：{{modes}}",
         "queryModePrefixInvalid": "無效的查詢模式前綴。請使用：/<模式> [空格] 查詢內容"

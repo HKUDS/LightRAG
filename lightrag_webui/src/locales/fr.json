@@ -303,7 +303,7 @@
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
       "clear": "Effacer",
       "send": "Envoyer",
-      "placeholder": "Tapez votre requête... (Préfixe du mode de requête : /<Query Mode>)",
+      "placeholder": "Tapez votre requête (Préfixe de requête : /<Query Mode>)",
       "error": "Erreur : Échec de l'obtention de la réponse",
       "queryModeError": "Seuls les modes de requête suivants sont pris en charge : {{modes}}",
       "queryModePrefixInvalid": "Préfixe de mode de requête invalide. Utilisez : /<mode> [espace] votre requête"

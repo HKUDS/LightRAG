@@ -269,7 +269,6 @@
           "file_path": "信源",
           "keywords": "Keys",
           "weight": "权重"
-
         }
       },
       "edge": {
@@ -304,7 +303,7 @@
       "startPrompt": "输入查询开始检索",
       "clear": "清空",
       "send": "发送",
-      "placeholder": "输入查询...(查询模式前缀：/<Query Mode>)",
+      "placeholder": "输入查询内容 (支持模式前缀: /<Query Mode>)",
       "error": "错误：获取响应失败",
       "queryModeError": "仅支持以下查询模式：{{modes}}",
       "queryModePrefixInvalid": "无效的查询模式前缀。请使用：/<模式> [空格] 查询内容"
