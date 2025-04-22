@@ -649,17 +649,11 @@ class PGVectorStorage(BaseVectorStorage):
         embeddings = await self.embedding_func([query])
         embedding = embeddings[0]
         embedding_string = ",".join(map(str, embedding))
-
-        if ids:
-            formatted_ids = ",".join(f"'{id}'" for id in ids)
-        else:
-            formatted_ids = "NULL"
-
-        sql = SQL_TEMPLATES[self.namespace].format(
-            embedding_string=embedding_string, doc_ids=formatted_ids
-        )
+        # Use parameterized document IDs (None means search across all documents)
+        sql = SQL_TEMPLATES[self.namespace].format(embedding_string=embedding_string)
         params = {
             "workspace": self.db.workspace,
+            "doc_ids": ids,
             "better_than_threshold": self.cosine_better_than_threshold,
             "top_k": top_k,
         }
@@ -2137,7 +2131,7 @@ SQL_TEMPLATES = {
     WITH relevant_chunks AS (
         SELECT id as chunk_id
         FROM LIGHTRAG_DOC_CHUNKS
-        WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
+        WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
     )
     SELECT source_id as src_id, target_id as tgt_id
     FROM (
@@ -2146,15 +2140,15 @@ SQL_TEMPLATES = {
         JOIN relevant_chunks c ON c.chunk_id = ANY(r.chunk_ids)
         WHERE r.workspace=$1
     ) filtered
-    WHERE distance>$2
+    WHERE distance>$3
     ORDER BY distance DESC
-    LIMIT $3
+    LIMIT $4
     """,
     "entities": """
         WITH relevant_chunks AS (
             SELECT id as chunk_id
             FROM LIGHTRAG_DOC_CHUNKS
-            WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
+            WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
         )
         SELECT entity_name FROM
             (
@@ -2163,26 +2157,26 @@ SQL_TEMPLATES = {
                 JOIN relevant_chunks c ON c.chunk_id = ANY(e.chunk_ids)
                 WHERE e.workspace=$1
             ) as chunk_distances
-            WHERE distance>$2
+            WHERE distance>$3
             ORDER BY distance DESC
-            LIMIT $3
+            LIMIT $4
     """,
     "chunks": """
         WITH relevant_chunks AS (
             SELECT id as chunk_id
             FROM LIGHTRAG_DOC_CHUNKS
-            WHERE {doc_ids} IS NULL OR full_doc_id = ANY(ARRAY[{doc_ids}])
+            WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
         )
         SELECT id, content, file_path FROM
             (
                 SELECT id, content, file_path, 1 - (content_vector <=> '[{embedding_string}]'::vector) as distance
                 FROM LIGHTRAG_DOC_CHUNKS
-                where workspace=$1
+                WHERE workspace=$1
                 AND id IN (SELECT chunk_id FROM relevant_chunks)
             ) as chunk_distances
-            WHERE distance>$2
+            WHERE distance>$3
             ORDER BY distance DESC
-            LIMIT $3
+            LIMIT $4
     """,
     # DROP tables
     "drop_specifiy_table_workspace": """
