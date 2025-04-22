@@ -18,10 +18,27 @@ export default function RetrievalTesting() {
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
 
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  // Check if the container is near the bottom
+  const isNearBottom = useCallback(() => {
+    const container = messagesContainerRef.current
+    if (!container) return true // Default to true if no container reference
+
+    // Calculate distance to bottom
+    const { scrollTop, scrollHeight, clientHeight } = container
+    const distanceToBottom = scrollHeight - scrollTop - clientHeight
+    
+    // Consider near bottom if less than 100px from bottom
+    return distanceToBottom < 100
   }, [])
+
+  const scrollToBottom = useCallback((force = false) => {
+    // Only scroll if forced or user is already near bottom
+    if (force || isNearBottom()) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [isNearBottom])
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -60,7 +77,8 @@ export default function RetrievalTesting() {
           }
           return newMessages
         })
-        scrollToBottom()
+        // Don't force scroll when updating with new chunks
+        scrollToBottom(false)
       }
 
       // Prepare query parameters
@@ -106,7 +124,7 @@ export default function RetrievalTesting() {
   )
 
   const debouncedMessages = useDebounce(messages, 100)
-  useEffect(() => scrollToBottom(), [debouncedMessages, scrollToBottom])
+  useEffect(() => scrollToBottom(false), [debouncedMessages, scrollToBottom])
 
   const clearMessages = useCallback(() => {
     setMessages([])
@@ -117,7 +135,7 @@ export default function RetrievalTesting() {
     <div className="flex size-full gap-2 px-2 pb-12 overflow-hidden">
       <div className="flex grow flex-col gap-4">
         <div className="relative grow">
-          <div className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2">
+          <div ref={messagesContainerRef} className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2">
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               {messages.length === 0 ? (
                 <div className="text-muted-foreground flex h-full items-center justify-center text-lg">
