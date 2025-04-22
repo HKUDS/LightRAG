@@ -25,7 +25,7 @@ export type MessageWithError = Message & {
 export const ChatMessage = ({ message }: { message: MessageWithError }) => {
   const { t } = useTranslation()
   // Remove extra spaces around bold text
-  message.content = message.content.replace(/\*\ {3}/g, '').replace(/\ {4}\*\*/g, '**')
+  message.content = message.content.replace(/\* {3}/g, '').replace(/ {4}\*\*/g, '**')
 
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
@@ -147,10 +147,10 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
 
 
           if (!looksPotentiallyComplete) {
-             console.log("Mermaid content might be incomplete, skipping render attempt:", rawContent);
-             // Keep loading indicator or show a message
-             // container.innerHTML = '<p class="text-sm text-muted-foreground">Waiting for complete diagram...</p>';
-             return; // Don't attempt to render potentially incomplete content
+            console.log('Mermaid content might be incomplete, skipping render attempt:', rawContent);
+            // Keep loading indicator or show a message
+            // container.innerHTML = '<p class="text-sm text-muted-foreground">Waiting for complete diagram...</p>';
+            return; // Don't attempt to render potentially incomplete content
           }
 
           const processedContent = rawContent
@@ -181,13 +181,13 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
                   try { // Add try-catch around bindFunctions as it can also throw
                     bindFunctions(container);
                   } catch (bindError) {
-                     console.error('Mermaid bindFunctions error:', bindError);
-                     // Optionally display a message in the container
-                     container.innerHTML += `<p class="text-orange-500 text-xs">Diagram interactions might be limited.</p>`;
+                    console.error('Mermaid bindFunctions error:', bindError);
+                    // Optionally display a message in the container
+                    container.innerHTML += '<p class="text-orange-500 text-xs">Diagram interactions might be limited.</p>';
                   }
                 }
               } else {
-                 console.log("Mermaid container changed before rendering completed.");
+                console.log('Mermaid container changed before rendering completed.');
               }
             })
             .catch(error => {
@@ -207,13 +207,13 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
         } catch (error) {
           console.error('Mermaid synchronous error (debounced):', error);
           console.error('Failed content (debounced):', String(children));
-           if (mermaidRef.current === container) {
-             const errorMessage = error instanceof Error ? error.message : String(error);
-             const errorPre = document.createElement('pre');
-             errorPre.className = 'text-red-500 text-xs whitespace-pre-wrap break-words';
-             errorPre.textContent = `Mermaid diagram setup error: ${errorMessage}`;
-             container.innerHTML = ''; // Clear previous content
-             container.appendChild(errorPre);
+          if (mermaidRef.current === container) {
+            const errorMessage = error instanceof Error ? error.message : String(error);
+            const errorPre = document.createElement('pre');
+            errorPre.className = 'text-red-500 text-xs whitespace-pre-wrap break-words';
+            errorPre.textContent = `Mermaid diagram setup error: ${errorMessage}`;
+            container.innerHTML = ''; // Clear previous content
+            container.appendChild(errorPre);
           }
         }
       }, 300); // 300ms debounce delay
