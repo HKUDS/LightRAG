@@ -36,7 +36,10 @@ export default defineConfig({
           
           // Mermaid-related modules
           'mermaid-vendor': ['mermaid'],
-          
+
+          // Typography-related modules
+          'typography-vendor': ['typography'],
+
           // Markdown-related modules
           'markdown-vendor': [
             'react-markdown',

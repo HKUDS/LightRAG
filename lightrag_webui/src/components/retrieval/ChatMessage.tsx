@@ -24,9 +24,6 @@ export type MessageWithError = Message & {
 
 export const ChatMessage = ({ message }: { message: MessageWithError }) => {
   const { t } = useTranslation()
-  // Remove extra spaces around bold text
-  message.content = message.content.replace(/\* {3}/g, '').replace(/ {4}\*\*/g, '**')
-
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
       try {
@@ -47,14 +44,22 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
             : 'bg-muted'
       }`}
     >
-      <pre className="relative break-words whitespace-pre-wrap">
+      <div className="relative">
         <ReactMarkdown
-          className="dark:prose-invert max-w-none text-base text-sm"
+          className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1"
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeReact]}
           skipHtml={false}
           components={{
-            code: CodeHighlight
+            code: CodeHighlight,
+            p: ({ children }) => <p className="my-2">{children}</p>,
+            h1: ({ children }) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
+            h2: ({ children }) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
+            h3: ({ children }) => <h3 className="text-base font-bold mt-3 mb-2">{children}</h3>,
+            h4: ({ children }) => <h4 className="text-base font-semibold mt-3 mb-2">{children}</h4>,
+            ul: ({ children }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
+            ol: ({ children }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
+            li: ({ children }) => <li className="my-1">{children}</li>
           }}
         >
           {message.content}
@@ -70,7 +75,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
             <CopyIcon className="size-4" /> {/* Explicit size */}
           </Button>
         )}
-      </pre>
+      </div>
       {message.content === '' && <LoaderIcon className="animate-spin duration-2000" />} {/* Check for empty string specifically */}
     </div>
   )
@@ -246,7 +251,7 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
   ) : (
     // Handle inline code
     <code
-      className={cn(className, 'mx-1 rounded-sm bg-muted px-1 py-0.5 text-sm')} // Adjusted styling for inline code
+      className={cn(className, 'mx-1 rounded-sm bg-muted px-1 py-0.5 font-mono text-sm')} // 添加 font-mono 确保使用等宽字体
       {...props}
     >
       {children}
