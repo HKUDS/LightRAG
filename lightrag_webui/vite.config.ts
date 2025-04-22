@@ -32,7 +32,19 @@ export default defineConfig({
           // Separate feature modules
           'feature-graph': ['./src/features/GraphViewer'],
           'feature-documents': ['./src/features/DocumentManager'],
-          'feature-retrieval': ['./src/features/RetrievalTesting']
+          'feature-retrieval': ['./src/features/RetrievalTesting'],
+          
+          // Mermaid-related modules
+          'mermaid-vendor': ['mermaid'],
+          
+          // Markdown-related modules
+          'markdown-vendor': [
+            'react-markdown',
+            'rehype-react',
+            'remark-gfm',
+            'remark-math',
+            'react-syntax-highlighter'
+          ]
         },
         // Ensure consistent chunk naming format
         chunkFileNames: 'assets/[name]-[hash].js',
