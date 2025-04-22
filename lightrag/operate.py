@@ -18,7 +18,6 @@ from .utils import (
     normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
-    extract_fixed_parenthesized_content,
     truncate_list_by_token_size,
     process_combine_contexts,
     compute_args_hash,
@@ -153,7 +152,7 @@ async def _handle_single_entity_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
+    if len(record_attributes) < 4 or '"entity"' not in record_attributes[0]:
         return None
 
     # Clean and validate entity name
@@ -199,7 +198,7 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
+    if len(record_attributes) < 5 or '"relationship"' not in record_attributes[0]:
         return None
     # add this record as edge
     source = clean_str(record_attributes[1])
@@ -549,8 +548,6 @@ async def extract_entities(
             result,
             [context_base["record_delimiter"], context_base["completion_delimiter"]],
         )
-
-        records = extract_fixed_parenthesized_content(records)
 
         for record in records:
             record = re.search(r"\((.*)\)", record)

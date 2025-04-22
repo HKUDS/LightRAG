@@ -408,33 +408,6 @@ def split_string_by_multi_markers(content: str, markers: list[str]) -> list[str]
     return [r.strip() for r in results if r.strip()]
 
 
-def extract_fixed_parenthesized_content(records: list[str]) -> list[str]:
-    """
-    Extract content that should be in parentheses from each record.
-    Ensures each extracted item has both opening and closing parentheses.
-    """
-    result = []
-
-    for record in records:
-        # First, extract properly matched pairs
-        balanced_matches = re.findall(r"\((.*?)\)", record)
-        for match in balanced_matches:
-            result.append(f"({match})")
-
-        # Process string to handle unbalanced parentheses
-        # For opening without closing
-        open_matches = re.findall(r"\(([^()]*?)$", record)
-        for match in open_matches:
-            result.append(f"({match})")
-
-        # For closing without opening
-        close_matches = re.findall(r"^([^()]*?)\)", record)
-        for match in close_matches:
-            result.append(f"({match})")
-
-    return result
-
-
 # Refer the utils functions of the official GraphRAG implementation:
 # https://github.com/microsoft/graphrag
 def clean_str(input: Any) -> str:
