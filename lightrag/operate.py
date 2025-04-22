@@ -14,7 +14,6 @@ from .utils import (
     compute_mdhash_id,
     Tokenizer,
     is_float_regex,
-    list_of_list_to_csv,
     normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
@@ -26,6 +25,7 @@ from .utils import (
     CacheData,
     get_conversation_turns,
     use_llm_func_with_cache,
+    list_of_list_to_json,
 )
 from .base import (
     BaseGraphStorage,
@@ -400,6 +400,16 @@ async def _merge_edges_then_upsert(
 
     for need_insert_id in [src_id, tgt_id]:
         if not (await knowledge_graph_inst.has_node(need_insert_id)):
+            # # Discard this edge if the node does not exist
+            # if need_insert_id == src_id:
+            #     logger.warning(
+            #         f"Discard edge: {src_id} - {tgt_id} | Source node missing"
+            #     )
+            # else:
+            #     logger.warning(
+            #         f"Discard edge: {src_id} - {tgt_id} | Target node missing"
+            #     )
+            # return None
             await knowledge_graph_inst.upsert_node(
                 need_insert_id,
                 node_data={
@@ -664,11 +674,17 @@ async def extract_entities(
         # Return the extracted nodes and edges for centralized processing
         return maybe_nodes, maybe_edges
 
-    # Handle all chunks in parallel and collect results
-    # Create tasks for all chunks
+    # Get max async tasks limit from global_config
+    llm_model_max_async = global_config.get("llm_model_max_async", 4)
+    semaphore = asyncio.Semaphore(llm_model_max_async)
+
+    async def _process_with_semaphore(chunk):
+        async with semaphore:
+            return await _process_single_content(chunk)
+
     tasks = []
     for c in ordered_chunks:
-        task = asyncio.create_task(_process_single_content(c))
+        task = asyncio.create_task(_process_with_semaphore(c))
         tasks.append(task)
 
     # Wait for tasks to complete or for the first exception to occur
@@ -738,7 +754,19 @@ async def extract_entities(
                 pipeline_status_lock,
                 llm_response_cache,
             )
-            relationships_data.append(edge_data)
+            if edge_data is not None:
+                relationships_data.append(edge_data)
+
+        # Update total counts
+        total_entities_count = len(entities_data)
+        total_relations_count = len(relationships_data)
+
+        log_message = f"Updating vector storage: {total_entities_count} entities..."
+        logger.info(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
         # Update vector databases with all collected data
         if entity_vdb is not None and entities_data:
@@ -754,6 +782,15 @@ async def extract_entities(
             }
             await entity_vdb.upsert(data_for_vdb)
 
+        log_message = (
+            f"Updating vector storage: {total_relations_count} relationships..."
+        )
+        logger.info(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
         if relationships_vdb is not None and relationships_data:
             data_for_vdb = {
                 compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
@@ -767,17 +804,6 @@ async def extract_entities(
                 for dp in relationships_data
             }
             await relationships_vdb.upsert(data_for_vdb)
-
-    # Update total counts
-    total_entities_count = len(entities_data)
-    total_relations_count = len(relationships_data)
-
-    log_message = f"Extracted {total_entities_count} entities + {total_relations_count} relationships (total)"
-    logger.info(log_message)
-    if pipeline_status is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
 
 
 async def kg_query(
@@ -1315,21 +1341,26 @@ async def _build_query_context(
             [hl_text_units_context, ll_text_units_context],
         )
     # not necessary to use LLM to generate a response
-    if not entities_context.strip() and not relations_context.strip():
+    if not entities_context and not relations_context:
         return None
+
+    # 转换为 JSON 字符串
+    entities_str = json.dumps(entities_context, ensure_ascii=False)
+    relations_str = json.dumps(relations_context, ensure_ascii=False)
+    text_units_str = json.dumps(text_units_context, ensure_ascii=False)
 
     result = f"""
     -----Entities-----
-    ```csv
-    {entities_context}
+    ```json
+    {entities_str}
     ```
     -----Relationships-----
-    ```csv
-    {relations_context}
+    ```json
+    {relations_str}
     ```
     -----Sources-----
-    ```csv
-    {text_units_context}
+    ```json
+    {text_units_str}
     ```
     """.strip()
     return result
@@ -1435,7 +1466,7 @@ async def _get_node_data(
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
+    entities_context = list_of_list_to_json(entites_section_list)
 
     relations_section_list = [
         [
@@ -1472,14 +1503,14 @@ async def _get_node_data(
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
+    relations_context = list_of_list_to_json(relations_section_list)
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
         text_units_section_list.append(
             [i, t["content"], t.get("file_path", "unknown_source")]
         )
-    text_units_context = list_of_list_to_csv(text_units_section_list)
+    text_units_context = list_of_list_to_json(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 
@@ -1757,7 +1788,7 @@ async def _get_edge_data(
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
+    relations_context = list_of_list_to_json(relations_section_list)
 
     entites_section_list = [
         ["id", "entity", "type", "description", "rank", "created_at", "file_path"]
@@ -1782,12 +1813,12 @@ async def _get_edge_data(
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
+    entities_context = list_of_list_to_json(entites_section_list)
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
         text_units_section_list.append([i, t["content"], t.get("file_path", "unknown")])
-    text_units_context = list_of_list_to_csv(text_units_section_list)
+    text_units_context = list_of_list_to_json(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 

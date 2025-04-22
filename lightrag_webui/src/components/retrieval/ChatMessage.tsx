@@ -25,7 +25,7 @@ export type MessageWithError = Message & {
 export const ChatMessage = ({ message }: { message: MessageWithError }) => {
   const { t } = useTranslation()
   // Remove extra spaces around bold text
-  message.content = message.content.replace(/\*\ {3}/g, '').replace(/\ {4}\*\*/g, '**').replace(/\*\ \[/g, '[')
+  // message.content = message.content.replace(/\*\ {3}/g, '').replace(/\ {4}\*\*/g, '**').replace(/\*\ \[/g, '[')
 
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
@@ -39,22 +39,30 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
 
   return (
     <div
-      className={`rounded-lg px-4 py-2 ${
+      className={`${
         message.role === 'user'
-          ? 'bg-primary text-primary-foreground'
+          ? 'max-w-[80%] bg-primary text-primary-foreground'
           : message.isError
-            ? 'bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
-            : 'bg-muted'
-      }`}
+            ? 'w-[90%] bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
+            : 'w-[90%] bg-muted'
+      } rounded-lg px-4 py-2`}
     >
-      <pre className="relative break-words whitespace-pre-wrap">
+      <div className="relative">
         <ReactMarkdown
-          className="dark:prose-invert max-w-none text-base text-sm"
+          className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1"
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[rehypeReact]}
           skipHtml={false}
           components={{
-            code: CodeHighlight
+            code: CodeHighlight,
+            p: ({ children }) => <p className="my-2">{children}</p>,
+            h1: ({ children }) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
+            h2: ({ children }) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
+            h3: ({ children }) => <h3 className="text-base font-bold mt-3 mb-2">{children}</h3>,
+            h4: ({ children }) => <h4 className="text-base font-semibold mt-3 mb-2">{children}</h4>,
+            ul: ({ children }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
+            ol: ({ children }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
+            li: ({ children }) => <li className="my-1">{children}</li>
           }}
         >
           {message.content}
@@ -70,7 +78,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
             <CopyIcon className="size-4" /> {/* Explicit size */}
           </Button>
         )}
-      </pre>
+      </div>
       {message.content === '' && <LoaderIcon className="animate-spin duration-2000" />} {/* Check for empty string specifically */}
     </div>
   )
@@ -141,9 +149,6 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
           // Preprocess mermaid content
           const rawContent = String(children).replace(/\n$/, '').trim(); // Trim whitespace as well
 
-          // Add debugging information
-          console.log("Attempting to render mermaid content:", rawContent.substring(0, 100) + (rawContent.length > 100 ? '...' : ''));
-
           // Preprocess gitGraph content to ensure correct format
           let processedRawContent = rawContent;
           if (rawContent.includes('gitGraph') && !rawContent.startsWith('gitGraph')) {
@@ -182,17 +187,15 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
 
           // If content looks incomplete but contains gitGraph keyword, attempt to fix
           if (!looksPotentiallyComplete && processedRawContent.includes('gitGraph')) {
-          console.log("Attempting to fix incomplete gitGraph content");
-          looksPotentiallyComplete = true;
+            looksPotentiallyComplete = true;
           }
 
           // Force attempt to render even if it looks incomplete
           if (!looksPotentiallyComplete) {
-          console.log("Content might be incomplete, but attempting to render anyway:", processedRawContent);
-          // For short content, we still attempt to render
-          if (processedRawContent.length > 5) {
-          looksPotentiallyComplete = true;
-          }
+            // For short content, we still attempt to render
+            if (processedRawContent.length > 5) {
+            looksPotentiallyComplete = true;
+            }
           }
 
           // Always attempt to render, no longer skipping
@@ -224,9 +227,9 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
                   return `${parts[0]} "${branchName}"`;
                 }
               }
-              // 处理commit消息中的中文和特殊字符
+              // Handling Chinese and special characters in commit messages
               if (trimmedLine.startsWith('commit') && trimmedLine.includes('"')) {
-                return trimmedLine; // 已经有引号的保持不变
+                return trimmedLine;
               } else if (trimmedLine.startsWith('commit') && trimmedLine.includes(' ')) {
                 const parts = trimmedLine.split(' ');
                 if (parts.length > 1) {
@@ -238,9 +241,6 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
             })
             .filter(line => !line.trim().startsWith('linkStyle')) // Keep filtering linkStyle
             .join('\n');
-
-          // 调试输出处理后的内容
-          console.log("Processed mermaid content:", processedContent.substring(0, 100) + (processedContent.length > 100 ? '...' : ''));
 
           const mermaidId = `mermaid-${Date.now()}`;
           mermaid.render(mermaidId, processedContent)
@@ -256,7 +256,7 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
                   }
                 }
               } else {
-                console.log("Mermaid container changed before rendering completed.");
+                console.log('Mermaid container changed before rendering completed.');
               }
             })
             .catch(error => {
@@ -304,7 +304,7 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
   ) : (
     // Handle inline code
     <code
-      className={cn(className, 'mx-1 rounded-sm bg-muted px-1 py-0.5 text-sm')} // Adjusted styling for inline code
+      className={cn(className, 'mx-1 rounded-sm bg-muted px-1 py-0.5 font-mono text-sm')}
       {...props}
     >
       {children}
@@ -318,7 +318,6 @@ const handleMermaidError = (container: HTMLDivElement, error: unknown, content?:
 
   let contentPreview = '';
   if (content) {
-    // 只显示内容的前50个字符作为预览
     contentPreview = content.length > 50 ? content.substring(0, 50) + '...' : content;
   }
 
