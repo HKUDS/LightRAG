@@ -102,7 +102,7 @@ export default function RetrievalTesting() {
           .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
       }
     },
-    [inputValue, isLoading, messages, setMessages, t]
+    [inputValue, isLoading, messages, setMessages, t, scrollToBottom]
   )
 
   const debouncedMessages = useDebounce(messages, 100)
