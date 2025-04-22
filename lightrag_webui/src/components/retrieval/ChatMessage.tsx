@@ -39,7 +39,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
 
   return (
     <div
-      className={`max-w-[80%] rounded-lg px-4 py-2 ${
+      className={`rounded-lg px-4 py-2 ${
         message.role === 'user'
           ? 'bg-primary text-primary-foreground'
           : message.isError
@@ -124,6 +124,7 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
             startOnLoad: false,
             theme: theme === 'dark' ? 'dark' : 'default',
             securityLevel: 'loose',
+            suppressErrorRendering: true,
           });
 
           // Show loading indicator while processing
@@ -148,9 +149,7 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
 
           if (!looksPotentiallyComplete) {
              console.log("Mermaid content might be incomplete, skipping render attempt:", rawContent);
-             // Keep loading indicator or show a message
-             // container.innerHTML = '<p class="text-sm text-muted-foreground">Waiting for complete diagram...</p>';
-             return; // Don't attempt to render potentially incomplete content
+             return;
           }
 
           const processedContent = rawContent
@@ -173,50 +172,36 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
           const mermaidId = `mermaid-${Date.now()}`;
           mermaid.render(mermaidId, processedContent)
             .then(({ svg, bindFunctions }) => {
-              // Check ref again inside async callback
-              // Ensure the container is still the one we intended to update
               if (mermaidRef.current === container) {
                 container.innerHTML = svg;
                 if (bindFunctions) {
-                  try { // Add try-catch around bindFunctions as it can also throw
+                  try {
                     bindFunctions(container);
                   } catch (bindError) {
-                     console.error('Mermaid bindFunctions error:', bindError);
-                     // Optionally display a message in the container
-                     container.innerHTML += `<p class="text-orange-500 text-xs">Diagram interactions might be limited.</p>`;
+                    console.error('Mermaid bindFunctions error:', bindError);
+                    container.innerHTML += `<p class="text-orange-500 text-xs">Diagram interactions might be limited.</p>`;
                   }
                 }
               } else {
-                 console.log("Mermaid container changed before rendering completed.");
+                console.log("Mermaid container changed before rendering completed.");
               }
             })
             .catch(error => {
               console.error('Mermaid rendering promise error (debounced):', error);
               console.error('Failed content (debounced):', processedContent);
               if (mermaidRef.current === container) {
-                const errorMessage = error instanceof Error ? error.message : String(error);
-                // Make error display more robust
-                const errorPre = document.createElement('pre');
-                errorPre.className = 'text-red-500 text-xs whitespace-pre-wrap break-words';
-                errorPre.textContent = `Mermaid diagram error: ${errorMessage}\n\nContent:\n${processedContent}`;
-                container.innerHTML = ''; // Clear previous content
-                container.appendChild(errorPre);
+                handleMermaidError(container, error, processedContent);
               }
             });
 
         } catch (error) {
           console.error('Mermaid synchronous error (debounced):', error);
           console.error('Failed content (debounced):', String(children));
-           if (mermaidRef.current === container) {
-             const errorMessage = error instanceof Error ? error.message : String(error);
-             const errorPre = document.createElement('pre');
-             errorPre.className = 'text-red-500 text-xs whitespace-pre-wrap break-words';
-             errorPre.textContent = `Mermaid diagram setup error: ${errorMessage}`;
-             container.innerHTML = ''; // Clear previous content
-             container.appendChild(errorPre);
+          if (mermaidRef.current === container) {
+            handleMermaidError(container, error);
           }
         }
-      }, 300); // 300ms debounce delay
+      }, 1000); // 1000ms debounce delay
     }
 
     // Cleanup function to clear the timer
@@ -252,4 +237,15 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
       {children}
     </code>
   );
+};
+
+const handleMermaidError = (container: HTMLDivElement, error: unknown, content?: string) => {
+  if (!container) return;
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  container.innerHTML = `
+    <div class="flex flex-col gap-2 p-4 text-red-500 dark:text-red-400 text-sm">
+      <div class="font-medium">Failed to render diagram</div>
+      <div class="text-xs opacity-80">${errorMessage}</div>
+    </div>
+  `;
 };
