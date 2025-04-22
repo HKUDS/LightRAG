@@ -1807,7 +1807,10 @@ class PGGraphStorage(BaseGraphStorage):
         )
 
         results = await self._query(query)
-        labels = [result["label"] for result in results]
+        labels = []
+        for result in results:
+            if result and isinstance(result, dict) and "label" in result:
+                labels.append(result["label"])
         return labels
 
     async def get_knowledge_graph(
