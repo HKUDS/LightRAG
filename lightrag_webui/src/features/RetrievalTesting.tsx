@@ -10,6 +10,7 @@ import QuerySettings from '@/components/retrieval/QuerySettings'
 import { ChatMessage, MessageWithError } from '@/components/retrieval/ChatMessage'
 import { EraserIcon, SendIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
+import type { QueryMode } from '@/api/lightrag'
 
 export default function RetrievalTesting() {
   const { t } = useTranslation()
@@ -18,6 +19,7 @@ export default function RetrievalTesting() {
   )
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [inputError, setInputError] = useState('') // Error message for input
   // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
   const shouldFollowScrollRef = useRef(true)
   // Reference to track if user interaction is from the form area
@@ -47,7 +49,38 @@ export default function RetrievalTesting() {
       e.preventDefault()
       if (!inputValue.trim() || isLoading) return
 
+      // Parse query mode prefix
+      const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass']
+      const prefixMatch = inputValue.match(/^\/(\w+)\s+(.+)/)
+      let modeOverride: QueryMode | undefined = undefined
+      let actualQuery = inputValue
+
+      // If input starts with a slash, but does not match the valid prefix pattern, treat as error
+      if (/^\/\S+/.test(inputValue) && !prefixMatch) {
+        setInputError(t('retrievePanel.retrieval.queryModePrefixInvalid'))
+        return
+      }
+
+      if (prefixMatch) {
+        const mode = prefixMatch[1] as QueryMode
+        const query = prefixMatch[2]
+        if (!allowedModes.includes(mode)) {
+          setInputError(
+            t('retrievePanel.retrieval.queryModeError', {
+              modes: 'naive, local, global, hybrid, mix, bypass',
+            })
+          )
+          return
+        }
+        modeOverride = mode
+        actualQuery = query
+      }
+
+      // Clear error message
+      setInputError('')
+
       // Create messages
+      // Save the original input (with prefix if any) in userMessage.content for display
       const userMessage: Message = {
         content: inputValue,
         role: 'user'
@@ -103,11 +136,12 @@ export default function RetrievalTesting() {
       const state = useSettingsStore.getState()
       const queryParams = {
         ...state.querySettings,
-        query: userMessage.content,
+        query: actualQuery,
         conversation_history: prevMessages
           .filter((m) => m.isError !== true)
           .slice(-(state.querySettings.history_turns || 0) * 2)
-          .map((m) => ({ role: m.role, content: m.content }))
+          .map((m) => ({ role: m.role, content: m.content })),
+        ...(modeOverride ? { mode: modeOverride } : {})
       }
 
       try {
@@ -270,10 +304,17 @@ export default function RetrievalTesting() {
               id="query-input"
               className="w-full"
               value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
+              onChange={(e) => {
+                setInputValue(e.target.value)
+                if (inputError) setInputError('')
+              }}
               placeholder={t('retrievePanel.retrieval.placeholder')}
               disabled={isLoading}
             />
+            {/* Error message below input */}
+            {inputError && (
+              <div className="absolute left-0 top-full mt-1 text-xs text-red-500">{inputError}</div>
+            )}
           </div>
           <Button type="submit" variant="default" disabled={isLoading} size="sm">
             <SendIcon />
