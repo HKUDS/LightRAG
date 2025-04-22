@@ -1,6 +1,7 @@
 import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { throttle } from '@/lib/utils'
 import { queryText, queryTextStream, Message } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
@@ -19,30 +20,27 @@ export default function RetrievalTesting() {
   const [isLoading, setIsLoading] = useState(false)
   // Reference to track if we should follow scroll during streaming (using ref for synchronous updates)
   const shouldFollowScrollRef = useRef(true)
-  // Reference to track if this is the first chunk of a streaming response
-  const isFirstChunkRef = useRef(true)
+  // Reference to track if user interaction is from the form area
+  const isFormInteractionRef = useRef(false)
+  // Reference to track if scroll was triggered programmatically
+  const programmaticScrollRef = useRef(false)
+  // Reference to track if we're currently receiving a streaming response
+  const isReceivingResponseRef = useRef(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
 
-  // Check if the container is near the bottom
-  const isNearBottom = useCallback(() => {
-    const container = messagesContainerRef.current
-    if (!container) return true // Default to true if no container reference
-
-    // Calculate distance to bottom
-    const { scrollTop, scrollHeight, clientHeight } = container
-    const distanceToBottom = scrollHeight - scrollTop - clientHeight
-
-    // Consider near bottom if less than 100px from bottom
-    return distanceToBottom < 100
+  // Scroll to bottom function - restored smooth scrolling with better handling
+  const scrollToBottom = useCallback(() => {
+    // Set flag to indicate this is a programmatic scroll
+    programmaticScrollRef.current = true
+    // Use requestAnimationFrame for better performance
+    requestAnimationFrame(() => {
+      if (messagesEndRef.current) {
+        // Use smooth scrolling for better user experience
+        messagesEndRef.current.scrollIntoView({ behavior: 'auto' })
+      }
+    })
   }, [])
-
-  const scrollToBottom = useCallback((force = false) => {
-    // Only scroll if forced or user is already near bottom
-    if (force || isNearBottom()) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [isNearBottom])
 
   const handleSubmit = useCallback(
     async (e: React.FormEvent) => {
@@ -64,15 +62,15 @@ export default function RetrievalTesting() {
 
       // Add messages to chatbox
       setMessages([...prevMessages, userMessage, assistantMessage])
-      
-      // Reset first chunk flag for new streaming response
-      isFirstChunkRef.current = true
-      // Enable follow scroll for new query
+
+      // Reset scroll following state for new query
       shouldFollowScrollRef.current = true
-      
+      // Set flag to indicate we're receiving a response
+      isReceivingResponseRef.current = true
+
       // Force scroll to bottom after messages are rendered
       setTimeout(() => {
-        scrollToBottom(true)
+        scrollToBottom()
       }, 0)
 
       // Clear input and set loading
@@ -81,17 +79,6 @@ export default function RetrievalTesting() {
 
       // Create a function to update the assistant's message
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
-        // Check if this is the first chunk of the streaming response
-        if (isFirstChunkRef.current) {
-          // Determine scroll behavior based on initial position
-          shouldFollowScrollRef.current = isNearBottom();
-          isFirstChunkRef.current = false;
-        }
-        
-        // Save current scroll position before updating content
-        const container = messagesContainerRef.current;
-        const currentScrollPosition = container ? container.scrollTop : 0;
-        
         assistantMessage.content += chunk
         setMessages((prev) => {
           const newMessages = [...prev]
@@ -102,19 +89,13 @@ export default function RetrievalTesting() {
           }
           return newMessages
         })
-        
-        // After updating content, check if we should scroll
-        // Use consistent scrolling behavior throughout the streaming response
+
+        // After updating content, scroll to bottom if auto-scroll is enabled
+        // Use a longer delay to ensure DOM has updated
         if (shouldFollowScrollRef.current) {
-          scrollToBottom(true);
-        } else if (container) {
-          // If user was not near bottom, restore their scroll position
-          // This needs to be in a setTimeout to work after React updates the DOM
           setTimeout(() => {
-            if (container) {
-              container.scrollTop = currentScrollPosition;
-            }
-          }, 0);
+            scrollToBottom()
+          }, 30)
         }
       }
 
@@ -152,6 +133,7 @@ export default function RetrievalTesting() {
       } finally {
         // Clear loading and add messages to state
         setIsLoading(false)
+        isReceivingResponseRef.current = false
         useSettingsStore
           .getState()
           .setRetrievalHistory([...prevMessages, userMessage, assistantMessage])
@@ -160,30 +142,76 @@ export default function RetrievalTesting() {
     [inputValue, isLoading, messages, setMessages, t, scrollToBottom]
   )
 
-  // Add scroll event listener to detect when user manually scrolls
+  // Add event listeners to detect when user manually interacts with the container
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
-    
-    const handleScroll = () => {
-      const isNearBottomNow = isNearBottom();
-      
-      // If user scrolls away from bottom while in auto-scroll mode, disable it
-      if (shouldFollowScrollRef.current && !isNearBottomNow) {
+
+    // Handle significant mouse wheel events - only disable auto-scroll for deliberate scrolling
+    const handleWheel = (e: WheelEvent) => {
+      // Only consider significant wheel movements (more than 10px)
+      if (Math.abs(e.deltaY) > 10 && !isFormInteractionRef.current) {
         shouldFollowScrollRef.current = false;
       }
-      // If user scrolls back to bottom while not in auto-scroll mode, re-enable it
-      else if (!shouldFollowScrollRef.current && isNearBottomNow) {
-        shouldFollowScrollRef.current = true;
-      }
     };
-    
-    container.addEventListener('scroll', handleScroll);
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [isNearBottom]); // Remove shouldFollowScroll from dependencies since we're using ref now
 
-  const debouncedMessages = useDebounce(messages, 100)
-  useEffect(() => scrollToBottom(false), [debouncedMessages, scrollToBottom])
+    // Handle scroll events - only disable auto-scroll if not programmatically triggered
+    // and if it's a significant scroll
+    const handleScroll = throttle(() => {
+      // If this is a programmatic scroll, don't disable auto-scroll
+      if (programmaticScrollRef.current) {
+        programmaticScrollRef.current = false;
+        return;
+      }
+
+      // If we're receiving a response, be more conservative about disabling auto-scroll
+      if (!isFormInteractionRef.current && !isReceivingResponseRef.current) {
+        shouldFollowScrollRef.current = false;
+      }
+    }, 30);
+
+    // Add event listeners - only listen for wheel and scroll events
+    container.addEventListener('wheel', handleWheel as EventListener);
+    container.addEventListener('scroll', handleScroll as EventListener);
+
+    return () => {
+      container.removeEventListener('wheel', handleWheel as EventListener);
+      container.removeEventListener('scroll', handleScroll as EventListener);
+    };
+  }, []);
+
+  // Add event listeners to the form area to prevent disabling auto-scroll when interacting with form
+  useEffect(() => {
+    const form = document.querySelector('form');
+    if (!form) return;
+
+    const handleFormMouseDown = () => {
+      // Set flag to indicate form interaction
+      isFormInteractionRef.current = true;
+
+      // Reset the flag after a short delay
+      setTimeout(() => {
+        isFormInteractionRef.current = false;
+      }, 500); // Give enough time for the form interaction to complete
+    };
+
+    form.addEventListener('mousedown', handleFormMouseDown);
+
+    return () => {
+      form.removeEventListener('mousedown', handleFormMouseDown);
+    };
+  }, []);
+
+  // Use a longer debounce time for better performance with large message updates
+  const debouncedMessages = useDebounce(messages, 150)
+  useEffect(() => {
+    // Only auto-scroll if enabled
+    if (shouldFollowScrollRef.current) {
+      // Force scroll to bottom when messages change
+      scrollToBottom()
+    }
+  }, [debouncedMessages, scrollToBottom])
+
 
   const clearMessages = useCallback(() => {
     setMessages([])
@@ -194,7 +222,15 @@ export default function RetrievalTesting() {
     <div className="flex size-full gap-2 px-2 pb-12 overflow-hidden">
       <div className="flex grow flex-col gap-4">
         <div className="relative grow">
-          <div ref={messagesContainerRef} className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2">
+          <div
+            ref={messagesContainerRef}
+            className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2"
+            onClick={() => {
+              if (shouldFollowScrollRef.current) {
+                shouldFollowScrollRef.current = false;
+              }
+            }}
+          >
             <div className="flex min-h-0 flex-1 flex-col gap-2">
               {messages.length === 0 ? (
                 <div className="text-muted-foreground flex h-full items-center justify-center text-lg">
