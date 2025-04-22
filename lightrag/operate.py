@@ -152,7 +152,7 @@ async def _handle_single_entity_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
+    if len(record_attributes) < 4 or '"entity"' not in record_attributes[0]:
         return None
 
     # Clean and validate entity name
@@ -198,7 +198,7 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
+    if len(record_attributes) < 5 or '"relationship"' not in record_attributes[0]:
         return None
     # add this record as edge
     source = clean_str(record_attributes[1])
@@ -215,7 +215,7 @@ async def _handle_single_relationship_extraction(
     edge_source_id = chunk_key
     weight = (
         float(record_attributes[-1].strip('"').strip("'"))
-        if is_float_regex(record_attributes[-1])
+        if is_float_regex(record_attributes[-1].strip('"').strip("'"))
         else 1.0
     )
     return dict(
