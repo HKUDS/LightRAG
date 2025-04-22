@@ -751,6 +751,17 @@ async def extract_entities(
             if edge_data is not None:
                 relationships_data.append(edge_data)
 
+        # Update total counts
+        total_entities_count = len(entities_data)
+        total_relations_count = len(relationships_data)
+
+        log_message = f"Updating vector storage: {total_entities_count} entities"
+        logger.info(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
         # Update vector databases with all collected data
         if entity_vdb is not None and entities_data:
             data_for_vdb = {
@@ -765,6 +776,13 @@ async def extract_entities(
             }
             await entity_vdb.upsert(data_for_vdb)
 
+        log_message = f"Updating vector storage: {total_relations_count} relationships"
+        logger.info(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
         if relationships_vdb is not None and relationships_data:
             data_for_vdb = {
                 compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
@@ -778,10 +796,6 @@ async def extract_entities(
                 for dp in relationships_data
             }
             await relationships_vdb.upsert(data_for_vdb)
-
-    # Update total counts
-    total_entities_count = len(entities_data)
-    total_relations_count = len(relationships_data)
 
     log_message = f"Extracted {total_entities_count} entities + {total_relations_count} relationships (total)"
     logger.info(log_message)
