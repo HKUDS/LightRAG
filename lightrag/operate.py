@@ -797,13 +797,6 @@ async def extract_entities(
             }
             await relationships_vdb.upsert(data_for_vdb)
 
-    log_message = f"Extracted {total_entities_count} entities + {total_relations_count} relationships (total)"
-    logger.info(log_message)
-    if pipeline_status is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
-
 
 async def kg_query(
     query: str,
