@@ -28,7 +28,7 @@ export default function RetrievalTesting() {
     // Calculate distance to bottom
     const { scrollTop, scrollHeight, clientHeight } = container
     const distanceToBottom = scrollHeight - scrollTop - clientHeight
-    
+
     // Consider near bottom if less than 100px from bottom
     return distanceToBottom < 100
   }, [])

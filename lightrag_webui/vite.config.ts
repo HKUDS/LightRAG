@@ -33,7 +33,7 @@ export default defineConfig({
           'feature-graph': ['./src/features/GraphViewer'],
           'feature-documents': ['./src/features/DocumentManager'],
           'feature-retrieval': ['./src/features/RetrievalTesting'],
-          
+
           // Mermaid-related modules
           'mermaid-vendor': ['mermaid'],
 
