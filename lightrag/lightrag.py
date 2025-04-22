@@ -226,6 +226,15 @@ class LightRAG:
     vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional parameters for vector database storage."""
 
+    kv_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
+    """Additional parameters for kv database storage."""
+
+    graph_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
+    """Additional parameters for graph database storage."""
+
+    doc_status_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
+    """Additional parameters for doc status database storage."""
+
     # TODO：deprecated, remove in the future, use WORKSPACE instead
     namespace_prefix: str = field(default="")
     """Prefix for namespacing stored data across different environments."""

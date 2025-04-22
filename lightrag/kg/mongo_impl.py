@@ -42,10 +42,15 @@ class ClientManager:
     _lock = asyncio.Lock()
 
     @classmethod
-    async def get_client(cls) -> AsyncIOMotorDatabase:
+    async def get_client(
+        cls, config_from_global: dict[str, Any] | None
+    ) -> AsyncIOMotorDatabase:
         async with cls._lock:
             if cls._instances["db"] is None:
-                uri = os.environ.get(
+                uri = (
+                    config_from_global.get("mongo_url") if config_from_global else None
+                )
+                uri = uri or os.environ.get(
                     "MONGO_URI",
                     config.get(
                         "mongodb",
@@ -53,7 +58,12 @@ class ClientManager:
                         fallback="mongodb://root:root@localhost:27017/",
                     ),
                 )
-                database_name = os.environ.get(
+                database_name = (
+                    config_from_global.get("mongo_database")
+                    if config_from_global
+                    else None
+                )
+                database_name = database_name or os.environ.get(
                     "MONGO_DATABASE",
                     config.get("mongodb", "database", fallback="LightRAG"),
                 )
@@ -85,7 +95,9 @@ class MongoKVStorage(BaseKVStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(
+                self.global_config["kv_db_storage_cls_kwargs"]
+            )
             self._data = await get_or_create_collection(self.db, self._collection_name)
             logger.debug(f"Use MongoDB as KV {self._collection_name}")
 
@@ -222,7 +234,9 @@ class MongoDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(
+                self.global_config["doc_status_db_storage_cls_kwargs"]
+            )
             self._data = await get_or_create_collection(self.db, self._collection_name)
             logger.debug(f"Use MongoDB as DocStatus {self._collection_name}")
 
@@ -332,7 +346,9 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(
+                self.global_config["graph_db_storage_cls_kwargs"]
+            )
             self.collection = await get_or_create_collection(
                 self.db, self._collection_name
             )
@@ -948,7 +964,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(
+                self.global_config["vector_db_storage_cls_kwargs"]
+            )
             self._data = await get_or_create_collection(self.db, self._collection_name)
 
             # Ensure vector index exists

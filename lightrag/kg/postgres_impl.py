@@ -223,40 +223,60 @@ class ClientManager:
     _lock = asyncio.Lock()
 
     @staticmethod
-    def get_config() -> dict[str, Any]:
+    def get_config(config_from_global: dict[str, Any]) -> dict[str, Any]:
         config = configparser.ConfigParser()
         config.read("config.ini", "utf-8")
+        host = config_from_global.get("postgres_host") if config_from_global else None
+        port = config_from_global.get("postgres_port") if config_from_global else None
+        user = config_from_global.get("postgres_user") if config_from_global else None
+        password = (
+            config_from_global.get("postgres_password") if config_from_global else None
+        )
+        database = (
+            config_from_global.get("postgres_database") if config_from_global else None
+        )
+        workspace = (
+            config_from_global.get("postgres_workspace") if config_from_global else None
+        )
 
         return {
-            "host": os.environ.get(
+            "host": host
+            or os.environ.get(
                 "POSTGRES_HOST",
                 config.get("postgres", "host", fallback="localhost"),
             ),
-            "port": os.environ.get(
+            "port": port
+            or os.environ.get(
                 "POSTGRES_PORT", config.get("postgres", "port", fallback=5432)
             ),
-            "user": os.environ.get(
+            "user": user
+            or os.environ.get(
                 "POSTGRES_USER", config.get("postgres", "user", fallback=None)
             ),
-            "password": os.environ.get(
+            "password": password
+            or os.environ.get(
                 "POSTGRES_PASSWORD",
                 config.get("postgres", "password", fallback=None),
             ),
-            "database": os.environ.get(
+            "database": database
+            or os.environ.get(
                 "POSTGRES_DATABASE",
                 config.get("postgres", "database", fallback=None),
             ),
-            "workspace": os.environ.get(
+            "workspace": workspace
+            or os.environ.get(
                 "POSTGRES_WORKSPACE",
                 config.get("postgres", "workspace", fallback="default"),
             ),
         }
 
     @classmethod
-    async def get_client(cls) -> PostgreSQLDB:
+    async def get_client(
+        cls, config_from_global: dict[str, Any] | None
+    ) -> PostgreSQLDB:
         async with cls._lock:
             if cls._instances["db"] is None:
-                config = ClientManager.get_config()
+                config = ClientManager.get_config(config_from_global)
                 db = PostgreSQLDB(config)
                 await db.initdb()
                 await db.check_tables()
@@ -289,7 +309,9 @@ class PGKVStorage(BaseKVStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(
+                self.global_config["kv_db_storage_cls_kwargs"]
+            )
 
     async def finalize(self):
         if self.db is not None:
@@ -537,7 +559,9 @@ class PGVectorStorage(BaseVectorStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(
+                self.global_config["vector_db_storage_cls_kwargs"]
+            )
 
     async def finalize(self):
         if self.db is not None:
@@ -841,7 +865,9 @@ class PGDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(
+                self.global_config["doc_status_db_storage_cls_kwargs"]
+            )
 
     async def finalize(self):
         if self.db is not None:
@@ -1081,7 +1107,9 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(
+                self.global_config["graph_db_storage_cls_kwargs"]
+            )
 
         node1_id = "dummy_entity"
         node1_data = {
