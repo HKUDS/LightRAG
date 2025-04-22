@@ -25,7 +25,7 @@ export type MessageWithError = Message & {
 export const ChatMessage = ({ message }: { message: MessageWithError }) => {
   const { t } = useTranslation()
   // Remove extra spaces around bold text
-  message.content = message.content.replace(/\*\ {3}/g, '').replace(/\ {4}\*\*/g, '**')
+  message.content = message.content.replace(/\*\ {3}/g, '').replace(/\ {4}\*\*/g, '**').replace(/\*\ \[/g, '[')
 
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
@@ -125,6 +125,14 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
             theme: theme === 'dark' ? 'dark' : 'default',
             securityLevel: 'loose',
             suppressErrorRendering: true,
+            gitGraph: {
+              useMaxWidth: true,
+              mainBranchName: 'main'
+            },
+            flowchart: {
+              useMaxWidth: true,
+              htmlLabels: true
+            }
           });
 
           // Show loading indicator while processing
@@ -133,18 +141,62 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
           // Preprocess mermaid content
           const rawContent = String(children).replace(/\n$/, '').trim(); // Trim whitespace as well
 
+          // Add debugging information
+          console.log("Attempting to render mermaid content:", rawContent.substring(0, 100) + (rawContent.length > 100 ? '...' : ''));
+
+          // Preprocess gitGraph content to ensure correct format
+          let processedRawContent = rawContent;
+          if (rawContent.includes('gitGraph') && !rawContent.startsWith('gitGraph')) {
+          // Attempt to fix incorrect gitGraph format
+          processedRawContent = 'gitGraph:\n' + rawContent.replace(/gitGraph:?/i, '');
+          console.log("Fixed gitGraph format:", processedRawContent.substring(0, 100));
+          }
+
           // Heuristic check for potentially complete graph definition
           // Looks for graph type declaration and some content beyond it.
-          const looksPotentiallyComplete = rawContent.length > 10 && (
-            rawContent.startsWith('graph') ||
-            rawContent.startsWith('sequenceDiagram') ||
-            rawContent.startsWith('classDiagram') ||
-            rawContent.startsWith('stateDiagram') ||
-            rawContent.startsWith('gantt') ||
-            rawContent.startsWith('pie') ||
-            rawContent.startsWith('flowchart') ||
-            rawContent.startsWith('erDiagram')
+          let looksPotentiallyComplete = processedRawContent.length > 10 && (
+          processedRawContent.startsWith('graph') ||
+          processedRawContent.startsWith('sequenceDiagram') ||
+          processedRawContent.startsWith('classDiagram') ||
+          processedRawContent.startsWith('stateDiagram') ||
+          processedRawContent.startsWith('gantt') ||
+          processedRawContent.startsWith('pie') ||
+          processedRawContent.startsWith('flowchart') ||
+          processedRawContent.startsWith('erDiagram') ||
+          processedRawContent.startsWith('gitGraph') ||
+          processedRawContent.startsWith('journey') ||
+          processedRawContent.startsWith('mindmap') ||
+          processedRawContent.startsWith('timeline') ||
+          /^gitGraph\s*:*/.test(processedRawContent) ||
+          /^graph\s+TD/.test(processedRawContent) ||
+          /^graph\s+LR/.test(processedRawContent)
           );
+
+          // Handle timeline type by converting it to gantt chart
+          if (processedRawContent.startsWith('timeline')) {
+          processedRawContent = processedRawContent
+          .replace('timeline', 'gantt')
+          .replace(/section\s+([^\n]+)/g, 'section $1')
+          .replace(/\s*:\s*([^,]+),\s*([^,]+),\s*([^\n]+)/g, '    $1 :$2, $3');
+          }
+
+          // If content looks incomplete but contains gitGraph keyword, attempt to fix
+          if (!looksPotentiallyComplete && processedRawContent.includes('gitGraph')) {
+          console.log("Attempting to fix incomplete gitGraph content");
+          looksPotentiallyComplete = true;
+          }
+
+          // Force attempt to render even if it looks incomplete
+          if (!looksPotentiallyComplete) {
+          console.log("Content might be incomplete, but attempting to render anyway:", processedRawContent);
+          // For short content, we still attempt to render
+          if (processedRawContent.length > 5) {
+          looksPotentiallyComplete = true;
+          }
+          }
+
+          // Always attempt to render, no longer skipping
+          looksPotentiallyComplete = true;
 
 
           if (!looksPotentiallyComplete) {
@@ -152,7 +204,7 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
              return;
           }
 
-          const processedContent = rawContent
+          const processedContent = processedRawContent
             .split('\n')
             .map(line => {
               const trimmedLine = line.trim();
@@ -160,14 +212,35 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
               if (trimmedLine.startsWith('subgraph')) {
                 const parts = trimmedLine.split(' ');
                 if (parts.length > 1) {
-                  const title = parts.slice(1).join(' ').replace(/["']/g, '');
+                  const title = parts.slice(1).join(' ').replace(/[\"']/g, '');
                   return `subgraph "${title}"`;
+                }
+              }
+              // Handle gitGraph branch names with spaces
+              if (trimmedLine.startsWith('branch') || trimmedLine.startsWith('checkout')) {
+                const parts = trimmedLine.split(' ');
+                if (parts.length > 1) {
+                  const branchName = parts.slice(1).join(' ').replace(/["']/g, '');
+                  return `${parts[0]} "${branchName}"`;
+                }
+              }
+              // 处理commit消息中的中文和特殊字符
+              if (trimmedLine.startsWith('commit') && trimmedLine.includes('"')) {
+                return trimmedLine; // 已经有引号的保持不变
+              } else if (trimmedLine.startsWith('commit') && trimmedLine.includes(' ')) {
+                const parts = trimmedLine.split(' ');
+                if (parts.length > 1) {
+                  const message = parts.slice(1).join(' ');
+                  return `commit "${message}"`;
                 }
               }
               return trimmedLine;
             })
             .filter(line => !line.trim().startsWith('linkStyle')) // Keep filtering linkStyle
             .join('\n');
+
+          // 调试输出处理后的内容
+          console.log("Processed mermaid content:", processedContent.substring(0, 100) + (processedContent.length > 100 ? '...' : ''));
 
           const mermaidId = `mermaid-${Date.now()}`;
           mermaid.render(mermaidId, processedContent)
@@ -242,10 +315,19 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
 const handleMermaidError = (container: HTMLDivElement, error: unknown, content?: string) => {
   if (!container) return;
   const errorMessage = error instanceof Error ? error.message : String(error);
+
+  let contentPreview = '';
+  if (content) {
+    // 只显示内容的前50个字符作为预览
+    contentPreview = content.length > 50 ? content.substring(0, 50) + '...' : content;
+  }
+
   container.innerHTML = `
     <div class="flex flex-col gap-2 p-4 text-red-500 dark:text-red-400 text-sm">
       <div class="font-medium">Failed to render diagram</div>
       <div class="text-xs opacity-80">${errorMessage}</div>
+      ${contentPreview ? `<div class="text-xs mt-2 p-2 bg-gray-100 dark:bg-gray-800 rounded overflow-x-auto"><code>${contentPreview.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</code></div>` : ''}
+      <div class="text-xs mt-2">Try simplifying your diagram or check syntax.</div>
     </div>
   `;
 };
