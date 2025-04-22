@@ -36,13 +36,13 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
 
   return (
     <div
-      className={`max-w-[80%] rounded-lg px-4 py-2 ${
+      className={`${
         message.role === 'user'
-          ? 'bg-primary text-primary-foreground'
+          ? 'max-w-[80%] bg-primary text-primary-foreground'
           : message.isError
-            ? 'bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
-            : 'bg-muted'
-      }`}
+            ? 'w-[90%] bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
+            : 'w-[90%] bg-muted'
+      } rounded-lg px-4 py-2`}
     >
       <div className="relative">
         <ReactMarkdown
