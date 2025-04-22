@@ -60,6 +60,11 @@ export default function RetrievalTesting() {
 
       // Add messages to chatbox
       setMessages([...prevMessages, userMessage, assistantMessage])
+      
+      // Force scroll to bottom after messages are rendered
+      setTimeout(() => {
+        scrollToBottom(true)
+      }, 0)
 
       // Clear input and set loading
       setInputValue('')
