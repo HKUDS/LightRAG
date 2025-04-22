@@ -292,7 +292,7 @@
         "andOthers": "還有 {count} 個",
         "refreshTooltip": "重載圖形數據(新增檔案後需重載)"
       },
-      "emptyGraph": "圖譜資料為空"
+      "emptyGraph": "無數據(請重載圖形數據)"
     },
     "retrievePanel": {
       "chatMessage": {
