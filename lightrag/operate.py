@@ -1349,20 +1349,25 @@ async def _build_query_context(
     relations_str = json.dumps(relations_context, ensure_ascii=False)
     text_units_str = json.dumps(text_units_context, ensure_ascii=False)
 
-    result = f"""
-    -----Entities-----
-    ```json
-    {entities_str}
-    ```
-    -----Relationships-----
-    ```json
-    {relations_str}
-    ```
-    -----Sources-----
-    ```json
-    {text_units_str}
-    ```
-    """.strip()
+    result = f"""-----Entities-----
+
+```json
+{entities_str}
+```
+
+-----Relationships-----
+
+```json
+{relations_str}
+```
+
+-----Sources-----
+
+```json
+{text_units_str}
+```
+
+"""
     return result
 
 
