@@ -1428,6 +1428,8 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
     # Remove English quotation marks from the beginning and end
     if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
         name = name[1:-1]
+    if len(name) >= 2 and name.startswith("'") and name.endswith("'"):
+        name = name[1:-1]
 
     if is_entity:
         # remove Chinese quotes
