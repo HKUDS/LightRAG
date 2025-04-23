@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 import asyncio
 from ascii_colors import trace_exception
 from lightrag import LightRAG, QueryParam
-from lightrag.utils import encode_string_by_tiktoken
+from lightrag.utils import TiktokenTokenizer
 from lightrag.api.utils_api import ollama_server_infos, get_combined_auth_dependency
 from fastapi import Depends
 
@@ -97,7 +97,7 @@ class OllamaTagResponse(BaseModel):
 
 def estimate_tokens(text: str) -> int:
     """Estimate the number of tokens in text using tiktoken"""
-    tokens = encode_string_by_tiktoken(text)
+    tokens = TiktokenTokenizer().encode(text)
     return len(tokens)
 
 
@@ -308,7 +308,7 @@ class OllamaAPI:
                             "Cache-Control": "no-cache",
                             "Connection": "keep-alive",
                             "Content-Type": "application/x-ndjson",
-                            "X-Accel-Buffering": "no",  # 确保在Nginx代理时正确处理流式响应
+                            "X-Accel-Buffering": "no",  # Ensure proper handling of streaming responses in Nginx proxy
                         },
                     )
                 else:

@@ -33,7 +33,8 @@
     "guestMode": "Login Free"
   },
   "common": {
-    "cancel": "Cancel"
+    "cancel": "Cancel",
+    "save": "Save"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -156,6 +157,7 @@
       "animal": "Animal",
       "unknown": "Unknown",
       "object": "Object",
+      "group": "Group",
       "technology": "Technology"
     },
     "sideBar": {
@@ -235,6 +237,17 @@
       "vectorStorage": "Vector Storage"
     },
     "propertiesView": {
+      "editProperty": "Edit {{property}}",
+      "editPropertyDescription": "Edit the property value in the text area below.",
+      "errors": {
+        "duplicateName": "Node name already exists",
+        "updateFailed": "Failed to update node",
+        "tryAgainLater": "Please try again later"
+      },
+      "success": {
+        "entityUpdated": "Node updated successfully",
+        "relationUpdated": "Relation updated successfully"
+      },
       "node": {
         "title": "Node",
         "id": "ID",
@@ -253,7 +266,9 @@
           "entity_type": "Type",
           "source_id": "SrcID",
           "Neighbour": "Neigh",
-          "file_path": "Source"
+          "file_path": "Source",
+          "keywords": "Keys",
+          "weight": "Weight"
         }
       },
       "edge": {
@@ -275,9 +290,9 @@
       "label": "Label",
       "placeholder": "Search labels...",
       "andOthers": "And {count} others",
-      "refreshTooltip": "Reload graph data"
+      "refreshTooltip": "Reload data(After file added)"
     },
-    "emptyGraph": "Graph Is Empty"
+    "emptyGraph": "Empty(Try Reload Again)"
   },
   "retrievePanel": {
     "chatMessage": {
@@ -288,20 +303,23 @@
       "startPrompt": "Start a retrieval by typing your query below",
       "clear": "Clear",
       "send": "Send",
-      "placeholder": "Type your query...",
-      "error": "Error: Failed to get response"
+      "placeholder": "Enter your query (Support prefix: /<Query Mode>)",
+      "error": "Error: Failed to get response",
+      "queryModeError": "Only supports the following query modes: {{modes}}",
+      "queryModePrefixInvalid": "Invalid query mode prefix. Use: /<mode> [space] your query"
     },
     "querySettings": {
       "parametersTitle": "Parameters",
       "parametersDescription": "Configure your query parameters",
       "queryMode": "Query Mode",
-      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval",
+      "queryModeTooltip": "Select the retrieval strategy:\n• Naive: Basic search without advanced techniques\n• Local: Context-dependent information retrieval\n• Global: Utilizes global knowledge base\n• Hybrid: Combines local and global retrieval\n• Mix: Integrates knowledge graph with vector retrieval\n• Bypass: Passes query directly to LLM without retrieval",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
         "global": "Global",
         "hybrid": "Hybrid",
-        "mix": "Mix"
+        "mix": "Mix",
+        "bypass": "Bypass"
       },
       "responseFormat": "Response Format",
       "responseFormatTooltip": "Defines the response format. Examples:\n• Multiple Paragraphs\n• Single Paragraph\n• Bullet Points",

@@ -12,7 +12,6 @@ from typing import (
     TypeVar,
     Callable,
 )
-import numpy as np
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
 
@@ -36,7 +35,7 @@ T = TypeVar("T")
 class QueryParam:
     """Configuration parameters for query execution in LightRAG."""
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix"] = "global"
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "global"
     """Specifies the retrieval mode:
     - "local": Focuses on context-dependent information.
     - "global": Utilizes global knowledge.
@@ -281,63 +280,239 @@ class BaseGraphStorage(StorageNameSpace, ABC):
 
     @abstractmethod
     async def has_node(self, node_id: str) -> bool:
-        """Check if an edge exists in the graph."""
+        """Check if a node exists in the graph.
+
+        Args:
+            node_id: The ID of the node to check
+
+        Returns:
+            True if the node exists, False otherwise
+        """
 
     @abstractmethod
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        """Get the degree of a node."""
+        """Check if an edge exists between two nodes.
+
+        Args:
+            source_node_id: The ID of the source node
+            target_node_id: The ID of the target node
+
+        Returns:
+            True if the edge exists, False otherwise
+        """
 
     @abstractmethod
     async def node_degree(self, node_id: str) -> int:
-        """Get the degree of an edge."""
+        """Get the degree (number of connected edges) of a node.
+
+        Args:
+            node_id: The ID of the node
+
+        Returns:
+            The number of edges connected to the node
+        """
 
     @abstractmethod
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        """Get a node by its id."""
+        """Get the total degree of an edge (sum of degrees of its source and target nodes).
+
+        Args:
+            src_id: The ID of the source node
+            tgt_id: The ID of the target node
+
+        Returns:
+            The sum of the degrees of the source and target nodes
+        """
 
     @abstractmethod
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        """Get node by its label identifier, return only node properties"""
+        """Get node by its ID, returning only node properties.
+
+        Args:
+            node_id: The ID of the node to retrieve
+
+        Returns:
+            A dictionary of node properties if found, None otherwise
+        """
 
     @abstractmethod
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        """Get edge properties between two nodes"""
+        """Get edge properties between two nodes.
+
+        Args:
+            source_node_id: The ID of the source node
+            target_node_id: The ID of the target node
+
+        Returns:
+            A dictionary of edge properties if found, None otherwise
+        """
 
     @abstractmethod
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
-        """Upsert a node into the graph."""
+        """Get all edges connected to a node.
+
+        Args:
+            source_node_id: The ID of the node to get edges for
+
+        Returns:
+            A list of (source_id, target_id) tuples representing edges,
+            or None if the node doesn't exist
+        """
+
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+        """Get nodes as a batch using UNWIND
+
+        Default implementation fetches nodes one by one.
+        Override this method for better performance in storage backends
+        that support batch operations.
+        """
+        result = {}
+        for node_id in node_ids:
+            node = await self.get_node(node_id)
+            if node is not None:
+                result[node_id] = node
+        return result
+
+    async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
+        """Node degrees as a batch using UNWIND
+
+        Default implementation fetches node degrees one by one.
+        Override this method for better performance in storage backends
+        that support batch operations.
+        """
+        result = {}
+        for node_id in node_ids:
+            degree = await self.node_degree(node_id)
+            result[node_id] = degree
+        return result
+
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """Edge degrees as a batch using UNWIND also uses node_degrees_batch
+
+        Default implementation calculates edge degrees one by one.
+        Override this method for better performance in storage backends
+        that support batch operations.
+        """
+        result = {}
+        for src_id, tgt_id in edge_pairs:
+            degree = await self.edge_degree(src_id, tgt_id)
+            result[(src_id, tgt_id)] = degree
+        return result
+
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """Get edges as a batch using UNWIND
+
+        Default implementation fetches edges one by one.
+        Override this method for better performance in storage backends
+        that support batch operations.
+        """
+        result = {}
+        for pair in pairs:
+            src_id = pair["src"]
+            tgt_id = pair["tgt"]
+            edge = await self.get_edge(src_id, tgt_id)
+            if edge is not None:
+                result[(src_id, tgt_id)] = edge
+        return result
+
+    async def get_nodes_edges_batch(
+        self, node_ids: list[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """Get nodes edges as a batch using UNWIND
+
+        Default implementation fetches node edges one by one.
+        Override this method for better performance in storage backends
+        that support batch operations.
+        """
+        result = {}
+        for node_id in node_ids:
+            edges = await self.get_node_edges(node_id)
+            result[node_id] = edges if edges is not None else []
+        return result
 
     @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
-        """Upsert an edge into the graph."""
+        """Insert a new node or update an existing node in the graph.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+
+        Args:
+            node_id: The ID of the node to insert or update
+            node_data: A dictionary of node properties
+        """
 
     @abstractmethod
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
+        """Insert a new edge or update an existing edge in the graph.
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+
+        Args:
+            source_node_id: The ID of the source node
+            target_node_id: The ID of the target node
+            edge_data: A dictionary of edge properties
+        """
+
+    @abstractmethod
+    async def delete_node(self, node_id: str) -> None:
         """Delete a node from the graph.
 
         Importance notes for in-memory storage:
         1. Changes will be persisted to disk during the next index_done_callback
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
+
+        Args:
+            node_id: The ID of the node to delete
         """
 
     @abstractmethod
-    async def delete_node(self, node_id: str) -> None:
-        """Embed nodes using an algorithm."""
+    async def remove_nodes(self, nodes: list[str]):
+        """Delete multiple nodes
+
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+
+        Args:
+            nodes: List of node IDs to be deleted
+        """
 
     @abstractmethod
-    async def embed_nodes(
-        self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        """Get all labels in the graph."""
+    async def remove_edges(self, edges: list[tuple[str, str]]):
+        """Delete multiple edges
+
+        Importance notes:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. Only one process should updating the storage at a time before index_done_callback,
+           KG-storage-log should be used to avoid data corruption
+
+        Args:
+            edges: List of edges to be deleted, each edge is a (source, target) tuple
+        """
 
     @abstractmethod
     async def get_all_labels(self) -> list[str]:
-        """Get a knowledge graph of a node."""
+        """Get all labels in the graph.
+
+        Returns:
+            A list of all node labels in the graph, sorted alphabetically
+        """
 
     @abstractmethod
     async def get_knowledge_graph(

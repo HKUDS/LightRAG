@@ -99,7 +99,10 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
     const events: Record<string, any> = {
       enterNode: (event: NodeEvent) => {
         if (!isButtonPressed(event.event.original)) {
-          setFocusedNode(event.node)
+          const graph = sigma.getGraph()
+          if (graph.hasNode(event.node)) {
+            setFocusedNode(event.node)
+          }
         }
       },
       leaveNode: (event: NodeEvent) => {
@@ -108,8 +111,11 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
         }
       },
       clickNode: (event: NodeEvent) => {
-        setSelectedNode(event.node)
-        setSelectedEdge(null)
+        const graph = sigma.getGraph()
+        if (graph.hasNode(event.node)) {
+          setSelectedNode(event.node)
+          setSelectedEdge(null)
+        }
       },
       clickStage: () => clearSelection()
     }

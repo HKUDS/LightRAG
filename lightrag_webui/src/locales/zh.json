@@ -33,7 +33,8 @@
     "guestMode": "无需登陆"
   },
   "common": {
-    "cancel": "取消"
+    "cancel": "取消",
+    "save": "保存"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -236,6 +237,17 @@
       "vectorStorage": "向量存储"
     },
     "propertiesView": {
+      "editProperty": "编辑{{property}}",
+      "editPropertyDescription": "在下方文本区域编辑属性值。",
+      "errors": {
+        "duplicateName": "节点名称已存在",
+        "updateFailed": "更新节点失败",
+        "tryAgainLater": "请稍后重试"
+      },
+      "success": {
+        "entityUpdated": "节点更新成功",
+        "relationUpdated": "关系更新成功"
+      },
       "node": {
         "title": "节点",
         "id": "ID",
@@ -254,7 +266,9 @@
           "entity_type": "类型",
           "source_id": "信源ID",
           "Neighbour": "邻接",
-          "file_path": "信源"
+          "file_path": "信源",
+          "keywords": "Keys",
+          "weight": "权重"
         }
       },
       "edge": {
@@ -276,9 +290,9 @@
       "label": "标签",
       "placeholder": "搜索标签...",
       "andOthers": "还有 {count} 个",
-      "refreshTooltip": "重新加载图形数据"
+      "refreshTooltip": "重载图形数据(添加文件后需重载)"
     },
-    "emptyGraph": "图谱数据为空"
+    "emptyGraph": "无数据(请重载图形数据)"
   },
   "retrievePanel": {
     "chatMessage": {
@@ -289,20 +303,23 @@
       "startPrompt": "输入查询开始检索",
       "clear": "清空",
       "send": "发送",
-      "placeholder": "输入查询...",
-      "error": "错误：获取响应失败"
+      "placeholder": "输入查询内容 (支持模式前缀: /<Query Mode>)",
+      "error": "错误：获取响应失败",
+      "queryModeError": "仅支持以下查询模式：{{modes}}",
+      "queryModePrefixInvalid": "无效的查询模式前缀。请使用：/<模式> [空格] 查询内容"
     },
     "querySettings": {
       "parametersTitle": "参数",
       "parametersDescription": "配置查询参数",
       "queryMode": "查询模式",
-      "queryModeTooltip": "选择检索策略：\n• Naive：基础搜索，无高级技术\n• Local：上下文相关信息检索\n• Global：利用全局知识库\n• Hybrid：结合本地和全局检索\n• Mix：整合知识图谱和向量检索",
+      "queryModeTooltip": "选择检索策略：\n• Naive：基础搜索，无高级技术\n• Local：上下文相关信息检索\n• Global：利用全局知识库\n• Hybrid：结合本地和全局检索\n• Mix：整合知识图谱和向量检索\n• Bypass：直接传递查询到LLM，不进行检索",
       "queryModeOptions": {
         "naive": "Naive",
         "local": "Local",
         "global": "Global",
         "hybrid": "Hybrid",
-        "mix": "Mix"
+        "mix": "Mix",
+        "bypass": "Bypass"
       },
       "responseFormat": "响应格式",
       "responseFormatTooltip": "定义响应格式。例如：\n• 多段落\n• 单段落\n• 要点",

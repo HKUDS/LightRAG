@@ -1,7 +1,7 @@
 name: Question
 description: Ask a general question
 labels: ["question"]
-title: "[Question]: <title>"
+title: "[Question]:"
 
 body:
   - type: checkboxes

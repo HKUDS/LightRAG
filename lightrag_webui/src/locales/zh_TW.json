@@ -1,0 +1,365 @@
+{
+    "settings": {
+      "language": "語言",
+      "theme": "主題",
+      "light": "淺色",
+      "dark": "深色",
+      "system": "系統"
+    },
+    "header": {
+      "documents": "文件",
+      "knowledgeGraph": "知識圖譜",
+      "retrieval": "檢索",
+      "api": "API",
+      "projectRepository": "專案庫",
+      "logout": "登出",
+      "themeToggle": {
+        "switchToLight": "切換至淺色主題",
+        "switchToDark": "切換至深色主題"
+      }
+    },
+    "login": {
+      "description": "請輸入您的帳號和密碼登入系統",
+      "username": "帳號",
+      "usernamePlaceholder": "請輸入帳號",
+      "password": "密碼",
+      "passwordPlaceholder": "請輸入密碼",
+      "loginButton": "登入",
+      "loggingIn": "登入中...",
+      "successMessage": "登入成功",
+      "errorEmptyFields": "請輸入您的帳號和密碼",
+      "errorInvalidCredentials": "登入失敗，請檢查帳號和密碼",
+      "authDisabled": "認證已停用，使用免登入模式",
+      "guestMode": "免登入"
+    },
+    "common": {
+      "cancel": "取消",
+      "save": "儲存"
+    },
+    "documentPanel": {
+      "clearDocuments": {
+        "button": "清空",
+        "tooltip": "清空文件",
+        "title": "清空文件",
+        "description": "此操作將從系統中移除所有文件",
+        "warning": "警告：此操作將永久刪除所有文件，無法復原！",
+        "confirm": "確定要清空所有文件嗎？",
+        "confirmPrompt": "請輸入 yes 確認操作",
+        "confirmPlaceholder": "輸入 yes 以確認",
+        "clearCache": "清空 LLM 快取",
+        "confirmButton": "確定",
+        "success": "文件清空成功",
+        "cacheCleared": "快取清空成功",
+        "cacheClearFailed": "清空快取失敗：\n{{error}}",
+        "failed": "清空文件失敗：\n{{message}}",
+        "error": "清空文件失敗：\n{{error}}"
+      },
+      "uploadDocuments": {
+        "button": "上傳",
+        "tooltip": "上傳文件",
+        "title": "上傳文件",
+        "description": "拖曳檔案至此處或點擊瀏覽",
+        "single": {
+          "uploading": "正在上傳 {{name}}：{{percent}}%",
+          "success": "上傳成功：\n{{name}} 上傳完成",
+          "failed": "上傳失敗：\n{{name}}\n{{message}}",
+          "error": "上傳失敗：\n{{name}}\n{{error}}"
+        },
+        "batch": {
+          "uploading": "正在上傳檔案...",
+          "success": "檔案上傳完成",
+          "error": "部分檔案上傳失敗"
+        },
+        "generalError": "上傳失敗\n{{error}}",
+        "fileTypes": "支援的檔案類型：TXT, MD, DOCX, PDF, PPTX, RTF, ODT, EPUB, HTML, HTM, TEX, JSON, XML, YAML, YML, CSV, LOG, CONF, INI, PROPERTIES, SQL, BAT, SH, C, CPP, PY, JAVA, JS, TS, SWIFT, GO, RB, PHP, CSS, SCSS, LESS",
+        "fileUploader": {
+          "singleFileLimit": "一次只能上傳一個檔案",
+          "maxFilesLimit": "最多只能上傳 {{count}} 個檔案",
+          "fileRejected": "檔案 {{name}} 被拒絕",
+          "unsupportedType": "不支援的檔案類型",
+          "fileTooLarge": "檔案過大，最大允許 {{maxSize}}",
+          "dropHere": "將檔案拖放至此處",
+          "dragAndDrop": "拖放檔案至此處，或點擊選擇檔案",
+          "removeFile": "移除檔案",
+          "uploadDescription": "您可以上傳{{isMultiple ? '多個' : count}}個檔案（每個檔案最大{{maxSize}}）",
+          "duplicateFile": "檔案名稱與伺服器上的快取重複"
+        }
+      },
+      "documentManager": {
+        "title": "文件管理",
+        "scanButton": "掃描",
+        "scanTooltip": "掃描輸入目錄中的文件",
+        "pipelineStatusButton": "pipeline 狀態",
+        "pipelineStatusTooltip": "查看pipeline 狀態",
+        "uploadedTitle": "已上傳文件",
+        "uploadedDescription": "已上傳文件清單及其狀態",
+        "emptyTitle": "無文件",
+        "emptyDescription": "尚未上傳任何文件",
+        "columns": {
+          "id": "ID",
+          "summary": "摘要",
+          "status": "狀態",
+          "length": "長度",
+          "chunks": "分塊",
+          "created": "建立時間",
+          "updated": "更新時間",
+          "metadata": "元資料"
+        },
+        "status": {
+          "all": "全部",
+          "completed": "已完成",
+          "processing": "處理中",
+          "pending": "等待中",
+          "failed": "失敗"
+        },
+        "errors": {
+          "loadFailed": "載入文件失敗\n{{error}}",
+          "scanFailed": "掃描文件失敗\n{{error}}",
+          "scanProgressFailed": "取得掃描進度失敗\n{{error}}"
+        },
+        "fileNameLabel": "檔案名稱",
+        "showButton": "顯示",
+        "hideButton": "隱藏",
+        "showFileNameTooltip": "顯示檔案名稱",
+        "hideFileNameTooltip": "隱藏檔案名稱"
+      },
+      "pipelineStatus": {
+        "title": "pipeline 狀態",
+        "busy": "pipeline 忙碌中",
+        "requestPending": "待處理請求",
+        "jobName": "工作名稱",
+        "startTime": "開始時間",
+        "progress": "進度",
+        "unit": "梯次",
+        "latestMessage": "最新訊息",
+        "historyMessages": "歷史訊息",
+        "errors": {
+          "fetchFailed": "取得pipeline 狀態失敗\n{{error}}"
+        }
+      }
+    },
+    "graphPanel": {
+      "dataIsTruncated": "圖資料已截斷至最大回傳節點數",
+      "statusDialog": {
+        "title": "LightRAG 伺服器設定",
+        "description": "查看目前系統狀態和連線資訊"
+      },
+      "legend": "圖例",
+      "nodeTypes": {
+        "person": "人物角色",
+        "category": "分類",
+        "geo": "地理名稱",
+        "location": "位置",
+        "organization": "組織機構",
+        "event": "事件",
+        "equipment": "設備",
+        "weapon": "武器",
+        "animal": "動物",
+        "unknown": "未知",
+        "object": "物品",
+        "group": "群組",
+        "technology": "技術"
+      },
+      "sideBar": {
+        "settings": {
+          "settings": "設定",
+          "healthCheck": "健康檢查",
+          "showPropertyPanel": "顯示屬性面板",
+          "showSearchBar": "顯示搜尋列",
+          "showNodeLabel": "顯示節點標籤",
+          "nodeDraggable": "節點可拖曳",
+          "showEdgeLabel": "顯示 Edge 標籤",
+          "hideUnselectedEdges": "隱藏未選取的 Edge",
+          "edgeEvents": "Edge 事件",
+          "maxQueryDepth": "最大查詢深度",
+          "maxNodes": "最大回傳節點數",
+          "maxLayoutIterations": "最大版面配置迭代次數",
+          "resetToDefault": "重設為預設值",
+          "edgeSizeRange": "Edge 粗細範圍",
+          "depth": "深度",
+          "max": "最大值",
+          "degree": "鄰邊",
+          "apiKey": "API key",
+          "enterYourAPIkey": "輸入您的 API key",
+          "save": "儲存",
+          "refreshLayout": "重新整理版面配置"
+        },
+        "zoomControl": {
+          "zoomIn": "放大",
+          "zoomOut": "縮小",
+          "resetZoom": "重設縮放",
+          "rotateCamera": "順時針旋轉圖形",
+          "rotateCameraCounterClockwise": "逆時針旋轉圖形"
+        },
+        "layoutsControl": {
+          "startAnimation": "繼續版面配置動畫",
+          "stopAnimation": "停止版面配置動畫",
+          "layoutGraph": "圖形版面配置",
+          "layouts": {
+            "Circular": "環形",
+            "Circlepack": "圓形打包",
+            "Random": "隨機",
+            "Noverlaps": "無重疊",
+            "Force Directed": "力導向",
+            "Force Atlas": "力圖"
+          }
+        },
+        "fullScreenControl": {
+          "fullScreen": "全螢幕",
+          "windowed": "視窗"
+        },
+        "legendControl": {
+          "toggleLegend": "切換圖例顯示"
+        }
+      },
+      "statusIndicator": {
+        "connected": "已連線",
+        "disconnected": "未連線"
+      },
+      "statusCard": {
+        "unavailable": "狀態資訊不可用",
+        "storageInfo": "儲存資訊",
+        "workingDirectory": "工作目錄",
+        "inputDirectory": "輸入目錄",
+        "llmConfig": "LLM 設定",
+        "llmBinding": "LLM 綁定",
+        "llmBindingHost": "LLM 綁定主機",
+        "llmModel": "LLM 模型",
+        "maxTokens": "最大權杖數",
+        "embeddingConfig": "嵌入設定",
+        "embeddingBinding": "嵌入綁定",
+        "embeddingBindingHost": "嵌入綁定主機",
+        "embeddingModel": "嵌入模型",
+        "storageConfig": "儲存設定",
+        "kvStorage": "KV 儲存",
+        "docStatusStorage": "文件狀態儲存",
+        "graphStorage": "圖形儲存",
+        "vectorStorage": "向量儲存"
+      },
+      "propertiesView": {
+        "editProperty": "編輯{{property}}",
+        "editPropertyDescription": "在下方文字區域編輯屬性值。",
+        "errors": {
+          "duplicateName": "節點名稱已存在",
+          "updateFailed": "更新節點失敗",
+          "tryAgainLater": "請稍後重試"
+        },
+        "success": {
+          "entityUpdated": "節點更新成功",
+          "relationUpdated": "關係更新成功"
+        },
+        "node": {
+          "title": "節點",
+          "id": "ID",
+          "labels": "標籤",
+          "degree": "度數",
+          "properties": "屬性",
+          "relationships": "關係(子圖內)",
+          "expandNode": "展開節點",
+          "pruneNode": "修剪節點",
+          "deleteAllNodesError": "拒絕刪除圖中的所有節點",
+          "nodesRemoved": "已刪除 {{count}} 個節點，包括孤立節點",
+          "noNewNodes": "沒有發現可以展開的節點",
+          "propertyNames": {
+            "description": "描述",
+            "entity_id": "名稱",
+            "entity_type": "類型",
+            "source_id": "來源ID",
+            "Neighbour": "鄰接",
+            "file_path": "來源",
+            "keywords": "Keys",
+            "weight": "權重"
+            }
+        },
+        "edge": {
+          "title": "關係",
+          "id": "ID",
+          "type": "類型",
+          "source": "來源節點",
+          "target": "目標節點",
+          "properties": "屬性"
+        }
+      },
+      "search": {
+        "placeholder": "搜尋節點...",
+        "message": "還有 {count} 個"
+      },
+      "graphLabels": {
+        "selectTooltip": "選擇查詢標籤",
+        "noLabels": "未找到標籤",
+        "label": "標籤",
+        "placeholder": "搜尋標籤...",
+        "andOthers": "還有 {count} 個",
+        "refreshTooltip": "重載圖形數據(新增檔案後需重載)"
+      },
+      "emptyGraph": "無數據(請重載圖形數據)"
+    },
+    "retrievePanel": {
+      "chatMessage": {
+        "copyTooltip": "複製到剪貼簿",
+        "copyError": "複製文字到剪貼簿失敗"
+      },
+      "retrieval": {
+        "startPrompt": "輸入查詢開始檢索",
+        "clear": "清空",
+        "send": "送出",
+        "placeholder": "輸入查詢內容 (支援模式前綴：/<Query Mode>)",
+        "error": "錯誤：取得回應失敗",
+        "queryModeError": "僅支援以下查詢模式：{{modes}}",
+        "queryModePrefixInvalid": "無效的查詢模式前綴。請使用：/<模式> [空格] 查詢內容"
+      },
+      "querySettings": {
+        "parametersTitle": "參數",
+        "parametersDescription": "設定查詢參數",
+        "queryMode": "查詢模式",
+        "queryModeTooltip": "選擇檢索策略：\n• Naive：基礎搜尋，無進階技術\n• Local：上下文相關資訊檢索\n• Global：利用全域知識庫\n• Hybrid：結合本地和全域檢索\n• Mix：整合知識圖譜和向量檢索\n• Bypass：直接傳遞查詢到LLM，不進行檢索",
+        "queryModeOptions": {
+          "naive": "Naive",
+          "local": "Local",
+          "global": "Global",
+          "hybrid": "Hybrid",
+          "mix": "Mix",
+          "bypass": "Bypass"
+        },
+        "responseFormat": "回應格式",
+        "responseFormatTooltip": "定義回應格式。例如：\n• 多段落\n• 單段落\n• 重點",
+        "responseFormatOptions": {
+          "multipleParagraphs": "多段落",
+          "singleParagraph": "單段落",
+          "bulletPoints": "重點"
+        },
+        "topK": "Top K結果",
+        "topKTooltip": "檢索的前幾項結果數。在'local'模式下表示實體，在'global'模式下表示關係",
+        "topKPlaceholder": "結果數量",
+        "maxTokensTextUnit": "文字單元最大權杖數",
+        "maxTokensTextUnitTooltip": "每個檢索文字區塊允許的最大權杖數",
+        "maxTokensGlobalContext": "全域上下文最大權杖數",
+        "maxTokensGlobalContextTooltip": "全域檢索中關係描述的最大權杖數",
+        "maxTokensLocalContext": "本地上下文最大權杖數",
+        "maxTokensLocalContextTooltip": "本地檢索中實體描述的最大權杖數",
+        "historyTurns": "歷史輪次",
+        "historyTurnsTooltip": "回應上下文中考慮的完整對話輪次（使用者-助手對）數量",
+        "historyTurnsPlaceholder": "歷史輪次數",
+        "hlKeywords": "進階關鍵字",
+        "hlKeywordsTooltip": "檢索中優先考慮的進階關鍵字清單。用逗號分隔",
+        "hlkeywordsPlaceHolder": "輸入關鍵字",
+        "llKeywords": "基礎關鍵字",
+        "llKeywordsTooltip": "用於細化檢索重點的基礎關鍵字清單。用逗號分隔",
+        "onlyNeedContext": "僅需上下文",
+        "onlyNeedContextTooltip": "如果為True，僅回傳檢索到的上下文而不產生回應",
+        "onlyNeedPrompt": "僅需提示",
+        "onlyNeedPromptTooltip": "如果為True，僅回傳產生的提示而不產生回應",
+        "streamResponse": "串流回應",
+        "streamResponseTooltip": "如果為True，啟用即時串流輸出回應"
+      }
+    },
+    "apiSite": {
+      "loading": "正在載入 API 文件..."
+    },
+    "apiKeyAlert": {
+      "title": "需要 API key",
+      "description": "請輸入您的 API key 以存取服務",
+      "placeholder": "請輸入 API key",
+      "save": "儲存"
+    }
+}

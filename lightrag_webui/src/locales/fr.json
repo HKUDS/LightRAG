@@ -33,7 +33,8 @@
     "guestMode": "Mode sans connexion"
   },
   "common": {
-    "cancel": "Annuler"
+    "cancel": "Annuler",
+    "save": "Sauvegarder"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -236,6 +237,17 @@
       "vectorStorage": "Stockage vectoriel"
     },
     "propertiesView": {
+      "editProperty": "Modifier {{property}}",
+      "editPropertyDescription": "Modifiez la valeur de la propriété dans la zone de texte ci-dessous.",
+      "errors": {
+        "duplicateName": "Le nom du nœud existe déjà",
+        "updateFailed": "Échec de la mise à jour du nœud",
+        "tryAgainLater": "Veuillez réessayer plus tard"
+      },
+      "success": {
+        "entityUpdated": "Nœud mis à jour avec succès",
+        "relationUpdated": "Relation mise à jour avec succès"
+      },
       "node": {
         "title": "Nœud",
         "id": "ID",
@@ -254,7 +266,9 @@
           "entity_type": "Type",
           "source_id": "ID source",
           "Neighbour": "Voisin",
-          "file_path": "Source"
+          "file_path": "Source",
+          "keywords": "Keys",
+          "weight": "Poids"
         }
       },
       "edge": {
@@ -276,9 +290,9 @@
       "label": "Étiquette",
       "placeholder": "Rechercher des étiquettes...",
       "andOthers": "Et {{count}} autres",
-      "refreshTooltip": "Recharger les données du graphe"
+      "refreshTooltip": "Recharger les données (Après l'ajout de fichier)"
     },
-    "emptyGraph": "Le graphe est vide"
+    "emptyGraph": "Vide (Essayez de recharger)"
   },
   "retrievePanel": {
     "chatMessage": {
@@ -289,20 +303,23 @@
       "startPrompt": "Démarrez une récupération en tapant votre requête ci-dessous",
       "clear": "Effacer",
       "send": "Envoyer",
-      "placeholder": "Tapez votre requête...",
-      "error": "Erreur : Échec de l'obtention de la réponse"
+      "placeholder": "Tapez votre requête (Préfixe de requête : /<Query Mode>)",
+      "error": "Erreur : Échec de l'obtention de la réponse",
+      "queryModeError": "Seuls les modes de requête suivants sont pris en charge : {{modes}}",
+      "queryModePrefixInvalid": "Préfixe de mode de requête invalide. Utilisez : /<mode> [espace] votre requête"
     },
     "querySettings": {
       "parametersTitle": "Paramètres",
       "parametersDescription": "Configurez vos paramètres de requête",
       "queryMode": "Mode de requête",
-      "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Recherche de base sans techniques avancées\n• Local : Récupération d'informations dépendante du contexte\n• Global : Utilise une base de connaissances globale\n• Hybride : Combine récupération locale et globale\n• Mixte : Intègre le graphe de connaissances avec la récupération vectorielle",
+      "queryModeTooltip": "Sélectionnez la stratégie de récupération :\n• Naïf : Recherche de base sans techniques avancées\n• Local : Récupération d'informations dépendante du contexte\n• Global : Utilise une base de connaissances globale\n• Hybride : Combine récupération locale et globale\n• Mixte : Intègre le graphe de connaissances avec la récupération vectorielle\n• Bypass : Transmet directement la requête au LLM sans récupération",
       "queryModeOptions": {
         "naive": "Naïf",
         "local": "Local",
         "global": "Global",
         "hybrid": "Hybride",
-        "mix": "Mixte"
+        "mix": "Mixte",
+        "bypass": "Bypass"
       },
       "responseFormat": "Format de réponse",
       "responseFormatTooltip": "Définit le format de la réponse. Exemples :\n• Plusieurs paragraphes\n• Paragraphe unique\n• Points à puces",

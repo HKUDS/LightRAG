@@ -74,19 +74,19 @@ const ZoomControl = () => {
     <>
       <Button
         variant={controlButtonVariant}
-        onClick={handleRotateCounterClockwise}
-        tooltip={t('graphPanel.sideBar.zoomControl.rotateCameraCounterClockwise')}
-        size="icon"
-      >
-        <RotateCcwIcon />
-      </Button>
-      <Button
-        variant={controlButtonVariant}
         onClick={handleRotate}
         tooltip={t('graphPanel.sideBar.zoomControl.rotateCamera')}
         size="icon"
       >
         <RotateCwIcon />
+      </Button>
+      <Button
+        variant={controlButtonVariant}
+        onClick={handleRotateCounterClockwise}
+        tooltip={t('graphPanel.sideBar.zoomControl.rotateCameraCounterClockwise')}
+        size="icon"
+      >
+        <RotateCcwIcon />
       </Button>
       <Button
         variant={controlButtonVariant}
