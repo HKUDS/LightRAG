@@ -601,9 +601,7 @@ async def extract_entities(
         file_path = chunk_dp.get("file_path", "unknown_source")
 
         # Get initial extraction
-        hint_prompt = entity_extract_prompt.format(
-            **context_base, input_text="{input_text}"
-        ).format(**context_base, input_text=content)
+        hint_prompt = entity_extract_prompt.format(**{**context_base, "input_text": content})
 
         final_result = await use_llm_func_with_cache(
             hint_prompt,
