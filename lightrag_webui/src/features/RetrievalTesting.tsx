@@ -198,9 +198,17 @@ export default function RetrievalTesting() {
         return;
       }
 
-      // If we're receiving a response, be more conservative about disabling auto-scroll
-      if (!isFormInteractionRef.current && !isReceivingResponseRef.current) {
-        shouldFollowScrollRef.current = false;
+      // Check if scrolled to bottom or very close to bottom
+      const container = messagesContainerRef.current;
+      if (container) {
+        const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
+
+        // If at bottom, enable auto-scroll, otherwise disable it
+        if (isAtBottom) {
+          shouldFollowScrollRef.current = true;
+        } else if (!isFormInteractionRef.current && !isReceivingResponseRef.current) {
+          shouldFollowScrollRef.current = false;
+        }
       }
     }, 30);
 
