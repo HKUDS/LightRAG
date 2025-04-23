@@ -1083,27 +1083,36 @@ class PGGraphStorage(BaseGraphStorage):
         if self.db is None:
             self.db = await ClientManager.get_client()
 
-        node1_id = "dummy_entity"
-        node1_data = {
-            "entity_id": node1_id,
-            "description": "dummy description",
-            "keywords": "dummy,keywords",
-            "entity_type": "dummy_type",
-        }
-        await self.upsert_node(node1_id, node1_data)
-        await self.delete_node(node1_id)
+        # 分别执行每个语句，忽略错误
+        queries = [
+            f"SELECT create_graph('{self.graph_name}')",
+            f'CREATE INDEX CONCURRENTLY vertex_p_idx ON {self.graph_name}."_ag_label_vertex" (id)',
+            f'CREATE INDEX CONCURRENTLY vertex_idx_node_id ON {self.graph_name}."_ag_label_vertex" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
+            f'CREATE INDEX CONCURRENTLY edge_p_idx ON {self.graph_name}."_ag_label_edge" (id)',
+            f'CREATE INDEX CONCURRENTLY edge_sid_idx ON {self.graph_name}."_ag_label_edge" (start_id)',
+            f'CREATE INDEX CONCURRENTLY edge_eid_idx ON {self.graph_name}."_ag_label_edge" (end_id)',
+            f'CREATE INDEX CONCURRENTLY edge_seid_idx ON {self.graph_name}."_ag_label_edge" (start_id,end_id)',
+            f'CREATE INDEX CONCURRENTLY directed_p_idx ON {self.graph_name}."DIRECTED" (id)',
+            f'CREATE INDEX CONCURRENTLY directed_eid_idx ON {self.graph_name}."DIRECTED" (end_id)',
+            f'CREATE INDEX CONCURRENTLY directed_sid_idx ON {self.graph_name}."DIRECTED" (start_id)',
+            f'CREATE INDEX CONCURRENTLY directed_seid_idx ON {self.graph_name}."DIRECTED" (start_id,end_id)',
+            f'CREATE INDEX CONCURRENTLY entity_p_idx ON {self.graph_name}."base" (id)',
+            f'CREATE INDEX CONCURRENTLY entity_idx_node_id ON {self.graph_name}."base" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
+            f'CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON {self.graph_name}."base" using gin(properties)',
+            f'ALTER TABLE {self.graph_name}."DIRECTED" CLUSTER ON directed_sid_idx',
+        ]
 
-        query = (
-            """CREATE INDEX entity_id_gin_idxSELECT ON %s."base" USING gin (properties);"""
-            % (self.graph_name)
-        )
-
-        await self.db.execute(
-            query,
-            upsert=True,
-            with_age=True,
-            graph_name=self.graph_name,
-        )
+        for query in queries:
+            try:
+                await self.db.execute(
+                    query,
+                    upsert=True,
+                    with_age=True,
+                    graph_name=self.graph_name,
+                )
+                logger.info(f"Successfully executed: {query}")
+            except Exception:
+                continue
 
     async def finalize(self):
         if self.db is not None:
