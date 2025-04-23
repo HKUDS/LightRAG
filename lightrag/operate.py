@@ -1185,6 +1185,13 @@ async def mix_kg_vector_query(
                 tokenizer=tokenizer,
             )
 
+            logger.debug(
+                f"Truncate chunks from {len(valid_chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+            )
+            logger.info(
+                f"Naive query: {len(maybe_trun_chunks)} chunks, top_k: {mix_topk}"
+            )
+
             if not maybe_trun_chunks:
                 return None
 
@@ -2012,6 +2019,9 @@ async def naive_query(
 
     logger.debug(
         f"Truncate chunks from {len(chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+    )
+    logger.info(
+        f"Naive query: {len(maybe_trun_chunks)} chunks, top_k: {query_param.top_k}"
     )
 
     section = "\n--New Chunk--\n".join(
