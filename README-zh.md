@@ -93,9 +93,11 @@ python examples/lightrag_openai_demo.py
 
 **注意事项**：在运行demo程序的时候需要注意，不同的测试程序可能使用的是不同的embedding模型，更换不同的embeding模型的时候需要把清空数据目录（`./dickens`），否则层序执行会出错。如果你想保留LLM缓存，可以在清除数据目录是保留`kv_store_llm_response_cache.json`文件。
 
-## 查询
+## 使用LightRAG Core进行编程
 
-使用以下Python代码片段（在脚本中）初始化LightRAG并执行查询：
+### 一个简单程序
+
+以下Python代码片段演示了如何初始化LightRAG、插入文本并进行查询：
 
 ```python
 import os
@@ -107,6 +109,7 @@ from lightrag.utils import setup_logger
 
 setup_logger("lightrag", level="INFO")
 
+WORKING_DIR = "./rag_storage"
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
@@ -120,23 +123,24 @@ async def initialize_rag():
     await initialize_pipeline_status()
     return rag
 
-def main():
+async def main():
     try:
-        # Initialize RAG instance
+        # 初始化RAG实例
         rag = await initialize_rag()
-		    rag.insert("Your text")
+        # 插入文本
+        await rag.insert("Your text")
 
-        # Perform hybrid search
-        mode="hybrid"
+        # 执行混合检索
+        mode = "hybrid"
         print(
-          await rag.query(
-              "What are the top themes in this story?",
-              param=QueryParam(mode=mode)
-          )
+            await rag.query(
+                "这个故事的主要主题是什么？",
+                param=QueryParam(mode=mode)
+            )
         )
 
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"发生错误: {e}")
     finally:
         if rag:
             await rag.finalize_storages()
@@ -145,7 +149,53 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
+重要说明：
+- 运行脚本前请先导出你的OPENAI_API_KEY环境变量。
+- 该程序使用LightRAG的默认存储设置，所有数据将持久化在WORKING_DIR/rag_storage目录下。
+- 该示例仅展示了初始化LightRAG对象的最简单方式：注入embedding和LLM函数，并在创建LightRAG对象后初始化存储和管道状态。
+
+### LightRAG初始化参数
+
+以下是完整的LightRAG对象初始化参数清单：
+
+<details>
+<summary> 参数 </summary>
+
+| **参数** | **类型** | **说明** | **默认值** |
+|--------------|----------|-----------------|-------------|
+| **working_dir** | `str` | 存储缓存的目录 | `lightrag_cache+timestamp` |
+| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
+| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
+| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
+| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
+| **chunk_token_size** | `int` | 拆分文档时每个块的最大令牌大小 | `1200` |
+| **chunk_overlap_token_size** | `int` | 拆分文档时两个块之间的重叠令牌大小 | `100` |
+| **tokenizer** | `Tokenizer` | 用于将文本转换为 tokens（数字）以及使用遵循 TokenizerInterface 协议的 .encode() 和 .decode() 函数将 tokens 转换回文本的函数。 如果您不指定，它将使用默认的 Tiktoken tokenizer。 | `TiktokenTokenizer` |
+| **tiktoken_model_name** | `str` | 如果您使用的是默认的 Tiktoken tokenizer，那么这是要使用的特定 Tiktoken 模型的名称。如果您提供自己的 tokenizer，则忽略此设置。 | `gpt-4o-mini` |
+| **entity_extract_max_gleaning** | `int` | 实体提取过程中的循环次数，附加历史消息 | `1` |
+| **entity_summary_to_max_tokens** | `int` | 每个实体摘要的最大令牌大小 | `500` |
+| **node_embedding_algorithm** | `str` | 节点嵌入算法（当前未使用） | `node2vec` |
+| **node2vec_params** | `dict` | 节点嵌入的参数 | `{"dimensions": 1536,"num_walks": 10,"walk_length": 40,"window_size": 2,"iterations": 3,"random_seed": 3,}` |
+| **embedding_func** | `EmbeddingFunc` | 从文本生成嵌入向量的函数 | `openai_embed` |
+| **embedding_batch_num** | `int` | 嵌入过程的最大批量大小（每批发送多个文本） | `32` |
+| **embedding_func_max_async** | `int` | 最大并发异步嵌入进程数 | `16` |
+| **llm_model_func** | `callable` | LLM生成的函数 | `gpt_4o_mini_complete` |
+| **llm_model_name** | `str` | 用于生成的LLM模型名称 | `meta-llama/Llama-3.2-1B-Instruct` |
+| **llm_model_max_token_size** | `int` | LLM生成的最大令牌大小（影响实体关系摘要） | `32768`（默认值由环境变量MAX_TOKENS更改） |
+| **llm_model_max_async** | `int` | 最大并发异步LLM进程数 | `4`（默认值由环境变量MAX_ASYNC更改） |
+| **llm_model_kwargs** | `dict` | LLM生成的附加参数 | |
+| **vector_db_storage_cls_kwargs** | `dict` | 向量数据库的附加参数，如设置节点和关系检索的阈值 | cosine_better_than_threshold: 0.2（默认值由环境变量COSINE_THRESHOLD更改） |
+| **enable_llm_cache** | `bool` | 如果为`TRUE`，将LLM结果存储在缓存中；重复的提示返回缓存的响应 | `TRUE` |
+| **enable_llm_cache_for_entity_extract** | `bool` | 如果为`TRUE`，将实体提取的LLM结果存储在缓存中；适合初学者调试应用程序 | `TRUE` |
+| **addon_params** | `dict` | 附加参数，例如`{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`：设置示例限制、输出语言和文档处理的批量大小 | `example_number: 所有示例, language: English` |
+| **convert_response_to_json_func** | `callable` | 未使用 | `convert_response_to_json` |
+| **embedding_cache_config** | `dict` | 问答缓存的配置。包含三个参数：`enabled`：布尔值，启用/禁用缓存查找功能。启用时，系统将在生成新答案之前检查缓存的响应。`similarity_threshold`：浮点值（0-1），相似度阈值。当新问题与缓存问题的相似度超过此阈值时，将直接返回缓存的答案而不调用LLM。`use_llm_check`：布尔值，启用/禁用LLM相似度验证。启用时，在返回缓存答案之前，将使用LLM作为二次检查来验证问题之间的相似度。 | 默认：`{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
+
+</details>
+
 ### 查询参数
+
+使用QueryParam控制你的查询行为：
 
 ```python
 class QueryParam:
@@ -421,54 +471,6 @@ if __name__ == "__main__":
 
 </details>
 
-### Token统计功能
-<details>
-<summary> <b>概述和使用</b> </summary>
-
-LightRAG提供了TokenTracker工具来跟踪和管理大模型的token消耗。这个功能对于控制API成本和优化性能特别有用。
-
-#### 使用方法
-
-```python
-from lightrag.utils import TokenTracker
-
-# 创建TokenTracker实例
-token_tracker = TokenTracker()
-
-# 方法1：使用上下文管理器（推荐）
-# 适用于需要自动跟踪token使用的场景
-with token_tracker:
-    result1 = await llm_model_func("你的问题1")
-    result2 = await llm_model_func("你的问题2")
-
-# 方法2：手动添加token使用记录
-# 适用于需要更精细控制token统计的场景
-token_tracker.reset()
-
-rag.insert()
-
-rag.query("你的问题1", param=QueryParam(mode="naive"))
-rag.query("你的问题2", param=QueryParam(mode="mix"))
-
-# 显示总token使用量（包含插入和查询操作）
-print("Token usage:", token_tracker.get_usage())
-```
-
-#### 使用建议
-- 在长会话或批量操作中使用上下文管理器，可以自动跟踪所有token消耗
-- 对于需要分段统计的场景，使用手动模式并适时调用reset()
-- 定期检查token使用情况，有助于及时发现异常消耗
-- 在开发测试阶段积极使用此功能，以便优化生产环境的成本
-
-#### 实际应用示例
-您可以参考以下示例来实现token统计：
-- `examples/lightrag_gemini_track_token_demo.py`：使用Google Gemini模型的token统计示例
-- `examples/lightrag_siliconcloud_track_token_demo.py`：使用SiliconCloud模型的token统计示例
-
-这些示例展示了如何在不同模型和场景下有效地使用TokenTracker功能。
-
-</details>
-
 ### 对话历史
 
 LightRAG现在通过对话历史功能支持多轮对话。以下是使用方法：
@@ -619,7 +621,7 @@ custom_kg = {
 rag.insert_custom_kg(custom_kg)
 ```
 
-## 插入
+### 插入
 
 <details>
   <summary> <b> 基本插入 </b></summary>
@@ -718,7 +720,9 @@ rag.insert(documents, file_paths=file_paths)
 
 </details>
 
-## 存储
+### 存储
+
+LightRAG使用到4种类型的存储，每一种存储都有多种实现方案。在初始化LightRAG的时候可以通过参数设定这四类存储的实现方案。详情请参看前面的LightRAG初始化参数。
 
 <details>
 <summary> <b>使用Neo4J进行存储</b> </summary>
@@ -846,16 +850,6 @@ rag = LightRAG(
 
 </details>
 
-## 删除
-
-```python
-#  删除实体：通过实体名称删除实体
-rag.delete_by_entity("Project Gutenberg")
-
-#  删除文档：通过文档ID删除与文档相关的实体和关系
-rag.delete_by_doc_id("doc_id")
-```
-
 ## 编辑实体和关系
 
 LightRAG现在支持全面的知识图谱管理功能，允许您在知识图谱中创建、编辑和删除实体和关系。
@@ -925,6 +919,54 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 - **edit_relation**：更新现有关系的属性
 
 这些操作在图数据库和向量数据库组件之间保持数据一致性，确保您的知识图谱保持连贯。
+
+## Token统计功能
+<details>
+<summary> <b>概述和使用</b> </summary>
+
+LightRAG提供了TokenTracker工具来跟踪和管理大模型的token消耗。这个功能对于控制API成本和优化性能特别有用。
+
+### 使用方法
+
+```python
+from lightrag.utils import TokenTracker
+
+# 创建TokenTracker实例
+token_tracker = TokenTracker()
+
+# 方法1：使用上下文管理器（推荐）
+# 适用于需要自动跟踪token使用的场景
+with token_tracker:
+    result1 = await llm_model_func("你的问题1")
+    result2 = await llm_model_func("你的问题2")
+
+# 方法2：手动添加token使用记录
+# 适用于需要更精细控制token统计的场景
+token_tracker.reset()
+
+rag.insert()
+
+rag.query("你的问题1", param=QueryParam(mode="naive"))
+rag.query("你的问题2", param=QueryParam(mode="mix"))
+
+# 显示总token使用量（包含插入和查询操作）
+print("Token usage:", token_tracker.get_usage())
+```
+
+### 使用建议
+- 在长会话或批量操作中使用上下文管理器，可以自动跟踪所有token消耗
+- 对于需要分段统计的场景，使用手动模式并适时调用reset()
+- 定期检查token使用情况，有助于及时发现异常消耗
+- 在开发测试阶段积极使用此功能，以便优化生产环境的成本
+
+### 实际应用示例
+您可以参考以下示例来实现token统计：
+- `examples/lightrag_gemini_track_token_demo.py`：使用Google Gemini模型的token统计示例
+- `examples/lightrag_siliconcloud_track_token_demo.py`：使用SiliconCloud模型的token统计示例
+
+这些示例展示了如何在不同模型和场景下有效地使用TokenTracker功能。
+
+</details>
 
 ## 数据导出功能
 
@@ -1079,56 +1121,6 @@ rag.clear_cache(modes=["local"])
 - `"global"`：全局搜索缓存
 - `"hybrid"`：混合搜索缓存
 - `"mix"`：混合搜索缓存
-
-</details>
-
-## LightRAG初始化参数
-
-<details>
-<summary> 参数 </summary>
-
-| **参数** | **类型** | **说明** | **默认值** |
-|--------------|----------|-----------------|-------------|
-| **working_dir** | `str` | 存储缓存的目录 | `lightrag_cache+timestamp` |
-| **kv_storage** | `str` | Storage type for documents and text chunks. Supported types: `JsonKVStorage`,`PGKVStorage`,`RedisKVStorage`,`MongoKVStorage` | `JsonKVStorage` |
-| **vector_storage** | `str` | Storage type for embedding vectors. Supported types: `NanoVectorDBStorage`,`PGVectorStorage`,`MilvusVectorDBStorage`,`ChromaVectorDBStorage`,`FaissVectorDBStorage`,`MongoVectorDBStorage`,`QdrantVectorDBStorage` | `NanoVectorDBStorage` |
-| **graph_storage** | `str` | Storage type for graph edges and nodes. Supported types: `NetworkXStorage`,`Neo4JStorage`,`PGGraphStorage`,`AGEStorage` | `NetworkXStorage` |
-| **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
-| **chunk_token_size** | `int` | 拆分文档时每个块的最大令牌大小 | `1200` |
-| **chunk_overlap_token_size** | `int` | 拆分文档时两个块之间的重叠令牌大小 | `100` |
-| **tokenizer** | `Tokenizer` | 用于将文本转换为 tokens（数字）以及使用遵循 TokenizerInterface 协议的 .encode() 和 .decode() 函数将 tokens 转换回文本的函数。 如果您不指定，它将使用默认的 Tiktoken tokenizer。 | `TiktokenTokenizer` |
-| **tiktoken_model_name** | `str` | 如果您使用的是默认的 Tiktoken tokenizer，那么这是要使用的特定 Tiktoken 模型的名称。如果您提供自己的 tokenizer，则忽略此设置。 | `gpt-4o-mini` |
-| **entity_extract_max_gleaning** | `int` | 实体提取过程中的循环次数，附加历史消息 | `1` |
-| **entity_summary_to_max_tokens** | `int` | 每个实体摘要的最大令牌大小 | `500` |
-| **node_embedding_algorithm** | `str` | 节点嵌入算法（当前未使用） | `node2vec` |
-| **node2vec_params** | `dict` | 节点嵌入的参数 | `{"dimensions": 1536,"num_walks": 10,"walk_length": 40,"window_size": 2,"iterations": 3,"random_seed": 3,}` |
-| **embedding_func** | `EmbeddingFunc` | 从文本生成嵌入向量的函数 | `openai_embed` |
-| **embedding_batch_num** | `int` | 嵌入过程的最大批量大小（每批发送多个文本） | `32` |
-| **embedding_func_max_async** | `int` | 最大并发异步嵌入进程数 | `16` |
-| **llm_model_func** | `callable` | LLM生成的函数 | `gpt_4o_mini_complete` |
-| **llm_model_name** | `str` | 用于生成的LLM模型名称 | `meta-llama/Llama-3.2-1B-Instruct` |
-| **llm_model_max_token_size** | `int` | LLM生成的最大令牌大小（影响实体关系摘要） | `32768`（默认值由环境变量MAX_TOKENS更改） |
-| **llm_model_max_async** | `int` | 最大并发异步LLM进程数 | `4`（默认值由环境变量MAX_ASYNC更改） |
-| **llm_model_kwargs** | `dict` | LLM生成的附加参数 | |
-| **vector_db_storage_cls_kwargs** | `dict` | 向量数据库的附加参数，如设置节点和关系检索的阈值 | cosine_better_than_threshold: 0.2（默认值由环境变量COSINE_THRESHOLD更改） |
-| **enable_llm_cache** | `bool` | 如果为`TRUE`，将LLM结果存储在缓存中；重复的提示返回缓存的响应 | `TRUE` |
-| **enable_llm_cache_for_entity_extract** | `bool` | 如果为`TRUE`，将实体提取的LLM结果存储在缓存中；适合初学者调试应用程序 | `TRUE` |
-| **addon_params** | `dict` | 附加参数，例如`{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`：设置示例限制、输出语言和文档处理的批量大小 | `example_number: 所有示例, language: English` |
-| **convert_response_to_json_func** | `callable` | 未使用 | `convert_response_to_json` |
-| **embedding_cache_config** | `dict` | 问答缓存的配置。包含三个参数：`enabled`：布尔值，启用/禁用缓存查找功能。启用时，系统将在生成新答案之前检查缓存的响应。`similarity_threshold`：浮点值（0-1），相似度阈值。当新问题与缓存问题的相似度超过此阈值时，将直接返回缓存的答案而不调用LLM。`use_llm_check`：布尔值，启用/禁用LLM相似度验证。启用时，在返回缓存答案之前，将使用LLM作为二次检查来验证问题之间的相似度。 | 默认：`{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
-
-</details>
-
-## 错误处理
-
-<details>
-<summary>点击查看错误处理详情</summary>
-
-API包括全面的错误处理：
-
-- 文件未找到错误（404）
-- 处理错误（500）
-- 支持多种文件编码（UTF-8和GBK）
 
 </details>
 
