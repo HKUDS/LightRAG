@@ -299,12 +299,29 @@ export const queryTextStream = async (
     });
 
     if (!response.ok) {
-      // Handle HTTP errors (e.g., 4xx, 5xx)
+      // Handle 401 Unauthorized error specifically
+      if (response.status === 401) {
+        // For consistency with axios interceptor, navigate to login page
+        navigationService.navigateToLogin();
+
+        // Create a specific authentication error
+        const authError = new Error('Authentication required');
+        throw authError;
+      }
+
+      // Handle other common HTTP errors with specific messages
       let errorBody = 'Unknown error';
       try {
         errorBody = await response.text(); // Try to get error details from body
       } catch { /* ignore */ }
-      throw new Error(`HTTP error ${response.status}: ${response.statusText}\n${errorBody}`);
+
+      // Format error message similar to axios interceptor for consistency
+      const url = `${backendBaseUrl}/query/stream`;
+      throw new Error(
+        `${response.status} ${response.statusText}\n${JSON.stringify(
+          { error: errorBody }
+        )}\n${url}`
+      );
     }
 
     if (!response.body) {
@@ -362,12 +379,81 @@ export const queryTextStream = async (
 
   } catch (error) {
     const message = errorMessage(error);
-    console.error('Stream request failed:', message);
+
+    // Check if this is an authentication error
+    if (message === 'Authentication required') {
+      // Already navigated to login page in the response.status === 401 block
+      console.error('Authentication required for stream request');
+      if (onError) {
+        onError('Authentication required');
+      }
+      return; // Exit early, no need for further error handling
+    }
+
+    // Check for specific HTTP error status codes in the error message
+    const statusCodeMatch = message.match(/^(\d{3})\s/);
+    if (statusCodeMatch) {
+      const statusCode = parseInt(statusCodeMatch[1], 10);
+
+      // Handle specific status codes with user-friendly messages
+      let userMessage = message;
+
+      switch (statusCode) {
+      case 403:
+        userMessage = 'You do not have permission to access this resource (403 Forbidden)';
+        console.error('Permission denied for stream request:', message);
+        break;
+      case 404:
+        userMessage = 'The requested resource does not exist (404 Not Found)';
+        console.error('Resource not found for stream request:', message);
+        break;
+      case 429:
+        userMessage = 'Too many requests, please try again later (429 Too Many Requests)';
+        console.error('Rate limited for stream request:', message);
+        break;
+      case 500:
+      case 502:
+      case 503:
+      case 504:
+        userMessage = `Server error, please try again later (${statusCode})`;
+        console.error('Server error for stream request:', message);
+        break;
+      default:
+        console.error('Stream request failed with status code:', statusCode, message);
+      }
+
+      if (onError) {
+        onError(userMessage);
+      }
+      return;
+    }
+
+    // Handle network errors (like connection refused, timeout, etc.)
+    if (message.includes('NetworkError') ||
+        message.includes('Failed to fetch') ||
+        message.includes('Network request failed')) {
+      console.error('Network error for stream request:', message);
+      if (onError) {
+        onError('Network connection error, please check your internet connection');
+      }
+      return;
+    }
+
+    // Handle JSON parsing errors during stream processing
+    if (message.includes('Error parsing') || message.includes('SyntaxError')) {
+      console.error('JSON parsing error in stream:', message);
+      if (onError) {
+        onError('Error processing response data');
+      }
+      return;
+    }
+
+    // Handle other errors
+    console.error('Unhandled stream error:', message);
     if (onError) {
       onError(message);
     } else {
-      // If no specific onError handler, maybe throw or log more prominently
-      console.error('Unhandled stream error:', message);
+      console.error('No error handler provided for stream error:', message);
     }
   }
 };
