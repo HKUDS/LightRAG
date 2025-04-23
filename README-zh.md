@@ -35,21 +35,6 @@
 
 ## 安装
 
-### 安装LightRAG核心
-
-* 从源代码安装（推荐）
-
-```bash
-cd LightRAG
-pip install -e .
-```
-
-* 从PyPI安装
-
-```bash
-pip install lightrag-hku
-```
-
 ### 安装LightRAG服务器
 
 LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知识图谱探索和简单的RAG查询界面。LightRAG服务器还提供兼容Ollama的接口，旨在将LightRAG模拟为Ollama聊天模型。这使得AI聊天机器人（如Open WebUI）可以轻松访问LightRAG。
@@ -68,18 +53,45 @@ pip install "lightrag-hku[api]"
 pip install -e ".[api]"
 ```
 
-**有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。**
+### 安装LightRAG Core
+
+* 从源代码安装（推荐）
+
+```bash
+cd LightRAG
+pip install -e .
+```
+
+* 从PyPI安装
+
+```bash
+pip install lightrag-hku
+```
 
 ## 快速开始
 
-* [视频演示](https://www.youtube.com/watch?v=g21royNJ4fw)展示如何在本地运行LightRAG。
-* 所有代码都可以在`examples`中找到。
-* 如果使用OpenAI模型，请在环境中设置OpenAI API密钥：`export OPENAI_API_KEY="sk-..."`。
-* 下载演示文本"狄更斯的圣诞颂歌"：
+### 使用LightRAG服务器
+
+**有关LightRAG服务器的更多信息，请参阅[LightRAG服务器](./lightrag/api/README.md)。**
+
+### 使用LightRAG Core
+
+LightRAG核心功能的示例代码请参见`examples`目录。您还可参照[视频](https://www.youtube.com/watch?v=g21royNJ4fw)视频完成环境配置。若已持有OpenAI API密钥，可以通过以下命令运行演示代码：
 
 ```bash
+### you should run the demo code with project folder
+cd LightRAG
+### provide your API-KEY for OpenAI
+export OPENAI_API_KEY="sk-...your_opeai_key..."
+### download the demo document of "A Christmas Carol" by Charles Dickens
 curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./book.txt
+### run the demo code
+python examples/lightrag_openai_demo.py
 ```
+
+如需流式响应示例的实现代码，请参阅 `examples/lightrag_openai_compatible_demo.py`。运行前，请确保根据需求修改示例代码中的LLM及嵌入模型配置。
+
+**注意事项**：在运行demo程序的时候需要注意，不同的测试程序可能使用的是不同的embedding模型，更换不同的embeding模型的时候需要把清空数据目录（`./dickens`），否则层序执行会出错。如果你想保留LLM缓存，可以在清除数据目录是保留`kv_store_llm_response_cache.json`文件。
 
 ## 查询
 
@@ -95,42 +107,42 @@ from lightrag.utils import setup_logger
 
 setup_logger("lightrag", level="INFO")
 
+if not os.path.exists(WORKING_DIR):
+    os.mkdir(WORKING_DIR)
+
 async def initialize_rag():
     rag = LightRAG(
-        working_dir="your/path",
+        working_dir=WORKING_DIR,
         embedding_func=openai_embed,
-        llm_model_func=gpt_4o_mini_complete
+        llm_model_func=gpt_4o_mini_complete,
     )
-
     await rag.initialize_storages()
     await initialize_pipeline_status()
-
     return rag
 
 def main():
-    # 初始化RAG实例
-    rag = asyncio.run(initialize_rag())
-    # 插入文本
-    rag.insert("Your text")
+    try:
+        # Initialize RAG instance
+        rag = await initialize_rag()
+		    rag.insert("Your text")
 
-    # 执行朴素搜索
-    mode="naive"
-    # 执行本地搜索
-    mode="local"
-    # 执行全局搜索
-    mode="global"
-    # 执行混合搜索
-    mode="hybrid"
-    # 混合模式集成知识图谱和向量检索
-    mode="mix"
+        # Perform hybrid search
+        mode="hybrid"
+        print(
+          await rag.query(
+              "What are the top themes in this story?",
+              param=QueryParam(mode=mode)
+          )
+        )
 
-    rag.query(
-        "这个故事的主要主题是什么？",
-        param=QueryParam(mode=mode)
-    )
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if rag:
+            await rag.finalize_storages()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
 ```
 
 ### 查询参数
@@ -628,21 +640,15 @@ rag.insert(["文本1", "文本2",...])
 
 # 带有自定义批量大小配置的批量插入
 rag = LightRAG(
+    ...
     working_dir=WORKING_DIR,
-    addon_params={
-        "insert_batch_size": 4  # 每批处理4个文档
-    }
+    max_parallel_insert = 4
 )
 
 rag.insert(["文本1", "文本2", "文本3", ...])  # 文档将以4个为一批进行处理
 ```
 
-`addon_params`中的`insert_batch_size`参数控制插入过程中每批处理的文档数量。这对于以下情况很有用：
-
-- 管理大型文档集合的内存使用
-- 优化处理速度
-- 提供更好的进度跟踪
-- 如果未指定，默认值为10
+参数 `max_parallel_insert` 用于控制文档索引流水线中并行处理的文档数量。若未指定，默认值为 **2**。建议将该参数设置为 **10 以下**，因为性能瓶颈通常出现在大语言模型（LLM）的处理环节。
 
 </details>
 
@@ -1090,7 +1096,8 @@ rag.clear_cache(modes=["local"])
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | 拆分文档时每个块的最大令牌大小 | `1200` |
 | **chunk_overlap_token_size** | `int` | 拆分文档时两个块之间的重叠令牌大小 | `100` |
-| **tiktoken_model_name** | `str` | 用于计算令牌数的Tiktoken编码器的模型名称 | `gpt-4o-mini` |
+| **tokenizer** | `Tokenizer` | 用于将文本转换为 tokens（数字）以及使用遵循 TokenizerInterface 协议的 .encode() 和 .decode() 函数将 tokens 转换回文本的函数。 如果您不指定，它将使用默认的 Tiktoken tokenizer。 | `TiktokenTokenizer` |
+| **tiktoken_model_name** | `str` | 如果您使用的是默认的 Tiktoken tokenizer，那么这是要使用的特定 Tiktoken 模型的名称。如果您提供自己的 tokenizer，则忽略此设置。 | `gpt-4o-mini` |
 | **entity_extract_max_gleaning** | `int` | 实体提取过程中的循环次数，附加历史消息 | `1` |
 | **entity_summary_to_max_tokens** | `int` | 每个实体摘要的最大令牌大小 | `500` |
 | **node_embedding_algorithm** | `str` | 节点嵌入算法（当前未使用） | `node2vec` |
@@ -1106,7 +1113,7 @@ rag.clear_cache(modes=["local"])
 | **vector_db_storage_cls_kwargs** | `dict` | 向量数据库的附加参数，如设置节点和关系检索的阈值 | cosine_better_than_threshold: 0.2（默认值由环境变量COSINE_THRESHOLD更改） |
 | **enable_llm_cache** | `bool` | 如果为`TRUE`，将LLM结果存储在缓存中；重复的提示返回缓存的响应 | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | 如果为`TRUE`，将实体提取的LLM结果存储在缓存中；适合初学者调试应用程序 | `TRUE` |
-| **addon_params** | `dict` | 附加参数，例如`{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"], "insert_batch_size": 10}`：设置示例限制、输出语言和文档处理的批量大小 | `example_number: 所有示例, language: English, insert_batch_size: 10` |
+| **addon_params** | `dict` | 附加参数，例如`{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`：设置示例限制、输出语言和文档处理的批量大小 | `example_number: 所有示例, language: English` |
 | **convert_response_to_json_func** | `callable` | 未使用 | `convert_response_to_json` |
 | **embedding_cache_config** | `dict` | 问答缓存的配置。包含三个参数：`enabled`：布尔值，启用/禁用缓存查找功能。启用时，系统将在生成新答案之前检查缓存的响应。`similarity_threshold`：浮点值（0-1），相似度阈值。当新问题与缓存问题的相似度超过此阈值时，将直接返回缓存的答案而不调用LLM。`use_llm_check`：布尔值，启用/禁用LLM相似度验证。启用时，在返回缓存答案之前，将使用LLM作为二次检查来验证问题之间的相似度。 | 默认：`{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 

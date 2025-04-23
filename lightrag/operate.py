@@ -12,10 +12,8 @@ from .utils import (
     logger,
     clean_str,
     compute_mdhash_id,
-    decode_tokens_by_tiktoken,
-    encode_string_by_tiktoken,
+    Tokenizer,
     is_float_regex,
-    list_of_list_to_csv,
     normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
@@ -27,6 +25,7 @@ from .utils import (
     CacheData,
     get_conversation_turns,
     use_llm_func_with_cache,
+    list_of_list_to_json,
 )
 from .base import (
     BaseGraphStorage,
@@ -46,32 +45,31 @@ load_dotenv(dotenv_path=".env", override=False)
 
 
 def chunking_by_token_size(
+    tokenizer: Tokenizer,
     content: str,
     split_by_character: str | None = None,
     split_by_character_only: bool = False,
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
-    tiktoken_model: str = "gpt-4o",
 ) -> list[dict[str, Any]]:
-    tokens = encode_string_by_tiktoken(content, model_name=tiktoken_model)
+    tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
     if split_by_character:
         raw_chunks = content.split(split_by_character)
         new_chunks = []
         if split_by_character_only:
             for chunk in raw_chunks:
-                _tokens = encode_string_by_tiktoken(chunk, model_name=tiktoken_model)
+                _tokens = tokenizer.encode(chunk)
                 new_chunks.append((len(_tokens), chunk))
         else:
             for chunk in raw_chunks:
-                _tokens = encode_string_by_tiktoken(chunk, model_name=tiktoken_model)
+                _tokens = tokenizer.encode(chunk)
                 if len(_tokens) > max_token_size:
                     for start in range(
                         0, len(_tokens), max_token_size - overlap_token_size
                     ):
-                        chunk_content = decode_tokens_by_tiktoken(
-                            _tokens[start : start + max_token_size],
-                            model_name=tiktoken_model,
+                        chunk_content = tokenizer.decode(
+                            _tokens[start : start + max_token_size]
                         )
                         new_chunks.append(
                             (min(max_token_size, len(_tokens) - start), chunk_content)
@@ -90,9 +88,7 @@ def chunking_by_token_size(
         for index, start in enumerate(
             range(0, len(tokens), max_token_size - overlap_token_size)
         ):
-            chunk_content = decode_tokens_by_tiktoken(
-                tokens[start : start + max_token_size], model_name=tiktoken_model
-            )
+            chunk_content = tokenizer.decode(tokens[start : start + max_token_size])
             results.append(
                 {
                     "tokens": min(max_token_size, len(tokens) - start),
@@ -116,19 +112,22 @@ async def _handle_entity_relation_summary(
     If too long, use LLM to summarize.
     """
     use_llm_func: callable = global_config["llm_model_func"]
+    tokenizer: Tokenizer = global_config["tokenizer"]
     llm_max_tokens = global_config["llm_model_max_token_size"]
-    tiktoken_model_name = global_config["tiktoken_model_name"]
     summary_max_tokens = global_config["summary_to_max_tokens"]
 
     language = global_config["addon_params"].get(
         "language", PROMPTS["DEFAULT_LANGUAGE"]
     )
 
-    tokens = encode_string_by_tiktoken(description, model_name=tiktoken_model_name)
+    tokens = tokenizer.encode(description)
+
+    ### summarize is not determined here anymore (It's determined by num_fragment now)
+    # if len(tokens) < summary_max_tokens:  # No need for summary
+    #     return description
+
     prompt_template = PROMPTS["summarize_entity_descriptions"]
-    use_description = decode_tokens_by_tiktoken(
-        tokens[:llm_max_tokens], model_name=tiktoken_model_name
-    )
+    use_description = tokenizer.decode(tokens[:llm_max_tokens])
     context_base = dict(
         entity_name=entity_or_relation_name,
         description_list=use_description.split(GRAPH_FIELD_SEP),
@@ -153,12 +152,12 @@ async def _handle_single_entity_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 4 or record_attributes[0] != '"entity"':
+    if len(record_attributes) < 4 or '"entity"' not in record_attributes[0]:
         return None
 
     # Clean and validate entity name
-    entity_name = clean_str(record_attributes[1]).strip('"')
-    if not entity_name.strip():
+    entity_name = clean_str(record_attributes[1]).strip()
+    if not entity_name:
         logger.warning(
             f"Entity extraction error: empty entity name in: {record_attributes}"
         )
@@ -199,7 +198,7 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 5 or record_attributes[0] != '"relationship"':
+    if len(record_attributes) < 5 or '"relationship"' not in record_attributes[0]:
         return None
     # add this record as edge
     source = clean_str(record_attributes[1])
@@ -216,7 +215,7 @@ async def _handle_single_relationship_extraction(
     edge_source_id = chunk_key
     weight = (
         float(record_attributes[-1].strip('"').strip("'"))
-        if is_float_regex(record_attributes[-1])
+        if is_float_regex(record_attributes[-1].strip('"').strip("'"))
         else 1.0
     )
     return dict(
@@ -401,6 +400,16 @@ async def _merge_edges_then_upsert(
 
     for need_insert_id in [src_id, tgt_id]:
         if not (await knowledge_graph_inst.has_node(need_insert_id)):
+            # # Discard this edge if the node does not exist
+            # if need_insert_id == src_id:
+            #     logger.warning(
+            #         f"Discard edge: {src_id} - {tgt_id} | Source node missing"
+            #     )
+            # else:
+            #     logger.warning(
+            #         f"Discard edge: {src_id} - {tgt_id} | Target node missing"
+            #     )
+            # return None
             await knowledge_graph_inst.upsert_node(
                 need_insert_id,
                 node_data={
@@ -665,9 +674,40 @@ async def extract_entities(
         # Return the extracted nodes and edges for centralized processing
         return maybe_nodes, maybe_edges
 
-    # Handle all chunks in parallel and collect results
-    tasks = [_process_single_content(c) for c in ordered_chunks]
-    chunk_results = await asyncio.gather(*tasks)
+    # Get max async tasks limit from global_config
+    llm_model_max_async = global_config.get("llm_model_max_async", 4)
+    semaphore = asyncio.Semaphore(llm_model_max_async)
+
+    async def _process_with_semaphore(chunk):
+        async with semaphore:
+            return await _process_single_content(chunk)
+
+    tasks = []
+    for c in ordered_chunks:
+        task = asyncio.create_task(_process_with_semaphore(c))
+        tasks.append(task)
+
+    # Wait for tasks to complete or for the first exception to occur
+    # This allows us to cancel remaining tasks if any task fails
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+    # Check if any task raised an exception
+    for task in done:
+        if task.exception():
+            # If a task failed, cancel all pending tasks
+            # This prevents unnecessary processing since the parent function will abort anyway
+            for pending_task in pending:
+                pending_task.cancel()
+
+            # Wait for cancellation to complete
+            if pending:
+                await asyncio.wait(pending)
+
+            # Re-raise the exception to notify the caller
+            raise task.exception()
+
+    # If all tasks completed successfully, collect results
+    chunk_results = [task.result() for task in tasks]
 
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
@@ -714,7 +754,19 @@ async def extract_entities(
                 pipeline_status_lock,
                 llm_response_cache,
             )
-            relationships_data.append(edge_data)
+            if edge_data is not None:
+                relationships_data.append(edge_data)
+
+        # Update total counts
+        total_entities_count = len(entities_data)
+        total_relations_count = len(relationships_data)
+
+        log_message = f"Updating vector storage: {total_entities_count} entities..."
+        logger.info(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
 
         # Update vector databases with all collected data
         if entity_vdb is not None and entities_data:
@@ -730,6 +782,15 @@ async def extract_entities(
             }
             await entity_vdb.upsert(data_for_vdb)
 
+        log_message = (
+            f"Updating vector storage: {total_relations_count} relationships..."
+        )
+        logger.info(log_message)
+        if pipeline_status is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+
         if relationships_vdb is not None and relationships_data:
             data_for_vdb = {
                 compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
@@ -743,17 +804,6 @@ async def extract_entities(
                 for dp in relationships_data
             }
             await relationships_vdb.upsert(data_for_vdb)
-
-    # Update total counts
-    total_entities_count = len(entities_data)
-    total_relations_count = len(relationships_data)
-
-    log_message = f"Extracted {total_entities_count} entities + {total_relations_count} relationships (total)"
-    logger.info(log_message)
-    if pipeline_status is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
 
 
 async def kg_query(
@@ -840,7 +890,8 @@ async def kg_query(
     if query_param.only_need_prompt:
         return sys_prompt
 
-    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    tokenizer: Tokenizer = global_config["tokenizer"]
+    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
     response = await use_model_func(
@@ -859,20 +910,22 @@ async def kg_query(
             .strip()
         )
 
-    # Save to cache
-    await save_to_cache(
-        hashing_kv,
-        CacheData(
-            args_hash=args_hash,
-            content=response,
-            prompt=query,
-            quantized=quantized,
-            min_val=min_val,
-            max_val=max_val,
-            mode=query_param.mode,
-            cache_type="query",
-        ),
-    )
+    if hashing_kv.global_config.get("enable_llm_cache"):
+        # Save to cache
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=response,
+                prompt=query,
+                quantized=quantized,
+                min_val=min_val,
+                max_val=max_val,
+                mode=query_param.mode,
+                cache_type="query",
+            ),
+        )
+
     return response
 
 
@@ -960,7 +1013,8 @@ async def extract_keywords_only(
         query=text, examples=examples, language=language, history=history_context
     )
 
-    len_of_prompts = len(encode_string_by_tiktoken(kw_prompt))
+    tokenizer: Tokenizer = global_config["tokenizer"]
+    len_of_prompts = len(tokenizer.encode(kw_prompt))
     logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
 
     # 5. Call the LLM for keyword extraction
@@ -989,19 +1043,21 @@ async def extract_keywords_only(
             "high_level_keywords": hl_keywords,
             "low_level_keywords": ll_keywords,
         }
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=json.dumps(cache_data),
-                prompt=text,
-                quantized=quantized,
-                min_val=min_val,
-                max_val=max_val,
-                mode=param.mode,
-                cache_type="keywords",
-            ),
-        )
+        if hashing_kv.global_config.get("enable_llm_cache"):
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=json.dumps(cache_data),
+                    prompt=text,
+                    quantized=quantized,
+                    min_val=min_val,
+                    max_val=max_val,
+                    mode=param.mode,
+                    cache_type="keywords",
+                ),
+            )
+
     return hl_keywords, ll_keywords
 
 
@@ -1025,6 +1081,8 @@ async def mix_kg_vector_query(
     2. Retrieving relevant text chunks through vector similarity
     3. Combining both results for comprehensive answer generation
     """
+    # get tokenizer
+    tokenizer: Tokenizer = global_config["tokenizer"]
     # 1. Cache handling
     use_model_func = (
         query_param.model_func
@@ -1124,6 +1182,7 @@ async def mix_kg_vector_query(
                 valid_chunks,
                 key=lambda x: x["content"],
                 max_token_size=query_param.max_token_for_text_unit,
+                tokenizer=tokenizer,
             )
 
             if not maybe_trun_chunks:
@@ -1166,24 +1225,22 @@ async def mix_kg_vector_query(
 
     # 5. Construct hybrid prompt
     sys_prompt = (
-        system_prompt
-        if system_prompt
-        else PROMPTS["mix_rag_response"].format(
-            kg_context=kg_context
-            if kg_context
-            else "No relevant knowledge graph information found",
-            vector_context=vector_context
-            if vector_context
-            else "No relevant text information found",
-            response_type=query_param.response_type,
-            history=history_context,
-        )
+        system_prompt if system_prompt else PROMPTS["mix_rag_response"]
+    ).format(
+        kg_context=kg_context
+        if kg_context
+        else "No relevant knowledge graph information found",
+        vector_context=vector_context
+        if vector_context
+        else "No relevant text information found",
+        response_type=query_param.response_type,
+        history=history_context,
     )
 
     if query_param.only_need_prompt:
         return sys_prompt
 
-    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(f"[mix_kg_vector_query]Prompt Tokens: {len_of_prompts}")
 
     # 6. Generate response
@@ -1205,20 +1262,21 @@ async def mix_kg_vector_query(
             .strip()
         )
 
-        # 7. Save cache - Only cache after collecting complete response
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=response,
-                prompt=query,
-                quantized=quantized,
-                min_val=min_val,
-                max_val=max_val,
-                mode="mix",
-                cache_type="query",
-            ),
-        )
+        if hashing_kv.global_config.get("enable_llm_cache"):
+            # 7. Save cache - Only cache after collecting complete response
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=response,
+                    prompt=query,
+                    quantized=quantized,
+                    min_val=min_val,
+                    max_val=max_val,
+                    mode="mix",
+                    cache_type="query",
+                ),
+            )
 
     return response
 
@@ -1250,21 +1308,19 @@ async def _build_query_context(
             query_param,
         )
     else:  # hybrid mode
-        ll_data, hl_data = await asyncio.gather(
-            _get_node_data(
-                ll_keywords,
-                knowledge_graph_inst,
-                entities_vdb,
-                text_chunks_db,
-                query_param,
-            ),
-            _get_edge_data(
-                hl_keywords,
-                knowledge_graph_inst,
-                relationships_vdb,
-                text_chunks_db,
-                query_param,
-            ),
+        ll_data = await _get_node_data(
+            ll_keywords,
+            knowledge_graph_inst,
+            entities_vdb,
+            text_chunks_db,
+            query_param,
+        )
+        hl_data = await _get_edge_data(
+            hl_keywords,
+            knowledge_graph_inst,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
         )
 
         (
@@ -1285,23 +1341,33 @@ async def _build_query_context(
             [hl_text_units_context, ll_text_units_context],
         )
     # not necessary to use LLM to generate a response
-    if not entities_context.strip() and not relations_context.strip():
+    if not entities_context and not relations_context:
         return None
 
-    result = f"""
-    -----Entities-----
-    ```csv
-    {entities_context}
-    ```
-    -----Relationships-----
-    ```csv
-    {relations_context}
-    ```
-    -----Sources-----
-    ```csv
-    {text_units_context}
-    ```
-    """.strip()
+    # 转换为 JSON 字符串
+    entities_str = json.dumps(entities_context, ensure_ascii=False)
+    relations_str = json.dumps(relations_context, ensure_ascii=False)
+    text_units_str = json.dumps(text_units_context, ensure_ascii=False)
+
+    result = f"""-----Entities-----
+
+```json
+{entities_str}
+```
+
+-----Relationships-----
+
+```json
+{relations_str}
+```
+
+-----Sources-----
+
+```json
+{text_units_str}
+```
+
+"""
     return result
 
 
@@ -1323,15 +1389,19 @@ async def _get_node_data(
 
     if not len(results):
         return "", "", ""
-    # get entity information
-    node_datas, node_degrees = await asyncio.gather(
-        asyncio.gather(
-            *[knowledge_graph_inst.get_node(r["entity_name"]) for r in results]
-        ),
-        asyncio.gather(
-            *[knowledge_graph_inst.node_degree(r["entity_name"]) for r in results]
-        ),
+
+    # Extract all entity IDs from your results list
+    node_ids = [r["entity_name"] for r in results]
+
+    # Call the batch node retrieval and degree functions concurrently.
+    nodes_dict, degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_nodes_batch(node_ids),
+        knowledge_graph_inst.node_degrees_batch(node_ids),
     )
+
+    # Now, if you need the node data and degree in order:
+    node_datas = [nodes_dict.get(nid) for nid in node_ids]
+    node_degrees = [degrees_dict.get(nid, 0) for nid in node_ids]
 
     if not all([n is not None for n in node_datas]):
         logger.warning("Some nodes are missing, maybe the storage is damaged")
@@ -1342,20 +1412,25 @@ async def _get_node_data(
         if n is not None
     ]  # what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
     # get entitytext chunk
-    use_text_units, use_relations = await asyncio.gather(
-        _find_most_related_text_unit_from_entities(
-            node_datas, query_param, text_chunks_db, knowledge_graph_inst
-        ),
-        _find_most_related_edges_from_entities(
-            node_datas, query_param, knowledge_graph_inst
-        ),
+    use_text_units = await _find_most_related_text_unit_from_entities(
+        node_datas,
+        query_param,
+        text_chunks_db,
+        knowledge_graph_inst,
+    )
+    use_relations = await _find_most_related_edges_from_entities(
+        node_datas,
+        query_param,
+        knowledge_graph_inst,
     )
 
+    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
     len_node_datas = len(node_datas)
     node_datas = truncate_list_by_token_size(
         node_datas,
         key=lambda x: x["description"] if x["description"] is not None else "",
         max_token_size=query_param.max_token_for_local_context,
+        tokenizer=tokenizer,
     )
     logger.debug(
         f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
@@ -1396,7 +1471,7 @@ async def _get_node_data(
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
+    entities_context = list_of_list_to_json(entites_section_list)
 
     relations_section_list = [
         [
@@ -1433,14 +1508,14 @@ async def _get_node_data(
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
+    relations_context = list_of_list_to_json(relations_section_list)
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
         text_units_section_list.append(
             [i, t["content"], t.get("file_path", "unknown_source")]
         )
-    text_units_context = list_of_list_to_csv(text_units_section_list)
+    text_units_context = list_of_list_to_json(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 
@@ -1455,9 +1530,12 @@ async def _find_most_related_text_unit_from_entities(
         for dp in node_datas
         if dp["source_id"] is not None
     ]
-    edges = await asyncio.gather(
-        *[knowledge_graph_inst.get_node_edges(dp["entity_name"]) for dp in node_datas]
-    )
+
+    node_names = [dp["entity_name"] for dp in node_datas]
+    batch_edges_dict = await knowledge_graph_inst.get_nodes_edges_batch(node_names)
+    # Build the edges list in the same order as node_datas.
+    edges = [batch_edges_dict.get(name, []) for name in node_names]
+
     all_one_hop_nodes = set()
     for this_edges in edges:
         if not this_edges:
@@ -1465,9 +1543,14 @@ async def _find_most_related_text_unit_from_entities(
         all_one_hop_nodes.update([e[1] for e in this_edges])
 
     all_one_hop_nodes = list(all_one_hop_nodes)
-    all_one_hop_nodes_data = await asyncio.gather(
-        *[knowledge_graph_inst.get_node(e) for e in all_one_hop_nodes]
+
+    # Batch retrieve one-hop node data using get_nodes_batch
+    all_one_hop_nodes_data_dict = await knowledge_graph_inst.get_nodes_batch(
+        all_one_hop_nodes
     )
+    all_one_hop_nodes_data = [
+        all_one_hop_nodes_data_dict.get(e) for e in all_one_hop_nodes
+    ]
 
     # Add null check for node data
     all_one_hop_text_units_lookup = {
@@ -1485,7 +1568,7 @@ async def _find_most_related_text_unit_from_entities(
                 all_text_units_lookup[c_id] = index
                 tasks.append((c_id, index, this_edges))
 
-    # Process in batches of 25 tasks at a time to avoid overwhelming resources
+    # Process in batches tasks at a time to avoid overwhelming resources
     batch_size = 5
     results = []
 
@@ -1522,14 +1605,15 @@ async def _find_most_related_text_unit_from_entities(
         logger.warning("No valid text units found")
         return []
 
+    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
     all_text_units = sorted(
         all_text_units, key=lambda x: (x["order"], -x["relation_counts"])
     )
-
     all_text_units = truncate_list_by_token_size(
         all_text_units,
         key=lambda x: x["data"]["content"],
         max_token_size=query_param.max_token_for_text_unit,
+        tokenizer=tokenizer,
     )
 
     logger.debug(
@@ -1545,30 +1629,45 @@ async def _find_most_related_edges_from_entities(
     query_param: QueryParam,
     knowledge_graph_inst: BaseGraphStorage,
 ):
-    all_related_edges = await asyncio.gather(
-        *[knowledge_graph_inst.get_node_edges(dp["entity_name"]) for dp in node_datas]
-    )
+    node_names = [dp["entity_name"] for dp in node_datas]
+    batch_edges_dict = await knowledge_graph_inst.get_nodes_edges_batch(node_names)
+
     all_edges = []
     seen = set()
 
-    for this_edges in all_related_edges:
+    for node_name in node_names:
+        this_edges = batch_edges_dict.get(node_name, [])
         for e in this_edges:
             sorted_edge = tuple(sorted(e))
             if sorted_edge not in seen:
                 seen.add(sorted_edge)
                 all_edges.append(sorted_edge)
 
-    all_edges_pack, all_edges_degree = await asyncio.gather(
-        asyncio.gather(*[knowledge_graph_inst.get_edge(e[0], e[1]) for e in all_edges]),
-        asyncio.gather(
-            *[knowledge_graph_inst.edge_degree(e[0], e[1]) for e in all_edges]
-        ),
+    # Prepare edge pairs in two forms:
+    # For the batch edge properties function, use dicts.
+    edge_pairs_dicts = [{"src": e[0], "tgt": e[1]} for e in all_edges]
+    # For edge degrees, use tuples.
+    edge_pairs_tuples = list(all_edges)  # all_edges is already a list of tuples
+
+    # Call the batched functions concurrently.
+    edge_data_dict, edge_degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_edges_batch(edge_pairs_dicts),
+        knowledge_graph_inst.edge_degrees_batch(edge_pairs_tuples),
     )
-    all_edges_data = [
-        {"src_tgt": k, "rank": d, **v}
-        for k, v, d in zip(all_edges, all_edges_pack, all_edges_degree)
-        if v is not None
-    ]
+
+    # Reconstruct edge_datas list in the same order as the deduplicated results.
+    all_edges_data = []
+    for pair in all_edges:
+        edge_props = edge_data_dict.get(pair)
+        if edge_props is not None:
+            combined = {
+                "src_tgt": pair,
+                "rank": edge_degrees_dict.get(pair, 0),
+                **edge_props,
+            }
+            all_edges_data.append(combined)
+
+    tokenizer: Tokenizer = knowledge_graph_inst.global_config.get("tokenizer")
     all_edges_data = sorted(
         all_edges_data, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
@@ -1576,6 +1675,7 @@ async def _find_most_related_edges_from_entities(
         all_edges_data,
         key=lambda x: x["description"] if x["description"] is not None else "",
         max_token_size=query_param.max_token_for_global_context,
+        tokenizer=tokenizer,
     )
 
     logger.debug(
@@ -1603,29 +1703,35 @@ async def _get_edge_data(
     if not len(results):
         return "", "", ""
 
-    edge_datas, edge_degree = await asyncio.gather(
-        asyncio.gather(
-            *[knowledge_graph_inst.get_edge(r["src_id"], r["tgt_id"]) for r in results]
-        ),
-        asyncio.gather(
-            *[
-                knowledge_graph_inst.edge_degree(r["src_id"], r["tgt_id"])
-                for r in results
-            ]
-        ),
+    # Prepare edge pairs in two forms:
+    # For the batch edge properties function, use dicts.
+    edge_pairs_dicts = [{"src": r["src_id"], "tgt": r["tgt_id"]} for r in results]
+    # For edge degrees, use tuples.
+    edge_pairs_tuples = [(r["src_id"], r["tgt_id"]) for r in results]
+
+    # Call the batched functions concurrently.
+    edge_data_dict, edge_degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_edges_batch(edge_pairs_dicts),
+        knowledge_graph_inst.edge_degrees_batch(edge_pairs_tuples),
     )
 
-    edge_datas = [
-        {
-            "src_id": k["src_id"],
-            "tgt_id": k["tgt_id"],
-            "rank": d,
-            "created_at": k.get("__created_at__", None),
-            **v,
-        }
-        for k, v, d in zip(results, edge_datas, edge_degree)
-        if v is not None
-    ]
+    # Reconstruct edge_datas list in the same order as results.
+    edge_datas = []
+    for k in results:
+        pair = (k["src_id"], k["tgt_id"])
+        edge_props = edge_data_dict.get(pair)
+        if edge_props is not None:
+            # Use edge degree from the batch as rank.
+            combined = {
+                "src_id": k["src_id"],
+                "tgt_id": k["tgt_id"],
+                "rank": edge_degrees_dict.get(pair, k.get("rank", 0)),
+                "created_at": k.get("__created_at__", None),
+                **edge_props,
+            }
+            edge_datas.append(combined)
+
+    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
     edge_datas = sorted(
         edge_datas, key=lambda x: (x["rank"], x["weight"]), reverse=True
     )
@@ -1633,13 +1739,19 @@ async def _get_edge_data(
         edge_datas,
         key=lambda x: x["description"] if x["description"] is not None else "",
         max_token_size=query_param.max_token_for_global_context,
+        tokenizer=tokenizer,
     )
     use_entities, use_text_units = await asyncio.gather(
         _find_most_related_entities_from_relationships(
-            edge_datas, query_param, knowledge_graph_inst
+            edge_datas,
+            query_param,
+            knowledge_graph_inst,
         ),
         _find_related_text_unit_from_relationships(
-            edge_datas, query_param, text_chunks_db, knowledge_graph_inst
+            edge_datas,
+            query_param,
+            text_chunks_db,
+            knowledge_graph_inst,
         ),
     )
     logger.info(
@@ -1681,7 +1793,7 @@ async def _get_edge_data(
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_csv(relations_section_list)
+    relations_context = list_of_list_to_json(relations_section_list)
 
     entites_section_list = [
         ["id", "entity", "type", "description", "rank", "created_at", "file_path"]
@@ -1706,12 +1818,12 @@ async def _get_edge_data(
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_csv(entites_section_list)
+    entities_context = list_of_list_to_json(entites_section_list)
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
         text_units_section_list.append([i, t["content"], t.get("file_path", "unknown")])
-    text_units_context = list_of_list_to_csv(text_units_section_list)
+    text_units_context = list_of_list_to_json(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 
@@ -1731,31 +1843,31 @@ async def _find_most_related_entities_from_relationships(
             entity_names.append(e["tgt_id"])
             seen.add(e["tgt_id"])
 
-    node_datas, node_degrees = await asyncio.gather(
-        asyncio.gather(
-            *[
-                knowledge_graph_inst.get_node(entity_name)
-                for entity_name in entity_names
-            ]
-        ),
-        asyncio.gather(
-            *[
-                knowledge_graph_inst.node_degree(entity_name)
-                for entity_name in entity_names
-            ]
-        ),
+    # Batch approach: Retrieve nodes and their degrees concurrently with one query each.
+    nodes_dict, degrees_dict = await asyncio.gather(
+        knowledge_graph_inst.get_nodes_batch(entity_names),
+        knowledge_graph_inst.node_degrees_batch(entity_names),
     )
-    node_datas = [
-        {**n, "entity_name": k, "rank": d}
-        for k, n, d in zip(entity_names, node_datas, node_degrees)
-        if n is not None
-    ]
 
+    # Rebuild the list in the same order as entity_names
+    node_datas = []
+    for entity_name in entity_names:
+        node = nodes_dict.get(entity_name)
+        degree = degrees_dict.get(entity_name, 0)
+        if node is None:
+            logger.warning(f"Node '{entity_name}' not found in batch retrieval.")
+            continue
+        # Combine the node data with the entity name and computed degree (as rank)
+        combined = {**node, "entity_name": entity_name, "rank": degree}
+        node_datas.append(combined)
+
+    tokenizer: Tokenizer = knowledge_graph_inst.global_config.get("tokenizer")
     len_node_datas = len(node_datas)
     node_datas = truncate_list_by_token_size(
         node_datas,
         key=lambda x: x["description"] if x["description"] is not None else "",
         max_token_size=query_param.max_token_for_local_context,
+        tokenizer=tokenizer,
     )
     logger.debug(
         f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
@@ -1810,10 +1922,12 @@ async def _find_related_text_unit_from_relationships(
         logger.warning("No valid text chunks after filtering")
         return []
 
+    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
     truncated_text_units = truncate_list_by_token_size(
         valid_text_units,
         key=lambda x: x["data"]["content"],
         max_token_size=query_param.max_token_for_text_unit,
+        tokenizer=tokenizer,
     )
 
     logger.debug(
@@ -1884,10 +1998,12 @@ async def naive_query(
         logger.warning("No valid chunks found after filtering")
         return PROMPTS["fail_response"]
 
+    tokenizer: Tokenizer = global_config["tokenizer"]
     maybe_trun_chunks = truncate_list_by_token_size(
         valid_chunks,
         key=lambda x: x["content"],
         max_token_size=query_param.max_token_for_text_unit,
+        tokenizer=tokenizer,
     )
 
     if not maybe_trun_chunks:
@@ -1925,15 +2041,16 @@ async def naive_query(
     if query_param.only_need_prompt:
         return sys_prompt
 
-    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(f"[naive_query]Prompt Tokens: {len_of_prompts}")
 
     response = await use_model_func(
         query,
         system_prompt=sys_prompt,
+        stream=query_param.stream,
     )
 
-    if len(response) > len(sys_prompt):
+    if isinstance(response, str) and len(response) > len(sys_prompt):
         response = (
             response[len(sys_prompt) :]
             .replace(sys_prompt, "")
@@ -1945,20 +2062,21 @@ async def naive_query(
             .strip()
         )
 
-    # Save to cache
-    await save_to_cache(
-        hashing_kv,
-        CacheData(
-            args_hash=args_hash,
-            content=response,
-            prompt=query,
-            quantized=quantized,
-            min_val=min_val,
-            max_val=max_val,
-            mode=query_param.mode,
-            cache_type="query",
-        ),
-    )
+    if hashing_kv.global_config.get("enable_llm_cache"):
+        # Save to cache
+        await save_to_cache(
+            hashing_kv,
+            CacheData(
+                args_hash=args_hash,
+                content=response,
+                prompt=query,
+                quantized=quantized,
+                min_val=min_val,
+                max_val=max_val,
+                mode=query_param.mode,
+                cache_type="query",
+            ),
+        )
 
     return response
 
@@ -2071,7 +2189,8 @@ async def kg_query_with_keywords(
     if query_param.only_need_prompt:
         return sys_prompt
 
-    len_of_prompts = len(encode_string_by_tiktoken(query + sys_prompt))
+    tokenizer: Tokenizer = global_config["tokenizer"]
+    len_of_prompts = len(tokenizer.encode(query + sys_prompt))
     logger.debug(f"[kg_query_with_keywords]Prompt Tokens: {len_of_prompts}")
 
     # 6. Generate response
@@ -2093,20 +2212,21 @@ async def kg_query_with_keywords(
             .strip()
         )
 
-        # 7. Save cache - 只有在收集完整响应后才缓存
-        await save_to_cache(
-            hashing_kv,
-            CacheData(
-                args_hash=args_hash,
-                content=response,
-                prompt=query,
-                quantized=quantized,
-                min_val=min_val,
-                max_val=max_val,
-                mode=query_param.mode,
-                cache_type="query",
-            ),
-        )
+        if hashing_kv.global_config.get("enable_llm_cache"):
+            # 7. Save cache - 只有在收集完整响应后才缓存
+            await save_to_cache(
+                hashing_kv,
+                CacheData(
+                    args_hash=args_hash,
+                    content=response,
+                    prompt=query,
+                    quantized=quantized,
+                    min_val=min_val,
+                    max_val=max_val,
+                    mode=query_param.mode,
+                    cache_type="query",
+                ),
+            )
 
     return response
 

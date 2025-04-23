@@ -37,6 +37,13 @@ from lightrag.api import __api_version__
 import numpy as np
 from typing import Any, Union
 
+from dotenv import load_dotenv
+
+# use the .env that is inside the current folder
+# allows to use different .env file for each lightrag instance
+# the OS environment variables take precedence over the .env file
+load_dotenv(dotenv_path=".env", override=False)
+
 
 class InvalidResponseError(Exception):
     """Custom exception class for triggering retry mechanism"""
@@ -82,7 +89,9 @@ def create_openai_async_client(
     if base_url is not None:
         merged_configs["base_url"] = base_url
     else:
-        merged_configs["base_url"] = os.environ["OPENAI_API_BASE"]
+        merged_configs["base_url"] = os.environ.get(
+            "OPENAI_API_BASE", "https://api.openai.com/v1"
+        )
 
     return AsyncOpenAI(**merged_configs)
 
@@ -193,6 +202,19 @@ async def openai_complete_if_cache(
         async def inner():
             try:
                 async for chunk in response:
+                    # Check if choices exists and is not empty
+                    if not hasattr(chunk, "choices") or not chunk.choices:
+                        logger.warning(f"Received chunk without choices: {chunk}")
+                        continue
+
+                    # Check if delta exists and has content
+                    if not hasattr(chunk.choices[0], "delta") or not hasattr(
+                        chunk.choices[0].delta, "content"
+                    ):
+                        logger.warning(
+                            f"Received chunk without delta content: {chunk.choices[0]}"
+                        )
+                        continue
                     content = chunk.choices[0].delta.content
                     if content is None:
                         continue

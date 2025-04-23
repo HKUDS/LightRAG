@@ -71,21 +71,6 @@
 
 ## Installation
 
-### Install  LightRAG Core
-
-* Install from source (Recommend)
-
-```bash
-cd LightRAG
-pip install -e .
-```
-
-* Install from PyPI
-
-```bash
-pip install lightrag-hku
-```
-
 ### Install LightRAG Server
 
 The LightRAG Server is designed to provide Web UI and API support. The Web UI facilitates document indexing, knowledge graph exploration, and a simple RAG query interface. LightRAG Server also provide an Ollama compatible interfaces, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat bot, such as Open WebUI, to access LightRAG easily.
@@ -104,18 +89,45 @@ pip install "lightrag-hku[api]"
 pip install -e ".[api]"
 ```
 
-**For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
+### Install  LightRAG Core
+
+* Install from source (Recommend)
+
+```bash
+cd LightRAG
+pip install -e .
+```
+
+* Install from PyPI
+
+```bash
+pip install lightrag-hku
+```
 
 ## Quick Start
 
-* [Video demo](https://www.youtube.com/watch?v=g21royNJ4fw) of running LightRAG locally.
-* All the code can be found in the `examples`.
-* Set OpenAI API key in environment if using OpenAI models: `export OPENAI_API_KEY="sk-...".`
-* Download the demo text "A Christmas Carol by Charles Dickens":
+### Quick Start for LightRAG Server
+
+For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).
+
+### Quick Start for LightRAG core
+
+To get started with LightRAG core, refer to the sample codes available in the `examples` folder. Additionally, a [video demo](https://www.youtube.com/watch?v=g21royNJ4fw) demonstration is provided to guide you through the local setup process. If you already possess an OpenAI API key, you can run the demo right away:
 
 ```bash
+### you should run the demo code with project folder
+cd LightRAG
+### provide your API-KEY for OpenAI
+export OPENAI_API_KEY="sk-...your_opeai_key..."
+### download the demo document of "A Christmas Carol" by Charles Dickens
 curl https://raw.githubusercontent.com/gusye1234/nano-graphrag/main/tests/mock_data.txt > ./book.txt
+### run the demo code
+python examples/lightrag_openai_demo.py
 ```
+
+For a streaming response implementation example, please see `examples/lightrag_openai_compatible_demo.py`. Prior to execution, ensure you modify the sample code’s LLM and embedding configurations accordingly.
+
+**Note**: When running the demo program, please be aware that different test scripts may use different embedding models. If you switch to a different embedding model, you must clear the data directory (`./dickens`); otherwise, the program may encounter errors. If you wish to retain the LLM cache, you can preserve the `kv_store_llm_response_cache.json` file while clearing the data directory.
 
 ## Query
 
@@ -131,42 +143,42 @@ from lightrag.utils import setup_logger
 
 setup_logger("lightrag", level="INFO")
 
+if not os.path.exists(WORKING_DIR):
+    os.mkdir(WORKING_DIR)
+
 async def initialize_rag():
     rag = LightRAG(
-        working_dir="your/path",
+        working_dir=WORKING_DIR,
         embedding_func=openai_embed,
-        llm_model_func=gpt_4o_mini_complete
+        llm_model_func=gpt_4o_mini_complete,
     )
-
     await rag.initialize_storages()
     await initialize_pipeline_status()
-
     return rag
 
 def main():
-    # Initialize RAG instance
-    rag = asyncio.run(initialize_rag())
-    # Insert text
-    rag.insert("Your text")
+    try:
+        # Initialize RAG instance
+        rag = await initialize_rag()
+		    rag.insert("Your text")
 
-    # Perform naive search
-    mode="naive"
-    # Perform local search
-    mode="local"
-    # Perform global search
-    mode="global"
-    # Perform hybrid search
-    mode="hybrid"
-    # Mix mode Integrates knowledge graph and vector retrieval.
-    mode="mix"
+        # Perform hybrid search
+        mode="hybrid"
+        print(
+          await rag.query(
+              "What are the top themes in this story?",
+              param=QueryParam(mode=mode)
+          )
+        )
 
-    rag.query(
-        "What are the top themes in this story?",
-        param=QueryParam(mode=mode)
-    )
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    finally:
+        if rag:
+            await rag.finalize_storages()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
 ```
 
 ### Query Param
@@ -621,21 +633,15 @@ rag.insert(["TEXT1", "TEXT2",...])
 
 # Batch Insert with custom batch size configuration
 rag = LightRAG(
+    ...
     working_dir=WORKING_DIR,
-    addon_params={
-        "insert_batch_size": 4  # Process 4 documents per batch
-    }
+    max_parallel_insert = 4
 )
 
 rag.insert(["TEXT1", "TEXT2", "TEXT3", ...])  # Documents will be processed in batches of 4
 ```
 
-The `insert_batch_size` parameter in `addon_params` controls how many documents are processed in each batch during insertion. This is useful for:
-
-- Managing memory usage with large document collections
-- Optimizing processing speed
-- Providing better progress tracking
-- Default value is 10 if not specified
+The `max_parallel_insert` parameter determines the number of documents processed concurrently in the document indexing pipeline. If unspecified, the default value is **2**. We recommend keeping this setting **below 10**, as the performance bottleneck typically lies with the LLM (Large Language Model) processing.The `max_parallel_insert` parameter determines the number of documents processed concurrently in the document indexing pipeline. If unspecified, the default value is **2**. We recommend keeping this setting **below 10**, as the performance bottleneck typically lies with the LLM (Large Language Model) processing.
 
 </details>
 
@@ -1156,7 +1162,8 @@ Valid modes are:
 | **doc_status_storage** | `str` | Storage type for documents process status. Supported types: `JsonDocStatusStorage`,`PGDocStatusStorage`,`MongoDocStatusStorage` | `JsonDocStatusStorage` |
 | **chunk_token_size** | `int` | Maximum token size per chunk when splitting documents | `1200` |
 | **chunk_overlap_token_size** | `int` | Overlap token size between two chunks when splitting documents | `100` |
-| **tiktoken_model_name** | `str` | Model name for the Tiktoken encoder used to calculate token numbers | `gpt-4o-mini` |
+| **tokenizer** | `Tokenizer` | The function used to convert text into tokens (numbers) and back using .encode() and .decode() functions following `TokenizerInterface` protocol. If you don't specify one, it will use the default Tiktoken tokenizer. | `TiktokenTokenizer` |
+| **tiktoken_model_name** | `str` | If you're using the default Tiktoken tokenizer, this is the name of the specific Tiktoken model to use. This setting is ignored if you provide your own tokenizer. | `gpt-4o-mini` |
 | **entity_extract_max_gleaning** | `int` | Number of loops in the entity extraction process, appending history messages | `1` |
 | **entity_summary_to_max_tokens** | `int` | Maximum token size for each entity summary | `500` |
 | **node_embedding_algorithm** | `str` | Algorithm for node embedding (currently not used) | `node2vec` |
@@ -1172,7 +1179,7 @@ Valid modes are:
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
-| **addon_params** | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"], "insert_batch_size": 10}`: sets example limit, output language, and batch size for document processing | `example_number: all examples, language: English, insert_batch_size: 10` |
+| **addon_params** | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`: sets example limit, entiy/relation extraction output language | `example_number: all examples, language: English` |
 | **convert_response_to_json_func** | `callable` | Not used | `convert_response_to_json` |
 | **embedding_cache_config** | `dict` | Configuration for question-answer caching. Contains three parameters: `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers. `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM. `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
 

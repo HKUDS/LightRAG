@@ -25,6 +25,7 @@ function App() {
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const [initializing, setInitializing] = useState(true) // Add initializing state
   const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
+  const healthCheckInitializedRef = useRef(false); // Prevent duplicate health checks in Vite dev mode
 
   const handleApiKeyAlertOpenChange = useCallback((open: boolean) => {
     setApiKeyAlertOpen(open)
@@ -69,6 +70,14 @@ function App() {
         console.error('Health check error:', error);
       }
     };
+
+    // On first mount or when enableHealthCheck becomes true and apiKeyAlertOpen is false,
+    // perform an immediate health check
+    if (!healthCheckInitializedRef.current) {
+      healthCheckInitializedRef.current = true;
+      // Immediate health check on first load
+      performHealthCheck();
+    }
 
     // Set interval for periodic execution
     const interval = setInterval(performHealthCheck, healthCheckInterval * 1000);
