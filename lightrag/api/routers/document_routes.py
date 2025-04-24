@@ -675,8 +675,8 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
             return
 
         # Process all files at once
-        await pipeline_index_files(rag, new_files)        
-        logger.info(f"Processed {total_files}/{total_files} files (100.0%)")
+        await pipeline_index_files(rag, new_files)
+        logger.info(f"Scanning process completed: {total_files} files Processed.")
 
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")

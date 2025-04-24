@@ -841,8 +841,8 @@ class LightRAG:
                         "job_name": "Default Job",
                         "job_start": datetime.now().isoformat(),
                         "docs": 0,
-                        "batchs": 0,  # 将被重新定义为待处理的文件总数
-                        "cur_batch": 0,  # 将被重新定义为当前处理的第几个文件
+                        "batchs": 0,  # Total number of files to be processed
+                        "cur_batch": 0,  # Number of files already processed
                         "request_pending": False,  # Clear any previous request
                         "latest_message": "",
                     }
@@ -870,10 +870,10 @@ class LightRAG:
                 log_message = f"Processing {len(to_process_docs)} document(s)"
                 logger.info(log_message)
 
-                # 更新 pipeline_status，batchs 现在表示待处理的文件总数
+                # Update pipeline_status, batchs now represents the total number of files to be processed
                 pipeline_status["docs"] = len(to_process_docs)
                 pipeline_status["batchs"] = len(to_process_docs)
-                pipeline_status["cur_batch"] = 0  # 初始化为0，表示当前已处理的文件数量
+                pipeline_status["cur_batch"] = 0
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
@@ -887,9 +887,9 @@ class LightRAG:
                 job_name = f"{path_prefix}[{total_files} files]"
                 pipeline_status["job_name"] = job_name
 
-                # 创建一个计数器，用于跟踪已处理的文件数量
+                # Create a counter to track the number of processed files
                 processed_count = 0
-                # 创建一个信号量，限制并发处理文件的数量
+                # Create a semaphore to limit the number of concurrent file processing
                 semaphore = asyncio.Semaphore(self.max_parallel_insert)
 
                 async def process_document(
@@ -902,21 +902,23 @@ class LightRAG:
                     semaphore: asyncio.Semaphore,
                 ) -> None:
                     """Process single document"""
-                    # 使用信号量控制并发
                     async with semaphore:
                         nonlocal processed_count
-                        # 获取并保存当前文件的序号
                         current_file_number = 0
                         try:
                             # Get file path from status document
-                            file_path = getattr(status_doc, "file_path", "unknown_source")
+                            file_path = getattr(
+                                status_doc, "file_path", "unknown_source"
+                            )
 
                             async with pipeline_status_lock:
-                                # 更新已处理文件数量并保存当前文件序号
+                                # Update processed file count and save current file number
                                 processed_count += 1
-                                current_file_number = processed_count  # 保存当前文件的序号
+                                current_file_number = (
+                                    processed_count  # Save the current file number
+                                )
                                 pipeline_status["cur_batch"] = processed_count
-                                
+
                                 log_message = f"Processing file ({current_file_number}/{total_files}): {file_path}"
                                 logger.info(log_message)
                                 pipeline_status["history_messages"].append(log_message)
@@ -998,16 +1000,16 @@ class LightRAG:
                                     }
                                 }
                             )
-                            
-                            # 每处理完一个文件，就调用一次 _insert_done
+
+                            # Call _insert_done after processing each file
                             await self._insert_done()
-                            
+
                             async with pipeline_status_lock:
                                 log_message = f"Completed processing file {current_file_number}/{total_files}: {file_path}"
                                 logger.info(log_message)
                                 pipeline_status["latest_message"] = log_message
                                 pipeline_status["history_messages"].append(log_message)
-                                
+
                         except Exception as e:
                             # Log error and update pipeline status
                             error_msg = f"Failed to process document {doc_id}: {traceback.format_exc()}"
@@ -1042,7 +1044,7 @@ class LightRAG:
                                 }
                             )
 
-                # 创建所有文档的处理任务
+                # Create processing tasks for all documents
                 doc_tasks = []
                 for doc_id, status_doc in to_process_docs.items():
                     doc_tasks.append(
@@ -1057,7 +1059,7 @@ class LightRAG:
                         )
                     )
 
-                # 等待所有文档处理完成
+                # Wait for all document processing to complete
                 await asyncio.gather(*doc_tasks)
 
                 # Check if there's a pending request to process more documents (with lock)
@@ -1113,7 +1115,7 @@ class LightRAG:
             )
         except Exception as e:
             logger.error(
-                f"Failed to extract entities and relationships : {traceback.format_exc()} 。"
+                f"Failed to extract entities and relationships : {traceback.format_exc()}"
             )
             raise e
 
