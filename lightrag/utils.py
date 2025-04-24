@@ -576,21 +576,27 @@ async def get_best_cached_response(
         # Check if cache data is valid
         if cache_data["embedding"] is None:
             continue
-            
+
         try:
             # Safely convert cached embedding
             cached_quantized = np.frombuffer(
                 bytes.fromhex(cache_data["embedding"]), dtype=np.uint8
             ).reshape(cache_data["embedding_shape"])
-            
+
             # Ensure min_val and max_val are valid float values
             embedding_min = cache_data.get("embedding_min")
             embedding_max = cache_data.get("embedding_max")
-            
-            if embedding_min is None or embedding_max is None or embedding_min >= embedding_max:
-                logger.warning(f"Invalid embedding min/max values: min={embedding_min}, max={embedding_max}")
+
+            if (
+                embedding_min is None
+                or embedding_max is None
+                or embedding_min >= embedding_max
+            ):
+                logger.warning(
+                    f"Invalid embedding min/max values: min={embedding_min}, max={embedding_max}"
+                )
                 continue
-                
+
             cached_embedding = dequantize_embedding(
                 cached_quantized,
                 embedding_min,
@@ -701,7 +707,7 @@ def dequantize_embedding(
     if min_val == max_val:
         # handle constant vector
         return np.full_like(quantized, min_val, dtype=np.float32)
-        
+
     scale = (max_val - min_val) / (2**bits - 1)
     return (quantized * scale + min_val).astype(np.float32)
 
