@@ -2,9 +2,6 @@ aiohttp
 configparser
 future
 
-# Basic modules
-gensim
-
 # Additional Packages for export Functionality
 pandas>=2.0.0
 
