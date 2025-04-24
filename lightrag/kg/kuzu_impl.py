@@ -707,9 +707,10 @@ class KuzuGraphStorage(BaseGraphStorage):
         if not node_ids:
             return
         conn = self._get_conn()
+        # Use UNWIND first, then MATCH and DETACH DELETE
         query = f"""
-            WITH $node_id_list AS ids_to_delete
-            MATCH (n:{self._node_table}) WHERE n.{self._entity_id_prop} IN ids_to_delete
+            UNWIND $node_id_list AS node_id_to_delete
+            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: node_id_to_delete }})
             DETACH DELETE n
         """
         params = {"node_id_list": node_ids}
@@ -754,9 +755,10 @@ class KuzuGraphStorage(BaseGraphStorage):
         if not node_ids:
             return {}
         conn = self._get_conn()
+        # Use UNWIND first, then MATCH
         query = f"""
-            WITH $node_id_list AS ids_to_get
-            MATCH (n:{self._node_table}) WHERE n.{self._entity_id_prop} IN ids_to_get
+            UNWIND $node_id_list AS id_to_get
+            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: id_to_get }})
             RETURN n.{self._entity_id_prop} AS id, n.{self._properties_col} AS props_json
         """
         params = {"node_id_list": node_ids}
@@ -783,9 +785,10 @@ class KuzuGraphStorage(BaseGraphStorage):
         if not node_ids:
             return {}
         conn = self._get_conn()
+        # Use UNWIND first, then MATCH
         query = f"""
-            WITH $node_id_list AS ids_to_check
-            MATCH (n:{self._node_table}) WHERE n.{self._entity_id_prop} IN ids_to_check
+            UNWIND $node_id_list AS id_to_check
+            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: id_to_check }})
             OPTIONAL MATCH (n)-[r]-()
             RETURN n.{self._entity_id_prop} AS node_id, count(r) AS degree
         """
@@ -824,14 +827,16 @@ class KuzuGraphStorage(BaseGraphStorage):
             return {}
         conn = self._get_conn()
         edge_pairs_list = [{"source": p["src"], "target": p["tgt"]} for p in pairs]
-        # Match directed edge as created by upsert_edge
+        # Match undirected edge -[r]- to find edge regardless of direction in pair list
         query = f"""
             UNWIND $edge_pairs AS pair
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: pair.source }})
-                  -[r:{self._edge_table}]->
+                  -[r:{self._edge_table}]-
                   (b:{self._node_table} {{ {self._entity_id_prop}: pair.target }})
+            // Return the requested pair along with the properties
             RETURN pair.source AS req_source_id, pair.target AS req_target_id,
                    r.{self._properties_col} AS props_json
+            LIMIT 1 // Should ensure only one edge per pair if multiple exist (unlikely)
         """
         params = {"edge_pairs": edge_pairs_list}
         final_edges_dict = {(p["src"], p["tgt"]): None for p in pairs}
@@ -841,10 +846,13 @@ class KuzuGraphStorage(BaseGraphStorage):
                 record = result.get_next()
                 req_src, req_tgt, props_json = record
                 original_pair = (req_src, req_tgt)
+                # Store properties if this is the first edge found for this pair
+                # The undirected match ensures we find it regardless of direction
                 if final_edges_dict.get(original_pair, None) is None:
                     final_edges_dict[original_pair] = self._json_to_properties(
                         props_json
                     )
+
             # Filter out pairs where no edge was found
             return {k: v for k, v in final_edges_dict.items() if v is not None}
         except Exception as e:
@@ -858,9 +866,10 @@ class KuzuGraphStorage(BaseGraphStorage):
         if not node_ids:
             return {}
         conn = self._get_conn()
+        # Use UNWIND first
         query = f"""
-            WITH $node_id_list AS ids_to_check
-            MATCH (n:{self._node_table}) WHERE n.{self._entity_id_prop} IN ids_to_check
+            UNWIND $node_id_list AS id_to_check
+            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: id_to_check }})
             OPTIONAL MATCH (n)-[r:{self._edge_table}]-(connected:{self._node_table})
             RETURN n.{self._entity_id_prop} AS source_node, connected.{self._entity_id_prop} AS connected_node
         """
@@ -875,6 +884,7 @@ class KuzuGraphStorage(BaseGraphStorage):
                 if src_node and connected_node:
                     canonical_pair = tuple(sorted((src_node, connected_node)))
                     if canonical_pair not in processed_undirected_edges:
+                        # Add edge from the perspective of each node involved if requested
                         if src_node in nodes_edges_dict:
                             nodes_edges_dict[src_node].append(
                                 (src_node, connected_node)
@@ -940,12 +950,13 @@ class KuzuGraphStorage(BaseGraphStorage):
 
         # Helper to convert Kuzu edge internal ID dict to string
         def kuzu_rel_internal_id_to_str(internal_id_dict):
+            # Corrected: Use 'table' key for relationships as well based on observation
             if (
                 isinstance(internal_id_dict, dict)
-                and "rel_table" in internal_id_dict
+                and "table" in internal_id_dict
                 and "offset" in internal_id_dict
             ):
-                return f"{internal_id_dict['rel_table']}_{internal_id_dict['offset']}"
+                return f"{internal_id_dict['table']}_{internal_id_dict['offset']}"
             logger.warning(
                 f"Unexpected format for Kuzu edge internal ID: {internal_id_dict}"
             )
@@ -966,26 +977,24 @@ class KuzuGraphStorage(BaseGraphStorage):
                 logger.error(f"Error counting nodes for '*': {e}", exc_info=True)
 
             # 2. Get top N nodes by degree and edges between them
-            # CORRECTED query structure
+            # CORRECTED query structure for wildcard '*'
             query = f"""
                 MATCH (n:{self._node_table})
                 OPTIONAL MATCH (n)-[r]-()
                 WITH n, count(r) AS degree
                 ORDER BY degree DESC LIMIT {max_nodes}
-                WITH collect(n) as top_nodes_list // Collect the node objects
-                // Now match edges between nodes *within* this collected list
+                WITH collect(n) as top_nodes_list
+                // Match edges where BOTH source and target are in the top_nodes_list
                 MATCH (n1:{self._node_table})-[rel:{self._edge_table}]-(n2:{self._node_table})
-                WHERE n1 IN top_nodes_list AND n2 IN top_nodes_list AND id(n1) < id(n2) // Ensure both ends are top nodes and avoid duplicates
-                // Return the nodes and the edges found between them
+                WHERE n1 IN top_nodes_list AND n2 IN top_nodes_list AND id(n1) < id(n2)
+                // Return the list of top nodes and the distinct edges connecting them
                 RETURN top_nodes_list as nodes, collect(distinct rel) as edges
             """
             try:
                 result: QueryResult = await conn.execute(query)
                 if result.has_next():
                     record = result.get_next()
-                    # The first element 'nodes' is the original top_nodes_list
                     nodes_data = record[0] if record[0] else []
-                    # The second element 'edges' contains the relationships *between* those top nodes
                     edges_data = record[1] if record[1] else []
 
                     # Process nodes
