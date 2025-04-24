@@ -5,6 +5,7 @@ STORAGE_IMPLEMENTATIONS = {
             "RedisKVStorage",
             "PGKVStorage",
             "MongoKVStorage",
+            # "KuzuKVStorage",
             # "TiDBKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
@@ -14,6 +15,7 @@ STORAGE_IMPLEMENTATIONS = {
             "NetworkXStorage",
             "Neo4JStorage",
             "PGGraphStorage",
+            "KuzuGraphStorage",
             # "AGEStorage",
             # "MongoGraphStorage",
             # "TiDBGraphStorage",
@@ -30,6 +32,7 @@ STORAGE_IMPLEMENTATIONS = {
             "FaissVectorDBStorage",
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
+            # "KuzuVectorDBStorage",
             # "TiDBVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
@@ -39,6 +42,7 @@ STORAGE_IMPLEMENTATIONS = {
             "JsonDocStatusStorage",
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
+            # "KuzuDocStatusStorage",
         ],
         "required_methods": ["get_docs_by_status"],
     },
@@ -52,6 +56,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "RedisKVStorage": ["REDIS_URI"],
     # "TiDBKVStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
+    # "KuzuKVStorage": [],
     # Graph Storage Implementations
     "NetworkXStorage": [],
     "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
@@ -68,6 +73,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
         "POSTGRES_PASSWORD",
         "POSTGRES_DATABASE",
     ],
+    "KuzuGraphStorage": [],
     # Vector Storage Implementations
     "NanoVectorDBStorage": [],
     "MilvusVectorDBStorage": [],
@@ -77,10 +83,12 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "FaissVectorDBStorage": [],
     "QdrantVectorDBStorage": ["QDRANT_URL"],  # QDRANT_API_KEY has default value None
     "MongoVectorDBStorage": [],
+    # "KuzuVectorDBStorage": [],
     # Document Status Storage Implementations
     "JsonDocStatusStorage": [],
     "PGDocStatusStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     "MongoDocStatusStorage": [],
+    # "KuzuDocStatusStorage": [],
 }
 
 # Storage implementation module mapping
@@ -108,6 +116,10 @@ STORAGES = {
     "PGDocStatusStorage": ".kg.postgres_impl",
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
+    # "KuzuKVStorage": ".kg.kuzu_impl",
+    "KuzuGraphStorage": ".kg.kuzu_impl",
+    # "KuzuVectorDBStorage": ".kg.kuzu_impl",
+    # "KuzuDocStatusStorage": ".kg.kuzu_impl",
 }
 
 
