@@ -1463,12 +1463,14 @@ class PGGraphStorage(BaseGraphStorage):
                      MATCH (target:base {entity_id: "%s"})
                      MERGE (source)-[r:DIRECTED]-(target)
                      SET r += %s
+                     SET r += %s
                      RETURN r
                    $$) AS (r agtype)""" % (
             self.graph_name,
             src_label,
             tgt_label,
             edge_properties,
+            edge_properties,  # https://github.com/HKUDS/LightRAG/issues/1438#issuecomment-2826000195
         )
 
         try:
