@@ -4,6 +4,30 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, final
 
+# Ensure kuzu and numpy are installed with specific versions
+import pipmaster as pm
+
+if not pm.is_installed("kuzu"):
+    pm.install("kuzu>=0.9.0")
+if not pm.is_installed("numpy"):
+    # Using >=1.22.5 as a generally compatible baseline.
+    # Pip will resolve the latest available version satisfying this if 2.2.5+ isn't directly available/compatible.
+    pm.install("numpy>=1.22.5")
+
+try:
+    import kuzu
+    from kuzu import (
+        AsyncConnection,
+        Database,
+        QueryResult,
+    )  # Import QueryResult for type hints if needed
+    import numpy as np  # noqa: F401  # Import numpy after ensuring installation
+except ImportError as e:
+    print(f"Error importing kuzu or numpy after installation attempt: {e}")
+    # Handle the error appropriately, maybe raise it or exit
+    raise
+
+
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -11,22 +35,69 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from ..base import BaseGraphStorage
-from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-from ..utils import logger
+# Assuming these base classes and types are in parent directories or installed package
+try:
+    from ..base import BaseGraphStorage
+    from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+    from ..utils import logger  # Assuming logger is configured elsewhere
+except ImportError:
+    # Provide dummy classes/functions if running standalone for testing
+    import logging  # Import standard logging here
+
+    logger = logging.getLogger("KuzuGraphStorage")
+    logger.setLevel(logging.INFO)
+    # Avoid adding handlers if logger might already exist from parent modules
+    if not logger.hasHandlers():
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter(
+            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        )
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
+    class BaseGraphStorage:
+        def __init__(self, namespace, global_config, embedding_func):
+            self.namespace = namespace
+            self.global_config = global_config
+            self.embedding_func = embedding_func
+
+        async def initialize(self):
+            pass
+
+        async def finalize(self):
+            pass
+
+        async def index_done_callback(self):
+            pass
+
+        async def drop(self):
+            return {"status": "success", "message": "data dropped"}
+
+    @dataclass
+    class KnowledgeGraphNode:
+        id: str
+        labels: list[str]
+        properties: dict[str, Any]
+
+    @dataclass
+    class KnowledgeGraphEdge:
+        id: str
+        type: str
+        source: str
+        target: str
+        properties: dict[str, Any]
+
+    @dataclass
+    class KnowledgeGraph:
+        nodes: list[KnowledgeGraphNode] = field(default_factory=list)
+        edges: list[KnowledgeGraphEdge] = field(default_factory=list)
+        is_truncated: bool = False
+
+
 import configparser
+
+# logging is imported above if needed
 from dotenv import load_dotenv
-
-# Ensure kuzu is installed
-import pipmaster as pm
-
-if not pm.is_installed("kuzu"):
-    pm.install("kuzu>=0.9.0")
-if not pm.is_installed("numpy"):
-    pm.install("numpy>=2.2.5")
-
-import kuzu
-from kuzu import AsyncConnection, Database
 
 # --- Configuration Loading ---
 
@@ -52,12 +123,21 @@ class KuzuClientManager:
         """Loads Kuzu configuration from environment variables and config.ini."""
         config = configparser.ConfigParser()
         # Assume config.ini is in the same directory or adjust path as needed
-        config_path = os.path.join(os.path.dirname(__file__), "config.ini")
+        # Use absolute path based on this file's location if needed
+        # Correctly get the directory of the *current* file
+        try:
+            current_file_dir = os.path.dirname(os.path.abspath(__file__))
+        except NameError:
+            # __file__ might not be defined in some environments (e.g., interactive)
+            current_file_dir = os.getcwd()  # Fallback to current working directory
+        config_path = os.path.join(current_file_dir, "config.ini")
+
         if os.path.exists(config_path):
             config.read(config_path, "utf-8")
+            logger.info(f"Loaded Kuzu config from: {config_path}")
         else:
             logger.warning(
-                "config.ini not found, using environment variables or defaults."
+                f"config.ini not found at {config_path}, using environment variables or defaults."
             )
 
         kuzu_config = {
@@ -83,26 +163,23 @@ class KuzuClientManager:
                     ),  # Default for AsyncConnection
                 )
             ),
-            "buffer_pool_size": int(
-                os.environ.get(
-                    "KUZU_BUFFER_POOL_SIZE",
-                    config.get(
-                        "kuzu", "buffer_pool_size", fallback=0
-                    ),  # fallback to buffer_pool_size to 80% of system memory
-                )
-            ),
             # Add other Kuzu DB options if needed (buffer_pool_size, etc.)
         }
-        logger.info(f"Kuzu Configuration: {kuzu_config}")
+        logger.info(f"Kuzu Configuration resolved to: {kuzu_config}")
         return kuzu_config
 
     @classmethod
     async def get_client(cls) -> tuple[Database, AsyncConnection]:
         """Gets or creates the singleton Kuzu Database and AsyncConnection."""
         async with cls._lock:
+            # Check if either db or async_conn is None, or if db is closed (might happen externally)
+            # Kuzu DB doesn't have an explicit is_closed, rely on async_conn status or try/except
             if cls._instances["db"] is None or cls._instances["async_conn"] is None:
+                logger.info("Creating new Kuzu DB and AsyncConnection instances.")
                 config = cls.get_config()
                 db_path = config["database_path"]
+                # Use max_num_threads for both DB and AsyncConnection thread pool for simplicity
+                # Can be configured separately if needed
                 max_threads = config["max_num_threads"]
                 max_concurrent = config["max_concurrent_queries"]
 
@@ -110,15 +187,20 @@ class KuzuClientManager:
                 if db_path != ":memory:":
                     db_dir = os.path.dirname(db_path)
                     if db_dir and not os.path.exists(db_dir):
-                        os.makedirs(db_dir, exist_ok=True)
-                        logger.info(f"Created Kuzu database directory: {db_dir}")
+                        try:
+                            os.makedirs(db_dir, exist_ok=True)
+                            logger.info(f"Created Kuzu database directory: {db_dir}")
+                        except OSError as e:
+                            logger.error(
+                                f"Failed to create Kuzu database directory {db_dir}: {e}"
+                            )
+                            raise  # Re-raise directory creation error
 
                 try:
                     # Initialize Kuzu Database
                     db = kuzu.Database(
                         database_path=db_path,
-                        max_num_threads=max_threads,
-                        # Add other config options here if needed
+                        # max_num_threads=max_threads # Set max_threads on connection instead if preferred
                     )
                     logger.info(f"Initialized Kuzu Database at: {db_path}")
 
@@ -126,10 +208,10 @@ class KuzuClientManager:
                     async_conn = kuzu.AsyncConnection(
                         database=db,
                         max_concurrent_queries=max_concurrent,
-                        max_threads_per_query=max_threads,  # Can be different from db max_threads
+                        max_threads_per_query=max_threads,  # Controls threads per query in the pool
                     )
                     logger.info(
-                        f"Initialized Kuzu AsyncConnection with max_concurrent_queries={max_concurrent}"
+                        f"Initialized Kuzu AsyncConnection with max_concurrent_queries={max_concurrent}, max_threads_per_query={max_threads}"
                     )
 
                     cls._instances["db"] = db
@@ -143,23 +225,29 @@ class KuzuClientManager:
             logger.debug(
                 f"Kuzu client reference count incremented to: {cls._instances['ref_count']}"
             )
+            # Return the potentially newly created or existing instances
             return cls._instances["db"], cls._instances["async_conn"]
 
     @classmethod
     async def release_client(cls, db: Database, async_conn: AsyncConnection):
         """Decrements reference count and closes connections if count reaches zero."""
         async with cls._lock:
-            # Check if the provided instances match the managed singletons
+            # Check if the provided instances match the managed singletons AND they exist
             if (
-                db is cls._instances["db"]
+                cls._instances["db"] is not None
+                and db is cls._instances["db"]
+                and cls._instances["async_conn"] is not None
                 and async_conn is cls._instances["async_conn"]
             ):
                 cls._instances["ref_count"] -= 1
                 logger.debug(
                     f"Kuzu client reference count decremented to: {cls._instances['ref_count']}"
                 )
+
                 if cls._instances["ref_count"] <= 0:
-                    logger.info("Closing Kuzu AsyncConnection and Database...")
+                    logger.info(
+                        "Reference count reached zero. Closing Kuzu AsyncConnection and Database..."
+                    )
                     try:
                         if cls._instances["async_conn"]:
                             cls._instances[
@@ -167,7 +255,7 @@ class KuzuClientManager:
                             ].close()  # Closes pool and threads
                         # Kuzu Database itself doesn't have an explicit close in the same way,
                         # relies on garbage collection or __del__.
-                        # We nullify references to allow GC.
+                        # Nullify references to allow GC.
                         cls._instances["async_conn"] = None
                         cls._instances["db"] = None
                         cls._instances["ref_count"] = 0  # Ensure it's 0
@@ -176,10 +264,18 @@ class KuzuClientManager:
                         )
                     except Exception as e:
                         logger.error(f"Error closing Kuzu resources: {e}")
+                        # Reset instances even if close fails to prevent reuse
+                        cls._instances["async_conn"] = None
+                        cls._instances["db"] = None
+                        cls._instances["ref_count"] = 0
+            elif cls._instances["ref_count"] > 0:
+                logger.debug(
+                    f"Kuzu client release called, but ref count is still {cls._instances['ref_count']}. Not closing."
+                )
             else:
-                # This case shouldn't happen if managed correctly, but log a warning
+                # This case might happen if release is called multiple times after ref count hits zero
                 logger.warning(
-                    "Attempted to release Kuzu client instances that don't match the managed singletons."
+                    "Attempted to release Kuzu client instances that don't match the managed singletons or were already released."
                 )
 
 
@@ -193,131 +289,122 @@ class KuzuGraphStorage(BaseGraphStorage):
     Graph storage implementation using KuzuDB.
 
     Manages nodes and relationships within a Kuzu database, providing
-    asynchronous operations compliant with BaseGraphStorage.
+    asynchronous operations compliant with BaseGraphStorage. Stores properties
+    as JSON strings for flexibility.
     """
 
-    _db: Database | None = field(default=None, init=False)
-    _async_conn: AsyncConnection | None = field(default=None, init=False)
+    _db: Database | None = field(default=None, init=False, repr=False)
+    _async_conn: AsyncConnection | None = field(default=None, init=False, repr=False)
     _node_table: str = field(default="base", init=False)
     _edge_table: str = field(default="DIRECTED", init=False)
     _entity_id_prop: str = field(
         default="entity_id", init=False
     )  # Property name for node identifier
+    _properties_col: str = field(
+        default="properties_json", init=False
+    )  # Column name for JSON string properties
 
     def __post_init__(self):
         """Additional initialization after dataclass setup."""
-        # Namespace could potentially be used to prefix table names if needed,
-        # but Kuzu manages data within the single DB file path.
-        # We'll stick to 'base' and 'DIRECTED' for now, similar to other backends.
         logger.info(f"KuzuGraphStorage initialized for namespace: {self.namespace}")
-        # MAX_GRAPH_NODES is loaded globally
 
     async def initialize(self):
         """Initializes the Kuzu database connection and ensures schema exists."""
         if self._db is None or self._async_conn is None:
+            logger.info("KuzuGraphStorage initializing client...")
             self._db, self._async_conn = await KuzuClientManager.get_client()
             await self._ensure_schema()
+        else:
+            logger.info("KuzuGraphStorage client already initialized.")
 
     async def finalize(self):
         """Releases the Kuzu database connection."""
         if self._db is not None and self._async_conn is not None:
+            logger.info("KuzuGraphStorage finalizing client...")
             await KuzuClientManager.release_client(self._db, self._async_conn)
             self._db = None
             self._async_conn = None
             logger.info("KuzuGraphStorage finalized.")
+        else:
+            logger.info("KuzuGraphStorage already finalized or not initialized.")
 
     async def _ensure_schema(self):
-        """Creates the necessary node and relationship tables and indexes if they don't exist."""
-        if not self._async_conn:
-            raise RuntimeError("Kuzu AsyncConnection not initialized.")
-
+        """Creates the necessary node and relationship tables using STRING for properties."""
+        conn = self._get_conn()
         try:
-            # Create node table 'base' with 'entity_id' as primary key
-            # Kuzu requires primary key to be INT64, FLOAT, or STRING. Using STRING.
-            # Store other properties in a flexible MAP type.
+            # Create node table 'base' with 'entity_id' PK and properties as JSON STRING
             node_table_query = f"""
             CREATE NODE TABLE IF NOT EXISTS {self._node_table}(
                 {self._entity_id_prop} STRING PRIMARY KEY,
-                properties MAP(STRING, ANY)
+                {self._properties_col} STRING
             )
             """
-            await self._async_conn.execute(node_table_query)
-            logger.info(f"Ensured node table '{self._node_table}' exists.")
+            await conn.execute(node_table_query)
+            logger.info(
+                f"Ensured node table '{self._node_table}' exists with properties column '{self._properties_col}'."
+            )
 
-            # Create relationship table 'DIRECTED' connecting 'base' nodes
-            # Store properties in a flexible MAP type.
+            # Create relationship table 'DIRECTED' connecting 'base' nodes, properties as JSON STRING
             edge_table_query = f"""
             CREATE REL TABLE IF NOT EXISTS {self._edge_table}(
-                FROM {self._node_table},
+                FROM {self._node_table}
                 TO {self._node_table},
-                properties MAP(STRING, ANY)
+                {self._properties_col} STRING
             )
             """
-            await self._async_conn.execute(edge_table_query)
-            logger.info(f"Ensured relationship table '{self._edge_table}' exists.")
-
-            # Note: Kuzu automatically creates indexes on primary keys.
-            # Additional indexes on properties within the MAP might require specific syntax
-            # or might not be directly supported depending on Kuzu version.
-            # For now, rely on the PK index for entity_id lookups.
-            # Example for indexing a specific property within the map (if needed and supported):
-            # CREATE INDEX idx_node_name ON base(properties['name']);
+            await conn.execute(edge_table_query)
+            logger.info(
+                f"Ensured relationship table '{self._edge_table}' exists with properties column '{self._properties_col}'."
+            )
 
         except Exception as e:
-            logger.error(f"Error ensuring Kuzu schema: {e}")
-            # If schema creation fails critically, maybe re-raise or handle appropriately
+            logger.error(f"Error ensuring Kuzu schema: {e}", exc_info=True)
             raise
 
     # --- Helper Methods ---
 
     def _get_conn(self) -> AsyncConnection:
-        """Ensures the async connection is available."""
+        """Ensures the async connection is available and raises error if not."""
         if not self._async_conn:
-            # This might happen if initialize wasn't called or finalize was called prematurely.
-            # Try to re-initialize. A better approach might involve state management.
-            logger.warning(
-                "Kuzu AsyncConnection accessed before initialization or after finalization. Attempting re-initialization."
-            )
-            # Note: Direct await in sync method is not possible.
-            # This indicates a potential design issue if called outside an async context
-            # after finalization. For simplicity here, we raise an error.
             raise RuntimeError(
-                "Kuzu AsyncConnection not available. Ensure initialize() is called."
+                "Kuzu AsyncConnection not available. Ensure initialize() is called before use."
             )
         return self._async_conn
 
-    def _prepare_cypher_params(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Prepares parameters for Kuzu Cypher execution (e.g., serializing complex types)."""
-        prepared_params = {}
-        for key, value in params.items():
-            # Kuzu's Python driver handles basic types well.
-            # We might need to serialize complex types like lists/dicts if storing them directly
-            # in non-MAP properties, but here we use MAPs.
-            # Ensure lists/dicts intended for MAP properties are passed as Python dicts.
-            # For properties stored directly (like entity_id), ensure correct type.
-            if isinstance(value, dict):
-                # Convert nested dicts/lists within the properties dict to JSON strings
-                # Kuzu's MAP(STRING, ANY) should handle basic Python types, but explicit is safer
-                prepared_params[key] = {
-                    k: json.dumps(v) if isinstance(v, (dict, list)) else v
-                    for k, v in value.items()
-                }
-            elif isinstance(value, list) and key.endswith(
-                "_list"
-            ):  # Convention for list params for UNWIND
-                prepared_params[key] = value  # Pass lists directly for UNWIND
-            else:
-                prepared_params[key] = value
-        return prepared_params
+    def _properties_to_json(self, props: dict[str, Any]) -> str:
+        """Serializes a properties dictionary to a JSON string."""
+        try:
+            # Ensure entity_id is not included in the JSON string itself if it's the PK
+            props_to_serialize = {
+                k: v for k, v in props.items() if k != self._entity_id_prop
+            }
+            return json.dumps(props_to_serialize)
+        except TypeError as e:
+            logger.error(f"Error serializing properties to JSON: {props} - {e}")
+            return "{}"  # Return empty JSON object on error
+
+    def _json_to_properties(
+        self, json_str: str | None, entity_id: str | None = None
+    ) -> dict[str, Any]:
+        """Deserializes a JSON string into a properties dictionary."""
+        props = {}
+        if json_str:
+            try:
+                props = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                logger.error(f"Error decoding JSON properties: {json_str} - {e}")
+                props = {"_raw_properties": json_str, "_error": "JSONDecodeError"}
+        # Ensure entity_id is present in the final dict if provided
+        if entity_id:
+            props[self._entity_id_prop] = entity_id
+        return props
 
     # --- Core Graph Operations ---
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type(
-            (RuntimeError, TimeoutError)
-        ),  # Add Kuzu specific transient errors if any
+        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
     )
     async def has_node(self, node_id: str) -> bool:
         """Checks if a node with the given entity_id exists."""
@@ -328,13 +415,20 @@ class KuzuGraphStorage(BaseGraphStorage):
         """
         params = {"node_id": node_id}
         try:
-            result = await conn.execute(query, params)
-            if await result.has_next():
-                return (await result.get_next())[0]  # Get the boolean value
-            return False  # Should not happen if query is correct
+            result: QueryResult = await conn.execute(query, params)
+            has_data = result.has_next()
+            if has_data:
+                return result.get_next()[0]
+            else:
+                logger.warning(
+                    f"has_node query for '{node_id}' returned no rows, assuming node does not exist."
+                )
+                return False
         except Exception as e:
-            logger.error(f"Error checking node existence for '{node_id}': {e}")
-            raise  # Re-raise after logging
+            logger.error(
+                f"Error checking node existence for '{node_id}': {e}", exc_info=True
+            )
+            raise
 
     @retry(
         stop=stop_after_attempt(3),
@@ -342,9 +436,8 @@ class KuzuGraphStorage(BaseGraphStorage):
         retry=retry_if_exception_type((RuntimeError, TimeoutError)),
     )
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
-        """Checks if a 'DIRECTED' edge exists between two nodes."""
+        """Checks if a 'DIRECTED' edge exists between two nodes (in either direction)."""
         conn = self._get_conn()
-        # Check for edge in either direction since base class implies undirected check
         query = f"""
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: $source_id }})
                   -[r:{self._edge_table}]-
@@ -353,13 +446,19 @@ class KuzuGraphStorage(BaseGraphStorage):
         """
         params = {"source_id": source_node_id, "target_id": target_node_id}
         try:
-            result = await conn.execute(query, params)
-            if await result.has_next():
-                return (await result.get_next())[0]
-            return False
+            result: QueryResult = await conn.execute(query, params)
+            has_data = result.has_next()
+            if has_data:
+                return result.get_next()[0]
+            else:
+                logger.warning(
+                    f"has_edge query between '{source_node_id}' and '{target_node_id}' returned no rows, assuming edge does not exist."
+                )
+                return False
         except Exception as e:
             logger.error(
-                f"Error checking edge existence between '{source_node_id}' and '{target_node_id}': {e}"
+                f"Error checking edge existence between '{source_node_id}' and '{target_node_id}': {e}",
+                exc_info=True,
             )
             raise
 
@@ -369,26 +468,22 @@ class KuzuGraphStorage(BaseGraphStorage):
         retry=retry_if_exception_type((RuntimeError, TimeoutError)),
     )
     async def get_node(self, node_id: str) -> dict[str, Any] | None:
-        """Gets node properties by entity_id."""
+        """Gets node properties (deserialized from JSON) by entity_id."""
         conn = self._get_conn()
         query = f"""
             MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})
-            RETURN n.properties AS properties
+            RETURN n.{self._properties_col} AS props_json
         """
         params = {"node_id": node_id}
         try:
-            result = await conn.execute(query, params)
-            if await result.has_next():
-                # Kuzu returns properties directly (as dict if MAP type)
-                node_props = (await result.get_next())[0]
-                # Add entity_id back for consistency if needed by consumers
-                if node_props is None:
-                    node_props = {}  # Handle case where properties map is null/empty
-                node_props[self._entity_id_prop] = node_id
-                return node_props
+            result: QueryResult = await conn.execute(query, params)
+            if result.has_next():
+                props_json = result.get_next()[0]
+                return self._json_to_properties(props_json, entity_id=node_id)
+            logger.debug(f"Node '{node_id}' not found in get_node.")
             return None
         except Exception as e:
-            logger.error(f"Error getting node for '{node_id}': {e}")
+            logger.error(f"Error getting node for '{node_id}': {e}", exc_info=True)
             raise
 
     @retry(
@@ -399,32 +494,39 @@ class KuzuGraphStorage(BaseGraphStorage):
     async def node_degree(self, node_id: str) -> int:
         """Gets the degree (number of relationships) of a node."""
         conn = self._get_conn()
-        # Count relationships in either direction
         query = f"""
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})-[r]-()
+            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})
+            OPTIONAL MATCH (n)-[r]-()
             RETURN count(r) AS degree
         """
         params = {"node_id": node_id}
         try:
-            result = await conn.execute(query, params)
-            if await result.has_next():
-                degree_result = await result.get_next()
-                # Check if the node was found, if not degree is 0
+            result: QueryResult = await conn.execute(query, params)
+            if result.has_next():
+                degree_result = result.get_next()
                 return degree_result[0] if degree_result else 0
-            return 0  # Node not found
+            logger.error(
+                f"Unexpected empty result for node_degree query for '{node_id}'"
+            )
+            return 0
         except Exception as e:
-            logger.error(f"Error getting node degree for '{node_id}': {e}")
-            # Check if the error is due to node not found vs other issues
-            if "Node not found" in str(e):  # Adjust based on actual Kuzu error message
-                return 0
+            logger.error(
+                f"Error getting node degree for '{node_id}': {e}", exc_info=True
+            )
             raise
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """Calculates the combined degree of the source and target nodes."""
-        # Reuse node_degree for efficiency
-        src_degree = await self.node_degree(src_id)
-        tgt_degree = await self.node_degree(tgt_id)
-        return src_degree + tgt_degree
+        try:
+            src_degree = await self.node_degree(src_id)
+            tgt_degree = await self.node_degree(tgt_id)
+            return src_degree + tgt_degree
+        except Exception:
+            logger.warning(
+                f"Could not calculate edge_degree for '{src_id}'-'{tgt_id}' due to error in node_degree.",
+                exc_info=False,
+            )  # Less verbose logging
+            return 0
 
     @retry(
         stop=stop_after_attempt(3),
@@ -434,28 +536,31 @@ class KuzuGraphStorage(BaseGraphStorage):
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, Any] | None:
-        """Gets properties of the first edge found between two nodes."""
+        """Gets properties (deserialized from JSON) of the first edge found between two nodes."""
         conn = self._get_conn()
-        # Find edge in either direction, return properties of the first one found
         query = f"""
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: $source_id }})
                   -[r:{self._edge_table}]-
                   (b:{self._node_table} {{ {self._entity_id_prop}: $target_id }})
-            RETURN r.properties AS properties
+            RETURN r.{self._properties_col} AS props_json
             LIMIT 1
         """
         params = {"source_id": source_node_id, "target_id": target_node_id}
         try:
-            result = await conn.execute(query, params)
-            if await result.has_next():
-                edge_props = (await result.get_next())[0]
-                return (
-                    edge_props if edge_props else {}
-                )  # Return empty dict if properties are null/empty
+            result: QueryResult = await conn.execute(query, params)
+            if result.has_next():
+                props_json = result.get_next()[0]
+                return self._json_to_properties(
+                    props_json
+                )  # No entity_id needed for edge props
+            logger.debug(
+                f"Edge between '{source_node_id}' and '{target_node_id}' not found."
+            )
             return None
         except Exception as e:
             logger.error(
-                f"Error getting edge between '{source_node_id}' and '{target_node_id}': {e}"
+                f"Error getting edge between '{source_node_id}' and '{target_node_id}': {e}",
+                exc_info=True,
             )
             raise
 
@@ -467,85 +572,73 @@ class KuzuGraphStorage(BaseGraphStorage):
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Gets all edges (source_id, target_id) connected to a node."""
         conn = self._get_conn()
-        # Match relationships where the source node is either start or end
         query = f"""
             MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})
                   -[r:{self._edge_table}]-
                   (connected:{self._node_table})
-            RETURN n.{self._entity_id_prop} AS source, connected.{self._entity_id_prop} AS target
+            RETURN n.{self._entity_id_prop} AS node1, connected.{self._entity_id_prop} AS node2
         """
         params = {"node_id": source_node_id}
         edges = []
+        processed_pairs = set()
         try:
-            result = await conn.execute(query, params)
-            while await result.has_next():
-                record = await result.get_next()
-                # Determine correct source/target based on the match direction implicitly handled by '-'
-                # Kuzu might return duplicates if a->b and b->a both exist, handle this if needed.
-                # For now, assume the query returns pairs representing the connection.
-                src, tgt = record[0], record[1]
-                if src == source_node_id:
-                    edges.append((src, tgt))
-                else:
-                    edges.append(
-                        (tgt, src)
-                    )  # Ensure source_node_id is first in the tuple
-
-            # Deduplicate edges if necessary (e.g., if Kuzu returns both directions for undirected match)
-            return list(set(edges)) if edges else None
-
+            result: QueryResult = await conn.execute(query, params)
+            while result.has_next():
+                record = result.get_next()
+                node1, node2 = record[0], record[1]
+                pair = tuple(sorted((node1, node2)))
+                if pair not in processed_pairs:
+                    if node1 == source_node_id:
+                        edges.append((node1, node2))
+                    else:
+                        edges.append((node2, node1))
+                    processed_pairs.add(pair)
+            return edges if edges else None
         except Exception as e:
-            # Handle node not found specifically
-            # This check might need adjustment based on Kuzu's specific error for missing nodes in MATCH
-            if "Node not found" in str(e):  # Placeholder check
+            # Updated error check based on potential Kuzu error messages
+            if (
+                "Binder exception:" in str(e)
+                and f"Node {self._node_table} with primary key = {source_node_id} does not exist"
+                in str(e)
+            ):
                 logger.warning(f"Node '{source_node_id}' not found for get_node_edges.")
                 return None
-            logger.error(f"Error getting edges for node '{source_node_id}': {e}")
+            logger.error(
+                f"Error getting edges for node '{source_node_id}': {e}", exc_info=True
+            )
             raise
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type(
-            (RuntimeError, TimeoutError)
-        ),  # Add Kuzu write-related errors if any
+        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
     )
     async def upsert_node(self, node_id: str, node_data: dict[str, Any]) -> None:
-        """Creates a new node or updates an existing node's properties."""
+        """Creates/updates a node, storing properties as a JSON string."""
         conn = self._get_conn()
         if self._entity_id_prop not in node_data:
-            # If entity_id is only passed as node_id, add it to node_data
             node_data[self._entity_id_prop] = node_id
         elif node_data[self._entity_id_prop] != node_id:
             logger.warning(
-                f"Mismatch between node_id ('{node_id}') and entity_id in properties ('{node_data[self._entity_id_prop]}'). Using node_id."
+                f"Mismatch between node_id ('{node_id}') and '{self._entity_id_prop}' in properties ('{node_data[self._entity_id_prop]}'). Using node_id ('{node_id}')."
             )
             node_data[self._entity_id_prop] = node_id
 
-        # Separate entity_id for matching, rest go into properties map
-        # match_prop = {self._entity_id_prop: node_id}
-        properties_map = {
-            k: v for k, v in node_data.items() if k != self._entity_id_prop
-        }
+        properties_json = self._properties_to_json(node_data)
 
-        # Use MERGE for upsert behavior
-        # ON CREATE sets initial properties, ON MATCH updates existing properties
-        # Kuzu's MAP update syntax might differ, using SET n.properties = $props for simplicity (overwrites map)
-        # A more granular update (map_set or similar) might be possible depending on Kuzu version.
         query = f"""
             MERGE (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})
-            ON CREATE SET n.properties = $properties
-            ON MATCH SET n.properties = $properties
+            ON CREATE SET n.{self._properties_col} = $properties_json
+            ON MATCH SET n.{self._properties_col} = $properties_json
         """
-        # Prepare parameters: node_id for matching, properties map for setting
-        params = {"node_id": node_id, "properties": properties_map}
-        prepared_params = self._prepare_cypher_params(params)
-
+        params = {"node_id": node_id, "properties_json": properties_json}
         try:
-            await conn.execute(query, prepared_params)
-            logger.debug(f"Upserted node '{node_id}' with properties: {properties_map}")
+            await conn.execute(query, params)
+            logger.debug(
+                f"Upserted node '{node_id}' with JSON properties: {properties_json}"
+            )
         except Exception as e:
-            logger.error(f"Error upserting node '{node_id}': {e}")
+            logger.error(f"Error upserting node '{node_id}': {e}", exc_info=True)
             raise
 
     @retry(
@@ -556,34 +649,31 @@ class KuzuGraphStorage(BaseGraphStorage):
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, Any]
     ) -> None:
-        """Creates a new edge or updates an existing edge's properties."""
+        """Creates/updates an edge, storing properties as a JSON string."""
         conn = self._get_conn()
+        properties_json = self._properties_to_json(edge_data)
 
-        # Use MERGE for upsert behavior based on nodes
-        # Use ON CREATE/ON MATCH to set/update edge properties
-        # Kuzu requires specifying direction in MERGE for relationships
         query = f"""
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: $source_id }})
             MATCH (b:{self._node_table} {{ {self._entity_id_prop}: $target_id }})
             MERGE (a)-[r:{self._edge_table}]->(b)
-            ON CREATE SET r.properties = $properties
-            ON MATCH SET r.properties = $properties
+            ON CREATE SET r.{self._properties_col} = $properties_json
+            ON MATCH SET r.{self._properties_col} = $properties_json
         """
         params = {
             "source_id": source_node_id,
             "target_id": target_node_id,
-            "properties": edge_data,
+            "properties_json": properties_json,
         }
-        prepared_params = self._prepare_cypher_params(params)
-
         try:
-            await conn.execute(query, prepared_params)
+            await conn.execute(query, params)
             logger.debug(
-                f"Upserted edge '{source_node_id}'->'{target_node_id}' with properties: {edge_data}"
+                f"Upserted edge '{source_node_id}'->'{target_node_id}' with JSON properties: {properties_json}"
             )
         except Exception as e:
             logger.error(
-                f"Error upserting edge '{source_node_id}'->'{target_node_id}': {e}"
+                f"Error upserting edge '{source_node_id}'->'{target_node_id}': {e}",
+                exc_info=True,
             )
             raise
 
@@ -602,15 +692,10 @@ class KuzuGraphStorage(BaseGraphStorage):
         params = {"node_id": node_id}
         try:
             await conn.execute(query, params)
-            logger.debug(f"Deleted node '{node_id}'.")
+            logger.debug(f"Attempted deletion of node '{node_id}'.")
         except Exception as e:
-            # Don't raise if node simply doesn't exist, but log warning.
-            # Check Kuzu error message for "not found" indication.
-            if "not found" in str(e).lower():  # Adjust based on actual Kuzu error
-                logger.warning(f"Node '{node_id}' not found for deletion.")
-            else:
-                logger.error(f"Error deleting node '{node_id}': {e}")
-                raise
+            logger.error(f"Error deleting node '{node_id}': {e}", exc_info=True)
+            raise
 
     @retry(
         stop=stop_after_attempt(3),
@@ -623,17 +708,16 @@ class KuzuGraphStorage(BaseGraphStorage):
             return
         conn = self._get_conn()
         query = f"""
-            UNWIND $node_id_list AS node_id
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: node_id }})
+            WITH $node_id_list AS ids_to_delete
+            MATCH (n:{self._node_table}) WHERE n.{self._entity_id_prop} IN ids_to_delete
             DETACH DELETE n
         """
-        # Kuzu expects list parameters directly for UNWIND
         params = {"node_id_list": node_ids}
         try:
             await conn.execute(query, params)
-            logger.debug(f"Attempted deletion of nodes: {node_ids}")
+            logger.debug(f"Attempted batch deletion of nodes: {node_ids}")
         except Exception as e:
-            logger.error(f"Error removing nodes batch: {e}")
+            logger.error(f"Error removing nodes batch: {e}", exc_info=True)
             raise
 
     @retry(
@@ -646,52 +730,52 @@ class KuzuGraphStorage(BaseGraphStorage):
         if not edges:
             return
         conn = self._get_conn()
-        # Prepare list of maps for UNWIND
         edge_pairs_list = [{"source": s, "target": t} for s, t in edges]
-
-        # Match edges in either direction and delete
+        # Match relationship in the specified direction (->) as created by upsert_edge
         query = f"""
             UNWIND $edge_pairs AS pair
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: pair.source }})
-                  -[r:{self._edge_table}]-
+                  -[r:{self._edge_table}]->
                   (b:{self._node_table} {{ {self._entity_id_prop}: pair.target }})
             DELETE r
         """
         params = {"edge_pairs": edge_pairs_list}
         try:
             await conn.execute(query, params)
-            logger.debug(f"Attempted deletion of edges: {edges}")
+            logger.debug(f"Attempted batch deletion of edges: {edges}")
         except Exception as e:
-            logger.error(f"Error removing edges batch: {e}")
+            logger.error(f"Error removing edges batch: {e}", exc_info=True)
             raise
 
     # --- Batch Operations ---
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
-        """Retrieves multiple nodes by their entity_ids in a batch."""
+        """Retrieves multiple nodes (properties deserialized from JSON) by their entity_ids."""
         if not node_ids:
             return {}
         conn = self._get_conn()
         query = f"""
-            UNWIND $node_id_list AS node_id
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: node_id }})
-            RETURN n.{self._entity_id_prop} AS id, n.properties AS properties
+            WITH $node_id_list AS ids_to_get
+            MATCH (n:{self._node_table}) WHERE n.{self._entity_id_prop} IN ids_to_get
+            RETURN n.{self._entity_id_prop} AS id, n.{self._properties_col} AS props_json
         """
         params = {"node_id_list": node_ids}
         nodes_dict = {}
         try:
-            result = await conn.execute(query, params)
-            while await result.has_next():
-                record = await result.get_next()
+            result: QueryResult = await conn.execute(query, params)
+            while result.has_next():
+                record = result.get_next()
                 node_id = record[0]
-                node_props = record[1] if record[1] else {}
-                node_props[self._entity_id_prop] = (
-                    node_id  # Ensure entity_id is present
+                props_json = record[1]
+                nodes_dict[node_id] = self._json_to_properties(
+                    props_json, entity_id=node_id
                 )
-                nodes_dict[node_id] = node_props
+            for req_id in node_ids:
+                if req_id not in nodes_dict:
+                    logger.debug(f"Node '{req_id}' not found in get_nodes_batch.")
             return nodes_dict
         except Exception as e:
-            logger.error(f"Error getting nodes batch: {e}")
+            logger.error(f"Error getting nodes batch: {e}", exc_info=True)
             raise
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
@@ -700,23 +784,21 @@ class KuzuGraphStorage(BaseGraphStorage):
             return {}
         conn = self._get_conn()
         query = f"""
-            UNWIND $node_id_list AS node_id
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: node_id }})
-            OPTIONAL MATCH (n)-[r]-() // Match relationships optionally
-            RETURN node_id, count(r) AS degree // Count relationships for each node
+            WITH $node_id_list AS ids_to_check
+            MATCH (n:{self._node_table}) WHERE n.{self._entity_id_prop} IN ids_to_check
+            OPTIONAL MATCH (n)-[r]-()
+            RETURN n.{self._entity_id_prop} AS node_id, count(r) AS degree
         """
         params = {"node_id_list": node_ids}
-        degrees_dict = {node_id: 0 for node_id in node_ids}  # Initialize with 0
+        degrees_dict = {node_id: 0 for node_id in node_ids}
         try:
-            result = await conn.execute(query, params)
-            while await result.has_next():
-                record = await result.get_next()
-                node_id = record[0]
-                degree = record[1]
-                degrees_dict[node_id] = degree
+            result: QueryResult = await conn.execute(query, params)
+            while result.has_next():
+                record = result.get_next()
+                degrees_dict[record[0]] = record[1]
             return degrees_dict
         except Exception as e:
-            logger.error(f"Error getting node degrees batch: {e}")
+            logger.error(f"Error getting node degrees batch: {e}", exc_info=True)
             raise
 
     async def edge_degrees_batch(
@@ -725,79 +807,48 @@ class KuzuGraphStorage(BaseGraphStorage):
         """Calculates combined degrees for multiple edge pairs in a batch."""
         if not edge_pairs:
             return {}
-
-        # Collect all unique node IDs involved
-        all_node_ids = set()
-        for src, tgt in edge_pairs:
-            all_node_ids.add(src)
-            all_node_ids.add(tgt)
-
-        # Get degrees for all involved nodes in one batch call
+        all_node_ids = set(src for src, tgt in edge_pairs) | set(
+            tgt for src, tgt in edge_pairs
+        )
         node_degrees = await self.node_degrees_batch(list(all_node_ids))
-
-        # Calculate combined degrees for each pair
-        edge_degrees_dict = {}
-        for src, tgt in edge_pairs:
-            src_degree = node_degrees.get(src, 0)
-            tgt_degree = node_degrees.get(tgt, 0)
-            edge_degrees_dict[(src, tgt)] = src_degree + tgt_degree
-
-        return edge_degrees_dict
+        return {
+            (src, tgt): node_degrees.get(src, 0) + node_degrees.get(tgt, 0)
+            for src, tgt in edge_pairs
+        }
 
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]
     ) -> dict[tuple[str, str], dict]:
-        """Retrieves properties for multiple edges in a batch."""
+        """Retrieves properties (deserialized from JSON) for multiple edges."""
         if not pairs:
             return {}
         conn = self._get_conn()
-        # Prepare list of maps for UNWIND
         edge_pairs_list = [{"source": p["src"], "target": p["tgt"]} for p in pairs]
-
+        # Match directed edge as created by upsert_edge
         query = f"""
             UNWIND $edge_pairs AS pair
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: pair.source }})
-                  -[r:{self._edge_table}]-
+                  -[r:{self._edge_table}]->
                   (b:{self._node_table} {{ {self._entity_id_prop}: pair.target }})
-            RETURN pair.source AS source_id, pair.target AS target_id, r.properties AS properties
-            LIMIT 1 // Limit to 1 edge per pair if multiple exist (unlikely with directed merge)
+            RETURN pair.source AS req_source_id, pair.target AS req_target_id,
+                   r.{self._properties_col} AS props_json
         """
         params = {"edge_pairs": edge_pairs_list}
-        edges_dict = {}
+        final_edges_dict = {(p["src"], p["tgt"]): None for p in pairs}
         try:
-            result = await conn.execute(query, params)
-            while await result.has_next():
-                record = await result.get_next()
-                source_id = record[0]
-                target_id = record[1]
-                edge_props = record[2] if record[2] else {}
-                # Store with the original (src, tgt) tuple order from input
-                # Need to find the original pair that matches source_id, target_id
-                # This assumes the MATCH finds edges in the direction specified by the pair,
-                # or the undirected match '-' finds one representation.
-                # A safer approach might be to return both directions if undirected match is used.
-                # For now, assume the key corresponds to the found edge nodes.
-                # We store it based on the returned order first.
-                edges_dict[(source_id, target_id)] = edge_props
-                # If undirected match was used, potentially add the reverse tuple too if needed
-                # edges_dict[(target_id, source_id)] = edge_props
-
-            # Re-key the dictionary based on the original input pairs for consistency
-            final_edges_dict = {}
-            for pair_input in pairs:
-                src, tgt = pair_input["src"], pair_input["tgt"]
-                if (src, tgt) in edges_dict:
-                    final_edges_dict[(src, tgt)] = edges_dict[(src, tgt)]
-                elif (
-                    tgt,
-                    src,
-                ) in edges_dict:  # Check reverse if undirected match was used
-                    final_edges_dict[(src, tgt)] = edges_dict[(tgt, src)]
-                # else: edge not found for this pair
-
-            return final_edges_dict
+            result: QueryResult = await conn.execute(query, params)
+            while result.has_next():
+                record = result.get_next()
+                req_src, req_tgt, props_json = record
+                original_pair = (req_src, req_tgt)
+                if final_edges_dict.get(original_pair, None) is None:
+                    final_edges_dict[original_pair] = self._json_to_properties(
+                        props_json
+                    )
+            # Filter out pairs where no edge was found
+            return {k: v for k, v in final_edges_dict.items() if v is not None}
         except Exception as e:
-            logger.error(f"Error getting edges batch: {e}")
+            logger.error(f"Error getting edges batch: {e}", exc_info=True)
             raise
 
     async def get_nodes_edges_batch(
@@ -808,50 +859,34 @@ class KuzuGraphStorage(BaseGraphStorage):
             return {}
         conn = self._get_conn()
         query = f"""
-            UNWIND $node_id_list AS node_id
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: node_id }})
-                  -[r:{self._edge_table}]-
-                  (connected:{self._node_table})
+            WITH $node_id_list AS ids_to_check
+            MATCH (n:{self._node_table}) WHERE n.{self._entity_id_prop} IN ids_to_check
+            OPTIONAL MATCH (n)-[r:{self._edge_table}]-(connected:{self._node_table})
             RETURN n.{self._entity_id_prop} AS source_node, connected.{self._entity_id_prop} AS connected_node
         """
         params = {"node_id_list": node_ids}
-        # Initialize result dict with empty lists
         nodes_edges_dict = {node_id: [] for node_id in node_ids}
-        processed_edges = set()  # To avoid duplicate edges from undirected match
-
+        processed_undirected_edges = set()
         try:
-            result = await conn.execute(query, params)
-            while await result.has_next():
-                record = await result.get_next()
-                src_node = record[0]
-                connected_node = record[1]
-
-                # Determine which node was the one queried in the UNWIND list
-                queried_node_id = src_node if src_node in node_ids else connected_node
-
-                # Create canonical edge tuple (smaller id first) to handle undirected match
-                edge_tuple = tuple(sorted((src_node, connected_node)))
-
-                if edge_tuple not in processed_edges:
-                    # Add edge tuple (queried_node, other_node) to the list for the queried node
-                    if src_node == queried_node_id:
-                        nodes_edges_dict[queried_node_id].append(
-                            (src_node, connected_node)
-                        )
-                    else:
-                        nodes_edges_dict[queried_node_id].append(
-                            (connected_node, src_node)
-                        )  # Store as (other, queried) to match convention? Or always (queried, other)? Let's stick to (queried, other)
-                        nodes_edges_dict[queried_node_id][-1] = (
-                            queried_node_id,
-                            src_node,
-                        )  # Corrected: always (queried, other)
-
-                    processed_edges.add(edge_tuple)
-
+            result: QueryResult = await conn.execute(query, params)
+            while result.has_next():
+                record = result.get_next()
+                src_node, connected_node = record[0], record[1]
+                if src_node and connected_node:
+                    canonical_pair = tuple(sorted((src_node, connected_node)))
+                    if canonical_pair not in processed_undirected_edges:
+                        if src_node in nodes_edges_dict:
+                            nodes_edges_dict[src_node].append(
+                                (src_node, connected_node)
+                            )
+                        if connected_node in nodes_edges_dict:
+                            nodes_edges_dict[connected_node].append(
+                                (connected_node, src_node)
+                            )
+                        processed_undirected_edges.add(canonical_pair)
             return nodes_edges_dict
         except Exception as e:
-            logger.error(f"Error getting nodes edges batch: {e}")
+            logger.error(f"Error getting nodes edges batch: {e}", exc_info=True)
             raise
 
     # --- Other Methods ---
@@ -866,12 +901,12 @@ class KuzuGraphStorage(BaseGraphStorage):
         """
         labels = []
         try:
-            result = await conn.execute(query)
-            while await result.has_next():
-                labels.append((await result.get_next())[0])
+            result: QueryResult = await conn.execute(query)
+            while result.has_next():
+                labels.append(result.get_next()[0])
             return labels
         except Exception as e:
-            logger.error(f"Error getting all labels: {e}")
+            logger.error(f"Error getting all labels: {e}", exc_info=True)
             raise
 
     async def get_knowledge_graph(
@@ -882,169 +917,175 @@ class KuzuGraphStorage(BaseGraphStorage):
     ) -> KnowledgeGraph:
         """
         Retrieves a connected subgraph starting from node_label.
-
-        Uses variable-length path matching in Kuzu. Handles '*' wildcard
-        by fetching top nodes by degree.
+        Handles '*' wildcard. Returns nodes/edges with deserialized properties.
+        Uses internal Kuzu IDs for processing but returns KnowledgeGraph with entity_ids.
         """
         conn = self._get_conn()
         kg = KnowledgeGraph()
-        seen_nodes = set()
-        seen_edges = set()  # Use edge ID (internal Kuzu ID)
+        seen_node_entity_ids = set()  # Track processed entity IDs for final KG nodes
+        seen_edge_internal_ids = set()  # Track processed internal edge IDs
+
+        # Helper to convert Kuzu internal ID dict to string
+        def kuzu_internal_id_to_str(internal_id_dict):
+            if (
+                isinstance(internal_id_dict, dict)
+                and "table" in internal_id_dict
+                and "offset" in internal_id_dict
+            ):
+                return f"{internal_id_dict['table']}_{internal_id_dict['offset']}"
+            logger.warning(
+                f"Unexpected format for Kuzu internal ID: {internal_id_dict}"
+            )
+            return str(internal_id_dict)
+
+        # Helper to convert Kuzu edge internal ID dict to string
+        def kuzu_rel_internal_id_to_str(internal_id_dict):
+            if (
+                isinstance(internal_id_dict, dict)
+                and "rel_table" in internal_id_dict
+                and "offset" in internal_id_dict
+            ):
+                return f"{internal_id_dict['rel_table']}_{internal_id_dict['offset']}"
+            logger.warning(
+                f"Unexpected format for Kuzu edge internal ID: {internal_id_dict}"
+            )
+            return str(internal_id_dict)
 
         if node_label == "*":
-            # 1. Get total node count for truncation check
+            # 1. Count for truncation check
             count_query = f"MATCH (n:{self._node_table}) RETURN count(n) AS total"
             try:
-                count_res = await conn.execute(count_query)
-                total_nodes = (
-                    (await count_res.get_next())[0] if await count_res.has_next() else 0
-                )
+                count_res: QueryResult = await conn.execute(count_query)
+                total_nodes = count_res.get_next()[0] if count_res.has_next() else 0
                 if total_nodes > max_nodes:
                     kg.is_truncated = True
                     logger.info(
                         f"Graph truncated: {total_nodes} nodes found, limiting to top {max_nodes} by degree."
                     )
             except Exception as e:
-                logger.error(f"Error counting nodes for '*': {e}")
-                total_nodes = 0  # Assume potentially truncated if count fails
+                logger.error(f"Error counting nodes for '*': {e}", exc_info=True)
 
-            # 2. Get top N nodes by degree and their connecting edges
-            # Note: Getting edges between *only* the top N nodes can be complex/slow.
-            # A simpler approach is to get top N nodes, then get their direct neighbors (1-hop).
-            # Or, fetch top N nodes and *all* edges, then filter in Python (might fetch too much data).
-            # Let's fetch top N nodes and the edges *between* them.
+            # 2. Get top N nodes by degree and edges between them
+            # CORRECTED query structure
             query = f"""
                 MATCH (n:{self._node_table})
-                WITH n ORDER BY size((n)-->()) DESC LIMIT {max_nodes} // Order by out-degree, adjust if needed
-                WITH collect(n) as top_nodes
-                UNWIND top_nodes as n1
-                UNWIND top_nodes as n2 // Create pairs of top nodes
-                MATCH (n1)-[r:{self._edge_table}]-(n2) // Find edges *between* top nodes
-                RETURN collect(distinct n1) + collect(distinct n2) as nodes, collect(distinct r) as edges // Collect distinct nodes and edges
+                OPTIONAL MATCH (n)-[r]-()
+                WITH n, count(r) AS degree
+                ORDER BY degree DESC LIMIT {max_nodes}
+                WITH collect(n) as top_nodes_list // Collect the node objects
+                // Now match edges between nodes *within* this collected list
+                MATCH (n1:{self._node_table})-[rel:{self._edge_table}]-(n2:{self._node_table})
+                WHERE n1 IN top_nodes_list AND n2 IN top_nodes_list AND id(n1) < id(n2) // Ensure both ends are top nodes and avoid duplicates
+                // Return the nodes and the edges found between them
+                RETURN top_nodes_list as nodes, collect(distinct rel) as edges
             """
-            # Alternative: Get top N nodes, then separately get edges involving them (might be more edges than needed)
-            # query = f"""
-            #     MATCH (n:{self._node_table})
-            #     WITH n ORDER BY size((n)-->()) DESC LIMIT {max_nodes}
-            #     OPTIONAL MATCH (n)-[r]-(m) // Get edges connected to top nodes
-            #     RETURN collect(distinct n) as nodes, collect(distinct r) as edges
-            # """
             try:
-                result = await conn.execute(query)
-                if await result.has_next():
-                    record = await result.get_next()
+                result: QueryResult = await conn.execute(query)
+                if result.has_next():
+                    record = result.get_next()
+                    # The first element 'nodes' is the original top_nodes_list
                     nodes_data = record[0] if record[0] else []
+                    # The second element 'edges' contains the relationships *between* those top nodes
                     edges_data = record[1] if record[1] else []
 
                     # Process nodes
+                    node_internal_to_entity_id = {}  # Map internal ID to entity_id for edges
                     for node_kuzu in nodes_data:
-                        # Kuzu node structure: {'_id': {'offset': 0, 'table': 0}, '_label': 'base', 'entity_id': 'id1', 'properties': {'prop': 'val'}}
-                        node_id_internal = node_kuzu[
-                            "_id"
-                        ]  # Use internal ID for edge matching
-                        node_id_str = (
-                            str(node_id_internal["table"])
-                            + "_"
-                            + str(node_id_internal["offset"])
-                        )  # Create unique string ID
-                        if node_id_str not in seen_nodes:
-                            props = node_kuzu.get("properties", {})
-                            entity_id = node_kuzu.get(
-                                self._entity_id_prop, node_id_str
-                            )  # Fallback if prop missing
-                            props[self._entity_id_prop] = (
-                                entity_id  # Ensure prop exists
+                        node_id_internal = node_kuzu["_id"]
+                        entity_id = node_kuzu.get(self._entity_id_prop)
+                        if not entity_id:
+                            continue
+
+                        # Map internal ID string to entity_id
+                        node_internal_to_entity_id[
+                            kuzu_internal_id_to_str(node_id_internal)
+                        ] = entity_id
+
+                        if entity_id not in seen_node_entity_ids:
+                            props_json = node_kuzu.get(self._properties_col)
+                            props = self._json_to_properties(
+                                props_json, entity_id=entity_id
                             )
 
                             kg.nodes.append(
                                 KnowledgeGraphNode(
-                                    id=node_id_str,  # Use string internal ID
-                                    labels=[entity_id],  # Use entity_id as label
-                                    properties=props,
+                                    id=entity_id, labels=[entity_id], properties=props
                                 )
                             )
-                            seen_nodes.add(node_id_str)
+                            seen_node_entity_ids.add(entity_id)
 
                     # Process edges
                     for edge_kuzu in edges_data:
-                        # Kuzu edge structure: {'_src': {'offset': 0, 'table': 0}, '_dst': {'offset': 1, 'table': 0}, '_label': 'DIRECTED', '_id': {'offset': 0, 'rel_table': 0}, 'properties': {'weight': 1.0}}
                         edge_id_internal = edge_kuzu["_id"]
-                        edge_id_str = (
-                            str(edge_id_internal["rel_table"])
-                            + "_"
-                            + str(edge_id_internal["offset"])
-                        )
+                        edge_id_str = kuzu_rel_internal_id_to_str(edge_id_internal)
 
-                        if edge_id_str not in seen_edges:
-                            src_id_internal = edge_kuzu["_src"]
-                            dst_id_internal = edge_kuzu["_dst"]
-                            src_id_str = (
-                                str(src_id_internal["table"])
-                                + "_"
-                                + str(src_id_internal["offset"])
+                        if edge_id_str not in seen_edge_internal_ids:
+                            src_id_internal_str = kuzu_internal_id_to_str(
+                                edge_kuzu["_src"]
                             )
-                            dst_id_str = (
-                                str(dst_id_internal["table"])
-                                + "_"
-                                + str(dst_id_internal["offset"])
+                            dst_id_internal_str = kuzu_internal_id_to_str(
+                                edge_kuzu["_dst"]
                             )
 
-                            # Ensure source and target nodes are in our seen_nodes set (due to LIMIT)
-                            if src_id_str in seen_nodes and dst_id_str in seen_nodes:
+                            src_entity_id = node_internal_to_entity_id.get(
+                                src_id_internal_str
+                            )
+                            dst_entity_id = node_internal_to_entity_id.get(
+                                dst_id_internal_str
+                            )
+
+                            # Ensure source and target nodes (by entity_id) were included
+                            if (
+                                src_entity_id in seen_node_entity_ids
+                                and dst_entity_id in seen_node_entity_ids
+                            ):
+                                props_json = edge_kuzu.get(self._properties_col)
+                                props = self._json_to_properties(props_json)
+
                                 kg.edges.append(
                                     KnowledgeGraphEdge(
                                         id=edge_id_str,
                                         type=edge_kuzu["_label"],
-                                        source=src_id_str,
-                                        target=dst_id_str,
-                                        properties=edge_kuzu.get("properties", {}),
+                                        source=src_entity_id,
+                                        target=dst_entity_id,
+                                        properties=props,
                                     )
                                 )
-                                seen_edges.add(edge_id_str)
+                                seen_edge_internal_ids.add(edge_id_str)
 
             except Exception as e:
-                logger.error(f"Error getting knowledge graph for '*': {e}")
+                logger.error(
+                    f"Error getting knowledge graph for '*': {e}", exc_info=True
+                )
 
         else:  # Specific node_label
-            # Use variable length path query
-            # Kuzu's path finding might return paths, need to extract distinct nodes/edges.
-            # `*1..{max_depth}` finds paths up to max_depth.
-            # Add LIMIT clause to restrict results if needed, but path finding limits are complex.
-            # A BFS approach might be more controllable for max_nodes. Let's try path first.
-            # We need to collect distinct nodes and edges from the paths found.
-
-            # Check if start node exists first
             if not await self.has_node(node_label):
                 logger.warning(
                     f"Start node '{node_label}' not found for get_knowledge_graph."
                 )
-                return kg  # Return empty graph
+                return kg
 
             query = f"""
                 MATCH path = (startNode:{self._node_table} {{ {self._entity_id_prop}: $start_node_id }})
-                            -[*1..{max_depth}]- // Undirected path up to max_depth
+                            -[*1..{max_depth}]-
                             (neighborNode:{self._node_table})
                 WITH nodes(path) as path_nodes, relationships(path) as path_rels
-                UNWIND path_nodes as n // Unwind nodes from all paths
-                UNWIND path_rels as r // Unwind relationships from all paths
+                UNWIND path_nodes as n
+                UNWIND path_rels as r
                 RETURN collect(distinct n) as nodes, collect(distinct r) as edges
-                // LIMIT {max_nodes} // Applying limit here might be incorrect for BFS-like result
             """
-            # Note: Kuzu's path finding might be exhaustive and slow for large graphs/depths.
-            # Applying a node limit during traversal isn't standard Cypher.
-            # A manual BFS implementation might be necessary for strict max_nodes control.
-            # Let's proceed with this query and handle potential truncation based on results.
-
             params = {"start_node_id": node_label}
             try:
-                result = await conn.execute(query, params)
-                if await result.has_next():
-                    record = await result.get_next()
+                result: QueryResult = await conn.execute(query, params)
+                if result.has_next():
+                    record = result.get_next()
                     nodes_data = record[0] if record[0] else []
                     edges_data = record[1] if record[1] else []
 
                     node_count = 0
-                    # Process nodes
+                    node_internal_to_entity_id = {}  # Map internal ID to entity_id
+
+                    # Process nodes, respecting max_nodes limit
                     for node_kuzu in nodes_data:
                         if node_count >= max_nodes:
                             kg.is_truncated = True
@@ -1054,67 +1095,77 @@ class KuzuGraphStorage(BaseGraphStorage):
                             break
 
                         node_id_internal = node_kuzu["_id"]
-                        node_id_str = (
-                            str(node_id_internal["table"])
-                            + "_"
-                            + str(node_id_internal["offset"])
-                        )
-                        if node_id_str not in seen_nodes:
-                            props = node_kuzu.get("properties", {})
-                            entity_id = node_kuzu.get(self._entity_id_prop, node_id_str)
-                            props[self._entity_id_prop] = entity_id
+                        entity_id = node_kuzu.get(self._entity_id_prop)
+                        if not entity_id:
+                            continue
+
+                        node_internal_to_entity_id[
+                            kuzu_internal_id_to_str(node_id_internal)
+                        ] = entity_id
+
+                        if entity_id not in seen_node_entity_ids:
+                            props_json = node_kuzu.get(self._properties_col)
+                            props = self._json_to_properties(
+                                props_json, entity_id=entity_id
+                            )
 
                             kg.nodes.append(
                                 KnowledgeGraphNode(
-                                    id=node_id_str, labels=[entity_id], properties=props
+                                    id=entity_id, labels=[entity_id], properties=props
                                 )
                             )
-                            seen_nodes.add(node_id_str)
+                            seen_node_entity_ids.add(entity_id)
                             node_count += 1
 
                     # Process edges, ensuring both endpoints are within the collected nodes
                     for edge_kuzu in edges_data:
                         edge_id_internal = edge_kuzu["_id"]
-                        edge_id_str = (
-                            str(edge_id_internal["rel_table"])
-                            + "_"
-                            + str(edge_id_internal["offset"])
-                        )
+                        edge_id_str = kuzu_rel_internal_id_to_str(edge_id_internal)
 
-                        if edge_id_str not in seen_edges:
-                            src_id_internal = edge_kuzu["_src"]
-                            dst_id_internal = edge_kuzu["_dst"]
-                            src_id_str = (
-                                str(src_id_internal["table"])
-                                + "_"
-                                + str(src_id_internal["offset"])
+                        if edge_id_str not in seen_edge_internal_ids:
+                            src_id_internal_str = kuzu_internal_id_to_str(
+                                edge_kuzu["_src"]
                             )
-                            dst_id_str = (
-                                str(dst_id_internal["table"])
-                                + "_"
-                                + str(dst_id_internal["offset"])
+                            dst_id_internal_str = kuzu_internal_id_to_str(
+                                edge_kuzu["_dst"]
                             )
 
-                            # Only add edge if both source and target nodes were included (due to potential truncation)
-                            if src_id_str in seen_nodes and dst_id_str in seen_nodes:
+                            src_entity_id = node_internal_to_entity_id.get(
+                                src_id_internal_str
+                            )
+                            dst_entity_id = node_internal_to_entity_id.get(
+                                dst_id_internal_str
+                            )
+
+                            if (
+                                src_entity_id in seen_node_entity_ids
+                                and dst_entity_id in seen_node_entity_ids
+                            ):
+                                props_json = edge_kuzu.get(self._properties_col)
+                                props = self._json_to_properties(props_json)
+
                                 kg.edges.append(
                                     KnowledgeGraphEdge(
                                         id=edge_id_str,
                                         type=edge_kuzu["_label"],
-                                        source=src_id_str,
-                                        target=dst_id_str,
-                                        properties=edge_kuzu.get("properties", {}),
+                                        source=src_entity_id,
+                                        target=dst_entity_id,
+                                        properties=props,
                                     )
                                 )
-                                seen_edges.add(edge_id_str)
+                                seen_edge_internal_ids.add(edge_id_str)
 
-                    # If we processed all nodes from the query and didn't hit max_nodes,
-                    # but the query itself might have implicitly limited due to path finding limits,
-                    # it's hard to be certain about truncation without a full graph count.
-                    # We set truncation based on hitting the limit during processing.
+                    if not kg.is_truncated and len(nodes_data) >= max_nodes:
+                        kg.is_truncated = True
+                        logger.info(
+                            f"Graph potentially truncated by query limits or processing node limit {max_nodes}."
+                        )
 
             except Exception as e:
-                logger.error(f"Error getting knowledge graph for '{node_label}': {e}")
+                logger.error(
+                    f"Error getting knowledge graph for '{node_label}': {e}",
+                    exc_info=True,
+                )
 
         logger.info(
             f"Subgraph query successful | Node count: {len(kg.nodes)} | Edge count: {len(kg.edges)} | Truncated: {kg.is_truncated}"
@@ -1123,52 +1174,32 @@ class KuzuGraphStorage(BaseGraphStorage):
 
     async def index_done_callback(self) -> None:
         """Handles persistence after indexing. Kuzu checkpoints automatically or manually."""
-        # Kuzu handles persistence via its write-ahead log (WAL) and checkpointing.
-        # If using a file-based DB, changes are generally persisted.
-        # Explicit checkpointing can be forced if needed, but usually not required here.
-        # For :memory: databases, data is lost on close unless explicitly saved.
-        # This callback might trigger a manual checkpoint if desired.
-        conn = self._get_conn()
-        try:
-            # Optional: Trigger manual checkpoint if needed, e.g., for :memory: backup
-            await conn.execute("CHECKPOINT;")
-            logger.info("Kuzu manual checkpoint triggered by index_done_callback.")
-            pass  # Kuzu's default WAL mechanism usually suffices
-        except Exception as e:
-            logger.error(f"Error during Kuzu index_done_callback (checkpoint): {e}")
-            # Decide if this should raise an error or just log
+        logger.debug(
+            "index_done_callback called for KuzuGraphStorage. No explicit action taken (relying on Kuzu persistence)."
+        )
+        pass
 
     async def drop(self) -> dict[str, str]:
-        """Drops all nodes and relationships from the Kuzu graph."""
+        """Drops all nodes and relationships by deleting all data."""
         conn = self._get_conn()
-        # Kuzu doesn't have a direct equivalent to DETACH DELETE for all nodes easily.
-        # Option 1: Delete relationships first, then nodes.
-        # Option 2: Recreate tables (might be faster for full clear).
-        # Option 3: If DB path is known and not :memory:, delete the DB files. (Risky if other processes use it)
-
-        # Let's try Option 1: Delete all relationships, then all nodes.
         try:
             logger.warning(
                 f"Dropping all data from Kuzu graph (namespace: {self.namespace})..."
             )
-            # Delete all relationships
-            rel_query = "MATCH ()-[r]-() DELETE r"
+            # Delete all directed relationships first
+            # Using directed match '->' as created by upsert_edge
+            rel_query = f"MATCH ()-[r:{self._edge_table}]->() DELETE r"
             await conn.execute(rel_query)
-            logger.debug("Deleted all relationships.")
+            logger.debug(f"Deleted all relationships from table '{self._edge_table}'.")
             # Delete all nodes
-            node_query = "MATCH (n) DELETE n"
+            node_query = f"MATCH (n:{self._node_table}) DELETE n"
             await conn.execute(node_query)
-            logger.debug("Deleted all nodes.")
-
-            # Alternatively, drop and recreate tables (might require exclusive access)
-            # await conn.execute(f"DROP REL TABLE {self._edge_table}")
-            # await conn.execute(f"DROP NODE TABLE {self._node_table}")
-            # await self._ensure_schema() # Recreate schema
+            logger.debug(f"Deleted all nodes from table '{self._node_table}'.")
 
             logger.info(
-                f"Successfully dropped all data from Kuzu graph (namespace: {self.namespace})."
+                f"Successfully dropped all data from Kuzu graph tables '{self._node_table}' and '{self._edge_table}'."
             )
             return {"status": "success", "message": "data dropped"}
         except Exception as e:
-            logger.error(f"Error dropping Kuzu graph data: {e}")
+            logger.error(f"Error dropping Kuzu graph data: {e}", exc_info=True)
             return {"status": "error", "message": str(e)}
