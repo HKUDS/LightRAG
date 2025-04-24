@@ -828,6 +828,7 @@ class KuzuGraphStorage(BaseGraphStorage):
         conn = self._get_conn()
         edge_pairs_list = [{"source": p["src"], "target": p["tgt"]} for p in pairs]
         # Match undirected edge -[r]- to find edge regardless of direction in pair list
+        # REMOVED LIMIT 1
         query = f"""
             UNWIND $edge_pairs AS pair
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: pair.source }})
@@ -836,7 +837,6 @@ class KuzuGraphStorage(BaseGraphStorage):
             // Return the requested pair along with the properties
             RETURN pair.source AS req_source_id, pair.target AS req_target_id,
                    r.{self._properties_col} AS props_json
-            LIMIT 1 // Should ensure only one edge per pair if multiple exist (unlikely)
         """
         params = {"edge_pairs": edge_pairs_list}
         final_edges_dict = {(p["src"], p["tgt"]): None for p in pairs}
@@ -977,17 +977,14 @@ class KuzuGraphStorage(BaseGraphStorage):
                 logger.error(f"Error counting nodes for '*': {e}", exc_info=True)
 
             # 2. Get top N nodes by degree and edges between them
-            # CORRECTED query structure for wildcard '*'
             query = f"""
                 MATCH (n:{self._node_table})
                 OPTIONAL MATCH (n)-[r]-()
                 WITH n, count(r) AS degree
                 ORDER BY degree DESC LIMIT {max_nodes}
                 WITH collect(n) as top_nodes_list
-                // Match edges where BOTH source and target are in the top_nodes_list
                 MATCH (n1:{self._node_table})-[rel:{self._edge_table}]-(n2:{self._node_table})
                 WHERE n1 IN top_nodes_list AND n2 IN top_nodes_list AND id(n1) < id(n2)
-                // Return the list of top nodes and the distinct edges connecting them
                 RETURN top_nodes_list as nodes, collect(distinct rel) as edges
             """
             try:
@@ -1005,7 +1002,6 @@ class KuzuGraphStorage(BaseGraphStorage):
                         if not entity_id:
                             continue
 
-                        # Map internal ID string to entity_id
                         node_internal_to_entity_id[
                             kuzu_internal_id_to_str(node_id_internal)
                         ] = entity_id
@@ -1043,7 +1039,6 @@ class KuzuGraphStorage(BaseGraphStorage):
                                 dst_id_internal_str
                             )
 
-                            # Ensure source and target nodes (by entity_id) were included
                             if (
                                 src_entity_id in seen_node_entity_ids
                                 and dst_entity_id in seen_node_entity_ids
