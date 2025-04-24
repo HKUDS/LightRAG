@@ -1849,9 +1849,8 @@ class PGGraphStorage(BaseGraphStorage):
         else:
             strip_label = self._normalize_node_id(node_label)
             count_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                    MATCH (n:base {{entity_id: "{strip_label}"}})
-                    OPTIONAL MATCH p = (n)-[*..{max_depth}]-()
-                    RETURN count(nodes(p)) AS total_nodes
+                    MATCH (n:base {{entity_id: "{strip_label}"}})-[r]-()
+                    RETURN count(r) AS total_nodes
                     $$) AS (total_nodes bigint)"""
 
         count_result = await self._query(count_query)
