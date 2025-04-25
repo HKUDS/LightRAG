@@ -89,7 +89,9 @@ def create_openai_async_client(
     if base_url is not None:
         merged_configs["base_url"] = base_url
     else:
-        merged_configs["base_url"] = os.environ["OPENAI_API_BASE"]
+        merged_configs["base_url"] = os.environ.get(
+            "OPENAI_API_BASE", "https://api.openai.com/v1"
+        )
 
     return AsyncOpenAI(**merged_configs)
 
@@ -200,6 +202,19 @@ async def openai_complete_if_cache(
         async def inner():
             try:
                 async for chunk in response:
+                    # Check if choices exists and is not empty
+                    if not hasattr(chunk, "choices") or not chunk.choices:
+                        logger.warning(f"Received chunk without choices: {chunk}")
+                        continue
+
+                    # Check if delta exists and has content
+                    if not hasattr(chunk.choices[0], "delta") or not hasattr(
+                        chunk.choices[0].delta, "content"
+                    ):
+                        logger.warning(
+                            f"Received chunk without delta content: {chunk.choices[0]}"
+                        )
+                        continue
                     content = chunk.choices[0].delta.content
                     if content is None:
                         continue

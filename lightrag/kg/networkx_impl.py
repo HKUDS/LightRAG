@@ -249,25 +249,47 @@ class NetworkXStorage(BaseGraphStorage):
                 logger.warning(f"Node {node_label} not found in the graph")
                 return KnowledgeGraph()  # Return empty graph
 
-            # Use BFS to get nodes
+            # Use modified BFS to get nodes, prioritizing high-degree nodes at the same depth
             bfs_nodes = []
             visited = set()
-            queue = [(node_label, 0)]  # (node, depth) tuple
+            # Store (node, depth, degree) in the queue
+            queue = [(node_label, 0, graph.degree(node_label))]
 
-            # Breadth-first search
+            # Modified breadth-first search with degree-based prioritization
             while queue and len(bfs_nodes) < max_nodes:
-                current, depth = queue.pop(0)
-                if current not in visited:
-                    visited.add(current)
-                    bfs_nodes.append(current)
+                # Get the current depth from the first node in queue
+                current_depth = queue[0][1]
 
-                    # Only explore neighbors if we haven't reached max_depth
-                    if depth < max_depth:
-                        # Add neighbor nodes to queue with incremented depth
-                        neighbors = list(graph.neighbors(current))
-                        queue.extend(
-                            [(n, depth + 1) for n in neighbors if n not in visited]
-                        )
+                # Collect all nodes at the current depth
+                current_level_nodes = []
+                while queue and queue[0][1] == current_depth:
+                    current_level_nodes.append(queue.pop(0))
+
+                # Sort nodes at current depth by degree (highest first)
+                current_level_nodes.sort(key=lambda x: x[2], reverse=True)
+
+                # Process all nodes at current depth in order of degree
+                for current_node, depth, degree in current_level_nodes:
+                    if current_node not in visited:
+                        visited.add(current_node)
+                        bfs_nodes.append(current_node)
+
+                        # Only explore neighbors if we haven't reached max_depth
+                        if depth < max_depth:
+                            # Add neighbor nodes to queue with incremented depth
+                            neighbors = list(graph.neighbors(current_node))
+                            # Filter out already visited neighbors
+                            unvisited_neighbors = [
+                                n for n in neighbors if n not in visited
+                            ]
+                            # Add neighbors to the queue with their degrees
+                            for neighbor in unvisited_neighbors:
+                                neighbor_degree = graph.degree(neighbor)
+                                queue.append((neighbor, depth + 1, neighbor_degree))
+
+                    # Check if we've reached max_nodes
+                    if len(bfs_nodes) >= max_nodes:
+                        break
 
             # Check if graph is truncated - if we still have nodes in the queue
             # and we've reached max_nodes, then the graph is truncated

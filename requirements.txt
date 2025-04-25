@@ -2,9 +2,6 @@ aiohttp
 configparser
 future
 
-# Basic modules
-gensim
-
 # Additional Packages for export Functionality
 pandas>=2.0.0
 
@@ -13,6 +10,9 @@ pandas>=2.0.0
 pipmaster
 pydantic
 python-dotenv
+
+# Unicode Collation Algorithm for proper Chinese sorting
+pyuca
 
 setuptools
 tenacity
