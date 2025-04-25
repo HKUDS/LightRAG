@@ -268,9 +268,13 @@ class NetworkXStorage(BaseGraphStorage):
                         # Filter out already visited neighbors
                         unvisited_neighbors = [n for n in neighbors if n not in visited]
                         # Get the degree of each neighbor node
-                        neighbor_degrees = [(n, graph.degree(n)) for n in unvisited_neighbors]
+                        neighbor_degrees = [
+                            (n, graph.degree(n)) for n in unvisited_neighbors
+                        ]
                         # Sort neighbors by degree in descending order
-                        sorted_neighbors = sorted(neighbor_degrees, key=lambda x: x[1], reverse=True)
+                        sorted_neighbors = sorted(
+                            neighbor_degrees, key=lambda x: x[1], reverse=True
+                        )
                         # Add sorted neighbors to the queue
                         queue.extend([(n, depth + 1) for n, _ in sorted_neighbors])
 
