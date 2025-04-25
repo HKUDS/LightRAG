@@ -1058,7 +1058,7 @@ class Neo4JStorage(BaseGraphStorage):
         result = KnowledgeGraph()
         visited_nodes = set()
         visited_edges = set()
-        visited_edge_pairs = set()  # Used to track processed edge pairs (sorted source_id, target_id)
+        visited_edge_pairs = set()
 
         # Get the starting node's data
         async with self._driver.session(
