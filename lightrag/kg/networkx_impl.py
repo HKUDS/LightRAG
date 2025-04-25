@@ -265,9 +265,14 @@ class NetworkXStorage(BaseGraphStorage):
                     if depth < max_depth:
                         # Add neighbor nodes to queue with incremented depth
                         neighbors = list(graph.neighbors(current))
-                        queue.extend(
-                            [(n, depth + 1) for n in neighbors if n not in visited]
-                        )
+                        # Filter out already visited neighbors
+                        unvisited_neighbors = [n for n in neighbors if n not in visited]
+                        # Get the degree of each neighbor node
+                        neighbor_degrees = [(n, graph.degree(n)) for n in unvisited_neighbors]
+                        # Sort neighbors by degree in descending order
+                        sorted_neighbors = sorted(neighbor_degrees, key=lambda x: x[1], reverse=True)
+                        # Add sorted neighbors to the queue
+                        queue.extend([(n, depth + 1) for n, _ in sorted_neighbors])
 
             # Check if graph is truncated - if we still have nodes in the queue
             # and we've reached max_nodes, then the graph is truncated
