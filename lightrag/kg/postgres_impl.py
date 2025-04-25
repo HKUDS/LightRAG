@@ -54,7 +54,8 @@ class PostgreSQLDB:
         self.password = config.get("password", None)
         self.database = config.get("database", "postgres")
         self.workspace = config.get("workspace", "default")
-        self.max = 12
+        self.max = config.get("max_connections", 12)
+        self.min = config.get("min_connections", 1)
         self.increment = 1
         self.pool: Pool | None = None
 
@@ -69,7 +70,7 @@ class PostgreSQLDB:
                 database=self.database,
                 host=self.host,
                 port=self.port,
-                min_size=1,
+                min_size=self.min,
                 max_size=self.max,
             )
 
@@ -223,40 +224,47 @@ class ClientManager:
     _lock = asyncio.Lock()
 
     @staticmethod
-    def get_config() -> dict[str, Any]:
+    def get_config(db_config: dict[str, Any] = {}) -> dict[str, Any]:
         config = configparser.ConfigParser()
         config.read("config.ini", "utf-8")
 
         return {
-            "host": os.environ.get(
-                "POSTGRES_HOST",
+            "host": db_config.get(
+                "host",
                 config.get("postgres", "host", fallback="localhost"),
             ),
-            "port": os.environ.get(
-                "POSTGRES_PORT", config.get("postgres", "port", fallback=5432)
+            "port": db_config.get(
+                "port", config.get("postgres", "port", fallback=5432)
             ),
-            "user": os.environ.get(
-                "POSTGRES_USER", config.get("postgres", "user", fallback=None)
+            "user": db_config.get(
+                "user", config.get("postgres", "user", fallback=None)
             ),
-            "password": os.environ.get(
-                "POSTGRES_PASSWORD",
+            "password": db_config.get(
+                "password",
                 config.get("postgres", "password", fallback=None),
             ),
-            "database": os.environ.get(
-                "POSTGRES_DATABASE",
+            "database": db_config.get(
+                "database",
                 config.get("postgres", "database", fallback=None),
             ),
-            "workspace": os.environ.get(
-                "POSTGRES_WORKSPACE",
-                config.get("postgres", "workspace", fallback="default"),
+            "workspace": db_config.get(
+                "workspace", config.get("postgres", "workspace", fallback="default")
+            ),
+            "max_connections": db_config.get(
+                "max_connections",
+                config.get("postgres", "max_connections", fallback=12),
+            ),
+            "min_connections": db_config.get(
+                "min_connections", config.get("postgres", "min_connections", fallback=1)
             ),
         }
 
     @classmethod
-    async def get_client(cls) -> PostgreSQLDB:
+    async def get_client(cls, db_config: dict[str, Any]) -> PostgreSQLDB:
         async with cls._lock:
             if cls._instances["db"] is None:
-                config = ClientManager.get_config()
+                config = ClientManager.get_config(db_config)
+                print(f"@@@@@@PostgreSQL, Config: {db_config}")
                 db = PostgreSQLDB(config)
                 await db.initdb()
                 await db.check_tables()
@@ -289,7 +297,7 @@ class PGKVStorage(BaseKVStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(self.global_config["db_params"])
 
     async def finalize(self):
         if self.db is not None:
@@ -537,7 +545,7 @@ class PGVectorStorage(BaseVectorStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(self.global_config["db_params"])
 
     async def finalize(self):
         if self.db is not None:
@@ -841,7 +849,7 @@ class PGDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(self.global_config["db_params"])
 
     async def finalize(self):
         if self.db is not None:
@@ -1081,7 +1089,7 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(self.global_config["db_params"])
 
         # 分别执行每个语句，忽略错误
         queries = [

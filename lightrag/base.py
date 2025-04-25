@@ -95,6 +95,41 @@ class QueryParam:
 
 
 @dataclass
+class DatabaseParam:
+    """Configuration parameters for database connections in LightRAG."""
+
+    host: str = field(default_factory=lambda: os.environ.get("DATABASE_HOST"))
+    """Database host address"""
+
+    port: int = field(default_factory=lambda: int(os.environ.get("DATABASE_PORT")))
+    """Database port number"""
+
+    user: str = field(default_factory=lambda: os.environ.get("DATABASE_USER"))
+    """Database username for authentication"""
+
+    password: str = field(default_factory=lambda: os.environ.get("DATABASE_PASSWORD"))
+    """Database password for authentication"""
+
+    database: str = field(default_factory=lambda: os.environ.get("DATABASE_DATABASE"))
+    """Database name to connect to"""
+
+    workspace: str = field(
+        default_factory=lambda: os.environ.get("DATABASE_WORKSPACE", "default")
+    )
+    """Workspace identifier for multi-tenant environments"""
+
+    max_connections: int = field(
+        default_factory=lambda: int(os.environ.get("DATABASE_MAX_CONNECTIONS", "12"))
+    )
+    """Maximum number of database connections in the pool"""
+
+    min_connections: int = field(
+        default_factory=lambda: int(os.environ.get("DATABASE_MIN_CONNECTIONS", "1"))
+    )
+    """Minimum number of database connections in the pool"""
+
+
+@dataclass
 class StorageNameSpace(ABC):
     namespace: str
     global_config: dict[str, Any]

@@ -1,4 +1,8 @@
-from .lightrag import LightRAG as LightRAG, QueryParam as QueryParam
+from .lightrag import (
+    LightRAG as LightRAG,
+    QueryParam as QueryParam,
+    DatabaseParam as DatabaseParam,
+)
 
 __version__ = "1.3.4"
 __author__ = "Zirui Guo"

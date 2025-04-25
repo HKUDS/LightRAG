@@ -39,6 +39,7 @@ from .base import (
     DocStatus,
     DocStatusStorage,
     QueryParam,
+    DatabaseParam,
     StorageNameSpace,
     StoragesStatus,
 )
@@ -235,6 +236,12 @@ class LightRAG:
 
     enable_llm_cache_for_entity_extract: bool = field(default=True)
     """If True, enables caching for entity extraction steps to reduce LLM costs."""
+
+    # Database Connection
+    # ---
+
+    db_params: DatabaseParam = field(default_factory=DatabaseParam)
+    """Database connection parameters. Used by database storage backends."""
 
     # Extensions
     # ---
