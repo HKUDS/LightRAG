@@ -85,7 +85,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._id_to_meta = {}
                 self._load_faiss_index()
                 self.storage_updated.value = False
-        return self._index
+            return self._index
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         """
@@ -362,11 +362,10 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 logger.warning(
                     f"Storage for FAISS {self.namespace} was updated by another process, reloading..."
                 )
-                async with self._storage_lock:
-                    self._index = faiss.IndexFlatIP(self._dim)
-                    self._id_to_meta = {}
-                    self._load_faiss_index()
-                    self.storage_updated.value = False
+                self._index = faiss.IndexFlatIP(self._dim)
+                self._id_to_meta = {}
+                self._load_faiss_index()
+                self.storage_updated.value = False
                 return False  # Return error
 
         # Acquire lock and perform persistence
