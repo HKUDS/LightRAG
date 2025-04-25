@@ -11,6 +11,8 @@ services:
     env_file:
       - .env
     restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   neo4j:
     image: neo4j:5.26.4-community
@@ -29,6 +31,8 @@ services:
       - lightrag_neo4j_import:/var/lib/neo4j/import
       - lightrag_neo4j_data:/data
       - lightrag_neo4j_backups:/backups
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   lightrag_neo4j_import:

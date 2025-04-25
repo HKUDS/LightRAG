@@ -106,7 +106,7 @@ setuptools.setup(
         else "",
     },
     extras_require={
-        "api": read_api_requirements(),  # API requirements as optional
+        "api": requirements + read_api_requirements(),
         "tools": read_extra_requirements(),  # API requirements as optional
     },
     entry_points={
