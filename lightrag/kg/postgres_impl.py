@@ -1083,7 +1083,7 @@ class PGGraphStorage(BaseGraphStorage):
         if self.db is None:
             self.db = await ClientManager.get_client()
 
-        # 分别执行每个语句，忽略错误
+        # Execute each statement separately and ignore errors
         queries = [
             f"SELECT create_graph('{self.graph_name}')",
             f"SELECT create_vlabel('{self.graph_name}', 'base');",
@@ -2053,7 +2053,6 @@ class PGGraphStorage(BaseGraphStorage):
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
             indicating whether the graph was truncated due to max_nodes limit
         """
-        # 初始化 kg 变量，确保在所有情况下都有定义
         kg = KnowledgeGraph()
 
         # Handle wildcard query - get all nodes
@@ -2099,7 +2098,7 @@ class PGGraphStorage(BaseGraphStorage):
                 nodes_dict = {}
                 edges_dict = {}
                 for result in results:
-                    # 处理节点 a
+                    # Process node a
                     if result.get("a") and isinstance(result["a"], dict):
                         node_a = result["a"]
                         node_id = str(node_a["id"])
@@ -2110,7 +2109,7 @@ class PGGraphStorage(BaseGraphStorage):
                                 properties=node_a["properties"],
                             )
 
-                    # 处理节点 b
+                    # Process node b
                     if result.get("b") and isinstance(result["b"], dict):
                         node_b = result["b"]
                         node_id = str(node_b["id"])
@@ -2121,7 +2120,7 @@ class PGGraphStorage(BaseGraphStorage):
                                 properties=node_b["properties"],
                             )
 
-                    # 处理边 r
+                    # Process edge r
                     if result.get("r") and isinstance(result["r"], dict):
                         edge = result["r"]
                         edge_id = str(edge["id"])
@@ -2147,7 +2146,7 @@ class PGGraphStorage(BaseGraphStorage):
                 f"Subgraph query successful | Node count: {len(kg.nodes)} | Edge count: {len(kg.edges)}"
             )
         else:
-            # 非通配符查询，使用 BFS 算法
+            # For non-wildcard queries, use the BFS algorithm
             kg = await self._bfs_subgraph(node_label, max_depth, max_nodes)
             logger.info(
                 f"Subgraph query for '{node_label}' successful | Node count: {len(kg.nodes)} | Edge count: {len(kg.edges)}"
