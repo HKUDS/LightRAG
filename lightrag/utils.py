@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import html
-import io
 import csv
 import json
 import logging
@@ -442,37 +441,24 @@ def truncate_list_by_token_size(
     return list_data
 
 
-def list_of_list_to_csv(data: list[list[str]]) -> str:
-    output = io.StringIO()
-    writer = csv.writer(
-        output,
-        quoting=csv.QUOTE_ALL,  # Quote all fields
-        escapechar="\\",  # Use backslash as escape character
-        quotechar='"',  # Use double quotes
-        lineterminator="\n",  # Explicit line terminator
-    )
-    writer.writerows(data)
-    return output.getvalue()
+def list_of_list_to_json(data: list[list[str]]) -> list[dict[str, str]]:
+    if not data or len(data) <= 1:
+        return []
 
+    header = data[0]
+    result = []
 
-def csv_string_to_list(csv_string: str) -> list[list[str]]:
-    # Clean the string by removing NUL characters
-    cleaned_string = csv_string.replace("\0", "")
+    for row in data[1:]:
+        if len(row) >= 2:
+            item = {}
+            for i, field_name in enumerate(header):
+                if i < len(row):
+                    item[field_name] = str(row[i])
+                else:
+                    item[field_name] = ""
+            result.append(item)
 
-    output = io.StringIO(cleaned_string)
-    reader = csv.reader(
-        output,
-        quoting=csv.QUOTE_ALL,  # Match the writer configuration
-        escapechar="\\",  # Use backslash as escape character
-        quotechar='"',  # Use double quotes
-    )
-
-    try:
-        return [row for row in reader]
-    except csv.Error as e:
-        raise ValueError(f"Failed to parse CSV string: {str(e)}")
-    finally:
-        output.close()
+    return result
 
 
 def save_data_to_file(data, file_name):
@@ -540,41 +526,23 @@ def xml_to_json(xml_file):
         return None
 
 
-def process_combine_contexts(hl: str, ll: str):
-    header = None
-    list_hl = csv_string_to_list(hl.strip())
-    list_ll = csv_string_to_list(ll.strip())
+def process_combine_contexts(
+    hl_context: list[dict[str, str]], ll_context: list[dict[str, str]]
+):
+    seen_content = {}
+    combined_data = []
 
-    if list_hl:
-        header = list_hl[0]
-        list_hl = list_hl[1:]
-    if list_ll:
-        header = list_ll[0]
-        list_ll = list_ll[1:]
-    if header is None:
-        return ""
+    for item in hl_context + ll_context:
+        content_dict = {k: v for k, v in item.items() if k != "id"}
+        content_key = tuple(sorted(content_dict.items()))
+        if content_key not in seen_content:
+            seen_content[content_key] = item
+            combined_data.append(item)
 
-    if list_hl:
-        list_hl = [",".join(item[1:]) for item in list_hl if item]
-    if list_ll:
-        list_ll = [",".join(item[1:]) for item in list_ll if item]
+    for i, item in enumerate(combined_data):
+        item["id"] = str(i)
 
-    combined_sources = []
-    seen = set()
-
-    for item in list_hl + list_ll:
-        if item and item not in seen:
-            combined_sources.append(item)
-            seen.add(item)
-
-    combined_sources_result = [",\t".join(header)]
-
-    for i, item in enumerate(combined_sources, start=1):
-        combined_sources_result.append(f"{i},\t{item}")
-
-    combined_sources_result = "\n".join(combined_sources_result)
-
-    return combined_sources_result
+    return combined_data
 
 
 def get_and_validate_prompt_template(
@@ -659,18 +627,38 @@ async def get_best_cached_response(
         if cache_type and cache_data.get("cache_type") != cache_type:
             continue
 
+        # Check if cache data is valid
         if cache_data["embedding"] is None:
             continue
 
-        # Convert cached embedding list to ndarray
-        cached_quantized = np.frombuffer(
-            bytes.fromhex(cache_data["embedding"]), dtype=np.uint8
-        ).reshape(cache_data["embedding_shape"])
-        cached_embedding = dequantize_embedding(
-            cached_quantized,
-            cache_data["embedding_min"],
-            cache_data["embedding_max"],
-        )
+        try:
+            # Safely convert cached embedding
+            cached_quantized = np.frombuffer(
+                bytes.fromhex(cache_data["embedding"]), dtype=np.uint8
+            ).reshape(cache_data["embedding_shape"])
+
+            # Ensure min_val and max_val are valid float values
+            embedding_min = cache_data.get("embedding_min")
+            embedding_max = cache_data.get("embedding_max")
+
+            if (
+                embedding_min is None
+                or embedding_max is None
+                or embedding_min >= embedding_max
+            ):
+                logger.warning(
+                    f"Invalid embedding min/max values: min={embedding_min}, max={embedding_max}"
+                )
+                continue
+
+            cached_embedding = dequantize_embedding(
+                cached_quantized,
+                embedding_min,
+                embedding_max,
+            )
+        except Exception as e:
+            logger.warning(f"Error processing cached embedding: {str(e)}")
+            continue
 
         similarity = cosine_similarity(current_embedding, cached_embedding)
         if similarity > best_similarity:
@@ -759,6 +747,11 @@ def quantize_embedding(embedding: np.ndarray | list[float], bits: int = 8) -> tu
     min_val = embedding.min()
     max_val = embedding.max()
 
+    if min_val == max_val:
+        # handle constant vector
+        quantized = np.zeros_like(embedding, dtype=np.uint8)
+        return quantized, min_val, max_val
+
     # Quantize to 0-255 range
     scale = (2**bits - 1) / (max_val - min_val)
     quantized = np.round((embedding - min_val) * scale).astype(np.uint8)
@@ -770,6 +763,10 @@ def dequantize_embedding(
     quantized: np.ndarray, min_val: float, max_val: float, bits=8
 ) -> np.ndarray:
     """Restore quantized embedding"""
+    if min_val == max_val:
+        # handle constant vector
+        return np.full_like(quantized, min_val, dtype=np.float32)
+
     scale = (max_val - min_val) / (2**bits - 1)
     return (quantized * scale + min_val).astype(np.float32)
 
@@ -789,6 +786,7 @@ async def handle_cache(
         if not hashing_kv.global_config.get("enable_llm_cache"):
             return None, None, None, None
 
+        # TODO: deprecated (PostgreSQL cache not implemented yet)
         # Get embedding cache configuration
         embedding_cache_config = hashing_kv.global_config.get(
             "embedding_cache_config",
@@ -1507,12 +1505,18 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
     # (?=[\u4e00-\u9fa5]): Positive lookahead for Chinese character
     name = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[\u4e00-\u9fa5])", "", name)
 
-    # Remove spaces between Chinese and English/numbers
-    name = re.sub(r"(?<=[\u4e00-\u9fa5])\s+(?=[a-zA-Z0-9])", "", name)
-    name = re.sub(r"(?<=[a-zA-Z0-9])\s+(?=[\u4e00-\u9fa5])", "", name)
+    # Remove spaces between Chinese and English/numbers/symbols
+    name = re.sub(
+        r"(?<=[\u4e00-\u9fa5])\s+(?=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])", "", name
+    )
+    name = re.sub(
+        r"(?<=[a-zA-Z0-9\(\)\[\]@#$%!&\*\-=+_])\s+(?=[\u4e00-\u9fa5])", "", name
+    )
 
     # Remove English quotation marks from the beginning and end
     if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+    if len(name) >= 2 and name.startswith("'") and name.endswith("'"):
         name = name[1:-1]
 
     if is_entity:

@@ -3,6 +3,7 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+from pyuca import Collator
 from lightrag.utils import logger
 import aiofiles
 import shutil
@@ -614,8 +615,12 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
     try:
         enqueued = False
 
+        # Create Collator for Unicode sorting
+        collator = Collator()
+        sorted_file_paths = sorted(file_paths, key=lambda p: collator.sort_key(str(p)))
+
         # Process files sequentially
-        for file_path in file_paths:
+        for file_path in sorted_file_paths:
             if await pipeline_enqueue_file(rag, file_path):
                 enqueued = True
 
@@ -674,27 +679,9 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         if not new_files:
             return
 
-        # Get MAX_PARALLEL_INSERT from global_args
-        max_parallel = global_args.max_parallel_insert
-        # Calculate batch size as 2 * MAX_PARALLEL_INSERT
-        batch_size = 2 * max_parallel
-
-        # Process files in batches
-        for i in range(0, total_files, batch_size):
-            batch_files = new_files[i : i + batch_size]
-            batch_num = i // batch_size + 1
-            total_batches = (total_files + batch_size - 1) // batch_size
-
-            logger.info(
-                f"Processing batch {batch_num}/{total_batches} with {len(batch_files)} files"
-            )
-            await pipeline_index_files(rag, batch_files)
-
-            # Log progress
-            processed = min(i + batch_size, total_files)
-            logger.info(
-                f"Processed {processed}/{total_files} files ({processed/total_files*100:.1f}%)"
-            )
+        # Process all files at once
+        await pipeline_index_files(rag, new_files)
+        logger.info(f"Scanning process completed: {total_files} files Processed.")
 
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")

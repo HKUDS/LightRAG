@@ -16,6 +16,7 @@ python-dotenv
 python-jose[cryptography]
 python-multipart
 pytz
+pyuca
 tenacity
 tiktoken
 uvicorn
