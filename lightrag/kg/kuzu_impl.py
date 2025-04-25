@@ -10,8 +10,6 @@ import pipmaster as pm
 if not pm.is_installed("kuzu"):
     pm.install("kuzu>=0.9.0")
 if not pm.is_installed("numpy"):
-    # Using >=1.22.5 as a generally compatible baseline.
-    # Pip will resolve the latest available version satisfying this if 2.2.5+ isn't directly available/compatible.
     pm.install("numpy>=1.22.5")
 
 try:
@@ -35,64 +33,9 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-# Assuming these base classes and types are in parent directories or installed package
-try:
-    from ..base import BaseGraphStorage
-    from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
-    from ..utils import logger  # Assuming logger is configured elsewhere
-except ImportError:
-    # Provide dummy classes/functions if running standalone for testing
-    import logging  # Import standard logging here
-
-    logger = logging.getLogger("KuzuGraphStorage")
-    logger.setLevel(logging.INFO)
-    # Avoid adding handlers if logger might already exist from parent modules
-    if not logger.hasHandlers():
-        handler = logging.StreamHandler()
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-
-    class BaseGraphStorage:
-        def __init__(self, namespace, global_config, embedding_func):
-            self.namespace = namespace
-            self.global_config = global_config
-            self.embedding_func = embedding_func
-
-        async def initialize(self):
-            pass
-
-        async def finalize(self):
-            pass
-
-        async def index_done_callback(self):
-            pass
-
-        async def drop(self):
-            return {"status": "success", "message": "data dropped"}
-
-    @dataclass
-    class KnowledgeGraphNode:
-        id: str
-        labels: list[str]
-        properties: dict[str, Any]
-
-    @dataclass
-    class KnowledgeGraphEdge:
-        id: str
-        type: str
-        source: str
-        target: str
-        properties: dict[str, Any]
-
-    @dataclass
-    class KnowledgeGraph:
-        nodes: list[KnowledgeGraphNode] = field(default_factory=list)
-        edges: list[KnowledgeGraphEdge] = field(default_factory=list)
-        is_truncated: bool = False
-
+from ..base import BaseGraphStorage
+from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+from ..utils import logger
 
 import configparser
 
@@ -163,7 +106,6 @@ class KuzuClientManager:
                     ),  # Default for AsyncConnection
                 )
             ),
-            # Add other Kuzu DB options if needed (buffer_pool_size, etc.)
         }
         logger.info(f"Kuzu Configuration resolved to: {kuzu_config}")
         return kuzu_config
@@ -200,7 +142,6 @@ class KuzuClientManager:
                     # Initialize Kuzu Database
                     db = kuzu.Database(
                         database_path=db_path,
-                        # max_num_threads=max_threads # Set max_threads on connection instead if preferred
                     )
                     logger.info(f"Initialized Kuzu Database at: {db_path}")
 
@@ -525,7 +466,7 @@ class KuzuGraphStorage(BaseGraphStorage):
             logger.warning(
                 f"Could not calculate edge_degree for '{src_id}'-'{tgt_id}' due to error in node_degree.",
                 exc_info=False,
-            )  # Less verbose logging
+            )
             return 0
 
     @retry(
@@ -550,9 +491,7 @@ class KuzuGraphStorage(BaseGraphStorage):
             result: QueryResult = await conn.execute(query, params)
             if result.has_next():
                 props_json = result.get_next()[0]
-                return self._json_to_properties(
-                    props_json
-                )  # No entity_id needed for edge props
+                return self._json_to_properties(props_json)
             logger.debug(
                 f"Edge between '{source_node_id}' and '{target_node_id}' not found."
             )
@@ -595,7 +534,6 @@ class KuzuGraphStorage(BaseGraphStorage):
                     processed_pairs.add(pair)
             return edges if edges else None
         except Exception as e:
-            # Updated error check based on potential Kuzu error messages
             if (
                 "Binder exception:" in str(e)
                 and f"Node {self._node_table} with primary key = {source_node_id} does not exist"
@@ -828,7 +766,6 @@ class KuzuGraphStorage(BaseGraphStorage):
         conn = self._get_conn()
         edge_pairs_list = [{"source": p["src"], "target": p["tgt"]} for p in pairs]
         # Match undirected edge -[r]- to find edge regardless of direction in pair list
-        # REMOVED LIMIT 1
         query = f"""
             UNWIND $edge_pairs AS pair
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: pair.source }})
@@ -950,7 +887,6 @@ class KuzuGraphStorage(BaseGraphStorage):
 
         # Helper to convert Kuzu edge internal ID dict to string
         def kuzu_rel_internal_id_to_str(internal_id_dict):
-            # Corrected: Use 'table' key for relationships as well based on observation
             if (
                 isinstance(internal_id_dict, dict)
                 and "table" in internal_id_dict
