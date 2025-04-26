@@ -2,7 +2,7 @@ import Input from '@/components/ui/Input'
 import Button from '@/components/ui/Button'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { throttle } from '@/lib/utils'
-import { queryText, queryTextStream, Message } from '@/api/lightrag'
+import { queryText, queryTextStream } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings'
 import { useDebounce } from '@/hooks/useDebounce'
@@ -14,9 +14,18 @@ import type { QueryMode } from '@/api/lightrag'
 
 export default function RetrievalTesting() {
   const { t } = useTranslation()
-  const [messages, setMessages] = useState<MessageWithError[]>(
-    () => useSettingsStore.getState().retrievalHistory || []
-  )
+  const [messages, setMessages] = useState<MessageWithError[]>(() => {
+    const history = useSettingsStore.getState().retrievalHistory || []
+    // Ensure each message from history has a unique ID and mermaidRendered status
+    return history.map((msg, index) => {
+      const msgWithError = msg as MessageWithError // Cast to access potential properties
+      return {
+        ...msg,
+        id: msgWithError.id || `hist-${Date.now()}-${index}`, // Add ID if missing
+        mermaidRendered: msgWithError.mermaidRendered ?? true // Assume historical mermaid is rendered
+      }
+    })
+  })
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [inputError, setInputError] = useState('') // Error message for input
@@ -81,14 +90,17 @@ export default function RetrievalTesting() {
 
       // Create messages
       // Save the original input (with prefix if any) in userMessage.content for display
-      const userMessage: Message = {
+      const userMessage: MessageWithError = {
+        id: crypto.randomUUID(), // Add unique ID
         content: inputValue,
         role: 'user'
       }
 
-      const assistantMessage: Message = {
+      const assistantMessage: MessageWithError = {
+        id: crypto.randomUUID(), // Add unique ID
         content: '',
-        role: 'assistant'
+        role: 'assistant',
+        mermaidRendered: false
       }
 
       const prevMessages = [...messages]
@@ -113,12 +125,28 @@ export default function RetrievalTesting() {
       // Create a function to update the assistant's message
       const updateAssistantMessage = (chunk: string, isError?: boolean) => {
         assistantMessage.content += chunk
+
+        // Detect if the assistant message contains a complete mermaid code block
+        // Simple heuristic: look for ```mermaid ... ```
+        const mermaidBlockRegex = /```mermaid\s+([\s\S]+?)```/g
+        let mermaidRendered = false
+        let match
+        while ((match = mermaidBlockRegex.exec(assistantMessage.content)) !== null) {
+          // If the block is not too short, consider it complete
+          if (match[1] && match[1].trim().length > 10) {
+            mermaidRendered = true
+            break
+          }
+        }
+        assistantMessage.mermaidRendered = mermaidRendered
+
         setMessages((prev) => {
           const newMessages = [...prev]
           const lastMessage = newMessages[newMessages.length - 1]
           if (lastMessage.role === 'assistant') {
             lastMessage.content = assistantMessage.content
             lastMessage.isError = isError
+            lastMessage.mermaidRendered = assistantMessage.mermaidRendered
           }
           return newMessages
         })
@@ -279,14 +307,17 @@ export default function RetrievalTesting() {
                   {t('retrievePanel.retrieval.startPrompt')}
                 </div>
               ) : (
-                messages.map((message, idx) => (
-                  <div
-                    key={idx}
-                    className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
-                    {<ChatMessage message={message} />}
-                  </div>
-                ))
+                messages.map((message) => { // Remove unused idx
+                  // isComplete logic is now handled internally based on message.mermaidRendered
+                  return (
+                    <div
+                      key={message.id} // Use stable ID for key
+                      className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      {<ChatMessage message={message} />}
+                    </div>
+                  );
+                })
               )}
               <div ref={messagesEndRef} className="pb-1" />
             </div>
