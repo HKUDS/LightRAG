@@ -578,8 +578,7 @@ class PGVectorStorage(BaseVectorStorage):
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
             "chunk_ids": chunk_ids,
-            "file_path": item["file_path"],
-            # TODO: add document_id
+            "file_path": item.get("file_path", None),
         }
         return upsert_sql, data
 
@@ -599,8 +598,7 @@ class PGVectorStorage(BaseVectorStorage):
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
             "chunk_ids": chunk_ids,
-            "file_path": item["file_path"],
-            # TODO: add document_id
+            "file_path": item.get("file_path", None),
         }
         return upsert_sql, data
 
