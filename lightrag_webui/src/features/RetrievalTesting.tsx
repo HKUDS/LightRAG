@@ -279,14 +279,23 @@ export default function RetrievalTesting() {
                   {t('retrievePanel.retrieval.startPrompt')}
                 </div>
               ) : (
-                messages.map((message, idx) => (
-                  <div
-                    key={idx}
-                    className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                  >
-                    {<ChatMessage message={message} />}
-                  </div>
-                ))
+                messages.map((message, idx) => {
+                  // Determine if this message is complete:
+                  // 1. If it's not the last message, it's complete
+                  // 2. If it's the last message but we're not receiving a streaming response, it's complete
+                  // 3. If it's the last message and we're receiving a streaming response, it's not complete
+                  const isLastMessage = idx === messages.length - 1;
+                  const isMessageComplete = !isLastMessage || !isReceivingResponseRef.current;
+                  
+                  return (
+                    <div
+                      key={idx}
+                      className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    >
+                      {<ChatMessage message={message} isComplete={isMessageComplete} />}
+                    </div>
+                  );
+                })
               )}
               <div ref={messagesEndRef} className="pb-1" />
             </div>
