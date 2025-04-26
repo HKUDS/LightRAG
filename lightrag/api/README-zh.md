@@ -133,7 +133,7 @@ MAX_ASYNC=4
 
 ### 将 Lightrag 安装为 Linux 服务
 
-从示例文件 `lightrag.sevice.example` 创建您的服务文件 `lightrag.sevice`。修改服务文件中的 WorkingDirectory 和 ExecStart：
+从示例文件 `lightrag.service.example` 创建您的服务文件 `lightrag.service`。修改服务文件中的 WorkingDirectory 和 ExecStart：
 
 ```text
 Description=LightRAG Ollama Service
