@@ -248,9 +248,9 @@ const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false
     };
   // Dependencies: renderAsDiagram ensures effect runs when diagram should be shown.
   // children, language, theme trigger re-render if code/context changes.
-  // Dependencies are minimal: only run when the intent to render changes or the rendered state changes.
-  // Access children, theme, language inside the effect when needed.
-  }, [renderAsDiagram, hasRendered, language]); // Keep language to ensure it IS mermaid
+  // Dependencies include all values used inside the effect to satisfy exhaustive-deps.
+  // The !hasRendered check prevents re-execution of render logic after success.
+  }, [renderAsDiagram, hasRendered, language, children, theme]); // Add children and theme back
 
   // Render based on language type
   // If it's a mermaid language block and rendering as diagram is not requested (e.g., incomplete stream), display as plain text
