@@ -103,7 +103,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
            ...
         }
         """
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f"FAISS: Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
