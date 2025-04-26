@@ -22,7 +22,7 @@ export type MessageWithError = Message & {
   isError?: boolean
 }
 
-export const ChatMessage = ({ message }: { message: MessageWithError }) => {
+export const ChatMessage = ({ message, isComplete = true }: { message: MessageWithError, isComplete?: boolean }) => {
   const { t } = useTranslation()
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
@@ -51,7 +51,7 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => {
           rehypePlugins={[rehypeReact]}
           skipHtml={false}
           components={{
-            code: CodeHighlight,
+            code: (props) => <CodeHighlight {...props} isComplete={isComplete} />,
             p: ({ children }) => <p className="my-2">{children}</p>,
             h1: ({ children }) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
             h2: ({ children }) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
@@ -86,6 +86,7 @@ interface CodeHighlightProps {
   className?: string
   children?: ReactNode
   node?: Element // Keep node for inline check
+  isComplete?: boolean // Flag to indicate if the message is complete
 }
 
 // Helper function remains the same
@@ -100,7 +101,7 @@ const isInlineCode = (node?: Element): boolean => {
 };
 
 
-const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightProps) => {
+const CodeHighlight = ({ className, children, node, isComplete = true, ...props }: CodeHighlightProps) => {
   const { theme } = useTheme();
   const match = className?.match(/language-(\w+)/);
   const language = match ? match[1] : undefined;
@@ -233,6 +234,21 @@ const CodeHighlight = ({ className, children, node, ...props }: CodeHighlightPro
   }, [language, children, theme]); // Dependencies
 
   // Render based on language type
+  // If it's a mermaid language block and the message is not complete, display as plain text
+  if (language === 'mermaid' && !isComplete) {
+    return (
+      <SyntaxHighlighter
+        style={theme === 'dark' ? oneDark : oneLight}
+        PreTag="div"
+        language="text" // Use text as language to avoid syntax highlighting errors
+        {...props}
+      >
+        {String(children).replace(/\n$/, '')}
+      </SyntaxHighlighter>
+    );
+  }
+
+  // If it's a mermaid language block and the message is complete, render as diagram
   if (language === 'mermaid') {
     // Container for Mermaid diagram
     return <div className="mermaid-diagram-container my-4 overflow-x-auto" ref={mermaidRef}></div>;
