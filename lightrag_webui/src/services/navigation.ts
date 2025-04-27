@@ -63,7 +63,7 @@ class NavigationService {
     if (currentUsername) {
       localStorage.setItem('LIGHTRAG-PREVIOUS-USER', currentUsername);
     }
-    
+
     // Reset application state but preserve history
     // History will be cleared on next login if the user changes
     this.resetAllApplicationState(true);

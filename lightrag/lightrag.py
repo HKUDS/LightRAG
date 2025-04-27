@@ -1028,7 +1028,7 @@ class LightRAG:
                     if file_extraction_stage_ok:
                         try:
                             # Get chunk_results from entity_relation_task
-                            chunk_results = await entity_relation_task                            
+                            chunk_results = await entity_relation_task
                             await merge_nodes_and_edges(
                                 chunk_results=chunk_results,  # result collected from entity_relation_task
                                 knowledge_graph_inst=self.chunk_entity_relation_graph,
