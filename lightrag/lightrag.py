@@ -511,6 +511,17 @@ class LightRAG:
         text = await self.chunk_entity_relation_graph.get_all_labels()
         return text
 
+    async def aget_doc_info(self, doc_id: str) -> dict[str, Any] | None:
+        """Async method to get document information by ID.
+
+        Args:
+            doc_id: The document ID to retrieve information for
+
+        Returns:
+            Dictionary containing document information or None if not found
+        """
+        return await self.doc_status.get_by_id(doc_id)
+
     async def get_knowledge_graph(
         self,
         node_label: str,
