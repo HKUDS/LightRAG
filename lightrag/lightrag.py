@@ -46,6 +46,7 @@ from .namespace import NameSpace, make_namespace
 from .operate import (
     chunking_by_token_size,
     extract_entities,
+    merge_nodes_and_edges,
     kg_query,
     mix_kg_vector_query,
     naive_query,
@@ -902,6 +903,7 @@ class LightRAG:
                     semaphore: asyncio.Semaphore,
                 ) -> None:
                     """Process single document"""
+                    file_extraction_stage_ok = False
                     async with semaphore:
                         nonlocal processed_count
                         current_file_number = 0
@@ -919,7 +921,7 @@ class LightRAG:
                                 )
                                 pipeline_status["cur_batch"] = processed_count
 
-                                log_message = f"Processing file ({current_file_number}/{total_files}): {file_path}"
+                                log_message = f"Processing file {current_file_number}/{total_files}: {file_path}"
                                 logger.info(log_message)
                                 pipeline_status["history_messages"].append(log_message)
                                 log_message = f"Processing d-id: {doc_id}"
@@ -986,6 +988,61 @@ class LightRAG:
                                 text_chunks_task,
                             ]
                             await asyncio.gather(*tasks)
+                            file_extraction_stage_ok = True
+
+                        except Exception as e:
+                            # Log error and update pipeline status
+                            error_msg = f"Failed to extrat document {doc_id}: {traceback.format_exc()}"
+                            logger.error(error_msg)
+                            async with pipeline_status_lock:
+                                pipeline_status["latest_message"] = error_msg
+                                pipeline_status["history_messages"].append(error_msg)
+
+                                # Cancel other tasks as they are no longer meaningful
+                                for task in [
+                                    chunks_vdb_task,
+                                    entity_relation_task,
+                                    full_docs_task,
+                                    text_chunks_task,
+                                ]:
+                                    if not task.done():
+                                        task.cancel()
+
+                            # Update document status to failed
+                            await self.doc_status.upsert(
+                                {
+                                    doc_id: {
+                                        "status": DocStatus.FAILED,
+                                        "error": str(e),
+                                        "content": status_doc.content,
+                                        "content_summary": status_doc.content_summary,
+                                        "content_length": status_doc.content_length,
+                                        "created_at": status_doc.created_at,
+                                        "updated_at": datetime.now().isoformat(),
+                                        "file_path": file_path,
+                                    }
+                                }
+                            )
+
+                    # Release semphore before entering to merge stage
+                    if file_extraction_stage_ok:
+                        try:
+                            # Get chunk_results from entity_relation_task
+                            chunk_results = await entity_relation_task                            
+                            await merge_nodes_and_edges(
+                                chunk_results=chunk_results,  # result collected from entity_relation_task
+                                knowledge_graph_inst=self.chunk_entity_relation_graph,
+                                entity_vdb=self.entities_vdb,
+                                relationships_vdb=self.relationships_vdb,
+                                global_config=asdict(self),
+                                pipeline_status=pipeline_status,
+                                pipeline_status_lock=pipeline_status_lock,
+                                llm_response_cache=self.llm_response_cache,
+                                current_file_number=current_file_number,
+                                total_files=total_files,
+                                file_path=file_path,
+                            )
+
                             await self.doc_status.upsert(
                                 {
                                     doc_id: {
@@ -1012,22 +1069,12 @@ class LightRAG:
 
                         except Exception as e:
                             # Log error and update pipeline status
-                            error_msg = f"Failed to process document {doc_id}: {traceback.format_exc()}"
-
+                            error_msg = f"Merging stage failed in document {doc_id}: {traceback.format_exc()}"
                             logger.error(error_msg)
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = error_msg
                                 pipeline_status["history_messages"].append(error_msg)
 
-                                # Cancel other tasks as they are no longer meaningful
-                                for task in [
-                                    chunks_vdb_task,
-                                    entity_relation_task,
-                                    full_docs_task,
-                                    text_chunks_task,
-                                ]:
-                                    if not task.done():
-                                        task.cancel()
                             # Update document status to failed
                             await self.doc_status.upsert(
                                 {
@@ -1101,9 +1148,9 @@ class LightRAG:
 
     async def _process_entity_relation_graph(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
-    ) -> None:
+    ) -> list:
         try:
-            await extract_entities(
+            chunk_results = await extract_entities(
                 chunk,
                 knowledge_graph_inst=self.chunk_entity_relation_graph,
                 entity_vdb=self.entities_vdb,
@@ -1113,6 +1160,7 @@ class LightRAG:
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
             )
+            return chunk_results
         except Exception as e:
             error_msg = f"Failed to extract entities and relationships: {str(e)}"
             logger.error(error_msg)
