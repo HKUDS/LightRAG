@@ -16,8 +16,10 @@ class NavigationService {
    * 1. User logs out
    * 2. Authentication token expires
    * 3. Direct access to login page
+   *
+   * @param preserveHistory If true, chat history will be preserved. Default is false.
    */
-  resetAllApplicationState() {
+  resetAllApplicationState(preserveHistory = false) {
     console.log('Resetting all application state...');
 
     // Reset graph state
@@ -32,8 +34,10 @@ class NavigationService {
     // Reset backend state
     useBackendState.getState().clear();
 
-    // Reset retrieval history message while preserving other user preferences
-    useSettingsStore.getState().setRetrievalHistory([]);
+    // Reset retrieval history message only if preserveHistory is false
+    if (!preserveHistory) {
+      useSettingsStore.getState().setRetrievalHistory([]);
+    }
 
     // Clear authentication state
     sessionStorage.clear();
@@ -46,20 +50,7 @@ class NavigationService {
   }
 
   /**
-   * Handle direct access to login page
-   * @returns true if it's a direct access, false if navigated from another page
-   */
-  handleDirectLoginAccess() {
-    const isDirectAccess = !document.referrer;
-    if (isDirectAccess) {
-      this.resetAllApplicationState();
-    }
-    return isDirectAccess;
-  }
-
-  /**
    * Navigate to login page and reset application state
-   * @param skipReset whether to skip state reset (used for direct access scenario where reset is already handled)
    */
   navigateToLogin() {
     if (!this.navigate) {
@@ -67,7 +58,15 @@ class NavigationService {
       return;
     }
 
-    this.resetAllApplicationState();
+    // Store current username before logout for comparison during next login
+    const currentUsername = useAuthStore.getState().username;
+    if (currentUsername) {
+      localStorage.setItem('LIGHTRAG-PREVIOUS-USER', currentUsername);
+    }
+
+    // Reset application state but preserve history
+    // History will be cleared on next login if the user changes
+    this.resetAllApplicationState(true);
     useAuthStore.getState().logout();
 
     this.navigate('/login');
