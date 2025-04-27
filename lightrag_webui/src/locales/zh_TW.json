@@ -54,6 +54,16 @@
         "failed": "清空文件失敗：\n{{message}}",
         "error": "清空文件失敗：\n{{error}}"
       },
+      "deleteDocument": {
+        "title": "刪除文件",
+        "description": "此操作將從系統中永久刪除該文件",
+        "confirmButton": "刪除",
+        "deleting": "刪除中...",
+        "success": "文件刪除成功",
+        "failed": "刪除文件失敗：\n{{message}}",
+        "error": "刪除文件失敗：\n{{error}}",
+        "refreshFailed": "刪除後刷新文件列表失敗"
+      },
       "uploadDocuments": {
         "button": "上傳",
         "tooltip": "上傳文件",
@@ -103,7 +113,8 @@
           "chunks": "分塊",
           "created": "建立時間",
           "updated": "更新時間",
-          "metadata": "元資料"
+          "metadata": "元資料",
+          "actions": "操作"
         },
         "status": {
           "all": "全部",

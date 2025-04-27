@@ -54,6 +54,16 @@
       "failed": "清空文档失败：\n{{message}}",
       "error": "清空文档失败：\n{{error}}"
     },
+    "deleteDocument": {
+      "title": "删除文档",
+      "description": "此操作将从系统中永久删除该文档",
+      "confirmButton": "删除",
+      "deleting": "删除中...",
+      "success": "文档删除成功",
+      "failed": "删除文档失败：\n{{message}}",
+      "error": "删除文档失败：\n{{error}}",
+      "refreshFailed": "删除后刷新文档列表失败"
+    },
     "uploadDocuments": {
       "button": "上传",
       "tooltip": "上传文档",
@@ -97,6 +107,7 @@
       "emptyDescription": "还没有上传任何文档",
       "columns": {
         "id": "ID",
+        "actions": "操作",
         "summary": "摘要",
         "status": "状态",
         "length": "长度",

@@ -593,6 +593,11 @@ export const loginToServer = async (username: string, password: string): Promise
   return response.data;
 }
 
+export const deleteDocument = async (docId: string): Promise<DocActionResponse> => {
+  const response = await axiosInstance.delete(`/documents/${docId}`)
+  return response.data
+}
+
 /**
  * Updates an entity's properties in the knowledge graph
  * @param entityName The name of the entity to update

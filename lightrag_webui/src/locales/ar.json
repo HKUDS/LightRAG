@@ -54,6 +54,16 @@
       "failed": "فشل مسح المستندات:\n{{message}}",
       "error": "فشل مسح المستندات:\n{{error}}"
     },
+    "deleteDocument": {
+      "title": "حذف المستند",
+      "description": "سيؤدي هذا الإجراء إلى حذف المستند بشكل دائم من النظام",
+      "confirmButton": "حذف",
+      "deleting": "جارٍ الحذف...",
+      "success": "تم حذف المستند بنجاح",
+      "failed": "فشل حذف المستند:\n{{message}}",
+      "error": "فشل حذف المستند:\n{{error}}",
+      "refreshFailed": "فشل تحديث قائمة المستندات بعد الحذف"
+    },
     "uploadDocuments": {
       "button": "رفع",
       "tooltip": "رفع المستندات",
@@ -103,7 +113,8 @@
         "chunks": "الأجزاء",
         "created": "تم الإنشاء",
         "updated": "تم التحديث",
-        "metadata": "البيانات الوصفية"
+        "metadata": "البيانات الوصفية",
+        "actions": "إجراءات"
       },
       "status": {
         "all": "الكل",

@@ -54,6 +54,16 @@
       "failed": "Clear Documents Failed:\n{{message}}",
       "error": "Clear Documents Failed:\n{{error}}"
     },
+    "deleteDocument": {
+      "title": "Delete Document",
+      "description": "This will permanently delete the document from the system",
+      "confirmButton": "Delete",
+      "deleting": "Deleting...",
+      "success": "Document deleted successfully",
+      "failed": "Delete Document Failed:\n{{message}}",
+      "error": "Delete Document Failed:\n{{error}}",
+      "refreshFailed": "Failed to refresh documents after deletion"
+    },
     "uploadDocuments": {
       "button": "Upload",
       "tooltip": "Upload documents",
@@ -97,6 +107,7 @@
       "emptyDescription": "There are no uploaded documents yet.",
       "columns": {
         "id": "ID",
+        "actions": "Actions",
         "summary": "Summary",
         "status": "Status",
         "length": "Length",

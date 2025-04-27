@@ -54,6 +54,16 @@
       "failed": "Échec de l'effacement des documents :\n{{message}}",
       "error": "Échec de l'effacement des documents :\n{{error}}"
     },
+    "deleteDocument": {
+      "title": "Supprimer le document",
+      "description": "Cette action supprimera définitivement le document du système",
+      "confirmButton": "Supprimer",
+      "deleting": "Suppression en cours...",
+      "success": "Document supprimé avec succès",
+      "failed": "Échec de la suppression du document :\n{{message}}",
+      "error": "Échec de la suppression du document :\n{{error}}",
+      "refreshFailed": "Échec du rafraîchissement de la liste des documents après suppression"
+    },
     "uploadDocuments": {
       "button": "Télécharger",
       "tooltip": "Télécharger des documents",
@@ -103,7 +113,8 @@
         "chunks": "Fragments",
         "created": "Créé",
         "updated": "Mis à jour",
-        "metadata": "Métadonnées"
+        "metadata": "Métadonnées",
+        "actions": "Actions"
       },
       "status": {
         "all": "Tous",

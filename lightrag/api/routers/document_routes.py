@@ -945,6 +945,45 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
+    @router.delete("/{doc_id}", dependencies=[Depends(combined_auth)])
+    async def delete_document(doc_id: str):
+        """
+        Delete a specific document by its ID.
+
+        Args:
+            doc_id (str): The ID of the document to delete.
+
+        Returns:
+            dict: A confirmation message.
+
+        Raises:
+            HTTPException: If the document is not found (404) or an error occurs (500).
+        """
+        try:
+            # Call the method, expect exception on failure (e.g., ValueError if not found)
+            await rag.adelete_by_doc_id(doc_id)
+            # If no exception, assume success
+            logger.info(f"Successfully deleted document with ID: {doc_id}")
+            return {
+                "status": "success",
+                "message": f"Document with ID '{doc_id}' deleted successfully.",
+            }
+        except ValueError:  # Assuming ValueError indicates the document was not found
+            logger.warning(f"Document with ID '{doc_id}' not found for deletion.")
+            raise HTTPException(
+                status_code=404, detail=f"Document with ID '{doc_id}' not found."
+            )
+        except HTTPException as http_exc:
+            # Re-raise HTTP exceptions directly
+            raise http_exc
+        except Exception as e:
+            logger.error(f"Unexpected error deleting document {doc_id}: {str(e)}")
+            logger.error(traceback.format_exc())  # Log traceback for unexpected errors
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal server error during deletion: {str(e)}",
+            )
+
     @router.delete(
         "", response_model=ClearDocumentsResponse, dependencies=[Depends(combined_auth)]
     )

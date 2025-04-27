@@ -21,8 +21,9 @@ import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon, TrashIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
+import DeleteDocumentDialog from '@/components/documents/DeleteDocumentDialog'
 
 type StatusFilter = DocStatus | 'all';
 
@@ -172,6 +173,13 @@ export default function DocumentManager() {
 
   // State for document status filter
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [docIdToDelete, setDocIdToDelete] = useState<string | null>(null)
+
+  const handleDeleteClick = (docId: string) => {
+    setDocIdToDelete(docId)
+    setDeleteDialogOpen(true)
+  }
 
 
   // Handle sort column click
@@ -505,6 +513,12 @@ export default function DocumentManager() {
             open={showPipelineStatus}
             onOpenChange={setShowPipelineStatus}
           />
+          <DeleteDocumentDialog
+            open={deleteDialogOpen}
+            onOpenChange={setDeleteDialogOpen}
+            docId={docIdToDelete || ''}
+            onDocumentDeleted={fetchDocuments}
+          />
         </div>
 
         <Card className="flex-1 flex flex-col border rounded-md min-h-0 mb-2">
@@ -652,6 +666,9 @@ export default function DocumentManager() {
                             )}
                           </div>
                         </TableHead>
+                        <TableHead className="w-16">
+                          {t('documentPanel.documentManager.columns.actions')}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
@@ -717,6 +734,16 @@ export default function DocumentManager() {
                           </TableCell>
                           <TableCell className="truncate">
                             {new Date(doc.updated_at).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-950"
+                              onClick={() => handleDeleteClick(doc.id)}
+                            >
+                              <TrashIcon className="h-4 w-4" />
+                            </Button>
                           </TableCell>
                         </TableRow>
                       ))}
