@@ -490,7 +490,7 @@ async def merge_nodes_and_edges(
     file_path: str = "unknown_source",
 ) -> None:
     """Merge nodes and edges from extraction results
-    
+
     Args:
         chunk_results: List of tuples (maybe_nodes, maybe_edges) containing extracted entities and relationships
         knowledge_graph_inst: Knowledge graph storage
@@ -503,8 +503,9 @@ async def merge_nodes_and_edges(
     """
     # Get lock manager from shared storage
     from .kg.shared_storage import get_graph_db_lock
+
     graph_db_lock = get_graph_db_lock(enable_logging=False)
-    
+
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
     all_edges = defaultdict(list)
@@ -527,7 +528,9 @@ async def merge_nodes_and_edges(
     # Use graph database lock to ensure atomic merges and updates
     async with graph_db_lock:
         async with pipeline_status_lock:
-            log_message = f"Merging nodes/edges {current_file_number}/{total_files}: {file_path}"
+            log_message = (
+                f"Merging nodes/edges {current_file_number}/{total_files}: {file_path}"
+            )
             logger.info(log_message)
             pipeline_status["latest_message"] = log_message
             pipeline_status["history_messages"].append(log_message)
@@ -585,9 +588,7 @@ async def merge_nodes_and_edges(
             }
             await entity_vdb.upsert(data_for_vdb)
 
-        log_message = (
-            f"Updating {total_relations_count} relations {current_file_number}/{total_files}: {file_path}"
-        )
+        log_message = f"Updating {total_relations_count} relations {current_file_number}/{total_files}: {file_path}"
         logger.info(log_message)
         if pipeline_status is not None:
             async with pipeline_status_lock:
@@ -832,7 +833,7 @@ async def extract_entities(
 
     # If all tasks completed successfully, collect results
     chunk_results = [task.result() for task in tasks]
-    
+
     # Return the chunk_results for later processing in merge_nodes_and_edges
     return chunk_results
 
