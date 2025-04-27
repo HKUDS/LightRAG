@@ -102,7 +102,7 @@ class JsonDocStatusStorage(DocStatusStorage):
                 data_dict = (
                     dict(self._data) if hasattr(self._data, "_getvalue") else self._data
                 )
-                logger.info(
+                logger.debug(
                     f"Process {os.getpid()} doc status writting {len(data_dict)} records to {self.namespace}"
                 )
                 write_json(data_dict, self._file_name)
