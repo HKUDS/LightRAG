@@ -79,7 +79,7 @@ class JsonKVStorage(BaseKVStorage):
                     # For non-cache namespaces, use the original count method
                     data_count = len(data_dict)
 
-                logger.info(
+                logger.debug(
                     f"Process {os.getpid()} KV writting {data_count} records to {self.namespace}"
                 )
                 write_json(data_dict, self._file_name)

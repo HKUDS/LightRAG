@@ -921,7 +921,7 @@ class LightRAG:
                                 )
                                 pipeline_status["cur_batch"] = processed_count
 
-                                log_message = f"Processing file {current_file_number}/{total_files}: {file_path}"
+                                log_message = f"Extracting stage {current_file_number}/{total_files}: {file_path}"
                                 logger.info(log_message)
                                 pipeline_status["history_messages"].append(log_message)
                                 log_message = f"Processing d-id: {doc_id}"
@@ -1028,7 +1028,7 @@ class LightRAG:
                     if file_extraction_stage_ok:
                         try:
                             # Get chunk_results from entity_relation_task
-                            chunk_results = await entity_relation_task                            
+                            chunk_results = await entity_relation_task
                             await merge_nodes_and_edges(
                                 chunk_results=chunk_results,  # result collected from entity_relation_task
                                 knowledge_graph_inst=self.chunk_entity_relation_graph,
