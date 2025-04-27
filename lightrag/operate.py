@@ -529,7 +529,7 @@ async def merge_nodes_and_edges(
     async with graph_db_lock:
         async with pipeline_status_lock:
             log_message = (
-                f"Merging nodes/edges {current_file_number}/{total_files}: {file_path}"
+                f"Merging stage {current_file_number}/{total_files}: {file_path}"
             )
             logger.info(log_message)
             pipeline_status["latest_message"] = log_message

@@ -921,7 +921,7 @@ class LightRAG:
                                 )
                                 pipeline_status["cur_batch"] = processed_count
 
-                                log_message = f"Processing file {current_file_number}/{total_files}: {file_path}"
+                                log_message = f"Extracting stage {current_file_number}/{total_files}: {file_path}"
                                 logger.info(log_message)
                                 pipeline_status["history_messages"].append(log_message)
                                 log_message = f"Processing d-id: {doc_id}"
