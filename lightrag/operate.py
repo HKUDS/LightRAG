@@ -616,9 +616,6 @@ async def merge_nodes_and_edges(
 
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
-    knowledge_graph_inst: BaseGraphStorage,
-    entity_vdb: BaseVectorStorage,
-    relationships_vdb: BaseVectorStorage,
     global_config: dict[str, str],
     pipeline_status: dict = None,
     pipeline_status_lock=None,
