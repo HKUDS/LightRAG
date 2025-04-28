@@ -61,7 +61,7 @@ from .utils import (
     compute_mdhash_id,
     convert_response_to_json,
     lazy_external_import,
-    limit_async_func_call,
+    priority_limit_async_func_call,
     get_content_summary,
     clean_text,
     check_storage_env_vars,
@@ -338,9 +338,9 @@ class LightRAG:
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
         # Init Embedding
-        self.embedding_func = limit_async_func_call(self.embedding_func_max_async)(  # type: ignore
-            self.embedding_func
-        )
+        self.embedding_func = priority_limit_async_func_call(
+            self.embedding_func_max_async
+        )(self.embedding_func)
 
         # Initialize all storages
         self.key_string_value_json_storage_cls: type[BaseKVStorage] = (
@@ -426,7 +426,7 @@ class LightRAG:
         # Directly use llm_response_cache, don't create a new object
         hashing_kv = self.llm_response_cache
 
-        self.llm_model_func = limit_async_func_call(self.llm_model_max_async)(
+        self.llm_model_func = priority_limit_async_func_call(self.llm_model_max_async)(
             partial(
                 self.llm_model_func,  # type: ignore
                 hashing_kv=hashing_kv,
@@ -1024,7 +1024,8 @@ class LightRAG:
                                 }
                             )
 
-                    # Release semphore before entering to merge stage
+                    # Semphore was released here
+
                     if file_extraction_stage_ok:
                         try:
                             # Get chunk_results from entity_relation_task
@@ -1152,9 +1153,6 @@ class LightRAG:
         try:
             chunk_results = await extract_entities(
                 chunk,
-                knowledge_graph_inst=self.chunk_entity_relation_graph,
-                entity_vdb=self.entities_vdb,
-                relationships_vdb=self.relationships_vdb,
                 global_config=asdict(self),
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
@@ -1445,6 +1443,9 @@ class LightRAG:
         elif param.mode == "bypass":
             # Bypass mode: directly use LLM without knowledge retrieval
             use_llm_func = param.model_func or global_config["llm_model_func"]
+            # Apply higher priority (8) to entity/relation summary tasks
+            use_llm_func = partial(use_llm_func, _priority=8)
+
             param.stream = True if param.stream is None else param.stream
             response = await use_llm_func(
                 query.strip(),

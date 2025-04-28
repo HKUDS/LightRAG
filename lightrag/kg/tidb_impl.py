@@ -390,7 +390,9 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
         """Search from tidb vector"""
-        embeddings = await self.embedding_func([query])
+        embeddings = await self.embedding_func(
+            [query], _priority=5
+        )  # higher priority for query
         embedding = embeddings[0]
 
         embedding_string = "[" + ", ".join(map(str, embedding.tolist())) + "]"
