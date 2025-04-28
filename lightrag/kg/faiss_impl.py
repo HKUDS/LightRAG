@@ -175,7 +175,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
         Search by a textual query; returns top_k results with their metadata + similarity distance.
         """
-        embedding = await self.embedding_func([query])
+        embedding = await self.embedding_func(
+            [query], _priority=5
+        )  # higher priority for query
         # embedding is shape (1, dim)
         embedding = np.array(embedding, dtype=np.float32)
         faiss.normalize_L2(embedding)  # we do in-place normalization

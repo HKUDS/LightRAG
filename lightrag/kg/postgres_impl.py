@@ -644,7 +644,9 @@ class PGVectorStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        embeddings = await self.embedding_func([query])
+        embeddings = await self.embedding_func(
+            [query], _priority=5
+        )  # higher priority for query
         embedding = embeddings[0]
         embedding_string = ",".join(map(str, embedding))
         # Use parameterized document IDs (None means search across all documents)
