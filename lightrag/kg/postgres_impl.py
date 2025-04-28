@@ -578,8 +578,7 @@ class PGVectorStorage(BaseVectorStorage):
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
             "chunk_ids": chunk_ids,
-            "file_path": item["file_path"],
-            # TODO: add document_id
+            "file_path": item.get("file_path", None),
         }
         return upsert_sql, data
 
@@ -599,8 +598,7 @@ class PGVectorStorage(BaseVectorStorage):
             "content": item["content"],
             "content_vector": json.dumps(item["__vector__"].tolist()),
             "chunk_ids": chunk_ids,
-            "file_path": item["file_path"],
-            # TODO: add document_id
+            "file_path": item.get("file_path", None),
         }
         return upsert_sql, data
 
@@ -1083,27 +1081,38 @@ class PGGraphStorage(BaseGraphStorage):
         if self.db is None:
             self.db = await ClientManager.get_client()
 
-        node1_id = "dummy_entity"
-        node1_data = {
-            "entity_id": node1_id,
-            "description": "dummy description",
-            "keywords": "dummy,keywords",
-            "entity_type": "dummy_type",
-        }
-        await self.upsert_node(node1_id, node1_data)
-        await self.delete_node(node1_id)
+        # Execute each statement separately and ignore errors
+        queries = [
+            f"SELECT create_graph('{self.graph_name}')",
+            f"SELECT create_vlabel('{self.graph_name}', 'base');",
+            f"SELECT create_elabel('{self.graph_name}', 'DIRECTED');",
+            # f'CREATE INDEX CONCURRENTLY vertex_p_idx ON {self.graph_name}."_ag_label_vertex" (id)',
+            f'CREATE INDEX CONCURRENTLY vertex_idx_node_id ON {self.graph_name}."_ag_label_vertex" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
+            # f'CREATE INDEX CONCURRENTLY edge_p_idx ON {self.graph_name}."_ag_label_edge" (id)',
+            f'CREATE INDEX CONCURRENTLY edge_sid_idx ON {self.graph_name}."_ag_label_edge" (start_id)',
+            f'CREATE INDEX CONCURRENTLY edge_eid_idx ON {self.graph_name}."_ag_label_edge" (end_id)',
+            f'CREATE INDEX CONCURRENTLY edge_seid_idx ON {self.graph_name}."_ag_label_edge" (start_id,end_id)',
+            f'CREATE INDEX CONCURRENTLY directed_p_idx ON {self.graph_name}."DIRECTED" (id)',
+            f'CREATE INDEX CONCURRENTLY directed_eid_idx ON {self.graph_name}."DIRECTED" (end_id)',
+            f'CREATE INDEX CONCURRENTLY directed_sid_idx ON {self.graph_name}."DIRECTED" (start_id)',
+            f'CREATE INDEX CONCURRENTLY directed_seid_idx ON {self.graph_name}."DIRECTED" (start_id,end_id)',
+            f'CREATE INDEX CONCURRENTLY entity_p_idx ON {self.graph_name}."base" (id)',
+            f'CREATE INDEX CONCURRENTLY entity_idx_node_id ON {self.graph_name}."base" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
+            f'CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON {self.graph_name}."base" using gin(properties)',
+            f'ALTER TABLE {self.graph_name}."DIRECTED" CLUSTER ON directed_sid_idx',
+        ]
 
-        query = (
-            """CREATE INDEX entity_id_gin_idxSELECT ON %s."base" USING gin (properties);"""
-            % (self.graph_name)
-        )
-
-        await self.db.execute(
-            query,
-            upsert=True,
-            with_age=True,
-            graph_name=self.graph_name,
-        )
+        for query in queries:
+            try:
+                await self.db.execute(
+                    query,
+                    upsert=True,
+                    with_age=True,
+                    graph_name=self.graph_name,
+                )
+                logger.info(f"Successfully executed: {query}")
+            except Exception:
+                continue
 
     async def finalize(self):
         if self.db is not None:
@@ -1454,12 +1463,14 @@ class PGGraphStorage(BaseGraphStorage):
                      MATCH (target:base {entity_id: "%s"})
                      MERGE (source)-[r:DIRECTED]-(target)
                      SET r += %s
+                     SET r += %s
                      RETURN r
                    $$) AS (r agtype)""" % (
             self.graph_name,
             src_label,
             tgt_label,
             edge_properties,
+            edge_properties,  # https://github.com/HKUDS/LightRAG/issues/1438#issuecomment-2826000195
         )
 
         try:
@@ -1813,6 +1824,215 @@ class PGGraphStorage(BaseGraphStorage):
                 labels.append(result["label"])
         return labels
 
+    async def _bfs_subgraph(
+        self, node_label: str, max_depth: int, max_nodes: int
+    ) -> KnowledgeGraph:
+        """
+        Implements a true breadth-first search algorithm for subgraph retrieval.
+        This method is used as a fallback when the standard Cypher query is too slow
+        or when we need to guarantee BFS ordering.
+
+        Args:
+            node_label: Label of the starting node
+            max_depth: Maximum depth of the subgraph
+            max_nodes: Maximum number of nodes to return
+
+        Returns:
+            KnowledgeGraph object containing nodes and edges
+        """
+        from collections import deque
+
+        result = KnowledgeGraph()
+        visited_nodes = set()
+        visited_node_ids = set()
+        visited_edges = set()
+        visited_edge_pairs = set()
+
+        # Get starting node data
+        label = self._normalize_node_id(node_label)
+        query = """SELECT * FROM cypher('%s', $$
+                    MATCH (n:base {entity_id: "%s"})
+                    RETURN id(n) as node_id, n
+                  $$) AS (node_id bigint, n agtype)""" % (self.graph_name, label)
+
+        node_result = await self._query(query)
+        if not node_result or not node_result[0].get("n"):
+            return result
+
+        # Create initial KnowledgeGraphNode
+        start_node_data = node_result[0]["n"]
+        entity_id = start_node_data["properties"]["entity_id"]
+        internal_id = str(start_node_data["id"])
+
+        start_node = KnowledgeGraphNode(
+            id=internal_id,
+            labels=[entity_id],
+            properties=start_node_data["properties"],
+        )
+
+        # Initialize BFS queue, each element is a tuple of (node, depth)
+        queue = deque([(start_node, 0)])
+
+        visited_nodes.add(entity_id)
+        visited_node_ids.add(internal_id)
+        result.nodes.append(start_node)
+
+        result.is_truncated = False
+
+        # BFS search main loop
+        while queue:
+            # Get all nodes at the current depth
+            current_level_nodes = []
+            current_depth = None
+
+            # Determine current depth
+            if queue:
+                current_depth = queue[0][1]
+
+            # Extract all nodes at current depth from the queue
+            while queue and queue[0][1] == current_depth:
+                node, depth = queue.popleft()
+                if depth > max_depth:
+                    continue
+                current_level_nodes.append(node)
+
+            if not current_level_nodes:
+                continue
+
+            # Check depth limit
+            if current_depth > max_depth:
+                continue
+
+            # Prepare node IDs list
+            node_ids = [node.labels[0] for node in current_level_nodes]
+            formatted_ids = ", ".join(
+                [f'"{self._normalize_node_id(node_id)}"' for node_id in node_ids]
+            )
+
+            # Construct batch query for outgoing edges
+            outgoing_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                UNWIND [{formatted_ids}] AS node_id
+                MATCH (n:base {{entity_id: node_id}})
+                OPTIONAL MATCH (n)-[r]->(neighbor:base)
+                RETURN node_id AS current_id,
+                       id(n) AS current_internal_id,
+                       id(neighbor) AS neighbor_internal_id,
+                       neighbor.entity_id AS neighbor_id,
+                       id(r) AS edge_id,
+                       r,
+                       neighbor,
+                       true AS is_outgoing
+              $$) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint,
+                      neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"""
+
+            # Construct batch query for incoming edges
+            incoming_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                UNWIND [{formatted_ids}] AS node_id
+                MATCH (n:base {{entity_id: node_id}})
+                OPTIONAL MATCH (n)<-[r]-(neighbor:base)
+                RETURN node_id AS current_id,
+                       id(n) AS current_internal_id,
+                       id(neighbor) AS neighbor_internal_id,
+                       neighbor.entity_id AS neighbor_id,
+                       id(r) AS edge_id,
+                       r,
+                       neighbor,
+                       false AS is_outgoing
+              $$) AS (current_id text, current_internal_id bigint, neighbor_internal_id bigint,
+                      neighbor_id text, edge_id bigint, r agtype, neighbor agtype, is_outgoing bool)"""
+
+            # Execute queries
+            outgoing_results = await self._query(outgoing_query)
+            incoming_results = await self._query(incoming_query)
+
+            # Combine results
+            neighbors = outgoing_results + incoming_results
+
+            # Create mapping from node ID to node object
+            node_map = {node.labels[0]: node for node in current_level_nodes}
+
+            # Process all results in a single loop
+            for record in neighbors:
+                if not record.get("neighbor") or not record.get("r"):
+                    continue
+
+                # Get current node information
+                current_entity_id = record["current_id"]
+                current_node = node_map[current_entity_id]
+
+                # Get neighbor node information
+                neighbor_entity_id = record["neighbor_id"]
+                neighbor_internal_id = str(record["neighbor_internal_id"])
+                is_outgoing = record["is_outgoing"]
+
+                # Determine edge direction
+                if is_outgoing:
+                    source_id = current_node.id
+                    target_id = neighbor_internal_id
+                else:
+                    source_id = neighbor_internal_id
+                    target_id = current_node.id
+
+                if not neighbor_entity_id:
+                    continue
+
+                # Get edge and node information
+                b_node = record["neighbor"]
+                rel = record["r"]
+                edge_id = str(record["edge_id"])
+
+                # Create neighbor node object
+                neighbor_node = KnowledgeGraphNode(
+                    id=neighbor_internal_id,
+                    labels=[neighbor_entity_id],
+                    properties=b_node["properties"],
+                )
+
+                # Sort entity_ids to ensure (A,B) and (B,A) are treated as the same edge
+                sorted_pair = tuple(sorted([current_entity_id, neighbor_entity_id]))
+
+                # Create edge object
+                edge = KnowledgeGraphEdge(
+                    id=edge_id,
+                    type=rel["label"],
+                    source=source_id,
+                    target=target_id,
+                    properties=rel["properties"],
+                )
+
+                if neighbor_internal_id in visited_node_ids:
+                    # Add backward edge if neighbor node is already visited
+                    if (
+                        edge_id not in visited_edges
+                        and sorted_pair not in visited_edge_pairs
+                    ):
+                        result.edges.append(edge)
+                        visited_edges.add(edge_id)
+                        visited_edge_pairs.add(sorted_pair)
+                else:
+                    if len(visited_node_ids) < max_nodes and current_depth < max_depth:
+                        # Add new node to result and queue
+                        result.nodes.append(neighbor_node)
+                        visited_nodes.add(neighbor_entity_id)
+                        visited_node_ids.add(neighbor_internal_id)
+
+                        # Add node to queue with incremented depth
+                        queue.append((neighbor_node, current_depth + 1))
+
+                        # Add forward edge
+                        if (
+                            edge_id not in visited_edges
+                            and sorted_pair not in visited_edge_pairs
+                        ):
+                            result.edges.append(edge)
+                            visited_edges.add(edge_id)
+                            visited_edge_pairs.add(sorted_pair)
+                    else:
+                        if current_depth < max_depth:
+                            result.is_truncated = True
+
+        return result
+
     async def get_knowledge_graph(
         self,
         node_label: str,
@@ -1825,115 +2045,111 @@ class PGGraphStorage(BaseGraphStorage):
         Args:
             node_label: Label of the starting node, * means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
-            max_nodes: Maxiumu nodes to return, Defaults to 1000 (not BFS nor DFS garanteed)
+            max_nodes: Maxiumu nodes to return, Defaults to 1000
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
             indicating whether the graph was truncated due to max_nodes limit
         """
-        # First, count the total number of nodes that would be returned without limit
+        kg = KnowledgeGraph()
+
+        # Handle wildcard query - get all nodes
         if node_label == "*":
+            # First check total node count to determine if graph should be truncated
             count_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
                     MATCH (n:base)
                     RETURN count(distinct n) AS total_nodes
                     $$) AS (total_nodes bigint)"""
-        else:
-            strip_label = self._normalize_node_id(node_label)
-            count_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                    MATCH (n:base {{entity_id: "{strip_label}"}})
-                    OPTIONAL MATCH p = (n)-[*..{max_depth}]-()
-                    RETURN count(nodes(p)) AS total_nodes
-                    $$) AS (total_nodes bigint)"""
 
-        count_result = await self._query(count_query)
-        total_nodes = count_result[0]["total_nodes"] if count_result else 0
-        is_truncated = total_nodes > max_nodes
+            count_result = await self._query(count_query)
+            total_nodes = count_result[0]["total_nodes"] if count_result else 0
+            is_truncated = total_nodes > max_nodes
 
-        # Now get the actual data with limit
-        if node_label == "*":
-            query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                    MATCH (node:base)
-                    OPTIONAL MATCH (node)-[r]->()
-                    RETURN collect(distinct node) AS n, collect(distinct r) AS r
-                    LIMIT {max_nodes}
-                    $$) AS (n agtype, r agtype)"""
-        else:
-            strip_label = self._normalize_node_id(node_label)
-            if total_nodes > 0:
+            # Get max_nodes with highest degrees
+            query_nodes = f"""SELECT * FROM cypher('{self.graph_name}', $$
+                    MATCH (n:base)
+                    OPTIONAL MATCH (n)-[r]->()
+                    RETURN id(n) as node_id, count(r) as degree
+                $$) AS (node_id BIGINT, degree BIGINT)
+                ORDER BY degree DESC
+                LIMIT {max_nodes}"""
+            node_results = await self._query(query_nodes)
+
+            node_ids = [str(result["node_id"]) for result in node_results]
+
+            logger.info(f"Total nodes: {total_nodes}, Selected nodes: {len(node_ids)}")
+
+            if node_ids:
+                formatted_ids = ", ".join(node_ids)
+                # Construct batch query for subgraph within max_nodes
                 query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                        MATCH (node:base {{entity_id: "{strip_label}"}})
-                        OPTIONAL MATCH p = (node)-[*..{max_depth}]-()
-                        RETURN nodes(p) AS n, relationships(p) AS r
-                        LIMIT {max_nodes}
-                        $$) AS (n agtype, r agtype)"""
-            else:
-                query = f"""SELECT * FROM cypher('{self.graph_name}', $$
-                        MATCH (node:base {{entity_id: "{strip_label}"}})
-                        RETURN node AS n
-                        $$) AS (n agtype)"""
+                        WITH [{formatted_ids}] AS node_ids
+                        MATCH (a)
+                        WHERE id(a) IN node_ids
+                        OPTIONAL MATCH (a)-[r]->(b)
+                            WHERE id(b) IN node_ids
+                        RETURN a, r, b
+                    $$) AS (a AGTYPE, r AGTYPE, b AGTYPE)"""
+                results = await self._query(query)
 
-        results = await self._query(query)
-
-        # Process the query results with deduplication by node and edge IDs
-        nodes_dict = {}
-        edges_dict = {}
-        for result in results:
-            # Handle single node cases
-            if result.get("n") and isinstance(result["n"], dict):
-                node_id = str(result["n"]["id"])
-                if node_id not in nodes_dict:
-                    nodes_dict[node_id] = KnowledgeGraphNode(
-                        id=node_id,
-                        labels=[result["n"]["properties"]["entity_id"]],
-                        properties=result["n"]["properties"],
-                    )
-            # Handle node list cases
-            elif result.get("n") and isinstance(result["n"], list):
-                for node in result["n"]:
-                    if isinstance(node, dict) and "id" in node:
-                        node_id = str(node["id"])
-                        if node_id not in nodes_dict and "properties" in node:
+                # Process query results, deduplicate nodes and edges
+                nodes_dict = {}
+                edges_dict = {}
+                for result in results:
+                    # Process node a
+                    if result.get("a") and isinstance(result["a"], dict):
+                        node_a = result["a"]
+                        node_id = str(node_a["id"])
+                        if node_id not in nodes_dict and "properties" in node_a:
                             nodes_dict[node_id] = KnowledgeGraphNode(
                                 id=node_id,
-                                labels=[node["properties"]["entity_id"]],
-                                properties=node["properties"],
+                                labels=[node_a["properties"]["entity_id"]],
+                                properties=node_a["properties"],
                             )
 
-            # Handle single edge cases
-            if result.get("r") and isinstance(result["r"], dict):
-                edge_id = str(result["r"]["id"])
-                if edge_id not in edges_dict:
-                    edges_dict[edge_id] = KnowledgeGraphEdge(
-                        id=edge_id,
-                        type="DIRECTED",
-                        source=str(result["r"]["start_id"]),
-                        target=str(result["r"]["end_id"]),
-                        properties=result["r"]["properties"],
-                    )
-            # Handle edge list cases
-            elif result.get("r") and isinstance(result["r"], list):
-                for edge in result["r"]:
-                    if isinstance(edge, dict) and "id" in edge:
+                    # Process node b
+                    if result.get("b") and isinstance(result["b"], dict):
+                        node_b = result["b"]
+                        node_id = str(node_b["id"])
+                        if node_id not in nodes_dict and "properties" in node_b:
+                            nodes_dict[node_id] = KnowledgeGraphNode(
+                                id=node_id,
+                                labels=[node_b["properties"]["entity_id"]],
+                                properties=node_b["properties"],
+                            )
+
+                    # Process edge r
+                    if result.get("r") and isinstance(result["r"], dict):
+                        edge = result["r"]
                         edge_id = str(edge["id"])
                         if edge_id not in edges_dict:
                             edges_dict[edge_id] = KnowledgeGraphEdge(
                                 id=edge_id,
-                                type="DIRECTED",
+                                type=edge["label"],
                                 source=str(edge["start_id"]),
                                 target=str(edge["end_id"]),
                                 properties=edge["properties"],
                             )
 
-        # Construct and return the KnowledgeGraph with deduplicated nodes and edges
-        kg = KnowledgeGraph(
-            nodes=list(nodes_dict.values()),
-            edges=list(edges_dict.values()),
-            is_truncated=is_truncated,
-        )
+                kg = KnowledgeGraph(
+                    nodes=list(nodes_dict.values()),
+                    edges=list(edges_dict.values()),
+                    is_truncated=is_truncated,
+                )
+            else:
+                # For single node query, use BFS algorithm
+                kg = await self._bfs_subgraph(node_label, max_depth, max_nodes)
 
-        logger.info(
-            f"Subgraph query successful | Node count: {len(kg.nodes)} | Edge count: {len(kg.edges)}"
-        )
+            logger.info(
+                f"Subgraph query successful | Node count: {len(kg.nodes)} | Edge count: {len(kg.edges)}"
+            )
+        else:
+            # For non-wildcard queries, use the BFS algorithm
+            kg = await self._bfs_subgraph(node_label, max_depth, max_nodes)
+            logger.info(
+                f"Subgraph query for '{node_label}' successful | Node count: {len(kg.nodes)} | Edge count: {len(kg.edges)}"
+            )
+
         return kg
 
     async def drop(self) -> dict[str, str]:

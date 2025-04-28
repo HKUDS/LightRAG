@@ -1058,7 +1058,7 @@ class Neo4JStorage(BaseGraphStorage):
         result = KnowledgeGraph()
         visited_nodes = set()
         visited_edges = set()
-        visited_edge_pairs = set()  # 用于跟踪已处理的边对(排序后的source_id, target_id)
+        visited_edge_pairs = set()
 
         # Get the starting node's data
         async with self._driver.session(
@@ -1160,12 +1160,12 @@ class Neo4JStorage(BaseGraphStorage):
                                 properties=dict(rel),
                             )
 
-                            # 对source_id和target_id进行排序，确保(A,B)和(B,A)被视为同一条边
+                            # Sort source_id and target_id to ensure (A,B) and (B,A) are treated as the same edge
                             sorted_pair = tuple(sorted([current_node.id, target_id]))
 
-                            # 检查是否已存在相同的边（考虑无向性）
+                            # Check if the same edge already exists (considering undirectedness)
                             if sorted_pair not in visited_edge_pairs:
-                                # 只有当目标节点已经在结果中或将被添加到结果中时，才添加边
+                                # Only add the edge if the target node is already in the result or will be added
                                 if target_id in visited_nodes or (
                                     target_id not in visited_nodes
                                     and current_depth < max_depth
