@@ -8,7 +8,6 @@ import logging
 import logging.handlers
 import os
 import re
-import time
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
@@ -302,12 +301,13 @@ def priority_limit_async_func_call(max_size: int):
         queue = asyncio.PriorityQueue()
         tasks = set()
         lock = asyncio.Lock()
+        counter = 0
 
         # Worker function that processes tasks from the queue
         async def worker():
             """Worker that processes tasks from the priority queue"""
             while True:
-                # Get task from queue (priority, task_id, future, args, kwargs)
+                # Get task from queue (priority, count, future, args, kwargs)
                 _, _, future, args, kwargs = await queue.get()
                 try:
                     # Execute the function
@@ -360,11 +360,13 @@ def priority_limit_async_func_call(max_size: int):
             # Create future for result
             future = asyncio.Future()
 
-            # Create unique task ID
-            task_id = id(args) + id(kwargs) + id(time.time())
+            nonlocal counter
+            async with lock:
+                current_count = counter
+                counter += 1
 
-            # Put task in queue with priority
-            await queue.put((_priority, task_id, future, args, kwargs))
+            # Put task in queue with priority and monotonic counter
+            await queue.put((_priority, current_count, future, args, kwargs))
 
             # Wait for result with optional timeout
             if _timeout is not None:
