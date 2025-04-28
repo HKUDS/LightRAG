@@ -308,7 +308,7 @@ def priority_limit_async_func_call(max_size: int):
             """Worker that processes tasks from the priority queue"""
             while True:
                 # Get task from queue (priority, task_id, future, args, kwargs)
-                priority, _, future, args, kwargs = await queue.get()
+                _, _, future, args, kwargs = await queue.get()
                 try:
                     # Execute the function
                     result = await func(*args, **kwargs)

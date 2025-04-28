@@ -147,7 +147,6 @@ async def _handle_entity_relation_summary(
         llm_response_cache=llm_response_cache,
         max_tokens=summary_max_tokens,
         cache_type="extract",
-        priority=5,  # Higher priority for entity/relation summary
     )
     return summary
 
