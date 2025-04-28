@@ -6,6 +6,8 @@ from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from typing import List, Optional, Dict, Any
 import logging
 
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+from google.api_core.exceptions import ResourceExhausted
 # Configure logging for this module
 logger = logging.getLogger(__name__)
 
@@ -20,12 +22,8 @@ def _configure_gemini():
     # Configure only if needed (e.g., if running functions standalone)
     # In the server context, this might be configured globally once.
     # Adding a check avoids re-configuration warnings/errors if already configured.
-    if not genai.API_KEY:
-         genai.configure(api_key=api_key)
-    elif genai.API_KEY != api_key:
-         # If the key changed, reconfigure
-         logger.warning("GEMINI_API_KEY changed, reconfiguring genai client.")
-         genai.configure(api_key=api_key)
+    # Always configure; the library handles idempotency.
+    genai.configure(api_key=api_key)
 
 
 async def gemini_complete(
@@ -108,6 +106,11 @@ async def gemini_complete(
         return f"Error: {e}"
 
 
+@retry(
+    stop=stop_after_attempt(3),  # Retry up to 3 times
+    wait=wait_exponential(multiplier=1, min=2, max=10), # Wait 2s, 4s, 8s between retries
+    retry=retry_if_exception_type(ResourceExhausted) # Only retry on 429 errors
+)
 async def gemini_embed(
     texts: List[str],
     model_name: str = "models/embedding-001", # Default model, server should override

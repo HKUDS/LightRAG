@@ -73,19 +73,17 @@ def create_app(args):
     set_verbose_debug(args.verbose)
 
     # Verify that bindings are correctly setup
-    if args.llm_binding not in [
-        "lollms",
-        "ollama",
-        "openai",
-        "openai-ollama",
-        "azure_openai",
-    ]:
-        raise Exception("llm binding not supported")
+    # Note: config.py already validates choices, but extra check here is fine
+    supported_llm_bindings = ["lollms", "ollama", "openai", "openai-ollama", "azure_openai", "gemini"]
+    supported_embedding_bindings = ["lollms", "ollama", "openai", "azure_openai", "gemini"]
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
-        raise Exception("embedding binding not supported")
+    if args.llm_binding not in supported_llm_bindings:
+        raise ValueError(f"Unsupported llm binding: {args.llm_binding}. Supported: {supported_llm_bindings}")
 
-    # Set default hosts if not provided
+    if args.embedding_binding not in supported_embedding_bindings:
+         raise ValueError(f"Unsupported embedding binding: {args.embedding_binding}. Supported: {supported_embedding_bindings}")
+
+    # Set default hosts if not provided (config.py handles this now, but keep for clarity)
     if args.llm_binding_host is None:
         args.llm_binding_host = get_default_host(args.llm_binding)
 
@@ -192,6 +190,8 @@ def create_app(args):
 
     # Create working directory if it doesn't exist
     Path(args.working_dir).mkdir(parents=True, exist_ok=True)
+
+    # --- Import necessary functions based on bindings ---
     if args.llm_binding == "lollms" or args.embedding_binding == "lollms":
         from lightrag.llm.lollms import lollms_model_complete, lollms_embed
     if args.llm_binding == "ollama" or args.embedding_binding == "ollama":
@@ -203,10 +203,14 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
-    if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
-        from lightrag.llm.openai import openai_complete_if_cache
-        from lightrag.llm.ollama import ollama_embed
+    # Handle openai-ollama combination explicitly if needed (config.py might already resolve this)
+    if args.llm_binding == "openai" and args.embedding_binding == "ollama":
+        # Imports likely already handled above, but good to be explicit if needed
+        pass
+    if args.llm_binding == "gemini" or args.embedding_binding == "gemini":
+        from lightrag.llm.gemini import gemini_complete, gemini_embed
 
+    # --- Define Helper Wrappers (indented correctly) ---
     async def openai_alike_model_complete(
         prompt,
         system_prompt=None,
@@ -219,7 +223,8 @@ def create_app(args):
             kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
-        kwargs["temperature"] = args.temperature
+        # Temperature is now passed via llm_model_kwargs
+        # kwargs["temperature"] = args.temperature
         return await openai_complete_if_cache(
             args.llm_model,
             prompt,
@@ -227,7 +232,7 @@ def create_app(args):
             history_messages=history_messages,
             base_url=args.llm_binding_host,
             api_key=args.llm_binding_api_key,
-            **kwargs,
+            **kwargs, # Pass remaining kwargs including temperature
         )
 
     async def azure_openai_model_complete(
@@ -242,113 +247,139 @@ def create_app(args):
             kwargs["response_format"] = GPTKeywordExtractionFormat
         if history_messages is None:
             history_messages = []
-        kwargs["temperature"] = args.temperature
+        # Temperature is now passed via llm_model_kwargs
+        # kwargs["temperature"] = args.temperature
         return await azure_openai_complete_if_cache(
             args.llm_model,
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
             base_url=args.llm_binding_host,
-            api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+            api_key=os.getenv("AZURE_OPENAI_API_KEY"), # Key still read from env here
             api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview"),
-            **kwargs,
+            **kwargs, # Pass remaining kwargs including temperature
         )
 
-    embedding_func = EmbeddingFunc(
-        embedding_dim=args.embedding_dim,
-        max_token_size=args.max_embed_tokens,
-        func=lambda texts: lollms_embed(
+    # --- Determine embedding function based on binding (indented correctly) ---
+    embed_async_func = None
+    if args.embedding_binding == "lollms":
+        embed_async_func = lambda texts: lollms_embed(
             texts,
             embed_model=args.embedding_model,
             host=args.embedding_binding_host,
             api_key=args.embedding_binding_api_key,
         )
-        if args.embedding_binding == "lollms"
-        else ollama_embed(
+    elif args.embedding_binding == "ollama":
+        embed_async_func = lambda texts: ollama_embed(
             texts,
             embed_model=args.embedding_model,
             host=args.embedding_binding_host,
             api_key=args.embedding_binding_api_key,
         )
-        if args.embedding_binding == "ollama"
-        else azure_openai_embed(
+    elif args.embedding_binding == "azure_openai":
+        # Azure OpenAI embedding function likely reads key/endpoint from env vars internally
+        embed_async_func = lambda texts: azure_openai_embed(
             texts,
-            model=args.embedding_model,  # no host is used for openai,
-            api_key=args.embedding_binding_api_key,
+            model=args.embedding_model,
+            api_key=args.embedding_binding_api_key, # Pass key just in case, might be ignored
         )
-        if args.embedding_binding == "azure_openai"
-        else openai_embed(
+    elif args.embedding_binding == "openai":
+         embed_async_func = lambda texts: openai_embed(
             texts,
             model=args.embedding_model,
             base_url=args.embedding_binding_host,
             api_key=args.embedding_binding_api_key,
-        ),
+        )
+    elif args.embedding_binding == "gemini":
+        # Gemini function needs the model name and dimension potentially
+        embed_async_func = lambda texts: gemini_embed(
+            texts,
+            model_name=args.embedding_model, # Pass the configured model name
+            dim=args.embedding_dim # Pass the configured dimension for error handling/validation
+        )
+    else:
+        # Should not happen due to config validation, but good practice
+        raise ValueError(f"Unsupported embedding binding: {args.embedding_binding}")
+
+    embedding_func = EmbeddingFunc(
+        embedding_dim=args.embedding_dim,
+        max_token_size=args.max_embed_tokens,
+        func=embed_async_func, # Use the determined function
     )
 
-    # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama", "openai"]:
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            llm_model_func=lollms_model_complete
-            if args.llm_binding == "lollms"
-            else ollama_model_complete
-            if args.llm_binding == "ollama"
-            else openai_alike_model_complete,
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "host": args.llm_binding_host,
-                "timeout": args.timeout,
-                "options": {"num_ctx": args.max_tokens},
-                "api_key": args.llm_binding_api_key,
-            }
-            if args.llm_binding == "lollms" or args.llm_binding == "ollama"
-            else {},
-            embedding_func=embedding_func,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            auto_manage_storages_states=False,
-            max_parallel_insert=args.max_parallel_insert,
-            addon_params={"language": args.summary_language},
-        )
-    else:  # azure_openai
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            llm_model_func=azure_openai_model_complete,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "timeout": args.timeout,
-            },
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
-            embedding_func=embedding_func,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            auto_manage_storages_states=False,
-            max_parallel_insert=args.max_parallel_insert,
-            addon_params={"language": args.summary_language},
-        )
+    # --- Determine LLM function and kwargs based on binding (indented correctly) ---
+    llm_model_func = None
+    llm_model_kwargs = {}
 
-    # Add routes
+    if args.llm_binding == "lollms":
+        llm_model_func = lollms_model_complete
+        llm_model_kwargs = {
+            "host": args.llm_binding_host,
+            "timeout": args.timeout,
+            "options": {"num_ctx": args.max_tokens},
+            "api_key": args.llm_binding_api_key,
+            "temperature": args.temperature, # Pass temperature
+        }
+    elif args.llm_binding == "ollama":
+        llm_model_func = ollama_model_complete
+        llm_model_kwargs = {
+            "host": args.llm_binding_host,
+            "timeout": args.timeout,
+            "options": {"num_ctx": args.max_tokens},
+            "api_key": args.llm_binding_api_key,
+            "temperature": args.temperature, # Pass temperature
+        }
+    elif args.llm_binding == "openai":
+        llm_model_func = openai_alike_model_complete # Use the wrapper
+        llm_model_kwargs = {
+             "timeout": args.timeout, # Pass timeout if applicable to the underlying call
+             "temperature": args.temperature, # Pass temperature to the wrapper, ADD COMMA
+        }
+    elif args.llm_binding == "azure_openai":
+        llm_model_func = azure_openai_model_complete # Use the wrapper
+        llm_model_kwargs = {
+             "timeout": args.timeout, # Pass timeout if applicable
+             "temperature": args.temperature, # Pass temperature to the wrapper, ADD COMMA
+        }
+    elif args.llm_binding == "gemini":
+        llm_model_func = gemini_complete # Gemini function handles API key internally via env var
+        llm_model_kwargs = {
+            "model_name": args.llm_model, # Pass the model name explicitly
+            "timeout": args.timeout, # Pass timeout if applicable
+            "temperature": args.temperature, # Pass temperature, ADD COMMA
+            # Other Gemini specific params like top_p, top_k can be added if needed
+        }
+    else:
+        # Should not happen due to config validation
+        raise ValueError(f"Unsupported LLM binding: {args.llm_binding}")
+
+
+    # --- Initialize RAG - simplified structure (indented correctly) ---
+    rag = LightRAG(
+        working_dir=args.working_dir,
+        llm_model_func=llm_model_func, # Use determined function
+        llm_model_name=args.llm_model, # Keep model name for logging/reference
+        llm_model_max_async=args.max_async,
+        llm_model_max_token_size=args.max_tokens,
+        chunk_token_size=int(args.chunk_size),
+        chunk_overlap_token_size=int(args.chunk_overlap_size),
+        llm_model_kwargs=llm_model_kwargs, # Use determined kwargs
+        embedding_func=embedding_func, # Use previously determined embedding_func
+        kv_storage=args.kv_storage,
+        graph_storage=args.graph_storage,
+        vector_storage=args.vector_storage,
+        doc_status_storage=args.doc_status_storage,
+        vector_db_storage_cls_kwargs={
+            "cosine_better_than_threshold": args.cosine_threshold
+        },
+        enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+        enable_llm_cache=args.enable_llm_cache,
+        auto_manage_storages_states=False,
+        max_parallel_insert=args.max_parallel_insert,
+        addon_params={"language": args.summary_language},
+    )
+
+    # --- Add routes (indented correctly) ---
     app.include_router(create_document_routes(rag, doc_manager, api_key))
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
@@ -493,7 +524,7 @@ def create_app(args):
         name="webui",
     )
 
-    return app
+    return app # Ensure this is the last statement inside create_app
 
 
 def get_application(args=None):
