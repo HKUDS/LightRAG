@@ -1445,6 +1445,9 @@ class LightRAG:
         elif param.mode == "bypass":
             # Bypass mode: directly use LLM without knowledge retrieval
             use_llm_func = param.model_func or global_config["llm_model_func"]
+            # Apply higher priority (8) to entity/relation summary tasks
+            use_llm_func = partial(use_llm_func, _priority=8)
+
             param.stream = True if param.stream is None else param.stream
             response = await use_llm_func(
                 query.strip(),
