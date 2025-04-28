@@ -40,36 +40,24 @@ def retrieve_metadata():
 
 
 # Reading dependencies from requirements.txt
-def read_requirements():
+def read_requirements(file_path="requirements.txt"):
     deps = []
     try:
-        with open("./requirements.txt") as f:
-            deps = [line.strip() for line in f if line.strip()]
+        with open(file_path) as f:
+            deps = [
+                line.strip() for line in f if line.strip() and not line.startswith("#")
+            ]
     except FileNotFoundError:
-        print(
-            "Warning: 'requirements.txt' not found. No dependencies will be installed."
-        )
+        print(f"Warning: '{file_path}' not found. No dependencies will be installed.")
     return deps
 
 
 def read_api_requirements():
-    api_deps = []
-    try:
-        with open("./lightrag/api/requirements.txt") as f:
-            api_deps = [line.strip() for line in f if line.strip()]
-    except FileNotFoundError:
-        print("Warning: API requirements.txt not found.")
-    return api_deps
+    return read_requirements("lightrag/api/requirements.txt")
 
 
 def read_extra_requirements():
-    api_deps = []
-    try:
-        with open("./lightrag/tools/lightrag_visualizer/requirements.txt") as f:
-            api_deps = [line.strip() for line in f if line.strip()]
-    except FileNotFoundError:
-        print("Warning: API requirements.txt not found.")
-    return api_deps
+    return read_requirements("lightrag/tools/lightrag_visualizer/requirements.txt")
 
 
 metadata = retrieve_metadata()
