@@ -161,7 +161,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
         self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
         try:
-            embedding = await self.embedding_func([query])
+            embedding = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
 
             results = self._collection.query(
                 query_embeddings=embedding.tolist()

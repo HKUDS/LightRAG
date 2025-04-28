@@ -1,4 +1,5 @@
 from __future__ import annotations
+import weakref
 
 import asyncio
 import html
@@ -267,17 +268,261 @@ def compute_mdhash_id(content: str, prefix: str = "") -> str:
     return prefix + md5(content.encode()).hexdigest()
 
 
-def limit_async_func_call(max_size: int):
-    """Add restriction of maximum concurrent async calls using asyncio.Semaphore"""
+# Custom exception class
+class QueueFullError(Exception):
+    """Raised when the queue is full and the wait times out"""
+
+    pass
+
+
+def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
+    """
+    Enhanced priority-limited asynchronous function call decorator
+
+    Args:
+        max_size: Maximum number of concurrent calls
+        max_queue_size: Maximum queue capacity to prevent memory overflow
+    Returns:
+        Decorator function
+    """
 
     def final_decro(func):
-        sem = asyncio.Semaphore(max_size)
+        queue = asyncio.PriorityQueue(maxsize=max_queue_size)
+        tasks = set()
+        initialization_lock = asyncio.Lock()
+        counter = 0
+        shutdown_event = asyncio.Event()
+        initialized = False  # Global initialization flag
+        worker_health_check_task = None
+
+        # Track active future objects for cleanup
+        active_futures = weakref.WeakSet()
+
+        # Worker function to process tasks in the queue
+        async def worker():
+            """Worker that processes tasks in the priority queue"""
+            try:
+                while not shutdown_event.is_set():
+                    try:
+                        # Use timeout to get tasks, allowing periodic checking of shutdown signal
+                        try:
+                            (
+                                priority,
+                                count,
+                                future,
+                                args,
+                                kwargs,
+                            ) = await asyncio.wait_for(queue.get(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            # Timeout is just to check shutdown signal, continue to next iteration
+                            continue
+
+                        # If future is cancelled, skip execution
+                        if future.cancelled():
+                            queue.task_done()
+                            continue
+
+                        try:
+                            # Execute function
+                            result = await func(*args, **kwargs)
+                            # If future is not done, set the result
+                            if not future.done():
+                                future.set_result(result)
+                        except asyncio.CancelledError:
+                            if not future.done():
+                                future.cancel()
+                            logger.debug("limit_async: Task cancelled during execution")
+                        except Exception as e:
+                            logger.error(
+                                f"limit_async: Error in decorated function: {str(e)}"
+                            )
+                            if not future.done():
+                                future.set_exception(e)
+                        finally:
+                            queue.task_done()
+                    except Exception as e:
+                        # Catch all exceptions in worker loop to prevent worker termination
+                        logger.error(f"limit_async: Critical error in worker: {str(e)}")
+                        await asyncio.sleep(0.1)  # Prevent high CPU usage
+            finally:
+                logger.warning("limit_async: Worker exiting")
+
+        async def health_check():
+            """Periodically check worker health status and recover"""
+            try:
+                while not shutdown_event.is_set():
+                    await asyncio.sleep(5)  # Check every 5 seconds
+
+                    # No longer acquire lock, directly operate on task set
+                    # Use a copy of the task set to avoid concurrent modification
+                    current_tasks = set(tasks)
+                    done_tasks = {t for t in current_tasks if t.done()}
+                    tasks.difference_update(done_tasks)
+
+                    # Calculate active tasks count
+                    active_tasks_count = len(tasks)
+                    workers_needed = max_size - active_tasks_count
+
+                    if workers_needed > 0:
+                        logger.info(
+                            f"limit_async: Creating {workers_needed} new workers"
+                        )
+                        new_tasks = set()
+                        for _ in range(workers_needed):
+                            task = asyncio.create_task(worker())
+                            new_tasks.add(task)
+                            task.add_done_callback(tasks.discard)
+                        # Update task set in one operation
+                        tasks.update(new_tasks)
+            except Exception as e:
+                logger.error(f"limit_async: Error in health check: {str(e)}")
+            finally:
+                logger.warning("limit_async: Health check task exiting")
+
+        async def ensure_workers():
+            """Ensure worker threads and health check system are available
+
+            This function checks if the worker system is already initialized.
+            If not, it performs a one-time initialization of all worker threads
+            and starts the health check system.
+            """
+            nonlocal initialized, worker_health_check_task, tasks
+
+            if initialized:
+                return
+
+            async with initialization_lock:
+                if initialized:
+                    return
+
+                logger.info("limit_async: Initializing worker system")
+
+                # Create initial worker tasks
+                for _ in range(max_size):
+                    task = asyncio.create_task(worker())
+                    tasks.add(task)
+                    task.add_done_callback(tasks.discard)
+
+                # Start health check
+                worker_health_check_task = asyncio.create_task(health_check())
+
+                initialized = True
+                logger.info("limit_async: Worker system initialized")
+
+        async def shutdown():
+            """Gracefully shut down all workers and the queue"""
+            logger.info("limit_async: Shutting down priority queue workers")
+
+            # Set the shutdown event
+            shutdown_event.set()
+
+            # Cancel all active futures
+            for future in list(active_futures):
+                if not future.done():
+                    future.cancel()
+
+            # Wait for the queue to empty
+            try:
+                await asyncio.wait_for(queue.join(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "limit_async: Timeout waiting for queue to empty during shutdown"
+                )
+
+            # Cancel all worker tasks
+            for task in list(tasks):
+                if not task.done():
+                    task.cancel()
+
+            # Wait for all tasks to complete
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Cancel the health check task
+            if worker_health_check_task and not worker_health_check_task.done():
+                worker_health_check_task.cancel()
+                try:
+                    await worker_health_check_task
+                except asyncio.CancelledError:
+                    pass
+
+            logger.info("limit_async: Priority queue workers shutdown complete")
 
         @wraps(func)
-        async def wait_func(*args, **kwargs):
-            async with sem:
-                result = await func(*args, **kwargs)
-                return result
+        async def wait_func(
+            *args, _priority=10, _timeout=None, _queue_timeout=None, **kwargs
+        ):
+            """
+            Execute the function with priority-based concurrency control
+            Args:
+                *args: Positional arguments passed to the function
+                _priority: Call priority (lower values have higher priority)
+                _timeout: Maximum time to wait for function completion (in seconds)
+                _queue_timeout: Maximum time to wait for entering the queue (in seconds)
+                **kwargs: Keyword arguments passed to the function
+            Returns:
+                The result of the function call
+            Raises:
+                TimeoutError: If the function call times out
+                QueueFullError: If the queue is full and waiting times out
+                Any exception raised by the decorated function
+            """
+            # Ensure worker system is initialized
+            await ensure_workers()
+
+            # Create a future for the result
+            future = asyncio.Future()
+            active_futures.add(future)
+
+            nonlocal counter
+            async with initialization_lock:
+                current_count = counter
+                counter += 1
+
+            # Try to put the task into the queue, supporting timeout
+            try:
+                if _queue_timeout is not None:
+                    # Use timeout to wait for queue space
+                    try:
+                        await asyncio.wait_for(
+                            queue.put((_priority, current_count, future, args, kwargs)),
+                            timeout=_queue_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        raise QueueFullError(
+                            f"Queue full, timeout after {_queue_timeout} seconds"
+                        )
+                else:
+                    # No timeout, may wait indefinitely
+                    await queue.put((_priority, current_count, future, args, kwargs))
+            except Exception as e:
+                # Clean up the future
+                if not future.done():
+                    future.set_exception(e)
+                active_futures.discard(future)
+                raise
+
+            try:
+                # Wait for the result, optional timeout
+                if _timeout is not None:
+                    try:
+                        return await asyncio.wait_for(future, _timeout)
+                    except asyncio.TimeoutError:
+                        # Cancel the future
+                        if not future.done():
+                            future.cancel()
+                        raise TimeoutError(
+                            f"limit_async: Task timed out after {_timeout} seconds"
+                        )
+                else:
+                    # Wait for the result without timeout
+                    return await future
+            finally:
+                # Clean up the future reference
+                active_futures.discard(future)
+
+        # Add the shutdown method to the decorated function
+        wait_func.shutdown = shutdown
 
         return wait_func
 
@@ -726,46 +971,10 @@ async def handle_cache(
     if mode != "default":  # handle cache for all type of query
         if not hashing_kv.global_config.get("enable_llm_cache"):
             return None, None, None, None
-
-        # TODO: deprecated (PostgreSQL cache not implemented yet)
-        # Get embedding cache configuration
-        embedding_cache_config = hashing_kv.global_config.get(
-            "embedding_cache_config",
-            {"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False},
-        )
-        is_embedding_cache_enabled = embedding_cache_config["enabled"]
-        use_llm_check = embedding_cache_config.get("use_llm_check", False)
-
-        quantized = min_val = max_val = None
-        if is_embedding_cache_enabled:  # Use embedding simularity to match cache
-            current_embedding = await hashing_kv.embedding_func([prompt])
-            llm_model_func = hashing_kv.global_config.get("llm_model_func")
-            quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-            best_cached_response = await get_best_cached_response(
-                hashing_kv,
-                current_embedding[0],
-                similarity_threshold=embedding_cache_config["similarity_threshold"],
-                mode=mode,
-                use_llm_check=use_llm_check,
-                llm_func=llm_model_func if use_llm_check else None,
-                original_prompt=prompt,
-                cache_type=cache_type,
-            )
-            if best_cached_response is not None:
-                logger.debug(f"Embedding cached hit(mode:{mode} type:{cache_type})")
-                return best_cached_response, None, None, None
-            else:
-                # if caching keyword embedding is enabled, return the quantized embedding for saving it latter
-                logger.debug(f"Embedding cached missed(mode:{mode} type:{cache_type})")
-                return None, quantized, min_val, max_val
-
     else:  # handle cache for entity extraction
         if not hashing_kv.global_config.get("enable_llm_cache_for_entity_extract"):
             return None, None, None, None
 
-    # Here is the conditions of code reaching this point:
-    #     1. All query mode: enable_llm_cache is True and embedding simularity is not enabled
-    #     2. Entity extract: enable_llm_cache_for_entity_extract is True
     if exists_func(hashing_kv, "get_by_mode_and_id"):
         mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
     else:
@@ -1340,7 +1549,7 @@ async def use_llm_func_with_cache(
 
     Args:
         input_text: Input text to send to LLM
-        use_llm_func: LLM function to call
+        use_llm_func: LLM function with higher priority
         llm_response_cache: Cache storage instance
         max_tokens: Maximum tokens for generation
         history_messages: History messages list
