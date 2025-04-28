@@ -826,46 +826,10 @@ async def handle_cache(
     if mode != "default":  # handle cache for all type of query
         if not hashing_kv.global_config.get("enable_llm_cache"):
             return None, None, None, None
-
-        # TODO: deprecated (PostgreSQL cache not implemented yet)
-        # Get embedding cache configuration
-        embedding_cache_config = hashing_kv.global_config.get(
-            "embedding_cache_config",
-            {"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False},
-        )
-        is_embedding_cache_enabled = embedding_cache_config["enabled"]
-        use_llm_check = embedding_cache_config.get("use_llm_check", False)
-
-        quantized = min_val = max_val = None
-        if is_embedding_cache_enabled:  # Use embedding simularity to match cache
-            current_embedding = await hashing_kv.embedding_func([prompt])
-            llm_model_func = hashing_kv.global_config.get("llm_model_func")
-            quantized, min_val, max_val = quantize_embedding(current_embedding[0])
-            best_cached_response = await get_best_cached_response(
-                hashing_kv,
-                current_embedding[0],
-                similarity_threshold=embedding_cache_config["similarity_threshold"],
-                mode=mode,
-                use_llm_check=use_llm_check,
-                llm_func=llm_model_func if use_llm_check else None,
-                original_prompt=prompt,
-                cache_type=cache_type,
-            )
-            if best_cached_response is not None:
-                logger.debug(f"Embedding cached hit(mode:{mode} type:{cache_type})")
-                return best_cached_response, None, None, None
-            else:
-                # if caching keyword embedding is enabled, return the quantized embedding for saving it latter
-                logger.debug(f"Embedding cached missed(mode:{mode} type:{cache_type})")
-                return None, quantized, min_val, max_val
-
     else:  # handle cache for entity extraction
         if not hashing_kv.global_config.get("enable_llm_cache_for_entity_extract"):
             return None, None, None, None
 
-    # Here is the conditions of code reaching this point:
-    #     1. All query mode: enable_llm_cache is True and embedding simularity is not enabled
-    #     2. Entity extract: enable_llm_cache_for_entity_extract is True
     if exists_func(hashing_kv, "get_by_mode_and_id"):
         mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
     else:
@@ -1440,7 +1404,7 @@ async def use_llm_func_with_cache(
 
     Args:
         input_text: Input text to send to LLM
-        use_llm_func: LLM function to call
+        use_llm_func: LLM function with higher priority
         llm_response_cache: Cache storage instance
         max_tokens: Maximum tokens for generation
         history_messages: History messages list
