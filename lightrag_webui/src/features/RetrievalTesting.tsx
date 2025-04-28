@@ -12,19 +12,46 @@ import { EraserIcon, SendIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import type { QueryMode } from '@/api/lightrag'
 
+// Helper function to generate unique IDs with browser compatibility
+const generateUniqueId = () => {
+  // Use crypto.randomUUID() if available
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Fallback to timestamp + random string for browsers without crypto.randomUUID
+  return `id-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+};
+
 export default function RetrievalTesting() {
   const { t } = useTranslation()
   const [messages, setMessages] = useState<MessageWithError[]>(() => {
-    const history = useSettingsStore.getState().retrievalHistory || []
-    // Ensure each message from history has a unique ID and mermaidRendered status
-    return history.map((msg, index) => {
-      const msgWithError = msg as MessageWithError // Cast to access potential properties
-      return {
-        ...msg,
-        id: msgWithError.id || `hist-${Date.now()}-${index}`, // Add ID if missing
-        mermaidRendered: msgWithError.mermaidRendered ?? true // Assume historical mermaid is rendered
-      }
-    })
+    try {
+      const history = useSettingsStore.getState().retrievalHistory || []
+      // Ensure each message from history has a unique ID and mermaidRendered status
+      return history.map((msg, index) => {
+        try {
+          const msgWithError = msg as MessageWithError // Cast to access potential properties
+          return {
+            ...msg,
+            id: msgWithError.id || `hist-${Date.now()}-${index}`, // Add ID if missing
+            mermaidRendered: msgWithError.mermaidRendered ?? true // Assume historical mermaid is rendered
+          }
+        } catch (error) {
+          console.error('Error processing message:', error)
+          // Return a default message if there's an error
+          return {
+            role: 'system',
+            content: 'Error loading message',
+            id: `error-${Date.now()}-${index}`,
+            isError: true,
+            mermaidRendered: true
+          }
+        }
+      })
+    } catch (error) {
+      console.error('Error loading history:', error)
+      return [] // Return an empty array if there's an error
+    }
   })
   const [inputValue, setInputValue] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -91,13 +118,13 @@ export default function RetrievalTesting() {
       // Create messages
       // Save the original input (with prefix if any) in userMessage.content for display
       const userMessage: MessageWithError = {
-        id: crypto.randomUUID(), // Add unique ID
+        id: generateUniqueId(), // Use browser-compatible ID generation
         content: inputValue,
         role: 'user'
       }
 
       const assistantMessage: MessageWithError = {
-        id: crypto.randomUUID(), // Add unique ID
+        id: generateUniqueId(), // Use browser-compatible ID generation
         content: '',
         role: 'assistant',
         mermaidRendered: false

@@ -167,7 +167,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 11,
+      version: 12,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -220,6 +220,10 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 11) {
           state.minEdgeSize = 1
           state.maxEdgeSize = 1
+        }
+        if (version < 12) {
+          // Clear retrieval history to avoid compatibility issues with MessageWithError type
+          state.retrievalHistory = []
         }
         return state
       }
