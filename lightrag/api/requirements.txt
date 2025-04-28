@@ -2,6 +2,7 @@ aiofiles
 ascii_colors
 asyncpg
 distro
+dotenv
 fastapi
 graspologic>=3.4.1
 httpcore
@@ -11,6 +12,7 @@ numpy
 openai
 passlib[bcrypt]
 pipmaster
+pydantic
 PyJWT
 python-dotenv
 python-jose[cryptography]
