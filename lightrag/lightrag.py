@@ -1024,7 +1024,8 @@ class LightRAG:
                                 }
                             )
 
-                    # Release semphore before entering to merge stage
+                    # Semphore was released here
+
                     if file_extraction_stage_ok:
                         try:
                             # Get chunk_results from entity_relation_task
