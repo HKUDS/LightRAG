@@ -508,8 +508,6 @@ async def merge_nodes_and_edges(
     # Get lock manager from shared storage
     from .kg.shared_storage import get_graph_db_lock
 
-    graph_db_lock = get_graph_db_lock(enable_logging=False)
-
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
     all_edges = defaultdict(list)
@@ -530,6 +528,7 @@ async def merge_nodes_and_edges(
 
     # Merge nodes and edges
     # Use graph database lock to ensure atomic merges and updates
+    graph_db_lock = get_graph_db_lock(enable_logging=True)
     async with graph_db_lock:
         async with pipeline_status_lock:
             log_message = (
