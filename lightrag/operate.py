@@ -1,4 +1,5 @@
 from __future__ import annotations
+from functools import partial
 
 import asyncio
 import traceback
@@ -112,6 +113,9 @@ async def _handle_entity_relation_summary(
     If too long, use LLM to summarize.
     """
     use_llm_func: callable = global_config["llm_model_func"]
+    # Apply higher priority (8) to entity/relation summary tasks
+    use_llm_func = partial(use_llm_func, _priority=8)
+
     tokenizer: Tokenizer = global_config["tokenizer"]
     llm_max_tokens = global_config["llm_model_max_token_size"]
     summary_max_tokens = global_config["summary_to_max_tokens"]
@@ -136,13 +140,14 @@ async def _handle_entity_relation_summary(
     use_prompt = prompt_template.format(**context_base)
     logger.debug(f"Trigger summary: {entity_or_relation_name}")
 
-    # Use LLM function with cache
+    # Use LLM function with cache (higher priority for summary generation)
     summary = await use_llm_func_with_cache(
         use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
         max_tokens=summary_max_tokens,
         cache_type="extract",
+        priority=5,  # Higher priority for entity/relation summary
     )
     return summary
 
