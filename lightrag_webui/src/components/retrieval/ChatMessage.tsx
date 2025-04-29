@@ -47,8 +47,8 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
         message.role === 'user'
           ? 'max-w-[80%] bg-primary text-primary-foreground'
           : message.isError
-            ? 'w-[90%] bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
-            : 'w-[90%] bg-muted'
+            ? 'w-[95%] bg-red-100 text-red-600 dark:bg-red-950 dark:text-red-400'
+            : 'w-[95%] bg-muted'
       } rounded-lg px-4 py-2`}
     >
       <div className="relative">
