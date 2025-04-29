@@ -789,7 +789,7 @@ async def extract_entities(
         processed_chunks += 1
         entities_count = len(maybe_nodes)
         relations_count = len(maybe_edges)
-        log_message = f"Chk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel"
+        log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel"
         logger.info(log_message)
         if pipeline_status is not None:
             async with pipeline_status_lock:
