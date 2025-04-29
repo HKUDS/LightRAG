@@ -528,7 +528,7 @@ async def merge_nodes_and_edges(
 
     # Merge nodes and edges
     # Use graph database lock to ensure atomic merges and updates
-    graph_db_lock = get_graph_db_lock(enable_logging=True)
+    graph_db_lock = get_graph_db_lock(enable_logging=False)
     async with graph_db_lock:
         async with pipeline_status_lock:
             log_message = (
