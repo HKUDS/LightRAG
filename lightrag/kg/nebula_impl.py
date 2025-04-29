@@ -312,6 +312,7 @@ class NebulaStorage(BaseGraphStorage):
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
             ) as session:
+                session.execute(f"USE {self._space_name}")
                 query = f"""
                   
                     MATCH (v:base)-[r]-(n) 
@@ -458,9 +459,12 @@ class NebulaStorage(BaseGraphStorage):
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
             ) as session:
+                session.execute(f"USE {self._space_name}")
                 sCondition=""
                 for adata in pairs:
-                    sCondition +=f"  or  (id(start)={adata["src"]} and id(end)={adata["tag"]}) "
+                    asrc=adata["src"]
+                    atag=adata["tag"]
+                    sCondition +=f"  or  (id(start)={asrc} and id(end)={atag}) "
                     
                     
                 query = f"""
@@ -584,6 +588,7 @@ class NebulaStorage(BaseGraphStorage):
                 self.USERNAME, self.PASSWORD
             ) as session:
             # Query to get both outgoing and incoming edges
+            session.execute(f"USE {self._space_name}")
             query = f"""
                
                 MATCH (n:base )-[r]-(connected:base)
@@ -692,11 +697,19 @@ class NebulaStorage(BaseGraphStorage):
         self,
         node_label: str,
         max_depth: int = 3,
-        min_degree: int = 0,
-        inclusive: bool = False,
+        max_nodes: int = MAX_GRAPH_NODES,
     ) -> KnowledgeGraph:
         """
-        Retrieve a connected subgraph of nodes
+        Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
+
+        Args:
+            node_label: Label of the starting node, * means all nodes
+            max_depth: Maximum depth of the subgraph, Defaults to 3
+            max_nodes: Maxiumu nodes to return by BFS, Defaults to 1000
+
+        Returns:
+            KnowledgeGraph object containing nodes and edges, with an is_truncated flag
+            indicating whether the graph was truncated due to max_nodes limit
         """
         result = KnowledgeGraph()
         seen_nodes = set()
@@ -714,15 +727,15 @@ class NebulaStorage(BaseGraphStorage):
                         f"MATCH (n:base) "
                         f"WHERE id(n) >= '' "
                         f"RETURN id(n) AS id, properties(n) AS props "
-                        f"LIMIT {MAX_GRAPH_NODES}"
+                        f"LIMIT {max_nodes}"
                     )
                 else:
                     # Start from specific node and traverse
                     query = f"""
                         MATCH (n)
-                        WHERE id(n) {'CONTAINS' if inclusive else '=='} "{node_label}"
+                        WHERE id(n) == "{node_label}"
                         RETURN id(n) AS id, properties(n) AS props 
-                        LIMIT {MAX_GRAPH_NODES}
+                        LIMIT {max_nodes}
                         """
                 
                 try:
@@ -752,7 +765,7 @@ class NebulaStorage(BaseGraphStorage):
                     MATCH (src)-[e*1..{max_depth}]-(neighbor)
                     WHERE id(src) IN {matched_ids}
                     RETURN DISTINCT id(neighbor) AS id,properties(neighbor) AS props 
-                    LIMIT {MAX_GRAPH_NODES - len(matched_ids)}
+                    LIMIT {max_nodes - len(matched_ids)}
                     """
                     
                     result_set = session.execute(neighbors_query).as_data_frame()
@@ -902,13 +915,14 @@ class NebulaStorage(BaseGraphStorage):
                     self.USERNAME, self.PASSWORD
                 ) as session:
                     # Delete all nodes and relationships
+                    session.execute(f"USE {self._space_name}")
                     
-                    query = f"USE {self._space_name};CLEAR SPACE;"
+                    query = f" drop space {self._space_name}"
                     session.execute(query)                   
                     logger.info(
-                        f"Process {os.getpid()} drop nebula database {self._space_name}"
+                        f"Process {os.getpid()} drop nebula space {self._space_name}"
                     )
                     return {"status": "success", "message": "data dropped"}
         except Exception as e:
-            logger.error(f"Error dropping nebula database {self._space_name}: {e}")
+            logger.error(f"Error dropping nebula space {self._space_name}: {e}")
             return {"status": "error", "message": str(e)}
