@@ -112,11 +112,6 @@ class UnifiedLock(Generic[T]):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         main_lock_released = False
         try:
-            # direct_log(
-            #     f"== Lock == Process {self._pid}: Releasing lock '{self._name}' (async={self._is_async})",
-            #     enable_output=self._enable_logging,
-            # )
-
             # Release main lock first
             if self._is_async:
                 self._lock.release()
@@ -137,10 +132,6 @@ class UnifiedLock(Generic[T]):
                     enable_output=self._enable_logging,
                 )
 
-            direct_log(
-                f"== Lock == Process {self._pid}: Lock '{self._name}' released (async={self._is_async})",
-                enable_output=self._enable_logging,
-            )
         except Exception as e:
             direct_log(
                 f"== Lock == Process {self._pid}: Failed to release lock '{self._name}': {e}",
