@@ -201,6 +201,7 @@ async def openai_complete_if_cache(
 
         async def inner():
             try:
+                state = 0
                 async for chunk in response:
                     # Check if choices exists and is not empty
                     if not hasattr(chunk, "choices") or not chunk.choices:
@@ -216,6 +217,21 @@ async def openai_complete_if_cache(
                         )
                         continue
                     content = chunk.choices[0].delta.content
+
+                    # <think>...</think>
+                    if hasattr(chunk.choices[0].delta, "reasoning_content"):
+                        reasoning_content = chunk.choices[0].delta.reasoning_content
+                        if state == 0:  # before think
+                            state = 1
+                            yield "<think>"
+
+                        if state == 1 and reasoning_content:  # thinking
+                            yield reasoning_content
+
+                        if state == 1 and content:  # finish think
+                            state = 2
+                            yield "</think>\n\n"
+
                     if content is None:
                         continue
                     if r"\u" in content:
