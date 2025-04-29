@@ -60,12 +60,12 @@ class NebulaStorage(BaseGraphStorage):
         self.PASSWORD = os.environ.get(
             "NEBULA_PASSWORD", config.get("nebula", "password", fallback="nebula")
         )
-        POOL_SIZE = int(
-            os.environ.get(
-                "NEBULA_POOL_SIZE",
-                config.get("nebula", "pool_size", fallback=10),
-            )
-        )
+        # POOL_SIZE = int(
+        #     os.environ.get(
+        #         "NEBULA_POOL_SIZE",
+        #         config.get("nebula", "pool_size", fallback=10),
+        #     )
+        # )
         # TIMEOUT = int(
         #     os.environ.get(
         #         "NEBULA_TIMEOUT",
@@ -75,7 +75,7 @@ class NebulaStorage(BaseGraphStorage):
 
         # Initialize connection pool
        
-        config.max_connection_pool_size = POOL_SIZE
+        # config.max_connection_pool_size = POOL_SIZE
         self._connection_pool = ConnectionPool()
         
         # Try to connect to Nebula
@@ -126,36 +126,80 @@ class NebulaStorage(BaseGraphStorage):
 
     async def has_node(self, node_id: str) -> bool:
         """
-        Check if a node with the given entity_id exists in the database
+        Check if a node with the given label exists in the database
+
+        Args:
+            node_id: Label of the node to check
+
+        Returns:
+            bool: True if node exists, False otherwise
+
+        Raises:
+            ValueError: If node_id is invalid
+            Exception: If there is an error executing the query
         """
         async with self._connection_pool_lock:
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
             ) as session:
+              try:
                 session.execute(f"USE {self._space_name}")
                 query = f""" MATCH (n) 
                         WHERE id(n) == '{node_id}' return count(n) as icount """
                 result = session.execute(query)
                 return result.is_succeeded() and len(result.as_data_frame())> 0
+              except Exception as e:
+                logger.error(f"Error checking node existence for {node_id}: {str(e)}")
+                raise
+             
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """
         Check if an edge exists between two nodes
+
+        Args:
+            source_node_id: Label of the source node
+            target_node_id: Label of the target node
+
+        Returns:
+            bool: True if edge exists, False otherwise
+
+        Raises:
+            ValueError: If either node_id is invalid
+            Exception: If there is an error executing the query
         """
         async with self._connection_pool_lock:
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
             ) as session:
-                session.execute(f"USE {self._space_name}")
-                query =  f''' MATCH (src)-[r]-(neighbor)
-                       WHERE id(src) =='{source_node_id}' AND id(neighbor)=='{target_node_id}'
-                      RETURN count(r) as icount
-                   '''   
-                result = session.execute(query)
-                return result.is_succeeded() and len(result.as_data_frame()) > 0
+                try:
+                    session.execute(f"USE {self._space_name}")
+                    query =  f''' MATCH (src)-[r]-(neighbor)
+                        WHERE id(src) =='{source_node_id}' AND id(neighbor)=='{target_node_id}'
+                        RETURN count(r) as icount
+                    '''   
+                    result = session.execute(query)
+                    return result.is_succeeded() and len(result.as_data_frame()) > 0
+                except Exception as e:
+                    logger.error(
+                        f"Error checking edge existence between {source_node_id} and {target_node_id}: {str(e)}"
+                    )                 
+                    raise
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
-        """Get node by its entity_id"""
+        """Get node by its label identifier, return only node properties
+
+        Args:
+            node_id: The node label to look up
+
+        Returns:
+            dict: Node properties if found
+            None: If node not found
+
+        Raises:
+            ValueError: If node_id is invalid
+            Exception: If there is an error executing the query
+        """
         async with self._connection_pool_lock:
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
@@ -187,28 +231,165 @@ class NebulaStorage(BaseGraphStorage):
                 except Exception as e:
                     logger.error(f"Error getting node for {node_id}: {str(e)}")
                     raise
+                
+    async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
+        """
+        Retrieve multiple nodes in one query using UNWIND.
+
+        Args:
+            node_ids: List of node entity IDs to fetch.
+
+        Returns:
+            A dictionary mapping each node_id to its node data (or None if not found).
+        """
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+             with self._connection_pool.session_context(
+                self.USERNAME, self.PASSWORD
+            ) as session:
+                session.execute(f"USE {self._space_name}")               
+                query = f"""
+               
+                MATCH (n:base)
+                where id(n) in {node_ids}
+                RETURN id(n) AS entity_id,  properties(n) AS props
+                """
+                result = session.execute(query).as_data_frame()
+                nodes = {}
+                for _,record in result.iterrows():
+                    entity_id = record["entity_id"]
+                    node = record["props"]
+                    node_dict = dict(node)
+                    # Remove the 'base' label if present in a 'labels' property
+                    if "labels" in node_dict:
+                        node_dict["labels"] = [
+                            label for label in node_dict["labels"] if label != "base"
+                        ]
+                    nodes[entity_id] = node_dict               
+                return nodes
 
     async def node_degree(self, node_id: str) -> int:
-        """Get the degree of a node"""
+        """Get the degree (number of relationships) of a node with the given label.
+        If multiple nodes have the same label, returns the degree of the first node.
+        If no node is found, returns 0.
+
+        Args:
+            node_id: The label of the node
+
+        Returns:
+            int: The number of relationships the node has, or 0 if no node found
+
+        Raises:
+            ValueError: If node_id is invalid
+            Exception: If there is an error executing the query
+        """
         async with self._connection_pool_lock:
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
             ) as session:
                 session.execute(f"USE {self._space_name}")
                 query = f" MATCH (v:base)-[r]-(n) WHERE id(v) == '{node_id}' RETURN count(r)  as degree"
+                try:
+                    result = session.execute(query).as_data_frame()
+                    return  int(result['degree'][0]) if len(result)>0 else 0
+                except Exception as e:
+                    logger.error(f"Error getting node degree for {node_id}: {str(e)}")
+                    raise
+                
+    async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
+        """
+        Retrieve the degree for multiple nodes in a single query using UNWIND.
+
+        Args:
+            node_ids: List of node labels (entity_id values) to look up.
+
+        Returns:
+            A dictionary mapping each node_id to its degree (number of relationships).
+            If a node is not found, its degree will be set to 0.
+        """
+        async with self._connection_pool_lock:
+            with self._connection_pool.session_context(
+                self.USERNAME, self.PASSWORD
+            ) as session:
+                query = f"""
+                  
+                    MATCH (v:base)-[r]-(n) 
+                     WHERE id(v) in '{node_ids}' 
+                    RETURN id(v) AS entity_id,count(r)  AS degree;
+                """
                 result = session.execute(query).as_data_frame()
-                return  int(result['degree'][0]) if len(result)>0 else 0
+                degrees = {}
+                for _,record in result.iterrows():
+                    entity_id = record["entity_id"]
+                    degrees[entity_id] = record["degree"]
+                
+
+                # For any node_id that did not return a record, set degree to 0.
+                for nid in node_ids:
+                    if nid not in degrees:
+                        logger.warning(f"No node found with label '{nid}'")
+                        degrees[nid] = 0
+
+                logger.debug(f"nebular batch node degree query returned: {degrees}")
+                return degrees
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
-        """Get the total degree of two nodes"""
+        """Get the total degree (sum of relationships) of two nodes.
+
+        Args:
+            src_id: Label of the source node
+            tgt_id: Label of the target node
+
+        Returns:
+            int: Sum of the degrees of both nodes
+        """
         src_degree = await self.node_degree(src_id)
         trg_degree = await self.node_degree(tgt_id)
         return src_degree + trg_degree
+    
+    async def edge_degrees_batch(
+        self, edge_pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """
+        Calculate the combined degree for each edge (sum of the source and target node degrees)
+        in batch using the already implemented node_degrees_batch.
+
+        Args:
+            edge_pairs: List of (src, tgt) tuples.
+
+        Returns:
+            A dictionary mapping each (src, tgt) tuple to the sum of their degrees.
+        """
+        # Collect unique node IDs from all edge pairs.
+        unique_node_ids = {src for src, _ in edge_pairs}
+        unique_node_ids.update({tgt for _, tgt in edge_pairs})
+
+        # Get degrees for all nodes in one go.
+        degrees = await self.node_degrees_batch(list(unique_node_ids))
+
+        # Sum up degrees for each edge pair.
+        edge_degrees = {}
+        for src, tgt in edge_pairs:
+            edge_degrees[(src, tgt)] = degrees.get(src, 0) + degrees.get(tgt, 0)
+        return edge_degrees
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
-        """Get edge properties between two nodes"""
+        """Get edge properties between two nodes.
+
+        Args:
+            source_node_id: Label of the source node
+            target_node_id: Label of the target node
+
+        Returns:
+            dict: Edge properties if found, default properties if not found or on error
+
+        Raises:
+            ValueError: If either node_id is invalid
+            Exception: If there is an error executing the query
+        """
         async with self._connection_pool_lock:
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
@@ -259,6 +440,65 @@ class NebulaStorage(BaseGraphStorage):
                         "description": None,
                         "keywords": None,
                     }
+                    
+                    
+    async def get_edges_batch(
+        self, pairs: list[dict[str, str]]
+    ) -> dict[tuple[str, str], dict]:
+        """
+        Retrieve edge properties for multiple (src, tgt) pairs in one query.
+
+        Args:
+            pairs: List of dictionaries, e.g. [{"src": "node1", "tgt": "node2"}, ...]
+
+        Returns:
+            A dictionary mapping (src, tgt) tuples to their edge properties.
+        """
+        async with self._connection_pool_lock:
+            with self._connection_pool.session_context(
+                self.USERNAME, self.PASSWORD
+            ) as session:
+                sCondition=""
+                for adata in pairs:
+                    sCondition +=f"  or  (id(start)={adata["src"]} and id(end)={adata["tag"]}) "
+                    
+                    
+                query = f"""
+                
+                MATCH (start:base )-[r:DIRECTED]-(end:base)
+                where 1=1  {sCondition}
+                
+                RETURN id(start) AS src_id, id(end) AS tgt_id,  properties(r)  AS edges
+                """
+                result = session.execute(query).as_data_frame()
+                edges_dict = {}
+                for _, record in result.iterrows():
+                    src = record["src_id"]
+                    tgt = record["tgt_id"]
+                    edges = record["edges"]
+                    if edges and len(edges) > 0:
+                        edge_props = edges[0]  # choose the first if multiple exist
+                        # Ensure required keys exist with defaults
+                        for key, default in {
+                            "weight": 0.0,
+                            "source_id": None,
+                            "description": None,
+                            "keywords": None,
+                        }.items():
+                            if key not in edge_props:
+                                edge_props[key] = default
+                        edges_dict[(src, tgt)] = edge_props
+                    else:
+                        # No edge found – set default edge properties
+                        edges_dict[(src, tgt)] = {
+                            "weight": 0.0,
+                            "source_id": None,
+                            "description": None,
+                            "keywords": None,
+                        }
+               
+                return edges_dict
+
 
                    
 
@@ -322,6 +562,64 @@ class NebulaStorage(BaseGraphStorage):
         except Exception as e:
             logger.error(f"Error in get_node_edges for {source_node_id}: {str(e)}")
             raise
+    
+    async def get_nodes_edges_batch(
+        self, node_ids: list[str]
+    ) -> dict[str, list[tuple[str, str]]]:
+        """
+        Batch retrieve edges for multiple nodes in one query using UNWIND.
+        For each node, returns both outgoing and incoming edges to properly represent
+        the undirected graph nature.
+
+        Args:
+            node_ids: List of node IDs (entity_id) for which to retrieve edges.
+
+        Returns:
+            A dictionary mapping each node ID to its list of edge tuples (source, target).
+            For each node, the list includes both:
+            - Outgoing edges: (queried_node, connected_node)
+            - Incoming edges: (connected_node, queried_node)
+        """
+        with self._connection_pool.session_context(
+                self.USERNAME, self.PASSWORD
+            ) as session:
+            # Query to get both outgoing and incoming edges
+            query = f"""
+               
+                MATCH (n:base )-[r]-(connected:base)
+                where id(n) in {node_ids}                
+                RETURN id(n) AS queried_id, id(n) AS node_entity_id,
+                       id(connected) AS connected_entity_id,
+                       src(r) AS start_entity_id
+            """
+            result =  session.execute(query).as_data_frame()
+
+            # Initialize the dictionary with empty lists for each node ID
+            edges_dict = {node_id: [] for node_id in node_ids}
+
+            # Process results to include both outgoing and incoming edges
+            for _, record in result.iterrows():
+                queried_id = record["queried_id"]
+                node_entity_id = record["node_entity_id"]
+                connected_entity_id = record["connected_entity_id"]
+                start_entity_id = record["start_entity_id"]
+
+                # Skip if either node is None
+                if not node_entity_id or not connected_entity_id:
+                    continue
+
+                # Determine the actual direction of the edge
+                # If the start node is the queried node, it's an outgoing edge
+                # Otherwise, it's an incoming edge
+                if start_entity_id == node_entity_id:
+                    # Outgoing edge: (queried_node -> connected_node)
+                    edges_dict[queried_id].append((node_entity_id, connected_entity_id))
+                else:
+                    # Incoming edge: (connected_node -> queried_node)
+                    edges_dict[queried_id].append((connected_entity_id, node_entity_id))
+
+          
+            return edges_dict
 
     @retry(
         stop=stop_after_attempt(3),
@@ -329,7 +627,13 @@ class NebulaStorage(BaseGraphStorage):
         retry=retry_if_exception_type((IOErrorException,)),
     )
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
-        """Upsert a node in Nebula"""
+        """
+        Upsert a node in the nebula database.
+
+        Args:
+            node_id: The unique identifier for the node (used as label)
+            node_data: Dictionary of node properties
+        """
         if "entity_id" not in node_data:
             raise ValueError("Node properties must contain an 'entity_id' field")
         fields=  ", ".join(f"{k}" for k, v in node_data.items())   
@@ -355,7 +659,19 @@ class NebulaStorage(BaseGraphStorage):
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
-        """Upsert an edge between two nodes"""
+        """
+        Upsert an edge and its properties between two nodes identified by their labels.
+        Ensures both source and target nodes exist and are unique before creating the edge.
+        Uses entity_id property to uniquely identify nodes.
+
+        Args:
+            source_node_id (str): Label of the source node (used as identifier)
+            target_node_id (str): Label of the target node (used as identifier)
+            edge_data (dict): Dictionary of properties to set on the edge
+
+        Raises:
+            ValueError: If either source or target node does not exist or is not unique
+        """
         fields=", ".join(f"{k}" for k, v in edge_data.items())
         properties = ", ".join(f"{repr(v)}" for k, v in edge_data.items())
         
@@ -371,9 +687,7 @@ class NebulaStorage(BaseGraphStorage):
                 )
                 session.execute(query)
 
-    async def _node2vec_embed(self):
-        print("Implemented but never called.")
-
+   
     async def get_knowledge_graph(
         self,
         node_label: str,
@@ -497,7 +811,9 @@ class NebulaStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """
-        Get all existing node entity_ids in the database
+        Get all existing node labels in the database
+        Returns:
+            ["Person", "Company", ...]  # Alphabetically sorted label list
         """
         async with self._connection_pool_lock:
             with self._connection_pool.session_context(
@@ -514,13 +830,17 @@ class NebulaStorage(BaseGraphStorage):
         retry=retry_if_exception_type((IOErrorException,)),
     )
     async def delete_node(self, node_id: str) -> None:
-        """Delete a node with the specified entity_id"""
+        """Delete a node with the specified label
+
+        Args:
+            node_id: The label of the node to delete
+        """
         async with self._connection_pool_lock:
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
             ) as session:
                 session.execute(f"USE {self._space_name}")
-                query = f"DELETE VERTEX '{node_id}' WITH EDGE"
+                query = f"DELETE VERTEX '{node_id}' "
                 session.execute(query)
 
     @retry(
@@ -529,15 +849,18 @@ class NebulaStorage(BaseGraphStorage):
         retry=retry_if_exception_type((IOErrorException,)),
     )
     async def remove_nodes(self, nodes: list[str]):
-        """Delete multiple nodes"""
+        """Delete multiple nodes
+
+        Args:
+            nodes: List of node labels to be deleted
+        """
         async with self._connection_pool_lock:
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
             ) as session:
                 session.execute(f"USE {self._space_name}")
                 for node in nodes:
-                    query = f"DELETE VERTEX '{node}' WITH EDGE"
-                    session.execute(query)
+                    await self.delete_node(node)
 
     @retry(
         stop=stop_after_attempt(3),
@@ -545,7 +868,11 @@ class NebulaStorage(BaseGraphStorage):
         retry=retry_if_exception_type((IOErrorException,)),
     )
     async def remove_edges(self, edges: list[tuple[str, str]]):
-        """Delete multiple edges"""
+        """Delete multiple edges
+
+        Args:
+            edges: List of edges to be deleted, each edge is a (source, target) tuple
+        """
         async with self._connection_pool_lock:
             with self._connection_pool.session_context(
                 self.USERNAME, self.PASSWORD
@@ -558,7 +885,30 @@ class NebulaStorage(BaseGraphStorage):
                     )
                     session.execute(query)
 
-    async def embed_nodes(
-        self, algorithm: str
-    ) -> tuple[np.ndarray[Any, Any], list[str]]:
-        raise NotImplementedError
+
+    async def drop(self) -> dict[str, str]:
+        """Drop all data from storage and clean up resources
+
+        This method will delete all nodes and relationships in the nebula database.
+
+        Returns:
+            dict[str, str]: Operation status and message
+            - On success: {"status": "success", "message": "data dropped"}
+            - On failure: {"status": "error", "message": "<error details>"}
+        """
+        try:
+            async with self._connection_pool_lock:
+                with self._connection_pool.session_context(
+                    self.USERNAME, self.PASSWORD
+                ) as session:
+                    # Delete all nodes and relationships
+                    
+                    query = f"USE {self._space_name};CLEAR SPACE;"
+                    session.execute(query)                   
+                    logger.info(
+                        f"Process {os.getpid()} drop nebula database {self._space_name}"
+                    )
+                    return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(f"Error dropping nebula database {self._space_name}: {e}")
+            return {"status": "error", "message": str(e)}
