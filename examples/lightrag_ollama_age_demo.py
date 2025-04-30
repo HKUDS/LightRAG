@@ -1,8 +1,6 @@
 import asyncio
 import nest_asyncio
 
-nest_asyncio.apply()
-
 import inspect
 import logging
 import os
@@ -11,6 +9,8 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.ollama import ollama_embed, ollama_model_complete
 from lightrag.utils import EmbeddingFunc
 from lightrag.kg.shared_storage import initialize_pipeline_status
+
+nest_asyncio.apply()
 
 WORKING_DIR = "./dickens_age"
 
