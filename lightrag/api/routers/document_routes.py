@@ -9,7 +9,7 @@ import aiofiles
 import shutil
 import traceback
 import pipmaster as pm
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
@@ -19,6 +19,30 @@ from lightrag import LightRAG
 from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
+
+# Function to format datetime to ISO format string with timezone information
+def format_datetime(dt: Any) -> Optional[str]:
+    """Format datetime to ISO format string with timezone information
+    
+    Args:
+        dt: Datetime object, string, or None
+        
+    Returns:
+        ISO format string with timezone information, or None if input is None
+    """
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        return dt
+    
+    # Check if datetime object has timezone information
+    if isinstance(dt, datetime):
+        # If datetime object has no timezone info (naive datetime), add UTC timezone
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+    
+    # Return ISO format string with timezone information
+    return dt.isoformat()
 
 router = APIRouter(
     prefix="/documents",
@@ -207,14 +231,6 @@ Attributes:
 
 
 class DocStatusResponse(BaseModel):
-    @staticmethod
-    def format_datetime(dt: Any) -> Optional[str]:
-        if dt is None:
-            return None
-        if isinstance(dt, str):
-            return dt
-        return dt.isoformat()
-
     id: str = Field(description="Document identifier")
     content_summary: str = Field(description="Summary of document content")
     content_length: int = Field(description="Length of document content in characters")
@@ -300,7 +316,7 @@ class PipelineStatusResponse(BaseModel):
         autoscanned: Whether auto-scan has started
         busy: Whether the pipeline is currently busy
         job_name: Current job name (e.g., indexing files/indexing texts)
-        job_start: Job start time as ISO format string (optional)
+        job_start: Job start time as ISO format string with timezone (optional)
         docs: Total number of documents to be indexed
         batchs: Number of batches for processing documents
         cur_batch: Current processing batch
@@ -321,6 +337,12 @@ class PipelineStatusResponse(BaseModel):
     latest_message: str = ""
     history_messages: Optional[List[str]] = None
     update_status: Optional[dict] = None
+
+    @field_validator('job_start', mode='before')
+    @classmethod
+    def parse_job_start(cls, value):
+        """Process datetime and return as ISO format string with timezone"""
+        return format_datetime(value)
 
     class Config:
         extra = "allow"  # Allow additional fields from the pipeline status
@@ -1188,9 +1210,10 @@ def create_document_routes(
             if "history_messages" in status_dict:
                 status_dict["history_messages"] = list(status_dict["history_messages"])
 
-            # Format the job_start time if it exists
-            if status_dict.get("job_start"):
-                status_dict["job_start"] = str(status_dict["job_start"])
+            # Ensure job_start is properly formatted as a string with timezone information
+            if "job_start" in status_dict and status_dict["job_start"]:
+                # Use format_datetime to ensure consistent formatting
+                status_dict["job_start"] = format_datetime(status_dict["job_start"])
 
             return PipelineStatusResponse(**status_dict)
         except Exception as e:
@@ -1240,10 +1263,10 @@ def create_document_routes(
                             content_summary=doc_status.content_summary,
                             content_length=doc_status.content_length,
                             status=doc_status.status,
-                            created_at=DocStatusResponse.format_datetime(
+                            created_at=format_datetime(
                                 doc_status.created_at
                             ),
-                            updated_at=DocStatusResponse.format_datetime(
+                            updated_at=format_datetime(
                                 doc_status.updated_at
                             ),
                             chunks_count=doc_status.chunks_count,
