@@ -91,7 +91,9 @@ python examples/lightrag_openai_demo.py
 
 如需流式响应示例的实现代码，请参阅 `examples/lightrag_openai_compatible_demo.py`。运行前，请确保根据需求修改示例代码中的LLM及嵌入模型配置。
 
-**注意事项**：在运行demo程序的时候需要注意，不同的测试程序可能使用的是不同的embedding模型，更换不同的embeding模型的时候需要把清空数据目录（`./dickens`），否则层序执行会出错。如果你想保留LLM缓存，可以在清除数据目录是保留`kv_store_llm_response_cache.json`文件。
+**注意1**：在运行demo程序的时候需要注意，不同的测试程序可能使用的是不同的embedding模型，更换不同的embeding模型的时候需要把清空数据目录（`./dickens`），否则层序执行会出错。如果你想保留LLM缓存，可以在清除数据目录是保留`kv_store_llm_response_cache.json`文件。
+
+**注意2**：官方支持的示例代码仅为 `lightrag_openai_demo.py` 和 `lightrag_openai_compatible_demo.py` 两个文件。其他示例文件均为社区贡献内容，尚未经过完整测试与优化。
 
 ## 使用LightRAG Core进行编程
 
@@ -825,7 +827,7 @@ rag = LightRAG(
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- 如有必要可以删除
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
