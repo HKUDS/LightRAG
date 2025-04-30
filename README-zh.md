@@ -827,7 +827,7 @@ rag = LightRAG(
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-  
+
   -- 如有必要可以删除
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
