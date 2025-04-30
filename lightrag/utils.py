@@ -346,7 +346,7 @@ def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
                         logger.error(f"limit_async: Critical error in worker: {str(e)}")
                         await asyncio.sleep(0.1)  # Prevent high CPU usage
             finally:
-                logger.warning("limit_async: Worker exiting")
+                logger.debug("limit_async: Worker exiting")
 
         async def health_check():
             """Periodically check worker health status and recover"""
@@ -379,7 +379,7 @@ def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
             except Exception as e:
                 logger.error(f"limit_async: Error in health check: {str(e)}")
             finally:
-                logger.warning("limit_async: Health check task exiting")
+                logger.debug("limit_async: Health check task exiting")
                 initialized = False
 
         async def ensure_workers():
