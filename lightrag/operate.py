@@ -873,7 +873,7 @@ async def kg_query(
     logger.debug(f"Low-level  keywords: {ll_keywords}")
 
     fail_response = get_and_validate_prompt_template(
-        query_param,
+        global_config["addon_params"],
         "fail_response",
     )
     # Handle empty keywords
@@ -1263,7 +1263,7 @@ async def mix_kg_vector_query(
     # 4. Merge contexts
     if kg_context is None and vector_context is None:
         fail_response = get_and_validate_prompt_template(
-            query_param,
+            global_config["addon_params"],
             "fail_response",
         )
         return fail_response
@@ -2039,7 +2039,7 @@ async def naive_query(
         query, top_k=query_param.top_k, ids=query_param.ids
     )
     fail_response = get_and_validate_prompt_template(
-        query_param,
+        global_config["addon_params"],
         "fail_response",
     )
     if not len(results):
@@ -2184,7 +2184,7 @@ async def kg_query_with_keywords(
     ll_keywords = getattr(query_param, "ll_keywords", []) or []
 
     fail_response = get_and_validate_prompt_template(
-        query_param,
+        global_config["addon_params"],
         "fail_response",
     )
     # If neither has any keywords, you could handle that logic here.
