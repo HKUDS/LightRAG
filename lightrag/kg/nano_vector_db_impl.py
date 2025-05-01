@@ -89,7 +89,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
-        current_time = time.time()
+        current_time = int(time.time())
         list_data = [
             {
                 "__id__": k,
