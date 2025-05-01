@@ -291,7 +291,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         client = await self._get_client()
         result = client.get([id])
         if result:
-            return result[0]
+            dp = result[0]
+            return {
+                **dp,
+                "id": dp.get("__id__"),
+                "created_at": dp.get("__created_at__"),
+            }
         return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -307,7 +312,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
             return []
 
         client = await self._get_client()
-        return client.get(ids)
+        results = client.get(ids)
+        return [
+            {
+                **dp,
+                "id": dp.get("__id__"),
+                "created_at": dp.get("__created_at__"),
+            }
+            for dp in results
+        ]
 
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources
