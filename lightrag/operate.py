@@ -311,6 +311,7 @@ async def _merge_nodes_then_upsert(
         description=description,
         source_id=source_id,
         file_path=file_path,
+        created_at=int(time.time()),
     )
     await knowledge_graph_inst.upsert_node(
         entity_name,
@@ -422,6 +423,7 @@ async def _merge_edges_then_upsert(
                     "description": description,
                     "entity_type": "UNKNOWN",
                     "file_path": file_path,
+                    "created_at": int(time.time()),
                 },
             )
 
@@ -465,6 +467,7 @@ async def _merge_edges_then_upsert(
             keywords=keywords,
             source_id=source_id,
             file_path=file_path,
+            created_at=int(time.time()),
         ),
     )
 
@@ -1455,7 +1458,12 @@ async def _get_node_data(
         logger.warning("Some nodes are missing, maybe the storage is damaged")
 
     node_datas = [
-        {**n, "entity_name": k["entity_name"], "rank": d}
+        {
+            **n,
+            "entity_name": k["entity_name"],
+            "rank": d,
+            "created_at": k.get("created_at"),
+        }
         for k, n, d in zip(results, node_datas, node_degrees)
         if n is not None
     ]  # what is this text_chunks_db doing.  dont remember it in airvx.  check the diagram.
@@ -1820,7 +1828,7 @@ async def _get_edge_data(
         ]
     ]
     for i, e in enumerate(edge_datas):
-        created_at = e.get("created_at", "Unknown")
+        created_at = e.get("created_at", "UNKNOWN")
         # Convert timestamp to readable format
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
@@ -1847,7 +1855,7 @@ async def _get_edge_data(
         ["id", "entity", "type", "description", "rank", "created_at", "file_path"]
     ]
     for i, n in enumerate(use_entities):
-        created_at = n.get("created_at", "Unknown")
+        created_at = n.get("created_at", "UNKNOWN")
         # Convert timestamp to readable format
         if isinstance(created_at, (int, float)):
             created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(created_at))
