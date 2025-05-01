@@ -958,7 +958,9 @@ class LightRAG:
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
                                             "created_at": status_doc.created_at,
-                                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                                            "updated_at": datetime.now(
+                                                timezone.utc
+                                            ).isoformat(),
                                             "file_path": file_path,
                                         }
                                     }
@@ -1018,7 +1020,9 @@ class LightRAG:
                                         "content_summary": status_doc.content_summary,
                                         "content_length": status_doc.content_length,
                                         "created_at": status_doc.created_at,
-                                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                                        "updated_at": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
                                         "file_path": file_path,
                                     }
                                 }
@@ -1053,7 +1057,9 @@ class LightRAG:
                                         "content_summary": status_doc.content_summary,
                                         "content_length": status_doc.content_length,
                                         "created_at": status_doc.created_at,
-                                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                                        "updated_at": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
                                         "file_path": file_path,
                                     }
                                 }

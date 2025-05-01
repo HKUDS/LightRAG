@@ -20,13 +20,14 @@ from lightrag.base import DocProcessingStatus, DocStatus
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
+
 # Function to format datetime to ISO format string with timezone information
 def format_datetime(dt: Any) -> Optional[str]:
     """Format datetime to ISO format string with timezone information
-    
+
     Args:
         dt: Datetime object, string, or None
-        
+
     Returns:
         ISO format string with timezone information, or None if input is None
     """
@@ -34,15 +35,16 @@ def format_datetime(dt: Any) -> Optional[str]:
         return None
     if isinstance(dt, str):
         return dt
-    
+
     # Check if datetime object has timezone information
     if isinstance(dt, datetime):
         # If datetime object has no timezone info (naive datetime), add UTC timezone
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
-    
+
     # Return ISO format string with timezone information
     return dt.isoformat()
+
 
 router = APIRouter(
     prefix="/documents",
@@ -338,7 +340,7 @@ class PipelineStatusResponse(BaseModel):
     history_messages: Optional[List[str]] = None
     update_status: Optional[dict] = None
 
-    @field_validator('job_start', mode='before')
+    @field_validator("job_start", mode="before")
     @classmethod
     def parse_job_start(cls, value):
         """Process datetime and return as ISO format string with timezone"""
@@ -1263,12 +1265,8 @@ def create_document_routes(
                             content_summary=doc_status.content_summary,
                             content_length=doc_status.content_length,
                             status=doc_status.status,
-                            created_at=format_datetime(
-                                doc_status.created_at
-                            ),
-                            updated_at=format_datetime(
-                                doc_status.updated_at
-                            ),
+                            created_at=format_datetime(doc_status.created_at),
+                            updated_at=format_datetime(doc_status.updated_at),
                             chunks_count=doc_status.chunks_count,
                             error=doc_status.error,
                             metadata=doc_status.metadata,

@@ -1028,7 +1028,7 @@ class PGDocStatusStorage(DocStatusStorage):
             # Remove timezone information, store utc time in db
             created_at = parse_datetime(v.get("created_at"))
             updated_at = parse_datetime(v.get("updated_at"))
-            
+
             # chunks_count is optional
             await self.db.execute(
                 sql,
