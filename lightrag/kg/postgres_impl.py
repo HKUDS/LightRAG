@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import time
+import datetime
 from dataclasses import dataclass, field
 from typing import Any, Union, final
 import numpy as np
@@ -992,8 +993,28 @@ class PGDocStatusStorage(DocStatusStorage):
         if not data:
             return
 
-        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content,content_summary,content_length,chunks_count,status,file_path)
-                 values($1,$2,$3,$4,$5,$6,$7,$8)
+        def parse_datetime(dt_str):
+            if dt_str is None:
+                return None
+            if isinstance(dt_str, (datetime.date, datetime.datetime)):
+                # If it's a datetime object without timezone info, remove timezone info
+                if isinstance(dt_str, datetime.datetime):
+                    # Remove timezone info, return naive datetime object
+                    return dt_str.replace(tzinfo=None)
+                return dt_str
+            try:
+                # Process ISO format string with timezone
+                dt = datetime.datetime.fromisoformat(dt_str)
+                # Remove timezone info, return naive datetime object
+                return dt.replace(tzinfo=None)
+            except (ValueError, TypeError):
+                logger.warning(f"Unable to parse datetime string: {dt_str}")
+                return None
+
+        # Modified SQL to include created_at and updated_at in both INSERT and UPDATE operations
+        # Both fields are updated from the input data in both INSERT and UPDATE cases
+        sql = """insert into LIGHTRAG_DOC_STATUS(workspace,id,content,content_summary,content_length,chunks_count,status,file_path,created_at,updated_at)
+                 values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                   on conflict(id,workspace) do update set
                   content = EXCLUDED.content,
                   content_summary = EXCLUDED.content_summary,
@@ -1001,8 +1022,13 @@ class PGDocStatusStorage(DocStatusStorage):
                   chunks_count = EXCLUDED.chunks_count,
                   status = EXCLUDED.status,
                   file_path = EXCLUDED.file_path,
-                  updated_at = CURRENT_TIMESTAMP"""
+                  created_at = EXCLUDED.created_at,
+                  updated_at = EXCLUDED.updated_at"""
         for k, v in data.items():
+            # Remove timezone information, store utc time in db
+            created_at = parse_datetime(v.get("created_at"))
+            updated_at = parse_datetime(v.get("updated_at"))
+            
             # chunks_count is optional
             await self.db.execute(
                 sql,
@@ -1015,6 +1041,8 @@ class PGDocStatusStorage(DocStatusStorage):
                     "chunks_count": v["chunks_count"] if "chunks_count" in v else -1,
                     "status": v["status"],
                     "file_path": v["file_path"],
+                    "created_at": created_at,  # 使用转换后的datetime对象
+                    "updated_at": updated_at,  # 使用转换后的datetime对象
                 },
             )
 
@@ -2265,8 +2293,8 @@ TABLES = {
 	               chunks_count int4 NULL,
 	               status varchar(64) NULL,
 	               file_path TEXT NULL,
-	               created_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
-	               updated_at timestamp DEFAULT CURRENT_TIMESTAMP NULL,
+	               created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NULL,
+	               updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NULL,
 	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)
 	              )"""
     },
