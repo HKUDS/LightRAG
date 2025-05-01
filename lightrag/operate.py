@@ -1774,7 +1774,7 @@ async def _get_edge_data(
                 "src_id": k["src_id"],
                 "tgt_id": k["tgt_id"],
                 "rank": edge_degrees_dict.get(pair, k.get("rank", 0)),
-                "created_at": k.get("__created_at__", None),
+                "created_at": k.get("created_at", None),
                 **edge_props,
             }
             edge_datas.append(combined)
