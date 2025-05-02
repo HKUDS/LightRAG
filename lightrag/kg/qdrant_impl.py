@@ -88,10 +88,11 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
-            
+
         import time
+
         current_time = int(time.time())
-        
+
         list_data = [
             {
                 "id": k,
@@ -144,10 +145,10 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         return [
             {
-                **dp.payload, 
+                **dp.payload,
                 "distance": dp.score,
-                "created_at": dp.payload.get("created_at")
-            } 
+                "created_at": dp.payload.get("created_at"),
+            }
             for dp in results
         ]
 
@@ -310,12 +311,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
             if not result:
                 return None
-                
+
             # Ensure the result contains created_at field
             payload = result[0].payload
             if "created_at" not in payload:
                 payload["created_at"] = None
-                
+
             return payload
         except Exception as e:
             logger.error(f"Error retrieving vector data for ID {id}: {e}")
@@ -343,7 +344,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 ids=qdrant_ids,
                 with_payload=True,
             )
-            
+
             # Ensure each result contains created_at field
             payloads = []
             for point in results:
@@ -351,7 +352,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 if "created_at" not in payload:
                     payload["created_at"] = None
                 payloads.append(payload)
-                
+
             return payloads
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")

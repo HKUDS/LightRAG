@@ -80,8 +80,9 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             return
 
         import time
+
         current_time = int(time.time())
-        
+
         list_data: list[dict[str, Any]] = [
             {
                 "id": k,
@@ -124,10 +125,10 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         print(results)
         return [
             {
-                **dp["entity"], 
-                "id": dp["id"], 
+                **dp["entity"],
+                "id": dp["id"],
                 "distance": dp["distance"],
-                "created_at": dp["entity"].get("created_at")
+                "created_at": dp["entity"].get("created_at"),
             }
             for dp in results[0]
         ]
@@ -268,7 +269,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Ensure the result contains created_at field
             if "created_at" not in result[0]:
                 result[0]["created_at"] = None
-                
+
             return result[0]
         except Exception as e:
             logger.error(f"Error retrieving vector data for ID {id}: {e}")
@@ -297,12 +298,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 filter=filter_expr,
                 output_fields=list(self.meta_fields) + ["id", "created_at"],
             )
-            
+
             # Ensure each result contains created_at field
             for item in result:
                 if "created_at" not in item:
                     item["created_at"] = None
-                    
+
             return result or []
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")

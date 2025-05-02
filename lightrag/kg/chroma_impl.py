@@ -115,8 +115,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
 
         try:
             import time
+
             current_time = int(time.time())
-            
+
             ids = list(data.keys())
             documents = [v["content"] for v in data.values()]
             metadatas = [

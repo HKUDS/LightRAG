@@ -1001,8 +1001,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
 
         # Add current time as Unix timestamp
         import time
+
         current_time = int(time.time())
-        
+
         list_data = [
             {
                 "_id": k,
@@ -1067,10 +1068,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
         # Format and return the results with created_at field
         return [
             {
-                **doc, 
-                "id": doc["_id"], 
+                **doc,
+                "id": doc["_id"],
                 "distance": doc.get("score", None),
-                "created_at": doc.get("created_at")  # Include created_at field
+                "created_at": doc.get("created_at"),  # Include created_at field
             }
             for doc in results
         ]
@@ -1165,10 +1166,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Format results, ensuring created_at is included
             results = [
                 {
-                    **doc, 
+                    **doc,
                     "id": doc["_id"],
-                    "created_at": doc.get("created_at")  # Include created_at field
-                } 
+                    "created_at": doc.get("created_at"),  # Include created_at field
+                }
                 for doc in matching_records
             ]
 
