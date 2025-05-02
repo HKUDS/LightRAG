@@ -425,7 +425,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if not metadata:
             return None
 
-        return {**metadata, "id": metadata.get("__id__"), "created_at": metadata.get("__created_at__")}
+        return {
+            **metadata,
+            "id": metadata.get("__id__"),
+            "created_at": metadata.get("__created_at__"),
+        }
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs
@@ -445,7 +449,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if fid is not None:
                 metadata = self._id_to_meta.get(fid, {})
                 if metadata:
-                    results.append({**metadata, "id": metadata.get("__id__"), "created_at": metadata.get("__created_at__")})
+                    results.append(
+                        {
+                            **metadata,
+                            "id": metadata.get("__id__"),
+                            "created_at": metadata.get("__created_at__"),
+                        }
+                    )
 
         return results
 
