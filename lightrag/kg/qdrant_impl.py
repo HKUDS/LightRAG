@@ -88,9 +88,14 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
+            
+        import time
+        current_time = int(time.time())
+        
         list_data = [
             {
                 "id": k,
+                "created_at": current_time,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
@@ -137,7 +142,14 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         logger.debug(f"query result: {results}")
 
-        return [{**dp.payload, "distance": dp.score} for dp in results]
+        return [
+            {
+                **dp.payload, 
+                "distance": dp.score,
+                "created_at": dp.payload.get("created_at")
+            } 
+            for dp in results
+        ]
 
     async def index_done_callback(self) -> None:
         # Qdrant handles persistence automatically
@@ -298,8 +310,13 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
             if not result:
                 return None
-
-            return result[0].payload
+                
+            # Ensure the result contains created_at field
+            payload = result[0].payload
+            if "created_at" not in payload:
+                payload["created_at"] = None
+                
+            return payload
         except Exception as e:
             logger.error(f"Error retrieving vector data for ID {id}: {e}")
             return None
@@ -326,8 +343,16 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 ids=qdrant_ids,
                 with_payload=True,
             )
-
-            return [point.payload for point in results]
+            
+            # Ensure each result contains created_at field
+            payloads = []
+            for point in results:
+                payload = point.payload
+                if "created_at" not in payload:
+                    payload["created_at"] = None
+                payloads.append(payload)
+                
+            return payloads
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
