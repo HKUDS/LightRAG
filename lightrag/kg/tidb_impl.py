@@ -45,8 +45,8 @@ class TiDB:
             raise
 
     async def _migrate_timestamp_columns(self):
-        """将表中的时间戳列迁移为带时区的类型，假设原始数据是UTC时间"""
-        # 需要迁移的表和列
+        """Migrate timestamp columns in tables to timezone-aware types, assuming original data is in UTC"""
+        # Tables and columns that need migration
         tables_to_migrate = {
             "LIGHTRAG_GRAPH_NODES": ["createtime", "updatetime"],
             "LIGHTRAG_GRAPH_EDGES": ["createtime", "updatetime"],
@@ -56,7 +56,7 @@ class TiDB:
         for table_name, columns in tables_to_migrate.items():
             for column_name in columns:
                 try:
-                    # 检查列是否存在
+                    # Check if column exists
                     check_column_sql = f"""
                     SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE
                     FROM INFORMATION_SCHEMA.COLUMNS
@@ -67,27 +67,27 @@ class TiDB:
                     column_info = await self.query(check_column_sql)
                     if not column_info:
                         logger.warning(
-                            f"列 {table_name}.{column_name} 不存在，跳过迁移"
+                            f"Column {table_name}.{column_name} does not exist, skipping migration"
                         )
                         continue
 
-                    # 检查列类型
+                    # Check column type
                     data_type = column_info.get("DATA_TYPE", "").lower()
                     column_type = column_info.get("COLUMN_TYPE", "").lower()
 
-                    # 如果已经是timestamp类型，检查是否包含时区信息
+                    # If already timestamp type, check if it contains timezone information
                     if data_type == "timestamp" and "time zone" in column_type:
                         logger.info(
-                            f"列 {table_name}.{column_name} 已经是带时区的timestamp类型，无需迁移"
+                            f"Column {table_name}.{column_name} is already a timezone-aware timestamp type, no migration needed"
                         )
                         continue
 
-                    # 如果是datetime类型，需要迁移到timestamp
+                    # If datetime type, need to migrate to timestamp
                     if data_type == "datetime" or (
                         data_type == "timestamp" and "time zone" not in column_type
                     ):
                         logger.info(
-                            f"正在迁移 {table_name}.{column_name} 到timestamp类型"
+                            f"Migrating {table_name}.{column_name} to timestamp type"
                         )
                         migration_sql = f"""
                         ALTER TABLE {table_name}
@@ -96,14 +96,14 @@ class TiDB:
 
                         await self.execute(migration_sql)
                         logger.info(
-                            f"成功迁移 {table_name}.{column_name} 到timestamp类型"
+                            f"Successfully migrated {table_name}.{column_name} to timestamp type"
                         )
                 except Exception as e:
-                    # 记录错误但不中断流程
-                    logger.warning(f"迁移 {table_name}.{column_name} 失败: {e}")
+                    # Log error but don't interrupt the process
+                    logger.warning(f"Failed to migrate {table_name}.{column_name}: {e}")
 
     async def check_tables(self):
-        # 首先创建所有表格
+        # First create all tables
         for k, v in TABLES.items():
             try:
                 await self.query(f"SELECT 1 FROM {k}".format(k=k))
@@ -117,12 +117,12 @@ class TiDB:
                     logger.error(f"Failed to create table {k} in TiDB database")
                     logger.error(f"TiDB database error: {e}")
 
-        # 所有表格创建完成后，尝试迁移时间字段
+        # After all tables are created, try to migrate timestamp fields
         try:
             await self._migrate_timestamp_columns()
         except Exception as e:
             logger.error(f"TiDB, Failed to migrate timestamp columns: {e}")
-            # 不抛出异常，允许初始化过程继续
+            # Don't raise exceptions, allow initialization process to continue
 
     async def query(
         self, sql: str, params: dict = None, multirows: bool = False
@@ -397,7 +397,7 @@ class TiDBKVStorage(BaseKVStorage):
             if table_name != "LIGHTRAG_LLM_CACHE":
                 return False
 
-            # 构建MySQL风格的IN查询
+            # Build MySQL style IN query
             modes_list = ", ".join([f"'{mode}'" for mode in modes])
             sql = f"""
             DELETE FROM {table_name}
