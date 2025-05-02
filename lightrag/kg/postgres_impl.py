@@ -106,7 +106,61 @@ class PostgreSQLDB:
         ):
             pass
 
+    async def _migrate_timestamp_columns(self):
+        """Migrate timestamp columns in tables to timezone-aware types, assuming original data is in UTC time"""
+        # Tables and columns that need migration
+        tables_to_migrate = {
+            "LIGHTRAG_VDB_ENTITY": ["create_time", "update_time"],
+            "LIGHTRAG_VDB_RELATION": ["create_time", "update_time"],
+            "LIGHTRAG_DOC_CHUNKS": ["create_time", "update_time"],
+        }
+
+        for table_name, columns in tables_to_migrate.items():
+            for column_name in columns:
+                try:
+                    # Check if column exists
+                    check_column_sql = f"""
+                    SELECT column_name, data_type
+                    FROM information_schema.columns
+                    WHERE table_name = '{table_name.lower()}'
+                    AND column_name = '{column_name}'
+                    """
+
+                    column_info = await self.query(check_column_sql)
+                    if not column_info:
+                        logger.warning(
+                            f"Column {table_name}.{column_name} does not exist, skipping migration"
+                        )
+                        continue
+
+                    # Check column type
+                    data_type = column_info.get("data_type")
+                    if data_type == "timestamp with time zone":
+                        logger.info(
+                            f"Column {table_name}.{column_name} is already timezone-aware, no migration needed"
+                        )
+                        continue
+
+                    # Execute migration, explicitly specifying UTC timezone for interpreting original data
+                    logger.info(
+                        f"Migrating {table_name}.{column_name} to timezone-aware type"
+                    )
+                    migration_sql = f"""
+                    ALTER TABLE {table_name}
+                    ALTER COLUMN {column_name} TYPE TIMESTAMP(0) WITH TIME ZONE
+                    USING {column_name} AT TIME ZONE 'UTC'
+                    """
+
+                    await self.execute(migration_sql)
+                    logger.info(
+                        f"Successfully migrated {table_name}.{column_name} to timezone-aware type"
+                    )
+                except Exception as e:
+                    # Log error but don't interrupt the process
+                    logger.warning(f"Failed to migrate {table_name}.{column_name}: {e}")
+
     async def check_tables(self):
+        # First create all tables
         for k, v in TABLES.items():
             try:
                 await self.query(f"SELECT 1 FROM {k} LIMIT 1")
@@ -141,6 +195,13 @@ class PostgreSQLDB:
                 logger.error(
                     f"PostgreSQL, Failed to create index on table {k}, Got: {e}"
                 )
+
+        # After all tables are created, attempt to migrate timestamp fields
+        try:
+            await self._migrate_timestamp_columns()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to migrate timestamp columns: {e}")
+            # Don't throw an exception, allow the initialization process to continue
 
     async def query(
         self,
@@ -621,9 +682,7 @@ class PGVectorStorage(BaseVectorStorage):
             return
 
         # Get current time with UTC timezone
-        current_time_with_tz = datetime.datetime.now(timezone.utc)
-        # Remove timezone info to avoid timezone mismatch issues
-        current_time = current_time_with_tz.replace(tzinfo=None)
+        current_time = datetime.datetime.now(timezone.utc)
         list_data = [
             {
                 "__id__": k,
@@ -1055,8 +1114,8 @@ class PGDocStatusStorage(DocStatusStorage):
                     "chunks_count": v["chunks_count"] if "chunks_count" in v else -1,
                     "status": v["status"],
                     "file_path": v["file_path"],
-                    "created_at": created_at,  # 使用转换后的datetime对象
-                    "updated_at": updated_at,  # 使用转换后的datetime对象
+                    "created_at": created_at,  # Use the converted datetime object
+                    "updated_at": updated_at,  # Use the converted datetime object
                 },
             )
 
@@ -2251,8 +2310,8 @@ TABLES = {
                     content TEXT,
                     content_vector VECTOR,
                     file_path VARCHAR(256),
-                    create_time TIMESTAMP(0),
-                    update_time TIMESTAMP(0),
+                    create_time TIMESTAMP(0) WITH TIME ZONE,
+                    update_time TIMESTAMP(0) WITH TIME ZONE,
 	                CONSTRAINT LIGHTRAG_DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -2263,8 +2322,8 @@ TABLES = {
                     entity_name VARCHAR(255),
                     content TEXT,
                     content_vector VECTOR,
-                    create_time TIMESTAMP(0),
-                    update_time TIMESTAMP(0),
+                    create_time TIMESTAMP(0) WITH TIME ZONE,
+                    update_time TIMESTAMP(0) WITH TIME ZONE,
                     chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
@@ -2278,8 +2337,8 @@ TABLES = {
                     target_id VARCHAR(256),
                     content TEXT,
                     content_vector VECTOR,
-                    create_time TIMESTAMP(0),
-                    update_time TIMESTAMP(0),
+                    create_time TIMESTAMP(0) WITH TIME ZONE,
+                    update_time TIMESTAMP(0) WITH TIME ZONE,
                     chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
