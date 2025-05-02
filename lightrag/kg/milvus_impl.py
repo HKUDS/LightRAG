@@ -79,9 +79,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
+        import time
+        current_time = int(time.time())
+        
         list_data: list[dict[str, Any]] = [
             {
                 "id": k,
+                "created_at": current_time,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
@@ -111,7 +115,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             collection_name=self.namespace,
             data=embedding,
             limit=top_k,
-            output_fields=list(self.meta_fields),
+            output_fields=list(self.meta_fields) + ["created_at"],
             search_params={
                 "metric_type": "COSINE",
                 "params": {"radius": self.cosine_better_than_threshold},
@@ -119,7 +123,12 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         print(results)
         return [
-            {**dp["entity"], "id": dp["id"], "distance": dp["distance"]}
+            {
+                **dp["entity"], 
+                "id": dp["id"], 
+                "distance": dp["distance"],
+                "created_at": dp["entity"].get("created_at")
+            }
             for dp in results[0]
         ]
 
@@ -250,12 +259,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             result = self._client.query(
                 collection_name=self.namespace,
                 filter=f'id == "{id}"',
-                output_fields=list(self.meta_fields) + ["id"],
+                output_fields=list(self.meta_fields) + ["id", "created_at"],
             )
 
             if not result or len(result) == 0:
                 return None
 
+            # Ensure the result contains created_at field
+            if "created_at" not in result[0]:
+                result[0]["created_at"] = None
+                
             return result[0]
         except Exception as e:
             logger.error(f"Error retrieving vector data for ID {id}: {e}")
@@ -282,9 +295,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             result = self._client.query(
                 collection_name=self.namespace,
                 filter=filter_expr,
-                output_fields=list(self.meta_fields) + ["id"],
+                output_fields=list(self.meta_fields) + ["id", "created_at"],
             )
-
+            
+            # Ensure each result contains created_at field
+            for item in result:
+                if "created_at" not in item:
+                    item["created_at"] = None
+                    
             return result or []
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
