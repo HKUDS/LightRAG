@@ -421,9 +421,17 @@ class TiDBVectorDBStorage(BaseVectorStorage):
 
         logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
 
+        # Get current time with UTC timezone
+        import datetime
+        from datetime import timezone
+        current_time_with_tz = datetime.datetime.now(timezone.utc)
+        # Remove timezone info to avoid timezone mismatch issues
+        current_time = current_time_with_tz.replace(tzinfo=None)
+
         list_data = [
             {
                 "id": k,
+                "created_at": current_time,
                 **{k1: v1 for k1, v1 in v.items()},
             }
             for k, v in data.items()
@@ -584,24 +592,11 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         """
         # Determine which table to query based on namespace
         if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
-            sql_template = """
-                SELECT entity_id as id, name as entity_name, entity_type, description, content
-                FROM LIGHTRAG_GRAPH_NODES
-                WHERE entity_id LIKE :prefix_pattern AND workspace = :workspace
-            """
+            sql_template = SQL_TEMPLATES["search_entity_by_prefix"]
         elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
-            sql_template = """
-                SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
-                       keywords, description, content
-                FROM LIGHTRAG_GRAPH_EDGES
-                WHERE relation_id LIKE :prefix_pattern AND workspace = :workspace
-            """
+            sql_template = SQL_TEMPLATES["search_relationship_by_prefix"]
         elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
-            sql_template = """
-                SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
-                FROM LIGHTRAG_DOC_CHUNKS
-                WHERE chunk_id LIKE :prefix_pattern AND workspace = :workspace
-            """
+            sql_template = SQL_TEMPLATES["search_chunk_by_prefix"]
         else:
             logger.warning(
                 f"Namespace {self.namespace} not supported for prefix search"
@@ -635,7 +630,8 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             # Determine which table to query based on namespace
             if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
                 sql_template = """
-                    SELECT entity_id as id, name as entity_name, entity_type, description, content
+                    SELECT entity_id as id, name as entity_name, entity_type, description, content, 
+                           UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_GRAPH_NODES
                     WHERE entity_id = :entity_id AND workspace = :workspace
                 """
@@ -643,14 +639,15 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
                 sql_template = """
                     SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
-                           keywords, description, content
+                           keywords, description, content, UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_GRAPH_EDGES
                     WHERE relation_id = :relation_id AND workspace = :workspace
                 """
                 params = {"relation_id": id, "workspace": self.db.workspace}
             elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
                 sql_template = """
-                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id,
+                           UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_DOC_CHUNKS
                     WHERE chunk_id = :chunk_id AND workspace = :workspace
                 """
@@ -686,20 +683,22 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             # Determine which table to query based on namespace
             if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
                 sql_template = f"""
-                    SELECT entity_id as id, name as entity_name, entity_type, description, content
+                    SELECT entity_id as id, name as entity_name, entity_type, description, content,
+                           UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_GRAPH_NODES
                     WHERE entity_id IN ({ids_str}) AND workspace = :workspace
                 """
             elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
                 sql_template = f"""
                     SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
-                           keywords, description, content
+                           keywords, description, content, UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_GRAPH_EDGES
                     WHERE relation_id IN ({ids_str}) AND workspace = :workspace
                 """
             elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
                 sql_template = f"""
-                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id,
+                           UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_DOC_CHUNKS
                     WHERE chunk_id IN ({ids_str}) AND workspace = :workspace
                 """
@@ -1166,18 +1165,18 @@ SQL_TEMPLATES = {
         full_doc_id = VALUES(full_doc_id), content_vector = VALUES(content_vector), workspace = VALUES(workspace), updatetime = CURRENT_TIMESTAMP
     """,
     # SQL for VectorStorage
-    "entities": """SELECT n.name as entity_name FROM
-        (SELECT entity_id as id, name, VEC_COSINE_DISTANCE(content_vector,:embedding_string) as distance
+    "entities": """SELECT n.name as entity_name, UNIX_TIMESTAMP(n.createtime) as created_at FROM
+        (SELECT entity_id as id, name, createtime, VEC_COSINE_DISTANCE(content_vector,:embedding_string) as distance
         FROM LIGHTRAG_GRAPH_NODES WHERE workspace = :workspace) n
         WHERE n.distance>:better_than_threshold ORDER BY n.distance DESC LIMIT :top_k
     """,
-    "relationships": """SELECT e.source_name as src_id, e.target_name as tgt_id FROM
-        (SELECT source_name, target_name, VEC_COSINE_DISTANCE(content_vector, :embedding_string) as distance
+    "relationships": """SELECT e.source_name as src_id, e.target_name as tgt_id, UNIX_TIMESTAMP(e.createtime) as created_at FROM
+        (SELECT source_name, target_name, createtime, VEC_COSINE_DISTANCE(content_vector, :embedding_string) as distance
         FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = :workspace) e
         WHERE e.distance>:better_than_threshold ORDER BY e.distance DESC LIMIT :top_k
     """,
-    "chunks": """SELECT c.id FROM
-        (SELECT chunk_id as id,VEC_COSINE_DISTANCE(content_vector, :embedding_string) as distance
+    "chunks": """SELECT c.id, UNIX_TIMESTAMP(c.createtime) as created_at FROM
+        (SELECT chunk_id as id, createtime, VEC_COSINE_DISTANCE(content_vector, :embedding_string) as distance
         FROM LIGHTRAG_DOC_CHUNKS WHERE workspace = :workspace) c
         WHERE c.distance>:better_than_threshold ORDER BY c.distance DESC LIMIT :top_k
     """,
@@ -1277,17 +1276,20 @@ SQL_TEMPLATES = {
     """,
     # Search by prefix SQL templates
     "search_entity_by_prefix": """
-        SELECT entity_id as id, name as entity_name, entity_type, description, content
+        SELECT entity_id as id, name as entity_name, entity_type, description, content, 
+               UNIX_TIMESTAMP(createtime) as created_at
         FROM LIGHTRAG_GRAPH_NODES
         WHERE entity_id LIKE :prefix_pattern AND workspace = :workspace
     """,
     "search_relationship_by_prefix": """
-        SELECT relation_id as id, source_name as src_id, target_name as tgt_id, keywords, description, content
+        SELECT relation_id as id, source_name as src_id, target_name as tgt_id, keywords, description, content,
+               UNIX_TIMESTAMP(createtime) as created_at
         FROM LIGHTRAG_GRAPH_EDGES
         WHERE relation_id LIKE :prefix_pattern AND workspace = :workspace
     """,
     "search_chunk_by_prefix": """
-        SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+        SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id,
+               UNIX_TIMESTAMP(createtime) as created_at
         FROM LIGHTRAG_DOC_CHUNKS
         WHERE chunk_id LIKE :prefix_pattern AND workspace = :workspace
     """,
