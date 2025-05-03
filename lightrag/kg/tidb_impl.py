@@ -642,42 +642,6 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        # Determine which table to query based on namespace
-        if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
-            sql_template = SQL_TEMPLATES["search_entity_by_prefix"]
-        elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
-            sql_template = SQL_TEMPLATES["search_relationship_by_prefix"]
-        elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
-            sql_template = SQL_TEMPLATES["search_chunk_by_prefix"]
-        else:
-            logger.warning(
-                f"Namespace {self.namespace} not supported for prefix search"
-            )
-            return []
-
-        # Add prefix pattern parameter with % for SQL LIKE
-        prefix_pattern = f"{prefix}%"
-        params = {"prefix_pattern": prefix_pattern, "workspace": self.db.workspace}
-
-        try:
-            results = await self.db.query(sql_template, params=params, multirows=True)
-            logger.debug(
-                f"Found {len(results) if results else 0} records with prefix '{prefix}'"
-            )
-            return results if results else []
-        except Exception as e:
-            logger.error(f"Error searching records with prefix '{prefix}': {e}")
-            return []
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
 
@@ -1332,25 +1296,6 @@ SQL_TEMPLATES = {
         DELETE FROM LIGHTRAG_GRAPH_EDGES
         WHERE (source_name = :source AND target_name = :target)
         AND workspace = :workspace
-    """,
-    # Search by prefix SQL templates
-    "search_entity_by_prefix": """
-        SELECT entity_id as id, name as entity_name, entity_type, description, content,
-               UNIX_TIMESTAMP(createtime) as created_at
-        FROM LIGHTRAG_GRAPH_NODES
-        WHERE entity_id LIKE :prefix_pattern AND workspace = :workspace
-    """,
-    "search_relationship_by_prefix": """
-        SELECT relation_id as id, source_name as src_id, target_name as tgt_id, keywords, description, content,
-               UNIX_TIMESTAMP(createtime) as created_at
-        FROM LIGHTRAG_GRAPH_EDGES
-        WHERE relation_id LIKE :prefix_pattern AND workspace = :workspace
-    """,
-    "search_chunk_by_prefix": """
-        SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id,
-               UNIX_TIMESTAMP(createtime) as created_at
-        FROM LIGHTRAG_DOC_CHUNKS
-        WHERE chunk_id LIKE :prefix_pattern AND workspace = :workspace
     """,
     # Drop tables
     "drop_specifiy_table_workspace": "DELETE FROM {table_name} WHERE workspace = :workspace",
