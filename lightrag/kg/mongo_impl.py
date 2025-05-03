@@ -999,9 +999,15 @@ class MongoVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
+        # Add current time as Unix timestamp
+        import time
+
+        current_time = int(time.time())
+
         list_data = [
             {
                 "_id": k,
+                "created_at": current_time,  # Add created_at field as Unix timestamp
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
@@ -1059,9 +1065,14 @@ class MongoVectorDBStorage(BaseVectorStorage):
         cursor = self._data.aggregate(pipeline)
         results = await cursor.to_list()
 
-        # Format and return the results
+        # Format and return the results with created_at field
         return [
-            {**doc, "id": doc["_id"], "distance": doc.get("score", None)}
+            {
+                **doc,
+                "id": doc["_id"],
+                "distance": doc.get("score", None),
+                "created_at": doc.get("created_at"),  # Include created_at field
+            }
             for doc in results
         ]
 
@@ -1137,28 +1148,6 @@ class MongoVectorDBStorage(BaseVectorStorage):
             logger.debug(f"Deleted {result.deleted_count} relations for {entity_name}")
         except PyMongoError as e:
             logger.error(f"Error deleting relations for {entity_name}: {str(e)}")
-
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        try:
-            # Use MongoDB regex to find documents where _id starts with the prefix
-            cursor = self._data.find({"_id": {"$regex": f"^{prefix}"}})
-            matching_records = await cursor.to_list(length=None)
-
-            # Format results
-            results = [{**doc, "id": doc["_id"]} for doc in matching_records]
-
-            logger.debug(
-                f"Found {len(results)} records with prefix '{prefix}' in {self.namespace}"
-            )
-            return results
 
         except PyMongoError as e:
             logger.error(f"Error searching by prefix in {self.namespace}: {str(e)}")
