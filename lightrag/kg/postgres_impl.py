@@ -1252,15 +1252,7 @@ class PGGraphStorage(BaseGraphStorage):
                     elif dtype == "edge":
                         d[k] = json.loads(v)
             else:
-                try:
-                    d[k] = (
-                        json.loads(v)
-                        if isinstance(v, str)
-                        and (v.startswith("{") or v.startswith("["))
-                        else v
-                    )
-                except json.JSONDecodeError:
-                    d[k] = v
+                d[k] = v  # Keep as string
 
         return d
 
