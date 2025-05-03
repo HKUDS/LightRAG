@@ -800,41 +800,6 @@ class PGVectorStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error deleting relations for entity {entity_name}: {e}")
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        table_name = namespace_to_table_name(self.namespace)
-        if not table_name:
-            logger.error(f"Unknown namespace for prefix search: {self.namespace}")
-            return []
-
-        search_sql = f"SELECT * FROM {table_name} WHERE workspace=$1 AND id LIKE $2"
-        params = {"workspace": self.db.workspace, "prefix": f"{prefix}%"}
-
-        try:
-            results = await self.db.query(search_sql, params, multirows=True)
-            logger.debug(f"Found {len(results)} records with prefix '{prefix}'")
-
-            # Format results to match the expected return format
-            formatted_results = []
-            for record in results:
-                formatted_record = dict(record)
-                # Ensure id field is available (for consistency with NanoVectorDB implementation)
-                if "id" not in formatted_record:
-                    formatted_record["id"] = record["id"]
-                formatted_results.append(formatted_record)
-
-            return formatted_results
-        except Exception as e:
-            logger.error(f"Error during prefix search for '{prefix}': {e}")
-            return []
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
 

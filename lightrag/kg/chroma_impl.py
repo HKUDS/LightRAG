@@ -243,42 +243,6 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
             raise
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        try:
-            # Get all records from the collection
-            # Since ChromaDB doesn't directly support prefix search on IDs,
-            # we'll get all records and filter in Python
-            results = self._collection.get(
-                include=["metadatas", "documents", "embeddings"]
-            )
-
-            matching_records = []
-
-            # Filter records where ID starts with the prefix
-            for i, record_id in enumerate(results["ids"]):
-                if record_id.startswith(prefix):
-                    matching_records.append(
-                        {
-                            "id": record_id,
-                            "content": results["documents"][i],
-                            "vector": results["embeddings"][i],
-                            **results["metadatas"][i],
-                        }
-                    )
-
-            logger.debug(
-                f"Found {len(matching_records)} records with prefix '{prefix}'"
-            )
-            return matching_records
-
         except Exception as e:
             logger.error(f"Error during prefix search in ChromaDB: {str(e)}")
             raise
