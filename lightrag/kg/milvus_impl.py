@@ -128,7 +128,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 **dp["entity"],
                 "id": dp["id"],
                 "distance": dp["distance"],
-                "created_at": dp["entity"].get("created_at"),
+                # created_at is requested in output_fields, so it should be a top-level key in the result dict (dp)
+                "created_at": dp.get("created_at"),
             }
             for dp in results[0]
         ]
