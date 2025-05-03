@@ -14,6 +14,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+    # entrypoint: >
+    #   sh -c '
+    #   python -m lightrag.api.lightrag_server --addon_params "{ \"language\": \"English\", \"entity_types\": [\"organization\", \"person\", \"geo\", \"event\",\"category\",\"product\"]}"
+    #   '
   neo4j:
     image: neo4j:5.26.4-community
     container_name: lightrag-server_neo4j-community

@@ -6,6 +6,7 @@ import os
 import argparse
 import logging
 from dotenv import load_dotenv
+import json
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -244,6 +245,21 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("EMBEDDING_BINDING", "ollama"),
         choices=["lollms", "ollama", "openai", "azure_openai"],
         help="Embedding binding type (default: from env or ollama)",
+    )
+
+    def parse_addon_params(value):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            raise argparse.ArgumentTypeError(
+                "Invalid format for --addon_params. Must be a valid JSON string representing a dictionary."
+            )
+
+    parser.add_argument(
+        "--addon_params",
+        type=parse_addon_params,
+        default=parse_addon_params(get_env_value("ADDON_PARAMS", default='{"language": "English"}')),
+        help='Additional parameters in JSON format (e.g., \'{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}\')',
     )
 
     args = parser.parse_args()
