@@ -67,7 +67,7 @@ statistic_data = {"llm_call": 0, "llm_cache": 0, "embed_call": 0}
 logger = logging.getLogger("lightrag")
 logger.propagate = False  # prevent log message send to root loggger
 # Let the main application configure the handlers
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 # Set httpx logging level to WARNING
 logging.getLogger("httpx").setLevel(logging.WARNING)
