@@ -13,10 +13,12 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
+    # Uncomment the following lines to supply the addon_params
+    # or alternatively set them in the .env file as a valid JSON string under the variable ADDON_PARAMS.
+    # 
     # entrypoint: >
     #   sh -c '
-    #   python -m lightrag.api.lightrag_server --addon_params "{ \"language\": \"English\", \"entity_types\": [\"organization\", \"person\", \"geo\", \"event\",\"category\",\"product\"]}"
+    #   python -m lightrag.api.lightrag_server --addon_params "{ \"language\": \"English\", \"entity_types\": [\"organization\", \"person\", \"geo\", \"event\",\"category\"]}"
     #   '
   neo4j:
     image: neo4j:5.26.4-community
