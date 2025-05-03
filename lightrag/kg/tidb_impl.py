@@ -2,7 +2,7 @@ import asyncio
 import os
 from dataclasses import dataclass, field
 from typing import Any, Union, final
-
+import time
 import numpy as np
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -44,7 +44,13 @@ class TiDB:
             logger.error(f"TiDB database error: {e}")
             raise
 
+    async def _migrate_timestamp_columns(self):
+        """Migrate timestamp columns in tables to timezone-aware types, assuming original data is in UTC"""
+        # Not implemented yet
+        pass
+
     async def check_tables(self):
+        # First create all tables
         for k, v in TABLES.items():
             try:
                 await self.query(f"SELECT 1 FROM {k}".format(k=k))
@@ -57,6 +63,13 @@ class TiDB:
                 except Exception as e:
                     logger.error(f"Failed to create table {k} in TiDB database")
                     logger.error(f"TiDB database error: {e}")
+
+        # After all tables are created, try to migrate timestamp fields
+        try:
+            await self._migrate_timestamp_columns()
+        except Exception as e:
+            logger.error(f"TiDB, Failed to migrate timestamp columns: {e}")
+            # Don't raise exceptions, allow initialization process to continue
 
     async def query(
         self, sql: str, params: dict = None, multirows: bool = False
@@ -244,6 +257,9 @@ class TiDBKVStorage(BaseKVStorage):
             for i, d in enumerate(list_data):
                 d["__vector__"] = embeddings[i]
 
+            # Get current time as UNIX timestamp
+            current_time = int(time.time())
+
             merge_sql = SQL_TEMPLATES["upsert_chunk"]
             data = []
             for item in list_data:
@@ -256,6 +272,7 @@ class TiDBKVStorage(BaseKVStorage):
                         "full_doc_id": item["full_doc_id"],
                         "content_vector": f"{item['__vector__'].tolist()}",
                         "workspace": self.db.workspace,
+                        "timestamp": current_time,
                     }
                 )
             await self.db.execute(merge_sql, data)
@@ -325,7 +342,7 @@ class TiDBKVStorage(BaseKVStorage):
             if table_name != "LIGHTRAG_LLM_CACHE":
                 return False
 
-            # 构建MySQL风格的IN查询
+            # Build MySQL style IN query
             modes_list = ", ".join([f"'{mode}'" for mode in modes])
             sql = f"""
             DELETE FROM {table_name}
@@ -406,7 +423,6 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         results = await self.db.query(
             SQL_TEMPLATES[self.namespace], params=params, multirows=True
         )
-        print("vector search result:", results)
         if not results:
             return []
         return results
@@ -416,14 +432,18 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
-        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
-            return
 
         logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
+
+        # Get current time as UNIX timestamp
+        import time
+
+        current_time = int(time.time())
 
         list_data = [
             {
                 "id": k,
+                "timestamp": current_time,
                 **{k1: v1 for k1, v1 in v.items()},
             }
             for k, v in data.items()
@@ -440,8 +460,20 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         for i, d in enumerate(list_data):
             d["content_vector"] = embeddings[i]
 
-        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
-            data = []
+        if is_namespace(self.namespace, NameSpace.VECTOR_STORE_CHUNKS):
+            for item in list_data:
+                param = {
+                    "id": item["id"],
+                    "content": item["content"],
+                    "tokens": item.get("tokens", 0),
+                    "chunk_order_index": item.get("chunk_order_index", 0),
+                    "full_doc_id": item.get("full_doc_id", ""),
+                    "content_vector": f"{item['content_vector'].tolist()}",
+                    "workspace": self.db.workspace,
+                    "timestamp": item["timestamp"],
+                }
+                await self.db.execute(SQL_TEMPLATES["upsert_chunk"], param)
+        elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_ENTITIES):
             for item in list_data:
                 param = {
                     "id": item["id"],
@@ -449,20 +481,10 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                     "content": item["content"],
                     "content_vector": f"{item['content_vector'].tolist()}",
                     "workspace": self.db.workspace,
+                    "timestamp": item["timestamp"],
                 }
-                # update entity_id if node inserted by graph_storage_instance before
-                has = await self.db.query(SQL_TEMPLATES["has_entity"], param)
-                if has["cnt"] != 0:
-                    await self.db.execute(SQL_TEMPLATES["update_entity"], param)
-                    continue
-
-                data.append(param)
-            if data:
-                merge_sql = SQL_TEMPLATES["insert_entity"]
-                await self.db.execute(merge_sql, data)
-
+                await self.db.execute(SQL_TEMPLATES["upsert_entity"], param)
         elif is_namespace(self.namespace, NameSpace.VECTOR_STORE_RELATIONSHIPS):
-            data = []
             for item in list_data:
                 param = {
                     "id": item["id"],
@@ -471,17 +493,9 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                     "content": item["content"],
                     "content_vector": f"{item['content_vector'].tolist()}",
                     "workspace": self.db.workspace,
+                    "timestamp": item["timestamp"],
                 }
-                # update relation_id if node inserted by graph_storage_instance before
-                has = await self.db.query(SQL_TEMPLATES["has_relationship"], param)
-                if has["cnt"] != 0:
-                    await self.db.execute(SQL_TEMPLATES["update_relationship"], param)
-                    continue
-
-                data.append(param)
-            if data:
-                merge_sql = SQL_TEMPLATES["insert_relationship"]
-                await self.db.execute(merge_sql, data)
+                await self.db.execute(SQL_TEMPLATES["upsert_relationship"], param)
 
     async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
@@ -573,55 +587,6 @@ class TiDBVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        # Determine which table to query based on namespace
-        if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
-            sql_template = """
-                SELECT entity_id as id, name as entity_name, entity_type, description, content
-                FROM LIGHTRAG_GRAPH_NODES
-                WHERE entity_id LIKE :prefix_pattern AND workspace = :workspace
-            """
-        elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
-            sql_template = """
-                SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
-                       keywords, description, content
-                FROM LIGHTRAG_GRAPH_EDGES
-                WHERE relation_id LIKE :prefix_pattern AND workspace = :workspace
-            """
-        elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
-            sql_template = """
-                SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
-                FROM LIGHTRAG_DOC_CHUNKS
-                WHERE chunk_id LIKE :prefix_pattern AND workspace = :workspace
-            """
-        else:
-            logger.warning(
-                f"Namespace {self.namespace} not supported for prefix search"
-            )
-            return []
-
-        # Add prefix pattern parameter with % for SQL LIKE
-        prefix_pattern = f"{prefix}%"
-        params = {"prefix_pattern": prefix_pattern, "workspace": self.db.workspace}
-
-        try:
-            results = await self.db.query(sql_template, params=params, multirows=True)
-            logger.debug(
-                f"Found {len(results) if results else 0} records with prefix '{prefix}'"
-            )
-            return results if results else []
-        except Exception as e:
-            logger.error(f"Error searching records with prefix '{prefix}': {e}")
-            return []
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
 
@@ -635,7 +600,8 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             # Determine which table to query based on namespace
             if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
                 sql_template = """
-                    SELECT entity_id as id, name as entity_name, entity_type, description, content
+                    SELECT entity_id as id, name as entity_name, entity_type, description, content,
+                           UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_GRAPH_NODES
                     WHERE entity_id = :entity_id AND workspace = :workspace
                 """
@@ -643,14 +609,15 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
                 sql_template = """
                     SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
-                           keywords, description, content
+                           keywords, description, content, UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_GRAPH_EDGES
                     WHERE relation_id = :relation_id AND workspace = :workspace
                 """
                 params = {"relation_id": id, "workspace": self.db.workspace}
             elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
                 sql_template = """
-                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id,
+                           UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_DOC_CHUNKS
                     WHERE chunk_id = :chunk_id AND workspace = :workspace
                 """
@@ -686,20 +653,22 @@ class TiDBVectorDBStorage(BaseVectorStorage):
             # Determine which table to query based on namespace
             if self.namespace == NameSpace.VECTOR_STORE_ENTITIES:
                 sql_template = f"""
-                    SELECT entity_id as id, name as entity_name, entity_type, description, content
+                    SELECT entity_id as id, name as entity_name, entity_type, description, content,
+                           UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_GRAPH_NODES
                     WHERE entity_id IN ({ids_str}) AND workspace = :workspace
                 """
             elif self.namespace == NameSpace.VECTOR_STORE_RELATIONSHIPS:
                 sql_template = f"""
                     SELECT relation_id as id, source_name as src_id, target_name as tgt_id,
-                           keywords, description, content
+                           keywords, description, content, UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_GRAPH_EDGES
                     WHERE relation_id IN ({ids_str}) AND workspace = :workspace
                 """
             elif self.namespace == NameSpace.VECTOR_STORE_CHUNKS:
                 sql_template = f"""
-                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
+                    SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id,
+                           UNIX_TIMESTAMP(createtime) as created_at
                     FROM LIGHTRAG_DOC_CHUNKS
                     WHERE chunk_id IN ({ids_str}) AND workspace = :workspace
                 """
@@ -1086,8 +1055,8 @@ TABLES = {
             `tokens` INT,
             `content` LONGTEXT,
             `content_vector` VECTOR,
-            `createtime` DATETIME DEFAULT CURRENT_TIMESTAMP,
-            `updatetime` DATETIME DEFAULT NULL,
+            `createtime` TIMESTAMP,
+            `updatetime` TIMESTAMP,
             UNIQUE KEY (`chunk_id`)
         );
         """
@@ -1104,8 +1073,8 @@ TABLES = {
             `source_chunk_id` VARCHAR(256),
             `content` LONGTEXT,
             `content_vector` VECTOR,
-            `createtime` DATETIME DEFAULT CURRENT_TIMESTAMP,
-            `updatetime` DATETIME DEFAULT NULL,
+            `createtime` TIMESTAMP,
+            `updatetime` TIMESTAMP,
             KEY (`entity_id`)
         );
         """
@@ -1124,8 +1093,8 @@ TABLES = {
             `source_chunk_id` varchar(256),
             `content` LONGTEXT,
             `content_vector` VECTOR,
-            `createtime` DATETIME DEFAULT CURRENT_TIMESTAMP,
-            `updatetime` DATETIME DEFAULT NULL,
+            `createtime` TIMESTAMP,
+            `updatetime` TIMESTAMP,
             KEY (`relation_id`)
         );
         """
@@ -1159,25 +1128,25 @@ SQL_TEMPLATES = {
         ON DUPLICATE KEY UPDATE content = VALUES(content), workspace = VALUES(workspace), updatetime = CURRENT_TIMESTAMP
     """,
     "upsert_chunk": """
-        INSERT INTO LIGHTRAG_DOC_CHUNKS(chunk_id, content, tokens, chunk_order_index, full_doc_id, content_vector, workspace)
-        VALUES (:id, :content, :tokens, :chunk_order_index, :full_doc_id, :content_vector, :workspace)
+        INSERT INTO LIGHTRAG_DOC_CHUNKS(chunk_id, content, tokens, chunk_order_index, full_doc_id, content_vector, workspace, createtime, updatetime)
+        VALUES (:id, :content, :tokens, :chunk_order_index, :full_doc_id, :content_vector, :workspace, FROM_UNIXTIME(:timestamp), FROM_UNIXTIME(:timestamp))
         ON DUPLICATE KEY UPDATE
         content = VALUES(content), tokens = VALUES(tokens), chunk_order_index = VALUES(chunk_order_index),
-        full_doc_id = VALUES(full_doc_id), content_vector = VALUES(content_vector), workspace = VALUES(workspace), updatetime = CURRENT_TIMESTAMP
+        full_doc_id = VALUES(full_doc_id), content_vector = VALUES(content_vector), workspace = VALUES(workspace), updatetime = FROM_UNIXTIME(:timestamp)
     """,
     # SQL for VectorStorage
-    "entities": """SELECT n.name as entity_name FROM
-        (SELECT entity_id as id, name, VEC_COSINE_DISTANCE(content_vector,:embedding_string) as distance
+    "entities": """SELECT n.name as entity_name, UNIX_TIMESTAMP(n.createtime) as created_at FROM
+        (SELECT entity_id as id, name, createtime, VEC_COSINE_DISTANCE(content_vector,:embedding_string) as distance
         FROM LIGHTRAG_GRAPH_NODES WHERE workspace = :workspace) n
         WHERE n.distance>:better_than_threshold ORDER BY n.distance DESC LIMIT :top_k
     """,
-    "relationships": """SELECT e.source_name as src_id, e.target_name as tgt_id FROM
-        (SELECT source_name, target_name, VEC_COSINE_DISTANCE(content_vector, :embedding_string) as distance
+    "relationships": """SELECT e.source_name as src_id, e.target_name as tgt_id, UNIX_TIMESTAMP(e.createtime) as created_at FROM
+        (SELECT source_name, target_name, createtime, VEC_COSINE_DISTANCE(content_vector, :embedding_string) as distance
         FROM LIGHTRAG_GRAPH_EDGES WHERE workspace = :workspace) e
         WHERE e.distance>:better_than_threshold ORDER BY e.distance DESC LIMIT :top_k
     """,
-    "chunks": """SELECT c.id FROM
-        (SELECT chunk_id as id,VEC_COSINE_DISTANCE(content_vector, :embedding_string) as distance
+    "chunks": """SELECT c.id, UNIX_TIMESTAMP(c.createtime) as created_at FROM
+        (SELECT chunk_id as id, createtime, VEC_COSINE_DISTANCE(content_vector, :embedding_string) as distance
         FROM LIGHTRAG_DOC_CHUNKS WHERE workspace = :workspace) c
         WHERE c.distance>:better_than_threshold ORDER BY c.distance DESC LIMIT :top_k
     """,
@@ -1187,23 +1156,21 @@ SQL_TEMPLATES = {
     "has_relationship": """
         SELECT COUNT(id) AS cnt FROM LIGHTRAG_GRAPH_EDGES WHERE source_name = :source_name AND target_name = :target_name AND workspace = :workspace
     """,
-    "update_entity": """
-        UPDATE LIGHTRAG_GRAPH_NODES SET
-            entity_id = :id, content = :content, content_vector = :content_vector, updatetime = CURRENT_TIMESTAMP
-        WHERE workspace = :workspace AND name = :name
+    "upsert_entity": """
+        INSERT INTO LIGHTRAG_GRAPH_NODES(entity_id, name, content, content_vector, workspace, createtime, updatetime)
+        VALUES(:id, :name, :content, :content_vector, :workspace, FROM_UNIXTIME(:timestamp), FROM_UNIXTIME(:timestamp))
+        ON DUPLICATE KEY UPDATE
+            content = VALUES(content),
+            content_vector = VALUES(content_vector),
+            updatetime = FROM_UNIXTIME(:timestamp)
     """,
-    "update_relationship": """
-        UPDATE LIGHTRAG_GRAPH_EDGES SET
-            relation_id = :id, content = :content, content_vector = :content_vector, updatetime = CURRENT_TIMESTAMP
-        WHERE workspace = :workspace AND source_name = :source_name AND target_name = :target_name
-    """,
-    "insert_entity": """
-        INSERT INTO LIGHTRAG_GRAPH_NODES(entity_id, name, content, content_vector, workspace)
-        VALUES(:id, :name, :content, :content_vector, :workspace)
-    """,
-    "insert_relationship": """
-        INSERT INTO LIGHTRAG_GRAPH_EDGES(relation_id, source_name, target_name, content, content_vector, workspace)
-        VALUES(:id, :source_name, :target_name, :content, :content_vector, :workspace)
+    "upsert_relationship": """
+        INSERT INTO LIGHTRAG_GRAPH_EDGES(relation_id, source_name, target_name, content, content_vector, workspace, createtime, updatetime)
+        VALUES(:id, :source_name, :target_name, :content, :content_vector, :workspace, FROM_UNIXTIME(:timestamp), FROM_UNIXTIME(:timestamp))
+        ON DUPLICATE KEY UPDATE
+            content = VALUES(content),
+            content_vector = VALUES(content_vector),
+            updatetime = FROM_UNIXTIME(:timestamp)
     """,
     # SQL for GraphStorage
     "get_node": """
@@ -1274,22 +1241,6 @@ SQL_TEMPLATES = {
         DELETE FROM LIGHTRAG_GRAPH_EDGES
         WHERE (source_name = :source AND target_name = :target)
         AND workspace = :workspace
-    """,
-    # Search by prefix SQL templates
-    "search_entity_by_prefix": """
-        SELECT entity_id as id, name as entity_name, entity_type, description, content
-        FROM LIGHTRAG_GRAPH_NODES
-        WHERE entity_id LIKE :prefix_pattern AND workspace = :workspace
-    """,
-    "search_relationship_by_prefix": """
-        SELECT relation_id as id, source_name as src_id, target_name as tgt_id, keywords, description, content
-        FROM LIGHTRAG_GRAPH_EDGES
-        WHERE relation_id LIKE :prefix_pattern AND workspace = :workspace
-    """,
-    "search_chunk_by_prefix": """
-        SELECT chunk_id as id, content, tokens, chunk_order_index, full_doc_id
-        FROM LIGHTRAG_DOC_CHUNKS
-        WHERE chunk_id LIKE :prefix_pattern AND workspace = :workspace
     """,
     # Drop tables
     "drop_specifiy_table_workspace": "DELETE FROM {table_name} WHERE workspace = :workspace",

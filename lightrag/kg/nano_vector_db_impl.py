@@ -89,7 +89,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
-        current_time = time.time()
+        current_time = int(time.time())
         list_data = [
             {
                 "__id__": k,
@@ -259,26 +259,6 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         return True  # Return success
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        storage = await self.client_storage
-        matching_records = []
-
-        # Search for records with IDs starting with the prefix
-        for record in storage["data"]:
-            if "__id__" in record and record["__id__"].startswith(prefix):
-                matching_records.append({**record, "id": record["__id__"]})
-
-        logger.debug(f"Found {len(matching_records)} records with prefix '{prefix}'")
-        return matching_records
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
 
@@ -291,7 +271,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         client = await self._get_client()
         result = client.get([id])
         if result:
-            return result[0]
+            dp = result[0]
+            return {
+                **dp,
+                "id": dp.get("__id__"),
+                "created_at": dp.get("__created_at__"),
+            }
         return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -307,7 +292,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
             return []
 
         client = await self._get_client()
-        return client.get(ids)
+        results = client.get(ids)
+        return [
+            {
+                **dp,
+                "id": dp.get("__id__"),
+                "created_at": dp.get("__created_at__"),
+            }
+            for dp in results
+        ]
 
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources
