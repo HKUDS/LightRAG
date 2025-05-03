@@ -2,7 +2,7 @@ import asyncio
 import os
 from dataclasses import dataclass, field
 from typing import Any, Union, final
-
+import time
 import numpy as np
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -46,61 +46,8 @@ class TiDB:
 
     async def _migrate_timestamp_columns(self):
         """Migrate timestamp columns in tables to timezone-aware types, assuming original data is in UTC"""
-        # Tables and columns that need migration
-        tables_to_migrate = {
-            "LIGHTRAG_GRAPH_NODES": ["createtime", "updatetime"],
-            "LIGHTRAG_GRAPH_EDGES": ["createtime", "updatetime"],
-            "LIGHTRAG_DOC_CHUNKS": ["createtime", "updatetime"],
-        }
-
-        for table_name, columns in tables_to_migrate.items():
-            for column_name in columns:
-                try:
-                    # Check if column exists
-                    check_column_sql = f"""
-                    SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE
-                    FROM INFORMATION_SCHEMA.COLUMNS
-                    WHERE TABLE_NAME = '{table_name}'
-                    AND COLUMN_NAME = '{column_name}'
-                    """
-
-                    column_info = await self.query(check_column_sql)
-                    if not column_info:
-                        logger.warning(
-                            f"Column {table_name}.{column_name} does not exist, skipping migration"
-                        )
-                        continue
-
-                    # Check column type
-                    data_type = column_info.get("DATA_TYPE", "").lower()
-                    column_type = column_info.get("COLUMN_TYPE", "").lower()
-
-                    # If already timestamp type, check if it contains timezone information
-                    if data_type == "timestamp" and "time zone" in column_type:
-                        logger.info(
-                            f"Column {table_name}.{column_name} is already a timezone-aware timestamp type, no migration needed"
-                        )
-                        continue
-
-                    # If datetime type, need to migrate to timestamp
-                    if data_type == "datetime" or (
-                        data_type == "timestamp" and "time zone" not in column_type
-                    ):
-                        logger.info(
-                            f"Migrating {table_name}.{column_name} to timestamp type"
-                        )
-                        migration_sql = f"""
-                        ALTER TABLE {table_name}
-                        MODIFY COLUMN {column_name} TIMESTAMP
-                        """
-
-                        await self.execute(migration_sql)
-                        logger.info(
-                            f"Successfully migrated {table_name}.{column_name} to timestamp type"
-                        )
-                except Exception as e:
-                    # Log error but don't interrupt the process
-                    logger.warning(f"Failed to migrate {table_name}.{column_name}: {e}")
+        # Not implemented yet
+        pass
 
     async def check_tables(self):
         # First create all tables
@@ -311,8 +258,6 @@ class TiDBKVStorage(BaseKVStorage):
                 d["__vector__"] = embeddings[i]
 
             # Get current time as UNIX timestamp
-            import time
-
             current_time = int(time.time())
 
             merge_sql = SQL_TEMPLATES["upsert_chunk"]
