@@ -1010,6 +1010,10 @@ class LightRAG:
                                     if not task.done():
                                         task.cancel()
 
+                            # Persistent llm cache
+                            if self.llm_response_cache:
+                                await self.llm_response_cache.index_done_callback
+
                             # Update document status to failed
                             await self.doc_status.upsert(
                                 {
@@ -1028,7 +1032,7 @@ class LightRAG:
                                 }
                             )
 
-                    # Semphore was released here
+                    # Semphore released, concurrency controlled by graph_db_lock in merge_nodes_and_edges instead
 
                     if file_extraction_stage_ok:
                         try:
@@ -1081,6 +1085,10 @@ class LightRAG:
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = error_msg
                                 pipeline_status["history_messages"].append(error_msg)
+
+                            # Persistent llm cache
+                            if self.llm_response_cache:
+                                await self.llm_response_cache.index_done_callback
 
                             # Update document status to failed
                             await self.doc_status.upsert(
