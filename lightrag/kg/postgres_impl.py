@@ -1178,7 +1178,7 @@ class PGGraphStorage(BaseGraphStorage):
                     with_age=True,
                     graph_name=self.graph_name,
                 )
-                logger.info(f"Successfully executed: {query}")
+                # logger.info(f"Successfully executed: {query}")
             except Exception:
                 continue
 
