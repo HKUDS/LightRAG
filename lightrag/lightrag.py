@@ -994,10 +994,14 @@ class LightRAG:
 
                         except Exception as e:
                             # Log error and update pipeline status
-                            error_msg = f"Failed to extrat document {doc_id}: {traceback.format_exc()}"
+                            logger.error(traceback.format_exc())
+                            error_msg = f"Failed to extrat document {current_file_number}/{total_files}: {file_path}"
                             logger.error(error_msg)
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = error_msg
+                                pipeline_status["history_messages"].append(
+                                    traceback.format_exc()
+                                )
                                 pipeline_status["history_messages"].append(error_msg)
 
                                 # Cancel other tasks as they are no longer meaningful
@@ -1080,10 +1084,14 @@ class LightRAG:
 
                         except Exception as e:
                             # Log error and update pipeline status
-                            error_msg = f"Merging stage failed in document {doc_id}: {traceback.format_exc()}"
+                            logger.error(traceback.format_exc())
+                            error_msg = f"Merging stage failed in document {current_file_number}/{total_files}: {file_path}"
                             logger.error(error_msg)
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = error_msg
+                                pipeline_status["history_messages"].append(
+                                    traceback.format_exc()
+                                )
                                 pipeline_status["history_messages"].append(error_msg)
 
                             # Persistent llm cache
