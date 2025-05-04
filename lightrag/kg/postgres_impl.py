@@ -1372,11 +1372,12 @@ class PGGraphStorage(BaseGraphStorage):
         if record:
             node = record[0]
             node_dict = node["n"]["properties"]
-            
+
             # Process string result, parse it to JSON dictionary
             if isinstance(node_dict, str):
                 try:
                     import json
+
                     node_dict = json.loads(node_dict)
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse node string: {node_dict}")
@@ -1428,15 +1429,16 @@ class PGGraphStorage(BaseGraphStorage):
         record = await self._query(query)
         if record and record[0] and record[0]["edge_properties"]:
             result = record[0]["edge_properties"]
-            
+
             # Process string result, parse it to JSON dictionary
             if isinstance(result, str):
                 try:
                     import json
+
                     result = json.loads(result)
                 except json.JSONDecodeError:
                     logger.warning(f"Failed to parse edge string: {result}")
-            
+
             return result
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -1645,15 +1647,18 @@ class PGGraphStorage(BaseGraphStorage):
         for result in results:
             if result["node_id"] and result["n"]:
                 node_dict = result["n"]["properties"]
-                
+
                 # Process string result, parse it to JSON dictionary
                 if isinstance(node_dict, str):
                     try:
                         import json
+
                         node_dict = json.loads(node_dict)
                     except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse node string in batch: {node_dict}")
-                
+                        logger.warning(
+                            f"Failed to parse node string in batch: {node_dict}"
+                        )
+
                 # Remove the 'base' label if present in a 'labels' property
                 if "labels" in node_dict:
                     node_dict["labels"] = [
@@ -1806,31 +1811,37 @@ class PGGraphStorage(BaseGraphStorage):
         for result in forward_results:
             if result["source"] and result["target"] and result["edge_properties"]:
                 edge_props = result["edge_properties"]
-                
+
                 # Process string result, parse it to JSON dictionary
                 if isinstance(edge_props, str):
                     try:
                         import json
+
                         edge_props = json.loads(edge_props)
                     except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse edge properties string: {edge_props}")
+                        logger.warning(
+                            f"Failed to parse edge properties string: {edge_props}"
+                        )
                         continue
-                
+
                 edges_dict[(result["source"], result["target"])] = edge_props
 
         for result in backward_results:
             if result["source"] and result["target"] and result["edge_properties"]:
                 edge_props = result["edge_properties"]
-                
+
                 # Process string result, parse it to JSON dictionary
                 if isinstance(edge_props, str):
                     try:
                         import json
+
                         edge_props = json.loads(edge_props)
                     except json.JSONDecodeError:
-                        logger.warning(f"Failed to parse edge properties string: {edge_props}")
+                        logger.warning(
+                            f"Failed to parse edge properties string: {edge_props}"
+                        )
                         continue
-                
+
                 edges_dict[(result["source"], result["target"])] = edge_props
 
         return edges_dict
