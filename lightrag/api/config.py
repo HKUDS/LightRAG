@@ -258,7 +258,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--addon_params",
         type=parse_addon_params,
-        default=parse_addon_params(get_env_value("ADDON_PARAMS", default='{"language": "English"}')),
+        default=parse_addon_params(
+            get_env_value("ADDON_PARAMS", default='{"language": "English"}')
+        ),
         help='Additional parameters in JSON format (e.g., \'{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}\')',
     )
 

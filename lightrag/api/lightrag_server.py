@@ -345,7 +345,7 @@ def create_app(args):
             enable_llm_cache=args.enable_llm_cache,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
-            addon_params=args.addon_params
+            addon_params=args.addon_params,
         )
 
     # Add routes
