@@ -2297,8 +2297,8 @@ TABLES = {
                     doc_name VARCHAR(1024),
                     content TEXT,
                     meta JSONB,
-                    create_time TIMESTAMP(0)
-                    update_time TIMESTAMP(0)
+                    create_time TIMESTAMP(0),
+                    update_time TIMESTAMP(0),
 	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
                     )"""
     },
