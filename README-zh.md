@@ -201,37 +201,65 @@ if __name__ == "__main__":
 
 ```python
 class QueryParam:
-    mode: Literal["local", "global", "hybrid", "naive", "mix"] = "global"
-    """指定检索模式：
-    - "local"：专注于上下文相关信息。
-    - "global"：利用全局知识。
-    - "hybrid"：结合本地和全局检索方法。
-    - "naive"：执行基本搜索，不使用高级技术。
-    - "mix"：集成知识图谱和向量检索。混合模式结合知识图谱和向量搜索：
-        - 同时使用结构化（KG）和非结构化（向量）信息
-        - 通过分析关系和上下文提供全面的答案
-        - 通过HTML img标签支持图像内容
-        - 允许通过top_k参数控制检索深度
+    """Configuration parameters for query execution in LightRAG."""
+
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "global"
+    """Specifies the retrieval mode:
+    - "local": Focuses on context-dependent information.
+    - "global": Utilizes global knowledge.
+    - "hybrid": Combines local and global retrieval methods.
+    - "naive": Performs a basic search without advanced techniques.
+    - "mix": Integrates knowledge graph and vector retrieval.
     """
+
     only_need_context: bool = False
-    """如果为True，仅返回检索到的上下文而不生成响应。"""
+    """If True, only returns the retrieved context without generating a response."""
+
+    only_need_prompt: bool = False
+    """If True, only returns the generated prompt without producing a response."""
+
     response_type: str = "Multiple Paragraphs"
-    """定义响应格式。示例：'Multiple Paragraphs'（多段落）, 'Single Paragraph'（单段落）, 'Bullet Points'（要点列表）。"""
-    top_k: int = 60
-    """要检索的顶部项目数量。在'local'模式下代表实体，在'global'模式下代表关系。"""
-    max_token_for_text_unit: int = 4000
-    """每个检索文本块允许的最大令牌数。"""
-    max_token_for_global_context: int = 4000
-    """全局检索中关系描述的最大令牌分配。"""
-    max_token_for_local_context: int = 4000
-    """本地检索中实体描述的最大令牌分配。"""
-    ids: list[str] | None = None # 仅支持PG向量数据库
-    """用于过滤RAG的ID列表。"""
-    model_func: Callable[..., object] | None = None
-    """查询使用的LLM模型函数。如果提供了此选项，它将代替LightRAG全局模型函数。
-    这允许为不同的查询模式使用不同的模型。
+    """Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'."""
+
+    stream: bool = False
+    """If True, enables streaming output for real-time responses."""
+
+    top_k: int = int(os.getenv("TOP_K", "60"))
+    """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
+
+    max_token_for_text_unit: int = int(os.getenv("MAX_TOKEN_TEXT_CHUNK", "4000"))
+    """Maximum number of tokens allowed for each retrieved text chunk."""
+
+    max_token_for_global_context: int = int(
+        os.getenv("MAX_TOKEN_RELATION_DESC", "4000")
+    )
+    """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
+
+    max_token_for_local_context: int = int(os.getenv("MAX_TOKEN_ENTITY_DESC", "4000"))
+    """Maximum number of tokens allocated for entity descriptions in local retrieval."""
+
+    hl_keywords: list[str] = field(default_factory=list)
+    """List of high-level keywords to prioritize in retrieval."""
+
+    ll_keywords: list[str] = field(default_factory=list)
+    """List of low-level keywords to refine retrieval focus."""
+
+    conversation_history: list[dict[str, str]] = field(default_factory=list)
+    """Stores past conversation history to maintain context.
+    Format: [{"role": "user/assistant", "content": "message"}].
     """
-    ...
+
+    history_turns: int = 3
+    """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
+
+    ids: list[str] | None = None
+    """List of ids to filter the results."""
+
+    model_func: Callable[..., object] | None = None
+    """Optional override for the LLM model function to use for this specific query.
+    If provided, this will be used instead of the global model function.
+    This allows using different models for different query modes.
+    """
 ```
 
 > top_k的默认值可以通过环境变量TOP_K更改。
