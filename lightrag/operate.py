@@ -211,6 +211,11 @@ async def _handle_single_relationship_extraction(
     # Normalize source and target entity names
     source = normalize_extracted_info(source, is_entity=True)
     target = normalize_extracted_info(target, is_entity=True)
+    if source == target:
+        logger.debug(
+            f"Relationship source and target are the same in: {record_attributes}"
+        )
+        return None
 
     edge_description = clean_str(record_attributes[3])
     edge_description = normalize_extracted_info(edge_description)
@@ -331,6 +336,9 @@ async def _merge_edges_then_upsert(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
 ):
+    if src_id == tgt_id:
+        return None
+
     already_weights = []
     already_source_ids = []
     already_description = []
