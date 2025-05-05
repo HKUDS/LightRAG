@@ -1660,6 +1660,9 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
     3. Preserve spaces within English text and numbers
     4. Replace Chinese parentheses with English parentheses
     5. Replace Chinese dash with English dash
+    6. Remove English quotation marks from the beginning and end of the text
+    7. Remove English quotation marks in and around chinese
+    8. Remove Chinese quotation marks
 
     Args:
         name: Entity name to normalize
