@@ -1249,7 +1249,7 @@ async def mix_kg_vector_query(
             for c in maybe_trun_chunks:
                 chunk_text = "File path: " + c["file_path"] + "\r\n\r\n" + c["content"]
                 if c["created_at"]:
-                    chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
+                    chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\r\n\r\n{chunk_text}"
                 formatted_chunks.append(chunk_text)
 
             logger.debug(
@@ -1271,12 +1271,12 @@ async def mix_kg_vector_query(
 
     if query_param.only_need_context:
         context_str = f"""
-        -----Knowledge Graph Context-----
-        {kg_context if kg_context else "No relevant knowledge graph information found"}
+\r\n\r\n=====Knowledge Graph Context=====\r\n\r\n
+{kg_context if kg_context else "No relevant knowledge graph information found"}
 
-        -----Vector Context-----
-        {vector_context if vector_context else "No relevant text information found"}
-        """.strip()
+\r\n\r\n=====Vector Context=====\r\n\r\n
+{vector_context if vector_context else "No relevant text information found"}
+""".strip()
         return context_str
 
     # 5. Construct hybrid prompt
