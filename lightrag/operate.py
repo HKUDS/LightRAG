@@ -1198,7 +1198,6 @@ async def mix_kg_vector_query(
             traceback.print_exc()
             return None
 
-
     # 3. Execute both retrievals in parallel
     kg_context, vector_context = await asyncio.gather(
         get_kg_context(), _get_vector_context(query, chunks_vdb, query_param, tokenizer)
@@ -1984,7 +1983,7 @@ async def naive_query(
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     section = await _get_vector_context(query, chunks_vdb, query_param, tokenizer)
-    
+
     if section is None:
         return PROMPTS["fail_response"]
 
@@ -2207,26 +2206,28 @@ async def _get_vector_context(
 ) -> str | None:
     """
     Retrieve vector context from the vector database.
-    
+
     This function performs vector search to find relevant text chunks for a query,
     formats them with file path and creation time information, and truncates
     the results to fit within token limits.
-    
+
     Args:
         query: The query string to search for
         chunks_vdb: Vector database containing document chunks
         query_param: Query parameters including top_k and ids
         tokenizer: Tokenizer for counting tokens
-        
+
     Returns:
         Formatted string containing relevant text chunks, or None if no results found
     """
     try:
         # Reduce top_k for vector search in hybrid mode since we have structured information from KG
-        mix_topk = min(10, query_param.top_k) if hasattr(query_param, 'mode') and query_param.mode == 'mix' else query_param.top_k
-        results = await chunks_vdb.query(
-            query, top_k=mix_topk, ids=query_param.ids
+        mix_topk = (
+            min(10, query_param.top_k)
+            if hasattr(query_param, "mode") and query_param.mode == "mix"
+            else query_param.top_k
         )
+        results = await chunks_vdb.query(query, top_k=mix_topk, ids=query_param.ids)
         if not results:
             return None
 
@@ -2254,9 +2255,7 @@ async def _get_vector_context(
         logger.debug(
             f"Truncate chunks from {len(valid_chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
         )
-        logger.info(
-            f"Vector query: {len(maybe_trun_chunks)} chunks, top_k: {mix_topk}"
-        )
+        logger.info(f"Vector query: {len(maybe_trun_chunks)} chunks, top_k: {mix_topk}")
 
         if not maybe_trun_chunks:
             return None
@@ -2276,6 +2275,7 @@ async def _get_vector_context(
     except Exception as e:
         logger.error(f"Error in _get_vector_context: {e}")
         return None
+
 
 async def query_with_keywords(
     query: str,
