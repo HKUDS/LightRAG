@@ -2049,10 +2049,7 @@ async def naive_query(
     if not len(results):
         return PROMPTS["fail_response"]
 
-    # 直接从 chunks_vdb.query 结果中获取内容
-    valid_chunks = [
-        result for result in results if "content" in result
-    ]
+    valid_chunks = [result for result in results if "content" in result]
 
     if not valid_chunks:
         logger.warning("No valid chunks found after filtering")
