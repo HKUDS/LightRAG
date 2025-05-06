@@ -57,7 +57,7 @@ from .operate import (
     naive_query,
     query_with_keywords,
 )
-from .prompt import GRAPH_FIELD_SEP, PROMPTS
+from .prompt import GRAPH_FIELD_SEP
 from .utils import (
     Tokenizer,
     TiktokenTokenizer,
