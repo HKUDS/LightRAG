@@ -116,6 +116,12 @@ const isInlineCode = (node?: Element): boolean => {
 };
 
 
+// Check if it is a large JSON
+const isLargeJson = (language: string | undefined, content: string | undefined): boolean => {
+  if (!content || language !== 'json') return false;
+  return content.length > 5000; // JSON larger than 5KB is considered large JSON
+};
+
 // Memoize the CodeHighlight component
 const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false, ...props }: CodeHighlightProps) => {
   const { theme } = useTheme();
@@ -125,6 +131,10 @@ const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false
   const inline = isInlineCode(node); // Use the helper function
   const mermaidRef = useRef<HTMLDivElement>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null); // Use ReturnType for better typing
+
+  // Get the content string, check if it is a large JSON
+  const contentStr = String(children || '').replace(/\n$/, '');
+  const isLargeJsonBlock = isLargeJson(language, contentStr);
 
   // Handle Mermaid rendering with debounce
   useEffect(() => {
@@ -247,10 +257,18 @@ const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false
       }
     };
   // Dependencies: renderAsDiagram ensures effect runs when diagram should be shown.
-  // children, language, theme trigger re-render if code/context changes.
   // Dependencies include all values used inside the effect to satisfy exhaustive-deps.
   // The !hasRendered check prevents re-execution of render logic after success.
   }, [renderAsDiagram, hasRendered, language, children, theme]); // Add children and theme back
+
+  // For large JSON, skip syntax highlighting completely and use a simple pre tag
+  if (isLargeJsonBlock) {
+    return (
+      <pre className="whitespace-pre-wrap break-words bg-muted p-4 rounded-md overflow-x-auto text-sm font-mono">
+        {contentStr}
+      </pre>
+    );
+  }
 
   // Render based on language type
   // If it's a mermaid language block and rendering as diagram is not requested (e.g., incomplete stream), display as plain text
@@ -262,7 +280,7 @@ const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false
         language="text" // Use text as language to avoid syntax highlighting errors
         {...props}
       >
-        {String(children).replace(/\n$/, '')}
+        {contentStr}
       </SyntaxHighlighter>
     );
   }
@@ -273,6 +291,7 @@ const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false
     return <div className="mermaid-diagram-container my-4 overflow-x-auto" ref={mermaidRef}></div>;
   }
 
+
   // Handle non-Mermaid code blocks
   return !inline ? (
     <SyntaxHighlighter
@@ -281,12 +300,12 @@ const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false
       language={language}
       {...props}
     >
-      {String(children).replace(/\n$/, '')}
+      {contentStr}
     </SyntaxHighlighter>
   ) : (
     // Handle inline code
     <code
-      className={cn(className, 'mx-1 rounded-sm bg-muted px-1 py-0.5 font-mono text-sm')} // 添加 font-mono 确保使用等宽字体
+      className={cn(className, 'mx-1 rounded-sm bg-muted px-1 py-0.5 font-mono text-sm')} // Add font-mono to ensure monospaced font is used
       {...props}
     >
       {children}
