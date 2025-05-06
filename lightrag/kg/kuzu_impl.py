@@ -2,27 +2,22 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass, field
-from typing import Any, final
+from typing import Any, final, Dict, Tuple, Optional
 
-# Ensure kuzu and numpy are installed with specific versions
+# Ensure kuzu and httpx are installed
 import pipmaster as pm
 
 if not pm.is_installed("kuzu"):
     pm.install("kuzu>=0.9.0")
-if not pm.is_installed("numpy"):
-    pm.install("numpy>=1.22.5")
+if not pm.is_installed("httpx"):
+    pm.install("httpx>=0.28.1")
 
 try:
     import kuzu
-    from kuzu import (
-        AsyncConnection,
-        Database,
-        QueryResult,
-    )  # Import QueryResult for type hints if needed
-    import numpy as np  # noqa: F401  # Import numpy after ensuring installation
+    from kuzu import AsyncConnection, Database, QueryResult
+    import httpx  # For Kuzu REST API
 except ImportError as e:
-    print(f"Error importing kuzu or numpy after installation attempt: {e}")
-    # Handle the error appropriately, maybe raise it or exit
+    print(f"Error importing required libraries: {e}. Please ensure installation.")
     raise
 
 
@@ -38,8 +33,6 @@ from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..utils import logger
 
 import configparser
-
-# logging is imported above if needed
 from dotenv import load_dotenv
 
 # --- Configuration Loading ---
@@ -52,11 +45,14 @@ load_dotenv(dotenv_path=".env", override=False)
 # Get maximum number of graph nodes from environment variable, default is 1000
 MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
 
-# --- Kuzu Client Management ---
+# --- Kuzu Client Management (Primarily for Embedded Mode) ---
 
 
 class KuzuClientManager:
-    """Manages singleton Kuzu Database and AsyncConnection instances."""
+    """
+    Manages singleton Kuzu Database and AsyncConnection instances for EMBEDDED mode.
+    For REST mode, it primarily provides configuration.
+    """
 
     _instances: dict[str, Any] = {"db": None, "async_conn": None, "ref_count": 0}
     _lock = asyncio.Lock()
@@ -71,8 +67,7 @@ class KuzuClientManager:
         try:
             current_file_dir = os.path.dirname(os.path.abspath(__file__))
         except NameError:
-            # __file__ might not be defined in some environments (e.g., interactive)
-            current_file_dir = os.getcwd()  # Fallback to current working directory
+            current_file_dir = os.getcwd()
         config_path = os.path.join(current_file_dir, "config.ini")
 
         if os.path.exists(config_path):
@@ -84,48 +79,52 @@ class KuzuClientManager:
             )
 
         kuzu_config = {
+            "connection_mode": os.environ.get(
+                "KUZU_CONNECTION_MODE",
+                config.get(
+                    "kuzu", "connection_mode", fallback="embedded"
+                ),  # embedded or rest
+            ).lower(),
             "database_path": os.environ.get(
                 "KUZU_DATABASE_PATH",
-                config.get(
-                    "kuzu", "database_path", fallback=":memory:"
-                ),  # Default to in-memory
+                config.get("kuzu", "database_path", fallback=":memory:"),
+            ),
+            "api_url": os.environ.get(
+                "KUZU_API_URL",
+                config.get("kuzu", "api_url", fallback="http://localhost:8000"),
             ),
             "max_num_threads": int(
                 os.environ.get(
                     "KUZU_MAX_NUM_THREADS",
-                    config.get(
-                        "kuzu", "max_num_threads", fallback=0
-                    ),  # 0 means use system default
+                    config.get("kuzu", "max_num_threads", fallback=0),
                 )
             ),
             "max_concurrent_queries": int(
                 os.environ.get(
                     "KUZU_MAX_CONCURRENT_QUERIES",
-                    config.get(
-                        "kuzu", "max_concurrent_queries", fallback=4
-                    ),  # Default for AsyncConnection
+                    config.get("kuzu", "max_concurrent_queries", fallback=4),
                 )
             ),
         }
+        if kuzu_config["connection_mode"] == "rest" and not kuzu_config["api_url"]:
+            raise ValueError("KUZU_API_URL must be set for 'rest' connection mode.")
+
         logger.info(f"Kuzu Configuration resolved to: {kuzu_config}")
         return kuzu_config
 
     @classmethod
-    async def get_client(cls) -> tuple[Database, AsyncConnection]:
-        """Gets or creates the singleton Kuzu Database and AsyncConnection."""
+    async def get_embedded_client(cls) -> Tuple[Database, AsyncConnection]:
+        """Gets or creates the singleton Kuzu Database and AsyncConnection for EMBEDDED mode."""
         async with cls._lock:
-            # Check if either db or async_conn is None, or if db is closed (might happen externally)
-            # Kuzu DB doesn't have an explicit is_closed, rely on async_conn status or try/except
             if cls._instances["db"] is None or cls._instances["async_conn"] is None:
-                logger.info("Creating new Kuzu DB and AsyncConnection instances.")
-                config = cls.get_config()
-                db_path = config["database_path"]
-                # Use max_num_threads for both DB and AsyncConnection thread pool for simplicity
-                # Can be configured separately if needed
-                max_threads = config["max_num_threads"]
-                max_concurrent = config["max_concurrent_queries"]
+                logger.info(
+                    "Creating new Kuzu EMBEDDED DB and AsyncConnection instances."
+                )
+                full_config = cls.get_config()
+                db_path = full_config["database_path"]
+                max_threads = full_config["max_num_threads"]
+                max_concurrent = full_config["max_concurrent_queries"]
 
-                # Ensure directory exists if not in-memory
                 if db_path != ":memory:":
                     db_dir = os.path.dirname(db_path)
                     if db_dir and not os.path.exists(db_dir):
@@ -136,44 +135,36 @@ class KuzuClientManager:
                             logger.error(
                                 f"Failed to create Kuzu database directory {db_dir}: {e}"
                             )
-                            raise  # Re-raise directory creation error
+                            raise
 
                 try:
-                    # Initialize Kuzu Database
-                    db = kuzu.Database(
-                        database_path=db_path,
-                    )
-                    logger.info(f"Initialized Kuzu Database at: {db_path}")
-
-                    # Initialize Kuzu AsyncConnection
+                    db = kuzu.Database(database_path=db_path)
+                    logger.info(f"Initialized Kuzu EMBEDDED Database at: {db_path}")
                     async_conn = kuzu.AsyncConnection(
                         database=db,
                         max_concurrent_queries=max_concurrent,
-                        max_threads_per_query=max_threads,  # Controls threads per query in the pool
+                        max_threads_per_query=max_threads,
                     )
-                    logger.info(
-                        f"Initialized Kuzu AsyncConnection with max_concurrent_queries={max_concurrent}, max_threads_per_query={max_threads}"
-                    )
-
+                    logger.info("Initialized Kuzu EMBEDDED AsyncConnection.")
                     cls._instances["db"] = db
                     cls._instances["async_conn"] = async_conn
-                    cls._instances["ref_count"] = 0  # Reset ref count on new creation
+                    cls._instances["ref_count"] = 0
                 except Exception as e:
-                    logger.error(f"Failed to initialize Kuzu DB/Connection: {e}")
+                    logger.error(
+                        f"Failed to initialize Kuzu EMBEDDED DB/Connection: {e}"
+                    )
                     raise
 
             cls._instances["ref_count"] += 1
             logger.debug(
-                f"Kuzu client reference count incremented to: {cls._instances['ref_count']}"
+                f"Kuzu EMBEDDED client reference count incremented to: {cls._instances['ref_count']}"
             )
-            # Return the potentially newly created or existing instances
             return cls._instances["db"], cls._instances["async_conn"]
 
     @classmethod
-    async def release_client(cls, db: Database, async_conn: AsyncConnection):
-        """Decrements reference count and closes connections if count reaches zero."""
+    async def release_embedded_client(cls, db: Database, async_conn: AsyncConnection):
+        """Decrements reference count for EMBEDDED client and closes if count reaches zero."""
         async with cls._lock:
-            # Check if the provided instances match the managed singletons AND they exist
             if (
                 cls._instances["db"] is not None
                 and db is cls._instances["db"]
@@ -182,41 +173,37 @@ class KuzuClientManager:
             ):
                 cls._instances["ref_count"] -= 1
                 logger.debug(
-                    f"Kuzu client reference count decremented to: {cls._instances['ref_count']}"
+                    f"Kuzu EMBEDDED client reference count decremented to: {cls._instances['ref_count']}"
                 )
-
                 if cls._instances["ref_count"] <= 0:
                     logger.info(
-                        "Reference count reached zero. Closing Kuzu AsyncConnection and Database..."
+                        "Reference count reached zero. Closing Kuzu EMBEDDED AsyncConnection and Database..."
                     )
                     try:
                         if cls._instances["async_conn"]:
-                            cls._instances[
-                                "async_conn"
-                            ].close()  # Closes pool and threads
-                        # Kuzu Database itself doesn't have an explicit close in the same way,
-                        # relies on garbage collection or __del__.
-                        # Nullify references to allow GC.
-                        cls._instances["async_conn"] = None
-                        cls._instances["db"] = None
-                        cls._instances["ref_count"] = 0  # Ensure it's 0
+                            cls._instances["async_conn"].close()
+                        cls._instances = {
+                            "db": None,
+                            "async_conn": None,
+                            "ref_count": 0,
+                        }
                         logger.info(
-                            "Kuzu AsyncConnection closed and Database references released."
+                            "Kuzu EMBEDDED AsyncConnection closed and Database references released."
                         )
                     except Exception as e:
-                        logger.error(f"Error closing Kuzu resources: {e}")
-                        # Reset instances even if close fails to prevent reuse
-                        cls._instances["async_conn"] = None
-                        cls._instances["db"] = None
-                        cls._instances["ref_count"] = 0
+                        logger.error(f"Error closing Kuzu EMBEDDED resources: {e}")
+                        cls._instances = {
+                            "db": None,
+                            "async_conn": None,
+                            "ref_count": 0,
+                        }
             elif cls._instances["ref_count"] > 0:
                 logger.debug(
-                    f"Kuzu client release called, but ref count is still {cls._instances['ref_count']}. Not closing."
+                    f"Kuzu EMBEDDED client release called, but ref count is still {cls._instances['ref_count']}. Not closing."
                 )
             else:
-                # This case might happen if release is called multiple times after ref count hits zero
                 logger.warning(
-                    "Attempted to release Kuzu client instances that don't match the managed singletons or were already released."
+                    "Attempted to release Kuzu EMBEDDED client instances that don't match or were already released."
                 )
 
 
@@ -227,158 +214,274 @@ class KuzuClientManager:
 @dataclass
 class KuzuGraphStorage(BaseGraphStorage):
     """
-    Graph storage implementation using KuzuDB.
-
-    Manages nodes and relationships within a Kuzu database, providing
-    asynchronous operations compliant with BaseGraphStorage. Stores properties
-    as JSON strings for flexibility.
+    Graph storage implementation using KuzuDB, supporting both embedded and REST API modes.
     """
 
-    _db: Database | None = field(default=None, init=False, repr=False)
-    _async_conn: AsyncConnection | None = field(default=None, init=False, repr=False)
+    _connection_mode: str = field(default="embedded", init=False)
+    _api_url: Optional[str] = field(default=None, init=False)
+    _http_client: Optional[httpx.AsyncClient] = field(
+        default=None, init=False, repr=False
+    )
+
+    _db: Database | None = field(
+        default=None, init=False, repr=False
+    )  # For embedded mode
+    _async_conn: AsyncConnection | None = field(
+        default=None, init=False, repr=False
+    )  # For embedded mode
+
     _node_table: str = field(default="base", init=False)
     _edge_table: str = field(default="DIRECTED", init=False)
-    _entity_id_prop: str = field(
-        default="entity_id", init=False
-    )  # Property name for node identifier
-    _properties_col: str = field(
-        default="properties_json", init=False
-    )  # Column name for JSON string properties
+    _entity_id_prop: str = field(default="entity_id", init=False)
+    _properties_col: str = field(default="properties_json", init=False)
 
     def __post_init__(self):
         """Additional initialization after dataclass setup."""
         logger.info(f"KuzuGraphStorage initialized for namespace: {self.namespace}")
+        self._config = KuzuClientManager.get_config()  # Store config for later use
+        self._connection_mode = self._config["connection_mode"]
+        if self._connection_mode == "rest":
+            self._api_url = self._config["api_url"]
 
     async def initialize(self):
-        """Initializes the Kuzu database connection and ensures schema exists."""
-        if self._db is None or self._async_conn is None:
-            logger.info("KuzuGraphStorage initializing client...")
-            self._db, self._async_conn = await KuzuClientManager.get_client()
-            await self._ensure_schema()
+        """Initializes Kuzu connection based on mode (embedded or REST API)."""
+        logger.info(
+            f"KuzuGraphStorage initializing in '{self._connection_mode}' mode..."
+        )
+        if self._connection_mode == "embedded":
+            if self._db is None or self._async_conn is None:
+                (
+                    self._db,
+                    self._async_conn,
+                ) = await KuzuClientManager.get_embedded_client()
+                await self._ensure_schema()
+        elif self._connection_mode == "rest":
+            if self._http_client is None:
+                self._http_client = httpx.AsyncClient(
+                    base_url=self._api_url, timeout=30.0
+                )
+                await self._check_api_server_status()  # Check server status
+                await self._ensure_schema()
         else:
-            logger.info("KuzuGraphStorage client already initialized.")
+            raise ValueError(
+                f"Unsupported Kuzu connection mode: {self._connection_mode}"
+            )
 
     async def finalize(self):
-        """Releases the Kuzu database connection."""
-        if self._db is not None and self._async_conn is not None:
-            logger.info("KuzuGraphStorage finalizing client...")
-            await KuzuClientManager.release_client(self._db, self._async_conn)
-            self._db = None
-            self._async_conn = None
-            logger.info("KuzuGraphStorage finalized.")
-        else:
-            logger.info("KuzuGraphStorage already finalized or not initialized.")
+        """Closes the Kuzu connection or HTTP client."""
+        logger.info(f"KuzuGraphStorage finalizing in '{self._connection_mode}' mode...")
+        if self._connection_mode == "embedded":
+            if self._db is not None and self._async_conn is not None:
+                await KuzuClientManager.release_embedded_client(
+                    self._db, self._async_conn
+                )
+                self._db = None
+                self._async_conn = None
+        elif self._connection_mode == "rest":
+            if self._http_client is not None:
+                await self._http_client.aclose()
+                self._http_client = None
+        logger.info("KuzuGraphStorage finalized.")
+
+    async def _check_api_server_status(self):
+        """Checks the status of the Kuzu API server."""
+        if not self._http_client:
+            return
+        try:
+            response = await self._http_client.get("/")
+            response.raise_for_status()
+            status_data = response.json()
+            logger.info(f"Kuzu API Server status: {status_data}")
+            if status_data.get("status") != "ok":
+                raise RuntimeError(f"Kuzu API Server not healthy: {status_data}")
+        except httpx.RequestError as e:
+            logger.error(f"Error connecting to Kuzu API Server at {self._api_url}: {e}")
+            raise RuntimeError(f"Could not connect to Kuzu API Server: {e}") from e
+        except Exception as e:
+            logger.error(f"Error checking Kuzu API server status: {e}")
+            raise
 
     async def _ensure_schema(self):
-        """Creates the necessary node and relationship tables using STRING for properties."""
-        conn = self._get_conn()
+        """Ensures schema for both EMBEDDED and REST modes."""
+        node_table_query = f"""
+        CREATE NODE TABLE IF NOT EXISTS {self._node_table}(
+            {self._entity_id_prop} STRING PRIMARY KEY,
+            {self._properties_col} STRING
+        )
+        """
+        edge_table_query = f"""
+        CREATE REL TABLE IF NOT EXISTS {self._edge_table}(
+            FROM {self._node_table}
+            TO {self._node_table},
+            {self._properties_col} STRING
+        )
+        """
         try:
-            # Create node table 'base' with 'entity_id' PK and properties as JSON STRING
-            node_table_query = f"""
-            CREATE NODE TABLE IF NOT EXISTS {self._node_table}(
-                {self._entity_id_prop} STRING PRIMARY KEY,
-                {self._properties_col} STRING
-            )
-            """
-            await conn.execute(node_table_query)
-            logger.info(
-                f"Ensured node table '{self._node_table}' exists with properties column '{self._properties_col}'."
-            )
-
-            # Create relationship table 'DIRECTED' connecting 'base' nodes, properties as JSON STRING
-            edge_table_query = f"""
-            CREATE REL TABLE IF NOT EXISTS {self._edge_table}(
-                FROM {self._node_table}
-                TO {self._node_table},
-                {self._properties_col} STRING
-            )
-            """
-            await conn.execute(edge_table_query)
-            logger.info(
-                f"Ensured relationship table '{self._edge_table}' exists with properties column '{self._properties_col}'."
-            )
-
+            if self._connection_mode == "embedded":
+                conn = self._get_embedded_conn()
+                await conn.execute(node_table_query)
+                logger.info(f"Ensured EMBEDDED node table '{self._node_table}'.")
+                await conn.execute(edge_table_query)
+                logger.info(
+                    f"Ensured EMBEDDED relationship table '{self._edge_table}'."
+                )
+            elif self._connection_mode == "rest":
+                # For REST, send DDL via /cypher endpoint
+                # The API server should handle "IF NOT EXISTS" gracefully
+                await self._execute_cypher_rest(node_table_query)
+                logger.info(
+                    f"Sent CREATE NODE TABLE IF NOT EXISTS to REST API for '{self._node_table}'."
+                )
+                await self._execute_cypher_rest(edge_table_query)
+                logger.info(
+                    f"Sent CREATE REL TABLE IF NOT EXISTS to REST API for '{self._edge_table}'."
+                )
+            else:
+                raise ValueError(
+                    f"Unknown connection mode for schema creation: {self._connection_mode}"
+                )
         except Exception as e:
-            logger.error(f"Error ensuring Kuzu schema: {e}", exc_info=True)
-            raise
+            # The Kuzu API server might return an error if the table already exists
+            # even with "IF NOT EXISTS", depending on its specific error handling.
+            # Or, the error could be a connection issue.
+            # If the error message indicates "already exists", we can often ignore it.
+            if (
+                "already exists" in str(e).lower()
+                or (
+                    "Catalog exception: Node table" in str(e)
+                    and "already exists" in str(e)
+                )
+                or (
+                    "Catalog exception: Rel table" in str(e)
+                    and "already exists" in str(e)
+                )
+                or ("Binder exception: Table" in str(e) and "already exists!" in str(e))
+            ):  # Added for REST API error
+                logger.debug(
+                    f"Schema element likely already exists (error: {e}). Continuing."
+                )
+            else:
+                logger.error(
+                    f"Error ensuring Kuzu schema in '{self._connection_mode}' mode: {e}",
+                    exc_info=True,
+                )
+                raise
 
     # --- Helper Methods ---
 
-    def _get_conn(self) -> AsyncConnection:
-        """Ensures the async connection is available and raises error if not."""
+    def _get_embedded_conn(self) -> AsyncConnection:
         if not self._async_conn:
-            raise RuntimeError(
-                "Kuzu AsyncConnection not available. Ensure initialize() is called before use."
-            )
+            raise RuntimeError("Kuzu EMBEDDED AsyncConnection not available.")
         return self._async_conn
 
+    def _get_http_client(self) -> httpx.AsyncClient:
+        if not self._http_client:
+            raise RuntimeError("Kuzu HTTP client not available for REST mode.")
+        return self._http_client
+
     def _properties_to_json(self, props: dict[str, Any]) -> str:
-        """Serializes a properties dictionary to a JSON string."""
-        try:
-            # Ensure entity_id is not included in the JSON string itself if it's the PK
-            props_to_serialize = {
-                k: v for k, v in props.items() if k != self._entity_id_prop
-            }
-            return json.dumps(props_to_serialize)
-        except TypeError as e:
-            logger.error(f"Error serializing properties to JSON: {props} - {e}")
-            return "{}"  # Return empty JSON object on error
+        props_to_serialize = {
+            k: v for k, v in props.items() if k != self._entity_id_prop
+        }
+        return json.dumps(props_to_serialize)
 
     def _json_to_properties(
-        self, json_str: str | None, entity_id: str | None = None
+        self, json_data: Any, entity_id: str | None = None
     ) -> dict[str, Any]:
         """Deserializes a JSON string into a properties dictionary."""
         props = {}
-        if json_str:
+        if isinstance(json_data, str):  # If it's a string, try to parse
             try:
-                props = json.loads(json_str)
-            except json.JSONDecodeError as e:
-                logger.error(f"Error decoding JSON properties: {json_str} - {e}")
-                props = {"_raw_properties": json_str, "_error": "JSONDecodeError"}
-        # Ensure entity_id is present in the final dict if provided
+                props = json.loads(json_data)
+            except json.JSONDecodeError:
+                logger.error(f"Failed to decode JSON properties string: {json_data}")
+                return {"_raw_properties": json_data, "_error": "JSONDecodeError"}
+        elif isinstance(json_data, dict):  # If it's already a dict (from Kuzu API)
+            props = json_data
+        else:  # Unexpected type
+            logger.warning(
+                f"Unexpected type for JSON properties: {type(json_data)}, value: {json_data}"
+            )
+            return {"_raw_data": str(json_data), "_error": "UnexpectedDataType"}
+
         if entity_id:
             props[self._entity_id_prop] = entity_id
         return props
 
-    # --- Core Graph Operations ---
+    async def _execute_cypher_rest(
+        self, query: str, params: Optional[Dict[str, Any]] = None
+    ) -> Any:
+        """Executes a Cypher query against the Kuzu REST API."""
+        client = self._get_http_client()
+        payload = {"query": query}
+        if params:
+            payload["params"] = params
+        try:
+            response = await client.post("/cypher", json=payload)
+            response.raise_for_status()  # Raise HTTPStatusError for bad responses (4xx or 5xx)
+            return response.json()  # Kuzu API returns JSON
+        except httpx.HTTPStatusError as e:
+            logger.error(
+                f"Kuzu API error for query '{query[:100]}...': {e.response.status_code} - {e.response.text}"
+            )
+            # Map to a more generic error or re-raise specific Kuzu API error if identifiable
+            raise RuntimeError(
+                f"Kuzu API query failed: {e.response.status_code} - {e.response.text}"
+            ) from e
+        except httpx.RequestError as e:
+            logger.error(f"Kuzu API request error for query '{query[:100]}...': {e}")
+            raise RuntimeError(f"Kuzu API request failed: {e}") from e
+        except json.JSONDecodeError as e:
+            logger.error(
+                f"Failed to decode Kuzu API JSON response for query '{query[:100]}...': {e.msg} - Response text: {response.text if 'response' in locals() else 'N/A'}"
+            )
+            raise RuntimeError(f"Kuzu API JSON decode error: {e.msg}") from e
+
+    # --- Core Graph Operations (Branching for Embedded vs REST) ---
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def has_node(self, node_id: str) -> bool:
         """Checks if a node with the given entity_id exists."""
-        conn = self._get_conn()
-        query = f"""
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})
-            RETURN count(n) > 0 AS node_exists
-        """
+        query = f"MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }}) RETURN count(n) > 0 AS node_exists"  # Added alias
         params = {"node_id": node_id}
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            has_data = result.has_next()
-            if has_data:
-                return result.get_next()[0]
-            else:
-                logger.warning(
-                    f"has_node query for '{node_id}' returned no rows, assuming node does not exist."
+
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                return result.get_next()[0] if result.has_next() else False
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error checking node '{node_id}': {e}", exc_info=True
                 )
-                return False
-        except Exception as e:
-            logger.error(
-                f"Error checking node existence for '{node_id}': {e}", exc_info=True
-            )
-            raise
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                return (
+                    response_data.get("rows", [{}])[0].get("node_exists", False)
+                    if response_data.get("rows") and response_data["rows"][0]
+                    else False
+                )
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error checking node '{node_id}': {e}", exc_info=True
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """Checks if a 'DIRECTED' edge exists between two nodes (in either direction)."""
-        conn = self._get_conn()
         query = f"""
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: $source_id }})
                   -[r:{self._edge_table}]-
@@ -386,85 +489,123 @@ class KuzuGraphStorage(BaseGraphStorage):
             RETURN count(r) > 0 AS edge_exists
         """
         params = {"source_id": source_node_id, "target_id": target_node_id}
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            has_data = result.has_next()
-            if has_data:
-                return result.get_next()[0]
-            else:
-                logger.warning(
-                    f"has_edge query between '{source_node_id}' and '{target_node_id}' returned no rows, assuming edge does not exist."
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                return result.get_next()[0] if result.has_next() else False
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error checking edge '{source_node_id}'-'{target_node_id}': {e}",
+                    exc_info=True,
                 )
-                return False
-        except Exception as e:
-            logger.error(
-                f"Error checking edge existence between '{source_node_id}' and '{target_node_id}': {e}",
-                exc_info=True,
-            )
-            raise
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                return (
+                    response_data.get("rows", [{}])[0].get("edge_exists", False)
+                    if response_data.get("rows") and response_data["rows"][0]
+                    else False
+                )
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error checking edge '{source_node_id}'-'{target_node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def get_node(self, node_id: str) -> dict[str, Any] | None:
         """Gets node properties (deserialized from JSON) by entity_id."""
-        conn = self._get_conn()
         query = f"""
             MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})
             RETURN n.{self._properties_col} AS props_json
         """
         params = {"node_id": node_id}
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            if result.has_next():
-                props_json = result.get_next()[0]
-                return self._json_to_properties(props_json, entity_id=node_id)
-            logger.debug(f"Node '{node_id}' not found in get_node.")
-            return None
-        except Exception as e:
-            logger.error(f"Error getting node for '{node_id}': {e}", exc_info=True)
-            raise
+
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                if result.has_next():
+                    props_json = result.get_next()[0]
+                    return self._json_to_properties(props_json, entity_id=node_id)
+                return None
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error getting node '{node_id}': {e}", exc_info=True
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                if response_data.get("rows") and response_data["rows"][0]:
+                    # For single aliased column, row is a dict: {"props_json": "value"}
+                    props_json = response_data["rows"][0].get("props_json")
+                    return self._json_to_properties(props_json, entity_id=node_id)
+                return None
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error getting node '{node_id}': {e}", exc_info=True
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def node_degree(self, node_id: str) -> int:
         """Gets the degree (number of relationships) of a node."""
-        conn = self._get_conn()
-        query = f"""
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})
-            OPTIONAL MATCH (n)-[r]-()
-            RETURN count(r) AS degree
-        """
+        query = f"MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }}) OPTIONAL MATCH (n)-[r]-() RETURN count(r) AS degree"
         params = {"node_id": node_id}
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            if result.has_next():
-                degree_result = result.get_next()
-                return degree_result[0] if degree_result else 0
-            logger.error(
-                f"Unexpected empty result for node_degree query for '{node_id}'"
-            )
-            return 0
-        except Exception as e:
-            logger.error(
-                f"Error getting node degree for '{node_id}': {e}", exc_info=True
-            )
-            raise
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                return result.get_next()[0] if result.has_next() else 0
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error getting degree for node '{node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                return (
+                    response_data.get("rows", [{}])[0].get("degree", 0)
+                    if response_data.get("rows") and response_data["rows"][0]
+                    else 0
+                )
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error getting degree for node '{node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """Calculates the combined degree of the source and target nodes."""
+        # This method relies on node_degree, which is already mode-aware
         try:
             src_degree = await self.node_degree(src_id)
             tgt_degree = await self.node_degree(tgt_id)
             return src_degree + tgt_degree
-        except Exception:
+        except Exception as e:
             logger.warning(
-                f"Could not calculate edge_degree for '{src_id}'-'{tgt_id}' due to error in node_degree.",
+                f"Could not calculate edge_degree for '{src_id}'-'{tgt_id}': {e}",
                 exc_info=False,
             )
             return 0
@@ -472,13 +613,12 @@ class KuzuGraphStorage(BaseGraphStorage):
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def get_edge(
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, Any] | None:
         """Gets properties (deserialized from JSON) of the first edge found between two nodes."""
-        conn = self._get_conn()
         query = f"""
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: $source_id }})
                   -[r:{self._edge_table}]-
@@ -487,30 +627,43 @@ class KuzuGraphStorage(BaseGraphStorage):
             LIMIT 1
         """
         params = {"source_id": source_node_id, "target_id": target_node_id}
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            if result.has_next():
-                props_json = result.get_next()[0]
-                return self._json_to_properties(props_json)
-            logger.debug(
-                f"Edge between '{source_node_id}' and '{target_node_id}' not found."
-            )
-            return None
-        except Exception as e:
-            logger.error(
-                f"Error getting edge between '{source_node_id}' and '{target_node_id}': {e}",
-                exc_info=True,
-            )
-            raise
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                if result.has_next():
+                    props_json = result.get_next()[0]
+                    return self._json_to_properties(props_json)
+                return None
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error getting edge '{source_node_id}'-'{target_node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                if response_data.get("rows") and response_data["rows"][0]:
+                    props_json = response_data["rows"][0].get("props_json")
+                    return self._json_to_properties(props_json)
+                return None
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error getting edge '{source_node_id}'-'{target_node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Gets all edges (source_id, target_id) connected to a node."""
-        conn = self._get_conn()
         query = f"""
             MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})
                   -[r:{self._edge_table}]-
@@ -520,45 +673,67 @@ class KuzuGraphStorage(BaseGraphStorage):
         params = {"node_id": source_node_id}
         edges = []
         processed_pairs = set()
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            while result.has_next():
-                record = result.get_next()
-                node1, node2 = record[0], record[1]
-                pair = tuple(sorted((node1, node2)))
-                if pair not in processed_pairs:
-                    if node1 == source_node_id:
-                        edges.append((node1, node2))
-                    else:
-                        edges.append((node2, node1))
-                    processed_pairs.add(pair)
-            return edges if edges else None
-        except Exception as e:
-            if (
-                "Binder exception:" in str(e)
-                and f"Node {self._node_table} with primary key = {source_node_id} does not exist"
-                in str(e)
-            ):
-                logger.warning(f"Node '{source_node_id}' not found for get_node_edges.")
-                return None
-            logger.error(
-                f"Error getting edges for node '{source_node_id}': {e}", exc_info=True
-            )
-            raise
+
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                while result.has_next():
+                    record = result.get_next()
+                    node1, node2 = record[0], record[1]
+                    pair = tuple(sorted((node1, node2)))
+                    if pair not in processed_pairs:
+                        edges.append(
+                            (node1, node2)
+                            if node1 == source_node_id
+                            else (node2, node1)
+                        )
+                        processed_pairs.add(pair)
+                return edges if edges else None
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error getting edges for node '{source_node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                # Expected: {"rows": [{"node1": "id1", "node2": "id2"}, ...], ...}
+                for row_dict in response_data.get("rows", []):
+                    node1 = row_dict.get("node1")
+                    node2 = row_dict.get("node2")
+                    if node1 and node2:  # Ensure both keys exist
+                        pair = tuple(sorted((node1, node2)))
+                        if pair not in processed_pairs:
+                            edges.append(
+                                (node1, node2)
+                                if node1 == source_node_id
+                                else (node2, node1)
+                            )
+                            processed_pairs.add(pair)
+                return edges if edges else None
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error getting edges for node '{source_node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def upsert_node(self, node_id: str, node_data: dict[str, Any]) -> None:
         """Creates/updates a node, storing properties as a JSON string."""
-        conn = self._get_conn()
         if self._entity_id_prop not in node_data:
             node_data[self._entity_id_prop] = node_id
         elif node_data[self._entity_id_prop] != node_id:
             logger.warning(
-                f"Mismatch between node_id ('{node_id}') and '{self._entity_id_prop}' in properties ('{node_data[self._entity_id_prop]}'). Using node_id ('{node_id}')."
+                f"Mismatch: node_id='{node_id}', props['{self._entity_id_prop}']='{node_data[self._entity_id_prop]}'. Using node_id."
             )
             node_data[self._entity_id_prop] = node_id
 
@@ -570,27 +745,39 @@ class KuzuGraphStorage(BaseGraphStorage):
             ON MATCH SET n.{self._properties_col} = $properties_json
         """
         params = {"node_id": node_id, "properties_json": properties_json}
-        try:
-            await conn.execute(query, params)
-            logger.debug(
-                f"Upserted node '{node_id}' with JSON properties: {properties_json}"
-            )
-        except Exception as e:
-            logger.error(f"Error upserting node '{node_id}': {e}", exc_info=True)
-            raise
+
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                await conn.execute(query, params)
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error upserting node '{node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                await self._execute_cypher_rest(query, params)
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error upserting node '{node_id}': {e}", exc_info=True
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+        logger.debug(f"Upserted node '{node_id}'")
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def upsert_edge(
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, Any]
     ) -> None:
         """Creates/updates an edge, storing properties as a JSON string."""
-        conn = self._get_conn()
         properties_json = self._properties_to_json(edge_data)
-
         query = f"""
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: $source_id }})
             MATCH (b:{self._node_table} {{ {self._entity_id_prop}: $target_id }})
@@ -603,74 +790,102 @@ class KuzuGraphStorage(BaseGraphStorage):
             "target_id": target_node_id,
             "properties_json": properties_json,
         }
-        try:
-            await conn.execute(query, params)
-            logger.debug(
-                f"Upserted edge '{source_node_id}'->'{target_node_id}' with JSON properties: {properties_json}"
-            )
-        except Exception as e:
-            logger.error(
-                f"Error upserting edge '{source_node_id}'->'{target_node_id}': {e}",
-                exc_info=True,
-            )
-            raise
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                await conn.execute(query, params)
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error upserting edge '{source_node_id}'-'{target_node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                await self._execute_cypher_rest(query, params)
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error upserting edge '{source_node_id}'-'{target_node_id}': {e}",
+                    exc_info=True,
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+        logger.debug(f"Upserted edge '{source_node_id}'->'{target_node_id}'")
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def delete_node(self, node_id: str) -> None:
-        """Deletes a node and its incident relationships."""
-        conn = self._get_conn()
-        query = f"""
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }})
-            DETACH DELETE n
-        """
+        query = f"MATCH (n:{self._node_table} {{ {self._entity_id_prop}: $node_id }}) DETACH DELETE n"
         params = {"node_id": node_id}
-        try:
-            await conn.execute(query, params)
-            logger.debug(f"Attempted deletion of node '{node_id}'.")
-        except Exception as e:
-            logger.error(f"Error deleting node '{node_id}': {e}", exc_info=True)
-            raise
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                await conn.execute(query, params)
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error deleting node '{node_id}': {e}", exc_info=True
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                await self._execute_cypher_rest(query, params)
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error deleting node '{node_id}': {e}", exc_info=True
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+        logger.debug(f"Attempted deletion of node '{node_id}'.")
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def remove_nodes(self, node_ids: list[str]) -> None:
         """Deletes multiple nodes and their incident relationships."""
         if not node_ids:
             return
-        conn = self._get_conn()
-        # Use UNWIND first, then MATCH and DETACH DELETE
-        query = f"""
-            UNWIND $node_id_list AS node_id_to_delete
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: node_id_to_delete }})
-            DETACH DELETE n
-        """
+        query = f"UNWIND $node_id_list AS id_to_delete MATCH (n:{self._node_table} {{ {self._entity_id_prop}: id_to_delete }}) DETACH DELETE n"
         params = {"node_id_list": node_ids}
-        try:
-            await conn.execute(query, params)
-            logger.debug(f"Attempted batch deletion of nodes: {node_ids}")
-        except Exception as e:
-            logger.error(f"Error removing nodes batch: {e}", exc_info=True)
-            raise
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                await conn.execute(query, params)
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error removing nodes batch: {e}", exc_info=True
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                await self._execute_cypher_rest(query, params)
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error removing nodes batch: {e}", exc_info=True
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+        logger.debug(f"Attempted batch deletion of nodes: {node_ids}")
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=1, max=5),
-        retry=retry_if_exception_type((RuntimeError, TimeoutError)),
+        retry=retry_if_exception_type((RuntimeError, TimeoutError, httpx.RequestError)),
     )
     async def remove_edges(self, edges: list[tuple[str, str]]) -> None:
-        """Deletes multiple edges specified by (source_id, target_id) tuples."""
+        """Deletes multiple edges between specified nodes."""
         if not edges:
             return
-        conn = self._get_conn()
+
         edge_pairs_list = [{"source": s, "target": t} for s, t in edges]
-        # Match relationship in the specified direction (->) as created by upsert_edge
+
         query = f"""
             UNWIND $edge_pairs AS pair
             MATCH (a:{self._node_table} {{ {self._entity_id_prop}: pair.source }})
@@ -679,79 +894,117 @@ class KuzuGraphStorage(BaseGraphStorage):
             DELETE r
         """
         params = {"edge_pairs": edge_pairs_list}
-        try:
-            await conn.execute(query, params)
-            logger.debug(f"Attempted batch deletion of edges: {edges}")
-        except Exception as e:
-            logger.error(f"Error removing edges batch: {e}", exc_info=True)
-            raise
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                await conn.execute(query, params)
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error removing edges batch: {e}", exc_info=True
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                await self._execute_cypher_rest(query, params)
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error removing edges batch: {e}", exc_info=True
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+        logger.debug(f"Attempted batch deletion of edges: {edges}")
 
     # --- Batch Operations ---
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
-        """Retrieves multiple nodes (properties deserialized from JSON) by their entity_ids."""
         if not node_ids:
             return {}
-        conn = self._get_conn()
-        # Use UNWIND first, then MATCH
-        query = f"""
-            UNWIND $node_id_list AS id_to_get
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: id_to_get }})
-            RETURN n.{self._entity_id_prop} AS id, n.{self._properties_col} AS props_json
-        """
+        query = f"UNWIND $node_id_list AS id_to_get MATCH (n:{self._node_table} {{ {self._entity_id_prop}: id_to_get }}) RETURN n.{self._entity_id_prop} AS id, n.{self._properties_col} AS props_json"
         params = {"node_id_list": node_ids}
         nodes_dict = {}
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            while result.has_next():
-                record = result.get_next()
-                node_id = record[0]
-                props_json = record[1]
-                nodes_dict[node_id] = self._json_to_properties(
-                    props_json, entity_id=node_id
+
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                while result.has_next():
+                    record = result.get_next()
+                    nodes_dict[record[0]] = self._json_to_properties(
+                        record[1], entity_id=record[0]
+                    )
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error getting nodes batch: {e}", exc_info=True
                 )
-            for req_id in node_ids:
-                if req_id not in nodes_dict:
-                    logger.debug(f"Node '{req_id}' not found in get_nodes_batch.")
-            return nodes_dict
-        except Exception as e:
-            logger.error(f"Error getting nodes batch: {e}", exc_info=True)
-            raise
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                for row_dict in response_data.get(
+                    "rows", []
+                ):  # REST API returns list of dicts for multiple columns
+                    nodes_dict[row_dict.get("id")] = self._json_to_properties(
+                        row_dict.get("props_json"), entity_id=row_dict.get("id")
+                    )
+            except Exception as e:
+                logger.error(f"REST Kuzu error getting nodes batch: {e}", exc_info=True)
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+
+        for req_id in node_ids:
+            if req_id not in nodes_dict:
+                logger.debug(f"Node '{req_id}' not found in get_nodes_batch.")
+        return nodes_dict
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
-        """Retrieves degrees for multiple nodes in a batch."""
         if not node_ids:
             return {}
-        conn = self._get_conn()
-        # Use UNWIND first, then MATCH
-        query = f"""
-            UNWIND $node_id_list AS id_to_check
-            MATCH (n:{self._node_table} {{ {self._entity_id_prop}: id_to_check }})
-            OPTIONAL MATCH (n)-[r]-()
-            RETURN n.{self._entity_id_prop} AS node_id, count(r) AS degree
-        """
+        query = f"UNWIND $node_id_list AS id_to_check MATCH (n:{self._node_table} {{ {self._entity_id_prop}: id_to_check }}) OPTIONAL MATCH (n)-[r]-() RETURN n.{self._entity_id_prop} AS node_id, count(r) AS degree"
         params = {"node_id_list": node_ids}
         degrees_dict = {node_id: 0 for node_id in node_ids}
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            while result.has_next():
-                record = result.get_next()
-                degrees_dict[record[0]] = record[1]
-            return degrees_dict
-        except Exception as e:
-            logger.error(f"Error getting node degrees batch: {e}", exc_info=True)
-            raise
+
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                while result.has_next():
+                    record = result.get_next()
+                    degrees_dict[record[0]] = record[1]
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error getting node degrees batch: {e}",
+                    exc_info=True,
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                for row_dict in response_data.get(
+                    "rows", []
+                ):  # REST API returns list of dicts for multiple columns
+                    degrees_dict[row_dict.get("node_id")] = row_dict.get("degree", 0)
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error getting node degrees batch: {e}", exc_info=True
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+        return degrees_dict
 
     async def edge_degrees_batch(
         self, edge_pairs: list[tuple[str, str]]
     ) -> dict[tuple[str, str], int]:
-        """Calculates combined degrees for multiple edge pairs in a batch."""
         if not edge_pairs:
             return {}
         all_node_ids = set(src for src, tgt in edge_pairs) | set(
             tgt for src, tgt in edge_pairs
         )
-        node_degrees = await self.node_degrees_batch(list(all_node_ids))
+        node_degrees = await self.node_degrees_batch(
+            list(all_node_ids)
+        )  # This is mode-aware
         return {
             (src, tgt): node_degrees.get(src, 0) + node_degrees.get(tgt, 0)
             for src, tgt in edge_pairs
@@ -760,50 +1013,69 @@ class KuzuGraphStorage(BaseGraphStorage):
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]
     ) -> dict[tuple[str, str], dict]:
-        """Retrieves properties (deserialized from JSON) for multiple edges."""
         if not pairs:
             return {}
-        conn = self._get_conn()
         edge_pairs_list = [{"source": p["src"], "target": p["tgt"]} for p in pairs]
-        # Match undirected edge -[r]- to find edge regardless of direction in pair list
+        # Use an explicit query that checks both directions for each pair to ensure
+        # behavior consistent with singular get_edge (undirected find)
         query = f"""
             UNWIND $edge_pairs AS pair
-            MATCH (a:{self._node_table} {{ {self._entity_id_prop}: pair.source }})
-                  -[r:{self._edge_table}]-
-                  (b:{self._node_table} {{ {self._entity_id_prop}: pair.target }})
-            // Return the requested pair along with the properties
+            MATCH (n1:{self._node_table} {{ {self._entity_id_prop}: pair.source }})
+            MATCH (n2:{self._node_table} {{ {self._entity_id_prop}: pair.target }})
+            OPTIONAL MATCH (n1)-[r1:{self._edge_table}]->(n2)
+            OPTIONAL MATCH (n2)-[r2:{self._edge_table}]->(n1) // Check reverse direction
+            WITH pair, r1, r2
+            WHERE r1 IS NOT NULL OR r2 IS NOT NULL // Ensure an edge was found
             RETURN pair.source AS req_source_id, pair.target AS req_target_id,
-                   r.{self._properties_col} AS props_json
+                   COALESCE(r1.{self._properties_col}, r2.{self._properties_col}) AS props_json
         """
         params = {"edge_pairs": edge_pairs_list}
         final_edges_dict = {(p["src"], p["tgt"]): None for p in pairs}
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            while result.has_next():
-                record = result.get_next()
-                req_src, req_tgt, props_json = record
-                original_pair = (req_src, req_tgt)
-                # Store properties if this is the first edge found for this pair
-                # The undirected match ensures we find it regardless of direction
-                if final_edges_dict.get(original_pair, None) is None:
-                    final_edges_dict[original_pair] = self._json_to_properties(
-                        props_json
-                    )
 
-            # Filter out pairs where no edge was found
-            return {k: v for k, v in final_edges_dict.items() if v is not None}
-        except Exception as e:
-            logger.error(f"Error getting edges batch: {e}", exc_info=True)
-            raise
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                while result.has_next():
+                    record = result.get_next()
+                    original_pair = (record[0], record[1])
+                    if (
+                        final_edges_dict.get(original_pair, None) is None
+                    ):  # Store first found
+                        final_edges_dict[original_pair] = self._json_to_properties(
+                            record[2]
+                        )
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error getting edges batch: {e}", exc_info=True
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                for row_dict in response_data.get(
+                    "rows", []
+                ):  # REST API returns list of dicts
+                    original_pair = (
+                        row_dict.get("req_source_id"),
+                        row_dict.get("req_target_id"),
+                    )
+                    if final_edges_dict.get(original_pair, None) is None:
+                        final_edges_dict[original_pair] = self._json_to_properties(
+                            row_dict.get("props_json")
+                        )
+            except Exception as e:
+                logger.error(f"REST Kuzu error getting edges batch: {e}", exc_info=True)
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+        return {k: v for k, v in final_edges_dict.items() if v is not None}
 
     async def get_nodes_edges_batch(
         self, node_ids: list[str]
     ) -> dict[str, list[tuple[str, str]]]:
-        """Retrieves all connected edges for multiple nodes in a batch."""
         if not node_ids:
             return {}
-        conn = self._get_conn()
-        # Use UNWIND first
         query = f"""
             UNWIND $node_id_list AS id_to_check
             MATCH (n:{self._node_table} {{ {self._entity_id_prop}: id_to_check }})
@@ -813,48 +1085,91 @@ class KuzuGraphStorage(BaseGraphStorage):
         params = {"node_id_list": node_ids}
         nodes_edges_dict = {node_id: [] for node_id in node_ids}
         processed_undirected_edges = set()
-        try:
-            result: QueryResult = await conn.execute(query, params)
-            while result.has_next():
-                record = result.get_next()
-                src_node, connected_node = record[0], record[1]
-                if src_node and connected_node:
-                    canonical_pair = tuple(sorted((src_node, connected_node)))
-                    if canonical_pair not in processed_undirected_edges:
-                        # Add edge from the perspective of each node involved if requested
-                        if src_node in nodes_edges_dict:
-                            nodes_edges_dict[src_node].append(
-                                (src_node, connected_node)
-                            )
-                        if connected_node in nodes_edges_dict:
-                            nodes_edges_dict[connected_node].append(
-                                (connected_node, src_node)
-                            )
-                        processed_undirected_edges.add(canonical_pair)
-            return nodes_edges_dict
-        except Exception as e:
-            logger.error(f"Error getting nodes edges batch: {e}", exc_info=True)
-            raise
+
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query, params)
+                while result.has_next():
+                    record = result.get_next()
+                    src_node, connected_node = record[0], record[1]
+                    if src_node and connected_node:
+                        pair = tuple(sorted((src_node, connected_node)))
+                        if pair not in processed_undirected_edges:
+                            if src_node in nodes_edges_dict:
+                                nodes_edges_dict[src_node].append(
+                                    (src_node, connected_node)
+                                )
+                            if connected_node in nodes_edges_dict:
+                                nodes_edges_dict[connected_node].append(
+                                    (connected_node, src_node)
+                                )
+                            processed_undirected_edges.add(pair)
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error in get_nodes_edges_batch: {e}", exc_info=True
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query, params)
+                for row_dict in response_data.get(
+                    "rows", []
+                ):  # REST API returns list of dicts
+                    src_node, connected_node = (
+                        row_dict.get("source_node"),
+                        row_dict.get("connected_node"),
+                    )
+                    if src_node and connected_node:
+                        pair = tuple(sorted((src_node, connected_node)))
+                        if pair not in processed_undirected_edges:
+                            if src_node in nodes_edges_dict:
+                                nodes_edges_dict[src_node].append(
+                                    (src_node, connected_node)
+                                )
+                            if connected_node in nodes_edges_dict:
+                                nodes_edges_dict[connected_node].append(
+                                    (connected_node, src_node)
+                                )
+                            processed_undirected_edges.add(pair)
+            except Exception as e:
+                logger.error(
+                    f"REST Kuzu error in get_nodes_edges_batch: {e}", exc_info=True
+                )
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+        return nodes_edges_dict
 
     # --- Other Methods ---
 
     async def get_all_labels(self) -> list[str]:
-        """Gets all distinct entity_ids from the 'base' node table."""
-        conn = self._get_conn()
-        query = f"""
-            MATCH (n:{self._node_table})
-            RETURN DISTINCT n.{self._entity_id_prop} AS label
-            ORDER BY label
-        """
+        query = f"MATCH (n:{self._node_table}) RETURN DISTINCT n.{self._entity_id_prop} AS label ORDER BY label"
         labels = []
-        try:
-            result: QueryResult = await conn.execute(query)
-            while result.has_next():
-                labels.append(result.get_next()[0])
-            return labels
-        except Exception as e:
-            logger.error(f"Error getting all labels: {e}", exc_info=True)
-            raise
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                result: QueryResult = await conn.execute(query)
+                while result.has_next():
+                    labels.append(result.get_next()[0])
+            except Exception as e:
+                logger.error(
+                    f"Embedded Kuzu error getting all labels: {e}", exc_info=True
+                )
+                raise
+        elif self._connection_mode == "rest":
+            try:
+                response_data = await self._execute_cypher_rest(query)
+                for row_dict in response_data.get(
+                    "rows", []
+                ):  # REST API returns list of dicts for single column
+                    labels.append(row_dict.get("label"))
+            except Exception as e:
+                logger.error(f"REST Kuzu error getting all labels: {e}", exc_info=True)
+                raise
+        else:
+            raise ValueError(f"Unknown connection mode: {self._connection_mode}")
+        return labels
 
     async def get_knowledge_graph(
         self,
@@ -862,15 +1177,9 @@ class KuzuGraphStorage(BaseGraphStorage):
         max_depth: int = 3,
         max_nodes: int = MAX_GRAPH_NODES,
     ) -> KnowledgeGraph:
-        """
-        Retrieves a connected subgraph starting from node_label.
-        Handles '*' wildcard. Returns nodes/edges with deserialized properties.
-        Uses internal Kuzu IDs for processing but returns KnowledgeGraph with entity_ids.
-        """
-        conn = self._get_conn()
         kg = KnowledgeGraph()
-        seen_node_entity_ids = set()  # Track processed entity IDs for final KG nodes
-        seen_edge_internal_ids = set()  # Track processed internal edge IDs
+        seen_node_entity_ids = set()
+        seen_edge_internal_ids = set()
 
         # Helper to convert Kuzu internal ID dict to string
         def kuzu_internal_id_to_str(internal_id_dict):
@@ -880,9 +1189,6 @@ class KuzuGraphStorage(BaseGraphStorage):
                 and "offset" in internal_id_dict
             ):
                 return f"{internal_id_dict['table']}_{internal_id_dict['offset']}"
-            logger.warning(
-                f"Unexpected format for Kuzu internal ID: {internal_id_dict}"
-            )
             return str(internal_id_dict)
 
         # Helper to convert Kuzu edge internal ID dict to string
@@ -893,26 +1199,79 @@ class KuzuGraphStorage(BaseGraphStorage):
                 and "offset" in internal_id_dict
             ):
                 return f"{internal_id_dict['table']}_{internal_id_dict['offset']}"
-            logger.warning(
-                f"Unexpected format for Kuzu edge internal ID: {internal_id_dict}"
-            )
             return str(internal_id_dict)
 
-        if node_label == "*":
-            # 1. Count for truncation check
-            count_query = f"MATCH (n:{self._node_table}) RETURN count(n) AS total"
-            try:
-                count_res: QueryResult = await conn.execute(count_query)
-                total_nodes = count_res.get_next()[0] if count_res.has_next() else 0
-                if total_nodes > max_nodes:
-                    kg.is_truncated = True
-                    logger.info(
-                        f"Graph truncated: {total_nodes} nodes found, limiting to top {max_nodes} by degree."
-                    )
-            except Exception as e:
-                logger.error(f"Error counting nodes for '*': {e}", exc_info=True)
+        # This helper expects a dictionary (as returned by REST API or from embedded collect())
+        def process_node_data(
+            node_data_dict: Dict, entity_id_key: str, props_json_key: str
+        ) -> Optional[KnowledgeGraphNode]:
+            entity_id = node_data_dict.get(entity_id_key)
+            if not entity_id or entity_id in seen_node_entity_ids:
+                return None
 
-            # 2. Get top N nodes by degree and edges between them
+            props_json_str = node_data_dict.get(props_json_key)
+            props = self._json_to_properties(props_json_str, entity_id=entity_id)
+
+            seen_node_entity_ids.add(entity_id)
+            return KnowledgeGraphNode(
+                id=entity_id, labels=[entity_id], properties=props
+            )
+
+        # This helper expects a dictionary
+        def process_edge_data(
+            edge_data_dict: Dict, props_json_key: str, node_map: Dict[str, str]
+        ) -> Optional[KnowledgeGraphEdge]:
+            src_internal_id_str = kuzu_internal_id_to_str(edge_data_dict["_src"])
+            dst_internal_id_str = kuzu_internal_id_to_str(edge_data_dict["_dst"])
+            edge_internal_id_str = kuzu_rel_internal_id_to_str(edge_data_dict["_id"])
+
+            if edge_internal_id_str in seen_edge_internal_ids:
+                return None
+
+            src_entity_id = node_map.get(src_internal_id_str)
+            dst_entity_id = node_map.get(dst_internal_id_str)
+
+            if (
+                not src_entity_id
+                or not dst_entity_id
+                or src_entity_id not in seen_node_entity_ids
+                or dst_entity_id not in seen_node_entity_ids
+            ):
+                return None
+
+            props_json_str = edge_data_dict.get(props_json_key)
+            props = self._json_to_properties(props_json_str)
+
+            seen_edge_internal_ids.add(edge_internal_id_str)
+            return KnowledgeGraphEdge(
+                id=edge_internal_id_str,
+                type=edge_data_dict["_label"],
+                source=src_entity_id,
+                target=dst_entity_id,
+                properties=props,
+            )
+
+        if node_label == "*":
+            count_query = f"MATCH (n:{self._node_table}) RETURN count(n) AS total"
+            total_nodes = 0
+            if self._connection_mode == "embedded":
+                conn_emb = self._get_embedded_conn()
+                count_res: QueryResult = await conn_emb.execute(count_query)
+                total_nodes = count_res.get_next()[0] if count_res.has_next() else 0
+            elif self._connection_mode == "rest":
+                count_data = await self._execute_cypher_rest(count_query)
+                total_nodes = (
+                    count_data.get("rows", [{}])[0].get("total", 0)
+                    if count_data.get("rows") and count_data.get("rows")[0]
+                    else 0
+                )
+
+            if total_nodes > max_nodes:
+                kg.is_truncated = True
+                logger.info(
+                    f"Graph truncated: {total_nodes} nodes found, limiting to top {max_nodes} by degree."
+                )
+
             query = f"""
                 MATCH (n:{self._node_table})
                 OPTIONAL MATCH (n)-[r]-()
@@ -923,82 +1282,48 @@ class KuzuGraphStorage(BaseGraphStorage):
                 WHERE n1 IN top_nodes_list AND n2 IN top_nodes_list AND id(n1) < id(n2)
                 RETURN top_nodes_list as nodes, collect(distinct rel) as edges
             """
-            try:
-                result: QueryResult = await conn.execute(query)
-                if result.has_next():
-                    record = result.get_next()
-                    nodes_data = record[0] if record[0] else []
-                    edges_data = record[1] if record[1] else []
+            nodes_data_list = []
+            edges_data_list = []
 
-                    # Process nodes
-                    node_internal_to_entity_id = {}  # Map internal ID to entity_id for edges
-                    for node_kuzu in nodes_data:
-                        node_id_internal = node_kuzu["_id"]
-                        entity_id = node_kuzu.get(self._entity_id_prop)
-                        if not entity_id:
-                            continue
+            if self._connection_mode == "embedded":
+                conn_emb = self._get_embedded_conn()
+                result_emb: QueryResult = await conn_emb.execute(query)
+                if result_emb.has_next():
+                    record = result_emb.get_next()
+                    nodes_data_list = record[0] if record[0] else []
+                    edges_data_list = record[1] if record[1] else []
+            elif self._connection_mode == "rest":
+                response_data = await self._execute_cypher_rest(query)
+                if response_data.get("rows") and response_data["rows"][0]:
+                    nodes_data_list = response_data["rows"][0].get("nodes", [])
+                    edges_data_list = response_data["rows"][0].get("edges", [])
 
-                        node_internal_to_entity_id[
-                            kuzu_internal_id_to_str(node_id_internal)
-                        ] = entity_id
-
-                        if entity_id not in seen_node_entity_ids:
-                            props_json = node_kuzu.get(self._properties_col)
-                            props = self._json_to_properties(
-                                props_json, entity_id=entity_id
-                            )
-
-                            kg.nodes.append(
-                                KnowledgeGraphNode(
-                                    id=entity_id, labels=[entity_id], properties=props
-                                )
-                            )
-                            seen_node_entity_ids.add(entity_id)
-
-                    # Process edges
-                    for edge_kuzu in edges_data:
-                        edge_id_internal = edge_kuzu["_id"]
-                        edge_id_str = kuzu_rel_internal_id_to_str(edge_id_internal)
-
-                        if edge_id_str not in seen_edge_internal_ids:
-                            src_id_internal_str = kuzu_internal_id_to_str(
-                                edge_kuzu["_src"]
-                            )
-                            dst_id_internal_str = kuzu_internal_id_to_str(
-                                edge_kuzu["_dst"]
-                            )
-
-                            src_entity_id = node_internal_to_entity_id.get(
-                                src_id_internal_str
-                            )
-                            dst_entity_id = node_internal_to_entity_id.get(
-                                dst_id_internal_str
-                            )
-
-                            if (
-                                src_entity_id in seen_node_entity_ids
-                                and dst_entity_id in seen_node_entity_ids
-                            ):
-                                props_json = edge_kuzu.get(self._properties_col)
-                                props = self._json_to_properties(props_json)
-
-                                kg.edges.append(
-                                    KnowledgeGraphEdge(
-                                        id=edge_id_str,
-                                        type=edge_kuzu["_label"],
-                                        source=src_entity_id,
-                                        target=dst_entity_id,
-                                        properties=props,
-                                    )
-                                )
-                                seen_edge_internal_ids.add(edge_id_str)
-
-            except Exception as e:
-                logger.error(
-                    f"Error getting knowledge graph for '*': {e}", exc_info=True
+            node_internal_to_entity_id_map = {}
+            for (
+                node_data_item_dict
+            ) in nodes_data_list:  # Data is already a list of dicts
+                node_kg = process_node_data(
+                    node_data_item_dict, self._entity_id_prop, self._properties_col
                 )
+                if node_kg:
+                    kg.nodes.append(node_kg)
+                    if "_id" in node_data_item_dict:
+                        node_internal_to_entity_id_map[
+                            kuzu_internal_id_to_str(node_data_item_dict["_id"])
+                        ] = node_kg.id
 
-        else:  # Specific node_label
+            for (
+                edge_data_item_dict
+            ) in edges_data_list:  # Data is already a list of dicts
+                edge_kg = process_edge_data(
+                    edge_data_item_dict,
+                    self._properties_col,
+                    node_internal_to_entity_id_map,
+                )
+                if edge_kg:
+                    kg.edges.append(edge_kg)
+
+        else:  # Specific start node_label
             if not await self.has_node(node_label):
                 logger.warning(
                     f"Start node '{node_label}' not found for get_knowledge_graph."
@@ -1015,97 +1340,55 @@ class KuzuGraphStorage(BaseGraphStorage):
                 RETURN collect(distinct n) as nodes, collect(distinct r) as edges
             """
             params = {"start_node_id": node_label}
-            try:
-                result: QueryResult = await conn.execute(query, params)
-                if result.has_next():
-                    record = result.get_next()
-                    nodes_data = record[0] if record[0] else []
-                    edges_data = record[1] if record[1] else []
+            nodes_data_list = []
+            edges_data_list = []
 
-                    node_count = 0
-                    node_internal_to_entity_id = {}  # Map internal ID to entity_id
+            if self._connection_mode == "embedded":
+                conn_emb = self._get_embedded_conn()
+                result_emb: QueryResult = await conn_emb.execute(query, params)
+                if result_emb.has_next():
+                    record = result_emb.get_next()
+                    nodes_data_list = record[0] if record[0] else []
+                    edges_data_list = record[1] if record[1] else []
+            elif self._connection_mode == "rest":
+                response_data = await self._execute_cypher_rest(query, params)
+                if response_data.get("rows") and response_data["rows"][0]:
+                    nodes_data_list = response_data["rows"][0].get("nodes", [])
+                    edges_data_list = response_data["rows"][0].get("edges", [])
 
-                    # Process nodes, respecting max_nodes limit
-                    for node_kuzu in nodes_data:
-                        if node_count >= max_nodes:
-                            kg.is_truncated = True
-                            logger.info(
-                                f"Graph truncated: Node limit {max_nodes} reached during processing."
-                            )
-                            break
+            node_count = 0
+            node_internal_to_entity_id_map = {}
+            for node_data_item_dict in nodes_data_list:
+                if node_count >= max_nodes:
+                    kg.is_truncated = True
+                    break
 
-                        node_id_internal = node_kuzu["_id"]
-                        entity_id = node_kuzu.get(self._entity_id_prop)
-                        if not entity_id:
-                            continue
-
-                        node_internal_to_entity_id[
-                            kuzu_internal_id_to_str(node_id_internal)
-                        ] = entity_id
-
-                        if entity_id not in seen_node_entity_ids:
-                            props_json = node_kuzu.get(self._properties_col)
-                            props = self._json_to_properties(
-                                props_json, entity_id=entity_id
-                            )
-
-                            kg.nodes.append(
-                                KnowledgeGraphNode(
-                                    id=entity_id, labels=[entity_id], properties=props
-                                )
-                            )
-                            seen_node_entity_ids.add(entity_id)
-                            node_count += 1
-
-                    # Process edges, ensuring both endpoints are within the collected nodes
-                    for edge_kuzu in edges_data:
-                        edge_id_internal = edge_kuzu["_id"]
-                        edge_id_str = kuzu_rel_internal_id_to_str(edge_id_internal)
-
-                        if edge_id_str not in seen_edge_internal_ids:
-                            src_id_internal_str = kuzu_internal_id_to_str(
-                                edge_kuzu["_src"]
-                            )
-                            dst_id_internal_str = kuzu_internal_id_to_str(
-                                edge_kuzu["_dst"]
-                            )
-
-                            src_entity_id = node_internal_to_entity_id.get(
-                                src_id_internal_str
-                            )
-                            dst_entity_id = node_internal_to_entity_id.get(
-                                dst_id_internal_str
-                            )
-
-                            if (
-                                src_entity_id in seen_node_entity_ids
-                                and dst_entity_id in seen_node_entity_ids
-                            ):
-                                props_json = edge_kuzu.get(self._properties_col)
-                                props = self._json_to_properties(props_json)
-
-                                kg.edges.append(
-                                    KnowledgeGraphEdge(
-                                        id=edge_id_str,
-                                        type=edge_kuzu["_label"],
-                                        source=src_entity_id,
-                                        target=dst_entity_id,
-                                        properties=props,
-                                    )
-                                )
-                                seen_edge_internal_ids.add(edge_id_str)
-
-                    if not kg.is_truncated and len(nodes_data) >= max_nodes:
-                        kg.is_truncated = True
-                        logger.info(
-                            f"Graph potentially truncated by query limits or processing node limit {max_nodes}."
-                        )
-
-            except Exception as e:
-                logger.error(
-                    f"Error getting knowledge graph for '{node_label}': {e}",
-                    exc_info=True,
+                node_kg = process_node_data(
+                    node_data_item_dict, self._entity_id_prop, self._properties_col
                 )
+                if node_kg:
+                    kg.nodes.append(node_kg)
+                    node_count += 1
+                    if "_id" in node_data_item_dict:
+                        node_internal_to_entity_id_map[
+                            kuzu_internal_id_to_str(node_data_item_dict["_id"])
+                        ] = node_kg.id
+
+            for edge_data_item_dict in edges_data_list:
+                edge_kg = process_edge_data(
+                    edge_data_item_dict,
+                    self._properties_col,
+                    node_internal_to_entity_id_map,
+                )
+                if edge_kg:
+                    kg.edges.append(edge_kg)
+
+            if (
+                not kg.is_truncated
+                and len(nodes_data_list) >= max_nodes
+                and node_count >= max_nodes
+            ):
+                kg.is_truncated = True
 
         logger.info(
             f"Subgraph query successful | Node count: {len(kg.nodes)} | Edge count: {len(kg.edges)} | Truncated: {kg.is_truncated}"
@@ -1121,25 +1404,49 @@ class KuzuGraphStorage(BaseGraphStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drops all nodes and relationships by deleting all data."""
-        conn = self._get_conn()
-        try:
-            logger.warning(
-                f"Dropping all data from Kuzu graph (namespace: {self.namespace})..."
-            )
-            # Delete all directed relationships first
-            # Using directed match '->' as created by upsert_edge
-            rel_query = f"MATCH ()-[r:{self._edge_table}]->() DELETE r"
-            await conn.execute(rel_query)
-            logger.debug(f"Deleted all relationships from table '{self._edge_table}'.")
-            # Delete all nodes
-            node_query = f"MATCH (n:{self._node_table}) DELETE n"
-            await conn.execute(node_query)
-            logger.debug(f"Deleted all nodes from table '{self._node_table}'.")
+        logger.warning(
+            f"Dropping all data from Kuzu graph (namespace: {self.namespace}, mode: {self._connection_mode})..."
+        )
+        # Delete all directed relationships first
+        rel_query = f"MATCH ()-[r:{self._edge_table}]->() DELETE r"
+        node_query = f"MATCH (n:{self._node_table}) DELETE n"
 
-            logger.info(
-                f"Successfully dropped all data from Kuzu graph tables '{self._node_table}' and '{self._edge_table}'."
-            )
-            return {"status": "success", "message": "data dropped"}
-        except Exception as e:
-            logger.error(f"Error dropping Kuzu graph data: {e}", exc_info=True)
-            return {"status": "error", "message": str(e)}
+        if self._connection_mode == "embedded":
+            conn = self._get_embedded_conn()
+            try:
+                await conn.execute(rel_query)
+                logger.debug(
+                    f"EMBEDDED: Deleted all relationships from table '{self._edge_table}'."
+                )
+                await conn.execute(node_query)
+                logger.debug(
+                    f"EMBEDDED: Deleted all nodes from table '{self._node_table}'."
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error dropping Kuzu EMBEDDED graph data: {e}", exc_info=True
+                )
+                return {"status": "error", "message": str(e)}
+        elif self._connection_mode == "rest":
+            try:
+                await self._execute_cypher_rest(rel_query)  # Send as separate queries
+                logger.debug(
+                    f"REST: Sent delete relationships command for table '{self._edge_table}'."
+                )
+                await self._execute_cypher_rest(node_query)
+                logger.debug(
+                    f"REST: Sent delete nodes command for table '{self._node_table}'."
+                )
+            except Exception as e:
+                logger.error(f"Error dropping Kuzu REST graph data: {e}", exc_info=True)
+                return {"status": "error", "message": str(e)}
+        else:
+            return {
+                "status": "error",
+                "message": f"Unknown connection mode: {self._connection_mode}",
+            }
+
+        logger.info(
+            f"Successfully dropped all data from Kuzu graph tables '{self._node_table}' and '{self._edge_table}'."
+        )
+        return {"status": "success", "message": "data dropped"}
