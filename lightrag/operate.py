@@ -1247,7 +1247,7 @@ async def mix_kg_vector_query(
             # Include time information in content
             formatted_chunks = []
             for c in maybe_trun_chunks:
-                chunk_text = "File path: " + c["file_path"] + "\n" + c["content"]
+                chunk_text = "File path: " + c["file_path"] + "\r\n\r\n" + c["content"]
                 if c["created_at"]:
                     chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\n{chunk_text}"
                 formatted_chunks.append(chunk_text)
@@ -1255,7 +1255,7 @@ async def mix_kg_vector_query(
             logger.debug(
                 f"Truncate chunks from {len(valid_chunks)} to {len(formatted_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
             )
-            return "\n\n--New Chunk--\n".join(formatted_chunks)
+            return "\r\n\r\n--New Chunk--\r\n\r\n".join(formatted_chunks)
         except Exception as e:
             logger.error(f"Error in get_vector_context: {e}")
             return None
@@ -2074,9 +2074,9 @@ async def naive_query(
         f"Naive query: {len(maybe_trun_chunks)} chunks, top_k: {query_param.top_k}"
     )
 
-    section = "\n\n--New Chunk--\n".join(
+    section = "\r\n\r\n--New Chunk--\r\n\r\n".join(
         [
-            "File path: " + c["file_path"] + "\n" + c["content"]
+            "File path: " + c["file_path"] + "\r\n\r\n" + c["content"]
             for c in maybe_trun_chunks
         ]
     )
