@@ -17,6 +17,12 @@ import xml.etree.ElementTree as ET
 import numpy as np
 from lightrag.prompt import PROMPTS
 from dotenv import load_dotenv
+from lightrag.constants import (
+    DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_LOG_BACKUP_COUNT,
+    DEFAULT_LOG_FILENAME,
+)
+from lightrag.api.config import get_env_value
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:
@@ -152,14 +158,16 @@ def setup_logger(
         # Get log file path
         if log_file_path is None:
             log_dir = os.getenv("LOG_DIR", os.getcwd())
-            log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+            log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
         # Ensure log directory exists
         os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
         # Get log file max size and backup count from environment variables
-        log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
-        log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
+        log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
+        log_backup_count = get_env_value(
+            "LOG_BACKUP_COUNT", DEFAULT_LOG_BACKUP_COUNT, int
+        )
 
         try:
             # Add file handler

@@ -20,6 +20,11 @@ from typing import (
     List,
     Dict,
 )
+from lightrag.constants import (
+    DEFAULT_MAX_TOKEN_SUMMARY,
+    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
+)
+from lightrag.api.config import get_env_value
 
 from lightrag.kg import (
     STORAGES,
@@ -52,7 +57,7 @@ from .operate import (
     naive_query,
     query_with_keywords,
 )
-from .prompt import GRAPH_FIELD_SEP, PROMPTS
+from .prompt import GRAPH_FIELD_SEP
 from .utils import (
     Tokenizer,
     TiktokenTokenizer,
@@ -119,10 +124,14 @@ class LightRAG:
     entity_extract_max_gleaning: int = field(default=1)
     """Maximum number of entity extraction attempts for ambiguous content."""
 
-    summary_to_max_tokens: int = field(default=int(os.getenv("MAX_TOKEN_SUMMARY", 500)))
+    summary_to_max_tokens: int = field(
+        default=get_env_value("MAX_TOKEN_SUMMARY", DEFAULT_MAX_TOKEN_SUMMARY, int)
+    )
 
     force_llm_summary_on_merge: int = field(
-        default=int(os.getenv("FORCE_LLM_SUMMARY_ON_MERGE", 6))
+        default=get_env_value(
+            "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
+        )
     )
 
     # Text chunking
@@ -245,7 +254,7 @@ class LightRAG:
 
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {
-            "language": os.getenv("SUMMARY_LANGUAGE", PROMPTS["DEFAULT_LANGUAGE"])
+            "language": get_env_value("SUMMARY_LANGUAGE", "English", str)
         }
     )
 
