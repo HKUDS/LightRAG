@@ -26,12 +26,18 @@ from .config import (
     global_args,
     update_uvicorn_mode_config,
     get_default_host,
+    get_env_value,
 )
 import sys
 from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
+from lightrag.constants import (
+    DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_LOG_BACKUP_COUNT,
+    DEFAULT_LOG_FILENAME,
+)
 from lightrag.api.routers.document_routes import (
     DocumentManager,
     create_document_routes,
@@ -514,14 +520,14 @@ def configure_logging():
 
     # Get log directory path from environment variable
     log_dir = os.getenv("LOG_DIR", os.getcwd())
-    log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+    log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
     print(f"\nLightRAG log file: {log_file_path}\n")
     os.makedirs(os.path.dirname(log_dir), exist_ok=True)
 
     # Get log file max size and backup count from environment variables
-    log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
-    log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
+    log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
+    log_backup_count = get_env_value("LOG_BACKUP_COUNT", DEFAULT_LOG_BACKUP_COUNT, int)
 
     logging.config.dictConfig(
         {
