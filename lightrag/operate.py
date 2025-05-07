@@ -1208,8 +1208,7 @@ async def mix_kg_vector_query(
         return PROMPTS["fail_response"]
 
     if query_param.only_need_context:
-        context_str = f"""
-\r\n\r\n-----Knowledge Graph Context-----\r\n\r\n
+        context_str = f"""\r\n\r\n-----Knowledge Graph Context-----\r\n\r\n
 {kg_context if kg_context else "No relevant knowledge graph information found"}
 
 \r\n\r\n-----Vector Context-----\r\n\r\n
@@ -1554,8 +1553,8 @@ async def _get_node_data(
     relations_section_list = [
         [
             "id",
-            "source",
-            "target",
+            "entity1",
+            "entity2",
             "description",
             "keywords",
             "weight",
@@ -1839,8 +1838,8 @@ async def _get_edge_data(
     relations_section_list = [
         [
             "id",
-            "source",
-            "target",
+            "entity1",
+            "entity2",
             "description",
             "keywords",
             "weight",
