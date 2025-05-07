@@ -26,7 +26,7 @@ from .utils import (
     CacheData,
     get_conversation_turns,
     use_llm_func_with_cache,
-    list_of_list_to_json,
+    list_of_list_to_dict,
 )
 from .base import (
     BaseGraphStorage,
@@ -1549,7 +1549,7 @@ async def _get_node_data(
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_json(entites_section_list)
+    entities_context = list_of_list_to_dict(entites_section_list)
 
     relations_section_list = [
         [
@@ -1586,14 +1586,14 @@ async def _get_node_data(
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_json(relations_section_list)
+    relations_context = list_of_list_to_dict(relations_section_list)
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
         text_units_section_list.append(
             [i, t["content"], t.get("file_path", "unknown_source")]
         )
-    text_units_context = list_of_list_to_json(text_units_section_list)
+    text_units_context = list_of_list_to_dict(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 
@@ -1871,7 +1871,7 @@ async def _get_edge_data(
                 file_path,
             ]
         )
-    relations_context = list_of_list_to_json(relations_section_list)
+    relations_context = list_of_list_to_dict(relations_section_list)
 
     entites_section_list = [
         ["id", "entity", "type", "description", "rank", "created_at", "file_path"]
@@ -1896,12 +1896,12 @@ async def _get_edge_data(
                 file_path,
             ]
         )
-    entities_context = list_of_list_to_json(entites_section_list)
+    entities_context = list_of_list_to_dict(entites_section_list)
 
     text_units_section_list = [["id", "content", "file_path"]]
     for i, t in enumerate(use_text_units):
         text_units_section_list.append([i, t["content"], t.get("file_path", "unknown")])
-    text_units_context = list_of_list_to_json(text_units_section_list)
+    text_units_context = list_of_list_to_dict(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 
