@@ -12,6 +12,8 @@ PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "category"]
 
+PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
+
 PROMPTS["entity_extraction"] = """---Goal---
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
 Use {language} as output language.
@@ -224,7 +226,10 @@ When handling relationships with timestamps:
 - Ensure the response maintains continuity with the conversation history.
 - List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path if available, in the following format: [KG/DC] file_path
 - If you don't know the answer, just say so.
-- Do not make anything up. Do not include information not provided by the Knowledge Base."""
+- Do not make anything up. Do not include information not provided by the Knowledge Base.
+- Addtional user prompt: {user_prompt}
+
+Response:"""
 
 PROMPTS["keywords_extraction"] = """---Role---
 
@@ -322,8 +327,10 @@ When handling content with timestamps:
 - Ensure the response maintains continuity with the conversation history.
 - List up to 5 most important reference sources at the end under "References" section. Clearly indicating each source from Document Chunks(DC), and include the file path if available, in the following format: [DC] file_path
 - If you don't know the answer, just say so.
-- Do not include information not provided by the Document Chunks."""
+- Do not include information not provided by the Document Chunks.
+- Addtional user prompt: {user_prompt}
 
+Response:"""
 
 PROMPTS[
     "similarity_check"
