@@ -28,7 +28,7 @@ export default function QuerySettings() {
     <Card className="flex shrink-0 flex-col min-w-[220px]">
       <CardHeader className="px-4 pt-4 pb-2">
         <CardTitle>{t('retrievePanel.querySettings.parametersTitle')}</CardTitle>
-        <CardDescription>{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
+        <CardDescription className="sr-only">{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
       </CardHeader>
       <CardContent className="m-0 flex grow flex-col p-0 text-xs">
         <div className="relative size-full">
