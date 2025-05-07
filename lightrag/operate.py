@@ -925,11 +925,18 @@ async def kg_query(
             query_param.conversation_history, query_param.history_turns
         )
 
+    # Build system prompt
+    user_prompt = (
+        query_param.user_prompt
+        if query_param.user_prompt
+        else PROMPTS["DEFAULT_USER_PROMPT"]
+    )
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
         context_data=context,
         response_type=query_param.response_type,
         history=history_context,
+        user_prompt=user_prompt,
     )
 
     if query_param.only_need_prompt:
@@ -1907,11 +1914,18 @@ async def naive_query(
             query_param.conversation_history, query_param.history_turns
         )
 
+    # Build system prompt
+    user_prompt = (
+        query_param.user_prompt
+        if query_param.user_prompt
+        else PROMPTS["DEFAULT_USER_PROMPT"]
+    )
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
         content_data=text_units_str,
         response_type=query_param.response_type,
         history=history_context,
+        user_prompt=user_prompt,
     )
 
     if query_param.only_need_prompt:
@@ -1957,6 +1971,7 @@ async def naive_query(
     return response
 
 
+# TODO: Deprecated, use user_prompt in QueryParam instead
 async def kg_query_with_keywords(
     query: str,
     knowledge_graph_inst: BaseGraphStorage,
@@ -2079,6 +2094,7 @@ async def kg_query_with_keywords(
     return response
 
 
+# TODO: Deprecated, use user_prompt in QueryParam instead
 async def query_with_keywords(
     query: str,
     prompt: str,
