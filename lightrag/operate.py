@@ -1156,7 +1156,7 @@ async def mix_kg_vector_query(
         )
 
     # 2. Execute knowledge graph and vector searches in parallel
-    async def get_kg_context():
+    async def _get_kg_context():
         try:
             hl_keywords, ll_keywords = await get_keywords_from_query(
                 query, query_param, global_config, hashing_kv
@@ -1194,13 +1194,13 @@ async def mix_kg_vector_query(
             return context
 
         except Exception as e:
-            logger.error(f"Error in get_kg_context: {str(e)}")
+            logger.error(f"Error in _get_kg_context: {str(e)}")
             traceback.print_exc()
             return None
 
     # 3. Execute both retrievals in parallel
     kg_context, vector_context = await asyncio.gather(
-        get_kg_context(), _get_vector_context(query, chunks_vdb, query_param, tokenizer)
+        _get_kg_context(), _get_vector_context(query, chunks_vdb, query_param, tokenizer)
     )
 
     # 4. Merge contexts
