@@ -1,7 +1,6 @@
 import { useCallback } from 'react'
 import { QueryMode, QueryRequest } from '@/api/lightrag'
 // Removed unused import for Text component
-import Input from '@/components/ui/Input'
 import Checkbox from '@/components/ui/Checkbox'
 import NumberInput from '@/components/ui/NumberInput'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
@@ -240,71 +239,6 @@ export default function QuerySettings() {
                   placeholder={t('retrievePanel.querySettings.historyTurnsPlaceholder')}
                 />
               </div>
-            </>
-
-            {/* Keywords */}
-            <>
-              <>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <label htmlFor="hl_keywords" className="ml-1 cursor-help">
-                        {t('retrievePanel.querySettings.hlKeywords')}
-                      </label>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">
-                      <p>{t('retrievePanel.querySettings.hlKeywordsTooltip')}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                <div>
-                  {/* Removed sr-only label */}
-                  <Input
-                    id="hl_keywords"
-                    type="text"
-                    value={querySettings.hl_keywords?.join(', ')}
-                    onChange={(e) => {
-                      const keywords = e.target.value
-                        .split(',')
-                        .map((k) => k.trim())
-                        .filter((k) => k !== '')
-                      handleChange('hl_keywords', keywords)
-                    }}
-                    placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
-                  />
-                </div>
-              </>
-
-              <>
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <label htmlFor="ll_keywords" className="ml-1 cursor-help">
-                        {t('retrievePanel.querySettings.llKeywords')}
-                      </label>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">
-                      <p>{t('retrievePanel.querySettings.llKeywordsTooltip')}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                <div>
-                  {/* Removed sr-only label */}
-                  <Input
-                    id="ll_keywords"
-                    type="text"
-                    value={querySettings.ll_keywords?.join(', ')}
-                    onChange={(e) => {
-                      const keywords = e.target.value
-                        .split(',')
-                        .map((k) => k.trim())
-                        .filter((k) => k !== '')
-                      handleChange('ll_keywords', keywords)
-                    }}
-                    placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
-                  />
-                </div>
-              </>
             </>
 
             {/* Toggle Options */}

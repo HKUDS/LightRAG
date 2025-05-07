@@ -94,10 +94,6 @@ export type QueryRequest = {
   max_token_for_global_context?: number
   /** Maximum number of tokens allocated for entity descriptions in local retrieval. */
   max_token_for_local_context?: number
-  /** List of high-level keywords to prioritize in retrieval. */
-  hl_keywords?: string[]
-  /** List of low-level keywords to refine retrieval focus. */
-  ll_keywords?: string[]
   /**
    * Stores past conversation history to maintain context.
    * Format: [{"role": "user/assistant", "content": "message"}].
