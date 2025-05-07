@@ -93,6 +93,11 @@ class QueryParam:
     This allows using different models for different query modes.
     """
 
+    user_prompt: str | None= None
+    """User-provided prompt for the query.
+    If proivded, this will be use instead of the default vaulue from prompt template.
+    """
+
 
 @dataclass
 class StorageNameSpace(ABC):
