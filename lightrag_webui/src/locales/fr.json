@@ -340,17 +340,15 @@
       "historyTurns": "Tours d'historique",
       "historyTurnsTooltip": "Nombre de tours complets de conversation (paires utilisateur-assistant) à prendre en compte dans le contexte de la réponse",
       "historyTurnsPlaceholder": "Nombre de tours d'historique",
-      "hlKeywords": "Mots-clés de haut niveau",
-      "hlKeywordsTooltip": "Liste de mots-clés de haut niveau à prioriser dans la récupération. Séparez par des virgules",
-      "hlkeywordsPlaceHolder": "Entrez les mots-clés",
-      "llKeywords": "Mots-clés de bas niveau",
-      "llKeywordsTooltip": "Liste de mots-clés de bas niveau pour affiner la focalisation de la récupération. Séparez par des virgules",
       "onlyNeedContext": "Besoin uniquement du contexte",
       "onlyNeedContextTooltip": "Si vrai, ne renvoie que le contexte récupéré sans générer de réponse",
       "onlyNeedPrompt": "Besoin uniquement de l'invite",
       "onlyNeedPromptTooltip": "Si vrai, ne renvoie que l'invite générée sans produire de réponse",
       "streamResponse": "Réponse en flux",
-      "streamResponseTooltip": "Si vrai, active la sortie en flux pour des réponses en temps réel"
+      "streamResponseTooltip": "Si vrai, active la sortie en flux pour des réponses en temps réel",
+      "userPrompt": "Invite personnalisée",
+      "userPromptTooltip": "Fournir des exigences de réponse supplémentaires au LLM (sans rapport avec le contenu de la requête, uniquement pour le traitement de sortie).",
+      "userPromptPlaceholder": "Entrez une invite personnalisée (facultatif)"
     }
   },
   "apiSite": {

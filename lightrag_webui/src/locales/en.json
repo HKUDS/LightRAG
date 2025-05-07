@@ -340,17 +340,15 @@
       "historyTurns": "History Turns",
       "historyTurnsTooltip": "Number of complete conversation turns (user-assistant pairs) to consider in the response context",
       "historyTurnsPlaceholder": "Number of history turns",
-      "hlKeywords": "High-Level Keywords",
-      "hlKeywordsTooltip": "List of high-level keywords to prioritize in retrieval. Separate with commas",
-      "hlkeywordsPlaceHolder": "Enter keywords",
-      "llKeywords": "Low-Level Keywords",
-      "llKeywordsTooltip": "List of low-level keywords to refine retrieval focus. Separate with commas",
       "onlyNeedContext": "Only Need Context",
       "onlyNeedContextTooltip": "If True, only returns the retrieved context without generating a response",
       "onlyNeedPrompt": "Only Need Prompt",
       "onlyNeedPromptTooltip": "If True, only returns the generated prompt without producing a response",
       "streamResponse": "Stream Response",
-      "streamResponseTooltip": "If True, enables streaming output for real-time responses"
+      "streamResponseTooltip": "If True, enables streaming output for real-time responses",
+      "userPrompt": "User Prompt",
+      "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
+      "userPromptPlaceholder": "Enter custom prompt (optional)"
     }
   },
   "apiSite": {

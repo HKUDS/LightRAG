@@ -78,6 +78,11 @@ class QueryRequest(BaseModel):
         description="Number of complete conversation turns (user-assistant pairs) to consider in the response context.",
     )
 
+    user_prompt: Optional[str] = Field(
+        default=None,
+        description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
