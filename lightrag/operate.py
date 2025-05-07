@@ -1209,10 +1209,10 @@ async def mix_kg_vector_query(
 
     if query_param.only_need_context:
         context_str = f"""
-\r\n\r\n=====Knowledge Graph Context=====\r\n\r\n
+\r\n\r\n-----Knowledge Graph Context-----\r\n\r\n
 {kg_context if kg_context else "No relevant knowledge graph information found"}
 
-\r\n\r\n=====Vector Context=====\r\n\r\n
+\r\n\r\n-----Vector Context-----\r\n\r\n
 {vector_context if vector_context else "No relevant text information found"}
 """.strip()
         return context_str
@@ -1273,6 +1273,85 @@ async def mix_kg_vector_query(
             )
 
     return response
+
+
+async def _get_vector_context(
+    query: str,
+    chunks_vdb: BaseVectorStorage,
+    query_param: QueryParam,
+    tokenizer: Tokenizer,
+) -> str | None:
+    """
+    Retrieve vector context from the vector database.
+
+    This function performs vector search to find relevant text chunks for a query,
+    formats them with file path and creation time information, and truncates
+    the results to fit within token limits.
+
+    Args:
+        query: The query string to search for
+        chunks_vdb: Vector database containing document chunks
+        query_param: Query parameters including top_k and ids
+        tokenizer: Tokenizer for counting tokens
+
+    Returns:
+        Formatted string containing relevant text chunks, or None if no results found
+    """
+    try:
+        # Reduce top_k for vector search in hybrid mode since we have structured information from KG
+        mix_topk = (
+            min(10, query_param.top_k)
+            if hasattr(query_param, "mode") and query_param.mode == "mix"
+            else query_param.top_k
+        )
+        results = await chunks_vdb.query(query, top_k=mix_topk, ids=query_param.ids)
+        if not results:
+            return None
+
+        valid_chunks = []
+        for result in results:
+            if "content" in result:
+                # Directly use content from chunks_vdb.query result
+                chunk_with_time = {
+                    "content": result["content"],
+                    "created_at": result.get("created_at", None),
+                    "file_path": result.get("file_path", None),
+                }
+                valid_chunks.append(chunk_with_time)
+
+        if not valid_chunks:
+            return None
+
+        maybe_trun_chunks = truncate_list_by_token_size(
+            valid_chunks,
+            key=lambda x: x["content"],
+            max_token_size=query_param.max_token_for_text_unit,
+            tokenizer=tokenizer,
+        )
+
+        logger.debug(
+            f"Truncate chunks from {len(valid_chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+        )
+        logger.info(f"Vector query: {len(maybe_trun_chunks)} chunks, top_k: {mix_topk}")
+
+        if not maybe_trun_chunks:
+            return None
+
+        # Include time information in content
+        formatted_chunks = []
+        for c in maybe_trun_chunks:
+            chunk_text = "File path: " + c["file_path"] + "\r\n\r\n" + c["content"]
+            if c["created_at"]:
+                chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\r\n\r\n{chunk_text}"
+            formatted_chunks.append(chunk_text)
+
+        logger.debug(
+            f"Truncate chunks from {len(valid_chunks)} to {len(formatted_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
+        )
+        return "\r\n\r\n-------New Chunk-------\r\n\r\n".join(formatted_chunks)
+    except Exception as e:
+        logger.error(f"Error in _get_vector_context: {e}")
+        return None
 
 
 async def _build_query_context(
@@ -2196,85 +2275,6 @@ async def kg_query_with_keywords(
             )
 
     return response
-
-
-async def _get_vector_context(
-    query: str,
-    chunks_vdb: BaseVectorStorage,
-    query_param: QueryParam,
-    tokenizer: Tokenizer,
-) -> str | None:
-    """
-    Retrieve vector context from the vector database.
-
-    This function performs vector search to find relevant text chunks for a query,
-    formats them with file path and creation time information, and truncates
-    the results to fit within token limits.
-
-    Args:
-        query: The query string to search for
-        chunks_vdb: Vector database containing document chunks
-        query_param: Query parameters including top_k and ids
-        tokenizer: Tokenizer for counting tokens
-
-    Returns:
-        Formatted string containing relevant text chunks, or None if no results found
-    """
-    try:
-        # Reduce top_k for vector search in hybrid mode since we have structured information from KG
-        mix_topk = (
-            min(10, query_param.top_k)
-            if hasattr(query_param, "mode") and query_param.mode == "mix"
-            else query_param.top_k
-        )
-        results = await chunks_vdb.query(query, top_k=mix_topk, ids=query_param.ids)
-        if not results:
-            return None
-
-        valid_chunks = []
-        for result in results:
-            if "content" in result:
-                # Directly use content from chunks_vdb.query result
-                chunk_with_time = {
-                    "content": result["content"],
-                    "created_at": result.get("created_at", None),
-                    "file_path": result.get("file_path", None),
-                }
-                valid_chunks.append(chunk_with_time)
-
-        if not valid_chunks:
-            return None
-
-        maybe_trun_chunks = truncate_list_by_token_size(
-            valid_chunks,
-            key=lambda x: x["content"],
-            max_token_size=query_param.max_token_for_text_unit,
-            tokenizer=tokenizer,
-        )
-
-        logger.debug(
-            f"Truncate chunks from {len(valid_chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
-        )
-        logger.info(f"Vector query: {len(maybe_trun_chunks)} chunks, top_k: {mix_topk}")
-
-        if not maybe_trun_chunks:
-            return None
-
-        # Include time information in content
-        formatted_chunks = []
-        for c in maybe_trun_chunks:
-            chunk_text = "File path: " + c["file_path"] + "\r\n\r\n" + c["content"]
-            if c["created_at"]:
-                chunk_text = f"[Created at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(c['created_at']))}]\r\n\r\n{chunk_text}"
-            formatted_chunks.append(chunk_text)
-
-        logger.debug(
-            f"Truncate chunks from {len(valid_chunks)} to {len(formatted_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
-        )
-        return "\r\n\r\n--New Chunk--\r\n\r\n".join(formatted_chunks)
-    except Exception as e:
-        logger.error(f"Error in _get_vector_context: {e}")
-        return None
 
 
 async def query_with_keywords(
