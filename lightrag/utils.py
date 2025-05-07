@@ -719,44 +719,6 @@ def truncate_list_by_token_size(
     return list_data
 
 
-def list_of_list_to_dict(data: list[list[str]]) -> list[dict[str, str]]:
-    """Convert a 2D string list (table-like data) into a list of dictionaries.
-
-    The first row is treated as header containing field names. Subsequent rows become
-    dictionary entries where keys come from header and values from row data.
-
-    Args:
-        data: 2D string array where first row contains headers and rest are data rows.
-              Minimum 2 columns required in data rows (rows with <2 elements are skipped).
-
-    Returns:
-        List of dictionaries where each dict represents a data row with:
-        - Keys: Header values from first row
-        - Values: Corresponding row values (empty string if missing)
-
-    Example:
-        Input: [["Name","Age"], ["Alice","23"], ["Bob"]]
-        Output: [{"Name":"Alice","Age":"23"}, {"Name":"Bob","Age":""}]
-    """
-    if not data or len(data) <= 1:
-        return []
-
-    header = data[0]
-    result = []
-
-    for row in data[1:]:
-        if len(row) >= 2:
-            item = {}
-            for i, field_name in enumerate(header):
-                if i < len(row):
-                    item[field_name] = str(row[i])
-                else:
-                    item[field_name] = ""
-            result.append(item)
-
-    return result
-
-
 def save_data_to_file(data, file_name):
     with open(file_name, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
