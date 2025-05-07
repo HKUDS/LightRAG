@@ -926,7 +926,11 @@ async def kg_query(
         )
 
     # Build system prompt
-    user_prompt = query_param.user_prompt if query_param.user_prompt else PROMPTS["DEFAULT_USER_PROMPT"]
+    user_prompt = (
+        query_param.user_prompt
+        if query_param.user_prompt
+        else PROMPTS["DEFAULT_USER_PROMPT"]
+    )
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["rag_response"]
     sys_prompt = sys_prompt_temp.format(
         context_data=context,
@@ -1911,7 +1915,11 @@ async def naive_query(
         )
 
     # Build system prompt
-    user_prompt = query_param.user_prompt if query_param.user_prompt else PROMPTS["DEFAULT_USER_PROMPT"]
+    user_prompt = (
+        query_param.user_prompt
+        if query_param.user_prompt
+        else PROMPTS["DEFAULT_USER_PROMPT"]
+    )
     sys_prompt_temp = system_prompt if system_prompt else PROMPTS["naive_rag_response"]
     sys_prompt = sys_prompt_temp.format(
         content_data=text_units_str,
