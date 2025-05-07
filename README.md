@@ -274,12 +274,6 @@ class QueryParam:
     max_token_for_local_context: int = int(os.getenv("MAX_TOKEN_ENTITY_DESC", "4000"))
     """Maximum number of tokens allocated for entity descriptions in local retrieval."""
 
-    hl_keywords: list[str] = field(default_factory=list)
-    """List of high-level keywords to prioritize in retrieval."""
-
-    ll_keywords: list[str] = field(default_factory=list)
-    """List of low-level keywords to refine retrieval focus."""
-
     conversation_history: list[dict[str, str]] = field(default_factory=list)
     """Stores past conversation history to maintain context.
     Format: [{"role": "user/assistant", "content": "message"}].
@@ -295,6 +289,11 @@ class QueryParam:
     """Optional override for the LLM model function to use for this specific query.
     If provided, this will be used instead of the global model function.
     This allows using different models for different query modes.
+    """
+
+    user_prompt: str | None = None
+    """User-provided prompt for the query.
+    If proivded, this will be use instead of the default vaulue from prompt template.
     """
 ```
 
@@ -571,76 +570,26 @@ response = rag.query(
 
 </details>
 
-### Custom Prompt Support
+### Custom User Prompt Support
 
-LightRAG now supports custom prompts for fine-tuned control over the system's behavior. Here's how to use it:
-
-<details>
-  <summary> <b> Usage Example </b></summary>
+Custom user prompts do not affect the query content; they are only used to instruct the LLM on how to handle the query results.  Here's how to use it:
 
 ```python
 # Create query parameters
 query_param = QueryParam(
-    mode="hybrid",  # or other mode: "local", "global", "hybrid", "mix" and "naive"
+    mode = "hybrid",  # 或其他模式："local"、"global"、"hybrid"、"mix"和"naive"
+    user_prompt = "Please create the diagram using the Mermaid syntax"
 )
 
-# Example 1: Using the default system prompt
+# Query and process
 response_default = rag.query(
-    "What are the primary benefits of renewable energy?",
+    "Please draw a character relationship diagram for Scrooge",
     param=query_param
 )
 print(response_default)
-
-# Example 2: Using a custom prompt
-custom_prompt = """
-You are an expert assistant in environmental science. Provide detailed and structured answers with examples.
----Conversation History---
-{history}
-
----Knowledge Base---
-{context_data}
-
----Response Rules---
-
-- Target format and length: {response_type}
-"""
-response_custom = rag.query(
-    "What are the primary benefits of renewable energy?",
-    param=query_param,
-    system_prompt=custom_prompt  # Pass the custom prompt
-)
-print(response_custom)
 ```
 
-</details>
 
-### Separate Keyword Extraction
-
-We've introduced a new function `query_with_separate_keyword_extraction` to enhance the keyword extraction capabilities. This function separates the keyword extraction process from the user's prompt, focusing solely on the query to improve the relevance of extracted keywords.
-
-**How It Works?**
-
-The function operates by dividing the input into two parts:
-
-- `User Query`
-- `Prompt`
-
-It then performs keyword extraction exclusively on the `user query`. This separation ensures that the extraction process is focused and relevant, unaffected by any additional language in the `prompt`. It also allows the `prompt` to serve purely for response formatting, maintaining the intent and clarity of the user's original question.
-
-<details>
-  <summary> <b> Usage Example </b></summary>
-
-This `example` shows how to tailor the function for educational content, focusing on detailed explanations for older students.
-
-```python
-rag.query_with_separate_keyword_extraction(
-    query="Explain the law of gravity",
-    prompt="Provide a detailed explanation suitable for high school students studying physics.",
-    param=QueryParam(mode="hybrid")
-)
-```
-
-</details>
 
 ### Insert
 
@@ -721,70 +670,6 @@ file_path = 'TEXT.pdf'
 text_content = textract.process(file_path)
 
 rag.insert(text_content.decode('utf-8'))
-```
-
-</details>
-
-<details>
-  <summary> <b> Insert Custom KG </b></summary>
-
-```python
-custom_kg = {
-    "chunks": [
-        {
-            "content": "Alice and Bob are collaborating on quantum computing research.",
-            "source_id": "doc-1"
-        }
-    ],
-    "entities": [
-        {
-            "entity_name": "Alice",
-            "entity_type": "person",
-            "description": "Alice is a researcher specializing in quantum physics.",
-            "source_id": "doc-1"
-        },
-        {
-            "entity_name": "Bob",
-            "entity_type": "person",
-            "description": "Bob is a mathematician.",
-            "source_id": "doc-1"
-        },
-        {
-            "entity_name": "Quantum Computing",
-            "entity_type": "technology",
-            "description": "Quantum computing utilizes quantum mechanical phenomena for computation.",
-            "source_id": "doc-1"
-        }
-    ],
-    "relationships": [
-        {
-            "src_id": "Alice",
-            "tgt_id": "Bob",
-            "description": "Alice and Bob are research partners.",
-            "keywords": "collaboration research",
-            "weight": 1.0,
-            "source_id": "doc-1"
-        },
-        {
-            "src_id": "Alice",
-            "tgt_id": "Quantum Computing",
-            "description": "Alice conducts research on quantum computing.",
-            "keywords": "research expertise",
-            "weight": 1.0,
-            "source_id": "doc-1"
-        },
-        {
-            "src_id": "Bob",
-            "tgt_id": "Quantum Computing",
-            "description": "Bob researches quantum computing.",
-            "keywords": "research application",
-            "weight": 1.0,
-            "source_id": "doc-1"
-        }
-    ]
-}
-
-rag.insert_custom_kg(custom_kg)
 ```
 
 </details>
@@ -992,17 +877,154 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 
 All operations are available in both synchronous and asynchronous versions. The asynchronous versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
-#### Entity Operations
+</details>
+
+<details>
+  <summary> <b> Insert Custom KG </b></summary>
+
+```python
+custom_kg = {
+    "chunks": [
+        {
+            "content": "Alice and Bob are collaborating on quantum computing research.",
+            "source_id": "doc-1"
+        }
+    ],
+    "entities": [
+        {
+            "entity_name": "Alice",
+            "entity_type": "person",
+            "description": "Alice is a researcher specializing in quantum physics.",
+            "source_id": "doc-1"
+        },
+        {
+            "entity_name": "Bob",
+            "entity_type": "person",
+            "description": "Bob is a mathematician.",
+            "source_id": "doc-1"
+        },
+        {
+            "entity_name": "Quantum Computing",
+            "entity_type": "technology",
+            "description": "Quantum computing utilizes quantum mechanical phenomena for computation.",
+            "source_id": "doc-1"
+        }
+    ],
+    "relationships": [
+        {
+            "src_id": "Alice",
+            "tgt_id": "Bob",
+            "description": "Alice and Bob are research partners.",
+            "keywords": "collaboration research",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        },
+        {
+            "src_id": "Alice",
+            "tgt_id": "Quantum Computing",
+            "description": "Alice conducts research on quantum computing.",
+            "keywords": "research expertise",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        },
+        {
+            "src_id": "Bob",
+            "tgt_id": "Quantum Computing",
+            "description": "Bob researches quantum computing.",
+            "keywords": "research application",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        }
+    ]
+}
+
+rag.insert_custom_kg(custom_kg)
+```
+
+</details>
+
+<details>
+  <summary> <b>Other Entity and Relation Operations</b></summary>
 
 - **create_entity**: Creates a new entity with specified attributes
 - **edit_entity**: Updates an existing entity's attributes or renames it
 
-#### Relation Operations
 
 - **create_relation**: Creates a new relation between existing entities
 - **edit_relation**: Updates an existing relation's attributes
 
 These operations maintain data consistency across both the graph database and vector database components, ensuring your knowledge graph remains coherent.
+
+</details>
+
+## Entity Merging
+
+<details>
+<summary> <b>Merge Entities and Their Relationships</b> </summary>
+
+LightRAG now supports merging multiple entities into a single entity, automatically handling all relationships:
+
+```python
+# Basic entity merging
+rag.merge_entities(
+    source_entities=["Artificial Intelligence", "AI", "Machine Intelligence"],
+    target_entity="AI Technology"
+)
+```
+
+With custom merge strategy:
+
+```python
+# Define custom merge strategy for different fields
+rag.merge_entities(
+    source_entities=["John Smith", "Dr. Smith", "J. Smith"],
+    target_entity="John Smith",
+    merge_strategy={
+        "description": "concatenate",  # Combine all descriptions
+        "entity_type": "keep_first",   # Keep the entity type from the first entity
+        "source_id": "join_unique"     # Combine all unique source IDs
+    }
+)
+```
+
+With custom target entity data:
+
+```python
+# Specify exact values for the merged entity
+rag.merge_entities(
+    source_entities=["New York", "NYC", "Big Apple"],
+    target_entity="New York City",
+    target_entity_data={
+        "entity_type": "LOCATION",
+        "description": "New York City is the most populous city in the United States.",
+    }
+)
+```
+
+Advanced usage combining both approaches:
+
+```python
+# Merge company entities with both strategy and custom data
+rag.merge_entities(
+    source_entities=["Microsoft Corp", "Microsoft Corporation", "MSFT"],
+    target_entity="Microsoft",
+    merge_strategy={
+        "description": "concatenate",  # Combine all descriptions
+        "source_id": "join_unique"     # Combine source IDs
+    },
+    target_entity_data={
+        "entity_type": "ORGANIZATION",
+    }
+)
+```
+
+When merging entities:
+
+* All relationships from source entities are redirected to the target entity
+* Duplicate relationships are intelligently merged
+* Self-relationships (loops) are prevented
+* Source entities are removed after merging
+* Relationship weights and attributes are preserved
 
 </details>
 
@@ -1111,78 +1133,6 @@ All exports include:
 * Entity information (names, IDs, metadata)
 * Relation data (connections between entities)
 * Relationship information from vector database
-
-
-## Entity Merging
-
-<details>
-<summary> <b>Merge Entities and Their Relationships</b> </summary>
-
-LightRAG now supports merging multiple entities into a single entity, automatically handling all relationships:
-
-```python
-# Basic entity merging
-rag.merge_entities(
-    source_entities=["Artificial Intelligence", "AI", "Machine Intelligence"],
-    target_entity="AI Technology"
-)
-```
-
-With custom merge strategy:
-
-```python
-# Define custom merge strategy for different fields
-rag.merge_entities(
-    source_entities=["John Smith", "Dr. Smith", "J. Smith"],
-    target_entity="John Smith",
-    merge_strategy={
-        "description": "concatenate",  # Combine all descriptions
-        "entity_type": "keep_first",   # Keep the entity type from the first entity
-        "source_id": "join_unique"     # Combine all unique source IDs
-    }
-)
-```
-
-With custom target entity data:
-
-```python
-# Specify exact values for the merged entity
-rag.merge_entities(
-    source_entities=["New York", "NYC", "Big Apple"],
-    target_entity="New York City",
-    target_entity_data={
-        "entity_type": "LOCATION",
-        "description": "New York City is the most populous city in the United States.",
-    }
-)
-```
-
-Advanced usage combining both approaches:
-
-```python
-# Merge company entities with both strategy and custom data
-rag.merge_entities(
-    source_entities=["Microsoft Corp", "Microsoft Corporation", "MSFT"],
-    target_entity="Microsoft",
-    merge_strategy={
-        "description": "concatenate",  # Combine all descriptions
-        "source_id": "join_unique"     # Combine source IDs
-    },
-    target_entity_data={
-        "entity_type": "ORGANIZATION",
-    }
-)
-```
-
-When merging entities:
-
-* All relationships from source entities are redirected to the target entity
-* Duplicate relationships are intelligently merged
-* Self-relationships (loops) are prevented
-* Source entities are removed after merging
-* Relationship weights and attributes are preserved
-
-</details>
 
 ## Cache
 
