@@ -25,7 +25,6 @@ from .utils import (
     CacheData,
     get_conversation_turns,
     use_llm_func_with_cache,
-    list_of_list_to_dict,
 )
 from .base import (
     BaseGraphStorage,
@@ -1175,21 +1174,16 @@ async def _get_vector_context(
         entities_context = []
         relations_context = []
 
-        # Create text_units_context in the same format as _get_edge_data and _get_node_data
-        text_units_section_list = [["id", "content", "file_path"]]
-
+        # Create text_units_context directly as a list of dictionaries
+        text_units_context = []
         for i, chunk in enumerate(maybe_trun_chunks):
-            # Add to text_units_section_list
-            text_units_section_list.append(
-                [
-                    i + 1,  # id
-                    chunk["content"],  # content
-                    chunk["file_path"],  # file_path
-                ]
+            text_units_context.append(
+                {
+                    "id": i + 1,
+                    "content": chunk["content"],
+                    "file_path": chunk["file_path"],
+                }
             )
-
-        # Convert to dictionary format using list_of_list_to_dict
-        text_units_context = list_of_list_to_dict(text_units_section_list)
 
         return entities_context, relations_context, text_units_context
     except Exception as e:
@@ -1398,17 +1392,7 @@ async def _get_node_data(
     )
 
     # build prompt
-    entites_section_list = [
-        [
-            "id",
-            "entity",
-            "type",
-            "description",
-            "rank",
-            "created_at",
-            "file_path",
-        ]
-    ]
+    entities_context = []
     for i, n in enumerate(node_datas):
         created_at = n.get("created_at", "UNKNOWN")
         if isinstance(created_at, (int, float)):
@@ -1417,32 +1401,19 @@ async def _get_node_data(
         # Get file path from node data
         file_path = n.get("file_path", "unknown_source")
 
-        entites_section_list.append(
-            [
-                i + 1,
-                n["entity_name"],
-                n.get("entity_type", "UNKNOWN"),
-                n.get("description", "UNKNOWN"),
-                n["rank"],
-                created_at,
-                file_path,
-            ]
+        entities_context.append(
+            {
+                "id": i + 1,
+                "entity": n["entity_name"],
+                "type": n.get("entity_type", "UNKNOWN"),
+                "description": n.get("description", "UNKNOWN"),
+                "rank": n["rank"],
+                "created_at": created_at,
+                "file_path": file_path,
+            }
         )
-    entities_context = list_of_list_to_dict(entites_section_list)
 
-    relations_section_list = [
-        [
-            "id",
-            "entity1",
-            "entity2",
-            "description",
-            "keywords",
-            "weight",
-            "rank",
-            "created_at",
-            "file_path",
-        ]
-    ]
+    relations_context = []
     for i, e in enumerate(use_relations):
         created_at = e.get("created_at", "UNKNOWN")
         # Convert timestamp to readable format
@@ -1452,27 +1423,29 @@ async def _get_node_data(
         # Get file path from edge data
         file_path = e.get("file_path", "unknown_source")
 
-        relations_section_list.append(
-            [
-                i + 1,
-                e["src_tgt"][0],
-                e["src_tgt"][1],
-                e["description"],
-                e["keywords"],
-                e["weight"],
-                e["rank"],
-                created_at,
-                file_path,
-            ]
+        relations_context.append(
+            {
+                "id": i + 1,
+                "entity1": e["src_tgt"][0],
+                "entity2": e["src_tgt"][1],
+                "description": e["description"],
+                "keywords": e["keywords"],
+                "weight": e["weight"],
+                "rank": e["rank"],
+                "created_at": created_at,
+                "file_path": file_path,
+            }
         )
-    relations_context = list_of_list_to_dict(relations_section_list)
 
-    text_units_section_list = [["id", "content", "file_path"]]
+    text_units_context = []
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append(
-            [i + 1, t["content"], t.get("file_path", "unknown_source")]
+        text_units_context.append(
+            {
+                "id": i + 1,
+                "content": t["content"],
+                "file_path": t.get("file_path", "unknown_source"),
+            }
         )
-    text_units_context = list_of_list_to_dict(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 
@@ -1715,19 +1688,7 @@ async def _get_edge_data(
         f"Global query uses {len(use_entities)} entites, {len(edge_datas)} relations, {len(use_text_units)} chunks"
     )
 
-    relations_section_list = [
-        [
-            "id",
-            "entity1",
-            "entity2",
-            "description",
-            "keywords",
-            "weight",
-            "rank",
-            "created_at",
-            "file_path",
-        ]
-    ]
+    relations_context = []
     for i, e in enumerate(edge_datas):
         created_at = e.get("created_at", "UNKNOWN")
         # Convert timestamp to readable format
@@ -1737,24 +1698,21 @@ async def _get_edge_data(
         # Get file path from edge data
         file_path = e.get("file_path", "unknown_source")
 
-        relations_section_list.append(
-            [
-                i + 1,
-                e["src_id"],
-                e["tgt_id"],
-                e["description"],
-                e["keywords"],
-                e["weight"],
-                e["rank"],
-                created_at,
-                file_path,
-            ]
+        relations_context.append(
+            {
+                "id": i + 1,
+                "entity1": e["src_id"],
+                "entity2": e["tgt_id"],
+                "description": e["description"],
+                "keywords": e["keywords"],
+                "weight": e["weight"],
+                "rank": e["rank"],
+                "created_at": created_at,
+                "file_path": file_path,
+            }
         )
-    relations_context = list_of_list_to_dict(relations_section_list)
 
-    entites_section_list = [
-        ["id", "entity", "type", "description", "rank", "created_at", "file_path"]
-    ]
+    entities_context = []
     for i, n in enumerate(use_entities):
         created_at = n.get("created_at", "UNKNOWN")
         # Convert timestamp to readable format
@@ -1764,25 +1722,27 @@ async def _get_edge_data(
         # Get file path from node data
         file_path = n.get("file_path", "unknown_source")
 
-        entites_section_list.append(
-            [
-                i + 1,
-                n["entity_name"],
-                n.get("entity_type", "UNKNOWN"),
-                n.get("description", "UNKNOWN"),
-                n["rank"],
-                created_at,
-                file_path,
-            ]
+        entities_context.append(
+            {
+                "id": i + 1,
+                "entity": n["entity_name"],
+                "type": n.get("entity_type", "UNKNOWN"),
+                "description": n.get("description", "UNKNOWN"),
+                "rank": n["rank"],
+                "created_at": created_at,
+                "file_path": file_path,
+            }
         )
-    entities_context = list_of_list_to_dict(entites_section_list)
 
-    text_units_section_list = [["id", "content", "file_path"]]
+    text_units_context = []
     for i, t in enumerate(use_text_units):
-        text_units_section_list.append(
-            [i + 1, t["content"], t.get("file_path", "unknown")]
+        text_units_context.append(
+            {
+                "id": i + 1,
+                "content": t["content"],
+                "file_path": t.get("file_path", "unknown"),
+            }
         )
-    text_units_context = list_of_list_to_dict(text_units_section_list)
     return entities_context, relations_context, text_units_context
 
 
