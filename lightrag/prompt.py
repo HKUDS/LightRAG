@@ -311,7 +311,7 @@ When handling content with timestamps:
 ---Conversation History---
 {history}
 
----Document Chunks---
+---Document Chunks(DC)---
 {content_data}
 
 ---Response Rules---
@@ -320,7 +320,7 @@ When handling content with timestamps:
 - Use markdown formatting with appropriate section headings
 - Please respond in the same language as the user's question.
 - Ensure the response maintains continuity with the conversation history.
-- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path if available, in the following format: [KG/DC] file_path
+- List up to 5 most important reference sources at the end under "References" section. Clearly indicating each source from Document Chunks(DC), and include the file path if available, in the following format: [DC] file_path
 - If you don't know the answer, just say so.
 - Do not include information not provided by the Document Chunks."""
 
