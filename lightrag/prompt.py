@@ -311,7 +311,7 @@ When handling content with timestamps:
 ---Conversation History---
 {history}
 
----Document Chunks---
+---Document Chunks(DC)---
 {content_data}
 
 ---Response Rules---
@@ -320,7 +320,7 @@ When handling content with timestamps:
 - Use markdown formatting with appropriate section headings
 - Please respond in the same language as the user's question.
 - Ensure the response maintains continuity with the conversation history.
-- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path if available, in the following format: [KG/DC] file_path
+- List up to 5 most important reference sources at the end under "References" section. Clearly indicating each source from Document Chunks(DC), and include the file path if available, in the following format: [DC] file_path
 - If you don't know the answer, just say so.
 - Do not include information not provided by the Document Chunks."""
 
@@ -347,41 +347,3 @@ Similarity score criteria:
 0.5: Partially related and answer needs modification to be used
 Return only a number between 0-1, without any additional content.
 """
-
-PROMPTS["mix_rag_response"] = """---Role---
-
-You are a helpful assistant responding to user query about Data Sources provided below.
-
-
----Goal---
-
-Generate a concise response based on Data Sources and follow Response Rules, considering both the conversation history and the current query. Data sources contain two parts: Knowledge Graph(KG) and Document Chunks(DC). Summarize all information in the provided Data Sources, and incorporating general knowledge relevant to the Data Sources. Do not include information not provided by Data Sources.
-
-When handling information with timestamps:
-1. Each piece of information (both relationships and content) has a "created_at" timestamp indicating when we acquired this knowledge
-2. When encountering conflicting information, consider both the content/relationship and the timestamp
-3. Don't automatically prefer the most recent information - use judgment based on the context
-4. For time-specific queries, prioritize temporal information in the content before considering creation timestamps
-
----Conversation History---
-{history}
-
----Data Sources---
-
-1. From Knowledge Graph(KG):
-{kg_context}
-
-2. From Document Chunks(DC):
-{vector_context}
-
----Response Rules---
-
-- Target format and length: {response_type}
-- Use markdown formatting with appropriate section headings
-- Please respond in the same language as the user's question.
-- Ensure the response maintains continuity with the conversation history.
-- Organize answer in sections focusing on one main point or aspect of the answer
-- Use clear and descriptive section titles that reflect the content
-- List up to 5 most important reference sources at the end under "References" section. Clearly indicating whether each source is from Knowledge Graph (KG) or Vector Data (DC), and include the file path if available, in the following format: [KG/DC] file_path
-- If you don't know the answer, just say so. Do not make anything up.
-- Do not include information not provided by the Data Sources."""

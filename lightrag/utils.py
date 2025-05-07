@@ -719,26 +719,6 @@ def truncate_list_by_token_size(
     return list_data
 
 
-def list_of_list_to_json(data: list[list[str]]) -> list[dict[str, str]]:
-    if not data or len(data) <= 1:
-        return []
-
-    header = data[0]
-    result = []
-
-    for row in data[1:]:
-        if len(row) >= 2:
-            item = {}
-            for i, field_name in enumerate(header):
-                if i < len(row):
-                    item[field_name] = str(row[i])
-                else:
-                    item[field_name] = ""
-            result.append(item)
-
-    return result
-
-
 def save_data_to_file(data, file_name):
     with open(file_name, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
@@ -804,21 +784,33 @@ def xml_to_json(xml_file):
         return None
 
 
-def process_combine_contexts(
-    hl_context: list[dict[str, str]], ll_context: list[dict[str, str]]
-):
+def process_combine_contexts(*context_lists):
+    """
+    Combine multiple context lists and remove duplicate content
+
+    Args:
+        *context_lists: Any number of context lists
+
+    Returns:
+        Combined context list with duplicates removed
+    """
     seen_content = {}
     combined_data = []
 
-    for item in hl_context + ll_context:
-        content_dict = {k: v for k, v in item.items() if k != "id"}
-        content_key = tuple(sorted(content_dict.items()))
-        if content_key not in seen_content:
-            seen_content[content_key] = item
-            combined_data.append(item)
+    # Iterate through all input context lists
+    for context_list in context_lists:
+        if not context_list:  # Skip empty lists
+            continue
+        for item in context_list:
+            content_dict = {k: v for k, v in item.items() if k != "id"}
+            content_key = tuple(sorted(content_dict.items()))
+            if content_key not in seen_content:
+                seen_content[content_key] = item
+                combined_data.append(item)
 
+    # Reassign IDs
     for i, item in enumerate(combined_data):
-        item["id"] = str(i)
+        item["id"] = str(i + 1)
 
     return combined_data
 
