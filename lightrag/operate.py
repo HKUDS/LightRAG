@@ -1861,7 +1861,6 @@ async def _find_related_text_unit_from_relationships(
 async def naive_query(
     query: str,
     chunks_vdb: BaseVectorStorage,
-    text_chunks_db: BaseKVStorage,
     query_param: QueryParam,
     global_config: dict[str, str],
     hashing_kv: BaseKVStorage | None = None,

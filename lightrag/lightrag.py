@@ -1456,7 +1456,6 @@ class LightRAG:
             response = await naive_query(
                 query.strip(),
                 self.chunks_vdb,
-                self.text_chunks,
                 param,
                 global_config,
                 hashing_kv=self.llm_response_cache,
