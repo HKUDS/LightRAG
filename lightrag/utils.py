@@ -721,19 +721,19 @@ def truncate_list_by_token_size(
 
 def list_of_list_to_dict(data: list[list[str]]) -> list[dict[str, str]]:
     """Convert a 2D string list (table-like data) into a list of dictionaries.
-    
+
     The first row is treated as header containing field names. Subsequent rows become
     dictionary entries where keys come from header and values from row data.
-    
+
     Args:
         data: 2D string array where first row contains headers and rest are data rows.
               Minimum 2 columns required in data rows (rows with <2 elements are skipped).
-    
+
     Returns:
         List of dictionaries where each dict represents a data row with:
         - Keys: Header values from first row
         - Values: Corresponding row values (empty string if missing)
-    
+
     Example:
         Input: [["Name","Age"], ["Alice","23"], ["Bob"]]
         Output: [{"Name":"Alice","Age":"23"}, {"Name":"Bob","Age":""}]
@@ -822,21 +822,33 @@ def xml_to_json(xml_file):
         return None
 
 
-def process_combine_contexts(
-    hl_context: list[dict[str, str]], ll_context: list[dict[str, str]]
-):
+def process_combine_contexts(*context_lists):
+    """
+    Combine multiple context lists and remove duplicate content
+
+    Args:
+        *context_lists: Any number of context lists
+
+    Returns:
+        Combined context list with duplicates removed
+    """
     seen_content = {}
     combined_data = []
 
-    for item in hl_context + ll_context:
-        content_dict = {k: v for k, v in item.items() if k != "id"}
-        content_key = tuple(sorted(content_dict.items()))
-        if content_key not in seen_content:
-            seen_content[content_key] = item
-            combined_data.append(item)
+    # Iterate through all input context lists
+    for context_list in context_lists:
+        if not context_list:  # Skip empty lists
+            continue
+        for item in context_list:
+            content_dict = {k: v for k, v in item.items() if k != "id"}
+            content_key = tuple(sorted(content_dict.items()))
+            if content_key not in seen_content:
+                seen_content[content_key] = item
+                combined_data.append(item)
 
+    # Reassign IDs
     for i, item in enumerate(combined_data):
-        item["id"] = str(i)
+        item["id"] = str(i + 1)
 
     return combined_data
 

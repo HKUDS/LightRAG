@@ -53,7 +53,6 @@ from .operate import (
     extract_entities,
     merge_nodes_and_edges,
     kg_query,
-    mix_kg_vector_query,
     naive_query,
     query_with_keywords,
 )
@@ -1437,8 +1436,10 @@ class LightRAG:
         """
         # If a custom model is provided in param, temporarily update global config
         global_config = asdict(self)
+        # Save original query for vector search
+        param.original_query = query
 
-        if param.mode in ["local", "global", "hybrid"]:
+        if param.mode in ["local", "global", "hybrid", "mix"]:
             response = await kg_query(
                 query.strip(),
                 self.chunk_entity_relation_graph,
@@ -1447,8 +1448,9 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 global_config,
-                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
+                hashing_kv=self.llm_response_cache,
                 system_prompt=system_prompt,
+                chunks_vdb=self.chunks_vdb,
             )
         elif param.mode == "naive":
             response = await naive_query(
@@ -1457,20 +1459,7 @@ class LightRAG:
                 self.text_chunks,
                 param,
                 global_config,
-                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
-                system_prompt=system_prompt,
-            )
-        elif param.mode == "mix":
-            response = await mix_kg_vector_query(
-                query.strip(),
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.chunks_vdb,
-                self.text_chunks,
-                param,
-                global_config,
-                hashing_kv=self.llm_response_cache,  # Directly use llm_response_cache
+                hashing_kv=self.llm_response_cache,
                 system_prompt=system_prompt,
             )
         elif param.mode == "bypass":
