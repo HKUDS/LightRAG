@@ -3,6 +3,7 @@ import { QueryMode, QueryRequest } from '@/api/lightrag'
 // Removed unused import for Text component
 import Checkbox from '@/components/ui/Checkbox'
 import NumberInput from '@/components/ui/NumberInput'
+import Input from '@/components/ui/Input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import {
   Select,
@@ -237,6 +238,31 @@ export default function QuerySettings() {
                   onValueChange={(v) => handleChange('history_turns', v)}
                   min={0}
                   placeholder={t('retrievePanel.querySettings.historyTurnsPlaceholder')}
+                />
+              </div>
+            </>
+
+            {/* User Prompt */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="user_prompt" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.userPrompt')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.userPromptTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <div>
+                <Input
+                  id="user_prompt"
+                  value={querySettings.user_prompt}
+                  onChange={(e) => handleChange('user_prompt', e.target.value)}
+                  placeholder={t('retrievePanel.querySettings.userPromptPlaceholder')}
+                  className="h-9"
                 />
               </div>
             </>

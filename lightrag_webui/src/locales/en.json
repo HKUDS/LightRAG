@@ -350,7 +350,10 @@
       "onlyNeedPrompt": "Only Need Prompt",
       "onlyNeedPromptTooltip": "If True, only returns the generated prompt without producing a response",
       "streamResponse": "Stream Response",
-      "streamResponseTooltip": "If True, enables streaming output for real-time responses"
+      "streamResponseTooltip": "If True, enables streaming output for real-time responses",
+      "userPrompt": "User Prompt",
+      "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
+      "userPromptPlaceholder": "Enter custom prompt (optional)"
     }
   },
   "apiSite": {

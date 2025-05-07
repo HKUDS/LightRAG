@@ -350,7 +350,10 @@
       "onlyNeedPrompt": "Besoin uniquement de l'invite",
       "onlyNeedPromptTooltip": "Si vrai, ne renvoie que l'invite générée sans produire de réponse",
       "streamResponse": "Réponse en flux",
-      "streamResponseTooltip": "Si vrai, active la sortie en flux pour des réponses en temps réel"
+      "streamResponseTooltip": "Si vrai, active la sortie en flux pour des réponses en temps réel",
+      "userPrompt": "Invite personnalisée",
+      "userPromptTooltip": "Fournir des exigences de réponse supplémentaires au LLM (sans rapport avec le contenu de la requête, uniquement pour le traitement de sortie).",
+      "userPromptPlaceholder": "Entrez une invite personnalisée (facultatif)"
     }
   },
   "apiSite": {
