@@ -20,3 +20,4 @@ user = your_username
 password = your_password
 database = your_database
 workspace = default  # 可选,默认为default
+max_connections = 12
