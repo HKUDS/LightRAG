@@ -1046,7 +1046,9 @@ class LightRAG:
                                 }
                             )
 
-                        # Semphore is NOT released here, however, the profile context is
+                        # Semphore is NOT released here, because the merge_nodes_and_edges function is highly concurrent
+                        # and more importantly, it is the bottleneck and needs to be resource controlled in massively
+                        # parallel insertions
 
                         if file_extraction_stage_ok:
                             try:
