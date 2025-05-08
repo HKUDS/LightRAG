@@ -388,14 +388,22 @@ async def _merge_edges_then_upsert(
             )
         )
     )
-    keywords = GRAPH_FIELD_SEP.join(
-        sorted(
-            set(
-                [dp["keywords"] for dp in edges_data if dp.get("keywords")]
-                + already_keywords
+
+    # Split all existing and new keywords into individual terms, then combine and deduplicate
+    all_keywords = set()
+    # Process already_keywords (which are comma-separated)
+    for keyword_str in already_keywords:
+        if keyword_str:  # Skip empty strings
+            all_keywords.update(k.strip() for k in keyword_str.split(",") if k.strip())
+    # Process new keywords from edges_data
+    for edge in edges_data:
+        if edge.get("keywords"):
+            all_keywords.update(
+                k.strip() for k in edge["keywords"].split(",") if k.strip()
             )
-        )
-    )
+    # Join all unique keywords with commas
+    keywords = ",".join(sorted(all_keywords))
+
     source_id = GRAPH_FIELD_SEP.join(
         set(
             [dp["source_id"] for dp in edges_data if dp.get("source_id")]
