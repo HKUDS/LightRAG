@@ -1302,19 +1302,19 @@ async def _build_query_context(
     relations_str = json.dumps(relations_context, ensure_ascii=False)
     text_units_str = json.dumps(text_units_context, ensure_ascii=False)
 
-    result = f"""-----Entities-----
+    result = f"""-----Entities(KG)-----
 
 ```json
 {entities_str}
 ```
 
------Relationships-----
+-----Relationships(KG)-----
 
 ```json
 {relations_str}
 ```
 
------Sources-----
+-----Document Chunks(DC)-----
 
 ```json
 {text_units_str}
