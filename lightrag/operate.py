@@ -218,7 +218,9 @@ async def _handle_single_relationship_extraction(
     edge_description = clean_str(record_attributes[3])
     edge_description = normalize_extracted_info(edge_description)
 
-    edge_keywords = clean_str(record_attributes[4]).strip('"').strip("'")
+    edge_keywords = normalize_extracted_info(clean_str(record_attributes[4]), is_entity=True)
+    edge_keywords = edge_keywords.replace("，", ",")
+
     edge_source_id = chunk_key
     weight = (
         float(record_attributes[-1].strip('"').strip("'"))
