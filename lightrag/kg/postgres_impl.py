@@ -54,7 +54,7 @@ class PostgreSQLDB:
         self.password = config.get("password", None)
         self.database = config.get("database", "postgres")
         self.workspace = config.get("workspace", "default")
-        self.max = config.get("max_connections", 12)
+        self.max = int(config.get("max_connections", 12))
         self.increment = 1
         self.pool: Pool | None = None
 
