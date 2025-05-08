@@ -218,7 +218,11 @@ async def _handle_single_relationship_extraction(
     edge_description = clean_str(record_attributes[3])
     edge_description = normalize_extracted_info(edge_description)
 
-    edge_keywords = clean_str(record_attributes[4]).strip('"').strip("'")
+    edge_keywords = normalize_extracted_info(
+        clean_str(record_attributes[4]), is_entity=True
+    )
+    edge_keywords = edge_keywords.replace("，", ",")
+
     edge_source_id = chunk_key
     weight = (
         float(record_attributes[-1].strip('"').strip("'"))
@@ -388,14 +392,22 @@ async def _merge_edges_then_upsert(
             )
         )
     )
-    keywords = GRAPH_FIELD_SEP.join(
-        sorted(
-            set(
-                [dp["keywords"] for dp in edges_data if dp.get("keywords")]
-                + already_keywords
+
+    # Split all existing and new keywords into individual terms, then combine and deduplicate
+    all_keywords = set()
+    # Process already_keywords (which are comma-separated)
+    for keyword_str in already_keywords:
+        if keyword_str:  # Skip empty strings
+            all_keywords.update(k.strip() for k in keyword_str.split(",") if k.strip())
+    # Process new keywords from edges_data
+    for edge in edges_data:
+        if edge.get("keywords"):
+            all_keywords.update(
+                k.strip() for k in edge["keywords"].split(",") if k.strip()
             )
-        )
-    )
+    # Join all unique keywords with commas
+    keywords = ",".join(sorted(all_keywords))
+
     source_id = GRAPH_FIELD_SEP.join(
         set(
             [dp["source_id"] for dp in edges_data if dp.get("source_id")]
