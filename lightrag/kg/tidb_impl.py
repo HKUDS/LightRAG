@@ -23,6 +23,14 @@ if not pm.is_installed("sqlalchemy"):
 from sqlalchemy import create_engine, text  # type: ignore
 
 
+def sanitize_sensitive_info(data: dict) -> dict:
+    sanitized_data = data.copy()
+    sensitive_fields = ['password', 'user', 'host', 'database', 'port', 'ssl_verify_cert', 'ssl_verify_identity']
+    for field in sensitive_fields:
+        if field in sanitized_data:
+            sanitized_data[field] = '***'
+    return sanitized_data
+
 class TiDB:
     def __init__(self, config, **kwargs):
         self.host = config.get("host", None)
@@ -38,9 +46,9 @@ class TiDB:
 
         try:
             self.engine = create_engine(connection_string)
-            logger.info(f"Connected to TiDB database at {self.database}")
+            logger.info("Connected to TiDB database")
         except Exception as e:
-            logger.error(f"Failed to connect to TiDB database at {self.database}")
+            logger.error("Failed to connect to TiDB database")
             logger.error(f"TiDB database error: {e}")
             raise
 
@@ -55,13 +63,13 @@ class TiDB:
             try:
                 await self.query(f"SELECT 1 FROM {k}".format(k=k))
             except Exception as e:
-                logger.error(f"Failed to check table {k} in TiDB database")
+                logger.error("Failed to check table in TiDB database")
                 logger.error(f"TiDB database error: {e}")
                 try:
                     await self.execute(v["ddl"])
-                    logger.info(f"Created table {k} in TiDB database")
+                    logger.info("Created table in TiDB database")
                 except Exception as e:
-                    logger.error(f"Failed to create table {k} in TiDB database")
+                    logger.error("Failed to create table in TiDB database")
                     logger.error(f"TiDB database error: {e}")
 
         # After all tables are created, try to migrate timestamp fields
@@ -82,7 +90,10 @@ class TiDB:
             try:
                 result = conn.execute(text(sql), params)
             except Exception as e:
-                logger.error(f"Tidb database,\nsql:{sql},\nparams:{params},\nerror:{e}")
+                sanitized_params = sanitize_sensitive_info(params)
+                sanitized_params = sanitize_sensitive_info(params)
+                sanitized_error = sanitize_sensitive_info({'error': str(e)})
+                logger.error(f"Tidb database,\nsql:{sql},\nparams:{sanitized_params},\nerror:{sanitized_error}")
                 raise
             if multirows:
                 rows = result.all()
@@ -107,7 +118,9 @@ class TiDB:
                 else:
                     conn.execute(text(sql), parameters=data)
         except Exception as e:
-            logger.error(f"Tidb database,\nsql:{sql},\ndata:{data},\nerror:{e}")
+            sanitized_data = sanitize_sensitive_info(data) if data else None
+            sanitized_error = sanitize_sensitive_info({'error': str(e)})
+            logger.error(f"Tidb database,\nsql:{sql},\ndata:{sanitized_data},\nerror:{sanitized_error}")
             raise
 
 
