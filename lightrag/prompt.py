@@ -298,7 +298,6 @@ Output:
 #############################""",
 ]
 
-
 PROMPTS["naive_rag_response"] = """---Role---
 
 You are a helpful assistant responding to user query about Document Chunks provided below.
@@ -332,6 +331,7 @@ When handling content with timestamps:
 
 Response:"""
 
+# TODO: deprecated
 PROMPTS[
     "similarity_check"
 ] = """Please analyze the similarity between these two questions:
