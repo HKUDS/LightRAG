@@ -1479,6 +1479,7 @@ class LightRAG:
         await self._query_done()
         return response
 
+    # TODO: Deprecated, use user_prompt in QueryParam instead
     def query_with_separate_keyword_extraction(
         self, query: str, prompt: str, param: QueryParam = QueryParam()
     ):
@@ -1500,6 +1501,7 @@ class LightRAG:
             self.aquery_with_separate_keyword_extraction(query, prompt, param)
         )
 
+    # TODO: Deprecated, use user_prompt in QueryParam instead
     async def aquery_with_separate_keyword_extraction(
         self, query: str, prompt: str, param: QueryParam = QueryParam()
     ) -> str | AsyncIterator[str]:
