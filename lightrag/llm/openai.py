@@ -177,14 +177,15 @@ async def openai_complete_if_cache(
     logger.debug("===== Sending Query to LLM =====")
 
     try:
-        if "response_format" in kwargs:
-            response = await openai_async_client.beta.chat.completions.parse(
-                model=model, messages=messages, **kwargs
-            )
-        else:
-            response = await openai_async_client.chat.completions.create(
-                model=model, messages=messages, **kwargs
-            )
+        async with openai_async_client:
+            if "response_format" in kwargs:
+                response = await openai_async_client.beta.chat.completions.parse(
+                    model=model, messages=messages, **kwargs
+                )
+            else:
+                response = await openai_async_client.chat.completions.create(
+                    model=model, messages=messages, **kwargs
+                )
     except APIConnectionError as e:
         logger.error(f"OpenAI API Connection Error: {e}")
         raise
@@ -421,7 +422,8 @@ async def openai_embed(
         api_key=api_key, base_url=base_url, client_configs=client_configs
     )
 
-    response = await openai_async_client.embeddings.create(
-        model=model, input=texts, encoding_format="float"
-    )
-    return np.array([dp.embedding for dp in response.data])
+    async with openai_async_client:
+        response = await openai_async_client.embeddings.create(
+            model=model, input=texts, encoding_format="float"
+        )
+        return np.array([dp.embedding for dp in response.data])
