@@ -570,15 +570,15 @@ response = rag.query(
 
 </details>
 
-### Custom User Prompt Support
+### User Prompt vs. Query
 
-Custom user prompts do not affect the query content; they are only used to instruct the LLM on how to handle the query results.  Here's how to use it:
+When using LightRAG for content queries, avoid combining the search process with unrelated output processing, as this significantly impacts query effectiveness. The `user_prompt` parameter in Query Param is specifically designed to address this issue — it does not participate in the RAG retrieval phase, but rather guides the LLM on how to process the retrieved results after the query is completed. Here's how to use it:
 
 ```python
 # Create query parameters
 query_param = QueryParam(
-    mode = "hybrid",  # 或其他模式："local"、"global"、"hybrid"、"mix"和"naive"
-    user_prompt = "Please create the diagram using the Mermaid syntax"
+    mode = "hybrid",  # Other modes：local, global, hybrid, mix, naive
+    user_prompt = "For diagrams, use mermaid format with English/Pinyin node names and Chinese display labels",
 )
 
 # Query and process
