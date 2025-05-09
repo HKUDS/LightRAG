@@ -1717,14 +1717,18 @@ class LightRAG:
                         for dp in entities_storage["data"]
                         if chunk_id in dp.get("source_id")
                     ]
-                    logger.debug(f"Chunk {chunk_id} has {len(entities)} related entities")
+                    logger.debug(
+                        f"Chunk {chunk_id} has {len(entities)} related entities"
+                    )
 
                     relations = [
                         dp
                         for dp in relationships_storage["data"]
                         if chunk_id in dp.get("source_id")
                     ]
-                    logger.debug(f"Chunk {chunk_id} has {len(relations)} related relations")
+                    logger.debug(
+                        f"Chunk {chunk_id} has {len(relations)} related relations"
+                    )
 
             # Continue with the original deletion process...
 
