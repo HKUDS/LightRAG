@@ -94,10 +94,6 @@ export type QueryRequest = {
   max_token_for_global_context?: number
   /** Maximum number of tokens allocated for entity descriptions in local retrieval. */
   max_token_for_local_context?: number
-  /** List of high-level keywords to prioritize in retrieval. */
-  hl_keywords?: string[]
-  /** List of low-level keywords to refine retrieval focus. */
-  ll_keywords?: string[]
   /**
    * Stores past conversation history to maintain context.
    * Format: [{"role": "user/assistant", "content": "message"}].
@@ -105,6 +101,8 @@ export type QueryRequest = {
   conversation_history?: Message[]
   /** Number of complete conversation turns (user-assistant pairs) to consider in the response context. */
   history_turns?: number
+  /** User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template. */
+  user_prompt?: string
 }
 
 export type QueryResponse = {

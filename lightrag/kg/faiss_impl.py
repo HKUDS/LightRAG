@@ -107,7 +107,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
-        current_time = time.time()
+        current_time = int(time.time())
 
         # Prepare data for embedding
         list_data = []
@@ -175,7 +175,9 @@ class FaissVectorDBStorage(BaseVectorStorage):
         """
         Search by a textual query; returns top_k results with their metadata + similarity distance.
         """
-        embedding = await self.embedding_func([query])
+        embedding = await self.embedding_func(
+            [query], _priority=5
+        )  # higher priority for query
         # embedding is shape (1, dim)
         embedding = np.array(embedding, dtype=np.float32)
         faiss.normalize_L2(embedding)  # we do in-place normalization
@@ -383,27 +385,6 @@ class FaissVectorDBStorage(BaseVectorStorage):
 
         return True  # Return success
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        matching_records = []
-
-        # Search for records with IDs starting with the prefix
-        for faiss_id, meta in self._id_to_meta.items():
-            if "__id__" in meta and meta["__id__"].startswith(prefix):
-                # Create a copy of all metadata and add "id" field
-                record = {**meta, "id": meta["__id__"]}
-                matching_records.append(record)
-
-        logger.debug(f"Found {len(matching_records)} records with prefix '{prefix}'")
-        return matching_records
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
 
@@ -423,7 +404,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if not metadata:
             return None
 
-        return {**metadata, "id": metadata.get("__id__")}
+        return {
+            **metadata,
+            "id": metadata.get("__id__"),
+            "created_at": metadata.get("__created_at__"),
+        }
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """Get multiple vector data by their IDs
@@ -443,7 +428,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
             if fid is not None:
                 metadata = self._id_to_meta.get(fid, {})
                 if metadata:
-                    results.append({**metadata, "id": metadata.get("__id__")})
+                    results.append(
+                        {
+                            **metadata,
+                            "id": metadata.get("__id__"),
+                            "created_at": metadata.get("__created_at__"),
+                        }
+                    )
 
         return results
 

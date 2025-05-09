@@ -197,3 +197,10 @@ class JsonKVStorage(BaseKVStorage):
         except Exception as e:
             logger.error(f"Error dropping {self.namespace}: {e}")
             return {"status": "error", "message": str(e)}
+
+    async def finalize(self):
+        """Finalize storage resources
+        Persistence cache data to disk before exiting
+        """
+        if self.namespace.endswith("cache"):
+            await self.index_done_callback()

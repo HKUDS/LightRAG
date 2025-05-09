@@ -7,6 +7,11 @@ import argparse
 import logging
 from dotenv import load_dotenv
 
+from lightrag.constants import (
+    DEFAULT_WOKERS,
+    DEFAULT_TIMEOUT,
+)
+
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
@@ -45,7 +50,9 @@ def get_default_host(binding_type: str) -> str:
     )  # fallback to ollama if unknown
 
 
-def get_env_value(env_key: str, default: any, value_type: type = str) -> any:
+def get_env_value(
+    env_key: str, default: any, value_type: type = str, special_none: bool = False
+) -> any:
     """
     Get value from environment variable with type conversion
 
@@ -53,6 +60,7 @@ def get_env_value(env_key: str, default: any, value_type: type = str) -> any:
         env_key (str): Environment variable key
         default (any): Default value if env variable is not set
         value_type (type): Type to convert the value to
+        special_none (bool): If True, return None when value is "None"
 
     Returns:
         any: Converted value from environment or default
@@ -61,11 +69,15 @@ def get_env_value(env_key: str, default: any, value_type: type = str) -> any:
     if value is None:
         return default
 
+    # Handle special case for "None" string
+    if special_none and value == "None":
+        return None
+
     if value_type is bool:
         return value.lower() in ("true", "1", "yes", "t", "on")
     try:
         return value_type(value)
-    except ValueError:
+    except (ValueError, TypeError):
         return default
 
 
@@ -109,17 +121,10 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing input documents (default: from env or ./inputs)",
     )
 
-    def timeout_type(value):
-        if value is None:
-            return 150
-        if value is None or value == "None":
-            return None
-        return int(value)
-
     parser.add_argument(
         "--timeout",
-        default=get_env_value("TIMEOUT", None, timeout_type),
-        type=timeout_type,
+        default=get_env_value("TIMEOUT", DEFAULT_TIMEOUT, int, special_none=True),
+        type=int,
         help="Timeout in seconds (useful when using slow AI). Use None for infinite timeout",
     )
 
@@ -226,7 +231,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=int,
-        default=get_env_value("WORKERS", 1, int),
+        default=get_env_value("WORKERS", DEFAULT_WOKERS, int),
         help="Number of worker processes (default: from env or 1)",
     )
 
@@ -307,7 +312,7 @@ def parse_args() -> argparse.Namespace:
 
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
-    args.summary_language = get_env_value("SUMMARY_LANGUAGE", "en")
+    args.summary_language = get_env_value("SUMMARY_LANGUAGE", "English")
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth

@@ -67,16 +67,6 @@ class QueryRequest(BaseModel):
         description="Maximum number of tokens allocated for entity descriptions in local retrieval.",
     )
 
-    hl_keywords: Optional[List[str]] = Field(
-        default=None,
-        description="List of high-level keywords to prioritize in retrieval.",
-    )
-
-    ll_keywords: Optional[List[str]] = Field(
-        default=None,
-        description="List of low-level keywords to refine retrieval focus.",
-    )
-
     conversation_history: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description="Stores past conversation history to maintain context. Format: [{'role': 'user/assistant', 'content': 'message'}].",
@@ -88,24 +78,15 @@ class QueryRequest(BaseModel):
         description="Number of complete conversation turns (user-assistant pairs) to consider in the response context.",
     )
 
+    user_prompt: Optional[str] = Field(
+        default=None,
+        description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
+    )
+
     @field_validator("query", mode="after")
     @classmethod
     def query_strip_after(cls, query: str) -> str:
         return query.strip()
-
-    @field_validator("hl_keywords", mode="after")
-    @classmethod
-    def hl_keywords_strip_after(cls, hl_keywords: List[str] | None) -> List[str] | None:
-        if hl_keywords is None:
-            return None
-        return [keyword.strip() for keyword in hl_keywords]
-
-    @field_validator("ll_keywords", mode="after")
-    @classmethod
-    def ll_keywords_strip_after(cls, ll_keywords: List[str] | None) -> List[str] | None:
-        if ll_keywords is None:
-            return None
-        return [keyword.strip() for keyword in ll_keywords]
 
     @field_validator("conversation_history", mode="after")
     @classmethod

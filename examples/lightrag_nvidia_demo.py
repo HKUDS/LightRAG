@@ -2,8 +2,6 @@ import os
 import asyncio
 import nest_asyncio
 
-nest_asyncio.apply()
-
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import (
     openai_complete_if_cache,
@@ -16,6 +14,7 @@ from lightrag.kg.shared_storage import initialize_pipeline_status
 # for custom llm_model_func
 from lightrag.utils import locate_json_string_body_from_string
 
+nest_asyncio.apply()
 
 WORKING_DIR = "./dickens"
 
