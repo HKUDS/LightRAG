@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>G6 Graph Visualization</title>
+  <script src="https://gw.alipayobjects.com/os/antv/pkg/_antv.g6-3.7.1/dist/g6.min.js"></script>
+  <style>
+    #graph-container {
+      width: 100%;
+      height: 100vh;
+      border: 1px solid #ddd;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div id="graph-container"></div>
+
+  <script>
+    // Initialize the graph
+    const graph = new G6.TreeGraph({
+      container: 'graph-container',
+      width: window.innerWidth,
+      height: window.innerHeight,
+      pixelRatio: 2,
+      plugins: [],
+      modes: {
+        default: [
+          {
+            type: 'collapse-expand',
+            onChange: function onChange(item, collapsed) {
+              const data = item.get('model').data;
+              data.collapsed = collapsed;
+              return true;
+            }
+          },
+          'drag-canvas',
+          'zoom-canvas',
+          'drag-node'
+        ]
+      },
+      layout: {
+        type: 'compactBox',
+        direction: 'LR',
+        getId: function getId(d) {
+          return d.id;
+        },
+        getHeight: function getHeight() {
+          return 16;
+        },
+        getWidth: function getWidth() {
+          return 16;
+        },
+        getVGap: function getVGap() {
+          return 22;
+        },
+        getHGap: function getHGap() {
+          return 100;
+        }
+      },
+      defaultNode: {
+        size: [50, 26],
+        style: {
+          fill: '#40a9ff',
+          stroke: '#096dd9'
+        },
+        labelCfg: {
+          position: 'center',
+        }
+      },
+      defaultEdge: {
+        shape: 'cubic-horizontal',
+        style: {
+          stroke: '#A3B1BF'
+        }
+      }
+    });
+
+    // Custom node style
+    graph.node(function(node) {
+      return {
+        size: [50, 26],
+        style: {
+          fill: '#40a9ff',
+          stroke: '#096dd9'
+        },
+        label: node.id,
+        labelCfg: {
+          position: 'center',
+        }
+      };
+    });
+
+    graph.edge(function (edge) {
+      return {
+        shape: 'cubic-horizontal',
+        style: {
+          stroke: '#A3B1BF',
+          lineWidth: 2
+        }
+      };
+    });
+
+    // Handle node click
+    graph.on('node:click', function(event) {
+      const node = event.item;
+      if (node) {
+        const nodeData = node.getModel();
+        console.log('Clicked node:', nodeData);
+        alert(`Node clicked: ${nodeData.id}`);
+      }
+    });
+
+    // Handle window resize
+    window.addEventListener('resize', function() {
+      graph.changeSize(window.innerWidth, window.innerHeight);
+      graph.fitView();
+    });
+
+    // Load JSON data
+    fetch('tree_graph.json')  // Make sure tree_graph.json is in the same directory(In vscode you need put the file at root)
+      .then(response => response.json())
+      .then(data => {
+        // Remove any progress properties if they exist
+        const removeProgress = (node) => {
+          if (node.progress !== undefined) {
+            delete node.progress;
+          }
+          if (node.children) {
+            node.children.forEach(child => removeProgress(child));
+          }
+        };
+        removeProgress(data);
+
+        // Load data and render
+        graph.data(data);
+        graph.render();
+        graph.fitView();
+      })
+      .catch(error => {
+        console.error('Error loading JSON file:', error);
+        // Fallback data if JSON fails to load
+        const fallbackData = {
+          id: "root",
+          children: [
+            { id: "child1" },
+            { id: "child2" }
+          ]
+        };
+        graph.data(fallbackData);
+        graph.render();
+        graph.fitView();
+      });
+  </script>
+</body>
+</html>
