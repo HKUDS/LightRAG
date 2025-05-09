@@ -532,20 +532,20 @@ response = rag.query(
 )
 ```
 
-### 自定义用户提示词
+### 用户提示词 vs. 查询内容
 
-自定义用户提示词不影响查询内容，仅仅用于向LLM指示如何处理查询结果。以下是使用方法：
+当使用LightRAG查询内容的时候，不要把内容查询和与查询结果无关的输出加工写在一起。因为把两者混在一起会严重影响查询的效果。Query Param中的`user_prompt`就是为解决这一问题而设计的。`user_prompt`中的内容不参与RAG中的查询过程，它仅会在获得查询结果之后，与查询结果一起送给LLM，指导LLM如何处理查询结果。以下是使用方法：
 
 ```python
-# 创建查询参数
+# Create query parameters
 query_param = QueryParam(
-    mode = "hybrid",  # 或其他模式："local"、"global"、"hybrid"、"mix"和"naive"
-    user_prompt = "Please create the diagram using the Mermaid syntax"
+    mode = "hybrid",  # Other modes：local, global, hybrid, mix, naive
+    user_prompt = "如需画图使用mermaid格式，节点名称用英文或拼音，显示名称用中文",
 )
 
-# 查询和处理
+# Query and process
 response_default = rag.query(
-    "Please draw a character relationship diagram for Scrooge",
+    "请画出 Scrooge 的人物关系图谱",
     param=query_param
 )
 print(response_default)
@@ -755,7 +755,7 @@ rag = LightRAG(
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- 如有必要可以删除
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
