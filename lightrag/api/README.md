@@ -204,6 +204,15 @@ For example, the chat message `/mix What's LightRAG?` will trigger a mix mode qu
 
 `/context` is also not a LightRAG query mode; it will tell LightRAG to return only the context information prepared for the LLM. You can check the context if it's what you want, or process the context by yourself.
 
+### Add user prompt in chat
+
+When using LightRAG for content queries, avoid combining the search process with unrelated output processing, as this significantly impacts query effectiveness. User prompt is specifically designed to address this issue — it does not participate in the RAG retrieval phase, but rather guides the LLM on how to process the retrieved results after the query is completed. We can append square brackets to the query prefix to provide the LLM with the user prompt:
+
+```
+/[Use mermaid format for diagrams] Please draw a character relationship diagram for Scrooge
+/mix[Use mermaid format for diagrams] Please draw a character relationship diagram for Scrooge
+```
+
 ## API Key and Authentication
 
 By default, the LightRAG Server can be accessed without any authentication. We can configure the server with an API Key or account credentials to secure it.
