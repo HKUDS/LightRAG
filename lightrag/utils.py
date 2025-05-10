@@ -22,7 +22,38 @@ from lightrag.constants import (
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
 )
-from lightrag.api.config import get_env_value
+
+
+def get_env_value(
+    env_key: str, default: any, value_type: type = str, special_none: bool = False
+) -> any:
+    """
+    Get value from environment variable with type conversion
+
+    Args:
+        env_key (str): Environment variable key
+        default (any): Default value if env variable is not set
+        value_type (type): Type to convert the value to
+        special_none (bool): If True, return None when value is "None"
+
+    Returns:
+        any: Converted value from environment or default
+    """
+    value = os.getenv(env_key)
+    if value is None:
+        return default
+
+    # Handle special case for "None" string
+    if special_none and value == "None":
+        return None
+
+    if value_type is bool:
+        return value.lower() in ("true", "1", "yes", "t", "on")
+    try:
+        return value_type(value)
+    except (ValueError, TypeError):
+        return default
+
 
 # Use TYPE_CHECKING to avoid circular imports
 if TYPE_CHECKING:

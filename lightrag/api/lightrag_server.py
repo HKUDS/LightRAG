@@ -26,8 +26,8 @@ from .config import (
     global_args,
     update_uvicorn_mode_config,
     get_default_host,
-    get_env_value,
 )
+from lightrag.utils import get_env_value
 import sys
 from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
