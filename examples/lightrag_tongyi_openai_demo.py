@@ -13,6 +13,8 @@ logging.basicConfig(level=logging.INFO)
 load_dotenv()
 
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen-turbo-latest")
+# some qwen models only support stream mode
+LLM_STREAM_MODE = False or LLM_MODEL.startswith(("qwen3-", "qwq-", "qvq-"))
 LLM_BINDING_HOST = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 LLM_BINDING_API_KEY = os.getenv("LLM_BINDING_API_KEY")
 
@@ -58,8 +60,17 @@ async def llm_model_func(
         top_p=kwargs.get("top_p", 1),
         n=kwargs.get("n", 1),
         extra_body={"enable_thinking": False},
+        stream=LLM_STREAM_MODE,
     )
-    return chat_completion.choices[0].message.content
+
+    if LLM_STREAM_MODE:
+        content = ""
+        for chunk in chat_completion:
+            if len(chunk.choices):
+                content += chunk.choices[0].delta.content
+    else:
+        content = chat_completion.choices[0].message.content
+    return content
 
 
 async def embedding_func(texts: list[str]) -> np.ndarray:
