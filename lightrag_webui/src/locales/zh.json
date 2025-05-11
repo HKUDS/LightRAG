@@ -34,7 +34,9 @@
   },
   "common": {
     "cancel": "取消",
-    "save": "保存"
+    "save": "保存",
+    "saving": "保存中...",
+    "saveFailed": "保存失败"
   },
   "documentPanel": {
     "clearDocuments": {

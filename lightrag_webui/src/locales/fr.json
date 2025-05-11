@@ -34,7 +34,9 @@
   },
   "common": {
     "cancel": "Annuler",
-    "save": "Sauvegarder"
+    "save": "Sauvegarder",
+    "saving": "Sauvegarde en cours...",
+    "saveFailed": "Échec de la sauvegarde"
   },
   "documentPanel": {
     "clearDocuments": {

@@ -34,7 +34,9 @@
   },
   "common": {
     "cancel": "إلغاء",
-    "save": "حفظ"
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ...",
+    "saveFailed": "فشل الحفظ"
   },
   "documentPanel": {
     "clearDocuments": {
