@@ -33,6 +33,8 @@ const PropertyEditDialog = ({
 }: PropertyEditDialogProps) => {
   const { t } = useTranslation()
   const [value, setValue] = useState('')
+  // Add error state to display save failure messages
+  const [error, setError] = useState<string | null>(null)
 
   // Initialize value when dialog opens
   useEffect(() => {
@@ -82,10 +84,20 @@ const PropertyEditDialog = ({
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (value.trim() !== '') {
-      onSave(value)
-      onClose()
+      // Clear previous error messages
+      setError(null)
+      try {
+        await onSave(value)
+        onClose()
+      } catch (error) {
+        console.error('Save error:', error)
+        // Set error message to state for UI display
+        setError(typeof error === 'object' && error !== null
+          ? (error as Error).message || t('common.saveFailed')
+          : t('common.saveFailed'))
+      }
     }
   }
 
@@ -102,6 +114,13 @@ const PropertyEditDialog = ({
             {t('graphPanel.propertiesView.editPropertyDescription')}
           </DialogDescription>
         </DialogHeader>
+
+        {/* Display error message if save fails */}
+        {error && (
+          <div className="bg-destructive/15 text-destructive px-4 py-2 rounded-md text-sm mt-2">
+            {error}
+          </div>
+        )}
 
         {/* Multi-line text input using textarea */}
         <div className="grid gap-4 py-4">
@@ -141,7 +160,19 @@ const PropertyEditDialog = ({
             onClick={handleSave}
             disabled={isSubmitting}
           >
-            {t('common.save')}
+            {isSubmitting ? (
+              <>
+                <span className="mr-2">
+                  <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                </span>
+                {t('common.saving')}
+              </>
+            ) : (
+              t('common.save')
+            )}
           </Button>
         </DialogFooter>
       </DialogContent>
