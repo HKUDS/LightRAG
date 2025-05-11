@@ -85,10 +85,17 @@ def create_app(args):
         "openai",
         "openai-ollama",
         "azure_openai",
+        "google",
     ]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
+    if args.embedding_binding not in [
+        "lollms",
+        "ollama",
+        "openai",
+        "azure_openai",
+        "google",
+    ]:
         raise Exception("embedding binding not supported")
 
     # Set default hosts if not provided
@@ -212,6 +219,9 @@ def create_app(args):
     if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
         from lightrag.llm.openai import openai_complete_if_cache
         from lightrag.llm.ollama import ollama_embed
+    if args.llm_binding == "google" or args.embedding_binding == "google":
+        from lightrag.llm.google import google_complete, google_embed
+        from lightrag.utils import GemmaTokenizer
 
     async def openai_alike_model_complete(
         prompt,
@@ -288,6 +298,14 @@ def create_app(args):
             model=args.embedding_model,
             base_url=args.embedding_binding_host,
             api_key=args.embedding_binding_api_key,
+        )
+        if args.embedding_binding == "google"
+        else google_embed(
+            texts,
+            model=args.embedding_model,
+            api_key=args.embedding_binding_api_key,
+            project_id=args.embedding_binding_project_id,
+            location=args.embedding_binding_location,
         ),
     )
 
@@ -313,6 +331,33 @@ def create_app(args):
             }
             if args.llm_binding == "lollms" or args.llm_binding == "ollama"
             else {},
+            embedding_func=embedding_func,
+            kv_storage=args.kv_storage,
+            graph_storage=args.graph_storage,
+            vector_storage=args.vector_storage,
+            doc_status_storage=args.doc_status_storage,
+            vector_db_storage_cls_kwargs={
+                "cosine_better_than_threshold": args.cosine_threshold
+            },
+            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+            enable_llm_cache=args.enable_llm_cache,
+            auto_manage_storages_states=False,
+            max_parallel_insert=args.max_parallel_insert,
+            addon_params={"language": args.summary_language},
+        )
+    elif args.llm_binding == "google":
+        rag = LightRAG(
+            working_dir=args.working_dir,
+            llm_model_func=google_complete,
+            llm_model_name=args.llm_model,
+            llm_model_max_async=args.max_async,
+            llm_model_max_token_size=args.max_tokens,
+            chunk_token_size=int(args.chunk_size),
+            chunk_overlap_token_size=int(args.chunk_overlap_size),
+            tokenizer=GemmaTokenizer(model_name=args.llm_model),
+            llm_model_kwargs={
+                "timeout": args.timeout,
+            },
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,

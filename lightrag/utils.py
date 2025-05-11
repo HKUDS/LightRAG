@@ -11,8 +11,10 @@ import os
 import re
 from dataclasses import dataclass
 from functools import wraps
-from hashlib import md5
-from typing import Any, Protocol, Callable, TYPE_CHECKING, List
+from hashlib import md5, sha256
+from pathlib import Path
+import pipmaster as pm
+from typing import Any, Protocol, Callable, TYPE_CHECKING, List, Optional
 import xml.etree.ElementTree as ET
 import numpy as np
 from lightrag.prompt import PROMPTS
@@ -698,6 +700,122 @@ class TiktokenTokenizer(Tokenizer):
             super().__init__(model_name=model_name, tokenizer=tokenizer)
         except KeyError:
             raise ValueError(f"Invalid model_name: {model_name}.")
+
+
+class GemmaTokenizer(Tokenizer):
+    @dataclass(frozen=True)
+    class _TokenizerConfig:
+        tokenizer_model_url: str
+        tokenizer_model_hash: str
+
+    _TOKENIZERS = {
+        "google/gemma2": _TokenizerConfig(
+            tokenizer_model_url="https://raw.githubusercontent.com/google/gemma_pytorch/33b652c465537c6158f9a472ea5700e5e770ad3f/tokenizer/tokenizer.model",
+            tokenizer_model_hash="61a7b147390c64585d6c3543dd6fc636906c9af3865a5548f27f31aee1d4c8e2",
+        ),
+        "google/gemma3": _TokenizerConfig(
+            tokenizer_model_url="https://raw.githubusercontent.com/google/gemma_pytorch/cb7c0152a369e43908e769eb09e1ce6043afe084/tokenizer/gemma3_cleaned_262144_v2.spiece.model",
+            tokenizer_model_hash="1299c11d7cf632ef3b4e11937501358ada021bbdf7c47638d13c0ee982f2e79c",
+        ),
+    }
+
+    def __init__(
+        self, model_name: Optional[str] = None, tokenizer_dir: Optional[str] = None
+    ):
+        if not pm.is_installed("sentencepiece"):
+            pm.install("sentencepiece")
+        import sentencepiece as spm
+        from lightrag.llm.google import DEFAULT_GOOGLE_GEMINI_MODEL
+
+        if model_name is None:
+            model_name = os.environ.get("LLM_MODEL", DEFAULT_GOOGLE_GEMINI_MODEL)
+
+        if "1.5" in model_name or "1.0" in model_name:
+            # up to gemini 1.5 gemma2 is a comparable local tokenizer
+            tokenizer_name = "google/gemma2"
+        else:
+            # for gemini > 2.0 gemma3 was used
+            tokenizer_name = "google/gemma3"
+
+        file_url = self._TOKENIZERS[tokenizer_name].tokenizer_model_url
+        tokenizer_model_name = file_url.rsplit("/", 1)[1]
+        expected_hash = self._TOKENIZERS[tokenizer_name].tokenizer_model_hash
+
+        tokenizer_dir = Path(tokenizer_dir)
+        if tokenizer_dir.is_dir():
+            file_path = tokenizer_dir / tokenizer_model_name
+            model_data = self._maybe_load_from_cache(
+                file_path=file_path, expected_hash=expected_hash
+            )
+        else:
+            model_data = None
+        if not model_data:
+            model_data = self._load_from_url(
+                file_url=file_url, expected_hash=expected_hash
+            )
+            self.save_tokenizer_to_cache(cache_path=file_path, model_data=model_data)
+
+        tokenizer = spm.SentencePieceProcessor()
+        tokenizer.LoadFromSerializedProto(model_data)
+        super().__init__(model_name=model_name, tokenizer=tokenizer)
+
+    def _is_valid_model(self, model_data: bytes, expected_hash: str) -> bool:
+        """Returns true if the content is valid by checking the hash."""
+        return sha256(model_data).hexdigest() == expected_hash
+
+    def _maybe_load_from_cache(self, file_path: Path, expected_hash: str) -> bytes:
+        """Loads the model data from the cache path."""
+        if not file_path.is_file():
+            return
+        with open(file_path, "rb") as f:
+            content = f.read()
+        if self._is_valid_model(model_data=content, expected_hash=expected_hash):
+            return content
+
+        # Cached file corrupted.
+        self._maybe_remove_file(file_path)
+
+    def _load_from_url(self, file_url: str, expected_hash: str) -> bytes:
+        """Loads model bytes from the given file url."""
+        if not pm.is_installed("requests"):
+            pm.install("requests")
+        import requests
+
+        resp = requests.get(file_url)
+        resp.raise_for_status()
+        content = resp.content
+
+        if not self._is_valid_model(model_data=content, expected_hash=expected_hash):
+            actual_hash = sha256(content).hexdigest()
+            raise ValueError(
+                f"Downloaded model file is corrupted."
+                f" Expected hash {expected_hash}. Got file hash {actual_hash}."
+            )
+        return content
+
+    @staticmethod
+    def save_tokenizer_to_cache(cache_path: Path, model_data: bytes) -> None:
+        """Saves the model data to the cache path."""
+        try:
+            if not cache_path.is_file():
+                cache_dir = cache_path.parent
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                with open(cache_path, "wb") as f:
+                    f.write(model_data)
+        except OSError:
+            # Don't raise if we cannot write file.
+            pass
+
+    @staticmethod
+    def _maybe_remove_file(file_path: Path) -> None:
+        """Removes the file if exists."""
+        if not file_path.is_file():
+            return
+        try:
+            file_path.unlink()
+        except OSError:
+            # Don't raise if we cannot remove file.
+            pass
 
 
 def pack_user_ass_to_openai_messages(*args: str):
