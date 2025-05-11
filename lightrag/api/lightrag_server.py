@@ -306,6 +306,7 @@ def create_app(args):
             api_key=args.embedding_binding_api_key,
             project_id=args.embedding_binding_project_id,
             location=args.embedding_binding_location,
+            use_vertex_ai=args.embedding_binding_vertex_ai,
         ),
     )
 
@@ -357,6 +358,10 @@ def create_app(args):
             tokenizer=GemmaTokenizer(model_name=args.llm_model),
             llm_model_kwargs={
                 "timeout": args.timeout,
+                "api_key": args.llm_binding_api_key,
+                "project_id": args.llm_binding_project_id,
+                "location": args.llm_binding_location,
+                "use_vertex_ai": args.llm_binding_vertex_ai,
             },
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,

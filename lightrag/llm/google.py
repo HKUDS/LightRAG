@@ -82,14 +82,14 @@ async def create_google_async_client(
     api_key: Optional[str] = None,
     project_id: Optional[str] = None,
     location: Optional[str] = None,
-    use_vertex_ai_env: Optional[bool] = None,  # Explicitly from env parsing
+    use_vertex_ai: Optional[bool] = None,
     client_configs: Optional[Dict[str, Any]] = None,
 ) -> GoogleGenAIClient:
     """
     Creates an asynchronous Google Generative AI client.
     Prioritizes explicit params, then environment variables.
     """
-    effective_use_vertex_ai = use_vertex_ai_env
+    effective_use_vertex_ai = use_vertex_ai
 
     # Determine API key
     effective_api_key = (
@@ -170,7 +170,7 @@ async def google_complete_if_cache(
     api_key: Optional[str] = None,
     project_id: Optional[str] = None,
     location: Optional[str] = None,
-    use_vertex_ai_env: Optional[bool] = None,  # From parsed env
+    use_vertex_ai: Optional[bool] = None,
     token_tracker: Optional[Any] = None,
     **kwargs: Any,
 ) -> str:
@@ -185,15 +185,11 @@ async def google_complete_if_cache(
 
     client_call_configs = kwargs.pop("google_client_configs", {})  # For client creation
 
-    # Determine if GOOGLE_GENAI_USE_VERTEXAI was true from environment
-    # This helps create_google_async_client make the right choice
-    # Passed as use_vertex_ai_env
-
     google_client = await create_google_async_client(
         api_key=api_key,
         project_id=project_id,
         location=location,
-        use_vertex_ai_env=use_vertex_ai_env,
+        use_vertex_ai=use_vertex_ai,
         client_configs=client_call_configs,
     )
 
@@ -453,14 +449,16 @@ async def google_complete(
             "Keyword extraction enabled, setting response_mime_type to application/json and providing schema."
         )
 
-    # Determine if GOOGLE_GENAI_USE_VERTEXAI was true from environment
-    use_vertex_ai_env_str = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "false").lower()
-    use_vertex_ai_env = use_vertex_ai_env_str == "true"
-
     # API key and Vertex params can be passed via kwargs or picked up from env by create_google_async_client
     api_key = kwargs.pop("api_key", None)
     project_id = kwargs.pop("project_id", None)
     location = kwargs.pop("location", None)
+    use_vertex_ai = kwargs.pop("use_vertex_ai", None)
+
+    if use_vertex_ai is None:
+        # Determine if GOOGLE_GENAI_USE_VERTEXAI was true from environment
+        use_vertex_ai_str = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "false").lower()
+        use_vertex_ai = use_vertex_ai_str == "true"
 
     result = await google_complete_if_cache(
         model=model_name,
@@ -470,7 +468,7 @@ async def google_complete(
         api_key=api_key,
         project_id=project_id,
         location=location,
-        use_vertex_ai_env=use_vertex_ai_env,
+        use_vertex_ai=use_vertex_ai,
         **kwargs,  # Remaining kwargs (token_tracker, temperature, etc.)
     )
 
@@ -534,6 +532,7 @@ async def google_embed(
     api_key: Optional[str] = None,
     project_id: Optional[str] = None,
     location: Optional[str] = None,
+    use_vertex_ai: Optional[bool] = None,
     client_configs: Optional[dict] = None,
     task_type: Optional[
         str
@@ -550,15 +549,16 @@ async def google_embed(
     if not VERBOSE_DEBUG and logging.getLogger("google_genai").level != logging.WARNING:
         logging.getLogger("google_genai").setLevel(logging.WARNING)
 
-    # Determine if GOOGLE_GENAI_USE_VERTEXAI was true from environment
-    use_vertex_ai_env_str = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "false").lower()
-    use_vertex_ai_env = use_vertex_ai_env_str == "true"
+    if use_vertex_ai is None:
+        # Determine if GOOGLE_GENAI_USE_VERTEXAI was true from environment
+        use_vertex_ai_str = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "false").lower()
+        use_vertex_ai = use_vertex_ai_str == "true"
 
     google_client = await create_google_async_client(
         api_key=api_key,
         project_id=project_id,
         location=location,
-        use_vertex_ai_env=use_vertex_ai_env,
+        use_vertex_ai=use_vertex_ai,
         client_configs=client_configs,
     )
 
