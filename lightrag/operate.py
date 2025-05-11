@@ -1610,9 +1610,11 @@ async def _find_most_related_edges_from_entities(
         edge_props = edge_data_dict.get(pair)
         if edge_props is not None:
             if "weight" not in edge_props:
-                logger.warning(f"Edge {pair} missing 'weight' attribute, using default value 0.0")
+                logger.warning(
+                    f"Edge {pair} missing 'weight' attribute, using default value 0.0"
+                )
                 edge_props["weight"] = 0.0
-                
+
             combined = {
                 "src_tgt": pair,
                 "rank": edge_degrees_dict.get(pair, 0),
@@ -1675,9 +1677,11 @@ async def _get_edge_data(
         edge_props = edge_data_dict.get(pair)
         if edge_props is not None:
             if "weight" not in edge_props:
-                logger.warning(f"Edge {pair} missing 'weight' attribute, using default value 0.0")
+                logger.warning(
+                    f"Edge {pair} missing 'weight' attribute, using default value 0.0"
+                )
                 edge_props["weight"] = 0.0
-                
+
             # Use edge degree from the batch as rank.
             combined = {
                 "src_id": k["src_id"],
