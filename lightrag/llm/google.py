@@ -380,7 +380,11 @@ async def google_complete_if_cache(
                 token_counts = {
                     "prompt_tokens": getattr(usage, "prompt_token_count", 0),
                     "completion_tokens": getattr(usage, "candidates_token_count", 0),
-                    "total_tokens": getattr(usage, "total_token_count", 0),
+                    "total_tokens": getattr(usage, "total_token_count", 0)
+                    or (
+                        getattr(usage, "prompt_token_count", 0)
+                        + getattr(usage, "candidates_token_count", 0)
+                    ),
                 }
                 token_tracker.add_usage(token_counts)
                 logger.debug(f"Google API token usage: {token_counts}")
