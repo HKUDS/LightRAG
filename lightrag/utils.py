@@ -326,6 +326,9 @@ def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
     """
 
     def final_decro(func):
+        # Ensure func is callable
+        if not callable(func):
+            raise TypeError(f"Expected a callable object, got {type(func)}")
         queue = asyncio.PriorityQueue(maxsize=max_queue_size)
         tasks = set()
         initialization_lock = asyncio.Lock()
