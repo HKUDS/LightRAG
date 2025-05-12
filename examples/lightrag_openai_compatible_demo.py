@@ -100,7 +100,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
     return await ollama_embed(
         texts=texts,
         embed_model="bge-m3:latest",
-        host="http://m4.lan.znipower.com:11434",
+        host="http://localhost:11434",
     )
 
 
