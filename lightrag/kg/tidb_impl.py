@@ -25,11 +25,20 @@ from sqlalchemy import create_engine, text  # type: ignore
 
 def sanitize_sensitive_info(data: dict) -> dict:
     sanitized_data = data.copy()
-    sensitive_fields = ['password', 'user', 'host', 'database', 'port', 'ssl_verify_cert', 'ssl_verify_identity']
-    for field in sensitive_fields:
-        if field in sanitized_data:
-            sanitized_data[field] = '***'
+    sensitive_fields = [
+        "password",
+        "user",
+        "host",
+        "database",
+        "port",
+        "ssl_verify_cert",
+        "ssl_verify_identity",
+    ]
+    for field_name in sensitive_fields:
+        if field_name in sanitized_data:
+            sanitized_data[field_name] = "***"
     return sanitized_data
+
 
 class TiDB:
     def __init__(self, config, **kwargs):
@@ -91,9 +100,10 @@ class TiDB:
                 result = conn.execute(text(sql), params)
             except Exception as e:
                 sanitized_params = sanitize_sensitive_info(params)
-                sanitized_params = sanitize_sensitive_info(params)
-                sanitized_error = sanitize_sensitive_info({'error': str(e)})
-                logger.error(f"Tidb database,\nsql:{sql},\nparams:{sanitized_params},\nerror:{sanitized_error}")
+                sanitized_error = sanitize_sensitive_info({"error": str(e)})
+                logger.error(
+                    f"Tidb database,\nsql:{sql},\nparams:{sanitized_params},\nerror:{sanitized_error}"
+                )
                 raise
             if multirows:
                 rows = result.all()
@@ -119,8 +129,10 @@ class TiDB:
                     conn.execute(text(sql), parameters=data)
         except Exception as e:
             sanitized_data = sanitize_sensitive_info(data) if data else None
-            sanitized_error = sanitize_sensitive_info({'error': str(e)})
-            logger.error(f"Tidb database,\nsql:{sql},\ndata:{sanitized_data},\nerror:{sanitized_error}")
+            sanitized_error = sanitize_sensitive_info({"error": str(e)})
+            logger.error(
+                f"Tidb database,\nsql:{sql},\ndata:{sanitized_data},\nerror:{sanitized_error}"
+            )
             raise
 
 
