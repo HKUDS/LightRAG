@@ -71,7 +71,6 @@ export default function SiteHeader() {
       <div className="min-w-[200px] w-auto flex items-center">
         <a href={webuiPrefix} className="flex items-center gap-2">
           <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
-          {/* <img src='/logo.png' className="size-4" /> */}
           <span className="font-bold md:inline-block">{SiteInfo.name}</span>
         </a>
         {webuiTitle && (
