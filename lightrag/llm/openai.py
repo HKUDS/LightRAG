@@ -264,8 +264,17 @@ async def openai_complete_if_cache(
                         logger.warning(
                             f"Failed to close stream response in finally block: {close_error}"
                         )
-                # Note: We don't close the client here for streaming responses
-                # The client will be closed by the caller after streaming is complete
+
+                # This prevents resource leaks since the caller doesn't handle closing
+                try:
+                    await openai_async_client.close()
+                    logger.debug(
+                        "Successfully closed OpenAI client for streaming response"
+                    )
+                except Exception as client_close_error:
+                    logger.warning(
+                        f"Failed to close OpenAI client in streaming finally block: {client_close_error}"
+                    )
 
         return inner()
 
