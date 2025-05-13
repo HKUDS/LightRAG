@@ -31,7 +31,7 @@ COPY --from=builder /root/.local /root/.local
 COPY ./lightrag ./lightrag
 COPY setup.py .
 
-RUN pip install .
+RUN pip install ".[api]"
 # Make sure scripts in .local are usable
 ENV PATH=/root/.local/bin:$PATH
 
