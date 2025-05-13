@@ -26,9 +26,7 @@ def configure_logging():
 
     # Get log directory path from environment variable or use current directory
     log_dir = os.getenv("LOG_DIR", os.getcwd())
-    log_file_path = os.path.abspath(
-        os.path.join(log_dir, "lightrag_ollama_demo.log")
-    )
+    log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag_ollama_demo.log"))
 
     print(f"\nLightRAG compatible demo log file: {log_file_path}\n")
     os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
@@ -210,6 +208,7 @@ async def main():
         if rag:
             await rag.llm_response_cache.index_done_callback()
             await rag.finalize_storages()
+
 
 if __name__ == "__main__":
     # Configure logging before running the main function
