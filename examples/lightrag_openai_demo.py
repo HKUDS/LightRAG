@@ -91,9 +91,45 @@ async def initialize_rag():
 
 
 async def main():
+    # Check if OPENAI_API_KEY environment variable exists
+    if not os.getenv("OPENAI_API_KEY"):
+        print(
+            "Error: OPENAI_API_KEY environment variable is not set. Please set this variable before running the program."
+        )
+        print("You can set the environment variable by running:")
+        print("  export OPENAI_API_KEY='your-openai-api-key'")
+        return  # Exit the async function
+
     try:
+        # Clear old data files
+        files_to_delete = [
+            "graph_chunk_entity_relation.graphml",
+            "kv_store_doc_status.json",
+            "kv_store_full_docs.json",
+            "kv_store_text_chunks.json",
+            "vdb_chunks.json",
+            "vdb_entities.json",
+            "vdb_relationships.json",
+        ]
+
+        for file in files_to_delete:
+            file_path = os.path.join(WORKING_DIR, file)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"Deleting old file:: {file_path}")
+
         # Initialize RAG instance
         rag = await initialize_rag()
+
+        # Test embedding function
+        test_text = ["This is a test string for embedding."]
+        embedding = await rag.embedding_func(test_text)
+        embedding_dim = embedding.shape[1]
+        print("\n=======================")
+        print("Test embedding function")
+        print("========================")
+        print(f"Test dict: {test_text}")
+        print(f"Detected embedding dimension: {embedding_dim}\n\n")
 
         with open("./book.txt", "r", encoding="utf-8") as f:
             await rag.ainsert(f.read())
