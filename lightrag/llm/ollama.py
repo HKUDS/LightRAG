@@ -62,9 +62,9 @@ async def _ollama_model_if_cache(
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    
+
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
-    
+
     try:
         messages = []
         if system_prompt:
@@ -106,15 +106,21 @@ async def _ollama_model_if_cache(
             await ollama_client._client.aclose()
             logger.debug("Successfully closed Ollama client after exception")
         except Exception as close_error:
-            logger.warning(f"Failed to close Ollama client after exception: {close_error}")
+            logger.warning(
+                f"Failed to close Ollama client after exception: {close_error}"
+            )
         raise e
     finally:
         if not stream:
             try:
                 await ollama_client._client.aclose()
-                logger.debug("Successfully closed Ollama client for non-streaming response")
+                logger.debug(
+                    "Successfully closed Ollama client for non-streaming response"
+                )
             except Exception as close_error:
-                logger.warning(f"Failed to close Ollama client in finally block: {close_error}")
+                logger.warning(
+                    f"Failed to close Ollama client in finally block: {close_error}"
+                )
 
 
 async def ollama_model_complete(
@@ -141,12 +147,12 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    
+
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None) or 90  # Default time out 90s
-    
+
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
-    
+
     try:
         data = await ollama_client.embed(model=embed_model, input=texts)
         return np.array(data["embeddings"])
@@ -156,7 +162,9 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
             await ollama_client._client.aclose()
             logger.debug("Successfully closed Ollama client after exception in embed")
         except Exception as close_error:
-            logger.warning(f"Failed to close Ollama client after exception in embed: {close_error}")
+            logger.warning(
+                f"Failed to close Ollama client after exception in embed: {close_error}"
+            )
         raise e
     finally:
         try:
