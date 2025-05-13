@@ -1,6 +1,10 @@
 services:
   lightrag:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      tags:
+        - lightrag:latest
     ports:
       - "${PORT:-9621}:9621"
     volumes:
@@ -13,28 +17,3 @@ services:
     restart: unless-stopped
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
-  neo4j:
-    image: neo4j:5.26.4-community
-    container_name: lightrag-server_neo4j-community
-    restart: always
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    environment:
-      - NEO4J_AUTH=${NEO4J_USERNAME}/${NEO4J_PASSWORD}
-      - NEO4J_apoc_export_file_enabled=true
-      - NEO4J_server_bolt_listen__address=0.0.0.0:7687
-      - NEO4J_server_bolt_advertised__address=neo4j:7687
-    volumes:
-      - ./neo4j/plugins:/var/lib/neo4j/plugins
-      - lightrag_neo4j_import:/var/lib/neo4j/import
-      - lightrag_neo4j_data:/data
-      - lightrag_neo4j_backups:/backups
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-
-volumes:
-  lightrag_neo4j_import:
-  lightrag_neo4j_data:
-  lightrag_neo4j_backups:
