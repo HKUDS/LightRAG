@@ -415,7 +415,7 @@ rag = LightRAG(
     embedding_func=EmbeddingFunc(
         embedding_dim=768,
         max_token_size=8192,
-        func=lambda texts: ollama_embedding(
+        func=lambda texts: ollama_embed(
             texts,
             embed_model="nomic-embed-text"
         )
