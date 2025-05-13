@@ -7,8 +7,11 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import openai_complete_if_cache
 from lightrag.llm.ollama import ollama_embed
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
-import numpy as np
 from lightrag.kg.shared_storage import initialize_pipeline_status
+
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path=".env", override=False)
 
 WORKING_DIR = "./dickens"
 
@@ -86,41 +89,14 @@ async def llm_model_func(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
     return await openai_complete_if_cache(
-        "deepseek-chat",
+        os.getenv("LLM_MODEL", "deepseek-chat"),
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,
-        api_key=os.getenv("OPENAI_API_KEY"),
-        base_url="https://api.deepseek.com",
+        api_key=os.getenv("LLM_BINDING_API_KEY") or os.getenv("OPENAI_API_KEY"),
+        base_url=os.getenv("LLM_BINDING_HOST", "https://api.deepseek.com"),
         **kwargs,
     )
-
-
-async def embedding_func(texts: list[str]) -> np.ndarray:
-    return await ollama_embed(
-        texts=texts,
-        embed_model="bge-m3:latest",
-        host="http://localhost:11434",
-    )
-
-
-async def get_embedding_dim():
-    test_text = ["This is a test sentence."]
-    embedding = await embedding_func(test_text)
-    embedding_dim = embedding.shape[1]
-    return embedding_dim
-
-
-# function test
-async def test_funcs():
-    result = await llm_model_func("How are you?")
-    print("llm_model_func: ", result)
-
-    result = await embedding_func(["How are you?"])
-    print("embedding_func: ", result)
-
-
-# asyncio.run(test_funcs())
 
 
 async def print_stream(stream):
@@ -130,16 +106,17 @@ async def print_stream(stream):
 
 
 async def initialize_rag():
-    embedding_dimension = await get_embedding_dim()
-    print(f"Detected embedding dimension: {embedding_dimension}")
-
     rag = LightRAG(
         working_dir=WORKING_DIR,
         llm_model_func=llm_model_func,
         embedding_func=EmbeddingFunc(
-            embedding_dim=embedding_dimension,
-            max_token_size=8192,
-            func=embedding_func,
+            embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
+            max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "8192")),
+            func=lambda texts: ollama_embed(
+                texts,
+                embed_model=os.getenv("EMBEDDING_MODEL", "bge-m3:latest"),
+                host=os.getenv("EMBEDDING_BINDING_HOST", "http://localhost:11434"),
+            ),
         ),
     )
 
@@ -151,8 +128,35 @@ async def initialize_rag():
 
 async def main():
     try:
+        # Clear old data files
+        files_to_delete = [
+            "graph_chunk_entity_relation.graphml",
+            "kv_store_doc_status.json",
+            "kv_store_full_docs.json",
+            "kv_store_text_chunks.json",
+            "vdb_chunks.json",
+            "vdb_entities.json",
+            "vdb_relationships.json",
+        ]
+
+        for file in files_to_delete:
+            file_path = os.path.join(WORKING_DIR, file)
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"Deleting old file:: {file_path}")
+
         # Initialize RAG instance
         rag = await initialize_rag()
+
+        # Test embedding function
+        test_text = ["This is a test string for embedding."]
+        embedding = await rag.embedding_func(test_text)
+        embedding_dim = embedding.shape[1]
+        print("\n=======================")
+        print("Test embedding function")
+        print("========================")
+        print(f"Test dict: {test_text}")
+        print(f"Detected embedding dimension: {embedding_dim}\n\n")
 
         with open("./book.txt", "r", encoding="utf-8") as f:
             await rag.ainsert(f.read())
