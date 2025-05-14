@@ -1,0 +1,21 @@
+This Helm chart has deployed KubeBlocks database clusters as configured in your values.yaml.
+
+Enabled clusters:
+{{- if .Values.postgresql.enabled }}
+  - PostgreSQL: {{ .Values.postgresql.name }} in namespace {{ .Values.global.namespace }}
+{{- end }}
+{{- if .Values.redis.enabled }}
+  - Redis: {{ .Values.redis.name }} in namespace {{ .Values.global.namespace }}
+{{- end }}
+{{- if .Values.elasticsearch.enabled }}
+  - Elasticsearch: {{ .Values.elasticsearch.name }} in namespace {{ .Values.global.namespace }}
+{{- end }}
+{{- if .Values.qdrant.enabled }}
+  - Qdrant: {{ .Values.qdrant.name }} in namespace {{ .Values.global.namespace }}
+{{- end }}
+
+You can check the status of your clusters using kubectl:
+  kubectl get clusters -n {{ .Values.global.namespace }}
+  kubectl get pods -n {{ .Values.global.namespace }}
+
+For KubeBlocks specific commands, you might use the kbcli tool if installed.
