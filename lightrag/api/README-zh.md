@@ -123,6 +123,8 @@ docker compose up
 docker compose up --build
 ```
 
+> 在此获取LightRAG docker镜像历史版本: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+
 ### 启动时自动扫描
 
 当使用 `--auto-scan-at-startup` 参数启动任何服务器时，系统将自动：

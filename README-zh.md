@@ -60,8 +60,12 @@ pip install -e ".[api]"
 ```
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
+cp env.example .env
+# modify LLM and Embedding settings in .env
 docker compose up
 ```
+
+> 在此获取LightRAG docker镜像历史版本: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
 ### 安装LightRAG Core
 
