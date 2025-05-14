@@ -6,6 +6,7 @@ import os
 import argparse
 import logging
 from dotenv import load_dotenv
+from lightrag.utils import get_env_value
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
@@ -48,37 +49,6 @@ def get_default_host(binding_type: str) -> str:
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
     )  # fallback to ollama if unknown
-
-
-def get_env_value(
-    env_key: str, default: any, value_type: type = str, special_none: bool = False
-) -> any:
-    """
-    Get value from environment variable with type conversion
-
-    Args:
-        env_key (str): Environment variable key
-        default (any): Default value if env variable is not set
-        value_type (type): Type to convert the value to
-        special_none (bool): If True, return None when value is "None"
-
-    Returns:
-        any: Converted value from environment or default
-    """
-    value = os.getenv(env_key)
-    if value is None:
-        return default
-
-    # Handle special case for "None" string
-    if special_none and value == "None":
-        return None
-
-    if value_type is bool:
-        return value.lower() in ("true", "1", "yes", "t", "on")
-    try:
-        return value_type(value)
-    except (ValueError, TypeError):
-        return default
 
 
 def parse_args() -> argparse.Namespace:

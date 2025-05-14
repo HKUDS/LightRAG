@@ -6,8 +6,6 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 
 if not pm.is_installed("aioboto3"):
     pm.install("aioboto3")
-if not pm.is_installed("tenacity"):
-    pm.install("tenacity")
 import aioboto3
 import numpy as np
 from tenacity import (

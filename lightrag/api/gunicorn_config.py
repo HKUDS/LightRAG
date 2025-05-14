@@ -2,8 +2,7 @@
 import os
 import logging
 from lightrag.kg.shared_storage import finalize_share_data
-from lightrag.utils import setup_logger
-from lightrag.api.config import get_env_value
+from lightrag.utils import setup_logger, get_env_value
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,

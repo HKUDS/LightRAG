@@ -21,6 +21,13 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 RUN pip install --user --no-cache-dir -r requirements.txt
 RUN pip install --user --no-cache-dir -r lightrag/api/requirements.txt
 
+# Install depndencies for default storage
+RUN pip install --user --no-cache-dir nano-vectordb networkx
+# Install depndencies for default LLM
+RUN pip install --user --no-cache-dir openai ollama tiktoken
+# Install depndencies for default document loader
+RUN pip install --user --no-cache-dir pypdf2 python-docx python-pptx openpyxl
+
 # Final stage
 FROM python:3.11-slim
 
@@ -31,7 +38,7 @@ COPY --from=builder /root/.local /root/.local
 COPY ./lightrag ./lightrag
 COPY setup.py .
 
-RUN pip install .
+RUN pip install ".[api]"
 # Make sure scripts in .local are usable
 ENV PATH=/root/.local/bin:$PATH
 

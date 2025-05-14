@@ -24,7 +24,7 @@ from lightrag.constants import (
     DEFAULT_MAX_TOKEN_SUMMARY,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
 )
-from lightrag.api.config import get_env_value
+from lightrag.utils import get_env_value
 
 from lightrag.kg import (
     STORAGES,
@@ -1026,7 +1026,7 @@ class LightRAG:
 
                             # Persistent llm cache
                             if self.llm_response_cache:
-                                await self.llm_response_cache.index_done_callback
+                                await self.llm_response_cache.index_done_callback()
 
                             # Update document status to failed
                             await self.doc_status.upsert(
@@ -1106,7 +1106,7 @@ class LightRAG:
 
                             # Persistent llm cache
                             if self.llm_response_cache:
-                                await self.llm_response_cache.index_done_callback
+                                await self.llm_response_cache.index_done_callback()
 
                             # Update document status to failed
                             await self.doc_status.upsert(

@@ -3,8 +3,6 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 # install specific modules
 if not pm.is_installed("lmdeploy"):
     pm.install("lmdeploy[all]")
-if not pm.is_installed("tenacity"):
-    pm.install("tenacity")
 
 from lightrag.exceptions import (
     APIConnectionError,
