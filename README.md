@@ -84,9 +84,19 @@ pip install "lightrag-hku[api]"
 * Installation from Source
 
 ```bash
+git clone https://github.com/HKUDS/LightRAG.git
+cd LightRAG
 # create a Python virtual enviroment if neccesary
 # Install in editable mode with API support
 pip install -e ".[api]"
+```
+
+* Launching the LightRAG Server with Docker Compose
+
+```
+git clone https://github.com/HKUDS/LightRAG.git
+cd LightRAG
+docker compose up
 ```
 
 ### Install  LightRAG Core
@@ -108,7 +118,7 @@ pip install lightrag-hku
 
 ### Quick Start for LightRAG Server
 
-For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).
+* For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).
 
 ### Quick Start for LightRAG core
 
