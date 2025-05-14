@@ -8,8 +8,6 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 
 if not pm.is_installed("aiohttp"):
     pm.install("aiohttp")
-if not pm.is_installed("tenacity"):
-    pm.install("tenacity")
 
 import aiohttp
 from tenacity import (
