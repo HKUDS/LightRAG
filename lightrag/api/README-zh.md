@@ -102,9 +102,26 @@ lightrag-gunicorn --workers 4
 - `--log-level`：日志级别（默认：INFO）
 - --input-dir：指定要扫描文档的目录（默认：./input）
 
-> ** 要求将.env文件置于启动目录中是经过特意设计的**。 这样做的目的是支持用户同时启动多个LightRAG实例，并为不同实例配置不同的.env文件。
+> - **要求将.env文件置于启动目录中是经过特意设计的**。 这样做的目的是支持用户同时启动多个LightRAG实例，并为不同实例配置不同的.env文件。
+> - **修改.env文件后，您需要重新打开终端以使新设置生效**。 这是因为每次启动时，LightRAG Server会将.env文件中的环境变量加载至系统环境变量，且系统环境变量的设置具有更高优先级。
 
-> **修改.env文件后，您需要重新打开终端以使新设置生效**。 这是因为每次启动时，LightRAG Server会将.env文件中的环境变量加载至系统环境变量，且系统环境变量的设置具有更高优先级。
+### 使用 Docker Compose 启动 LightRAG 服务器
+
+* 克隆代码仓库：
+```
+git clone https://github.com/HKUDS/LightRAG.git
+cd LightRAG
+```
+
+* 配置 .env 文件：
+    通过复制 env.example 文件创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
+
+* 通过以下命令启动 LightRAG 服务器：
+```
+docker compose up
+# 如拉取了新版本，请添加 --build 重新构建
+docker compose up --build
+```
 
 ### 启动时自动扫描
 
