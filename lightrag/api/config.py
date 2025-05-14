@@ -90,6 +90,11 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("INPUT_DIR", "./inputs"),
         help="Directory containing input documents (default: from env or ./inputs)",
     )
+    parser.add_argument(
+        "--tokenizer-dir",
+        default=get_env_value("TOKENIZER_DIR", "./tokenizer"),
+        help="Directory containing tokenizer files (default: from env or ./tokenizer)",
+    )
 
     parser.add_argument(
         "--timeout",
@@ -210,14 +215,21 @@ def parse_args() -> argparse.Namespace:
         "--llm-binding",
         type=str,
         default=get_env_value("LLM_BINDING", "ollama"),
-        choices=["lollms", "ollama", "openai", "openai-ollama", "azure_openai"],
+        choices=[
+            "lollms",
+            "ollama",
+            "openai",
+            "openai-ollama",
+            "azure_openai",
+            "google",
+        ],
         help="LLM binding type (default: from env or ollama)",
     )
     parser.add_argument(
         "--embedding-binding",
         type=str,
         default=get_env_value("EMBEDDING_BINDING", "ollama"),
-        choices=["lollms", "ollama", "openai", "azure_openai"],
+        choices=["lollms", "ollama", "openai", "azure_openai", "google"],
         help="Embedding binding type (default: from env or ollama)",
     )
 
@@ -257,6 +269,28 @@ def parse_args() -> argparse.Namespace:
     )
     args.llm_binding_api_key = get_env_value("LLM_BINDING_API_KEY", None)
     args.embedding_binding_api_key = get_env_value("EMBEDDING_BINDING_API_KEY", "")
+
+    if args.llm_binding == "google":
+        args.google_genai_use_vertexai = get_env_value(
+            "GOOGLE_GENAI_USE_VERTEXAI",
+            True,
+        )
+        args.llm_binding_project_id = get_env_value("LLM_BINDING_PROJECT_ID", None)
+        args.llm_binding_location = get_env_value("LLM_BINDING_LOCATION", None)
+        args.llm_binding_vertex_ai = get_env_value(
+            "LLM_BINDING_VERTEX_AI",
+            True,
+        )
+        args.embedding_binding_project_id = get_env_value(
+            "EMBEDDING_BINDING_PROJECT_ID", None
+        )
+        args.embedding_binding_location = get_env_value(
+            "EMBEDDING_BINDING_LOCATION", None
+        )
+        args.embedding_binding_vertex_ai = get_env_value(
+            "EMBEDDING_BINDING_VERTEX_AI",
+            True,
+        )
 
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")

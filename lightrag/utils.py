@@ -719,9 +719,7 @@ class GemmaTokenizer(Tokenizer):
         ),
     }
 
-    def __init__(
-        self, model_name: Optional[str] = None, tokenizer_dir: Optional[str] = None
-    ):
+    def __init__(self, model_name: Optional[str] = None, tokenizer_dir: str = "."):
         if not pm.is_installed("sentencepiece"):
             pm.install("sentencepiece")
         import sentencepiece as spm
@@ -742,13 +740,11 @@ class GemmaTokenizer(Tokenizer):
         expected_hash = self._TOKENIZERS[tokenizer_name].tokenizer_model_hash
 
         tokenizer_dir = Path(tokenizer_dir)
-        if tokenizer_dir.is_dir():
-            file_path = tokenizer_dir / tokenizer_model_name
-            model_data = self._maybe_load_from_cache(
-                file_path=file_path, expected_hash=expected_hash
-            )
-        else:
-            model_data = None
+        file_path = tokenizer_dir / tokenizer_model_name
+
+        model_data = self._maybe_load_from_cache(
+            file_path=file_path, expected_hash=expected_hash
+        )
         if not model_data:
             model_data = self._load_from_url(
                 file_url=file_url, expected_hash=expected_hash

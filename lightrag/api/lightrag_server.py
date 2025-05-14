@@ -355,7 +355,9 @@ def create_app(args):
             llm_model_max_token_size=args.max_tokens,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            tokenizer=GemmaTokenizer(model_name=args.llm_model),
+            tokenizer=GemmaTokenizer(
+                model_name=args.llm_model, tokenizer_dir=args.tokenizer_dir
+            ),
             llm_model_kwargs={
                 "timeout": args.timeout,
                 "api_key": args.llm_binding_api_key,

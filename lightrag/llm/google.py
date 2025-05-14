@@ -435,7 +435,7 @@ async def google_complete(
     """
     model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
 
-    if not model_name.contains("gemini"):
+    if "gemini" not in model_name:
         # TODO check against client.models.list()
         logger.warning(
             f"Invalid `llm_model_name` Argument: {model_name}. Set a correct model name - default to {DEFAULT_GOOGLE_GEMINI_MODEL}."
@@ -584,7 +584,7 @@ async def google_embed(
             task_type_enum = None  # Defaults to "RETRIEVAL_QUERY"
 
     try:
-        response = await google_client.aio.embed_contents(
+        response = await google_client.aio.models.embed_content(
             model=model,
             contents=texts,
             config=google_types.EmbedContentConfig(
