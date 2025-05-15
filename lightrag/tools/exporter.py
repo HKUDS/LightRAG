@@ -189,8 +189,22 @@ class LightRAGExporter:
         
         # Export complete knowledge graph (for verification)
         kg = await lightrag_instance.get_knowledge_graph("*", max_depth=5, max_nodes=100000)
+        
+        # Convert knowledge graph to serializable format
+        kg_dict = {}
+        try:
+            # Try to use asdict if it's a dataclass
+            kg_dict = asdict(kg)
+        except TypeError:
+            # Fall back to manual conversion if not a dataclass
+            kg_dict = {
+                "nodes": [{"id": node.id, **vars(node)} for node in getattr(kg, "nodes", [])],
+                "edges": [{"source": edge.source, "target": edge.target, **vars(edge)} 
+                         for edge in getattr(kg, "edges", [])]
+            }
+        
         with open(os.path.join(graph_dir, "knowledge_graph.json"), "w") as f:
-            json.dump(asdict(kg), f)
+            json.dump(kg_dict, f)
     
     @staticmethod
     async def _export_doc_status(
