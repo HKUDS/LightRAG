@@ -416,13 +416,7 @@ def export_lightrag_data(lightrag_instance, output_dir, include_cache=False, com
         Path to the export directory
     """
     import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    return loop.run_until_complete(
+    return asyncio.run(
         LightRAGExporter.export_data(lightrag_instance, output_dir, include_cache, compress)
     )
 
@@ -437,12 +431,6 @@ def import_lightrag_data(lightrag_instance, import_dir, include_cache=False):
         include_cache: Whether to import LLM response cache
     """
     import asyncio
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    
-    loop.run_until_complete(
+    asyncio.run(
         LightRAGExporter.import_data(lightrag_instance, import_dir, include_cache)
     ) 
