@@ -105,22 +105,62 @@ lightrag-gunicorn --workers 4
 > - **要求将.env文件置于启动目录中是经过特意设计的**。 这样做的目的是支持用户同时启动多个LightRAG实例，并为不同实例配置不同的.env文件。
 > - **修改.env文件后，您需要重新打开终端以使新设置生效**。 这是因为每次启动时，LightRAG Server会将.env文件中的环境变量加载至系统环境变量，且系统环境变量的设置具有更高优先级。
 
-### 使用 Docker Compose 启动 LightRAG 服务器
+### 使用 Docker 启动 LightRAG 服务器
 
 * 克隆代码仓库：
-```
+```shell
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 ```
 
 * 配置 .env 文件：
-    通过复制 env.example 文件创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
+    通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
 
 * 通过以下命令启动 LightRAG 服务器：
-```
+```shell
 docker compose up
 # 如拉取了新版本，请添加 --build 重新构建
 docker compose up --build
+```
+### 无需克隆代码而使用 Docker 部署 LightRAG 服务器
+
+* 为 LightRAG 服务器创建工作文件夹：
+
+```shell
+mkdir lightrag
+cd lightrag
+```
+
+* 准备 .env 文件：
+    通过复制 env.example 文件创建个性化的.env 文件。根据您的需求配置 LLM 和嵌入参数。
+
+* 创建一个名为 docker-compose.yml 的 docker compose 文件：
+
+```yaml
+services:
+  lightrag:
+    container_name: lightrag
+    image: ghcr.io/hkuds/lightrag:latest
+    ports:
+      - "${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./config.ini:/app/config.ini
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+* 准备 .env 文件：
+    通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件。根据您的需求配置 LLM 和嵌入参数。
+
+* 使用以下命令启动 LightRAG 服务器：
+```shell
+docker compose up
 ```
 
 > 在此获取LightRAG docker镜像历史版本: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)

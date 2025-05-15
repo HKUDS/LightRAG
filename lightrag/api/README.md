@@ -107,22 +107,60 @@ Here are some commonly used startup parameters:
 > - The requirement for the .env file to be in the startup directory is intentionally designed this way. The purpose is to support users in launching multiple LightRAG instances simultaneously, allowing different .env files for different instances.
 > - **After changing the .env file, you need to open a new terminal to make  the new settings take effect.** This because the LightRAG Server will load the environment variables from .env into the system environment variables each time it starts, and LightRAG Server will prioritize the settings in the system environment variables.
 
-### Launching the LightRAG Server with Docker Compose
+### Launching LightRAG Server with Docker
 
 * Clone the repository:
-```
+```shell
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 ```
 
 * Prepare the .env file:
-    Create a personalized .env file by duplicating env.example. Configure the LLM and embedding parameters according to your requirements.
+    Create a personalized .env file from sample file `env.example`. Configure the LLM and embedding parameters according to your requirements.
 
 * Start the LightRAG Server using the following commands:
-```
+```shell
 docker compose up
 # Use --build if you have pulled a new version
 docker compose up --build
+```
+
+### Deploying LightRAG Server with docker without cloneing the repository
+
+* Create a working folder for LightRAG Server:
+
+```shell
+mkdir lightrag
+cd lightrag
+```
+
+* Create a docker compose file named docker-compose.yml:
+
+
+```yaml
+services:
+  lightrag:
+    container_name: lightrag
+    image: ghcr.io/hkuds/lightrag:latest
+    ports:
+      - "${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./config.ini:/app/config.ini
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+* Prepare the .env file:
+    Create a personalized .env file from sample file `env.example`. Configure the LLM and embedding parameters according to your requirements.
+
+* Start the LightRAG Server using the following commands:
+```shell
+docker compose up
 ```
 
 > Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
