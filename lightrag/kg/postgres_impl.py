@@ -1430,20 +1430,40 @@ class PGGraphStorage(BaseGraphStorage):
             src_label,
             tgt_label,
         )
-        record = await self._query(query)
-        if record and record[0] and record[0]["edge_properties"]:
-            result = record[0]["edge_properties"]
+        try:
+            record = await self._query(query)
+            if record and record[0] and record[0]["edge_properties"]:
+                result = record[0]["edge_properties"]
+                # Process string result, parse it to JSON dictionary
+                if isinstance(result, str):
+                    try:
+                        import json
 
-            # Process string result, parse it to JSON dictionary
-            if isinstance(result, str):
-                try:
-                    import json
+                        result = json.loads(result)
+                    except json.JSONDecodeError:
+                        logger.warning(f"Failed to parse edge string: {result}")
 
-                    result = json.loads(result)
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse edge string: {result}")
+                # Ensure required keys exist with defaults
+                required_keys = {
+                    "weight": 0.0,
+                    "source_id": None,
+                    "description": None,
+                    "keywords": None,
+                }
+                for key, default_value in required_keys.items():
+                    if key not in result:
+                        result[key] = default_value
+                        logger.warning(
+                            f"Edge between {source_node_id} and {target_node_id} "
+                            f"missing {key}, using default: {default_value}"
+                        )
 
-            return result
+                return result
+        except Exception as e:
+            logger.error(
+                f"Error retrieving edge between {source_node_id} and {target_node_id}: {e}"
+            )
+        return None
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
@@ -1828,6 +1848,17 @@ class PGGraphStorage(BaseGraphStorage):
                         )
                         continue
 
+                required_keys = {
+                    "weight": 0.0,
+                    "source_id": None,
+                    "description": None,
+                    "keywords": None,
+                }
+                for key, default_value in required_keys.items():
+                    if key not in edge_props:
+                        edge_props[key] = default_value
+                        logger.warning(f"missing {key}, using default: {default_value}")
+
                 edges_dict[(result["source"], result["target"])] = edge_props
 
         for result in backward_results:
@@ -1845,6 +1876,17 @@ class PGGraphStorage(BaseGraphStorage):
                             f"Failed to parse edge properties string: {edge_props}"
                         )
                         continue
+
+                required_keys = {
+                    "weight": 0.0,
+                    "source_id": None,
+                    "description": None,
+                    "keywords": None,
+                }
+                for key, default_value in required_keys.items():
+                    if key not in edge_props:
+                        edge_props[key] = default_value
+                        logger.warning(f"missing {key}, using default: {default_value}")
 
                 edges_dict[(result["source"], result["target"])] = edge_props
 
