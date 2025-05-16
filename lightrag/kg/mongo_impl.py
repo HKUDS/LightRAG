@@ -38,7 +38,7 @@ config.read("config.ini", "utf-8")
 
 
 class ClientManager:
-    _instances = {"db": None, "ref_count": 0}
+    _instances: dict[str, Any] = {"db": None, "ref_count": 0}
     _lock = asyncio.Lock()
 
     @classmethod
@@ -211,6 +211,8 @@ class MongoKVStorage(BaseKVStorage):
             return {"status": "error", "message": str(e)}
 
 
+
+
 @final
 @dataclass
 class MongoDocStatusStorage(DocStatusStorage):
@@ -255,6 +257,27 @@ class MongoDocStatusStorage(DocStatusStorage):
                 self._data.update_one({"_id": k}, {"$set": v}, upsert=True)
             )
         await asyncio.gather(*update_tasks)
+
+    async def delete(self, ids: list[str]) -> None:
+        """Delete specific records from storage by their IDs
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed
+
+        Args:
+            ids (list[str]): List of document IDs to be deleted from storage
+
+        Returns:
+            None
+        """
+        logger.info(f"Deleting records with ids: {ids} from {self.namespace}")
+        if not ids:
+            return
+        delete_tasks: list[Any] = []
+        for _id in ids:
+            delete_tasks.append(self._data.delete_one({"_id": _id}))
+        await asyncio.gather(*delete_tasks)
 
     async def get_status_counts(self) -> dict[str, int]:
         """Get counts of documents in each status"""
@@ -506,6 +529,52 @@ class MongoGraphStorage(BaseGraphStorage):
         inbound_count = inbound_result[0]["totalInbound"] if inbound_result else 0
 
         return outbound_count + inbound_count
+    
+    async def node_degrees_batch(self, node_ids: List[str]) -> dict[str, int]:
+        """
+        Calculates the degree (total number of connected edges) for a batch of nodes
+        using a single aggregation pipeline for improved performance.
+
+        Args:
+            node_ids: A list of node IDs (strings).
+
+        Returns:
+            A dictionary where keys are node IDs and values are their corresponding degrees (integers).
+        """
+
+        # --- 1. Outbound Degrees ---
+        # Get the 'edges' array length for each node in node_ids
+        outbound_pipeline = [
+            {"$match": {"_id": {"$in": node_ids}}},
+            {
+                "$project": {
+                    "_id": 1,
+                    "outboundDegree": {"$size": "$edges"},
+                }
+            },
+        ]
+        outbound_results = await self.collection.aggregate(outbound_pipeline).to_list(None)
+        outbound_degrees = {item["_id"]: item["outboundDegree"] for item in outbound_results}
+
+        # --- 2. Inbound Degrees ---
+        # Calculate how many times each node_id appears in the 'edges.target'
+        inbound_pipeline = [
+            {"$unwind": "$edges"},
+            {"$group": {"_id": "$edges.target", "inboundCount": {"$sum": 1}}},
+            {"$match": {"_id": {"$in": node_ids}}}, # Filter down to the nodes we care about
+        ]
+
+        inbound_results = await self.collection.aggregate(inbound_pipeline).to_list(None)
+        inbound_degrees = {item["_id"]: item["inboundCount"] for item in inbound_results}
+
+        # --- 3. Combine Results ---
+        # Combine outbound and inbound degrees for each node.
+        result = {}
+        for node_id in node_ids:
+            outbound_degree = outbound_degrees.get(node_id, 0)  # Default to 0 if not found
+            inbound_degree = inbound_degrees.get(node_id, 0)  # Default to 0 if not found
+            result[node_id] = outbound_degree + inbound_degree
+        return result
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         """
@@ -541,6 +610,45 @@ class MongoGraphStorage(BaseGraphStorage):
         count = sum(1 for e in edges if e.get("target") == tgt_id)
         return count
 
+    
+
+    async def edge_degrees_batch(
+        self, edge_pairs: List[tuple[str, str]]
+    ) -> dict[tuple[str, str], int]:
+        """Edge degrees as a batch using $match, $unwind, and $filter."""
+        if not edge_pairs:
+            return {}
+
+        pipeline = [
+            {"$match": {"_id": {"$in": [src_id for src_id, _ in edge_pairs]}}},
+            {"$unwind": "$edges"},
+            {"$group": {
+                "_id": {"source": "$_id", "target": "$edges.target"},
+                "degree": {"$sum": 1}
+            }},
+            {"$project": {
+                "_id": 0,
+                "source": "$_id.source",
+                "target": "$_id.target",
+                "degree": 1
+            }}
+        ]
+
+        results = await self.collection.aggregate(pipeline).to_list(None)
+
+        edge_degrees: dict[tuple[str, str], int] = {}
+        for src_id, tgt_id in edge_pairs:
+            edge_degrees[(src_id, tgt_id)] = 0  # Initialize count
+
+        for result in results:
+            source = result.get("source")
+            target = result.get("target")
+            degree = result.get("degree", 0)
+            if source and target and (source, target) in edge_degrees:
+                edge_degrees[(source, target)] = degree
+
+        return edge_degrees
+
     #
     # -------------------------------------------------------------------------
     # GETTERS
@@ -552,6 +660,19 @@ class MongoGraphStorage(BaseGraphStorage):
         Return the full node document (including "edges"), or None if missing.
         """
         return await self.collection.find_one({"_id": node_id})
+    
+    async def get_nodes_batch(self, node_ids: List[str]) -> dict[str, dict[str, Any]]:
+        """
+        Get a batch of nodes from Cosmos DB based on their IDs.
+
+        Uses the $in operator for efficient retrieval of multiple documents.
+        """
+        cursor = self.collection.find({"_id": {"$in": node_ids}})
+        nodes = await cursor.to_list(length=len(node_ids))  # Optimize by providing expected length
+        result: dict[str, dict[str, Any]] = {}
+        for node in nodes:
+            result[node["_id"]] = node
+        return result
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
@@ -581,6 +702,55 @@ class MongoGraphStorage(BaseGraphStorage):
                 return e
         return None
 
+    async def get_edges_batch(
+        self, pairs: List[dict[str, str]]
+    ) -> dict[tuple[str, str], dict[str, Any] | None]:
+        """
+        Retrieves a batch of edges, where each edge is defined by a source and target node ID.
+        This function uses an aggregation pipeline to perform a batch lookup for better performance.
+
+        Args:
+            pairs: A list of dictionaries, where each dictionary contains the source node ID ('src')
+            and the target node ID ('tgt').
+
+        Returns:
+            A dictionary where the keys are tuples of (src_id, tgt_id), and the values are either
+            the edge document (a dictionary) if found, or None if the edge is not found.
+        """
+        if not pairs:
+            return {}
+
+        # Extract unique source node IDs to minimize database queries.
+        source_node_ids = list(set(pair["src"] for pair in pairs))
+
+        pipeline: List[dict[str, Any]] = [
+            {"$match": {"_id": {"$in": source_node_ids}}},
+            {"$project": {
+                "_id": 1,  # Include the source node ID
+                "edges": 1,
+            }},
+        ]
+
+        cursor = self.collection.aggregate(pipeline)
+        results = await cursor.to_list(None)
+
+        # Create a dictionary to store the results, initializing all edges to None
+        edges_map: dict[tuple[str, str], dict[str, Any] | None] = {(pair["src"], pair["tgt"]): None for pair in pairs}
+
+        # Iterate through the results and populate the edges_map
+        for doc in results:
+            source_id = doc["_id"]
+            edges = doc.get("edges", [])  # Safely get the edges array
+
+            # Iterate through the target node IDs for the current source
+            for target_node_id in [pair["tgt"] for pair in pairs if pair["src"] == source_id]:
+                for edge in edges:
+                    if edge.get("target") == target_node_id:
+                        edges_map[(source_id, target_node_id)] = edge
+                        break # important:  Once found, go to the next target_node_id
+
+        return edges_map
+
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """
         Return a list of (source_id, target_id) for direct edges from source_node_id.
@@ -608,6 +778,48 @@ class MongoGraphStorage(BaseGraphStorage):
 
         edges = result[0].get("edges", [])
         return [(source_node_id, e["target"]) for e in edges]
+
+    async def get_nodes_edges_batch(
+        self, node_ids: List[str]
+    ) -> dict[str, List[tuple[str, str]]]:
+        """
+        Retrieves the edges for a batch of nodes, returning a dictionary where keys are
+        node IDs and values are lists of (source_id, target_id) tuples representing the
+        edges for each node.
+
+        Args:
+            node_ids: A list of node IDs (strings).
+
+        Returns:
+            A dictionary where keys are node IDs and values are lists of their edges.
+            Returns an empty list for nodes with no edges, and will not include node_ids
+            that are not found.
+        """
+        if not node_ids:
+            return {}
+
+        pipeline = [
+            {"$match": {"_id": {"$in": node_ids}}},
+            {"$project": {
+                "_id": 1,
+                "edges": 1,
+            }},
+        ]
+        cursor = self.collection.aggregate(pipeline)
+        results = await cursor.to_list(None)
+
+        edges_by_node: dict[str, List[tuple[str, str]]] = {}
+        for node_data in results:
+            node_id = node_data["_id"]
+            edges = node_data.get("edges", [])
+            edges_by_node[node_id] = [(node_id, edge["target"]) for edge in edges]
+
+        # Ensure all provided node_ids are in the result, even if they have no edges.
+        for node_id in node_ids:
+            if node_id not in edges_by_node:
+                edges_by_node[node_id] = []
+
+        return edges_by_node
 
     #
     # -------------------------------------------------------------------------
@@ -665,6 +877,20 @@ class MongoGraphStorage(BaseGraphStorage):
 
     #
     # -------------------------------------------------------------------------
+    # EMBEDDINGS (NOT IMPLEMENTED)
+    # -------------------------------------------------------------------------
+    #
+
+    async def embed_nodes(
+        self, algorithm: str
+    ) -> tuple[np.ndarray[Any, Any], list[str]]:
+        """
+        Placeholder for demonstration, raises NotImplementedError.
+        """
+        raise NotImplementedError("Node embedding is not used in lightrag.")
+
+    #
+    # -------------------------------------------------------------------------
     # QUERY
     # -------------------------------------------------------------------------
     #
@@ -688,7 +914,7 @@ class MongoGraphStorage(BaseGraphStorage):
         return labels
 
     async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 5
+        self, node_label: str, max_depth: int = 5, max_nodes: int = 1000,
     ) -> KnowledgeGraph:
         """
         Get complete connected subgraph for specified node (including the starting node itself)
@@ -945,6 +1171,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
         self._collection_name = self.namespace
         self._max_batch_size = self.global_config["embedding_batch_num"]
+        self._mongo_type = os.environ.get(
+            "MONGO_TYPE",
+            config.get("mongodb", "type", fallback="Atlas")
+        )
 
     async def initialize(self):
         if self.db is None:
@@ -963,36 +1193,65 @@ class MongoVectorDBStorage(BaseVectorStorage):
             self._data = None
 
     async def create_vector_index_if_not_exists(self):
-        """Creates an Atlas Vector Search index."""
+        """Creates a vector search index based on MONGO_TYPE environment variable."""
         try:
             index_name = "vector_knn_index"
 
-            indexes = await self._data.list_search_indexes().to_list(length=None)
-            for index in indexes:
-                if index["name"] == index_name:
-                    logger.debug("vector index already exist")
-                    return
+            if self._mongo_type == "Cosmos":
+                # Cosmos DB MongoDB vCore vector search index creation
+                index_definition = {
+                    "name": index_name,
+                    "key": {
+                        "vector": "cosmosSearch"
+                    },
+                    "cosmosSearchOptions": {
+                        "kind": "vector-diskann",
+                        "similarity": "COS",
+                        "dimensions": self.embedding_func.embedding_dim
+                    }
+                }
+                
+                await self._data.create_index(
+                    [("vector", "cosmosSearch")],
+                    name=index_definition["name"],
+                    cosmosSearchOptions=index_definition["cosmosSearchOptions"]
+                )
+                logger.info("CosmosDB Vector index created successfully.")
 
-            search_index_model = SearchIndexModel(
-                definition={
-                    "fields": [
-                        {
-                            "type": "vector",
-                            "numDimensions": self.embedding_func.embedding_dim,  # Ensure correct dimensions
-                            "path": "vector",
-                            "similarity": "cosine",  # Options: euclidean, cosine, dotProduct
-                        }
-                    ]
-                },
-                name=index_name,
-                type="vectorSearch",
-            )
+            elif self._mongo_type == "Atlas":
+                # Atlas MongoDB Vector Search index creation
+                indexes = await self._data.list_search_indexes().to_list(length=None)
+                for index in indexes:
+                    if index["name"] == index_name:
+                        logger.debug("Vector index already exists in Atlas.")
+                        return
+                
+                search_index_model = SearchIndexModel(
+                    definition={
+                        "fields": [
+                            {
+                                "type": "vector",
+                                "numDimensions": self.embedding_func.embedding_dim,
+                                "path": "vector",
+                                "similarity": "cosine",  # Options: euclidean, cosine, dotProduct
+                            }
+                        ]
+                    },
+                    name=index_name,
+                    type="vectorSearch",
+                )
+                
+                await self._data.create_search_index(search_index_model)
+                logger.info("Atlas Vector index created successfully.")
 
-            await self._data.create_search_index(search_index_model)
-            logger.info("Vector index created successfully.")
+            else:
+                logger.error("Unknown MONGO_TYPE environment variable value.")
 
-        except PyMongoError as _:
-            logger.debug("vector index already exist")
+        except PyMongoError as e:
+            if "Index with name: vector_knn_index already exists" in str(e):
+                logger.debug("Vector index already exists.")
+            else:
+                logger.error(f"Error creating vector index: {e}")
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.info(f"Inserting {len(data)} to {self.namespace}")
@@ -1036,32 +1295,52 @@ class MongoVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        """Queries the vector database using Atlas Vector Search."""
+        """Queries the vector database using either CosmosDB or Atlas based on MONGO_TYPE."""
+        
         # Generate the embedding
-        embedding = await self.embedding_func(
-            [query], _priority=5
-        )  # higher priority for query
-
-        # Convert numpy array to a list to ensure compatibility with MongoDB
+        embedding = await self.embedding_func([query])
         query_vector = embedding[0].tolist()
 
-        # Define the aggregation pipeline with the converted query vector
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index": "vector_knn_index",  # Ensure this matches the created index name
-                    "path": "vector",
-                    "queryVector": query_vector,
-                    "numCandidates": 100,  # Adjust for performance
-                    "limit": top_k,
-                }
-            },
-            {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
-            {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
-            {"$project": {"vector": 0}},
-        ]
+        # Adjust top_k for Cosmos if necessary
+        adjusted_top_k = min(top_k, 40) if self._mongo_type == "Cosmos" else top_k
 
-        # Execute the aggregation pipeline
+        # Define the aggregation pipeline based on the MONGO_TYPE
+        if self._mongo_type == "Cosmos":
+            pipeline = [
+                {
+                    "$search": {
+                        "cosmosSearch": {
+                            "path": "vector",
+                            "vector": query_vector,
+                            "k": adjusted_top_k,
+                        }
+                    }
+                },
+                {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
+                {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
+                {"$project": {"vector": 0}},
+            ]
+        
+        elif self._mongo_type == "Atlas":
+            pipeline = [
+                {
+                    "$vectorSearch": {
+                        "index": "vector_knn_index",
+                        "path": "vector",
+                        "queryVector": query_vector,
+                        "numCandidates": 100,
+                        "limit": top_k,
+                    }
+                },
+                {"$addFields": {"score": {"$meta": "vectorSearchScore"}}},
+                {"$match": {"score": {"$gte": self.cosine_better_than_threshold}}},
+                {"$project": {"vector": 0}},
+            ]
+        
+        else:
+            raise ValueError("Unknown MONGO_TYPE environment variable value.")
+
+        # Execute the aggregation pipeline and get results
         cursor = self._data.aggregate(pipeline)
         results = await cursor.to_list()
 
