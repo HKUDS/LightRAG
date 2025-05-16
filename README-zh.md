@@ -111,6 +111,8 @@ python examples/lightrag_openai_demo.py
 
 ## 使用LightRAG Core进行编程
 
+> 如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API。LightRAG Core通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
+
 ### 一个简单程序
 
 以下Python代码片段演示了如何初始化LightRAG、插入文本并进行查询：
@@ -769,7 +771,7 @@ rag = LightRAG(
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- 如有必要可以删除
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;

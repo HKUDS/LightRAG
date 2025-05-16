@@ -147,6 +147,8 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 ## Programing with LightRAG Core
 
+> If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
+
 ### A Simple Program
 
 Use the below Python snippet to initialize LightRAG, insert text to it, and perform queries:
@@ -773,7 +775,7 @@ For production level scenarios you will most likely want to leverage an enterpri
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- drop if necessary
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
