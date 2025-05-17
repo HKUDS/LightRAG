@@ -1,0 +1,22 @@
+{
+  "doc-e4d909c290d0fb1ca068ffaddf22cbd0": {
+    "status": "processed",
+    "chunks_count": 1,
+    "content": "The quick brown fox jumps over the lazy dog.",
+    "content_summary": "The quick brown fox jumps over the lazy dog.",
+    "content_length": 44,
+    "created_at": "2025-04-27T13:29:56.032182",
+    "updated_at": "2025-04-27T13:30:04.933077",
+    "file_path": "unknown_source"
+  },
+  "doc-1905f7014c5c00c46217eaacc00e3ff7": {
+    "status": "processed",
+    "chunks_count": 1,
+    "content": "Artificial intelligence is transforming various industries.",
+    "content_summary": "Artificial intelligence is transforming various industries.",
+    "content_length": 59,
+    "created_at": "2025-04-27T13:30:05.044523",
+    "updated_at": "2025-04-27T13:30:28.026868",
+    "file_path": "unknown_source"
+  }
+}

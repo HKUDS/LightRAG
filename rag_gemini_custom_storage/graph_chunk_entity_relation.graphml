@@ -1,0 +1,92 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <key id="d9" for="edge" attr.name="file_path" attr.type="string" />
+  <key id="d8" for="edge" attr.name="source_id" attr.type="string" />
+  <key id="d7" for="edge" attr.name="keywords" attr.type="string" />
+  <key id="d6" for="edge" attr.name="description" attr.type="string" />
+  <key id="d5" for="edge" attr.name="weight" attr.type="double" />
+  <key id="d4" for="node" attr.name="file_path" attr.type="string" />
+  <key id="d3" for="node" attr.name="source_id" attr.type="string" />
+  <key id="d2" for="node" attr.name="description" attr.type="string" />
+  <key id="d1" for="node" attr.name="entity_type" attr.type="string" />
+  <key id="d0" for="node" attr.name="entity_id" attr.type="string" />
+  <graph edgedefault="undirected">
+    <node id="Fox">
+      <data key="d0">Fox</data>
+      <data key="d1">category</data>
+      <data key="d2">A quick brown fox is described as performing an action.</data>
+      <data key="d3">chunk-e4d909c290d0fb1ca068ffaddf22cbd0</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Dog">
+      <data key="d0">Dog</data>
+      <data key="d1">category</data>
+      <data key="d2">A lazy dog is mentioned in relation to the fox's action.</data>
+      <data key="d3">chunk-e4d909c290d0fb1ca068ffaddf22cbd0</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Artificial Intelligence">
+      <data key="d0">Artificial Intelligence</data>
+      <data key="d1">category</data>
+      <data key="d2">Artificial intelligence is a technology or field of study that is transforming various industries.</data>
+      <data key="d3">chunk-1905f7014c5c00c46217eaacc00e3ff7</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Industries">
+      <data key="d0">Industries</data>
+      <data key="d1">category</data>
+      <data key="d2">Industries refers to the various sectors or businesses that are being transformed by artificial intelligence.</data>
+      <data key="d3">chunk-1905f7014c5c00c46217eaacc00e3ff7</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Various Industries">
+      <data key="d0">Various Industries</data>
+      <data key="d1">category</data>
+      <data key="d2">Various industries are sectors or businesses that are being transformed by artificial intelligence.</data>
+      <data key="d3">chunk-1905f7014c5c00c46217eaacc00e3ff7</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <node id="Transformation">
+      <data key="d0">Transformation</data>
+      <data key="d1">category</data>
+      <data key="d2">Transformation refers to the process of significant change and impact that artificial intelligence is bringing about.</data>
+      <data key="d3">chunk-1905f7014c5c00c46217eaacc00e3ff7</data>
+      <data key="d4">unknown_source</data>
+    </node>
+    <edge source="Fox" target="Dog">
+      <data key="d5">8.0</data>
+      <data key="d6">The text states that the Fox jumps over the Dog.</data>
+      <data key="d7">movement, interaction</data>
+      <data key="d8">chunk-e4d909c290d0fb1ca068ffaddf22cbd0</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Artificial Intelligence" target="Industries">
+      <data key="d5">9.0</data>
+      <data key="d6">Artificial intelligence is transforming various industries, indicating a significant impact on these sectors.</data>
+      <data key="d7">technology impact, industry transformation</data>
+      <data key="d8">chunk-1905f7014c5c00c46217eaacc00e3ff7</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Artificial Intelligence" target="Various Industries">
+      <data key="d5">9.0</data>
+      <data key="d6">Artificial intelligence is described as actively transforming various industries.</data>
+      <data key="d7">direct impact, industry change</data>
+      <data key="d8">chunk-1905f7014c5c00c46217eaacc00e3ff7</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Artificial Intelligence" target="Transformation">
+      <data key="d5">8.0</data>
+      <data key="d6">Artificial intelligence is the cause or driver of the transformation process.</data>
+      <data key="d7">causation, driver</data>
+      <data key="d8">chunk-1905f7014c5c00c46217eaacc00e3ff7</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+    <edge source="Various Industries" target="Transformation">
+      <data key="d5">7.0</data>
+      <data key="d6">Transformation is the process that is happening to various industries as a result of artificial intelligence.</data>
+      <data key="d7">target, scope</data>
+      <data key="d8">chunk-1905f7014c5c00c46217eaacc00e3ff7</data>
+      <data key="d9">unknown_source</data>
+    </edge>
+  </graph>
+</graphml>
