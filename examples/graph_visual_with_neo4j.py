@@ -13,6 +13,7 @@ NEO4J_URI = "bolt://localhost:7687"
 NEO4J_USERNAME = "neo4j"
 NEO4J_PASSWORD = "your_password"
 
+
 def xml_to_json(xml_file):
     try:
         tree = ET.parse(xml_file)
@@ -60,7 +61,6 @@ def xml_to_json(xml_file):
                 else "",
             }
             data["edges"].append(edge_data)
-
 
         # Print the number of nodes and edges found
         print(f"Found {len(data['nodes'])} nodes and {len(data['edges'])} edges")
