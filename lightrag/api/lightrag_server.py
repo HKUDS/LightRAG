@@ -289,15 +289,16 @@ def create_app(args):
 
     # --- Determine LLM and Embedding functions based on bindings or custom flag ---
     final_llm_func_to_use = None
-    final_embedding_func_to_use = None
+    final_embedding_func_to_use = None # This will be an EmbeddingFunc instance
 
-    # LLM Function
+    # LLM Function Selection
     if args.use_custom_bindings and custom_functions_available and gemini_llm_complete_func:
         print("INFO: Using custom Gemini LLM function from run_lightrag_gemini_jina.py.")
         final_llm_func_to_use = gemini_llm_complete_func
     else:
         if args.use_custom_bindings and not (custom_functions_available and gemini_llm_complete_func):
             print("WARNING: --use-custom-bindings specified, but custom Gemini LLM function is not available. Falling back to CLI --llm-binding.")
+        
         if args.llm_binding == "lollms":
             final_llm_func_to_use = lollms_model_complete
         elif args.llm_binding == "ollama":
@@ -306,24 +307,31 @@ def create_app(args):
             final_llm_func_to_use = openai_alike_model_complete
         elif args.llm_binding == "azure_openai":
             final_llm_func_to_use = azure_openai_model_complete
-        elif args.llm_binding == "gemini": # Standard gemini binding
+        elif args.llm_binding == "gemini": # Standard gemini binding from lightrag.llm.gemini
             final_llm_func_to_use = gemini_complete
         else:
-            raise ValueError(f"Unsupported llm binding: {args.llm_binding}")
+            # This case should ideally be caught by argparse choices, but as a safeguard:
+            raise ValueError(f"Unsupported or misconfigured llm_binding: {args.llm_binding}")
 
-    # Embedding Function
+    # Embedding Function Selection
     if args.use_custom_bindings and custom_functions_available and jina_embedding_func:
         print("INFO: Using custom Jina embedding function from run_lightrag_gemini_jina.py for embeddings.")
         if isinstance(jina_embedding_func, EmbeddingFunc):
             final_embedding_func_to_use = jina_embedding_func
-        else: # Assuming it's a raw callable
-            # TODO: Determine correct embedding_dim and max_token_size for custom jina_embedding_func
-            # For now, using general args.embedding_dim, but this might need to be specific to Jina.
-            # e.g., JINA_EMBEDDING_DIM from run_lightrag_gemini_jina.py if it's defined there.
-            # Defaulting to args.embedding_dim for now.
-            jina_dim = getattr(jina_embedding_func, 'embedding_dim', args.embedding_dim)
-            jina_max_tokens = getattr(jina_embedding_func, 'max_token_size', args.max_embed_tokens)
-
+        else: # Assuming it's a raw callable, wrap it in EmbeddingFunc
+            # Attempt to get specific dim and max_tokens if defined in run_lightrag_gemini_jina.py
+            # Fallback to command-line args if not found.
+            # Example: JINA_EMBEDDING_DIM, JINA_MAX_TOKEN_SIZE could be constants in run_lightrag_gemini_jina.py
+            try:
+                from run_lightrag_gemini_jina import JINA_EMBEDDING_DIM, JINA_MAX_TOKEN_SIZE
+                jina_dim = JINA_EMBEDDING_DIM
+                jina_max_tokens = JINA_MAX_TOKEN_SIZE
+                print(f"INFO: Using JINA_EMBEDDING_DIM={jina_dim}, JINA_MAX_TOKEN_SIZE={jina_max_tokens} from run_lightrag_gemini_jina.py")
+            except ImportError:
+                print(f"WARNING: JINA_EMBEDDING_DIM or JINA_MAX_TOKEN_SIZE not found in run_lightrag_gemini_jina.py. Using defaults from args: dim={args.embedding_dim}, max_tokens={args.max_embed_tokens}")
+                jina_dim = args.embedding_dim
+                jina_max_tokens = args.max_embed_tokens
+            
             final_embedding_func_to_use = EmbeddingFunc(
                 embedding_dim=jina_dim,
                 max_token_size=jina_max_tokens,
@@ -352,7 +360,7 @@ def create_app(args):
             selected_embed_lambda = lambda texts: azure_openai_embed(
                 texts,
                 model=args.embedding_model,
-                api_key=args.embedding_binding_api_key,
+                api_key=args.embedding_binding_api_key, # This should be AZURE_OPENAI_API_KEY from env
             )
         elif args.embedding_binding == "openai":
             selected_embed_lambda = lambda texts: openai_embed(
@@ -361,37 +369,50 @@ def create_app(args):
                 base_url=args.embedding_binding_host,
                 api_key=args.embedding_binding_api_key,
             )
-        elif args.embedding_binding == "gemini": # Standard gemini binding
+        elif args.embedding_binding == "gemini": # Standard gemini binding from lightrag.llm.gemini
              selected_embed_lambda = lambda texts: gemini_embed(
                 texts,
-                model_name=args.embedding_model, # or specific gemini embedding model
-                # api_key=os.getenv("GEMINI_API_KEY") # Gemini embed might use this
+                model_name=args.embedding_model, # e.g., "models/embedding-001"
+                # api_key=os.getenv("GEMINI_API_KEY") # gemini_embed handles API key via genai.configure
             )
         else:
-            raise ValueError(f"Unsupported embedding binding: {args.embedding_binding}")
+            # This case should ideally be caught by argparse choices, but as a safeguard:
+            raise ValueError(f"Unsupported or misconfigured embedding_binding: {args.embedding_binding}")
+        
+        if selected_embed_lambda:
+            final_embedding_func_to_use = EmbeddingFunc(
+                embedding_dim=args.embedding_dim,
+                max_token_size=args.max_embed_tokens,
+                func=selected_embed_lambda
+            )
+        else: # Should not happen if choices are validated by argparse
+            raise ValueError(f"Could not determine embedding function for binding: {args.embedding_binding}")
 
-        final_embedding_func_to_use = EmbeddingFunc(
-            embedding_dim=args.embedding_dim,
-            max_token_size=args.max_embed_tokens,
-            func=selected_embed_lambda
-        )
 
-    # Initialize RAG
     # Common llm_model_kwargs, specific ones added based on binding if not custom
-    llm_kwargs_for_rag = {
-        "host": args.llm_binding_host,
-        "timeout": args.timeout,
-        "options": {"num_ctx": args.max_tokens}, # ollama/lollms specific
-        "api_key": args.llm_binding_api_key, # for lollms, ollama, openai
-    }
-    if args.llm_binding == "azure_openai":
-        llm_kwargs_for_rag["api_version"] = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
-        # AZURE_OPENAI_API_KEY is read inside azure_openai_model_complete
-
-    if args.use_custom_bindings and custom_functions_available and gemini_llm_complete_func:
-        # When using custom, some specific binding kwargs might not apply or are handled inside the custom func
+    llm_kwargs_for_rag = {}
+    if not (args.use_custom_bindings and custom_functions_available and gemini_llm_complete_func):
+        # Only populate these if not using custom LLM func, as custom func handles its own specifics
         llm_kwargs_for_rag = {
-             "timeout": args.timeout, # General timeout
+            "host": args.llm_binding_host, # For lollms, ollama, openai
+            "timeout": args.timeout,
+            "options": {"num_ctx": args.max_tokens}, # ollama/lollms specific
+            "api_key": args.llm_binding_api_key, # for lollms, ollama, openai
+        }
+        if args.llm_binding == "azure_openai":
+            llm_kwargs_for_rag["api_version"] = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+            # AZURE_OPENAI_API_KEY is read inside azure_openai_model_complete wrapper
+            # Remove host/api_key if they are not used by azure_openai_model_complete directly
+            llm_kwargs_for_rag.pop("host", None)
+            llm_kwargs_for_rag.pop("api_key", None)
+        elif args.llm_binding == "gemini": # Standard gemini
+             # Gemini functions usually configured globally or handle API key internally
+            llm_kwargs_for_rag.pop("host", None)
+            llm_kwargs_for_rag.pop("api_key", None)
+            llm_kwargs_for_rag.pop("options", None) # num_ctx not standard for Gemini
+    else: # Using custom gemini_llm_complete_func
+        llm_kwargs_for_rag = {
+             "timeout": args.timeout, # General timeout can still be passed
              # Custom function handles its own model, host, api_key internally
         }
 
@@ -399,7 +420,7 @@ def create_app(args):
     rag = LightRAG(
         working_dir=args.working_dir,
         llm_model_func=final_llm_func_to_use,
-        llm_model_name=args.llm_model, # Still useful for logging/reference
+        llm_model_name=args.llm_model, # Still useful for logging/reference even with custom func
         llm_model_max_async=args.max_async,
         llm_model_max_token_size=args.max_tokens,
         chunk_token_size=int(args.chunk_size),
@@ -415,35 +436,11 @@ def create_app(args):
         },
         enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
         enable_llm_cache=args.enable_llm_cache,
-        auto_manage_storages_states=False,
+        auto_manage_storages_states=False, # Explicitly False as per original
         max_parallel_insert=args.max_parallel_insert,
         addon_params={"language": args.summary_language},
     )
     # Removed redundant LightRAG initialization for azure_openai as it's now covered by the general logic
-
-    # --- Add routes (indented correctly) ---
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "timeout": args.timeout,
-            },
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
-            embedding_func=embedding_func,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            auto_manage_storages_states=False,
-            max_parallel_insert=args.max_parallel_insert,
-            addon_params={"language": args.summary_language},
-        )
 
     # --- Add routes (indented correctly) ---
     app.include_router(create_document_routes(rag, doc_manager, api_key))
