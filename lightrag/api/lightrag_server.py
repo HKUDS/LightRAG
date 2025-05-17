@@ -287,78 +287,141 @@ def create_app(args):
             **kwargs, # Pass remaining kwargs including temperature
         )
 
-    embedding_func = EmbeddingFunc(
-        embedding_dim=args.embedding_dim,
-        max_token_size=args.max_embed_tokens,
-        func=lambda texts: lollms_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
+    # --- Determine LLM and Embedding functions based on bindings or custom flag ---
+    final_llm_func_to_use = None
+    final_embedding_func_to_use = None
+
+    # LLM Function
+    if args.use_custom_bindings and custom_functions_available and gemini_llm_complete_func:
+        print("INFO: Using custom Gemini LLM function from run_lightrag_gemini_jina.py.")
+        final_llm_func_to_use = gemini_llm_complete_func
+    else:
+        if args.use_custom_bindings and not (custom_functions_available and gemini_llm_complete_func):
+            print("WARNING: --use-custom-bindings specified, but custom Gemini LLM function is not available. Falling back to CLI --llm-binding.")
+        if args.llm_binding == "lollms":
+            final_llm_func_to_use = lollms_model_complete
+        elif args.llm_binding == "ollama":
+            final_llm_func_to_use = ollama_model_complete
+        elif args.llm_binding == "openai":
+            final_llm_func_to_use = openai_alike_model_complete
+        elif args.llm_binding == "azure_openai":
+            final_llm_func_to_use = azure_openai_model_complete
+        elif args.llm_binding == "gemini": # Standard gemini binding
+            final_llm_func_to_use = gemini_complete
+        else:
+            raise ValueError(f"Unsupported llm binding: {args.llm_binding}")
+
+    # Embedding Function
+    if args.use_custom_bindings and custom_functions_available and jina_embedding_func:
+        print("INFO: Using custom Jina embedding function from run_lightrag_gemini_jina.py for embeddings.")
+        if isinstance(jina_embedding_func, EmbeddingFunc):
+            final_embedding_func_to_use = jina_embedding_func
+        else: # Assuming it's a raw callable
+            # TODO: Determine correct embedding_dim and max_token_size for custom jina_embedding_func
+            # For now, using general args.embedding_dim, but this might need to be specific to Jina.
+            # e.g., JINA_EMBEDDING_DIM from run_lightrag_gemini_jina.py if it's defined there.
+            # Defaulting to args.embedding_dim for now.
+            jina_dim = getattr(jina_embedding_func, 'embedding_dim', args.embedding_dim)
+            jina_max_tokens = getattr(jina_embedding_func, 'max_token_size', args.max_embed_tokens)
+
+            final_embedding_func_to_use = EmbeddingFunc(
+                embedding_dim=jina_dim,
+                max_token_size=jina_max_tokens,
+                func=jina_embedding_func
+            )
+    else:
+        if args.use_custom_bindings and not (custom_functions_available and jina_embedding_func):
+            print("WARNING: --use-custom-bindings specified, but custom Jina embedding function is not available. Falling back to CLI --embedding-binding.")
+
+        selected_embed_lambda = None
+        if args.embedding_binding == "lollms":
+            selected_embed_lambda = lambda texts: lollms_embed(
+                texts,
+                embed_model=args.embedding_model,
+                host=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            )
+        elif args.embedding_binding == "ollama":
+            selected_embed_lambda = lambda texts: ollama_embed(
+                texts,
+                embed_model=args.embedding_model,
+                host=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            )
+        elif args.embedding_binding == "azure_openai":
+            selected_embed_lambda = lambda texts: azure_openai_embed(
+                texts,
+                model=args.embedding_model,
+                api_key=args.embedding_binding_api_key,
+            )
+        elif args.embedding_binding == "openai":
+            selected_embed_lambda = lambda texts: openai_embed(
+                texts,
+                model=args.embedding_model,
+                base_url=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            )
+        elif args.embedding_binding == "gemini": # Standard gemini binding
+             selected_embed_lambda = lambda texts: gemini_embed(
+                texts,
+                model_name=args.embedding_model, # or specific gemini embedding model
+                # api_key=os.getenv("GEMINI_API_KEY") # Gemini embed might use this
+            )
+        else:
+            raise ValueError(f"Unsupported embedding binding: {args.embedding_binding}")
+
+        final_embedding_func_to_use = EmbeddingFunc(
+            embedding_dim=args.embedding_dim,
+            max_token_size=args.max_embed_tokens,
+            func=selected_embed_lambda
         )
-    elif args.embedding_binding == "ollama":
-        embed_async_func = lambda texts: ollama_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-        )
-    elif args.embedding_binding == "azure_openai":
-        # Azure OpenAI embedding function likely reads key/endpoint from env vars internally
-        embed_async_func = lambda texts: azure_openai_embed(
-            texts,
-            model=args.embedding_model,  # no host is used for openai,
-            api_key=args.embedding_binding_api_key,
-        )
-    elif args.embedding_binding == "openai":
-         embed_async_func = lambda texts: openai_embed(
-            texts,
-            model=args.embedding_model,
-            base_url=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-        ),
-    )
 
     # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama", "openai"]:
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            llm_model_func=lollms_model_complete
-            if args.llm_binding == "lollms"
-            else ollama_model_complete
-            if args.llm_binding == "ollama"
-            else openai_alike_model_complete,
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "host": args.llm_binding_host,
-                "timeout": args.timeout,
-                "options": {"num_ctx": args.max_tokens},
-                "api_key": args.llm_binding_api_key,
-            }
-            if args.llm_binding == "lollms" or args.llm_binding == "ollama"
-            else {},
-            embedding_func=embedding_func,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            auto_manage_storages_states=False,
-            max_parallel_insert=args.max_parallel_insert,
-            addon_params={"language": args.summary_language},
-        )
-    else:  # azure_openai
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            llm_model_func=azure_openai_model_complete,
+    # Common llm_model_kwargs, specific ones added based on binding if not custom
+    llm_kwargs_for_rag = {
+        "host": args.llm_binding_host,
+        "timeout": args.timeout,
+        "options": {"num_ctx": args.max_tokens}, # ollama/lollms specific
+        "api_key": args.llm_binding_api_key, # for lollms, ollama, openai
+    }
+    if args.llm_binding == "azure_openai":
+        llm_kwargs_for_rag["api_version"] = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+        # AZURE_OPENAI_API_KEY is read inside azure_openai_model_complete
+
+    if args.use_custom_bindings and custom_functions_available and gemini_llm_complete_func:
+        # When using custom, some specific binding kwargs might not apply or are handled inside the custom func
+        llm_kwargs_for_rag = {
+             "timeout": args.timeout, # General timeout
+             # Custom function handles its own model, host, api_key internally
+        }
+
+
+    rag = LightRAG(
+        working_dir=args.working_dir,
+        llm_model_func=final_llm_func_to_use,
+        llm_model_name=args.llm_model, # Still useful for logging/reference
+        llm_model_max_async=args.max_async,
+        llm_model_max_token_size=args.max_tokens,
+        chunk_token_size=int(args.chunk_size),
+        chunk_overlap_token_size=int(args.chunk_overlap_size),
+        llm_model_kwargs=llm_kwargs_for_rag,
+        embedding_func=final_embedding_func_to_use,
+        kv_storage=args.kv_storage,
+        graph_storage=args.graph_storage,
+        vector_storage=args.vector_storage,
+        doc_status_storage=args.doc_status_storage,
+        vector_db_storage_cls_kwargs={
+            "cosine_better_than_threshold": args.cosine_threshold
+        },
+        enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+        enable_llm_cache=args.enable_llm_cache,
+        auto_manage_storages_states=False,
+        max_parallel_insert=args.max_parallel_insert,
+        addon_params={"language": args.summary_language},
+    )
+    # Removed redundant LightRAG initialization for azure_openai as it's now covered by the general logic
+
+    # --- Add routes (indented correctly) ---
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs={
