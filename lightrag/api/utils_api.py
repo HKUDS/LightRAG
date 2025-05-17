@@ -120,7 +120,11 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
             except HTTPException as e:
                 # If already a 401 error, re-raise it
                 if e.status_code == status.HTTP_401_UNAUTHORIZED:
-                    raise
+                    # If JWT validation (from Authorization: Bearer <token>) results in 401,
+                    # check if the 'token' itself is the configured API key.
+                    if api_key_configured and token == api_key:
+                        return  # Allow access if the token matches the API key
+                    raise # Otherwise, re-raise the original 401 from JWT validation
                 # For other exceptions, continue processing
 
         # 3. Acept all request if no API protection needed

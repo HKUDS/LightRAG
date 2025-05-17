@@ -220,6 +220,12 @@ def parse_args() -> argparse.Namespace:
         choices=["lollms", "ollama", "openai", "azure_openai"],
         help="Embedding binding type (default: from env or ollama)",
     )
+    parser.add_argument(
+        "--use-custom-bindings",
+        action="store_true",
+        default=get_env_value("USE_CUSTOM_BINDINGS", False, bool), # Added default from env
+        help="Use custom LLM and embedding functions from run_lightrag_gemini_jina.py, overriding --llm-binding and --embedding-binding."
+    )
 
     args = parser.parse_args()
 

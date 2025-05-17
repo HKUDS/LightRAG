@@ -33,6 +33,27 @@ from lightrag import LightRAG, __version__ as core_version
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
+
+# --- Python Path Modification and Custom Function Imports START ---
+import sys # sys was already imported, ensure it's fine
+import os # os was already imported
+# Assuming lightrag_server.py is in .../LightRAG/lightrag/api/
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+try:
+    from run_lightrag_gemini_jina import gemini_llm_complete_func, jina_embedding_func
+    # Assuming jina_embedding_func from run_lightrag_gemini_jina.py is an EmbeddingFunc instance or compatible
+    custom_functions_available = True
+    print("INFO: Successfully imported custom functions from run_lightrag_gemini_jina.py.")
+except ImportError as e:
+    print(f"DEBUG: Could not import custom functions from run_lightrag_gemini_jina.py: {e}") # Optional debug
+    gemini_llm_complete_func = None
+    jina_embedding_func = None
+    custom_functions_available = False
+# --- Python Path Modification and Custom Function Imports END ---
+
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
@@ -60,7 +81,7 @@ from lightrag.api.auth import auth_handler
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
-
+# Removed existing custom function definitions as they are now imported.
 
 webui_title = os.getenv("WEBUI_TITLE")
 webui_description = os.getenv("WEBUI_DESCRIPTION")
@@ -260,7 +281,7 @@ def create_app(args):
             **kwargs,
         )
 
-    embedding_func = EmbeddingFunc(
+    default_embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
         max_token_size=args.max_embed_tokens,
         func=lambda texts: lollms_embed(
@@ -279,8 +300,9 @@ def create_app(args):
         if args.embedding_binding == "ollama"
         else azure_openai_embed(
             texts,
-            model=args.embedding_model,  # no host is used for openai,
-            api_key=args.embedding_binding_api_key,
+            model=args.embedding_model,
+            api_key=args.embedding_binding_api_key or os.getenv("AZURE_OPENAI_API_KEY"), # Ensure API key is sourced
+            # Azure specific params like endpoint and api_version are handled by azure_openai_embed if it reads from env or LightRAG passes them
         )
         if args.embedding_binding == "azure_openai"
         else openai_embed(
@@ -291,68 +313,84 @@ def create_app(args):
         ),
     )
 
+    # --- Logic to determine LLM and Embedding functions for LightRAG ---
+    final_llm_model_func = None
+    final_embedding_func = None
+    
+    # Parameters for LightRAG if it needs to initialize its own LLM (when final_llm_model_func is None)
+    rag_llm_config_params = {
+        "llm_model_name": args.llm_model,
+        # Assuming args.max_tokens maps to LightRAG's llm_model_max_token_size or similar
+        "llm_model_max_token_size": args.max_tokens,
+        "llm_model_kwargs": {"temperature": args.temperature}, # Pass temperature
+    }
+    # Add binding-specific details for LightRAG's internal LLM setup
+    if args.llm_binding == "openai":
+        rag_llm_config_params["openai_api_key"] = args.llm_binding_api_key or os.getenv("OPENAI_API_KEY")
+        if args.llm_binding_host and not args.llm_binding_host.startswith("https://api.openai.com"): # Non-default base URL
+            rag_llm_config_params["openai_base_url"] = args.llm_binding_host
+    elif args.llm_binding == "azure_openai":
+        rag_llm_config_params["azure_openai_api_key"] = args.llm_binding_api_key or os.getenv("AZURE_OPENAI_API_KEY")
+        rag_llm_config_params["azure_openai_endpoint"] = args.llm_binding_host or os.getenv("AZURE_OPENAI_ENDPOINT")
+        rag_llm_config_params["azure_openai_api_version"] = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview") # Default from server
+    elif args.llm_binding == "ollama": # Handles ollama and openai-ollama if llm_model_func is None
+        rag_llm_config_params["ollama_host"] = args.llm_binding_host or os.getenv("OLLAMA_HOST", "http://localhost:11434")
+        # For openai-ollama, llm_model_name (args.llm_model) will be used by LightRAG's ollama setup
+    elif args.llm_binding == "lollms":
+        rag_llm_config_params["lollms_host"] = args.llm_binding_host or os.getenv("LOLLMS_HOST", "http://localhost:9600")
+
+    # Check for --use-custom-bindings argument (ensure it's added to ArgumentParser in config.py)
+    if hasattr(args, 'use_custom_bindings') and args.use_custom_bindings:
+        if custom_functions_available:
+            print("INFO: Using custom LLM and embedding functions from run_lightrag_gemini_jina.py.")
+            final_llm_model_func = gemini_llm_complete_func  # Imported function
+            final_embedding_func = jina_embedding_func    # Imported function (assumed EmbeddingFunc instance or compatible)
+            rag_llm_config_params = {}  # Clear config params as function is provided
+        else:
+            print("ERROR: --use-custom-bindings specified, but custom functions could not be imported. Falling back to CLI --llm-binding/--embedding-binding.")
+            # Fallback to default server-defined wrappers or LightRAG internal setup
+            if args.llm_binding == "openai" or args.llm_binding == "openai-ollama":
+                 final_llm_model_func = openai_alike_model_complete # Server-defined wrapper
+                 rag_llm_config_params = {}
+            elif args.llm_binding == "azure_openai":
+                 final_llm_model_func = azure_openai_model_complete # Server-defined wrapper
+                 rag_llm_config_params = {}
+            # else: final_llm_model_func remains None, LightRAG will use rag_llm_config_params
+            final_embedding_func = default_embedding_func
+    else: # Not using --use-custom-bindings flag, or flag not present in args
+        # Default behavior: use server-defined wrappers or let LightRAG initialize
+        if args.llm_binding == "openai" or args.llm_binding == "openai-ollama":
+            final_llm_model_func = openai_alike_model_complete
+            rag_llm_config_params = {}
+        elif args.llm_binding == "azure_openai":
+            final_llm_model_func = azure_openai_model_complete
+            rag_llm_config_params = {}
+        # else: final_llm_model_func remains None, LightRAG will use rag_llm_config_params
+        final_embedding_func = default_embedding_func
+    # --- End of logic to determine functions ---
+
     # Initialize RAG
-    if args.llm_binding in ["lollms", "ollama", "openai"]:
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            llm_model_func=lollms_model_complete
-            if args.llm_binding == "lollms"
-            else ollama_model_complete
-            if args.llm_binding == "ollama"
-            else openai_alike_model_complete,
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "host": args.llm_binding_host,
-                "timeout": args.timeout,
-                "options": {"num_ctx": args.max_tokens},
-                "api_key": args.llm_binding_api_key,
-            }
-            if args.llm_binding == "lollms" or args.llm_binding == "ollama"
-            else {},
-            embedding_func=embedding_func,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            auto_manage_storages_states=False,
-            max_parallel_insert=args.max_parallel_insert,
-            addon_params={"language": args.summary_language},
-        )
-    else:  # azure_openai
-        rag = LightRAG(
-            working_dir=args.working_dir,
-            llm_model_func=azure_openai_model_complete,
-            chunk_token_size=int(args.chunk_size),
-            chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "timeout": args.timeout,
-            },
-            llm_model_name=args.llm_model,
-            llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
-            embedding_func=embedding_func,
-            kv_storage=args.kv_storage,
-            graph_storage=args.graph_storage,
-            vector_storage=args.vector_storage,
-            doc_status_storage=args.doc_status_storage,
-            vector_db_storage_cls_kwargs={
-                "cosine_better_than_threshold": args.cosine_threshold
-            },
-            enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
-            enable_llm_cache=args.enable_llm_cache,
-            auto_manage_storages_states=False,
-            max_parallel_insert=args.max_parallel_insert,
-            addon_params={"language": args.summary_language},
-        )
+    rag = LightRAG(
+        llm_model_func=final_llm_model_func,
+        embedding_func=final_embedding_func,
+        **rag_llm_config_params,  # Pass LLM config if func is None; LightRAG should ignore if func is set
+        # Common LightRAG parameters:
+        working_dir=args.working_dir,
+        kv_storage=args.kv_storage,
+        vector_storage=args.vector_storage,
+        graph_storage=args.graph_storage,
+        doc_status_storage=args.doc_status_storage,
+        chunk_token_size=int(args.chunk_size),
+        chunk_overlap_token_size=int(args.chunk_overlap_size),
+        vector_db_storage_cls_kwargs={
+            "cosine_better_than_threshold": args.cosine_threshold
+        },
+        enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
+        enable_llm_cache=args.enable_llm_cache,
+        auto_manage_storages_states=False,
+        max_parallel_insert=args.max_parallel_insert,
+        addon_params={"language": args.summary_language},
+    )
 
     # Add routes
     app.include_router(create_document_routes(rag, doc_manager, api_key))
