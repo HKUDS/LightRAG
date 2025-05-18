@@ -12,13 +12,13 @@ The LightRAG Server is designed to provide a Web UI and API support. The Web UI 
 
 ### Installation
 
-*   Install from PyPI
+* Install from PyPI
 
 ```bash
 pip install "lightrag-hku[api]"
 ```
 
-*   Installation from Source
+* Installation from Source
 
 ```bash
 # Clone the repository
@@ -36,16 +36,16 @@ pip install -e ".[api]"
 
 LightRAG necessitates the integration of both an LLM (Large Language Model) and an Embedding Model to effectively execute document indexing and querying operations. Prior to the initial deployment of the LightRAG server, it is essential to configure the settings for both the LLM and the Embedding Model. LightRAG supports binding to various LLM/Embedding backends:
 
-*   ollama
-*   lollms
-*   openai or openai compatible
-*   azure_openai
+* ollama
+* lollms
+* openai or openai compatible
+* azure_openai
 
 It is recommended to use environment variables to configure the LightRAG Server. There is an example environment variable file named `env.example` in the root directory of the project. Please copy this file to the startup directory and rename it to `.env`. After that, you can modify the parameters related to the LLM and Embedding models in the `.env` file. It is important to note that the LightRAG Server will load the environment variables from `.env` into the system environment variables each time it starts. Since the LightRAG Server will prioritize the settings in the system environment variables, if you modify the `.env` file after starting the LightRAG Server via the command line, you need to execute `source .env` to make the new settings take effect.
 
 Here are some examples of common settings for LLM and Embedding models:
 
-*   OpenAI LLM + Ollama Embedding:
+* OpenAI LLM + Ollama Embedding:
 
 ```
 LLM_BINDING=openai
@@ -62,7 +62,7 @@ EMBEDDING_DIM=1024
 # EMBEDDING_BINDING_API_KEY=your_api_key
 ```
 
-*   Ollama LLM + Ollama Embedding:
+* Ollama LLM + Ollama Embedding:
 
 ```
 LLM_BINDING=ollama
@@ -82,12 +82,12 @@ EMBEDDING_DIM=1024
 ### Starting LightRAG Server
 
 The LightRAG Server supports two operational modes:
-*   The simple and efficient Uvicorn mode:
+* The simple and efficient Uvicorn mode:
 
 ```
 lightrag-server
 ```
-*   The multiprocess Gunicorn + Uvicorn mode (production mode, not supported on Windows environments):
+* The multiprocess Gunicorn + Uvicorn mode (production mode, not supported on Windows environments):
 
 ```
 lightrag-gunicorn --workers 4
@@ -98,23 +98,80 @@ Upon launching, the LightRAG Server will create a documents directory (default i
 
 Here are some commonly used startup parameters:
 
--   `--host`: Server listening address (default: 0.0.0.0)
--   `--port`: Server listening port (default: 9621)
--   `--timeout`: LLM request timeout (default: 150 seconds)
--   `--log-level`: Logging level (default: INFO)
--   `--input-dir`: Specifying the directory to scan for documents (default: ./inputs)
+- `--host`: Server listening address (default: 0.0.0.0)
+- `--port`: Server listening port (default: 9621)
+- `--timeout`: LLM request timeout (default: 150 seconds)
+- `--log-level`: Logging level (default: INFO)
+- `--input-dir`: Specifying the directory to scan for documents (default: ./inputs)
 
-> The requirement for the .env file to be in the startup directory is intentionally designed this way. The purpose is to support users in launching multiple LightRAG instances simultaneously, allowing different .env files for different instances.
+> - The requirement for the .env file to be in the startup directory is intentionally designed this way. The purpose is to support users in launching multiple LightRAG instances simultaneously, allowing different .env files for different instances.
+> - **After changing the .env file, you need to open a new terminal to make  the new settings take effect.** This because the LightRAG Server will load the environment variables from .env into the system environment variables each time it starts, and LightRAG Server will prioritize the settings in the system environment variables.
 
-> **After changing the .env file, you need to open a new terminal to make  the new settings take effect.** This because the LightRAG Server will load the environment variables from .env into the system environment variables each time it starts, and LightRAG Server will prioritize the settings in the system environment variables.
+### Launching LightRAG Server with Docker
+
+* Clone the repository:
+```shell
+git clone https://github.com/HKUDS/LightRAG.git
+cd LightRAG
+```
+
+* Prepare the .env file:
+    Create a personalized .env file from sample file `env.example`. Configure the LLM and embedding parameters according to your requirements.
+
+* Start the LightRAG Server using the following commands:
+```shell
+docker compose up
+# Use --build if you have pulled a new version
+docker compose up --build
+```
+
+### Deploying LightRAG Server with docker without cloneing the repository
+
+* Create a working folder for LightRAG Server:
+
+```shell
+mkdir lightrag
+cd lightrag
+```
+
+* Create a docker compose file named docker-compose.yml:
+
+
+```yaml
+services:
+  lightrag:
+    container_name: lightrag
+    image: ghcr.io/hkuds/lightrag:latest
+    ports:
+      - "${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./config.ini:/app/config.ini
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+* Prepare the .env file:
+    Create a personalized .env file from sample file `env.example`. Configure the LLM and embedding parameters according to your requirements.
+
+* Start the LightRAG Server using the following commands:
+```shell
+docker compose up
+```
+
+> Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
 ### Auto scan on startup
 
 When starting any of the servers with the `--auto-scan-at-startup` parameter, the system will automatically:
 
-1.  Scan for new files in the input directory
-2.  Index new documents that aren't already in the database
-3.  Make all content immediately available for RAG queries
+1. Scan for new files in the input directory
+2. Index new documents that aren't already in the database
+3. Make all content immediately available for RAG queries
 
 > The `--input-dir` parameter specifies the input directory to scan. You can trigger the input directory scan from the Web UI.
 
@@ -204,11 +261,20 @@ For example, the chat message `/mix What's LightRAG?` will trigger a mix mode qu
 
 `/context` is also not a LightRAG query mode; it will tell LightRAG to return only the context information prepared for the LLM. You can check the context if it's what you want, or process the context by yourself.
 
+### Add user prompt in chat
+
+When using LightRAG for content queries, avoid combining the search process with unrelated output processing, as this significantly impacts query effectiveness. User prompt is specifically designed to address this issue — it does not participate in the RAG retrieval phase, but rather guides the LLM on how to process the retrieved results after the query is completed. We can append square brackets to the query prefix to provide the LLM with the user prompt:
+
+```
+/[Use mermaid format for diagrams] Please draw a character relationship diagram for Scrooge
+/mix[Use mermaid format for diagrams] Please draw a character relationship diagram for Scrooge
+```
+
 ## API Key and Authentication
 
 By default, the LightRAG Server can be accessed without any authentication. We can configure the server with an API Key or account credentials to secure it.
 
-*   API Key:
+* API Key:
 
 ```
 LIGHTRAG_API_KEY=your-secure-api-key-here
@@ -217,7 +283,7 @@ WHITELIST_PATHS=/health,/api/*
 
 > Health check and Ollama emulation endpoints are excluded from API Key check by default.
 
-*   Account credentials (the Web UI requires login before access can be granted):
+* Account credentials (the Web UI requires login before access can be granted):
 
 LightRAG API Server implements JWT-based authentication using the HS256 algorithm. To enable secure access control, the following environment variables are required:
 
@@ -272,9 +338,9 @@ EMBEDDING_MODEL=your-embedding-deployment-name
 
 The API Server can be configured in three ways (highest priority first):
 
-*   Command line arguments
-*   Environment variables or .env file
-*   Config.ini (Only for storage configuration)
+* Command line arguments
+* Environment variables or .env file
+* Config.ini (Only for storage configuration)
 
 Most of the configurations come with default settings; check out the details in the sample file: `.env.example`. Data storage configuration can also be set by config.ini. A sample file `config.ini.example` is provided for your convenience.
 
@@ -282,15 +348,15 @@ Most of the configurations come with default settings; check out the details in 
 
 LightRAG supports binding to various LLM/Embedding backends:
 
-*   ollama
-*   lollms
-*   openai & openai compatible
-*   azure_openai
+* ollama
+* lollms
+* openai & openai compatible
+* azure_openai
 
 Use environment variables `LLM_BINDING` or CLI argument `--llm-binding` to select the LLM backend type. Use environment variables `EMBEDDING_BINDING` or CLI argument `--embedding-binding` to select the Embedding backend type.
 
 ### Entity Extraction Configuration
-*   ENABLE_LLM_CACHE_FOR_EXTRACT: Enable LLM cache for entity extraction (default: true)
+* ENABLE_LLM_CACHE_FOR_EXTRACT: Enable LLM cache for entity extraction (default: true)
 
 It's very common to set `ENABLE_LLM_CACHE_FOR_EXTRACT` to true for a test environment to reduce the cost of LLM calls.
 
@@ -298,14 +364,14 @@ It's very common to set `ENABLE_LLM_CACHE_FOR_EXTRACT` to true for a test enviro
 
 LightRAG uses 4 types of storage for different purposes:
 
-*   KV_STORAGE: llm response cache, text chunks, document information
-*   VECTOR_STORAGE: entities vectors, relation vectors, chunks vectors
-*   GRAPH_STORAGE: entity relation graph
-*   DOC_STATUS_STORAGE: document indexing status
+* KV_STORAGE: llm response cache, text chunks, document information
+* VECTOR_STORAGE: entities vectors, relation vectors, chunks vectors
+* GRAPH_STORAGE: entity relation graph
+* DOC_STATUS_STORAGE: document indexing status
 
 Each storage type has several implementations:
 
-*   KV_STORAGE supported implementations:
+* KV_STORAGE supported implementations:
 
 ```
 JsonKVStorage    JsonFile (default)
@@ -314,7 +380,7 @@ RedisKVStorage   Redis
 MongoKVStorage   MongoDB
 ```
 
-*   GRAPH_STORAGE supported implementations:
+* GRAPH_STORAGE supported implementations:
 
 ```
 NetworkXStorage      NetworkX (default)
@@ -324,7 +390,7 @@ PGGraphStorage       PostgreSQL with AGE plugin
 
 > Testing has shown that Neo4J delivers superior performance in production environments compared to PostgreSQL with AGE plugin.
 
-*   VECTOR_STORAGE supported implementations:
+* VECTOR_STORAGE supported implementations:
 
 ```
 NanoVectorDBStorage         NanoVector (default)
@@ -336,7 +402,7 @@ QdrantVectorDBStorage       Qdrant
 MongoVectorDBStorage        MongoDB
 ```
 
-*   DOC_STATUS_STORAGE: supported implementations:
+* DOC_STATUS_STORAGE: supported implementations:
 
 ```
 JsonDocStatusStorage        JsonFile (default)
@@ -421,21 +487,37 @@ EMBEDDING_BINDING_HOST=http://localhost:11434
 
 ```
 
+## Document and Chunk  Processing Login Clarification
+
+The document processing pipeline in LightRAG is somewhat complex and is divided into two primary stages: the Extraction stage (entity and relationship extraction) and the Merging stage (entity and relationship merging). There are two key parameters that control pipeline concurrency: the maximum number of files processed in parallel (MAX_PARALLEL_INSERT) and the maximum number of concurrent LLM requests (MAX_ASYNC). The workflow is described as follows:
+
+1. MAX_PARALLEL_INSERT controls the number of files processed in parallel during the extraction stage.
+2. MAX_ASYNC limits the total number of concurrent LLM requests in the system, including those for querying, extraction, and merging. LLM requests have different priorities: query operations have the highest priority, followed by merging, and then extraction.
+3. Within a single file, entity and relationship extractions from different text blocks are processed concurrently, with the degree of concurrency set by MAX_ASYNC. Only after MAX_ASYNC text blocks are processed will the system proceed to the next batch within the same file.
+4. The merging stage begins only after all text blocks in a file have completed entity and relationship extraction. When a file enters the merging stage, the pipeline allows the next file to begin extraction.
+5. Since the extraction stage is generally faster than merging, the actual number of files being processed concurrently may exceed MAX_PARALLEL_INSERT, as this parameter only controls parallelism during the extraction stage.
+6. To prevent race conditions, the merging stage does not support concurrent processing of multiple files; only one file can be merged at a time, while other files must wait in queue.
+7. Each file is treated as an atomic processing unit in the pipeline. A file is marked as successfully processed only after all its text blocks have completed extraction and merging. If any error occurs during processing, the entire file is marked as failed and must be reprocessed.
+8. When a file is reprocessed due to errors, previously processed text blocks can be quickly skipped thanks to LLM caching. Although LLM cache is also utilized during the merging stage, inconsistencies in merging order may limit its effectiveness in this stage.
+9. If an error occurs during extraction, the system does not retain any intermediate results. If an error occurs during merging, already merged entities and relationships might be preserved; when the same file is reprocessed, re-extracted entities and relationships will be merged with the existing ones, without impacting the query results.
+10. At the end of the merging stage, all entity and relationship data are updated in the vector database. Should an error occur at this point, some updates may be retained. However, the next processing attempt will overwrite previous results, ensuring that successfully reprocessed files do not affect the integrity of future query results.
+
+Large files should be divided into smaller segments to enable incremental processing. Reprocessing of failed files can be initiated by pressing the "Scan" button on the web UI.
 
 ## API Endpoints
 
 All servers (LoLLMs, Ollama, OpenAI and Azure OpenAI) provide the same REST API endpoints for RAG functionality. When the API Server is running, visit:
 
--   Swagger UI: http://localhost:9621/docs
--   ReDoc: http://localhost:9621/redoc
+- Swagger UI: http://localhost:9621/docs
+- ReDoc: http://localhost:9621/redoc
 
 You can test the API endpoints using the provided curl commands or through the Swagger UI interface. Make sure to:
 
-1.  Start the appropriate backend service (LoLLMs, Ollama, or OpenAI)
-2.  Start the RAG server
-3.  Upload some documents using the document management endpoints
-4.  Query the system using the query endpoints
-5.  Trigger document scan if new files are put into the inputs directory
+1. Start the appropriate backend service (LoLLMs, Ollama, or OpenAI)
+2. Start the RAG server
+3. Upload some documents using the document management endpoints
+4. Query the system using the query endpoints
+5. Trigger document scan if new files are put into the inputs directory
 
 ### Query Endpoints:
 

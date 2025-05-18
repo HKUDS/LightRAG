@@ -114,11 +114,18 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             return
 
         try:
+            import time
+
+            current_time = int(time.time())
+
             ids = list(data.keys())
             documents = [v["content"] for v in data.values()]
             metadatas = [
-                {k: v for k, v in item.items() if k in self.meta_fields}
-                or {"_default": "true"}
+                {
+                    **{k: v for k, v in item.items() if k in self.meta_fields},
+                    "created_at": current_time,
+                }
+                or {"_default": "true", "created_at": current_time}
                 for item in data.values()
             ]
 
@@ -161,7 +168,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
         self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
         try:
-            embedding = await self.embedding_func([query])
+            embedding = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
 
             results = self._collection.query(
                 query_embeddings=embedding.tolist()
@@ -181,6 +190,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
                     "id": results["ids"][0][i],
                     "distance": 1 - results["distances"][0][i],
                     "content": results["documents"][0][i],
+                    "created_at": results["metadatas"][0][i].get("created_at"),
                     **results["metadatas"][0][i],
                 }
                 for i in range(len(results["ids"][0]))
@@ -233,42 +243,6 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
             raise
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        try:
-            # Get all records from the collection
-            # Since ChromaDB doesn't directly support prefix search on IDs,
-            # we'll get all records and filter in Python
-            results = self._collection.get(
-                include=["metadatas", "documents", "embeddings"]
-            )
-
-            matching_records = []
-
-            # Filter records where ID starts with the prefix
-            for i, record_id in enumerate(results["ids"]):
-                if record_id.startswith(prefix):
-                    matching_records.append(
-                        {
-                            "id": record_id,
-                            "content": results["documents"][i],
-                            "vector": results["embeddings"][i],
-                            **results["metadatas"][i],
-                        }
-                    )
-
-            logger.debug(
-                f"Found {len(matching_records)} records with prefix '{prefix}'"
-            )
-            return matching_records
-
         except Exception as e:
             logger.error(f"Error during prefix search in ChromaDB: {str(e)}")
             raise
@@ -296,6 +270,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
                 "id": result["ids"][0],
                 "vector": result["embeddings"][0],
                 "content": result["documents"][0],
+                "created_at": result["metadatas"][0].get("created_at"),
                 **result["metadatas"][0],
             }
         except Exception as e:
@@ -329,6 +304,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
                     "id": result["ids"][i],
                     "vector": result["embeddings"][i],
                     "content": result["documents"][i],
+                    "created_at": result["metadatas"][i].get("created_at"),
                     **result["metadatas"][i],
                 }
                 for i in range(len(result["ids"]))

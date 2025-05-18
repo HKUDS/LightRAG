@@ -84,10 +84,24 @@ pip install "lightrag-hku[api]"
 * Installation from Source
 
 ```bash
+git clone https://github.com/HKUDS/LightRAG.git
+cd LightRAG
 # create a Python virtual enviroment if neccesary
 # Install in editable mode with API support
 pip install -e ".[api]"
 ```
+
+* Launching the LightRAG Server with Docker Compose
+
+```
+git clone https://github.com/HKUDS/LightRAG.git
+cd LightRAG
+cp env.example .env
+# modify LLM and Embedding settings in .env
+docker compose up
+```
+
+> Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
 ### Install  LightRAG Core
 
@@ -108,7 +122,7 @@ pip install lightrag-hku
 
 ### Quick Start for LightRAG Server
 
-For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).
+* For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).
 
 ### Quick Start for LightRAG core
 
@@ -127,11 +141,13 @@ python examples/lightrag_openai_demo.py
 
 For a streaming response implementation example, please see `examples/lightrag_openai_compatible_demo.py`. Prior to execution, ensure you modify the sample code’s LLM and embedding configurations accordingly.
 
-**Note**: When running the demo program, please be aware that different test scripts may use different embedding models. If you switch to a different embedding model, you must clear the data directory (`./dickens`); otherwise, the program may encounter errors. If you wish to retain the LLM cache, you can preserve the `kv_store_llm_response_cache.json` file while clearing the data directory.
+**Note 1**: When running the demo program, please be aware that different test scripts may use different embedding models. If you switch to a different embedding model, you must clear the data directory (`./dickens`); otherwise, the program may encounter errors. If you wish to retain the LLM cache, you can preserve the `kv_store_llm_response_cache.json` file while clearing the data directory.
 
-Integrate Using LightRAG core object
+**Note 2**: Only `lightrag_openai_demo.py` and `lightrag_openai_compatible_demo.py` are officially supported sample codes. Other sample files are community contributions that haven't undergone full testing and optimization.
 
 ## Programing with LightRAG Core
+
+> If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
 
 ### A Simple Program
 
@@ -237,38 +253,64 @@ Use QueryParam to control the behavior your query:
 
 ```python
 class QueryParam:
-    mode: Literal["local", "global", "hybrid", "naive", "mix"] = "global"
+    """Configuration parameters for query execution in LightRAG."""
+
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "global"
     """Specifies the retrieval mode:
     - "local": Focuses on context-dependent information.
     - "global": Utilizes global knowledge.
     - "hybrid": Combines local and global retrieval methods.
     - "naive": Performs a basic search without advanced techniques.
-    - "mix": Integrates knowledge graph and vector retrieval. Mix mode combines knowledge graph and vector search:
-        - Uses both structured (KG) and unstructured (vector) information
-        - Provides comprehensive answers by analyzing relationships and context
-        - Supports image content through HTML img tags
-        - Allows control over retrieval depth via top_k parameter
+    - "mix": Integrates knowledge graph and vector retrieval.
     """
+
     only_need_context: bool = False
     """If True, only returns the retrieved context without generating a response."""
+
+    only_need_prompt: bool = False
+    """If True, only returns the generated prompt without producing a response."""
+
     response_type: str = "Multiple Paragraphs"
     """Defines the response format. Examples: 'Multiple Paragraphs', 'Single Paragraph', 'Bullet Points'."""
-    top_k: int = 60
+
+    stream: bool = False
+    """If True, enables streaming output for real-time responses."""
+
+    top_k: int = int(os.getenv("TOP_K", "60"))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
-    max_token_for_text_unit: int = 4000
+
+    max_token_for_text_unit: int = int(os.getenv("MAX_TOKEN_TEXT_CHUNK", "4000"))
     """Maximum number of tokens allowed for each retrieved text chunk."""
-    max_token_for_global_context: int = 4000
+
+    max_token_for_global_context: int = int(
+        os.getenv("MAX_TOKEN_RELATION_DESC", "4000")
+    )
     """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
-    max_token_for_local_context: int = 4000
+
+    max_token_for_local_context: int = int(os.getenv("MAX_TOKEN_ENTITY_DESC", "4000"))
     """Maximum number of tokens allocated for entity descriptions in local retrieval."""
-    ids: list[str] | None = None # ONLY SUPPORTED FOR PG VECTOR DBs
-    """List of ids to filter the RAG."""
+
+    conversation_history: list[dict[str, str]] = field(default_factory=list)
+    """Stores past conversation history to maintain context.
+    Format: [{"role": "user/assistant", "content": "message"}].
+    """
+
+    history_turns: int = 3
+    """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
+
+    ids: list[str] | None = None
+    """List of ids to filter the results."""
+
     model_func: Callable[..., object] | None = None
     """Optional override for the LLM model function to use for this specific query.
     If provided, this will be used instead of the global model function.
     This allows using different models for different query modes.
     """
-    ...
+
+    user_prompt: str | None = None
+    """User-provided prompt for the query.
+    If proivded, this will be use instead of the default vaulue from prompt template.
+    """
 ```
 
 > default value of Top_k can be change by environment  variables  TOP_K.
@@ -421,7 +463,7 @@ rag = LightRAG(
     embedding_func=EmbeddingFunc(
         embedding_dim=768,
         max_token_size=8192,
-        func=lambda texts: ollama_embedding(
+        func=lambda texts: ollama_embed(
             texts,
             embed_model="nomic-embed-text"
         )
@@ -544,76 +586,26 @@ response = rag.query(
 
 </details>
 
-### Custom Prompt Support
+### User Prompt vs. Query
 
-LightRAG now supports custom prompts for fine-tuned control over the system's behavior. Here's how to use it:
-
-<details>
-  <summary> <b> Usage Example </b></summary>
+When using LightRAG for content queries, avoid combining the search process with unrelated output processing, as this significantly impacts query effectiveness. The `user_prompt` parameter in Query Param is specifically designed to address this issue — it does not participate in the RAG retrieval phase, but rather guides the LLM on how to process the retrieved results after the query is completed. Here's how to use it:
 
 ```python
 # Create query parameters
 query_param = QueryParam(
-    mode="hybrid",  # or other mode: "local", "global", "hybrid", "mix" and "naive"
+    mode = "hybrid",  # Other modes：local, global, hybrid, mix, naive
+    user_prompt = "For diagrams, use mermaid format with English/Pinyin node names and Chinese display labels",
 )
 
-# Example 1: Using the default system prompt
+# Query and process
 response_default = rag.query(
-    "What are the primary benefits of renewable energy?",
+    "Please draw a character relationship diagram for Scrooge",
     param=query_param
 )
 print(response_default)
-
-# Example 2: Using a custom prompt
-custom_prompt = """
-You are an expert assistant in environmental science. Provide detailed and structured answers with examples.
----Conversation History---
-{history}
-
----Knowledge Base---
-{context_data}
-
----Response Rules---
-
-- Target format and length: {response_type}
-"""
-response_custom = rag.query(
-    "What are the primary benefits of renewable energy?",
-    param=query_param,
-    system_prompt=custom_prompt  # Pass the custom prompt
-)
-print(response_custom)
 ```
 
-</details>
 
-### Separate Keyword Extraction
-
-We've introduced a new function `query_with_separate_keyword_extraction` to enhance the keyword extraction capabilities. This function separates the keyword extraction process from the user's prompt, focusing solely on the query to improve the relevance of extracted keywords.
-
-**How It Works?**
-
-The function operates by dividing the input into two parts:
-
-- `User Query`
-- `Prompt`
-
-It then performs keyword extraction exclusively on the `user query`. This separation ensures that the extraction process is focused and relevant, unaffected by any additional language in the `prompt`. It also allows the `prompt` to serve purely for response formatting, maintaining the intent and clarity of the user's original question.
-
-<details>
-  <summary> <b> Usage Example </b></summary>
-
-This `example` shows how to tailor the function for educational content, focusing on detailed explanations for older students.
-
-```python
-rag.query_with_separate_keyword_extraction(
-    query="Explain the law of gravity",
-    prompt="Provide a detailed explanation suitable for high school students studying physics.",
-    param=QueryParam(mode="hybrid")
-)
-```
-
-</details>
 
 ### Insert
 
@@ -694,70 +686,6 @@ file_path = 'TEXT.pdf'
 text_content = textract.process(file_path)
 
 rag.insert(text_content.decode('utf-8'))
-```
-
-</details>
-
-<details>
-  <summary> <b> Insert Custom KG </b></summary>
-
-```python
-custom_kg = {
-    "chunks": [
-        {
-            "content": "Alice and Bob are collaborating on quantum computing research.",
-            "source_id": "doc-1"
-        }
-    ],
-    "entities": [
-        {
-            "entity_name": "Alice",
-            "entity_type": "person",
-            "description": "Alice is a researcher specializing in quantum physics.",
-            "source_id": "doc-1"
-        },
-        {
-            "entity_name": "Bob",
-            "entity_type": "person",
-            "description": "Bob is a mathematician.",
-            "source_id": "doc-1"
-        },
-        {
-            "entity_name": "Quantum Computing",
-            "entity_type": "technology",
-            "description": "Quantum computing utilizes quantum mechanical phenomena for computation.",
-            "source_id": "doc-1"
-        }
-    ],
-    "relationships": [
-        {
-            "src_id": "Alice",
-            "tgt_id": "Bob",
-            "description": "Alice and Bob are research partners.",
-            "keywords": "collaboration research",
-            "weight": 1.0,
-            "source_id": "doc-1"
-        },
-        {
-            "src_id": "Alice",
-            "tgt_id": "Quantum Computing",
-            "description": "Alice conducts research on quantum computing.",
-            "keywords": "research expertise",
-            "weight": 1.0,
-            "source_id": "doc-1"
-        },
-        {
-            "src_id": "Bob",
-            "tgt_id": "Quantum Computing",
-            "description": "Bob researches quantum computing.",
-            "keywords": "research application",
-            "weight": 1.0,
-            "source_id": "doc-1"
-        }
-    ]
-}
-
-rag.insert_custom_kg(custom_kg)
 ```
 
 </details>
@@ -965,17 +893,154 @@ updated_relation = rag.edit_relation("Google", "Google Mail", {
 
 All operations are available in both synchronous and asynchronous versions. The asynchronous versions have the prefix "a" (e.g., `acreate_entity`, `aedit_relation`).
 
-#### Entity Operations
+</details>
+
+<details>
+  <summary> <b> Insert Custom KG </b></summary>
+
+```python
+custom_kg = {
+    "chunks": [
+        {
+            "content": "Alice and Bob are collaborating on quantum computing research.",
+            "source_id": "doc-1"
+        }
+    ],
+    "entities": [
+        {
+            "entity_name": "Alice",
+            "entity_type": "person",
+            "description": "Alice is a researcher specializing in quantum physics.",
+            "source_id": "doc-1"
+        },
+        {
+            "entity_name": "Bob",
+            "entity_type": "person",
+            "description": "Bob is a mathematician.",
+            "source_id": "doc-1"
+        },
+        {
+            "entity_name": "Quantum Computing",
+            "entity_type": "technology",
+            "description": "Quantum computing utilizes quantum mechanical phenomena for computation.",
+            "source_id": "doc-1"
+        }
+    ],
+    "relationships": [
+        {
+            "src_id": "Alice",
+            "tgt_id": "Bob",
+            "description": "Alice and Bob are research partners.",
+            "keywords": "collaboration research",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        },
+        {
+            "src_id": "Alice",
+            "tgt_id": "Quantum Computing",
+            "description": "Alice conducts research on quantum computing.",
+            "keywords": "research expertise",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        },
+        {
+            "src_id": "Bob",
+            "tgt_id": "Quantum Computing",
+            "description": "Bob researches quantum computing.",
+            "keywords": "research application",
+            "weight": 1.0,
+            "source_id": "doc-1"
+        }
+    ]
+}
+
+rag.insert_custom_kg(custom_kg)
+```
+
+</details>
+
+<details>
+  <summary> <b>Other Entity and Relation Operations</b></summary>
 
 - **create_entity**: Creates a new entity with specified attributes
 - **edit_entity**: Updates an existing entity's attributes or renames it
 
-#### Relation Operations
 
 - **create_relation**: Creates a new relation between existing entities
 - **edit_relation**: Updates an existing relation's attributes
 
 These operations maintain data consistency across both the graph database and vector database components, ensuring your knowledge graph remains coherent.
+
+</details>
+
+## Entity Merging
+
+<details>
+<summary> <b>Merge Entities and Their Relationships</b> </summary>
+
+LightRAG now supports merging multiple entities into a single entity, automatically handling all relationships:
+
+```python
+# Basic entity merging
+rag.merge_entities(
+    source_entities=["Artificial Intelligence", "AI", "Machine Intelligence"],
+    target_entity="AI Technology"
+)
+```
+
+With custom merge strategy:
+
+```python
+# Define custom merge strategy for different fields
+rag.merge_entities(
+    source_entities=["John Smith", "Dr. Smith", "J. Smith"],
+    target_entity="John Smith",
+    merge_strategy={
+        "description": "concatenate",  # Combine all descriptions
+        "entity_type": "keep_first",   # Keep the entity type from the first entity
+        "source_id": "join_unique"     # Combine all unique source IDs
+    }
+)
+```
+
+With custom target entity data:
+
+```python
+# Specify exact values for the merged entity
+rag.merge_entities(
+    source_entities=["New York", "NYC", "Big Apple"],
+    target_entity="New York City",
+    target_entity_data={
+        "entity_type": "LOCATION",
+        "description": "New York City is the most populous city in the United States.",
+    }
+)
+```
+
+Advanced usage combining both approaches:
+
+```python
+# Merge company entities with both strategy and custom data
+rag.merge_entities(
+    source_entities=["Microsoft Corp", "Microsoft Corporation", "MSFT"],
+    target_entity="Microsoft",
+    merge_strategy={
+        "description": "concatenate",  # Combine all descriptions
+        "source_id": "join_unique"     # Combine source IDs
+    },
+    target_entity_data={
+        "entity_type": "ORGANIZATION",
+    }
+)
+```
+
+When merging entities:
+
+* All relationships from source entities are redirected to the target entity
+* Duplicate relationships are intelligently merged
+* Self-relationships (loops) are prevented
+* Source entities are removed after merging
+* Relationship weights and attributes are preserved
 
 </details>
 
@@ -1084,78 +1149,6 @@ All exports include:
 * Entity information (names, IDs, metadata)
 * Relation data (connections between entities)
 * Relationship information from vector database
-
-
-## Entity Merging
-
-<details>
-<summary> <b>Merge Entities and Their Relationships</b> </summary>
-
-LightRAG now supports merging multiple entities into a single entity, automatically handling all relationships:
-
-```python
-# Basic entity merging
-rag.merge_entities(
-    source_entities=["Artificial Intelligence", "AI", "Machine Intelligence"],
-    target_entity="AI Technology"
-)
-```
-
-With custom merge strategy:
-
-```python
-# Define custom merge strategy for different fields
-rag.merge_entities(
-    source_entities=["John Smith", "Dr. Smith", "J. Smith"],
-    target_entity="John Smith",
-    merge_strategy={
-        "description": "concatenate",  # Combine all descriptions
-        "entity_type": "keep_first",   # Keep the entity type from the first entity
-        "source_id": "join_unique"     # Combine all unique source IDs
-    }
-)
-```
-
-With custom target entity data:
-
-```python
-# Specify exact values for the merged entity
-rag.merge_entities(
-    source_entities=["New York", "NYC", "Big Apple"],
-    target_entity="New York City",
-    target_entity_data={
-        "entity_type": "LOCATION",
-        "description": "New York City is the most populous city in the United States.",
-    }
-)
-```
-
-Advanced usage combining both approaches:
-
-```python
-# Merge company entities with both strategy and custom data
-rag.merge_entities(
-    source_entities=["Microsoft Corp", "Microsoft Corporation", "MSFT"],
-    target_entity="Microsoft",
-    merge_strategy={
-        "description": "concatenate",  # Combine all descriptions
-        "source_id": "join_unique"     # Combine source IDs
-    },
-    target_entity_data={
-        "entity_type": "ORGANIZATION",
-    }
-)
-```
-
-When merging entities:
-
-* All relationships from source entities are redirected to the target entity
-* Duplicate relationships are intelligently merged
-* Self-relationships (loops) are prevented
-* Source entities are removed after merging
-* Relationship weights and attributes are preserved
-
-</details>
 
 ## Cache
 

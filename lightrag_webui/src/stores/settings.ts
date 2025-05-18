@@ -115,7 +115,8 @@ const useSettingsStoreBase = create<SettingsState>()(
         stream: true,
         history_turns: 3,
         hl_keywords: [],
-        ll_keywords: []
+        ll_keywords: [],
+        user_prompt: ''
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -167,7 +168,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 11,
+      version: 13,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -220,6 +221,16 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 11) {
           state.minEdgeSize = 1
           state.maxEdgeSize = 1
+        }
+        if (version < 12) {
+          // Clear retrieval history to avoid compatibility issues with MessageWithError type
+          state.retrievalHistory = []
+        }
+        if (version < 13) {
+          // Add user_prompt field for older versions
+          if (state.querySettings) {
+            state.querySettings.user_prompt = ''
+          }
         }
         return state
       }

@@ -8,8 +8,14 @@ import sys
 import signal
 import pipmaster as pm
 from lightrag.api.utils_api import display_splash_screen, check_env_file
+from lightrag.api.config import global_args
+from lightrag.utils import get_env_value
 from lightrag.kg.shared_storage import initialize_share_data, finalize_share_data
-from .config import global_args
+
+from lightrag.constants import (
+    DEFAULT_WOKERS,
+    DEFAULT_TIMEOUT,
+)
 
 
 def check_and_install_dependencies():
@@ -122,7 +128,7 @@ def main():
             gunicorn_config.workers = (
                 global_args.workers
                 if global_args.workers
-                else int(os.getenv("WORKERS", 1))
+                else get_env_value("WORKERS", DEFAULT_WOKERS, int)
             )
 
             # Bind configuration prioritizes command line arguments
@@ -134,7 +140,7 @@ def main():
             port = (
                 global_args.port
                 if global_args.port != 9621
-                else int(os.getenv("PORT", 9621))
+                else get_env_value("PORT", 9621, int)
             )
             gunicorn_config.bind = f"{host}:{port}"
 
@@ -149,11 +155,13 @@ def main():
             gunicorn_config.timeout = (
                 global_args.timeout * 2
                 if global_args.timeout is not None
-                else int(os.getenv("TIMEOUT", 150 * 2))
+                else get_env_value(
+                    "TIMEOUT", DEFAULT_TIMEOUT + 30, int, special_none=True
+                )
             )
 
             # Keepalive configuration
-            gunicorn_config.keepalive = int(os.getenv("KEEPALIVE", 5))
+            gunicorn_config.keepalive = get_env_value("KEEPALIVE", 5, int)
 
             # SSL configuration prioritizes command line arguments
             if global_args.ssl or os.getenv("SSL", "").lower() in (
@@ -202,7 +210,7 @@ def main():
     app = GunicornApp("")
 
     # Force workers to be an integer and greater than 1 for multi-process mode
-    workers_count = int(global_args.workers)
+    workers_count = global_args.workers
     if workers_count > 1:
         # Set a flag to indicate we're in the main process
         os.environ["LIGHTRAG_MAIN_PROCESS"] = "1"

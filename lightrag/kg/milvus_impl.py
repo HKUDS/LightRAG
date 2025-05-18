@@ -79,9 +79,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
+        import time
+
+        current_time = int(time.time())
+
         list_data: list[dict[str, Any]] = [
             {
                 "id": k,
+                "created_at": current_time,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
@@ -104,12 +109,14 @@ class MilvusVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        embedding = await self.embedding_func([query])
+        embedding = await self.embedding_func(
+            [query], _priority=5
+        )  # higher priority for query
         results = self._client.search(
             collection_name=self.namespace,
             data=embedding,
             limit=top_k,
-            output_fields=list(self.meta_fields),
+            output_fields=list(self.meta_fields) + ["created_at"],
             search_params={
                 "metric_type": "COSINE",
                 "params": {"radius": self.cosine_better_than_threshold},
@@ -117,7 +124,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         )
         print(results)
         return [
-            {**dp["entity"], "id": dp["id"], "distance": dp["distance"]}
+            {
+                **dp["entity"],
+                "id": dp["id"],
+                "distance": dp["distance"],
+                # created_at is requested in output_fields, so it should be a top-level key in the result dict (dp)
+                "created_at": dp.get("created_at"),
+            }
             for dp in results[0]
         ]
 
@@ -209,31 +222,6 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        try:
-            # Use Milvus query with expression to find IDs with the given prefix
-            expression = f'id like "{prefix}%"'
-            results = self._client.query(
-                collection_name=self.namespace,
-                filter=expression,
-                output_fields=list(self.meta_fields) + ["id"],
-            )
-
-            logger.debug(f"Found {len(results)} records with prefix '{prefix}'")
-            return results
-
-        except Exception as e:
-            logger.error(f"Error searching for records with prefix '{prefix}': {e}")
-            return []
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
 
@@ -248,11 +236,15 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             result = self._client.query(
                 collection_name=self.namespace,
                 filter=f'id == "{id}"',
-                output_fields=list(self.meta_fields) + ["id"],
+                output_fields=list(self.meta_fields) + ["id", "created_at"],
             )
 
             if not result or len(result) == 0:
                 return None
+
+            # Ensure the result contains created_at field
+            if "created_at" not in result[0]:
+                result[0]["created_at"] = None
 
             return result[0]
         except Exception as e:
@@ -280,8 +272,13 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             result = self._client.query(
                 collection_name=self.namespace,
                 filter=filter_expr,
-                output_fields=list(self.meta_fields) + ["id"],
+                output_fields=list(self.meta_fields) + ["id", "created_at"],
             )
+
+            # Ensure each result contains created_at field
+            for item in result:
+                if "created_at" not in item:
+                    item["created_at"] = None
 
             return result or []
         except Exception as e:

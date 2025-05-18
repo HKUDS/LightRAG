@@ -1,9 +1,9 @@
 import { useCallback } from 'react'
 import { QueryMode, QueryRequest } from '@/api/lightrag'
-import Text from '@/components/ui/Text'
-import Input from '@/components/ui/Input'
+// Removed unused import for Text component
 import Checkbox from '@/components/ui/Checkbox'
 import NumberInput from '@/components/ui/NumberInput'
+import Input from '@/components/ui/Input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import {
   Select,
@@ -13,6 +13,7 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/Select'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
 
@@ -28,24 +29,33 @@ export default function QuerySettings() {
     <Card className="flex shrink-0 flex-col min-w-[220px]">
       <CardHeader className="px-4 pt-4 pb-2">
         <CardTitle>{t('retrievePanel.querySettings.parametersTitle')}</CardTitle>
-        <CardDescription>{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
+        <CardDescription className="sr-only">{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
       </CardHeader>
       <CardContent className="m-0 flex grow flex-col p-0 text-xs">
         <div className="relative size-full">
           <div className="absolute inset-0 flex flex-col gap-2 overflow-auto px-2">
             {/* Query Mode */}
             <>
-              <Text
-                className="ml-1"
-                text={t('retrievePanel.querySettings.queryMode')}
-                tooltip={t('retrievePanel.querySettings.queryModeTooltip')}
-                side="left"
-              />
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="query_mode_select" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.queryMode')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.queryModeTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
               <Select
                 value={querySettings.mode}
                 onValueChange={(v) => handleChange('mode', v as QueryMode)}
               >
-                <SelectTrigger className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0">
+                <SelectTrigger
+                  id="query_mode_select"
+                  className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -63,17 +73,26 @@ export default function QuerySettings() {
 
             {/* Response Format */}
             <>
-              <Text
-                className="ml-1"
-                text={t('retrievePanel.querySettings.responseFormat')}
-                tooltip={t('retrievePanel.querySettings.responseFormatTooltip')}
-                side="left"
-              />
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="response_format_select" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.responseFormat')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.responseFormatTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
               <Select
                 value={querySettings.response_type}
                 onValueChange={(v) => handleChange('response_type', v)}
               >
-                <SelectTrigger className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0">
+                <SelectTrigger
+                  id="response_format_select"
+                  className="hover:bg-primary/5 h-9 cursor-pointer focus:ring-0 focus:ring-offset-0 focus:outline-0 active:right-0"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -88,16 +107,20 @@ export default function QuerySettings() {
 
             {/* Top K */}
             <>
-              <Text
-                className="ml-1"
-                text={t('retrievePanel.querySettings.topK')}
-                tooltip={t('retrievePanel.querySettings.topKTooltip')}
-                side="left"
-              />
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="top_k" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.topK')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.topKTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
               <div>
-                <label htmlFor="top_k" className="sr-only">
-                  {t('retrievePanel.querySettings.topK')}
-                </label>
+                {/* Removed sr-only label */}
                 <NumberInput
                   id="top_k"
                   stepper={1}
@@ -112,16 +135,20 @@ export default function QuerySettings() {
             {/* Max Tokens */}
             <>
               <>
-                <Text
-                  className="ml-1"
-                  text={t('retrievePanel.querySettings.maxTokensTextUnit')}
-                  tooltip={t('retrievePanel.querySettings.maxTokensTextUnitTooltip')}
-                  side="left"
-                />
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="max_token_for_text_unit" className="ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.maxTokensTextUnit')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.maxTokensTextUnitTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
                 <div>
-                  <label htmlFor="max_token_for_text_unit" className="sr-only">
-                    {t('retrievePanel.querySettings.maxTokensTextUnit')}
-                  </label>
+                  {/* Removed sr-only label */}
                   <NumberInput
                     id="max_token_for_text_unit"
                     stepper={500}
@@ -134,15 +161,20 @@ export default function QuerySettings() {
               </>
 
               <>
-                <Text
-                  text={t('retrievePanel.querySettings.maxTokensGlobalContext')}
-                  tooltip={t('retrievePanel.querySettings.maxTokensGlobalContextTooltip')}
-                  side="left"
-                />
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="max_token_for_global_context" className="ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.maxTokensGlobalContext')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.maxTokensGlobalContextTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
                 <div>
-                  <label htmlFor="max_token_for_global_context" className="sr-only">
-                    {t('retrievePanel.querySettings.maxTokensGlobalContext')}
-                  </label>
+                  {/* Removed sr-only label */}
                   <NumberInput
                     id="max_token_for_global_context"
                     stepper={500}
@@ -155,16 +187,20 @@ export default function QuerySettings() {
               </>
 
               <>
-                <Text
-                  className="ml-1"
-                  text={t('retrievePanel.querySettings.maxTokensLocalContext')}
-                  tooltip={t('retrievePanel.querySettings.maxTokensLocalContextTooltip')}
-                  side="left"
-                />
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="max_token_for_local_context" className="ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.maxTokensLocalContext')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.maxTokensLocalContextTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
                 <div>
-                  <label htmlFor="max_token_for_local_context" className="sr-only">
-                    {t('retrievePanel.querySettings.maxTokensLocalContext')}
-                  </label>
+                  {/* Removed sr-only label */}
                   <NumberInput
                     id="max_token_for_local_context"
                     stepper={500}
@@ -179,16 +215,20 @@ export default function QuerySettings() {
 
             {/* History Turns */}
             <>
-              <Text
-                className="ml-1"
-                text={t('retrievePanel.querySettings.historyTurns')}
-                tooltip={t('retrievePanel.querySettings.historyTurnsTooltip')}
-                side="left"
-              />
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="history_turns" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.historyTurns')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.historyTurnsTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
               <div>
-                <label htmlFor="history_turns" className="sr-only">
-                  {t('retrievePanel.querySettings.historyTurns')}
-                </label>
+                {/* Removed sr-only label */}
                 <NumberInput
                   className="!border-input"
                   id="history_turns"
@@ -202,74 +242,46 @@ export default function QuerySettings() {
               </div>
             </>
 
-            {/* Keywords */}
+            {/* User Prompt */}
             <>
-              <>
-                <Text
-                  className="ml-1"
-                  text={t('retrievePanel.querySettings.hlKeywords')}
-                  tooltip={t('retrievePanel.querySettings.hlKeywordsTooltip')}
-                  side="left"
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="user_prompt" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.userPrompt')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.userPromptTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <div>
+                <Input
+                  id="user_prompt"
+                  value={querySettings.user_prompt}
+                  onChange={(e) => handleChange('user_prompt', e.target.value)}
+                  placeholder={t('retrievePanel.querySettings.userPromptPlaceholder')}
+                  className="h-9"
                 />
-                <div>
-                  <label htmlFor="hl_keywords" className="sr-only">
-                    {t('retrievePanel.querySettings.hlKeywords')}
-                  </label>
-                  <Input
-                    id="hl_keywords"
-                    type="text"
-                    value={querySettings.hl_keywords?.join(', ')}
-                    onChange={(e) => {
-                      const keywords = e.target.value
-                        .split(',')
-                        .map((k) => k.trim())
-                        .filter((k) => k !== '')
-                      handleChange('hl_keywords', keywords)
-                    }}
-                    placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
-                  />
-                </div>
-              </>
-
-              <>
-                <Text
-                  className="ml-1"
-                  text={t('retrievePanel.querySettings.llKeywords')}
-                  tooltip={t('retrievePanel.querySettings.llKeywordsTooltip')}
-                  side="left"
-                />
-                <div>
-                  <label htmlFor="ll_keywords" className="sr-only">
-                    {t('retrievePanel.querySettings.llKeywords')}
-                  </label>
-                  <Input
-                    id="ll_keywords"
-                    type="text"
-                    value={querySettings.ll_keywords?.join(', ')}
-                    onChange={(e) => {
-                      const keywords = e.target.value
-                        .split(',')
-                        .map((k) => k.trim())
-                        .filter((k) => k !== '')
-                      handleChange('ll_keywords', keywords)
-                    }}
-                    placeholder={t('retrievePanel.querySettings.hlkeywordsPlaceHolder')}
-                  />
-                </div>
-              </>
+              </div>
             </>
 
             {/* Toggle Options */}
             <>
               <div className="flex items-center gap-2">
-                <label htmlFor="only_need_context" className="flex-1">
-                  <Text
-                    className="ml-1"
-                    text={t('retrievePanel.querySettings.onlyNeedContext')}
-                    tooltip={t('retrievePanel.querySettings.onlyNeedContextTooltip')}
-                    side="left"
-                  />
-                </label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="only_need_context" className="flex-1 ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.onlyNeedContext')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.onlyNeedContextTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
                 <Checkbox
                   className="mr-1 cursor-pointer"
                   id="only_need_context"
@@ -279,14 +291,18 @@ export default function QuerySettings() {
               </div>
 
               <div className="flex items-center gap-2">
-                <label htmlFor="only_need_prompt" className="flex-1">
-                  <Text
-                    className="ml-1"
-                    text={t('retrievePanel.querySettings.onlyNeedPrompt')}
-                    tooltip={t('retrievePanel.querySettings.onlyNeedPromptTooltip')}
-                    side="left"
-                  />
-                </label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="only_need_prompt" className="flex-1 ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.onlyNeedPrompt')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.onlyNeedPromptTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
                 <Checkbox
                   className="mr-1 cursor-pointer"
                   id="only_need_prompt"
@@ -296,14 +312,18 @@ export default function QuerySettings() {
               </div>
 
               <div className="flex items-center gap-2">
-                <label htmlFor="stream" className="flex-1">
-                  <Text
-                    className="ml-1"
-                    text={t('retrievePanel.querySettings.streamResponse')}
-                    tooltip={t('retrievePanel.querySettings.streamResponseTooltip')}
-                    side="left"
-                  />
-                </label>
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="stream" className="flex-1 ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.streamResponse')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.streamResponseTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
                 <Checkbox
                   className="mr-1 cursor-pointer"
                   id="stream"

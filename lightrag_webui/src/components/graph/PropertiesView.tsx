@@ -294,6 +294,7 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
         {Object.keys(node.properties)
           .sort()
           .map((name) => {
+            if (name === 'created_at') return null; // Hide created_at property
             return (
               <PropertyRow
                 key={name}
@@ -360,6 +361,7 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
         {Object.keys(edge.properties)
           .sort()
           .map((name) => {
+            if (name === 'created_at') return null; // Hide created_at property
             return (
               <PropertyRow
                 key={name}

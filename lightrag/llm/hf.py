@@ -9,12 +9,8 @@ if not pm.is_installed("transformers"):
     pm.install("transformers")
 if not pm.is_installed("torch"):
     pm.install("torch")
-if not pm.is_installed("tenacity"):
-    pm.install("tenacity")
 if not pm.is_installed("numpy"):
     pm.install("numpy")
-if not pm.is_installed("tenacity"):
-    pm.install("tenacity")
 
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from tenacity import (

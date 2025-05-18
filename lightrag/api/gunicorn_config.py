@@ -2,18 +2,24 @@
 import os
 import logging
 from lightrag.kg.shared_storage import finalize_share_data
-from lightrag.utils import setup_logger
+from lightrag.utils import setup_logger, get_env_value
+from lightrag.constants import (
+    DEFAULT_LOG_MAX_BYTES,
+    DEFAULT_LOG_BACKUP_COUNT,
+    DEFAULT_LOG_FILENAME,
+)
+
 
 # Get log directory path from environment variable
 log_dir = os.getenv("LOG_DIR", os.getcwd())
-log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag.log"))
+log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
 # Ensure log directory exists
 os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
 
 # Get log file max size and backup count from environment variables
-log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
-log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
+log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)
+log_backup_count = get_env_value("LOG_BACKUP_COUNT", DEFAULT_LOG_BACKUP_COUNT, int)
 
 # These variables will be set by run_with_gunicorn.py
 workers = None
@@ -29,10 +35,6 @@ preload_app = True
 worker_class = "uvicorn.workers.UvicornWorker"
 
 # Other Gunicorn configurations
-timeout = int(
-    os.getenv("TIMEOUT", 150 * 2)
-)  # Default 150s *2 to match run_with_gunicorn.py
-keepalive = int(os.getenv("KEEPALIVE", 5))  # Default 5s
 
 # Logging configuration
 errorlog = os.getenv("ERROR_LOG", log_file_path)  # Default write to lightrag.log

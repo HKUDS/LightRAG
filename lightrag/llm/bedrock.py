@@ -6,8 +6,6 @@ import pipmaster as pm  # Pipmaster for dynamic library install
 
 if not pm.is_installed("aioboto3"):
     pm.install("aioboto3")
-if not pm.is_installed("tenacity"):
-    pm.install("tenacity")
 import aioboto3
 import numpy as np
 from tenacity import (
@@ -94,12 +92,14 @@ async def bedrock_complete_if_cache(
     return response["output"]["message"]["content"][0]["text"]
 
 
+# Generic Bedrock completion function
 async def bedrock_complete(
     prompt, system_prompt=None, history_messages=[], keyword_extraction=False, **kwargs
 ) -> str:
     keyword_extraction = kwargs.pop("keyword_extraction", None)
+    model_name = kwargs["hashing_kv"].global_config["llm_model_name"]
     result = await bedrock_complete_if_cache(
-        "anthropic.claude-3-haiku-20240307-v1:0",
+        model_name,
         prompt,
         system_prompt=system_prompt,
         history_messages=history_messages,

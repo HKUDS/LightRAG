@@ -46,8 +46,25 @@ class NanoVectorDBStorage(BaseVectorStorage):
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
 
+        # Determine the effective embedding dimension
+        effective_embedding_dim = None # Initialize to None, as there's no explicit 'self.default_embedding_dim'
+                                     # This 'None' will be logged if the primary source fails.
+        
+        if self.embedding_func and hasattr(self.embedding_func, 'embedding_dim') and self.embedding_func.embedding_dim is not None:
+            effective_embedding_dim = self.embedding_func.embedding_dim
+        else:
+            # If self.embedding_func.embedding_dim was None, or func/attr missing, effective_embedding_dim is still None here.
+            logger.warning(
+                f"NanoVectorDBStorage: embedding_func or its dimension not provided or None, "
+                f"falling back to effective_embedding_dim: {effective_embedding_dim}. "
+                f"NanoVectorDB will receive this value; it may use an internal default or raise an error if the dimension is critical."
+            )
+            # If self.embedding_func exists and has embedding_dim but it's None, effective_embedding_dim is already None.
+            # If self.embedding_func is None or no attr, effective_embedding_dim is already None.
+            # This path ensures 'effective_embedding_dim' (which is None in these cases) is passed.
+
         self._client = NanoVectorDB(
-            self.embedding_func.embedding_dim,
+            embedding_dim=effective_embedding_dim, # Pass the determined dimension
             storage_file=self._client_file_name,
         )
 
@@ -89,7 +106,7 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
-        current_time = time.time()
+        current_time = int(time.time())
         list_data = [
             {
                 "__id__": k,
@@ -112,7 +129,17 @@ class NanoVectorDBStorage(BaseVectorStorage):
         if len(embeddings) == len(list_data):
             for i, d in enumerate(list_data):
                 d["__vector__"] = embeddings[i]
+
             client = await self._get_client()
+            logger.info(f"ROO_DEBUG: NanoVectorDB client instance: {client}")
+            logger.info(f"ROO_DEBUG: NanoVectorDB client initialized embedding_dim: {client.embedding_dim if hasattr(client, 'embedding_dim') else 'N/A'}")
+            if hasattr(client, "_NanoVectorDB__storage") and client._NanoVectorDB__storage and "matrix" in client._NanoVectorDB__storage and client._NanoVectorDB__storage["matrix"] is not None and client._NanoVectorDB__storage["matrix"].size > 0:
+                logger.info(f"ROO_DEBUG: Existing client matrix shape: {client._NanoVectorDB__storage['matrix'].shape}")
+            else:
+                logger.info("ROO_DEBUG: Existing client matrix is empty or not found.")
+            logger.info(f"ROO_DEBUG: Shape of new embeddings to upsert: {embeddings.shape if embeddings is not None else 'N/A'}")
+            logger.info(f"ROO_DEBUG: Number of data items to upsert: {len(list_data)}")
+
             results = client.upsert(datas=list_data)
             return results
         else:
@@ -124,8 +151,10 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        # Execute embedding outside of lock to avoid long lock times
-        embedding = await self.embedding_func([query])
+        # Execute embedding outside of lock to avoid improve cocurrent
+        embedding = await self.embedding_func(
+            [query], _priority=5
+        )  # higher priority for query
         embedding = embedding[0]
 
         client = await self._get_client()
@@ -257,26 +286,6 @@ class NanoVectorDBStorage(BaseVectorStorage):
 
         return True  # Return success
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        storage = await self.client_storage
-        matching_records = []
-
-        # Search for records with IDs starting with the prefix
-        for record in storage["data"]:
-            if "__id__" in record and record["__id__"].startswith(prefix):
-                matching_records.append({**record, "id": record["__id__"]})
-
-        logger.debug(f"Found {len(matching_records)} records with prefix '{prefix}'")
-        return matching_records
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
 
@@ -289,7 +298,12 @@ class NanoVectorDBStorage(BaseVectorStorage):
         client = await self._get_client()
         result = client.get([id])
         if result:
-            return result[0]
+            dp = result[0]
+            return {
+                **dp,
+                "id": dp.get("__id__"),
+                "created_at": dp.get("__created_at__"),
+            }
         return None
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -305,7 +319,15 @@ class NanoVectorDBStorage(BaseVectorStorage):
             return []
 
         client = await self._get_client()
-        return client.get(ids)
+        results = client.get(ids)
+        return [
+            {
+                **dp,
+                "id": dp.get("__id__"),
+                "created_at": dp.get("__created_at__"),
+            }
+            for dp in results
+        ]
 
     async def drop(self) -> dict[str, str]:
         """Drop all vector data from storage and clean up resources

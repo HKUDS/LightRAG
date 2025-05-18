@@ -6,6 +6,12 @@ import os
 import argparse
 import logging
 from dotenv import load_dotenv
+from lightrag.utils import get_env_value
+
+from lightrag.constants import (
+    DEFAULT_WOKERS,
+    DEFAULT_TIMEOUT,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -43,30 +49,6 @@ def get_default_host(binding_type: str) -> str:
     return default_hosts.get(
         binding_type, os.getenv("LLM_BINDING_HOST", "http://localhost:11434")
     )  # fallback to ollama if unknown
-
-
-def get_env_value(env_key: str, default: any, value_type: type = str) -> any:
-    """
-    Get value from environment variable with type conversion
-
-    Args:
-        env_key (str): Environment variable key
-        default (any): Default value if env variable is not set
-        value_type (type): Type to convert the value to
-
-    Returns:
-        any: Converted value from environment or default
-    """
-    value = os.getenv(env_key)
-    if value is None:
-        return default
-
-    if value_type is bool:
-        return value.lower() in ("true", "1", "yes", "t", "on")
-    try:
-        return value_type(value)
-    except ValueError:
-        return default
 
 
 def parse_args() -> argparse.Namespace:
@@ -109,17 +91,10 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing input documents (default: from env or ./inputs)",
     )
 
-    def timeout_type(value):
-        if value is None:
-            return 150
-        if value is None or value == "None":
-            return None
-        return int(value)
-
     parser.add_argument(
         "--timeout",
-        default=get_env_value("TIMEOUT", None, timeout_type),
-        type=timeout_type,
+        default=get_env_value("TIMEOUT", DEFAULT_TIMEOUT, int, special_none=True),
+        type=int,
         help="Timeout in seconds (useful when using slow AI). Use None for infinite timeout",
     )
 
@@ -226,7 +201,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=int,
-        default=get_env_value("WORKERS", 1, int),
+        default=get_env_value("WORKERS", DEFAULT_WOKERS, int),
         help="Number of worker processes (default: from env or 1)",
     )
 
@@ -244,6 +219,12 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("EMBEDDING_BINDING", "ollama"),
         choices=["lollms", "ollama", "openai", "azure_openai", "gemini"],
         help="Embedding binding type (default: from env or ollama)",
+    )
+    parser.add_argument(
+        "--use-custom-bindings",
+        action="store_true",
+        default=get_env_value("USE_CUSTOM_BINDINGS", False, bool), # Added default from env
+        help="Use custom LLM and embedding functions from run_lightrag_gemini_jina.py, overriding --llm-binding and --embedding-binding."
     )
 
     args = parser.parse_args()
@@ -286,7 +267,7 @@ def parse_args() -> argparse.Namespace:
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
     args.embedding_model = get_env_value("EMBEDDING_MODEL", "bge-m3:latest")
-    args.embedding_dim = get_env_value("EMBEDDING_DIM", 1024, int)
+    args.embedding_dim = get_env_value("EMBEDDING_DIM", 768, int)
     args.max_embed_tokens = get_env_value("MAX_EMBED_TOKENS", 8192, int)
 
     # Inject chunk configuration
@@ -307,7 +288,7 @@ def parse_args() -> argparse.Namespace:
 
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
-    args.summary_language = get_env_value("SUMMARY_LANGUAGE", "en")
+    args.summary_language = get_env_value("SUMMARY_LANGUAGE", "English")
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth

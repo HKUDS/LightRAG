@@ -9,11 +9,15 @@ import sys
 from ascii_colors import ASCIIColors
 from lightrag.api import __api_version__ as api_version
 from lightrag import __version__ as core_version
+from lightrag.constants import (
+    DEFAULT_MAX_TOKEN_SUMMARY,
+    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
+)
 from fastapi import HTTPException, Security, Request, status
 from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from starlette.status import HTTP_403_FORBIDDEN
 from .auth import auth_handler
-from .config import ollama_server_infos, global_args
+from .config import ollama_server_infos, global_args, get_env_value
 
 
 def check_env_file():
@@ -116,7 +120,11 @@ def get_combined_auth_dependency(api_key: Optional[str] = None):
             except HTTPException as e:
                 # If already a 401 error, re-raise it
                 if e.status_code == status.HTTP_401_UNAUTHORIZED:
-                    raise
+                    # If JWT validation (from Authorization: Bearer <token>) results in 401,
+                    # check if the 'token' itself is the configured API key.
+                    if api_key_configured and token == api_key:
+                        return  # Allow access if the token matches the API key
+                    raise # Otherwise, re-raise the original 401 from JWT validation
                 # For other exceptions, continue processing
 
         # 3. Acept all request if no API protection needed
@@ -264,9 +272,13 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.white("    ├─ Top-K: ", end="")
     ASCIIColors.yellow(f"{args.top_k}")
     ASCIIColors.white("    ├─ Max Token Summary: ", end="")
-    ASCIIColors.yellow(f"{int(os.getenv('MAX_TOKEN_SUMMARY', 500))}")
+    ASCIIColors.yellow(
+        f"{get_env_value('MAX_TOKEN_SUMMARY', DEFAULT_MAX_TOKEN_SUMMARY, int)}"
+    )
     ASCIIColors.white("    └─ Force LLM Summary on Merge: ", end="")
-    ASCIIColors.yellow(f"{int(os.getenv('FORCE_LLM_SUMMARY_ON_MERGE', 6))}")
+    ASCIIColors.yellow(
+        f"{get_env_value('FORCE_LLM_SUMMARY_ON_MERGE', DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int)}"
+    )
 
     # System Configuration
     ASCIIColors.magenta("\n💾 Storage Configuration:")

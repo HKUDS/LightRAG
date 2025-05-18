@@ -88,9 +88,15 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
+
+        import time
+
+        current_time = int(time.time())
+
         list_data = [
             {
                 "id": k,
+                "created_at": current_time,
                 **{k1: v1 for k1, v1 in v.items() if k1 in self.meta_fields},
             }
             for k, v in data.items()
@@ -124,7 +130,9 @@ class QdrantVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
-        embedding = await self.embedding_func([query])
+        embedding = await self.embedding_func(
+            [query], _priority=5
+        )  # higher priority for query
         results = self._client.search(
             collection_name=self.namespace,
             query_vector=embedding[0],
@@ -135,7 +143,14 @@ class QdrantVectorDBStorage(BaseVectorStorage):
 
         logger.debug(f"query result: {results}")
 
-        return [{**dp.payload, "distance": dp.score} for dp in results]
+        return [
+            {
+                **dp.payload,
+                "distance": dp.score,
+                "created_at": dp.payload.get("created_at"),
+            }
+            for dp in results
+        ]
 
     async def index_done_callback(self) -> None:
         # Qdrant handles persistence automatically
@@ -234,46 +249,6 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error deleting relations for {entity_name}: {e}")
 
-    async def search_by_prefix(self, prefix: str) -> list[dict[str, Any]]:
-        """Search for records with IDs starting with a specific prefix.
-
-        Args:
-            prefix: The prefix to search for in record IDs
-
-        Returns:
-            List of records with matching ID prefixes
-        """
-        try:
-            # Use scroll method to find records with IDs starting with the prefix
-            results = self._client.scroll(
-                collection_name=self.namespace,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="id", match=models.MatchText(text=prefix, prefix=True)
-                        )
-                    ]
-                ),
-                with_payload=True,
-                with_vectors=False,
-                limit=1000,  # Adjust as needed for your use case
-            )
-
-            # Extract matching points
-            matching_records = results[0]
-
-            # Format the results to match expected return format
-            formatted_results = [{**point.payload} for point in matching_records]
-
-            logger.debug(
-                f"Found {len(formatted_results)} records with prefix '{prefix}'"
-            )
-            return formatted_results
-
-        except Exception as e:
-            logger.error(f"Error searching for prefix '{prefix}': {e}")
-            return []
-
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
 
@@ -297,7 +272,12 @@ class QdrantVectorDBStorage(BaseVectorStorage):
             if not result:
                 return None
 
-            return result[0].payload
+            # Ensure the result contains created_at field
+            payload = result[0].payload
+            if "created_at" not in payload:
+                payload["created_at"] = None
+
+            return payload
         except Exception as e:
             logger.error(f"Error retrieving vector data for ID {id}: {e}")
             return None
@@ -325,7 +305,15 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                 with_payload=True,
             )
 
-            return [point.payload for point in results]
+            # Ensure each result contains created_at field
+            payloads = []
+            for point in results:
+                payload = point.payload
+                if "created_at" not in payload:
+                    payload["created_at"] = None
+                payloads.append(payload)
+
+            return payloads
         except Exception as e:
             logger.error(f"Error retrieving vector data for IDs {ids}: {e}")
             return []
