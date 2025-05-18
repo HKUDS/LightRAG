@@ -102,7 +102,7 @@ def create_app(args):
     # Verify that bindings are correctly setup
     # Note: config.py already validates choices, but extra check here is fine
     supported_llm_bindings = ["lollms", "ollama", "openai", "openai-ollama", "azure_openai", "gemini"]
-    supported_embedding_bindings = ["lollms", "ollama", "openai", "azure_openai", "gemini"]
+    supported_embedding_bindings = ["lollms", "ollama", "openai", "azure_openai", "gemini", "jina"]
 
     if args.llm_binding not in supported_llm_bindings:
         raise ValueError(f"Unsupported llm binding: {args.llm_binding}. Supported: {supported_llm_bindings}")
@@ -416,6 +416,23 @@ def create_app(args):
              # Custom function handles its own model, host, api_key internally
         }
 
+
+        logger.info(f"ROO_DEBUG: Final embedding function to use: {final_embedding_func_to_use}")
+        if final_embedding_func_to_use:
+            logger.info(f"ROO_DEBUG: Final embedding_func_to_use.embedding_dim: {final_embedding_func_to_use.embedding_dim}")
+            logger.info(f"ROO_DEBUG: Final embedding_func_to_use.max_token_size: {final_embedding_func_to_use.max_token_size}")
+            logger.info(f"ROO_DEBUG: Final embedding_func_to_use func: {final_embedding_func_to_use.func}")
+        logger.info(f"ROO_DEBUG: args.embedding_dim: {args.embedding_dim}")
+        logger.info(f"ROO_DEBUG: args.embedding_model: {args.embedding_model}")
+        logger.info(f"ROO_DEBUG: args.embedding_binding: {args.embedding_binding}")
+        logger.info(f"ROO_DEBUG: args.use_custom_bindings: {args.use_custom_bindings}")
+        logger.info(f"ROO_DEBUG: custom_functions_available: {custom_functions_available}")
+        if custom_functions_available and jina_embedding_func:
+            try:
+                from run_lightrag_gemini_jina import JINA_EMBEDDING_DIM
+                logger.info(f"ROO_DEBUG: JINA_EMBEDDING_DIM from run_lightrag_gemini_jina: {JINA_EMBEDDING_DIM}")
+            except ImportError:
+                logger.info("ROO_DEBUG: JINA_EMBEDDING_DIM not found in run_lightrag_gemini_jina.py")
 
     rag = LightRAG(
         working_dir=args.working_dir,

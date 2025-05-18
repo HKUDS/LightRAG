@@ -25,7 +25,7 @@ from lightrag.utils import setup_logger
 # --- Jina Embedding Setup ---
 # Note: Replace with your actual Jina API Key if JINA_API_KEY is not set as an environment variable
 JINA_API_KEY = os.getenv("JINA_API_KEY", "jina_c6322587415445b080c9b50b81ad349c5dd-MTCa0jIiRcbhHe3Nk71R4DQe")
-JINA_EMBEDDING_DIM = 768
+JINA_EMBEDDING_DIM = 1024
 JINA_MAX_TOKEN_SIZE = 8192
 
 async def jina_embedding_wrapper(texts: list[str]) -> np.ndarray:
@@ -48,6 +48,7 @@ jina_embedding_func = EmbeddingFunc(
 # --- Gemini LLM Setup ---
 # Note: Replace with your actual Gemini API Key if GEMINI_API_KEY is not set as an environment variable
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyBi0jME5WSX9dGH-GWVYluNNnbSdJ6Pse4")
+# print(f"DEBUG run_lightrag_gemini_jina.py: GEMINI_API_KEY as seen by os.getenv = {GEMINI_API_KEY}") # DEBUG LINE - Restored
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 else:
@@ -64,7 +65,7 @@ async def gemini_llm_complete_func(
     **kwargs
 ) -> str:
     """Wrapper for Gemini LLM completion function."""
-    if not GEMINI_API_KEY:
+    if not GEMINI_API_KEY: # Now check the original GEMINI_API_KEY from os.getenv
         return "Error: GEMINI_API_KEY is not configured."
     
     # Determine the actual model to use, prioritizing kwargs over the default
@@ -157,7 +158,7 @@ WORKING_DIR = "./lightrag_gemini_jina_storage"
 async def initialize_rag(working_dir: str) -> LightRAG | None:
     """Initializes the LightRAG instance."""
     print(f"Initializing LightRAG in working directory: {working_dir}")
-    if not GEMINI_API_KEY or not JINA_API_KEY:
+    if not os.getenv("GEMINI_API_KEY", "AIzaSyBi0jME5WSX9dGH-GWVYluNNnbSdJ6Pse4") or not JINA_API_KEY: # Ensure we check the actual key value for init
         print("Error: API keys for Jina or Gemini are not set. Cannot initialize LightRAG.")
         return None
     try:

@@ -446,6 +446,26 @@ class LightRAG:
 
         self._storages_status = StoragesStatus.CREATED
 
+        # Log effective embedding parameters
+        if self.embedding_func and hasattr(self.embedding_func, 'embedding_dim'):
+            func_name = getattr(getattr(self.embedding_func, 'func', self.embedding_func), '__name__', str(getattr(self.embedding_func, 'func', self.embedding_func)))
+            max_tokens_attr = getattr(self.embedding_func, 'max_tokens', 'N/A')
+            embedding_dim_val = self.embedding_func.embedding_dim
+            logger.info(
+                f"LightRAG Effective Embedding Setup: Dimension: {embedding_dim_val}, "
+                f"Max Tokens: {max_tokens_attr}, Function: {func_name}"
+            )
+            if "jina_embedding_func" in func_name: # Check against the actual function name
+                logger.info("LightRAG is configured to use custom Jina embeddings from run_lightrag_gemini_jina.py.")
+            else:
+                # Safely access embedding_binding and embedding_model_name from self
+                binding_attr = getattr(self, 'embedding_binding', 'N/A')
+                model_name_attr = getattr(self, 'embedding_model_name', 'N/A')
+                logger.info(f"LightRAG is using embedding function: {func_name} (Binding: {binding_attr}, Model: {model_name_attr})")
+        else:
+            logger.warning("LightRAG: embedding_func or its dimension not available for logging.")
+
+
         if self.auto_manage_storages_states:
             self._run_async_safely(self.initialize_storages, "Storage Initialization")
 
