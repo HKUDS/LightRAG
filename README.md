@@ -147,6 +147,8 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 ## Programing with LightRAG Core
 
+> If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
+
 ### A Simple Program
 
 Use the below Python snippet to initialize LightRAG, insert text to it, and perform queries:

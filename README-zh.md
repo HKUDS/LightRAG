@@ -111,6 +111,8 @@ python examples/lightrag_openai_demo.py
 
 ## 使用LightRAG Core进行编程
 
+> 如果您希望将LightRAG集成到您的项目中，建议您使用LightRAG Server提供的REST API。LightRAG Core通常用于嵌入式应用，或供希望进行研究与评估的学者使用。
+
 ### 一个简单程序
 
 以下Python代码片段演示了如何初始化LightRAG、插入文本并进行查询：

@@ -105,22 +105,62 @@ lightrag-gunicorn --workers 4
 > - **要求将.env文件置于启动目录中是经过特意设计的**。 这样做的目的是支持用户同时启动多个LightRAG实例，并为不同实例配置不同的.env文件。
 > - **修改.env文件后，您需要重新打开终端以使新设置生效**。 这是因为每次启动时，LightRAG Server会将.env文件中的环境变量加载至系统环境变量，且系统环境变量的设置具有更高优先级。
 
-### 使用 Docker Compose 启动 LightRAG 服务器
+### 使用 Docker 启动 LightRAG 服务器
 
 * 克隆代码仓库：
-```
+```shell
 git clone https://github.com/HKUDS/LightRAG.git
 cd LightRAG
 ```
 
 * 配置 .env 文件：
-    通过复制 env.example 文件创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
+    通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
 
 * 通过以下命令启动 LightRAG 服务器：
-```
+```shell
 docker compose up
 # 如拉取了新版本，请添加 --build 重新构建
 docker compose up --build
+```
+### 无需克隆代码而使用 Docker 部署 LightRAG 服务器
+
+* 为 LightRAG 服务器创建工作文件夹：
+
+```shell
+mkdir lightrag
+cd lightrag
+```
+
+* 准备 .env 文件：
+    通过复制 env.example 文件创建个性化的.env 文件。根据您的需求配置 LLM 和嵌入参数。
+
+* 创建一个名为 docker-compose.yml 的 docker compose 文件：
+
+```yaml
+services:
+  lightrag:
+    container_name: lightrag
+    image: ghcr.io/hkuds/lightrag:latest
+    ports:
+      - "${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./config.ini:/app/config.ini
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
+
+* 准备 .env 文件：
+    通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件。根据您的需求配置 LLM 和嵌入参数。
+
+* 使用以下命令启动 LightRAG 服务器：
+```shell
+docker compose up
 ```
 
 > 在此获取LightRAG docker镜像历史版本: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
@@ -445,8 +485,6 @@ EMBEDDING_BINDING_HOST=http://localhost:11434
 # WHITELIST_PATHS=/health,/api/*
 ```
 
-
-
 #### 使用 ollama 默认本地服务器作为 llm 和嵌入后端运行 Lightrag 服务器
 
 Ollama 是 llm 和嵌入的默认后端，因此默认情况下您可以不带参数运行 lightrag-server，将使用默认值。确保已安装 ollama 并且正在运行，且默认模型已安装在 ollama 上。
@@ -515,6 +553,23 @@ lightrag-server --help
 ```bash
 pip install lightrag-hku
 ```
+
+## 文档和块处理逻辑说明
+
+LightRAG 中的文档处理流程有些复杂，分为两个主要阶段：提取阶段（实体和关系提取）和合并阶段（实体和关系合并）。有两个关键参数控制流程并发性：并行处理的最大文件数（`MAX_PARALLEL_INSERT`）和最大并发 LLM 请求数（`MAX_ASYNC`）。工作流程描述如下：
+
+1. `MAX_PARALLEL_INSERT` 控制提取阶段并行处理的文件数量。
+2. `MAX_ASYNC` 限制系统中并发 LLM 请求的总数，包括查询、提取和合并的请求。LLM 请求具有不同的优先级：查询操作优先级最高，其次是合并，然后是提取。
+3. 在单个文件中，来自不同文本块的实体和关系提取是并发处理的，并发度由 `MAX_ASYNC` 设置。只有在处理完 `MAX_ASYNC` 个文本块后，系统才会继续处理同一文件中的下一批文本块。
+4. 合并阶段仅在文件中所有文本块完成实体和关系提取后开始。当一个文件进入合并阶段时，流程允许下一个文件开始提取。
+5. 由于提取阶段通常比合并阶段快，因此实际并发处理的文件数可能会超过 `MAX_PARALLEL_INSERT`，因为此参数仅控制提取阶段的并行度。
+6. 为防止竞争条件，合并阶段不支持多个文件的并发处理；一次只能合并一个文件，其他文件必须在队列中等待。
+7. 每个文件在流程中被视为一个原子处理单元。只有当其所有文本块都完成提取和合并后，文件才会被标记为成功处理。如果在处理过程中发生任何错误，整个文件将被标记为失败，并且必须重新处理。
+8. 当由于错误而重新处理文件时，由于 LLM 缓存，先前处理的文本块可以快速跳过。尽管 LLM 缓存在合并阶段也会被利用，但合并顺序的不一致可能会限制其在此阶段的有效性。
+9. 如果在提取过程中发生错误，系统不会保留任何中间结果。如果在合并过程中发生错误，已合并的实体和关系可能会被保留；当重新处理同一文件时，重新提取的实体和关系将与现有实体和关系合并，而不会影响查询结果。
+10. 在合并阶段结束时，所有实体和关系数据都会在向量数据库中更新。如果此时发生错误，某些更新可能会被保留。但是，下一次处理尝试将覆盖先前结果，确保成功重新处理的文件不会影响未来查询结果的完整性。
+
+大型文件应分割成较小的片段以启用增量处理。可以通过在 Web UI 上按“扫描”按钮来启动失败文件的重新处理。
 
 ## API 端点
 
