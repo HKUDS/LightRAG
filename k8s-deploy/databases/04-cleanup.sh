@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DATABASE_SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 # Load configuration file
-source "$SCRIPT_DIR/00-config.sh"
+source "$DATABASE_SCRIPT_DIR/00-config.sh"
 
 print "Uninstalling KubeBlocks database addons..."
 
@@ -18,7 +18,7 @@ print "Uninstalling KubeBlocks database addons..."
 
 print_success "Database addons uninstallation completed!"
 
-source "$SCRIPT_DIR/uninstall-kubeblocks.sh"
+source "$DATABASE_SCRIPT_DIR/uninstall-kubeblocks.sh"
 
 kubectl delete namespace $NAMESPACE
 kubectl delete namespace kb-system
