@@ -21,23 +21,19 @@ if [ -z "$OPENAI_API_BASE" ]; then
 fi
 
 # Install KubeBlocks (if not already installed)
-echo "Preparing to install KubeBlocks and required components..."
 bash "$SCRIPT_DIR/databases/01-prepare.sh"
 
 # Install database clusters
-echo "Installing database clusters..."
 bash "$SCRIPT_DIR/databases/02-install-database.sh"
 
 # Create vector extension in PostgreSQL if enabled
-if [ "$ENABLE_POSTGRESQL" = true ]; then
-    print "Waiting for PostgreSQL pods to be ready..."
-    if kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=pg-cluster -n $NAMESPACE --timeout=300s; then
-        print "Creating vector extension in PostgreSQL..."
-        kubectl exec -it $(kubectl get pods -l kubeblocks.io/role=primary,app.kubernetes.io/instance=pg-cluster -n $NAMESPACE -o name) -n $NAMESPACE -- psql -c "CREATE EXTENSION vector;"
-        print_success "Vector extension created successfully."
-    else
-        print "Warning: PostgreSQL pods not ready within timeout. Vector extension not created."
-    fi
+print "Waiting for PostgreSQL pods to be ready..."
+if kubectl wait --for=condition=ready pods -l kubeblocks.io/role=primary,app.kubernetes.io/instance=pg-cluster -n $NAMESPACE --timeout=300s; then
+    print "Creating vector extension in PostgreSQL..."
+    kubectl exec -it $(kubectl get pods -l kubeblocks.io/role=primary,app.kubernetes.io/instance=pg-cluster -n $NAMESPACE -o name) -n $NAMESPACE -- psql -c "CREATE EXTENSION vector;"
+    print_success "Vector extension created successfully."
+else
+    print "Warning: PostgreSQL pods not ready within timeout. Vector extension not created."
 fi
 
 # Get database passwords from Kubernetes secrets
@@ -87,7 +83,7 @@ helm upgrade --install lightrag $SCRIPT_DIR/lightrag \
 # Wait for LightRAG pod to be ready
 echo ""
 echo "Waiting for lightrag pod to be ready..."
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=lightrag --timeout=60s -n rag
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=lightrag --timeout=120s -n rag
 echo "lightrag pod is ready"
 echo ""
 echo "Running Port-Forward:"
