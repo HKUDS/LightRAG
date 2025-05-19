@@ -19,6 +19,6 @@ print "Installing database clusters..."
 [ "$ENABLE_MONGODB" = true ] && print "Installing MongoDB cluster..." && helm upgrade --install mongodb-cluster kubeblocks/mongodb-cluster -f "$SCRIPT_DIR/mongodb/values.yaml" --namespace $NAMESPACE --version $ADDON_CLUSTER_CHART_VERSION
 [ "$ENABLE_NEO4J" = true ] && print "Installing Neo4j cluster..." && helm upgrade --install neo4j-cluster kubeblocks/neo4j-cluster -f "$SCRIPT_DIR/neo4j/values.yaml" --namespace $NAMESPACE --version $ADDON_CLUSTER_CHART_VERSION
 
-print "Database clusters installation completed!"
+print_success "Database clusters installation completed!"
 print "Use the following command to check the status of installed clusters:"
 print "kubectl get clusters -n $NAMESPACE"

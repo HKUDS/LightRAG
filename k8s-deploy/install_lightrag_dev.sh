@@ -47,8 +47,6 @@ for var in "${required_env_vars[@]}"; do
   fi
 done
 
-echo "Environment variables check passed"
-
 if ! kubectl get namespace rag &> /dev/null; then
   echo "creating namespace 'rag'..."
   kubectl create namespace rag
