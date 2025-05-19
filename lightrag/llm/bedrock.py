@@ -49,6 +49,7 @@ async def bedrock_complete_if_cache(
         "AWS_SESSION_TOKEN", aws_session_token
     )
     kwargs.pop("hashing_kv", None)
+    kwargs.pop("stream", None)
     # Fix message history format
     messages = []
     for history_message in history_messages:
