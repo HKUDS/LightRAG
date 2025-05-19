@@ -104,7 +104,7 @@ if ! kubectl get namespace rag &> /dev/null; then
   kubectl create namespace rag
 fi
 
-helm upgrade --install lightrag . \
+helm upgrade --install lightrag $SCRIPT_DIR/lightrag \
   --namespace $NAMESPACE \
   --set-string env.POSTGRES_PASSWORD=$POSTGRES_PASSWORD \
   --set-string env.NEO4J_PASSWORD=$NEO4J_PASSWORD \
