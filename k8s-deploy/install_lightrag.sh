@@ -2,27 +2,8 @@
 
 NAMESPACE=rag
 
-# Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
-check_dependencies(){
-  echo "Checking dependencies..."
-  command -v kubectl >/dev/null 2>&1 || { echo "Error: kubectl command not found"; exit 1; }
-  command -v helm >/dev/null 2>&1 || { echo "Error: helm command not found"; exit 1; }
-
-  # Check if Kubernetes is available
-  echo "Checking if Kubernetes is available..."
-  kubectl cluster-info &>/dev/null
-  if [ $? -ne 0 ]; then
-      echo "Error: Kubernetes cluster is not accessible. Please ensure you have proper access to a Kubernetes cluster."
-      exit 1
-  fi
-  echo "Kubernetes cluster is accessible."
-}
-
-check_dependencies
-
-# Check and set environment variables
 if [ -z "$OPENAI_API_KEY" ]; then
   echo "OPENAI_API_KEY environment variable is not set"
   read -p "Enter your OpenAI API key: " OPENAI_API_KEY
@@ -39,59 +20,24 @@ if [ -z "$OPENAI_API_BASE" ]; then
   export OPENAI_API_BASE=$OPENAI_API_BASE
 fi
 
-# Check if databases are already installed, install them if not
-echo "Checking database installation status..."
-if ! kubectl get clusters -n rag pg-cluster &> /dev/null || ! kubectl get clusters -n rag neo4j-cluster &> /dev/null; then
-  echo "Databases not installed or incompletely installed, will install required databases first..."
+# Install KubeBlocks (if not already installed)
+echo "Preparing to install KubeBlocks and required components..."
+bash "$SCRIPT_DIR/databases/01-prepare.sh"
 
-  # Install KubeBlocks (if not already installed)
-  echo "Preparing to install KubeBlocks and required components..."
-  bash "$SCRIPT_DIR/databases/01-prepare.sh"
+# Install database clusters
+echo "Installing database clusters..."
+bash "$SCRIPT_DIR/databases/02-install-database.sh"
 
-  # Install database clusters
-  echo "Installing database clusters..."
-  bash "$SCRIPT_DIR/databases/02-install-database.sh"
-
-  # Wait for databases to be ready
-  echo "Waiting for databases to be ready..."
-  TIMEOUT=300  # Set timeout to 5 minutes
-  START_TIME=$(date +%s)
-
-  while true; do
-    CURRENT_TIME=$(date +%s)
-    ELAPSED=$((CURRENT_TIME - START_TIME))
-
-    if [ $ELAPSED -gt $TIMEOUT ]; then
-      echo "Timeout waiting for databases to be ready. Please check database status manually and try again"
-      exit 1
+# Create vector extension in PostgreSQL if enabled
+if [ "$ENABLE_POSTGRESQL" = true ]; then
+    print "Waiting for PostgreSQL pods to be ready..."
+    if kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=pg-cluster -n $NAMESPACE --timeout=300s; then
+        print "Creating vector extension in PostgreSQL..."
+        kubectl exec -it $(kubectl get pods -l kubeblocks.io/role=primary,app.kubernetes.io/instance=pg-cluster -n $NAMESPACE -o name) -n $NAMESPACE -- psql -c "CREATE EXTENSION vector;"
+        print_success "Vector extension created successfully."
+    else
+        print "Warning: PostgreSQL pods not ready within timeout. Vector extension not created."
     fi
-
-    # Use kubectl wait to check if both databases are ready
-    if kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=pg-cluster -n rag --timeout=10s &> /dev/null &&
-       kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=neo4j-cluster -n rag --timeout=10s &> /dev/null; then
-      echo "Database pods are ready, continuing with LightRAG deployment..."
-      break
-    fi
-
-    echo "Waiting for database pods to be ready..."
-    sleep 10
-  done
-else
-  echo "Databases already installed, checking if database pods are ready..."
-
-  # Verify that pods are ready before proceeding
-  echo "Waiting for database pods to be ready..."
-  if ! kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=pg-cluster -n rag --timeout=60s; then
-    echo "PostgreSQL pods are not ready. Please check database status manually."
-    exit 1
-  fi
-
-  if ! kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=neo4j-cluster -n rag --timeout=60s; then
-    echo "Neo4j pods are not ready. Please check database status manually."
-    exit 1
-  fi
-
-  echo "Database pods are ready, proceeding with LightRAG deployment..."
 fi
 
 # Get database passwords from Kubernetes secrets
@@ -109,6 +55,13 @@ if [ -z "$NEO4J_PASSWORD" ]; then
   exit 1
 fi
 export NEO4J_PASSWORD=$NEO4J_PASSWORD
+
+#REDIS_PASSWORD=$(kubectl get secrets -n rag redis-cluster-redis-account-default -o jsonpath='{.data.password}' | base64 -d)
+#if [ -z "$REDIS_PASSWORD" ]; then
+#  echo "Error: Could not retrieve Redis password. Make sure Redis is deployed and the secret exists."
+#  exit 1
+#fi
+#export REDIS_PASSWORD=$REDIS_PASSWORD
 
 echo "Deploying production LightRAG (using external databases)..."
 
@@ -129,7 +82,11 @@ helm upgrade --install lightrag $SCRIPT_DIR/lightrag \
   --set-string env.EMBEDDING_MODEL=text-embedding-ada-002 \
   --set-string env.EMBEDDING_DIM=1536 \
   --set-string env.EMBEDDING_BINDING_API_KEY=$OPENAI_API_KEY
+#  --set-string env.REDIS_URI="redis://default:${REDIS_PASSWORD}@redis-cluster-redis-redis:6379"
 
 # Wait for LightRAG pod to be ready
 echo "Waiting for LightRAG pod to be ready..."
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=lightrag --timeout=60s -n rag
+
+#echo "Current LightRAG Config: "
+#kubectl get secrets lightrag-env -o jsonpath='{.data.\.env}' -n rag | base64 -d

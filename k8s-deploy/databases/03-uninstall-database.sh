@@ -1,10 +1,10 @@
 #!/bin/bash
 
 # Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+DATABASE_SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 # Load configuration file
-source "$SCRIPT_DIR/00-config.sh"
+source "$DATABASE_SCRIPT_DIR/00-config.sh"
 
 print "Uninstalling database clusters..."
 
