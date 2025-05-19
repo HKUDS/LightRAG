@@ -67,5 +67,15 @@ helm upgrade --install lightrag-dev $SCRIPT_DIR/lightrag \
   --set-string env.EMBEDDING_BINDING_API_KEY=$OPENAI_API_KEY
 
 # Wait for LightRAG pod to be ready
-echo "Waiting for LightRAG pod to be ready..."
+echo ""
+echo "Waiting for lightrag-dev pod to be ready..."
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=lightrag-dev --timeout=60s -n rag
+echo "lightrag-dev pod is ready"
+echo ""
+echo "Running Port-Forward:"
+echo "    kubectl --namespace rag port-forward svc/lightrag-dev 9621:9621"
+echo "==========================================="
+echo ""
+echo "✅ You can visit LightRAG at: http://localhost:9621"
+echo ""
+kubectl --namespace rag port-forward svc/lightrag-dev 9621:9621
