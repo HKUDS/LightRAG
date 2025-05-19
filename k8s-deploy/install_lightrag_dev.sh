@@ -5,6 +5,23 @@ NAMESPACE=rag
 # Get the directory where this script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
+check_dependencies(){
+  echo "Checking dependencies..."
+  command -v kubectl >/dev/null 2>&1 || { echo "Error: kubectl command not found"; exit 1; }
+  command -v helm >/dev/null 2>&1 || { echo "Error: helm command not found"; exit 1; }
+
+  # Check if Kubernetes is available
+  echo "Checking if Kubernetes is available..."
+  kubectl cluster-info &>/dev/null
+  if [ $? -ne 0 ]; then
+      echo "Error: Kubernetes cluster is not accessible. Please ensure you have proper access to a Kubernetes cluster."
+      exit 1
+  fi
+  echo "Kubernetes cluster is accessible."
+}
+
+check_dependencies
+
 if [ -z "$OPENAI_API_KEY" ]; then
   echo "OPENAI_API_KEY environment variable is not set"
   read -p "Enter your OpenAI API key: " OPENAI_API_KEY
