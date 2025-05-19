@@ -39,5 +39,5 @@ check_dependencies(){
       print "Error: Kubernetes cluster is not accessible. Please ensure you have proper access to a Kubernetes cluster."
       exit 1
   fi
-  print "Kubernetes cluster is accessible."
+  print_success "Kubernetes cluster is accessible."
 }

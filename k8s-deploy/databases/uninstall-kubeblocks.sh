@@ -15,7 +15,6 @@ if ! kubectl cluster-info &>/dev/null; then
     print "Error: Kubernetes cluster is not accessible. Please ensure you have proper access to a Kubernetes cluster."
     exit 1
 fi
-print "Kubernetes cluster is accessible."
 
 print "Checking if KubeBlocks is installed in kb-system namespace..."
 if ! kubectl get namespace kb-system &>/dev/null; then

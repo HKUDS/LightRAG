@@ -16,5 +16,5 @@ print "Uninstalling database clusters..."
 [ "$ENABLE_MONGODB" = true ] && print "Uninstalling MongoDB cluster..." && helm uninstall mongodb-cluster --namespace $NAMESPACE 2>/dev/null || true
 [ "$ENABLE_NEO4J" = true ] && print "Uninstalling Neo4j cluster..." && helm uninstall neo4j-cluster --namespace $NAMESPACE 2>/dev/null || true
 
-print "Database clusters uninstalled"
+print_success "Database clusters uninstalled"
 print "To uninstall database addons and KubeBlocks, run 04-cleanup.sh"

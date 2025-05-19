@@ -23,7 +23,7 @@ install_kubeblocks() {
 
     # Install snapshot controller
     helm install snapshot-controller piraeus-charts/snapshot-controller -n kb-system --create-namespace
-    kubectl wait --for=condition=ready pods -l app=snapshot-controller -n kb-system --timeout=120s
+    kubectl wait --for=condition=ready pods -l app.kubernetes.io/name=snapshot-controller -n kb-system --timeout=60s
     print_success "snapshot-controller installation complete!"
 
     # Install KubeBlocks CRDs
@@ -38,7 +38,7 @@ install_kubeblocks() {
 
     # Verify installation
     print "Waiting for KubeBlocks to be ready..."
-    kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=kubeblocks -n kb-system --timeout=300s
+    kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=kubeblocks -n kb-system --timeout=120s
     print_success "KubeBlocks installation complete!"
 }
 

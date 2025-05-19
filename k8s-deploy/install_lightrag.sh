@@ -54,7 +54,7 @@ if ! kubectl get clusters -n rag pg-cluster &> /dev/null || ! kubectl get cluste
 
   # Wait for databases to be ready
   echo "Waiting for databases to be ready..."
-  TIMEOUT=600  # Set timeout to 10 minutes
+  TIMEOUT=300  # Set timeout to 5 minutes
   START_TIME=$(date +%s)
 
   while true; do
@@ -66,19 +66,32 @@ if ! kubectl get clusters -n rag pg-cluster &> /dev/null || ! kubectl get cluste
       exit 1
     fi
 
-    PG_STATUS=$(kubectl get clusters -n rag pg-cluster -o jsonpath='{.status.phase}' 2>/dev/null)
-    NEO4J_STATUS=$(kubectl get clusters -n rag neo4j-cluster -o jsonpath='{.status.phase}' 2>/dev/null)
-
-    if [ "$PG_STATUS" == "Running" ] && [ "$NEO4J_STATUS" == "Running" ]; then
-      echo "Databases are ready, continuing with LightRAG deployment..."
+    # Use kubectl wait to check if both databases are ready
+    if kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=pg-cluster -n rag --timeout=10s &> /dev/null &&
+       kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=neo4j-cluster -n rag --timeout=10s &> /dev/null; then
+      echo "Database pods are ready, continuing with LightRAG deployment..."
       break
     fi
 
-    echo "Databases preparing... PostgreSQL: $PG_STATUS, Neo4J: $NEO4J_STATUS"
+    echo "Waiting for database pods to be ready..."
     sleep 10
   done
 else
-  echo "Databases already installed, proceeding directly to LightRAG deployment..."
+  echo "Databases already installed, checking if database pods are ready..."
+
+  # Verify that pods are ready before proceeding
+  echo "Waiting for database pods to be ready..."
+  if ! kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=pg-cluster -n rag --timeout=60s; then
+    echo "PostgreSQL pods are not ready. Please check database status manually."
+    exit 1
+  fi
+
+  if ! kubectl wait --for=condition=ready pods -l app.kubernetes.io/instance=neo4j-cluster -n rag --timeout=60s; then
+    echo "Neo4j pods are not ready. Please check database status manually."
+    exit 1
+  fi
+
+  echo "Database pods are ready, proceeding with LightRAG deployment..."
 fi
 
 # Get database passwords from Kubernetes secrets

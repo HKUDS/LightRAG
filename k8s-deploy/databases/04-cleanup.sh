@@ -16,11 +16,11 @@ print "Uninstalling KubeBlocks database addons..."
 [ "$ENABLE_MONGODB" = true ] && print "Uninstalling MongoDB addon..." && helm uninstall kb-addon-mongodb --namespace kb-system 2>/dev/null || true
 [ "$ENABLE_NEO4J" = true ] && print "Uninstalling Neo4j addon..." && helm uninstall kb-addon-neo4j --namespace kb-system 2>/dev/null || true
 
-print "Database addons uninstallation completed!"
+print_success "Database addons uninstallation completed!"
 
 source "$SCRIPT_DIR/uninstall-kubeblocks.sh"
 
 kubectl delete namespace $NAMESPACE
 kubectl delete namespace kb-system
 
-print "KubeBlocks uninstallation completed!"
+print_success "KubeBlocks uninstallation completed!"
