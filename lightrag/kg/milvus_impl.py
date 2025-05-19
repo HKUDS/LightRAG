@@ -68,14 +68,15 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             ),
         )
         self._max_batch_size = self.global_config["embedding_batch_num"]
+        self.collection_name = self.namespace + "_" + self.workspace
         MilvusVectorDBStorage.create_collection_if_not_exist(
             self._client,
-            self.namespace,
+            self.collection_name,
             dimension=self.embedding_func.embedding_dim,
         )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.info(f"Inserting {len(data)} to {self.collection_name}")
         if not data:
             return
 
@@ -103,7 +104,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         embeddings = np.concatenate(embeddings_list)
         for i, d in enumerate(list_data):
             d["vector"] = embeddings[i]
-        results = self._client.upsert(collection_name=self.namespace, data=list_data)
+        results = self._client.upsert(collection_name=self.collection_name, data=list_data)
         return results
 
     async def query(
@@ -113,7 +114,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             [query], _priority=5
         )  # higher priority for query
         results = self._client.search(
-            collection_name=self.namespace,
+            collection_name=self.collection_name,
             data=embedding,
             limit=top_k,
             output_fields=list(self.meta_fields) + ["created_at"],
@@ -153,7 +154,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             # Delete the entity from Milvus collection
             result = self._client.delete(
-                collection_name=self.namespace, pks=[entity_id]
+                collection_name=self.collection_name, pks=[entity_id]
             )
 
             if result and result.get("delete_count", 0) > 0:
@@ -176,7 +177,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             # Find all relations involving this entity
             results = self._client.query(
-                collection_name=self.namespace, filter=expr, output_fields=["id"]
+                collection_name=self.collection_name, filter=expr, output_fields=["id"]
             )
 
             if not results or len(results) == 0:
@@ -192,7 +193,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Delete the relations
             if relation_ids:
                 delete_result = self._client.delete(
-                    collection_name=self.namespace, pks=relation_ids
+                    collection_name=self.collection_name, pks=relation_ids
                 )
 
                 logger.debug(
@@ -210,17 +211,17 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         """
         try:
             # Delete vectors by IDs
-            result = self._client.delete(collection_name=self.namespace, pks=ids)
+            result = self._client.delete(collection_name=self.collection_name, pks=ids)
 
             if result and result.get("delete_count", 0) > 0:
                 logger.debug(
-                    f"Successfully deleted {result.get('delete_count', 0)} vectors from {self.namespace}"
+                    f"Successfully deleted {result.get('delete_count', 0)} vectors from {self.collection_name}"
                 )
             else:
-                logger.debug(f"No vectors were deleted from {self.namespace}")
+                logger.debug(f"No vectors were deleted from {self.collection_name}")
 
         except Exception as e:
-            logger.error(f"Error while deleting vectors from {self.namespace}: {e}")
+            logger.error(f"Error while deleting vectors from {self.collection_name}: {e}")
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get vector data by its ID
@@ -234,7 +235,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         try:
             # Query Milvus for a specific ID
             result = self._client.query(
-                collection_name=self.namespace,
+                collection_name=self.collection_name,
                 filter=f'id == "{id}"',
                 output_fields=list(self.meta_fields) + ["id", "created_at"],
             )
@@ -270,7 +271,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
 
             # Query Milvus with the filter
             result = self._client.query(
-                collection_name=self.namespace,
+                collection_name=self.collection_name,
                 filter=filter_expr,
                 output_fields=list(self.meta_fields) + ["id", "created_at"],
             )
