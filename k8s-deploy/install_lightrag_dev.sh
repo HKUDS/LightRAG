@@ -54,7 +54,7 @@ if ! kubectl get namespace rag &> /dev/null; then
   kubectl create namespace rag
 fi
 
-helm upgrade --install lightrag-dev $SCRIPT_DIR \
+helm upgrade --install lightrag-dev $SCRIPT_DIR/lightrag \
   --namespace rag \
   --set-string env.LIGHTRAG_KV_STORAGE=JsonKVStorage \
   --set-string env.LIGHTRAG_VECTOR_STORAGE=NanoVectorDBStorage \
