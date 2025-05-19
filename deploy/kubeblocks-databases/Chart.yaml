@@ -1,6 +1,0 @@
-apiVersion: v2
-name: kubeblocks-databases
-description: A Helm chart to deploy PostgreSQL, Redis, Elasticsearch, and Qdrant clusters using KubeBlocks.
-type: application
-version: 0.1.0
-appVersion: "1.0" # Or the version of KubeBlocks you are targeting

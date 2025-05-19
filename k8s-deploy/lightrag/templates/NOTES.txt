@@ -1,0 +1,38 @@
+===========================================
+ LightRAG has been successfully deployed!
+===========================================
+
+View application logs:
+  kubectl logs -f --namespace {{ .Release.Namespace }} deploy/{{ include "lightrag.fullname" . }}
+
+===========================================
+
+Access the application:
+{{- if contains "NodePort" .Values.service.type }}
+  Run these commands to get access information:
+  -----------------------------------------
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "lightrag.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo "LightRAG is accessible at: http://$NODE_IP:$NODE_PORT"
+  -----------------------------------------
+{{- else if contains "LoadBalancer" .Values.service.type }}
+  Run these commands to get access information (external IP may take a minute to assign):
+  -----------------------------------------
+  export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "lightrag.fullname" . }} --template "{{ "{{ range (index .status.loadBalancer.ingress 0) }}{{ . }}{{ end }}" }}")
+  echo "LightRAG is accessible at: http://$SERVICE_IP:{{ .Values.service.port }}"
+  -----------------------------------------
+  If SERVICE_IP is empty, retry the command or check service status with:
+  kubectl get svc --namespace {{ .Release.Namespace }} {{ include "lightrag.fullname" . }}
+{{- else if contains "ClusterIP" .Values.service.type }}
+  For development environments, to access LightRAG from your local machine:
+
+  1. Run this port-forward command in your terminal:
+    kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "lightrag.fullname" . }} {{ .Values.service.port }}:{{ .Values.env.PORT }}
+
+  2. While the command is running, open your browser and navigate to:
+     http://localhost:{{ .Values.service.port }}
+
+  Note: To stop port-forwarding, press Ctrl+C in the terminal.
+{{- end }}
+
+===========================================
