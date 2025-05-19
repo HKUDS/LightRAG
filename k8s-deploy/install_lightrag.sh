@@ -85,8 +85,15 @@ helm upgrade --install lightrag $SCRIPT_DIR/lightrag \
 #  --set-string env.REDIS_URI="redis://default:${REDIS_PASSWORD}@redis-cluster-redis-redis:6379"
 
 # Wait for LightRAG pod to be ready
-echo "Waiting for LightRAG pod to be ready..."
+echo ""
+echo "Waiting for lightrag pod to be ready..."
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=lightrag --timeout=60s -n rag
-
-#echo "Current LightRAG Config: "
-#kubectl get secrets lightrag-env -o jsonpath='{.data.\.env}' -n rag | base64 -d
+echo "lightrag pod is ready"
+echo ""
+echo "Running Port-Forward:"
+echo "    kubectl --namespace rag port-forward svc/lightrag 9621:9621"
+echo "==========================================="
+echo ""
+echo "✅ You can visit LightRAG at: http://localhost:9621"
+echo ""
+kubectl --namespace rag port-forward svc/lightrag 9621:9621
