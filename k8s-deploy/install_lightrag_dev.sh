@@ -69,7 +69,7 @@ helm upgrade --install lightrag-dev $SCRIPT_DIR/lightrag \
 # Wait for LightRAG pod to be ready
 echo ""
 echo "Waiting for lightrag-dev pod to be ready..."
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=lightrag-dev --timeout=60s -n rag
+kubectl wait --for=condition=ready pod -l app.kubernetes.io/instance=lightrag-dev --timeout=300s -n rag
 echo "lightrag-dev pod is ready"
 echo ""
 echo "Running Port-Forward:"
