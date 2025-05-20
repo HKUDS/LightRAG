@@ -6,6 +6,8 @@ There are two recommended deployment methods for LightRAG:
 1. **Lightweight Deployment**: Using built-in lightweight storage, suitable for testing and small-scale usage
 2. **Production Deployment**: Using external databases (such as PostgreSQL and Neo4J), suitable for production environments and large-scale usage
 
+> If you'd like a video walkthrough of the deployment process, feel free to check out this optional [video tutorial](https://youtu.be/JW1z7fzeKTw?si=vPzukqqwmdzq9Q4q) on YouTube. It might help clarify some steps for those who prefer visual guidance.
+
 ## Prerequisites
 
 Make sure the following tools are installed and configured:
