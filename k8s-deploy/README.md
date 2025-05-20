@@ -4,7 +4,7 @@ This is the Helm chart for LightRAG, used to deploy LightRAG services on a Kuber
 
 There are two recommended deployment methods for LightRAG:
 1. **Lightweight Deployment**: Using built-in lightweight storage, suitable for testing and small-scale usage
-2. **Full Deployment**: Using external databases (such as PostgreSQL and Neo4J), suitable for production environments and large-scale usage
+2. **Production Deployment**: Using external databases (such as PostgreSQL and Neo4J), suitable for production environments and large-scale usage
 
 ## Prerequisites
 
@@ -16,19 +16,31 @@ Make sure the following tools are installed and configured:
   * Any standard cloud or on-premises Kubernetes cluster (EKS, GKE, AKS, etc.) also works.
 
 * **kubectl**
-  * The Kubernetes command-line interface.
+  * The Kubernetes command-line tool for managing your cluster.
   * Follow the official guide: [Install and Set Up kubectl](https://kubernetes.io/docs/tasks/tools/#kubectl).
 
 * **Helm** (v3.x+)
-  * Kubernetes package manager used by the scripts below.
+  * Kubernetes package manager used to install LightRAG.
   * Install it via the official instructions: [Installing Helm](https://helm.sh/docs/intro/install/).
-
 
 ## Lightweight Deployment (No External Databases Required)
 
-Uses built-in lightweight storage components with no need to configure external databases:
+This deployment option uses built-in lightweight storage components that are perfect for testing, demos, or small-scale usage scenarios. No external database configuration is required.
+
+You can deploy LightRAG using either the provided convenience script or direct Helm commands. Both methods configure the same environment variables defined in the `lightrag/values.yaml` file.
+
+### Using the convenience script (recommended):
 
 ```bash
+export OPENAI_API_BASE=<YOUR_OPENAI_API_BASE>
+export OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>
+bash ./install_lightrag_dev.sh
+```
+
+### Or using Helm directly:
+
+```bash
+# You can override any env param you want
 helm upgrade --install lightrag ./lightrag \
   --namespace rag \
   --set-string env.LIGHTRAG_KV_STORAGE=JsonKVStorage \
@@ -45,82 +57,68 @@ helm upgrade --install lightrag ./lightrag \
   --set-string env.EMBEDDING_BINDING_API_KEY=$OPENAI_API_KEY
 ```
 
-You can refer to: [install_lightrag_dev.sh](install_lightrag_dev.sh)
+### Accessing the application:
 
-You can use it directly like this:
 ```bash
-export OPENAI_API_BASE=<YOUR_OPENAI_API_BASE>
-export OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>
-bash ./install_lightrag_dev.sh
-```
-Then you can Access the application
-```bash
-  1. Run this port-forward command in your terminal:
-    kubectl --namespace rag port-forward svc/lightrag-dev 9621:9621
+# 1. Run this port-forward command in your terminal:
+kubectl --namespace rag port-forward svc/lightrag-dev 9621:9621
 
-  2. While the command is running, open your browser and navigate to:
-     http://localhost:9621
+# 2. While the command is running, open your browser and navigate to:
+# http://localhost:9621
 ```
 
-## Full Deployment (Using External Databases)
+## Production Deployment (Using External Databases)
 
 ### 1. Install Databases
 > You can skip this step if you've already prepared databases. Detailed information can be found in: [README.md](databases%2FREADME.md).
 
 We recommend KubeBlocks for database deployment. KubeBlocks is a cloud-native database operator that makes it easy to run any database on Kubernetes at production scale.
-FastGPT also use KubeBlocks for their database infrastructure.
 
 First, install KubeBlocks and KubeBlocks-Addons (skip if already installed):
 ```bash
 bash ./databases/01-prepare.sh
 ```
 
-Then install the required databases. By default, this will install PostgreSQL and Neo4J, but you can modify [00-config.sh](databases%2F00-config.sh) to select different databases based on your needs. KubeBlocks supports various databases including MongoDB, Qdrant, Redis, and more.
+Then install the required databases. By default, this will install PostgreSQL and Neo4J, but you can modify [00-config.sh](databases%2F00-config.sh) to select different databases based on your needs:
 ```bash
 bash ./databases/02-install-database.sh
 ```
 
-When the script completes, confirm that the clusters are up. It may take a few minutes for all the clusters to become ready,
-   especially if this is the first time running the script as Kubernetes needs to pull container images from registries.
-   You can monitor the progress using the following commands:
+Verify that the clusters are up and running:
 ```bash
 kubectl get clusters -n rag
-NAME            CLUSTER-DEFINITION   TERMINATION-POLICY   STATUS     AGE
-neo4j-cluster                        Delete               Running    39s
-pg-cluster      postgresql           Delete               Creating   42s
-```
-You can see all the Database `Pods` created by KubeBlocks.
-   Initially, you might see pods in `ContainerCreating` or `Pending` status - this is normal while images are being pulled and containers are starting up.
-   Wait until all pods show `Running` status:
-```bash
+# Expected output:
+# NAME            CLUSTER-DEFINITION   TERMINATION-POLICY   STATUS     AGE
+# neo4j-cluster                        Delete               Running    39s
+# pg-cluster      postgresql           Delete               Running    42s
+
 kubectl get po -n rag
-NAME                      READY   STATUS    RESTARTS   AGE
-neo4j-cluster-neo4j-0     1/1     Running   0          58s
-pg-cluster-postgresql-0   4/4     Running   0          59s
-pg-cluster-postgresql-1   4/4     Running   0          59s
+# Expected output:
+# NAME                      READY   STATUS    RESTARTS   AGE
+# neo4j-cluster-neo4j-0     1/1     Running   0          58s
+# pg-cluster-postgresql-0   4/4     Running   0          59s
+# pg-cluster-postgresql-1   4/4     Running   0          59s
 ```
 
 ### 2. Install LightRAG
 
 LightRAG and its databases are deployed within the same Kubernetes cluster, making configuration straightforward.
-When using KubeBlocks to provide PostgreSQL and Neo4J database services, the `install_lightrag.sh` script can automatically retrieve all database connection information (host, port, user, password), eliminating the need to manually set database credentials.
+The installation script automatically retrieves all database connection information from KubeBlocks, eliminating the need to manually set database credentials:
 
-You only need to run [install_lightrag.sh](install_lightrag.sh) like this:
 ```bash
 export OPENAI_API_BASE=<YOUR_OPENAI_API_BASE>
 export OPENAI_API_KEY=<YOUR_OPENAI_API_KEY>
 bash ./install_lightrag.sh
 ```
 
-The above commands automatically extract the database passwords from Kubernetes secrets, eliminating the need to manually set these credentials.
+### Accessing the application:
 
-After deployment, you can access the application:
 ```bash
-  1. Run this port-forward command in your terminal:
-    kubectl --namespace rag port-forward svc/lightrag 9621:9621
+# 1. Run this port-forward command in your terminal:
+kubectl --namespace rag port-forward svc/lightrag 9621:9621
 
-  2. While the command is running, open your browser and navigate to:
-     http://localhost:9621
+# 2. While the command is running, open your browser and navigate to:
+# http://localhost:9621
 ```
 
 ## Configuration
@@ -187,5 +185,5 @@ env:
 - Ensure all necessary environment variables (API keys and database passwords) are set before deployment
 - For security reasons, it's recommended to pass sensitive information using environment variables rather than writing them directly in scripts or values files
 - Lightweight deployment is suitable for testing and small-scale usage, but data persistence and performance may be limited
-- Full deployment (PostgreSQL + Neo4J) is recommended for production environments and large-scale usage
+- Production deployment (PostgreSQL + Neo4J) is recommended for production environments and large-scale usage
 - For more customized configurations, please refer to the official LightRAG documentation
