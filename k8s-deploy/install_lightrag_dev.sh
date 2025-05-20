@@ -21,7 +21,7 @@ check_dependencies(){
 
 check_dependencies
 
-if [ -z "$OPENAI_API_KEY2" ]; then
+if [ -z "$OPENAI_API_KEY" ]; then
   echo "OPENAI_API_KEY environment variable is not set"
   read -s -p "Enter your OpenAI API key: " OPENAI_API_KEY
   if [ -z "$OPENAI_API_KEY" ]; then
