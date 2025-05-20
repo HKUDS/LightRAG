@@ -18,7 +18,7 @@ os.environ["REDIS_URI"] = "redis://localhost:6379"
 # neo4j
 BATCH_SIZE_NODES = 500
 BATCH_SIZE_EDGES = 100
-os.environ["NEO4J_URI"] = "bolt://117.50.173.35:7687"
+os.environ["NEO4J_URI"] = "neo4j://117.50.173.35:7687"
 os.environ["NEO4J_USERNAME"] = "neo4j"
 os.environ["NEO4J_PASSWORD"] = "12345678"
 
