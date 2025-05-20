@@ -6,7 +6,7 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 if [ -z "$OPENAI_API_KEY" ]; then
   echo "OPENAI_API_KEY environment variable is not set"
-  read -p "Enter your OpenAI API key: " OPENAI_API_KEY
+  read -s -p "Enter your OpenAI API key: " OPENAI_API_KEY
   if [ -z "$OPENAI_API_KEY" ]; then
     echo "Error: OPENAI_API_KEY must be provided"
     exit 1
