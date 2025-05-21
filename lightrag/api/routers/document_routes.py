@@ -98,12 +98,12 @@ class InsertTextRequest(BaseModel):
     )
     @field_validator("text", mode="after")
     @classmethod
-    def strip_after(cls, text: str) -> str:
+    def strip_text_after(cls, text: str) -> str:
         return text.strip()
     
     @field_validator("file_source", mode="after")
     @classmethod
-    def strip_after(cls, file_source: str) -> str:
+    def strip_source_after(cls, file_source: str) -> str:
         return file_source.strip()
     
     class Config:
@@ -135,11 +135,11 @@ class InsertTextsRequest(BaseModel):
     
     @field_validator("texts", mode="after")
     @classmethod
-    def strip_after(cls, texts: list[str]) -> list[str]:
+    def strip_texts_after(cls, texts: list[str]) -> list[str]:
         return [text.strip() for text in texts]
     @field_validator("file_sources", mode="after")
     @classmethod
-    def strip_after(cls, file_sources: list[str]) -> list[str]:
+    def strip_sources_after(cls, file_sources: list[str]) -> list[str]:
         return [file_source.strip() for file_source in file_sources]
     
     class Config:
