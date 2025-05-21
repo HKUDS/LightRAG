@@ -488,6 +488,8 @@ def create_app(args):
                 )
                 response.headers["Pragma"] = "no-cache"
                 response.headers["Expires"] = "0"
+            elif path.endswith(".js"):
+                response.headers["Content-Type"] = "application/javascript"
             return response
 
     # Webui mount webui/index.html
