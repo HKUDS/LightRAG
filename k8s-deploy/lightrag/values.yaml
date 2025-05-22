@@ -1,0 +1,58 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/hkuds/lightrag
+  tag: latest
+
+service:
+  type: ClusterIP
+  port: 9621
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+persistence:
+  enabled: true
+  ragStorage:
+    size: 10Gi
+  inputs:
+    size: 5Gi
+
+env:
+  HOST: 0.0.0.0
+  PORT: 9621
+  WEBUI_TITLE: Graph RAG Engine
+  WEBUI_DESCRIPTION: Simple and Fast Graph Based RAG System
+  LLM_BINDING: openai
+  LLM_MODEL: gpt-4o-mini
+  LLM_BINDING_HOST:
+  LLM_BINDING_API_KEY:
+  EMBEDDING_BINDING: openai
+  EMBEDDING_MODEL: text-embedding-ada-002
+  EMBEDDING_DIM: 1536
+  EMBEDDING_BINDING_API_KEY:
+  LIGHTRAG_KV_STORAGE: PGKVStorage
+  LIGHTRAG_VECTOR_STORAGE: PGVectorStorage
+#  LIGHTRAG_KV_STORAGE: RedisKVStorage
+#  LIGHTRAG_VECTOR_STORAGE: QdrantVectorDBStorage
+  LIGHTRAG_GRAPH_STORAGE: Neo4JStorage
+  LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
+  # Replace with your POSTGRES credentials
+  POSTGRES_HOST: pg-cluster-postgresql-postgresql
+  POSTGRES_PORT: 5432
+  POSTGRES_USER: postgres
+  POSTGRES_PASSWORD:
+  POSTGRES_DATABASE: postgres
+  POSTGRES_WORKSPACE: default
+  # Replace with your NEO4J credentials
+  NEO4J_URI: neo4j://neo4j-cluster-neo4j:7687
+  NEO4J_USERNAME: neo4j
+  NEO4J_PASSWORD:
+  # Replace with your Qdrant credentials
+  QDRANT_URL: http://qdrant-cluster-qdrant-qdrant:6333
+  # REDIS_URI: redis://default:${REDIS_PASSWORD}@redis-cluster-redis-redis:6379

@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightrag.fullname" . }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "lightrag.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include "lightrag.envContent" . | sha256sum }}
+      labels:
+        {{- include "lightrag.selectorLabels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: {{ .Values.env.PORT }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: rag-storage
+              mountPath: /app/data/rag_storage
+            - name: inputs
+              mountPath: /app/data/inputs
+            - name: env-file
+              mountPath: /app/.env
+              subPath: .env
+      volumes:
+        - name: env-file
+          secret:
+            secretName: {{ include "lightrag.fullname" . }}-env
+        {{- if .Values.persistence.enabled }}
+        - name: rag-storage
+          persistentVolumeClaim:
+            claimName: {{ include "lightrag.fullname" . }}-rag-storage
+        - name: inputs
+          persistentVolumeClaim:
+            claimName: {{ include "lightrag.fullname" . }}-inputs
+        {{- else }}
+        - name: rag-storage
+          emptyDir: {}
+        - name: inputs
+          emptyDir: {}
+        {{- end }}
