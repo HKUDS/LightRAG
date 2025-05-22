@@ -49,13 +49,13 @@ MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
 
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
-        self.host = config.get("host", "localhost")
-        self.port = config.get("port", 5432)
-        self.user = config.get("user", "postgres")
-        self.password = config.get("password", None)
-        self.database = config.get("database", "postgres")
-        self.workspace = config.get("workspace", "default")
-        self.max = int(config.get("max_connections", 20))
+        self.host = config["host"]
+        self.port = config["port"]
+        self.user = config["user"]
+        self.password = config["password"]
+        self.database = config["database"]
+        self.workspace = config["workspace"]
+        self.max = int(config["max_connections"])
         self.increment = 1
         self.pool: Pool | None = None
 
@@ -298,7 +298,7 @@ class ClientManager:
                 "POSTGRES_PORT", config.get("postgres", "port", fallback=5432)
             ),
             "user": os.environ.get(
-                "POSTGRES_USER", config.get("postgres", "user", fallback=None)
+                "POSTGRES_USER", config.get("postgres", "user", fallback="postgres")
             ),
             "password": os.environ.get(
                 "POSTGRES_PASSWORD",
@@ -306,7 +306,7 @@ class ClientManager:
             ),
             "database": os.environ.get(
                 "POSTGRES_DATABASE",
-                config.get("postgres", "database", fallback=None),
+                config.get("postgres", "database", fallback="postgres"),
             ),
             "workspace": os.environ.get(
                 "POSTGRES_WORKSPACE",
