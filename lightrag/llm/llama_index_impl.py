@@ -95,7 +95,7 @@ async def llama_index_complete_if_cache(
     prompt: str,
     system_prompt: Optional[str] = None,
     history_messages: List[dict] = [],
-    chat_kwargs = {},
+    chat_kwargs={},
 ) -> str:
     """Complete the prompt using LlamaIndex."""
     try:
@@ -122,7 +122,9 @@ async def llama_index_complete_if_cache(
         # Add current prompt
         formatted_messages.append(ChatMessage(role=MessageRole.USER, content=prompt))
 
-        response: ChatResponse = await model.achat(messages=formatted_messages, **chat_kwargs)
+        response: ChatResponse = await model.achat(
+            messages=formatted_messages, **chat_kwargs
+        )
 
         # In newer versions, the response is in message.content
         content = response.message.content
