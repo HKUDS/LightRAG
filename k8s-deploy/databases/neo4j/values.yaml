@@ -1,0 +1,46 @@
+# Version
+# description: Cluster version.
+# default: 5.26.5
+# one of: [5.26.5, 4.4.42]
+version: 5.26.5
+
+# Mode
+# description: Cluster topology mode.
+# default: singlealone
+# one of: [singlealone]
+mode: singlealone
+
+# CPU
+# description: CPU cores.
+# default: 2
+# minimum: 2
+# maximum: 64
+cpu: 2
+
+# Memory(Gi)
+# description: Memory, the unit is Gi.
+# default: 2
+# minimum: 2
+# maximum: 1000
+memory: 4
+
+# Storage(Gi)
+# description: Storage size, the unit is Gi.
+# default: 20
+# minimum: 1
+# maximum: 10000
+storage: 20
+
+# Replicas
+# description: The number of replicas, for standalone mode, the replicas is 1, for replicaset mode, the default replicas is 3.
+# default: 1
+# minimum: 1
+# maximum: 5
+replicas: 1
+
+# Storage Class Name
+# description: Storage class name of the data volume
+storageClassName: ""
+
+extra:
+  terminationPolicy: Delete
