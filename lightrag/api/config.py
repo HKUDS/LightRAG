@@ -111,6 +111,12 @@ def parse_args() -> argparse.Namespace:
         default=get_env_value("MAX_TOKENS", 32768, int),
         help="Maximum token size (default: from env or 32768)",
     )
+    parser.add_argument(
+        "--prompts-yaml-file",
+        type=str,
+        default=get_env_value("PROMPTS_YAML_FILE", None),
+        help="User prompts yanl file (default: None)",
+    )
 
     # Logging configuration
     parser.add_argument(
@@ -226,6 +232,7 @@ def parse_args() -> argparse.Namespace:
     # convert relative path to absolute path
     args.working_dir = os.path.abspath(args.working_dir)
     args.input_dir = os.path.abspath(args.input_dir)
+    args.prompts_yaml_file = os.path.abspath(args.prompts_yaml_file) if args.prompts_yaml_file else None
 
     # Inject storage configuration from environment variables
     args.kv_storage = get_env_value(

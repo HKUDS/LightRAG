@@ -1,5 +1,7 @@
 from __future__ import annotations
 from typing import Any
+import yaml
+import copy
 
 GRAPH_FIELD_SEP = "<SEP>"
 
@@ -354,3 +356,30 @@ Similarity score criteria:
 0.5: Partially related and answer needs modification to be used
 Return only a number between 0-1, without any additional content.
 """
+DEFAULT_PROMPT = copy.deepcopy(PROMPTS)
+
+def load_prompts_from_yaml(yaml_path: str | None) -> bool:
+    """
+    Load a user-defined PROMPTS from a YAML file.
+    if the input yaml_path is None, the default prompts will be used.
+
+    Args:
+        yaml_path (str): Path to the YAML file containing prompt definitions.
+
+    """
+    loaded = False
+    if yaml_path is None:
+        PROMPTS.update(DEFAULT_PROMPT)
+        loaded = True
+    else:
+        try:
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+                if isinstance(data, dict):
+                    PROMPTS.update(data)
+                    loaded = True
+        except Exception as e:
+            pass
+    if loaded:
+        return True
+    return False
