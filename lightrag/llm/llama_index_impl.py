@@ -95,7 +95,7 @@ async def llama_index_complete_if_cache(
     prompt: str,
     system_prompt: Optional[str] = None,
     history_messages: List[dict] = [],
-    **kwargs,
+    chat_kwargs={},
 ) -> str:
     """Complete the prompt using LlamaIndex."""
     try:
@@ -122,13 +122,9 @@ async def llama_index_complete_if_cache(
         # Add current prompt
         formatted_messages.append(ChatMessage(role=MessageRole.USER, content=prompt))
 
-        # Get LLM instance from kwargs
-        if "llm_instance" not in kwargs:
-            raise ValueError("llm_instance must be provided in kwargs")
-        llm = kwargs["llm_instance"]
-
-        # Get response
-        response: ChatResponse = await llm.achat(messages=formatted_messages)
+        response: ChatResponse = await model.achat(
+            messages=formatted_messages, **chat_kwargs
+        )
 
         # In newer versions, the response is in message.content
         content = response.message.content
