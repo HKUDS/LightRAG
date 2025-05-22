@@ -55,7 +55,7 @@ class PostgreSQLDB:
         self.password = config.get("password", None)
         self.database = config.get("database", "postgres")
         self.workspace = config.get("workspace", "default")
-        self.max = int(config.get("max_connections", 12))
+        self.max = int(config.get("max_connections", 20))
         self.increment = 1
         self.pool: Pool | None = None
 
@@ -314,7 +314,7 @@ class ClientManager:
             ),
             "max_connections": os.environ.get(
                 "POSTGRES_MAX_CONNECTIONS",
-                config.get("postgres", "max_connections", fallback=12),
+                config.get("postgres", "max_connections", fallback=20),
             ),
         }
 
