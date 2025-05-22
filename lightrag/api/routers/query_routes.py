@@ -79,8 +79,7 @@ class QueryRequest(BaseModel):
     )
 
     ids: list[str] | None = Field(
-        default=None,
-        description="List of ids to filter the results."
+        default=None, description="List of ids to filter the results."
     )
 
     user_prompt: Optional[str] = Field(
