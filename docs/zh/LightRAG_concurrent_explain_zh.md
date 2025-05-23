@@ -235,9 +235,6 @@ async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
 - 4个chunks等待LLM响应
 ```
 
-### 场景3：资源瓶颈分析
-![lightrag_llm_request_timeline.png](..%2Fassets%2Flightrag_llm_request_timeline.png)
-
 ## 7. 性能优化建议
 
 ### 理解瓶颈

@@ -239,11 +239,6 @@ Total:
 - 4 chunks waiting for LLM response
 ```
 
-### Scenario 3: Resource Bottleneck Analysis
-
-**Timeline Example (max_parallel_insert=2, llm_model_max_async=4)**:
-![lightrag_llm_request_timeline.png](assets%2Flightrag_llm_request_timeline.png)
-
 ## 7. Performance Optimization Recommendations
 
 ### Understanding the Bottleneck
