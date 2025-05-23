@@ -285,7 +285,7 @@ class ClientManager:
     _lock = asyncio.Lock()
 
     @staticmethod
-    def get_config() -> dict[str, Any]:
+    def get_config(workspace: str = "default") -> dict[str, Any]:
         config = configparser.ConfigParser()
         config.read("config.ini", "utf-8")
 
@@ -308,10 +308,11 @@ class ClientManager:
                 "POSTGRES_DATABASE",
                 config.get("postgres", "database", fallback="postgres"),
             ),
-            "workspace": os.environ.get(
-                "POSTGRES_WORKSPACE",
-                config.get("postgres", "workspace", fallback="default"),
-            ),
+            # "workspace": os.environ.get(
+            #     "POSTGRES_WORKSPACE",
+            #     config.get("postgres", "workspace", fallback="default"),
+            # ),
+            "workspace": workspace,
             "max_connections": os.environ.get(
                 "POSTGRES_MAX_CONNECTIONS",
                 config.get("postgres", "max_connections", fallback=20),
@@ -319,10 +320,10 @@ class ClientManager:
         }
 
     @classmethod
-    async def get_client(cls) -> PostgreSQLDB:
+    async def get_client(cls, workspace: str) -> PostgreSQLDB:
         async with cls._lock:
             if cls._instances["db"] is None:
-                config = ClientManager.get_config()
+                config = ClientManager.get_config(workspace)
                 db = PostgreSQLDB(config)
                 await db.initdb()
                 await db.check_tables()
@@ -355,7 +356,7 @@ class PGKVStorage(BaseKVStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(self.workspace)
 
     async def finalize(self):
         if self.db is not None:
@@ -603,7 +604,7 @@ class PGVectorStorage(BaseVectorStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(self.workspace)
 
     async def finalize(self):
         if self.db is not None:
@@ -884,7 +885,7 @@ class PGDocStatusStorage(DocStatusStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(self.workspace)
 
     async def finalize(self):
         if self.db is not None:
@@ -1151,7 +1152,7 @@ class PGGraphStorage(BaseGraphStorage):
 
     async def initialize(self):
         if self.db is None:
-            self.db = await ClientManager.get_client()
+            self.db = await ClientManager.get_client(self.workspace)
 
         # Execute each statement separately and ignore errors
         queries = [
