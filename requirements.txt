@@ -1,6 +1,7 @@
 aiohttp
 configparser
 future
+PyYAML
 
 # Additional Packages for export Functionality
 pandas>=2.0.0
