@@ -236,7 +236,7 @@ async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
 ```
 
 ### 场景3：资源瓶颈分析
-[LightRAG 多文档并发处理机制详解.md](LightRAG%20%E5%A4%9A%E6%96%87%E6%A1%A3%E5%B9%B6%E5%8F%91%E5%A4%84%E7%90%86%E6%9C%BA%E5%88%B6%E8%AF%A6%E8%A7%A3.md)
+![lightrag_llm_request_timeline.png](..%2Fassets%2Flightrag_llm_request_timeline.png)
 
 ## 7. 性能优化建议
 
