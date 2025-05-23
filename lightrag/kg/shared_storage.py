@@ -1,9 +1,12 @@
+from collections import defaultdict
 import os
 import sys
 import asyncio
+import multiprocessing as mp
 from multiprocessing.synchronize import Lock as ProcessLock
 from multiprocessing import Manager
-from typing import Any, Dict, Optional, Union, TypeVar, Generic
+import time
+from typing import Any, Callable, Dict, List, Optional, Union, TypeVar, Generic
 
 
 # Define a direct print function for critical logs that must be visible in all processes
@@ -27,7 +30,13 @@ LockType = Union[ProcessLock, asyncio.Lock]
 _is_multiprocess = None
 _workers = None
 _manager = None
+_lock_registry: Optional[Dict[str, mp.synchronize.Lock]] = None
+_lock_registry_count: Optional[Dict[str, int]] = None
+_lock_cleanup_data: Optional[Dict[str, time.time]] = None
+_registry_guard = None
 _initialized = None
+
+CLEANUP_KEYED_LOCKS_AFTER_SECONDS = 300
 
 # shared data for storage across processes
 _shared_dicts: Optional[Dict[str, Any]] = None
@@ -40,10 +49,31 @@ _internal_lock: Optional[LockType] = None
 _pipeline_status_lock: Optional[LockType] = None
 _graph_db_lock: Optional[LockType] = None
 _data_init_lock: Optional[LockType] = None
+_graph_db_lock_keyed: Optional["KeyedUnifiedLock"] = None
 
 # async locks for coroutine synchronization in multiprocess mode
 _async_locks: Optional[Dict[str, asyncio.Lock]] = None
 
+DEBUG_LOCKS = False
+_debug_n_locks_acquired: int = 0
+def inc_debug_n_locks_acquired():
+    global _debug_n_locks_acquired
+    if DEBUG_LOCKS:
+        _debug_n_locks_acquired += 1
+        print(f"DEBUG: Keyed Lock acquired, total: {_debug_n_locks_acquired:>5}", end="\r", flush=True)
+
+def dec_debug_n_locks_acquired():
+    global _debug_n_locks_acquired
+    if DEBUG_LOCKS:
+        if _debug_n_locks_acquired > 0:
+            _debug_n_locks_acquired -= 1
+            print(f"DEBUG: Keyed Lock released, total: {_debug_n_locks_acquired:>5}", end="\r", flush=True)
+        else:
+            raise RuntimeError("Attempting to release lock when no locks are acquired")
+
+def get_debug_n_locks_acquired():
+    global _debug_n_locks_acquired
+    return _debug_n_locks_acquired
 
 class UnifiedLock(Generic[T]):
     """Provide a unified lock interface type for asyncio.Lock and multiprocessing.Lock"""
@@ -210,6 +240,207 @@ class UnifiedLock(Generic[T]):
             )
             raise
 
+    def locked(self) -> bool:
+        if self._is_async:
+            return self._lock.locked()
+        else:
+            return self._lock.locked()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 2.  CROSS‑PROCESS FACTORY  (one manager.Lock shared by *all* processes)
+# ─────────────────────────────────────────────────────────────────────────────
+def _get_combined_key(factory_name: str, key: str) -> str:
+    """Return the combined key for the factory and key."""
+    return f"{factory_name}:{key}"
+
+def _get_or_create_shared_raw_mp_lock(factory_name: str, key: str) -> Optional[mp.synchronize.Lock]:
+    """Return the *singleton* manager.Lock() proxy for *key*, creating if needed."""
+    if not _is_multiprocess:
+        return None
+
+    with _registry_guard:
+        combined_key = _get_combined_key(factory_name, key)
+        raw = _lock_registry.get(combined_key)
+        count = _lock_registry_count.get(combined_key)
+        if raw is None:
+            raw = _manager.Lock()
+            _lock_registry[combined_key] = raw
+            _lock_registry_count[combined_key] = 0
+        else:
+            if count is None:
+                raise RuntimeError(f"Shared-Data lock registry for {factory_name} is corrupted for key {key}")
+            count += 1
+            _lock_registry_count[combined_key] = count
+            if count == 1 and combined_key in _lock_cleanup_data:
+                _lock_cleanup_data.pop(combined_key)
+        return raw
+
+
+def _release_shared_raw_mp_lock(factory_name: str, key: str):
+    """Release the *singleton* manager.Lock() proxy for *key*."""
+    if not _is_multiprocess:
+        return
+
+    with _registry_guard:
+        combined_key = _get_combined_key(factory_name, key)
+        raw = _lock_registry.get(combined_key)
+        count = _lock_registry_count.get(combined_key)
+        if raw is None and count is None:
+            return
+        elif raw is None or count is None:
+            raise RuntimeError(f"Shared-Data lock registry for {factory_name} is corrupted for key {key}")
+
+        count -= 1
+        if count < 0:
+            raise RuntimeError(f"Attempting to remove lock for {key} but it is not in the registry")
+        else:
+            _lock_registry_count[combined_key] = count
+        
+        if count == 0:
+            _lock_cleanup_data[combined_key] = time.time()
+        
+        for combined_key, value in list(_lock_cleanup_data.items()):
+            if time.time() - value > CLEANUP_KEYED_LOCKS_AFTER_SECONDS:
+                _lock_registry.pop(combined_key)
+                _lock_registry_count.pop(combined_key)
+                _lock_cleanup_data.pop(combined_key)
+        
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 3.  PARAMETER‑KEYED WRAPPER  (unchanged except it *accepts a factory*)
+# ─────────────────────────────────────────────────────────────────────────────
+class KeyedUnifiedLock:
+    """
+    Parameter‑keyed wrapper around `UnifiedLock`.
+
+    • Keeps only a table of per‑key *asyncio* gates locally
+    • Fetches the shared process‑wide mutex on *every* acquire
+    • Builds a fresh `UnifiedLock` each time, so `enable_logging`
+      (or future options) can vary per call.
+    """
+
+    # ---------------- construction ----------------
+    def __init__(self, factory_name: str, *, default_enable_logging: bool = True) -> None:
+        self._factory_name = factory_name
+        self._default_enable_logging = default_enable_logging
+        self._async_lock: Dict[str, asyncio.Lock] = {}  # key → asyncio.Lock
+        self._async_lock_count: Dict[str, int] = {}  # key → asyncio.Lock count
+        self._async_lock_cleanup_data: Dict[str, time.time] = {}  # key → time.time
+        self._mp_locks: Dict[str, mp.synchronize.Lock] = {}  # key → mp.synchronize.Lock
+
+    # ---------------- public API ------------------
+    def __call__(self, keys: list[str], *, enable_logging: Optional[bool] = None):
+        """
+        Ergonomic helper so you can write:
+
+            async with keyed_locks("alpha"):
+                ...
+        """
+        if enable_logging is None:
+            enable_logging = self._default_enable_logging
+        return _KeyedLockContext(self, factory_name=self._factory_name, keys=keys, enable_logging=enable_logging)
+
+    def _get_or_create_async_lock(self, key: str) -> asyncio.Lock:
+        async_lock = self._async_lock.get(key)
+        count = self._async_lock_count.get(key, 0)
+        if async_lock is None:
+            async_lock = asyncio.Lock()
+            self._async_lock[key] = async_lock
+        elif count == 0 and key in self._async_lock_cleanup_data:
+            self._async_lock_cleanup_data.pop(key)
+        count += 1
+        self._async_lock_count[key] = count
+        return async_lock
+
+    def _release_async_lock(self, key: str):
+        count = self._async_lock_count.get(key, 0)
+        count -= 1
+        if count == 0:
+            self._async_lock_cleanup_data[key] = time.time()
+        self._async_lock_count[key] = count
+
+        for key, value in list(self._async_lock_cleanup_data.items()):
+            if time.time() - value > CLEANUP_KEYED_LOCKS_AFTER_SECONDS:
+                self._async_lock.pop(key)
+                self._async_lock_count.pop(key)
+                self._async_lock_cleanup_data.pop(key)
+
+                
+    def _get_lock_for_key(self, key: str, enable_logging: bool = False) -> UnifiedLock:
+        # 1. get (or create) the per‑process async gate for this key
+        # Is synchronous, so no need to acquire a lock
+        async_lock = self._get_or_create_async_lock(key)
+
+        # 2. fetch the shared raw lock
+        raw_lock = _get_or_create_shared_raw_mp_lock(self._factory_name, key)
+        is_multiprocess = raw_lock is not None
+        if not is_multiprocess:
+            raw_lock = async_lock
+            
+        # 3. build a *fresh* UnifiedLock with the chosen logging flag
+        if is_multiprocess:
+            return UnifiedLock(
+                lock=raw_lock,
+                is_async=False,                       # manager.Lock is synchronous
+                name=f"key:{self._factory_name}:{key}",
+                enable_logging=enable_logging,
+                async_lock=async_lock,                # prevents event‑loop blocking
+            )
+        else:
+            return UnifiedLock(
+                lock=raw_lock,
+                is_async=True,
+                name=f"key:{self._factory_name}:{key}",
+                enable_logging=enable_logging,
+                async_lock=None,                # No need for async lock in single process mode
+            )
+    
+    def _release_lock_for_key(self, key: str):
+        self._release_async_lock(key)
+        _release_shared_raw_mp_lock(self._factory_name, key)
+
+class _KeyedLockContext:
+    def __init__(
+        self,
+        parent: KeyedUnifiedLock,
+        factory_name: str,
+        keys: list[str],
+        enable_logging: bool,
+    ) -> None:
+        self._parent = parent
+        self._factory_name = factory_name
+
+        # The sorting is critical to ensure proper lock and release order
+        # to avoid deadlocks
+        self._keys = sorted(keys)
+        self._enable_logging = (
+            enable_logging if enable_logging is not None
+            else parent._default_enable_logging
+        )
+        self._ul: Optional[List["UnifiedLock"]] = None  # set in __aenter__
+
+    # ----- enter -----
+    async def __aenter__(self):
+        if self._ul is not None:
+            raise RuntimeError("KeyedUnifiedLock already acquired in current context")
+
+        # 4. acquire it
+        self._ul = []
+        for key in self._keys:
+            lock = self._parent._get_lock_for_key(key, enable_logging=self._enable_logging)
+            await lock.__aenter__()
+            inc_debug_n_locks_acquired()
+            self._ul.append(lock)
+        return self  # or return self._key if you prefer
+
+    # ----- exit -----
+    async def __aexit__(self, exc_type, exc, tb):
+        # The UnifiedLock takes care of proper release order
+        for ul, key in zip(reversed(self._ul), reversed(self._keys)):
+            await ul.__aexit__(exc_type, exc, tb)
+            self._parent._release_lock_for_key(key)
+            dec_debug_n_locks_acquired()
+        self._ul = None
 
 def get_internal_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified storage lock for data consistency"""
@@ -258,6 +489,14 @@ def get_graph_db_lock(enable_logging: bool = False) -> UnifiedLock:
         async_lock=async_lock,
     )
 
+def get_graph_db_lock_keyed(keys: str | list[str], enable_logging: bool = False) -> KeyedUnifiedLock:
+    """return unified graph database lock for ensuring atomic operations"""
+    global _graph_db_lock_keyed
+    if _graph_db_lock_keyed is None:
+        raise RuntimeError("Shared-Data is not initialized")
+    if isinstance(keys, str):
+        keys = [keys]
+    return _graph_db_lock_keyed(keys, enable_logging=enable_logging)
 
 def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified data initialization lock for ensuring atomic data initialization"""
@@ -294,6 +533,10 @@ def initialize_share_data(workers: int = 1):
         _workers, \
         _is_multiprocess, \
         _storage_lock, \
+        _lock_registry, \
+        _lock_registry_count, \
+        _lock_cleanup_data, \
+        _registry_guard, \
         _internal_lock, \
         _pipeline_status_lock, \
         _graph_db_lock, \
@@ -302,7 +545,8 @@ def initialize_share_data(workers: int = 1):
         _init_flags, \
         _initialized, \
         _update_flags, \
-        _async_locks
+        _async_locks, \
+        _graph_db_lock_keyed
 
     # Check if already initialized
     if _initialized:
@@ -316,6 +560,10 @@ def initialize_share_data(workers: int = 1):
     if workers > 1:
         _is_multiprocess = True
         _manager = Manager()
+        _lock_registry = _manager.dict()
+        _lock_registry_count = _manager.dict()
+        _lock_cleanup_data = _manager.dict()
+        _registry_guard = _manager.RLock()
         _internal_lock = _manager.Lock()
         _storage_lock = _manager.Lock()
         _pipeline_status_lock = _manager.Lock()
@@ -324,6 +572,10 @@ def initialize_share_data(workers: int = 1):
         _shared_dicts = _manager.dict()
         _init_flags = _manager.dict()
         _update_flags = _manager.dict()
+        
+        _graph_db_lock_keyed = KeyedUnifiedLock(
+            factory_name="graph_db_lock",
+        )
 
         # Initialize async locks for multiprocess mode
         _async_locks = {
@@ -348,6 +600,10 @@ def initialize_share_data(workers: int = 1):
         _init_flags = {}
         _update_flags = {}
         _async_locks = None  # No need for async locks in single process mode
+        
+        _graph_db_lock_keyed = KeyedUnifiedLock(
+            factory_name="graph_db_lock",
+        )
         direct_log(f"Process {os.getpid()} Shared-Data created for Single Process")
 
     # Mark as initialized
