@@ -18,12 +18,12 @@ os.environ["REDIS_URI"] = "redis://localhost:6379"
 # neo4j
 BATCH_SIZE_NODES = 500
 BATCH_SIZE_EDGES = 100
-os.environ["NEO4J_URI"] = "bolt://117.50.173.35:7687"
+os.environ["NEO4J_URI"] = "neo4j://localhost:7687"
 os.environ["NEO4J_USERNAME"] = "neo4j"
 os.environ["NEO4J_PASSWORD"] = "12345678"
 
 # milvus
-os.environ["MILVUS_URI"] = "http://117.50.173.35:19530"
+os.environ["MILVUS_URI"] = "http://localhost:19530"
 os.environ["MILVUS_USER"] = "root"
 os.environ["MILVUS_PASSWORD"] = "Milvus"
 os.environ["MILVUS_DB_NAME"] = "lightrag"

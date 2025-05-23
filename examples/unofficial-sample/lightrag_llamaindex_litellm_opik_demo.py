@@ -19,9 +19,9 @@ WORKING_DIR = "./index_default"
 print(f"WORKING_DIR: {WORKING_DIR}")
 
 # Model configuration
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gemma-3-4b")
 print(f"LLM_MODEL: {LLM_MODEL}")
-EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "text-embedding-3-large")
+EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "arctic-embed")
 print(f"EMBEDDING_MODEL: {EMBEDDING_MODEL}")
 EMBEDDING_MAX_TOKEN_SIZE = int(os.environ.get("EMBEDDING_MAX_TOKEN_SIZE", 8192))
 print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
@@ -29,7 +29,7 @@ print(f"EMBEDDING_MAX_TOKEN_SIZE: {EMBEDDING_MAX_TOKEN_SIZE}")
 # LiteLLM configuration
 LITELLM_URL = os.environ.get("LITELLM_URL", "http://localhost:4000")
 print(f"LITELLM_URL: {LITELLM_URL}")
-LITELLM_KEY = os.environ.get("LITELLM_KEY", "sk-1234")
+LITELLM_KEY = os.environ.get("LITELLM_KEY", "sk-4JdvGFKqSA3S0k_5p0xufw")
 
 if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
@@ -48,11 +48,22 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
             )
             kwargs["llm_instance"] = llm_instance
 
+        chat_kwargs = {}
+        chat_kwargs["litellm_params"] = {
+            "metadata": {
+                "opik": {
+                    "project_name": "lightrag_llamaindex_litellm_opik_demo",
+                    "tags": ["lightrag", "litellm"],
+                }
+            }
+        }
+
         response = await llama_index_complete_if_cache(
             kwargs["llm_instance"],
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
+            chat_kwargs=chat_kwargs,
         )
         return response
     except Exception as e:
