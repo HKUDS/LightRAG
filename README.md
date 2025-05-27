@@ -1243,7 +1243,7 @@ Output the results in the following structure:
 
 ### Batch Eval
 
-To evaluate the performance of two RAG systems on high-level queries, LightRAG uses the following prompt, with the specific code available in `example/batch_eval.py`.
+To evaluate the performance of two RAG systems on high-level queries, LightRAG uses the following prompt, with the specific code available in `reproduce/batch_eval.py`.
 
 <details>
 <summary> Prompt </summary>
