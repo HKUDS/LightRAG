@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import asyncio
 from typing import Any, cast
 
@@ -479,7 +480,9 @@ async def acreate_entity(
                 "entity_id": entity_name,
                 "entity_type": entity_data.get("entity_type", "UNKNOWN"),
                 "description": entity_data.get("description", ""),
-                "source_id": entity_data.get("source_id", "manual"),
+                "source_id": entity_data.get("source_id", "manual_creation"),
+                "file_path": entity_data.get("file_path", "manual_creation"),
+                "created_at": int(time.time()),
             }
 
             # Add entity to knowledge graph
@@ -575,8 +578,10 @@ async def acreate_relation(
             edge_data = {
                 "description": relation_data.get("description", ""),
                 "keywords": relation_data.get("keywords", ""),
-                "source_id": relation_data.get("source_id", "manual"),
+                "source_id": relation_data.get("source_id", "manual_creation"),
                 "weight": float(relation_data.get("weight", 1.0)),
+                "file_path": relation_data.get("file_path", "manual_creation"),
+                "created_at": int(time.time()),
             }
 
             # Add relation to knowledge graph

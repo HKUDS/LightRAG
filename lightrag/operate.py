@@ -496,6 +496,7 @@ async def _merge_edges_then_upsert(
         keywords=keywords,
         source_id=source_id,
         file_path=file_path,
+        created_at=int(time.time()),
     )
 
     return edge_data
