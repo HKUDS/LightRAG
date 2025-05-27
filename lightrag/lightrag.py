@@ -1295,6 +1295,7 @@ class LightRAG:
                     "entity_type": entity_type,
                     "description": description,
                     "source_id": source_id,
+                    "file_path": file_path,
                 }
                 # Insert node data into the knowledge graph
                 await self.chunk_entity_relation_graph.upsert_node(
