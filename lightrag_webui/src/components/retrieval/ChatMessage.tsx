@@ -8,9 +8,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeReact from 'rehype-react'
 import remarkMath from 'remark-math'
-import rehypeKatex from 'rehype-katex'
 import mermaid from 'mermaid'
-import 'katex/dist/katex.min.css'
 
 import type { Element } from 'hast'
 
@@ -34,6 +32,23 @@ export type MessageWithError = Message & {
 export const ChatMessage = ({ message }: { message: MessageWithError }) => { // Remove isComplete prop
   const { t } = useTranslation()
   const { theme } = useTheme()
+  const [katexPlugin, setKatexPlugin] = useState<any>(null)
+
+  // Load KaTeX dynamically
+  useEffect(() => {
+    const loadKaTeX = async () => {
+      try {
+        const [{ default: rehypeKatex }] = await Promise.all([
+          import('rehype-katex'),
+          import('katex/dist/katex.min.css')
+        ])
+        setKatexPlugin(() => rehypeKatex)
+      } catch (error) {
+        console.error('Failed to load KaTeX:', error)
+      }
+    }
+    loadKaTeX()
+  }, [])
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
       try {
@@ -59,11 +74,14 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
           className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto"
           remarkPlugins={[remarkGfm, remarkMath]}
           rehypePlugins={[
-            [rehypeKatex, {
-              errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
-              throwOnError: false,
-              displayMode: false
-            }],
+            ...(katexPlugin ? [[
+              katexPlugin,
+              {
+                errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
+                throwOnError: false,
+                displayMode: false
+              }
+            ] as any] : []),
             rehypeReact
           ]}
           skipHtml={false}
