@@ -8,7 +8,9 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeReact from 'rehype-react'
 import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
 import mermaid from 'mermaid'
+import 'katex/dist/katex.min.css'
 
 import type { Element } from 'hast'
 
@@ -31,6 +33,7 @@ export type MessageWithError = Message & {
 // Restore original component definition and export
 export const ChatMessage = ({ message }: { message: MessageWithError }) => { // Remove isComplete prop
   const { t } = useTranslation()
+  const { theme } = useTheme()
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
       try {
@@ -53,9 +56,16 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
     >
       <div className="relative">
         <ReactMarkdown
-          className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1"
+          className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto"
           remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[rehypeReact]}
+          rehypePlugins={[
+            [rehypeKatex, {
+              errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
+              throwOnError: false,
+              displayMode: false
+            }],
+            rehypeReact
+          ]}
           skipHtml={false}
           // Memoize the components object to prevent unnecessary re-renders of ReactMarkdown children
           components={useMemo(() => ({
