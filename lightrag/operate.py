@@ -422,28 +422,32 @@ async def _merge_edges_then_upsert(
     )
 
     for need_insert_id in [src_id, tgt_id]:
-        if not (await knowledge_graph_inst.has_node(need_insert_id)):
-            # # Discard this edge if the node does not exist
-            # if need_insert_id == src_id:
-            #     logger.warning(
-            #         f"Discard edge: {src_id} - {tgt_id} | Source node missing"
-            #     )
-            # else:
-            #     logger.warning(
-            #         f"Discard edge: {src_id} - {tgt_id} | Target node missing"
-            #     )
-            # return None
-            await knowledge_graph_inst.upsert_node(
-                need_insert_id,
-                node_data={
-                    "entity_id": need_insert_id,
-                    "source_id": source_id,
-                    "description": description,
-                    "entity_type": "UNKNOWN",
-                    "file_path": file_path,
-                    "created_at": int(time.time()),
-                },
-            )
+        if (await knowledge_graph_inst.has_node(need_insert_id)):
+            # This is so that the initial check for the existence of the node need not be locked
+            continue
+        async with get_graph_db_lock_keyed([need_insert_id], enable_logging=False):
+            if not (await knowledge_graph_inst.has_node(need_insert_id)):
+                # # Discard this edge if the node does not exist
+                # if need_insert_id == src_id:
+                #     logger.warning(
+                #         f"Discard edge: {src_id} - {tgt_id} | Source node missing"
+                #     )
+                # else:
+                #     logger.warning(
+                #         f"Discard edge: {src_id} - {tgt_id} | Target node missing"
+                #     )
+                # return None
+                await knowledge_graph_inst.upsert_node(
+                    need_insert_id,
+                    node_data={
+                        "entity_id": need_insert_id,
+                        "source_id": source_id,
+                        "description": description,
+                        "entity_type": "UNKNOWN",
+                        "file_path": file_path,
+                        "created_at": int(time.time()),
+                    },
+                )
 
     force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
 
@@ -528,7 +532,8 @@ async def merge_nodes_and_edges(
         llm_response_cache: LLM response cache
     """
     # Get lock manager from shared storage
-    from .kg.shared_storage import get_graph_db_lock
+    from .kg.shared_storage import get_graph_db_lock_keyed
+
 
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
@@ -545,23 +550,28 @@ async def merge_nodes_and_edges(
             all_edges[sorted_edge_key].extend(edges)
 
     # Centralized processing of all nodes and edges
-    entities_data = []
-    relationships_data = []
+    total_entities_count = len(all_nodes)
+    total_relations_count = len(all_edges)
 
     # Merge nodes and edges
-    # Use graph database lock to ensure atomic merges and updates
-    graph_db_lock = get_graph_db_lock(enable_logging=False)
-    async with graph_db_lock:
+    async with pipeline_status_lock:
+        log_message = (
+            f"Merging stage {current_file_number}/{total_files}: {file_path}"
+        )
+        logger.info(log_message)
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
+
+    # Process and update all entities at once
+    log_message = f"Updating {total_entities_count} entities  {current_file_number}/{total_files}: {file_path}"
+    logger.info(log_message)
+    if pipeline_status is not None:
         async with pipeline_status_lock:
-            log_message = (
-                f"Merging stage {current_file_number}/{total_files}: {file_path}"
-            )
-            logger.info(log_message)
             pipeline_status["latest_message"] = log_message
             pipeline_status["history_messages"].append(log_message)
 
-        # Process and update all entities at once
-        for entity_name, entities in all_nodes.items():
+    async def _locked_process_entity_name(entity_name, entities):
+        async with get_graph_db_lock_keyed([entity_name], enable_logging=False):
             entity_data = await _merge_nodes_then_upsert(
                 entity_name,
                 entities,
@@ -571,10 +581,34 @@ async def merge_nodes_and_edges(
                 pipeline_status_lock,
                 llm_response_cache,
             )
-            entities_data.append(entity_data)
+            if entity_vdb is not None:
+                data_for_vdb = {
+                    compute_mdhash_id(entity_data["entity_name"], prefix="ent-"): {
+                        "entity_name": entity_data["entity_name"],
+                        "entity_type": entity_data["entity_type"],
+                        "content": f"{entity_data['entity_name']}\n{entity_data['description']}",
+                        "source_id": entity_data["source_id"],
+                        "file_path": entity_data.get("file_path", "unknown_source"),
+                    }
+                }
+                await entity_vdb.upsert(data_for_vdb)
+            return entity_data
 
-        # Process and update all relationships at once
-        for edge_key, edges in all_edges.items():
+    tasks = []
+    for entity_name, entities in all_nodes.items():
+        tasks.append(asyncio.create_task(_locked_process_entity_name(entity_name, entities)))
+    await asyncio.gather(*tasks)
+
+    # Process and update all relationships at once
+    log_message = f"Updating {total_relations_count} relations {current_file_number}/{total_files}: {file_path}"
+    logger.info(log_message)
+    if pipeline_status is not None:
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = log_message
+            pipeline_status["history_messages"].append(log_message)
+
+    async def _locked_process_edges(edge_key, edges):
+        async with get_graph_db_lock_keyed(f"{edge_key[0]}-{edge_key[1]}", enable_logging=False):
             edge_data = await _merge_edges_then_upsert(
                 edge_key[0],
                 edge_key[1],
@@ -585,55 +619,27 @@ async def merge_nodes_and_edges(
                 pipeline_status_lock,
                 llm_response_cache,
             )
-            if edge_data is not None:
-                relationships_data.append(edge_data)
+            if edge_data is None:
+                return None
 
-        # Update total counts
-        total_entities_count = len(entities_data)
-        total_relations_count = len(relationships_data)
-
-        log_message = f"Updating {total_entities_count} entities  {current_file_number}/{total_files}: {file_path}"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-        # Update vector databases with all collected data
-        if entity_vdb is not None and entities_data:
-            data_for_vdb = {
-                compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                    "entity_name": dp["entity_name"],
-                    "entity_type": dp["entity_type"],
-                    "content": f"{dp['entity_name']}\n{dp['description']}",
-                    "source_id": dp["source_id"],
-                    "file_path": dp.get("file_path", "unknown_source"),
+            if relationships_vdb is not None:
+                data_for_vdb = {
+                    compute_mdhash_id(edge_data["src_id"] + edge_data["tgt_id"], prefix="rel-"): {
+                        "src_id": edge_data["src_id"],
+                        "tgt_id": edge_data["tgt_id"],
+                        "keywords": edge_data["keywords"],
+                        "content": f"{edge_data['src_id']}\t{edge_data['tgt_id']}\n{edge_data['keywords']}\n{edge_data['description']}",
+                        "source_id": edge_data["source_id"],
+                        "file_path": edge_data.get("file_path", "unknown_source"),
+                    }
                 }
-                for dp in entities_data
-            }
-            await entity_vdb.upsert(data_for_vdb)
+                await relationships_vdb.upsert(data_for_vdb)
+            return edge_data
 
-        log_message = f"Updating {total_relations_count} relations {current_file_number}/{total_files}: {file_path}"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
-        if relationships_vdb is not None and relationships_data:
-            data_for_vdb = {
-                compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
-                    "src_id": dp["src_id"],
-                    "tgt_id": dp["tgt_id"],
-                    "keywords": dp["keywords"],
-                    "content": f"{dp['src_id']}\t{dp['tgt_id']}\n{dp['keywords']}\n{dp['description']}",
-                    "source_id": dp["source_id"],
-                    "file_path": dp.get("file_path", "unknown_source"),
-                }
-                for dp in relationships_data
-            }
-            await relationships_vdb.upsert(data_for_vdb)
-
+    tasks = []
+    for edge_key, edges in all_edges.items():
+        tasks.append(asyncio.create_task(_locked_process_edges(edge_key, edges)))
+    await asyncio.gather(*tasks)
 
 async def extract_entities(
     chunks: dict[str, TextChunkSchema],
