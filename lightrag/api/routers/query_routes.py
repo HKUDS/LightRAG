@@ -4,6 +4,7 @@ This module contains all query-related routes for the LightRAG API.
 
 import json
 import logging
+import os
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +13,9 @@ from ..utils_api import get_combined_auth_dependency
 from pydantic import BaseModel, Field, field_validator
 
 from ascii_colors import trace_exception
+
+# Add this at module level for optional debug logging
+DEBUG_STREAMING = os.getenv("DEBUG_STREAMING", "false").lower() == "true"
 
 router = APIRouter(tags=["query"])
 
@@ -146,7 +150,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         """
         try:
             param = request.to_query_params(False)
-            response = await rag.aquery(request.query, param=param)
+            query_result = await rag.aquery(request.query, param=param)
+            
+            # Unpack the tuple returned by aquery - (response, retrieval_details)
+            if isinstance(query_result, tuple) and len(query_result) == 2:
+                response, retrieval_details = query_result
+            else:
+                # Fallback for backward compatibility
+                response = query_result
 
             # If response is a string (e.g. cache hit), return directly
             if isinstance(response, str):
@@ -168,30 +179,55 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         Args:
             request (QueryRequest): The request object containing the query parameters.
-            optional_api_key (Optional[str], optional): An optional API key for authentication. Defaults to None.
 
         Returns:
             StreamingResponse: A streaming response containing the RAG query results.
         """
         try:
             param = request.to_query_params(True)
-            response = await rag.aquery(request.query, param=param)
+            query_result = await rag.aquery(request.query, param=param)
+            
+            # Unpack the tuple returned by aquery - (response, retrieval_details)
+            if isinstance(query_result, tuple) and len(query_result) == 2:
+                response, retrieval_details = query_result
+            else:
+                # Fallback for backward compatibility
+                response = query_result
 
             from fastapi.responses import StreamingResponse
 
             async def stream_generator():
+                # Handle None responses explicitly
+                if response is None:
+                    yield f"{json.dumps({'response': None, 'message': 'No context found or an error occurred.'})}\n"
+                    return
+                    
                 if isinstance(response, str):
                     # If it's a string, send it all at once
                     yield f"{json.dumps({'response': response})}\n"
-                else:
+                elif hasattr(response, '__aiter__'):  # Explicit async iterator check
                     # If it's an async generator, send chunks one by one
+                    chunk_count = 0
                     try:
                         async for chunk in response:
                             if chunk:  # Only send non-empty content
+                                chunk_count += 1
                                 yield f"{json.dumps({'response': chunk})}\n"
+                                
+                                if DEBUG_STREAMING and chunk_count % 10 == 0:
+                                    logging.debug(f"[stream_generator] Processed {chunk_count} chunks")
+                        
+                        if DEBUG_STREAMING:
+                            logging.info(f"[stream_generator] Completed streaming {chunk_count} chunks")
+                            
                     except Exception as e:
-                        logging.error(f"Streaming error: {str(e)}")
+                        logging.error(f"Streaming error: {str(e)}", exc_info=True)
                         yield f"{json.dumps({'error': str(e)})}\n"
+                else:
+                    # Handle unexpected response types
+                    error_msg = f"Unexpected response type: {type(response)}"
+                    logging.warning(error_msg)
+                    yield f"{json.dumps({'error': error_msg})}\n"
 
             return StreamingResponse(
                 stream_generator(),

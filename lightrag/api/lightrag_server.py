@@ -30,6 +30,7 @@ from .config import (
 from lightrag.utils import get_env_value
 import sys
 from lightrag import LightRAG, __version__ as core_version
+from lightrag.advanced_lightrag import AdvancedLightRAG
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
@@ -88,7 +89,7 @@ def create_app(args):
     ]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
+    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai", "anthropic"]:
         raise Exception("embedding binding not supported")
 
     # Set default hosts if not provided
@@ -209,6 +210,8 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
+    if args.embedding_binding == "anthropic":
+        from lightrag.llm.anthropic import anthropic_embed
     if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
         from lightrag.llm.openai import openai_complete_if_cache
         from lightrag.llm.ollama import ollama_embed
@@ -260,40 +263,67 @@ def create_app(args):
             **kwargs,
         )
 
-    embedding_func = EmbeddingFunc(
-        embedding_dim=args.embedding_dim,
-        max_token_size=args.max_embed_tokens,
-        func=lambda texts: lollms_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
+    # Create embedding function based on binding type
+    if args.embedding_binding == "lollms":
+        embedding_func = EmbeddingFunc(
+            embedding_dim=args.embedding_dim,
+            max_token_size=args.max_embed_tokens,
+            func=lambda texts: lollms_embed(
+                texts,
+                embed_model=args.embedding_model,
+                host=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            )
         )
-        if args.embedding_binding == "lollms"
-        else ollama_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
+    elif args.embedding_binding == "ollama":
+        embedding_func = EmbeddingFunc(
+            embedding_dim=args.embedding_dim,
+            max_token_size=args.max_embed_tokens,
+            func=lambda texts: ollama_embed(
+                texts,
+                embed_model=args.embedding_model,
+                host=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            )
         )
-        if args.embedding_binding == "ollama"
-        else azure_openai_embed(
-            texts,
-            model=args.embedding_model,  # no host is used for openai,
-            api_key=args.embedding_binding_api_key,
+    elif args.embedding_binding == "azure_openai":
+        embedding_func = EmbeddingFunc(
+            embedding_dim=args.embedding_dim,
+            max_token_size=args.max_embed_tokens,
+            func=lambda texts: azure_openai_embed(
+                texts,
+                model=args.embedding_model,  # no host is used for openai,
+                api_key=args.embedding_binding_api_key,
+            )
         )
-        if args.embedding_binding == "azure_openai"
-        else openai_embed(
-            texts,
-            model=args.embedding_model,
-            base_url=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-        ),
-    )
+    elif args.embedding_binding == "openai":
+        embedding_func = EmbeddingFunc(
+            embedding_dim=args.embedding_dim,
+            max_token_size=args.max_embed_tokens,
+            func=lambda texts: openai_embed(
+                texts,
+                model=args.embedding_model,
+                base_url=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            )
+        )
+    elif args.embedding_binding == "anthropic":
+        embedding_func = EmbeddingFunc(
+            embedding_dim=args.embedding_dim,
+            max_token_size=args.max_embed_tokens,
+            func=lambda texts: anthropic_embed(
+                texts,
+                model=args.embedding_model,
+                base_url=args.embedding_binding_host,
+                api_key=os.getenv("VOYAGE_API_KEY") or args.embedding_binding_api_key,
+            )
+        )
+    else:
+        raise ValueError(f"Unsupported embedding_binding: {args.embedding_binding}")
 
     # Initialize RAG
     if args.llm_binding in ["lollms", "ollama", "openai"]:
-        rag = LightRAG(
+        rag = AdvancedLightRAG(
             working_dir=args.working_dir,
             llm_model_func=lollms_model_complete
             if args.llm_binding == "lollms"
@@ -326,9 +356,15 @@ def create_app(args):
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
             addon_params={"language": args.summary_language},
+            # Advanced features enabled by default
+            enable_mix_mode=True,
+            enable_relationship_types=True,
+            enable_semantic_weights=True,
+            enable_retrieval_details=True,
+            use_advanced_chunking=True,
         )
     else:  # azure_openai
-        rag = LightRAG(
+        rag = AdvancedLightRAG(
             working_dir=args.working_dir,
             llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
@@ -352,6 +388,12 @@ def create_app(args):
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
             addon_params={"language": args.summary_language},
+            # Advanced features enabled by default
+            enable_mix_mode=True,
+            enable_relationship_types=True,
+            enable_semantic_weights=True,
+            enable_retrieval_details=True,
+            use_advanced_chunking=True,
         )
 
     # Add routes

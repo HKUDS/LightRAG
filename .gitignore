@@ -12,6 +12,11 @@ __pycache__/
 env/
 venv/
 *.env*
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 .env_example
 
 # Build / Distribution
@@ -70,3 +75,11 @@ test_*
 
 # Cline files
 memory-bank/
+
+# Sensitive data (API keys, passwords, etc.)
+*.key
+*.pem
+*.p12
+*.pfx
+secrets/
+config.ini

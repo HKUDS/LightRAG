@@ -360,6 +360,12 @@ const createSigmaGraph = (rawGraph: RawGraph | null) => {
 
   // Add edges from raw graph data
   for (const rawEdge of rawGraph?.edges ?? []) {
+    // Skip if edge already exists (check both directions for undirected graph)
+    if (graph.hasEdge(rawEdge.source, rawEdge.target)) {
+      console.warn(`Edge already exists between ${rawEdge.source} and ${rawEdge.target}, skipping duplicate`);
+      continue;
+    }
+
     // Get weight from edge properties or default to 1
     const weight = rawEdge.properties?.weight !== undefined ? Number(rawEdge.properties.weight) : 1
 

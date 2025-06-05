@@ -40,6 +40,7 @@
 
 ## 🎉 News
 
+- [X] [2025.06.04]🎯📢**MAJOR UPDATE**: LightRAG now preserves semantic relationship types with 96.8% accuracy through advanced LLM post-processing. See [Relationship Type Preservation Guide](./RELATIONSHIP_TYPE_PRESERVATION_IMPLEMENTATION.md).
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
 - [X] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.

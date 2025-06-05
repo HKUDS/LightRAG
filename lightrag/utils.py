@@ -9,6 +9,7 @@ import logging
 import logging.handlers
 import os
 import re
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
@@ -1667,7 +1668,7 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
 
     if is_entity:
         # remove Chinese quotes
-        name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
+        name = name.replace(""", "").replace(""", "").replace("'", "").replace("'", "")
         # remove English queotes in and around chinese
         name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
         name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
@@ -1763,3 +1764,99 @@ class TokenTracker:
             f"Completion tokens: {usage['completion_tokens']}, "
             f"Total tokens: {usage['total_tokens']}"
         )
+
+
+def list_of_list_to_json(data: list[list[str]]) -> list[dict[str, str]]:
+    """Convert list of lists to JSON format for Neo4j integration.
+    
+    Args:
+        data: List of lists where first list contains headers
+        
+    Returns:
+        List of dictionaries with header keys and row values
+    """
+    if not data or len(data) <= 1:
+        return []
+
+    header = data[0]
+    result = []
+
+    for row in data[1:]:
+        if len(row) >= 2:
+            item = {}
+            for i, field_name in enumerate(header):
+                if i < len(row):
+                    item[field_name] = str(row[i])
+                else:
+                    item[field_name] = ""
+            result.append(item)
+
+    return result
+
+
+def xml_to_json(xml_file):
+    """Parse XML file and convert to JSON format for Neo4j integration.
+    
+    Args:
+        xml_file: Path to XML file to parse
+        
+    Returns:
+        Dictionary containing nodes and edges data, or None if parsing fails
+    """
+    try:
+        tree = ET.parse(xml_file)
+        root = tree.getroot()
+
+        # Print the root element's tag and attributes to confirm the file has been correctly loaded
+        print(f"Root element: {root.tag}")
+        print(f"Root attributes: {root.attrib}")
+
+        data = {"nodes": [], "edges": []}
+
+        # Use namespace
+        namespace = {"": "http://graphml.graphdrawing.org/xmlns"}
+
+        for node in root.findall(".//node", namespace):
+            node_data = {
+                "id": node.get("id").strip('"'),
+                "entity_type": node.find("./data[@key='d0']", namespace).text.strip('"')
+                if node.find("./data[@key='d0']", namespace) is not None
+                else "",
+                "description": node.find("./data[@key='d1']", namespace).text
+                if node.find("./data[@key='d1']", namespace) is not None
+                else "",
+                "source_id": node.find("./data[@key='d2']", namespace).text
+                if node.find("./data[@key='d2']", namespace) is not None
+                else "",
+            }
+            data["nodes"].append(node_data)
+
+        for edge in root.findall(".//edge", namespace):
+            edge_data = {
+                "source": edge.get("source").strip('"'),
+                "target": edge.get("target").strip('"'),
+                "weight": float(edge.find("./data[@key='d3']", namespace).text)
+                if edge.find("./data[@key='d3']", namespace) is not None
+                else 0.0,
+                "description": edge.find("./data[@key='d4']", namespace).text
+                if edge.find("./data[@key='d4']", namespace) is not None
+                else "",
+                "keywords": edge.find("./data[@key='d5']", namespace).text
+                if edge.find("./data[@key='d5']", namespace) is not None
+                else "",
+                "source_id": edge.find("./data[@key='d6']", namespace).text
+                if edge.find("./data[@key='d6']", namespace) is not None
+                else "",
+            }
+            data["edges"].append(edge_data)
+
+        # Print the number of nodes and edges found
+        print(f"Found {len(data['nodes'])} nodes and {len(data['edges'])} edges")
+
+        return data
+    except ET.ParseError as e:
+        print(f"Error parsing XML file: {e}")
+        return None
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
