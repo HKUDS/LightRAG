@@ -39,7 +39,7 @@
 </div>
 
 ## 🎉 News
-- [X] [2025.06.05]🎯📢LightRAG now supports multimodal document parsing and RAG with MinerU integration (PDF, images, Office, tables, formulas, etc.). See the new multimodal section below.
+- [X] [2025.06.05]🎯📢LightRAG now supports multimodal document parsing and RAG with MinerU integration (PDF, images, Office, tables, formulas, etc.). See the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-mineru-integration) below.
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
 - [X] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
