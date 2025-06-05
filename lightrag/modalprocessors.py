@@ -31,7 +31,7 @@ class BaseModalProcessor:
 
     def __init__(self, lightrag: LightRAG, modal_caption_func):
         """Initialize base processor
-        
+
         Args:
             lightrag: LightRAG instance
             modal_caption_func: Function for generating descriptions
@@ -65,8 +65,8 @@ class BaseModalProcessor:
         raise NotImplementedError("Subclasses must implement this method")
 
     async def _create_entity_and_chunk(
-            self, modal_chunk: str, entity_info: Dict[str, Any],
-            file_path: str) -> Tuple[str, Dict[str, Any]]:
+        self, modal_chunk: str, entity_info: Dict[str, Any], file_path: str
+    ) -> Tuple[str, Dict[str, Any]]:
         """Create entity and text chunk"""
         # Create chunk
         chunk_id = compute_mdhash_id(str(modal_chunk), prefix="chunk-")
@@ -93,16 +93,16 @@ class BaseModalProcessor:
             "created_at": int(time.time()),
         }
 
-        await self.knowledge_graph_inst.upsert_node(entity_info["entity_name"],
-                                                    node_data)
+        await self.knowledge_graph_inst.upsert_node(
+            entity_info["entity_name"], node_data
+        )
 
         # Insert entity into vector database
         entity_vdb_data = {
             compute_mdhash_id(entity_info["entity_name"], prefix="ent-"): {
                 "entity_name": entity_info["entity_name"],
                 "entity_type": entity_info["entity_type"],
-                "content":
-                f"{entity_info['entity_name']}\n{entity_info['summary']}",
+                "content": f"{entity_info['entity_name']}\n{entity_info['summary']}",
                 "source_id": chunk_id,
                 "file_path": file_path,
             }
@@ -110,8 +110,7 @@ class BaseModalProcessor:
         await self.entities_vdb.upsert(entity_vdb_data)
 
         # Process entity and relationship extraction
-        await self._process_chunk_for_extraction(chunk_id,
-                                                 entity_info["entity_name"])
+        await self._process_chunk_for_extraction(chunk_id, entity_info["entity_name"])
 
         # Ensure all storage updates are complete
         await self._insert_done()
@@ -120,11 +119,12 @@ class BaseModalProcessor:
             "entity_name": entity_info["entity_name"],
             "entity_type": entity_info["entity_type"],
             "description": entity_info["summary"],
-            "chunk_id": chunk_id
+            "chunk_id": chunk_id,
         }
 
-    async def _process_chunk_for_extraction(self, chunk_id: str,
-                                            modal_entity_name: str):
+    async def _process_chunk_for_extraction(
+        self, chunk_id: str, modal_entity_name: str
+    ):
         """Process chunk for entity and relationship extraction"""
         chunk_data = await self.text_chunks_db.get_by_id(chunk_id)
         if not chunk_data:
@@ -168,37 +168,27 @@ class BaseModalProcessor:
                 if entity_name != modal_entity_name:  # Skip self-relationship
                     # Create belongs_to relationship
                     relation_data = {
-                        "description":
-                        f"Entity {entity_name} belongs to {modal_entity_name}",
-                        "keywords":
-                        "belongs_to,part_of,contained_in",
-                        "source_id":
-                        chunk_id,
-                        "weight":
-                        10.0,
-                        "file_path":
-                        chunk_data.get("file_path", "manual_creation"),
+                        "description": f"Entity {entity_name} belongs to {modal_entity_name}",
+                        "keywords": "belongs_to,part_of,contained_in",
+                        "source_id": chunk_id,
+                        "weight": 10.0,
+                        "file_path": chunk_data.get("file_path", "manual_creation"),
                     }
                     await self.knowledge_graph_inst.upsert_edge(
-                        entity_name, modal_entity_name, relation_data)
+                        entity_name, modal_entity_name, relation_data
+                    )
 
-                    relation_id = compute_mdhash_id(entity_name +
-                                                    modal_entity_name,
-                                                    prefix="rel-")
+                    relation_id = compute_mdhash_id(
+                        entity_name + modal_entity_name, prefix="rel-"
+                    )
                     relation_vdb_data = {
                         relation_id: {
-                            "src_id":
-                            entity_name,
-                            "tgt_id":
-                            modal_entity_name,
-                            "keywords":
-                            relation_data["keywords"],
-                            "content":
-                            f"{relation_data['keywords']}\t{entity_name}\n{modal_entity_name}\n{relation_data['description']}",
-                            "source_id":
-                            chunk_id,
-                            "file_path":
-                            chunk_data.get("file_path", "manual_creation"),
+                            "src_id": entity_name,
+                            "tgt_id": modal_entity_name,
+                            "keywords": relation_data["keywords"],
+                            "content": f"{relation_data['keywords']}\t{entity_name}\n{modal_entity_name}\n{relation_data['description']}",
+                            "source_id": chunk_id,
+                            "file_path": chunk_data.get("file_path", "manual_creation"),
                         }
                     }
                     await self.relationships_vdb.upsert(relation_vdb_data)
@@ -215,16 +205,18 @@ class BaseModalProcessor:
         )
 
     async def _insert_done(self) -> None:
-        await asyncio.gather(*[
-            cast(StorageNameSpace, storage_inst).index_done_callback()
-            for storage_inst in [
-                self.text_chunks_db,
-                self.chunks_vdb,
-                self.entities_vdb,
-                self.relationships_vdb,
-                self.knowledge_graph_inst,
+        await asyncio.gather(
+            *[
+                cast(StorageNameSpace, storage_inst).index_done_callback()
+                for storage_inst in [
+                    self.text_chunks_db,
+                    self.chunks_vdb,
+                    self.entities_vdb,
+                    self.relationships_vdb,
+                    self.knowledge_graph_inst,
+                ]
             ]
-        ])
+        )
 
 
 class ImageModalProcessor(BaseModalProcessor):
@@ -232,7 +224,7 @@ class ImageModalProcessor(BaseModalProcessor):
 
     def __init__(self, lightrag: LightRAG, modal_caption_func):
         """Initialize image processor
-        
+
         Args:
             lightrag: LightRAG instance
             modal_caption_func: Function for generating descriptions (supporting image understanding)
@@ -243,8 +235,7 @@ class ImageModalProcessor(BaseModalProcessor):
         """Encode image to base64"""
         try:
             with open(image_path, "rb") as image_file:
-                encoded_string = base64.b64encode(
-                    image_file.read()).decode('utf-8')
+                encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
             return encoded_string
         except Exception as e:
             logger.error(f"Failed to encode image {image_path}: {e}")
@@ -309,13 +300,12 @@ class ImageModalProcessor(BaseModalProcessor):
                 response = await self.modal_caption_func(
                     vision_prompt,
                     image_data=image_base64,
-                    system_prompt=
-                    "You are an expert image analyst. Provide detailed, accurate descriptions."
+                    system_prompt="You are an expert image analyst. Provide detailed, accurate descriptions.",
                 )
             else:
                 # Analyze based on existing text information
                 text_prompt = f"""Based on the following image information, provide analysis:
-                
+
                     Image Path: {image_path}
                     Captions: {captions}
                     Footnotes: {footnotes}
@@ -324,13 +314,11 @@ class ImageModalProcessor(BaseModalProcessor):
 
                 response = await self.modal_caption_func(
                     text_prompt,
-                    system_prompt=
-                    "You are an expert image analyst. Provide detailed analysis based on available information."
+                    system_prompt="You are an expert image analyst. Provide detailed analysis based on available information.",
                 )
 
             # Parse response
-            enhanced_caption, entity_info = self._parse_response(
-                response, entity_name)
+            enhanced_caption, entity_info = self._parse_response(response, entity_name)
 
             # Build complete image content
             modal_chunk = f"""
@@ -341,27 +329,30 @@ class ImageModalProcessor(BaseModalProcessor):
 
                     Visual Analysis: {enhanced_caption}"""
 
-            return await self._create_entity_and_chunk(modal_chunk,
-                                                       entity_info, file_path)
+            return await self._create_entity_and_chunk(
+                modal_chunk, entity_info, file_path
+            )
 
         except Exception as e:
             logger.error(f"Error processing image content: {e}")
             # Fallback processing
             fallback_entity = {
-                "entity_name": entity_name if entity_name else
-                f"image_{compute_mdhash_id(str(modal_content))}",
+                "entity_name": entity_name
+                if entity_name
+                else f"image_{compute_mdhash_id(str(modal_content))}",
                 "entity_type": "image",
-                "summary": f"Image content: {str(modal_content)[:100]}"
+                "summary": f"Image content: {str(modal_content)[:100]}",
             }
             return str(modal_content), fallback_entity
 
-    def _parse_response(self,
-                        response: str,
-                        entity_name: str = None) -> Tuple[str, Dict[str, Any]]:
+    def _parse_response(
+        self, response: str, entity_name: str = None
+    ) -> Tuple[str, Dict[str, Any]]:
         """Parse model response"""
         try:
             response_data = json.loads(
-                re.search(r"\{.*\}", response, re.DOTALL).group(0))
+                re.search(r"\{.*\}", response, re.DOTALL).group(0)
+            )
 
             description = response_data.get("detailed_description", "")
             entity_data = response_data.get("entity_info", {})
@@ -369,11 +360,14 @@ class ImageModalProcessor(BaseModalProcessor):
             if not description or not entity_data:
                 raise ValueError("Missing required fields in response")
 
-            if not all(key in entity_data
-                       for key in ["entity_name", "entity_type", "summary"]):
+            if not all(
+                key in entity_data for key in ["entity_name", "entity_type", "summary"]
+            ):
                 raise ValueError("Missing required fields in entity_info")
 
-            entity_data["entity_name"] = entity_data["entity_name"] + f" ({entity_data['entity_type']})"
+            entity_data["entity_name"] = (
+                entity_data["entity_name"] + f" ({entity_data['entity_type']})"
+            )
             if entity_name:
                 entity_data["entity_name"] = entity_name
 
@@ -382,13 +376,11 @@ class ImageModalProcessor(BaseModalProcessor):
         except (json.JSONDecodeError, AttributeError, ValueError) as e:
             logger.error(f"Error parsing image analysis response: {e}")
             fallback_entity = {
-                "entity_name":
-                entity_name
-                if entity_name else f"image_{compute_mdhash_id(response)}",
-                "entity_type":
-                "image",
-                "summary":
-                response[:100] + "..." if len(response) > 100 else response
+                "entity_name": entity_name
+                if entity_name
+                else f"image_{compute_mdhash_id(response)}",
+                "entity_type": "image",
+                "summary": response[:100] + "..." if len(response) > 100 else response,
             }
             return response, fallback_entity
 
@@ -447,15 +439,15 @@ class TableModalProcessor(BaseModalProcessor):
 
         response = await self.modal_caption_func(
             table_prompt,
-            system_prompt=
-            "You are an expert data analyst. Provide detailed table analysis with specific insights."
+            system_prompt="You are an expert data analyst. Provide detailed table analysis with specific insights.",
         )
 
         # Parse response
         enhanced_caption, entity_info = self._parse_table_response(
-            response, entity_name)
-        
-        #TODO: Add Retry Mechanism
+            response, entity_name
+        )
+
+        # TODO: Add Retry Mechanism
 
         # Build complete table content
         modal_chunk = f"""Table Analysis:
@@ -466,17 +458,16 @@ class TableModalProcessor(BaseModalProcessor):
 
             Analysis: {enhanced_caption}"""
 
-        return await self._create_entity_and_chunk(modal_chunk, entity_info,
-                                                   file_path)
+        return await self._create_entity_and_chunk(modal_chunk, entity_info, file_path)
 
     def _parse_table_response(
-            self,
-            response: str,
-            entity_name: str = None) -> Tuple[str, Dict[str, Any]]:
+        self, response: str, entity_name: str = None
+    ) -> Tuple[str, Dict[str, Any]]:
         """Parse table analysis response"""
         try:
             response_data = json.loads(
-                re.search(r"\{.*\}", response, re.DOTALL).group(0))
+                re.search(r"\{.*\}", response, re.DOTALL).group(0)
+            )
 
             description = response_data.get("detailed_description", "")
             entity_data = response_data.get("entity_info", {})
@@ -484,11 +475,14 @@ class TableModalProcessor(BaseModalProcessor):
             if not description or not entity_data:
                 raise ValueError("Missing required fields in response")
 
-            if not all(key in entity_data
-                       for key in ["entity_name", "entity_type", "summary"]):
+            if not all(
+                key in entity_data for key in ["entity_name", "entity_type", "summary"]
+            ):
                 raise ValueError("Missing required fields in entity_info")
 
-            entity_data["entity_name"] = entity_data["entity_name"] + f" ({entity_data['entity_type']})"
+            entity_data["entity_name"] = (
+                entity_data["entity_name"] + f" ({entity_data['entity_type']})"
+            )
             if entity_name:
                 entity_data["entity_name"] = entity_name
 
@@ -497,13 +491,11 @@ class TableModalProcessor(BaseModalProcessor):
         except (json.JSONDecodeError, AttributeError, ValueError) as e:
             logger.error(f"Error parsing table analysis response: {e}")
             fallback_entity = {
-                "entity_name":
-                entity_name
-                if entity_name else f"table_{compute_mdhash_id(response)}",
-                "entity_type":
-                "table",
-                "summary":
-                response[:100] + "..." if len(response) > 100 else response
+                "entity_name": entity_name
+                if entity_name
+                else f"table_{compute_mdhash_id(response)}",
+                "entity_type": "table",
+                "summary": response[:100] + "..." if len(response) > 100 else response,
             }
             return response, fallback_entity
 
@@ -559,13 +551,13 @@ class EquationModalProcessor(BaseModalProcessor):
 
         response = await self.modal_caption_func(
             equation_prompt,
-            system_prompt=
-            "You are an expert mathematician. Provide detailed mathematical analysis."
+            system_prompt="You are an expert mathematician. Provide detailed mathematical analysis.",
         )
 
         # Parse response
         enhanced_caption, entity_info = self._parse_equation_response(
-            response, entity_name)
+            response, entity_name
+        )
 
         # Build complete equation content
         modal_chunk = f"""Mathematical Equation Analysis:
@@ -574,17 +566,16 @@ class EquationModalProcessor(BaseModalProcessor):
 
             Mathematical Analysis: {enhanced_caption}"""
 
-        return await self._create_entity_and_chunk(modal_chunk, entity_info,
-                                                   file_path)
+        return await self._create_entity_and_chunk(modal_chunk, entity_info, file_path)
 
     def _parse_equation_response(
-            self,
-            response: str,
-            entity_name: str = None) -> Tuple[str, Dict[str, Any]]:
+        self, response: str, entity_name: str = None
+    ) -> Tuple[str, Dict[str, Any]]:
         """Parse equation analysis response"""
         try:
             response_data = json.loads(
-                re.search(r"\{.*\}", response, re.DOTALL).group(0))
+                re.search(r"\{.*\}", response, re.DOTALL).group(0)
+            )
 
             description = response_data.get("detailed_description", "")
             entity_data = response_data.get("entity_info", {})
@@ -592,11 +583,14 @@ class EquationModalProcessor(BaseModalProcessor):
             if not description or not entity_data:
                 raise ValueError("Missing required fields in response")
 
-            if not all(key in entity_data
-                       for key in ["entity_name", "entity_type", "summary"]):
+            if not all(
+                key in entity_data for key in ["entity_name", "entity_type", "summary"]
+            ):
                 raise ValueError("Missing required fields in entity_info")
 
-            entity_data["entity_name"] = entity_data["entity_name"] + f" ({entity_data['entity_type']})"
+            entity_data["entity_name"] = (
+                entity_data["entity_name"] + f" ({entity_data['entity_type']})"
+            )
             if entity_name:
                 entity_data["entity_name"] = entity_name
 
@@ -605,13 +599,11 @@ class EquationModalProcessor(BaseModalProcessor):
         except (json.JSONDecodeError, AttributeError, ValueError) as e:
             logger.error(f"Error parsing equation analysis response: {e}")
             fallback_entity = {
-                "entity_name":
-                entity_name
-                if entity_name else f"equation_{compute_mdhash_id(response)}",
-                "entity_type":
-                "equation",
-                "summary":
-                response[:100] + "..." if len(response) > 100 else response
+                "entity_name": entity_name
+                if entity_name
+                else f"equation_{compute_mdhash_id(response)}",
+                "entity_type": "equation",
+                "summary": response[:100] + "..." if len(response) > 100 else response,
             }
             return response, fallback_entity
 
@@ -651,13 +643,13 @@ class GenericModalProcessor(BaseModalProcessor):
 
         response = await self.modal_caption_func(
             generic_prompt,
-            system_prompt=
-            f"You are an expert content analyst specializing in {content_type} content."
+            system_prompt=f"You are an expert content analyst specializing in {content_type} content.",
         )
 
         # Parse response
         enhanced_caption, entity_info = self._parse_generic_response(
-            response, entity_name, content_type)
+            response, entity_name, content_type
+        )
 
         # Build complete content
         modal_chunk = f"""{content_type.title()} Content Analysis:
@@ -665,18 +657,16 @@ class GenericModalProcessor(BaseModalProcessor):
 
             Analysis: {enhanced_caption}"""
 
-        return await self._create_entity_and_chunk(modal_chunk, entity_info,
-                                                   file_path)
+        return await self._create_entity_and_chunk(modal_chunk, entity_info, file_path)
 
     def _parse_generic_response(
-            self,
-            response: str,
-            entity_name: str = None,
-            content_type: str = "content") -> Tuple[str, Dict[str, Any]]:
+        self, response: str, entity_name: str = None, content_type: str = "content"
+    ) -> Tuple[str, Dict[str, Any]]:
         """Parse generic analysis response"""
         try:
             response_data = json.loads(
-                re.search(r"\{.*\}", response, re.DOTALL).group(0))
+                re.search(r"\{.*\}", response, re.DOTALL).group(0)
+            )
 
             description = response_data.get("detailed_description", "")
             entity_data = response_data.get("entity_info", {})
@@ -684,11 +674,14 @@ class GenericModalProcessor(BaseModalProcessor):
             if not description or not entity_data:
                 raise ValueError("Missing required fields in response")
 
-            if not all(key in entity_data
-                       for key in ["entity_name", "entity_type", "summary"]):
+            if not all(
+                key in entity_data for key in ["entity_name", "entity_type", "summary"]
+            ):
                 raise ValueError("Missing required fields in entity_info")
 
-            entity_data["entity_name"] = entity_data["entity_name"] + f" ({entity_data['entity_type']})"
+            entity_data["entity_name"] = (
+                entity_data["entity_name"] + f" ({entity_data['entity_type']})"
+            )
             if entity_name:
                 entity_data["entity_name"] = entity_name
 
@@ -697,12 +690,10 @@ class GenericModalProcessor(BaseModalProcessor):
         except (json.JSONDecodeError, AttributeError, ValueError) as e:
             logger.error(f"Error parsing generic analysis response: {e}")
             fallback_entity = {
-                "entity_name":
-                entity_name if entity_name else
-                f"{content_type}_{compute_mdhash_id(response)}",
-                "entity_type":
-                content_type,
-                "summary":
-                response[:100] + "..." if len(response) > 100 else response
+                "entity_name": entity_name
+                if entity_name
+                else f"{content_type}_{compute_mdhash_id(response)}",
+                "entity_type": content_type,
+                "summary": response[:100] + "..." if len(response) > 100 else response,
             }
             return response, fallback_entity

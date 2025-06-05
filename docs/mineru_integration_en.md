@@ -257,7 +257,7 @@ The processors support different types of content:
 - `ImageModalProcessor`: Processes images with captions and footnotes
 - `TableModalProcessor`: Processes tables with captions and footnotes
 - `EquationModalProcessor`: Processes mathematical equations in LaTeX format
-- `GenericModalProcessor`: A base processor that can be extended for custom content types 
+- `GenericModalProcessor`: A base processor that can be extended for custom content types
 
 > **Note**: A complete working example can be found in `examples/modalprocessors_example.py`. You can run it using:
 > ```bash

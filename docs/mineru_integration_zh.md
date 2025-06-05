@@ -256,7 +256,7 @@ MinerU 配置文件 `magic-pdf.json` 支持多种自定义选项，包括：
 - `ImageModalProcessor`：处理带有标题和脚注的图像
 - `TableModalProcessor`：处理带有标题和脚注的表格
 - `EquationModalProcessor`：处理 LaTeX 格式的数学公式
-- `GenericModalProcessor`：可用于扩展自定义内容类型的基础处理器 
+- `GenericModalProcessor`：可用于扩展自定义内容类型的基础处理器
 
 > **注意**：完整的可运行示例可以在 `examples/modalprocessors_example.py` 中找到。您可以使用以下命令运行它：
 > ```bash
