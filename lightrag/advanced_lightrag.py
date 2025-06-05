@@ -107,8 +107,74 @@ class AdvancedLightRAG(LightRAG):
             kwargs["chunking_func"] = advanced_semantic_chunking
             logger.info("🧠 Advanced semantic chunking enabled")
         
-        # Initialize parent class
+        # Initialize parent class first
         super().__init__(**kwargs)
+        
+        # Log post-processing configuration status (after initialization)
+        chunk_processing_enabled = getattr(self, 'enable_chunk_post_processing', False)
+        llm_processing_enabled = getattr(self, 'enable_llm_post_processing', True)
+        
+        if chunk_processing_enabled:
+            logger.info("✅ Chunk-level relationship post-processing enabled")
+        else:
+            logger.info("❌ Chunk-level relationship post-processing disabled")
+            
+        if llm_processing_enabled:
+            logger.info("✅ Document-level LLM post-processing enabled")
+        else:
+            logger.info("❌ Document-level LLM post-processing disabled")
+        
+        # Log enhanced relationship filter configuration status
+        enhanced_filter_enabled = getattr(self, 'enable_enhanced_relationship_filter', True)
+        log_classification = getattr(self, 'log_relationship_classification', False)
+        track_performance = getattr(self, 'relationship_filter_performance_tracking', True)
+        console_logging = getattr(self, 'enhanced_filter_console_logging', False)
+        
+        if enhanced_filter_enabled:
+            logger.info("🎯 Enhanced Relationship Filter: ENABLED")
+            logger.info(f"   📊 Performance Tracking: {'ENABLED' if track_performance else 'DISABLED'}")
+            logger.info(f"   🔍 Classification Logging: {'ENABLED' if log_classification else 'DISABLED'}")
+            
+            # Show the data-driven categories
+            logger.info("   🏷️  Data-Driven Categories (based on your Neo4j patterns):")
+            logger.info("      • technical_core (USES, INTEGRATES_WITH, RUNS_ON, ...)")
+            logger.info("      • development_operations (CREATES, CONFIGURES, DEVELOPS, ...)")
+            logger.info("      • troubleshooting_support (TROUBLESHOOTS, DEBUGS, SOLVES, ...)")
+            logger.info("      • system_interactions (HOSTS, MANAGES, PROCESSES, ...)")
+            logger.info("      • abstract_conceptual (RELATED, AFFECTS, SUPPORTS, ...)")
+            logger.info("      • data_flow (READS_FROM, WRITES_TO, EXTRACTS_DATA_FROM, ...)")
+            
+            # Initialize enhanced filter logging with full configuration
+            try:
+                from lightrag.kg.utils.enhanced_filter_logger import log_enhanced_filter_initialization
+                filter_config = {
+                    "enable_enhanced_relationship_filter": enhanced_filter_enabled,
+                    "log_relationship_classification": log_classification,
+                    "relationship_filter_performance_tracking": track_performance,
+                    "enhanced_filter_console_logging": console_logging,
+                    # Include other relevant config
+                    "enable_chunk_post_processing": chunk_processing_enabled,
+                    "enable_llm_post_processing": llm_processing_enabled
+                }
+                if console_logging:
+                    log_enhanced_filter_initialization(filter_config)
+                else:
+                    logger.debug("Enhanced filter logging configured (console output disabled)")
+            except ImportError:
+                logger.warning("Enhanced filter logger not available")
+        else:
+            logger.info("❌ Enhanced Relationship Filter: DISABLED (using basic filtering)")
+        
+        # Log logs directory information
+        logs_dir = "logs"
+        try:
+            import os
+            if os.path.exists(logs_dir):
+                logger.info(f"📁 Enhanced filter logs will be saved to: ./{logs_dir}/")
+            else:
+                logger.debug(f"Logs directory will be created at: ./{logs_dir}/")
+        except Exception:
+            pass
         
         # Initialize components
         self._query_logger: QueryLogger | None = None

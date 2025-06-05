@@ -11,6 +11,19 @@ __pycache__/
 .venv/
 env/
 venv/
+# Project-specific virtual environments
+TLL_RobustVenv/
+TLLLightragVenv/
+*/TLL_RobustVenv/
+*/TLLLightragVenv/
+**/TLL_RobustVenv/
+**/TLLLightragVenv/
+# Additional venv patterns
+*Venv/
+*venv/
+*.venv/
+
+# Environment files
 *.env*
 .env
 .env.local
@@ -23,6 +36,10 @@ venv/
 dist/
 build/
 site/
+*.whl
+*.egg
+*.deb
+*.rpm
 
 # Logs / Reports
 *.log
@@ -30,6 +47,7 @@ site/
 *.logfire
 *.coverage/
 log/
+logs/
 
 # Caches
 .cache/
@@ -39,6 +57,11 @@ log/
 .gradio/
 .history/
 temp/
+tmp/
+# Python bytecode cache
+*.pyc
+*.pyo
+*.pyd
 
 # IDE / Editor Files
 .idea/
@@ -83,3 +106,17 @@ memory-bank/
 *.pfx
 secrets/
 config.ini
+
+# Temporary and generated files
+graph_data.json
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# Operating system files
+Thumbs.db
+ehthumbs.db
+Desktop.ini

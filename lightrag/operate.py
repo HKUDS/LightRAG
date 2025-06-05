@@ -52,6 +52,13 @@ from .monitoring import (
 import time
 from dotenv import load_dotenv
 from lightrag.kg.utils.relationship_registry import standardize_relationship_type
+from .chunk_post_processor import _post_process_chunk_relationships
+from .constants import (
+    DEFAULT_ENABLE_CHUNK_POST_PROCESSING,
+    DEFAULT_CHUNK_VALIDATION_BATCH_SIZE,
+    DEFAULT_CHUNK_VALIDATION_TIMEOUT,
+    DEFAULT_LOG_VALIDATION_CHANGES,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -787,22 +794,57 @@ def _validate_relationship_context(src_id: str, tgt_id: str, rel_type: str, desc
     return True
 
 
-def _apply_relationship_quality_filter(all_edges: dict) -> dict:
+def _apply_relationship_quality_filter(all_edges: dict, global_config: dict = None) -> dict:
     """
-    Enhanced post-processing filter to remove redundant and low-quality relationships.
+    Enhanced post-processing filter with type-specific intelligence and comprehensive metrics.
+    
+    Uses data-driven relationship categorization based on actual Neo4j patterns to apply
+    type-specific confidence thresholds and validation rules.
     
     Args:
         all_edges: Dictionary of edge lists keyed by sorted edge tuples
         
     Returns:
-        Filtered dictionary with redundant relationships removed
+        Filtered dictionary with type-aware relationship filtering
     """
+    # Check configuration and import the enhanced classifier
+    global_config = global_config or {}
+    enable_enhanced_filter = global_config.get("enable_enhanced_relationship_filter", True)
+    log_classification = global_config.get("log_relationship_classification", False)
+    track_performance = global_config.get("relationship_filter_performance_tracking", True)
+    monitoring_mode = global_config.get("enhanced_filter_monitoring_mode", False)
     
-    # Enhanced abstract/generic relationship types to filter
+    use_enhanced_classification = False
+    classifier = None
+    enhanced_logger = None
+    
+    # Initialize enhanced logging if enabled
+    if enable_enhanced_filter or track_performance:
+        try:
+            from .kg.utils.enhanced_filter_logger import get_enhanced_filter_logger
+            console_logging = global_config.get("enhanced_filter_console_logging", False)
+            enhanced_logger = get_enhanced_filter_logger(enable_console_logging=console_logging)
+        except ImportError:
+            enhanced_logger = None
+    
+    if enable_enhanced_filter:
+        try:
+            from .kg.utils.enhanced_relationship_classifier import EnhancedRelationshipClassifier
+            classifier = EnhancedRelationshipClassifier()
+            use_enhanced_classification = True
+            logger.debug("Using enhanced type-specific relationship filtering")
+        except ImportError as e:
+            logger.warning(f"Enhanced classifier not available, falling back to basic filtering: {e}")
+            if enhanced_logger:
+                enhanced_logger.log_error("EnhancedClassifier", e, "Failed to import enhanced classifier")
+    else:
+        logger.debug("Enhanced relationship filtering disabled by configuration")
+    
+    # Fallback abstract/generic relationship types for basic filtering
     ABSTRACT_RELATIONSHIPS = {
         'implements', 'supports', 'enables', 'involves', 'includes', 
         'contains', 'related', 'part_of', 'applies_to', 'affects',
-        'investigates', 'analyzes', 'optimizes', 'facilitates'  # Enhanced set
+        'investigates', 'analyzes', 'optimizes', 'facilitates'
     }
     
     # Define synonym pairs to detect redundant relationships
@@ -824,9 +866,27 @@ def _apply_relationship_quality_filter(all_edges: dict) -> dict:
         'abstract_entities': 0,
         'low_confidence': 0,
         'context_validation': 0,
+        'type_specific_filtered': 0,
         'total_before': 0,
         'total_after': 0
     }
+    
+    # Enhanced statistics for type-specific filtering
+    if use_enhanced_classification:
+        filter_stats.update({
+            'technical_core_filtered': 0,
+            'development_operations_filtered': 0,
+            'system_interactions_filtered': 0,
+            'troubleshooting_support_filtered': 0,
+            'abstract_conceptual_filtered': 0,
+            'data_flow_filtered': 0,
+            'category_stats': defaultdict(lambda: {'total': 0, 'kept': 0, 'filtered': 0})
+        })
+    
+    # Log filter session start
+    total_relationships = sum(len(edges) for edges in all_edges.values())
+    if enhanced_logger:
+        enhanced_logger.log_filter_session_start(total_relationships, "enhanced" if use_enhanced_classification else "basic")
     
     for edge_key, edges in all_edges.items():
         filter_stats['total_before'] += len(edges)
@@ -839,8 +899,58 @@ def _apply_relationship_quality_filter(all_edges: dict) -> dict:
             weight = edge.get("weight", 0)
             description = edge.get("description", "")
             
-            # Filter 1: Remove abstract relationship types with low weights
-            if rel_type in ABSTRACT_RELATIONSHIPS and weight < 0.8:
+            # NEW: Enhanced type-specific filtering
+            if use_enhanced_classification:
+                classification = classifier.classify_relationship(
+                    rel_type, src_id, tgt_id, description
+                )
+                
+                category = classification["category"]
+                confidence = classification["confidence"]
+                should_keep = classification["should_keep"]
+                threshold = classification["threshold"]
+                
+                # Track category statistics
+                filter_stats['category_stats'][category]['total'] += 1
+                
+                # Enhanced logging for classification results
+                if enhanced_logger and (log_classification or not should_keep):
+                    enhanced_logger.log_classification_result(rel_type, src_id, tgt_id, classification)
+                
+                # CRITICAL FIX: Check monitoring mode
+                if monitoring_mode:
+                    # In monitoring mode, log the decision but don't actually filter
+                    if not should_keep:
+                        logger.info(f"MONITORING: Would filter {src_id} -[{rel_type}]-> {tgt_id} "
+                                   f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+                        filter_stats['category_stats'][category]['filtered'] += 1
+                    else:
+                        filter_stats['category_stats'][category]['kept'] += 1
+                        if log_classification:
+                            logger.debug(f"MONITORING: Would keep {src_id} -[{rel_type}]-> {tgt_id} "
+                                       f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+                    # Always keep the relationship in monitoring mode
+                elif not should_keep:
+                    # Filter based on type-specific confidence thresholds
+                    filter_stats['type_specific_filtered'] += 1
+                    filter_stats[f'{category}_filtered'] += 1
+                    filter_stats['category_stats'][category]['filtered'] += 1
+                    
+                    if log_classification:
+                        logger.info(f"Type-specific filter: {src_id} -[{rel_type}]-> {tgt_id} "
+                                   f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+                    else:
+                        logger.debug(f"Type-specific filter: {src_id} -[{rel_type}]-> {tgt_id} "
+                                   f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+                    continue
+                else:
+                    filter_stats['category_stats'][category]['kept'] += 1
+                    if log_classification:
+                        logger.debug(f"Type-specific keep: {src_id} -[{rel_type}]-> {tgt_id} "
+                                   f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+            
+            # FALLBACK: Basic abstract relationship filtering (if enhanced classification not available)
+            elif rel_type in ABSTRACT_RELATIONSHIPS and weight < 0.8:
                 filter_stats['abstract_relationships'] += 1
                 logger.debug(f"Filtered abstract relationship: {src_id} -[{rel_type}]-> {tgt_id} (weight: {weight})")
                 continue
@@ -897,7 +1007,21 @@ def _apply_relationship_quality_filter(all_edges: dict) -> dict:
     removed = filter_stats['total_before'] - filter_stats['total_after']
     if removed > 0:
         logger.info(f"Enhanced relationship quality filter removed {removed}/{filter_stats['total_before']} relationships:")
-        logger.info(f"  - Abstract relationships: {filter_stats['abstract_relationships']}")
+        
+        if use_enhanced_classification:
+            # Log type-specific filtering results
+            logger.info(f"  - Type-specific filtered: {filter_stats['type_specific_filtered']}")
+            
+            # Log category-specific statistics
+            for category, stats in filter_stats['category_stats'].items():
+                if stats['total'] > 0:
+                    retention_rate = stats['kept'] / stats['total']
+                    logger.info(f"    • {category}: {stats['kept']}/{stats['total']} kept ({retention_rate:.1%})")
+        else:
+            # Log basic filtering results
+            logger.info(f"  - Abstract relationships: {filter_stats['abstract_relationships']}")
+        
+        # Log remaining filter categories
         logger.info(f"  - Synonym relationships: {filter_stats['synonym_relationships']}")
         logger.info(f"  - Abstract entities: {filter_stats['abstract_entities']}")
         logger.info(f"  - Low confidence: {filter_stats['low_confidence']}")
@@ -908,6 +1032,68 @@ def _apply_relationship_quality_filter(all_edges: dict) -> dict:
         if filter_stats['total_after'] > 0:
             quality_ratio = filter_stats['total_after'] / filter_stats['total_before']
             logger.info(f"  - Relationship retention rate: {quality_ratio:.1%}")
+            
+            # Log enhanced quality assessment and record metrics if available
+            if use_enhanced_classification and filter_stats['category_stats']:
+                # Convert to format expected by classifier
+                relationships_for_assessment = []
+                for edge_key, edges in all_edges.items():
+                    relationships_for_assessment.extend(edges)
+                
+                try:
+                    recommendations = classifier.get_validation_recommendations(relationships_for_assessment[:100])  # Sample for performance
+                    overall_quality = recommendations.get('overall_quality', 'N/A')
+                    logger.info(f"  - Overall Quality Assessment: {overall_quality}")
+                    
+                    # Enhanced logging for quality assessment
+                    if enhanced_logger:
+                        enhanced_logger.log_quality_assessment(
+                            overall_quality, 
+                            recommendations.get('category_insights', {}).get('insights', [])
+                        )
+                except Exception as e:
+                    logger.debug(f"Could not generate quality assessment: {e}")
+                    if enhanced_logger:
+                        enhanced_logger.log_error("QualityAssessment", e, "Failed to generate quality recommendations")
+                
+                # Record metrics if performance tracking is enabled
+                if track_performance:
+                    try:
+                        from .kg.utils.relationship_filter_metrics import get_filter_metrics
+                        metrics = get_filter_metrics()
+                        metrics.record_filter_session(filter_stats, filter_stats['category_stats'])
+                        
+                        # Enhanced logging for metrics collection
+                        if enhanced_logger:
+                            summary = metrics.get_session_summary()
+                            enhanced_logger.log_metrics_collection(summary)
+                        
+                        logger.debug("Recorded filter performance metrics")
+                    except Exception as e:
+                        logger.debug(f"Could not record filter metrics: {e}")
+                        if enhanced_logger:
+                            enhanced_logger.log_error("MetricsCollection", e, "Failed to record filter metrics")
+    
+    # SANITY CHECK: Detect abnormal retention rates
+    total_before = filter_stats.get('total_before', 0)
+    total_after = filter_stats.get('total_after', 0)
+    retention_rate = total_after / max(total_before, 1)
+    
+    if retention_rate > 0.95 and total_before > 10:
+        logger.warning(f"🚨 ABNORMALLY HIGH RETENTION RATE: {retention_rate:.1%} ({total_after}/{total_before})")
+        logger.warning("   This suggests the enhanced filter may not be working properly")
+        logger.warning("   Consider adjusting confidence thresholds or checking classification logic")
+    elif retention_rate < 0.5 and total_before > 10:
+        logger.warning(f"🚨 ABNORMALLY LOW RETENTION RATE: {retention_rate:.1%} ({total_after}/{total_before})")
+        logger.warning("   This suggests the enhanced filter may be too aggressive")
+        logger.warning("   Consider lowering confidence thresholds")
+    elif 0.75 <= retention_rate <= 0.9:
+        logger.info(f"✅ HEALTHY RETENTION RATE: {retention_rate:.1%} (target: 75-90%)")
+    
+    # Log filter session end with enhanced details
+    if enhanced_logger:
+        enhanced_stats = filter_stats.get('category_stats', {}) if use_enhanced_classification else None
+        enhanced_logger.log_filter_session_end(filter_stats, enhanced_stats)
     
     return filtered_edges
 
@@ -1357,7 +1543,15 @@ async def merge_nodes_and_edges(
 
     # Apply basic post-processing filters to remove redundant relationships
     # Note: Made more lenient since LLM post-processing will do the heavy lifting
-    all_edges = _apply_relationship_quality_filter(all_edges)
+    all_edges = _apply_relationship_quality_filter(all_edges, global_config)
+
+    # Clean up orphaned entities after chunk post-processing
+    if global_config.get("enable_chunk_post_processing", False):
+        from .chunk_post_processor import cleanup_orphaned_entities
+        log_changes = global_config.get("log_validation_changes", False)
+        original_entity_count = len(all_nodes)
+        all_nodes = cleanup_orphaned_entities(all_nodes, all_edges, log_changes)
+        logger.info(f"Post-processing entity cleanup: {original_entity_count} → {len(all_nodes)} entities")
 
     # NEW: LLM-based post-processing for enhanced accuracy
     all_entities_list = [entity for entities in all_nodes.values() for entity in entities]
@@ -1783,6 +1977,21 @@ async def extract_entities(
                     async with pipeline_status_lock:
                         pipeline_status["latest_message"] = log_message
                         pipeline_status["history_messages"].append(log_message)
+
+                # Apply chunk-level relationship post-processing if enabled
+                if global_config.get("enable_chunk_post_processing", DEFAULT_ENABLE_CHUNK_POST_PROCESSING):
+                    try:
+                        maybe_edges = await _post_process_chunk_relationships(
+                            content,
+                            maybe_edges,
+                            maybe_nodes,
+                            use_llm_func,
+                            chunk_key,
+                            global_config
+                        )
+                    except Exception as e:
+                        logger.warning(f"Chunk post-processing failed for {chunk_key}: {e}")
+                        logger.info("Continuing with original relationships")
 
                 # Return the extracted nodes and edges for centralized processing
                 return maybe_nodes, maybe_edges

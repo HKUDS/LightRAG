@@ -24,6 +24,10 @@ from typing import (
 from lightrag.constants import (
     DEFAULT_MAX_TOKEN_SUMMARY,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
+    DEFAULT_ENABLE_CHUNK_POST_PROCESSING,
+    DEFAULT_CHUNK_VALIDATION_BATCH_SIZE,
+    DEFAULT_CHUNK_VALIDATION_TIMEOUT,
+    DEFAULT_LOG_VALIDATION_CHANGES,
 )
 from lightrag.utils import get_env_value
 
@@ -133,6 +137,44 @@ class LightRAG:
             "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
         )
     )
+
+    # Chunk-level relationship post-processing
+    # ---
+    
+    enable_chunk_post_processing: bool = field(
+        default=get_env_value(
+            "ENABLE_CHUNK_POST_PROCESSING", DEFAULT_ENABLE_CHUNK_POST_PROCESSING, bool
+        )
+    )
+    """Enable chunk-level relationship validation and refinement."""
+    
+    chunk_validation_batch_size: int = field(
+        default=get_env_value(
+            "CHUNK_VALIDATION_BATCH_SIZE", DEFAULT_CHUNK_VALIDATION_BATCH_SIZE, int
+        )
+    )
+    """Maximum number of relationships to validate per chunk."""
+    
+    chunk_validation_timeout: int = field(
+        default=get_env_value(
+            "CHUNK_VALIDATION_TIMEOUT", DEFAULT_CHUNK_VALIDATION_TIMEOUT, int
+        )
+    )
+    """Timeout in seconds for chunk-level validation."""
+    
+    log_validation_changes: bool = field(
+        default=get_env_value(
+            "LOG_VALIDATION_CHANGES", DEFAULT_LOG_VALIDATION_CHANGES, bool
+        )
+    )
+    """Enable detailed logging of relationship validation changes."""
+    
+    enable_llm_post_processing: bool = field(
+        default=get_env_value(
+            "ENABLE_LLM_POST_PROCESSING", True, bool
+        )
+    )
+    """Enable document-level LLM post-processing (legacy)."""
 
     # Text chunking
     # ---
