@@ -57,7 +57,7 @@ from .operate import (
     naive_query,
     query_with_keywords,
 )
-from .prompt import GRAPH_FIELD_SEP
+from .prompt import GRAPH_FIELD_SEP, load_prompts_from_yaml
 from .utils import (
     Tokenizer,
     TiktokenTokenizer,
@@ -254,7 +254,8 @@ class LightRAG:
 
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {
-            "language": get_env_value("SUMMARY_LANGUAGE", "English", str)
+            "language": get_env_value("SUMMARY_LANGUAGE", "English", str),
+            "prompts_yaml_file": get_env_value("PROMPTS_YAML_FILE", None, str),
         }
     )
 
@@ -345,6 +346,12 @@ class LightRAG:
         global_config = asdict(self)
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
+
+        # Load prompts from YAML file if provided
+        if not load_prompts_from_yaml(self.addon_params["prompts_yaml_file"]):
+            logger.warning(
+                f"Error loading prompts YAML file {self.addon_params["prompts_yaml_file"]}\nUsing default prompts."
+            )
 
         # Init Embedding
         self.embedding_func = priority_limit_async_func_call(
