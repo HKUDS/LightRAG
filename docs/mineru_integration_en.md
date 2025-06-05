@@ -243,4 +243,118 @@ The MinerU configuration file `magic-pdf.json` supports various customization op
 - GPU acceleration settings
 - Cache settings
 
-For complete configuration options, refer to the [MinerU official documentation](https://mineru.readthedocs.io/). 
+For complete configuration options, refer to the [MinerU official documentation](https://mineru.readthedocs.io/).
+
+### Using Modal Processors Directly
+
+You can also use LightRAG's modal processors directly without going through MinerU. This is useful when you want to process specific types of content or have more control over the processing pipeline.
+
+Each modal processor returns a tuple containing:
+1. A description of the processed content
+2. Entity information that can be used for further processing or storage
+
+The processors support different types of content:
+- `ImageModalProcessor`: Processes images with captions and footnotes
+- `TableModalProcessor`: Processes tables with captions and footnotes
+- `EquationModalProcessor`: Processes mathematical equations in LaTeX format
+- `GenericModalProcessor`: A base processor that can be extended for custom content types 
+
+> **Note**: A complete working example can be found in `examples/modalprocessors_example.py`. You can run it using:
+> ```bash
+> python examples/modalprocessors_example.py --api-key YOUR_API_KEY
+> ```
+
+<details>
+<summary> Here's an example of how to use different modal processors: </summary>
+
+```python
+from lightrag.modalprocessors import (
+    ImageModalProcessor,
+    TableModalProcessor,
+    EquationModalProcessor,
+    GenericModalProcessor
+)
+
+# Initialize LightRAG
+lightrag = LightRAG(
+    working_dir="./rag_storage",
+    embedding_func=lambda texts: openai_embed(
+        texts,
+        model="text-embedding-3-large",
+        api_key="your-api-key",
+        base_url="your-base-url",
+    ),
+    llm_model_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs: openai_complete_if_cache(
+        "gpt-4o-mini",
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        api_key="your-api-key",
+        base_url="your-base-url",
+        **kwargs,
+    ),
+)
+
+# Process an image
+image_processor = ImageModalProcessor(
+    lightrag=lightrag,
+    modal_caption_func=vision_model_func
+)
+
+image_content = {
+    "img_path": "image.jpg",
+    "img_caption": ["Example image caption"],
+    "img_footnote": ["Example image footnote"]
+}
+
+description, entity_info = await image_processor.process_multimodal_content(
+    modal_content=image_content,
+    content_type="image",
+    file_path="image_example.jpg",
+    entity_name="Example Image"
+)
+
+# Process a table
+table_processor = TableModalProcessor(
+    lightrag=lightrag,
+    modal_caption_func=llm_model_func
+)
+
+table_content = {
+    "table_body": """
+    | Name | Age | Occupation |
+    |------|-----|------------|
+    | John | 25  | Engineer   |
+    | Mary | 30  | Designer   |
+    """,
+    "table_caption": ["Employee Information Table"],
+    "table_footnote": ["Data updated as of 2024"]
+}
+
+description, entity_info = await table_processor.process_multimodal_content(
+    modal_content=table_content,
+    content_type="table",
+    file_path="table_example.md",
+    entity_name="Employee Table"
+)
+
+# Process an equation
+equation_processor = EquationModalProcessor(
+    lightrag=lightrag,
+    modal_caption_func=llm_model_func
+)
+
+equation_content = {
+    "text": "E = mc^2",
+    "text_format": "LaTeX"
+}
+
+description, entity_info = await equation_processor.process_multimodal_content(
+    modal_content=equation_content,
+    content_type="equation",
+    file_path="equation_example.txt",
+    entity_name="Mass-Energy Equivalence"
+)
+```
+
+</details>

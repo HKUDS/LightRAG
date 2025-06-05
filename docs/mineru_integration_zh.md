@@ -242,4 +242,117 @@ MinerU 配置文件 `magic-pdf.json` 支持多种自定义选项，包括：
 - GPU 加速设置
 - 缓存设置
 
-有关完整的配置选项，请参阅 [MinerU 官方文档](https://mineru.readthedocs.io/)。 
+有关完整的配置选项，请参阅 [MinerU 官方文档](https://mineru.readthedocs.io/)。
+
+### 直接使用模态处理器
+
+您也可以直接使用 LightRAG 的模态处理器，而不需要通过 MinerU。这在您想要处理特定类型的内容或对处理流程有更多控制时特别有用。
+
+每个模态处理器都会返回一个包含以下内容的元组：
+1. 处理后内容的描述
+2. 可用于进一步处理或存储的实体信息
+
+处理器支持不同类型的内容：
+- `ImageModalProcessor`：处理带有标题和脚注的图像
+- `TableModalProcessor`：处理带有标题和脚注的表格
+- `EquationModalProcessor`：处理 LaTeX 格式的数学公式
+- `GenericModalProcessor`：可用于扩展自定义内容类型的基础处理器 
+
+> **注意**：完整的可运行示例可以在 `examples/modalprocessors_example.py` 中找到。您可以使用以下命令运行它：
+> ```bash
+> python examples/modalprocessors_example.py --api-key YOUR_API_KEY
+> ```
+
+<details>
+<summary> 使用不同模态处理器的示例 </summary>
+
+```python
+from lightrag.modalprocessors import (
+    ImageModalProcessor,
+    TableModalProcessor,
+    EquationModalProcessor,
+    GenericModalProcessor
+)
+
+# 初始化 LightRAG
+lightrag = LightRAG(
+    working_dir="./rag_storage",
+    embedding_func=lambda texts: openai_embed(
+        texts,
+        model="text-embedding-3-large",
+        api_key="your-api-key",
+        base_url="your-base-url",
+    ),
+    llm_model_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs: openai_complete_if_cache(
+        "gpt-4o-mini",
+        prompt,
+        system_prompt=system_prompt,
+        history_messages=history_messages,
+        api_key="your-api-key",
+        base_url="your-base-url",
+        **kwargs,
+    ),
+)
+
+# 处理图像
+image_processor = ImageModalProcessor(
+    lightrag=lightrag,
+    modal_caption_func=vision_model_func
+)
+
+image_content = {
+    "img_path": "image.jpg",
+    "img_caption": ["示例图像标题"],
+    "img_footnote": ["示例图像脚注"]
+}
+
+description, entity_info = await image_processor.process_multimodal_content(
+    modal_content=image_content,
+    content_type="image",
+    file_path="image_example.jpg",
+    entity_name="示例图像"
+)
+
+# 处理表格
+table_processor = TableModalProcessor(
+    lightrag=lightrag,
+    modal_caption_func=llm_model_func
+)
+
+table_content = {
+    "table_body": """
+    | 姓名 | 年龄 | 职业 |
+    |------|-----|------|
+    | 张三 | 25  | 工程师 |
+    | 李四 | 30  | 设计师 |
+    """,
+    "table_caption": ["员工信息表"],
+    "table_footnote": ["数据更新至2024年"]
+}
+
+description, entity_info = await table_processor.process_multimodal_content(
+    modal_content=table_content,
+    content_type="table",
+    file_path="table_example.md",
+    entity_name="员工表格"
+)
+
+# 处理公式
+equation_processor = EquationModalProcessor(
+    lightrag=lightrag,
+    modal_caption_func=llm_model_func
+)
+
+equation_content = {
+    "text": "E = mc^2",
+    "text_format": "LaTeX"
+}
+
+description, entity_info = await equation_processor.process_multimodal_content(
+    modal_content=equation_content,
+    content_type="equation",
+    file_path="equation_example.txt",
+    entity_name="质能方程"
+)
+```
+</details>
