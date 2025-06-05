@@ -4,6 +4,7 @@
 
 ## 🎉 新闻
 
+- [X] [2025.06.05]🎯📢LightRAG现已集成MinerU，支持多模态文档解析与RAG（PDF、图片、Office、表格、公式等）。详见下方多模态处理模块。
 - [X] [2025.03.18]🎯📢LightRAG现已支持引文功能。
 - [X] [2025.02.05]🎯📢我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
 - [X] [2025.01.13]🎯📢我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
@@ -1001,6 +1002,32 @@ rag.merge_entities(
 * 保留关系权重和属性
 
 </details>
+
+## 多模态文档处理（MinerU集成）
+
+LightRAG 现已支持通过 [MinerU](https://github.com/opendatalab/MinerU) 实现多模态文档解析与检索增强生成（RAG）。您可以从 PDF、图片、Office 文档中提取结构化内容（文本、图片、表格、公式等），并在 RAG 流程中使用。
+
+**主要特性：**
+- 支持解析 PDF、图片、DOC/DOCX/PPT/PPTX 等多种格式
+- 提取并索引文本、图片、表格、公式及文档结构
+- 在 RAG 中查询和检索多模态内容（文本、图片、表格、公式）
+- 与 LightRAG Core 及 RAGAnything 无缝集成
+
+**快速开始：**
+1. 安装依赖：
+   ```bash
+   pip install "magic-pdf[full]>=1.2.2" huggingface_hub
+   ```
+2. 下载 MinerU 模型权重（详见 [MinerU 集成指南](docs/mineru_integration_zh.md)）
+3. 使用新版 `MineruParser` 或 RAGAnything 的 `process_document_complete` 处理文件：
+   ```python
+   from lightrag.mineru_parser import MineruParser
+   content_list, md_content = MineruParser.parse_pdf('path/to/document.pdf', 'output_dir')
+   # 或自动识别类型：
+   content_list, md_content = MineruParser.parse_document('path/to/file', 'auto', 'output_dir')
+   ```
+4. 使用 LightRAG 查询多模态内容请参见 [docs/mineru_integration_zh.md](docs/mineru_integration_zh.md)。
+
 
 ## Token统计功能
 

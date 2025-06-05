@@ -39,7 +39,7 @@
 </div>
 
 ## 🎉 News
-
+- [X] [2025.06.05]🎯📢LightRAG now supports multimodal document parsing and RAG with MinerU integration (PDF, images, Office, tables, formulas, etc.). See the new multimodal section below.
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
 - [X] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
@@ -1050,6 +1050,31 @@ When merging entities:
 * Relationship weights and attributes are preserved
 
 </details>
+
+## Multimodal Document Processing (MinerU Integration)
+
+LightRAG now supports multimodal document parsing and retrieval-augmented generation (RAG) via [MinerU](https://github.com/opendatalab/MinerU). You can extract structured content (text, images, tables, formulas, etc.) from PDF, images, and Office documents, and use them in your RAG pipeline.
+
+**Key Features:**
+- Parse PDFs, images, DOC/DOCX/PPT/PPTX, and more
+- Extract and index text, images, tables, formulas, and document structure
+- Query and retrieve multimodal content (text, image, table, formula) in RAG
+- Seamless integration with LightRAG core and RAGAnything
+
+**Quick Start:**
+1. Install dependencies:
+   ```bash
+   pip install "magic-pdf[full]>=1.2.2" huggingface_hub
+   ```
+2. Download MinerU model weights (see [MinerU Integration Guide](docs/mineru_integration_en.md))
+3. Use the new `MineruParser` or RAGAnything's `process_document_complete` to process files:
+   ```python
+   from lightrag.mineru_parser import MineruParser
+   content_list, md_content = MineruParser.parse_pdf('path/to/document.pdf', 'output_dir')
+   # or for any file type:
+   content_list, md_content = MineruParser.parse_document('path/to/file', 'auto', 'output_dir')
+   ```
+4. Query multimodal content with LightRAG see [docs/mineru_integration_en.md](docs/mineru_integration_en.md).
 
 ## Token Usage Tracking
 
