@@ -58,6 +58,7 @@ from .constants import (
     DEFAULT_CHUNK_VALIDATION_BATCH_SIZE,
     DEFAULT_CHUNK_VALIDATION_TIMEOUT,
     DEFAULT_LOG_VALIDATION_CHANGES,
+    DEFAULT_ENABLE_ENTITY_CLEANUP,
 )
 
 # use the .env that is inside the current folder
@@ -739,36 +740,7 @@ def _is_abstract_entity(entity_name: str) -> bool:
     return any(re.match(pattern, name) for pattern in ABSTRACT_ENTITY_PATTERNS)
 
 
-def _calculate_confidence_score(relationship: dict) -> float:
-    """
-    Calculate confidence score for a relationship based on multiple factors.
-    Returns score between 0 and 1.
-    """
-    weight = relationship.get('weight', 0)
-    rel_type = relationship.get('rel_type', '').lower()
-    description = relationship.get('description', '')
-    
-    # Base score from weight
-    confidence = weight * 0.4
-    
-    # Bonus for concrete relationship types
-    concrete_rel_types = {'uses', 'calls', 'accesses', 'creates', 'runs_on', 'debugs', 
-                         'displays', 'contains', 'processes', 'is_hosted_on'}
-    if rel_type in concrete_rel_types:
-        confidence += 0.3
-    
-    # Bonus for detailed descriptions
-    description_bonus = min(len(description), 100) / 100 * 0.2
-    confidence += description_bonus
-    
-    # Penalty for abstract relationship types
-    abstract_rel_types = {'implements', 'supports', 'enables', 'involves', 'includes',
-                         'applies_to', 'affects', 'investigates', 'analyzes', 'optimizes', 
-                         'facilitates', 'related'}
-    if rel_type in abstract_rel_types:
-        confidence -= 0.1
-    
-    return max(0.0, min(1.0, confidence))
+# Legacy confidence scoring removed - LLM provides more accurate quality assessment
 
 
 def _validate_relationship_context(src_id: str, tgt_id: str, rel_type: str, description: str) -> bool:
@@ -843,6 +815,7 @@ def _apply_relationship_quality_filter(all_edges: dict, global_config: dict = No
                 enhanced_logger.log_error("EnhancedClassifier", e, "Failed to import enhanced classifier")
     else:
         logger.debug("Enhanced relationship filtering disabled by configuration")
+        return all_edges  # Return original edges without any filtering
     
     # Fallback abstract/generic relationship types for basic filtering
     ABSTRACT_RELATIONSHIPS = {
@@ -978,11 +951,11 @@ def _apply_relationship_quality_filter(all_edges: dict, global_config: dict = No
                     logger.debug(f"Filtered abstract entity relationship: {src_id} -[{rel_type}]-> {tgt_id}")
                     continue
             
-            # Filter 4: Apply confidence-based filtering (very lenient since LLM will do intelligent filtering)
-            confidence_score = _calculate_confidence_score(edge)
-            if confidence_score < 0.2:  # Very lenient threshold - only filter obvious noise
+            # Filter 4: Apply basic weight filtering (very lenient - only filter obvious noise)
+            weight = edge.get('weight', 1.0)
+            if weight < 0.1:  # Very lenient threshold - only filter extremely low weight relationships
                 filter_stats['low_confidence'] += 1
-                logger.debug(f"Filtered low-confidence relationship: {src_id} -[{rel_type}]-> {tgt_id} (confidence: {confidence_score:.2f})")
+                logger.debug(f"Filtered low-weight relationship: {src_id} -[{rel_type}]-> {tgt_id} (weight: {weight:.2f})")
                 continue
             
             # Filter 5: Skip context validation - LLM will handle this more intelligently
@@ -1102,59 +1075,7 @@ def _apply_relationship_quality_filter(all_edges: dict, global_config: dict = No
     return filtered_edges
 
 
-def _log_extraction_quality(entities: list, relationships: list) -> None:
-    """
-    Log extraction quality metrics to monitor the effectiveness of filtering.
-    """
-    if not entities and not relationships:
-        return
-    
-    # Define concrete relationship types
-    CONCRETE_REL_TYPES = {'uses', 'calls', 'accesses', 'creates', 'runs_on', 'debugs', 
-                         'displays', 'contains', 'processes', 'is_hosted_on', 'manages'}
-    
-    # Calculate entity quality metrics
-    concrete_entities = 0
-    abstract_entities = 0
-    
-    for entity in entities:
-        entity_name = entity.get('entity_name', '') if isinstance(entity, dict) else str(entity)
-        if _is_abstract_entity(entity_name):
-            abstract_entities += 1
-        else:
-            concrete_entities += 1
-    
-    entity_quality = concrete_entities / len(entities) if entities else 0
-    
-    # Calculate relationship quality metrics
-    concrete_relationships = 0
-    high_confidence_relationships = 0
-    
-    for rel in relationships:
-        rel_type = rel.get('rel_type', '').lower() if isinstance(rel, dict) else ''
-        
-        if rel_type in CONCRETE_REL_TYPES:
-            concrete_relationships += 1
-        
-        if isinstance(rel, dict):
-            confidence = _calculate_confidence_score(rel)
-            if confidence >= 0.75:
-                high_confidence_relationships += 1
-    
-    rel_quality = concrete_relationships / len(relationships) if relationships else 0
-    confidence_ratio = high_confidence_relationships / len(relationships) if relationships else 0
-    
-    # Log quality metrics
-    logger.info(f"Extraction quality analysis:")
-    logger.info(f"  - Entities: {len(entities)} total ({entity_quality:.1%} concrete, {abstract_entities} abstract)")
-    logger.info(f"  - Relationships: {len(relationships)} total ({rel_quality:.1%} concrete, {confidence_ratio:.1%} high-confidence)")
-    
-    if entity_quality >= 0.8 and rel_quality >= 0.8:
-        logger.info(f"  - Quality status: EXCELLENT (target 85-90% achieved)")
-    elif entity_quality >= 0.7 and rel_quality >= 0.7:
-        logger.info(f"  - Quality status: GOOD (approaching target)")
-    else:
-        logger.info(f"  - Quality status: NEEDS IMPROVEMENT (below 70% baseline)")
+# Legacy extraction quality logging removed - deprecated metrics no longer needed
 
 
 async def _llm_post_process_relationships(
@@ -1550,37 +1471,28 @@ async def merge_nodes_and_edges(
     all_edges = _apply_relationship_quality_filter(all_edges, global_config)
 
     # Clean up orphaned entities after chunk post-processing
-    if global_config.get("enable_chunk_post_processing", False):
+    # Note: Entity cleanup can be controlled independently from chunk post-processing
+    if (global_config.get("enable_chunk_post_processing", False) and 
+        global_config.get("enable_entity_cleanup", DEFAULT_ENABLE_ENTITY_CLEANUP)):
         from .chunk_post_processor import cleanup_orphaned_entities
         log_changes = global_config.get("log_validation_changes", False)
         original_entity_count = len(all_nodes)
         all_nodes = cleanup_orphaned_entities(all_nodes, all_edges, log_changes)
         logger.info(f"Post-processing entity cleanup: {original_entity_count} → {len(all_nodes)} entities")
+    elif global_config.get("enable_chunk_post_processing", False):
+        logger.info(f"Entity cleanup disabled: Keeping all {len(all_nodes)} entities (some may be orphaned)")
 
     # NEW: LLM-based post-processing for enhanced accuracy
     all_entities_list = [entity for entities in all_nodes.values() for entity in entities]
     all_relationships_list = [edge for edges in all_edges.values() for edge in edges]
     
-    # Debug: Log what's actually in all_edges before temp file creation
-    logger.info(f"🔍 DEBUG: Checking all_edges structure before temp file:")
-    edges_sample = list(all_edges.items())[:3]
-    for i, (edge_key, edge_list) in enumerate(edges_sample):
-        logger.info(f"  Edge {i+1}: Key={edge_key}")
-        for j, edge in enumerate(edge_list[:2]):  # First 2 edges per key
-            logger.info(f"    Edge {j+1}: rel_type='{edge.get('rel_type', 'MISSING')}', src='{edge.get('src_id', '')}', tgt='{edge.get('tgt_id', '')}'")
-    
-    logger.info(f"🔍 DEBUG: First 5 items in all_relationships_list:")
-    for i, rel in enumerate(all_relationships_list[:5]):
-        logger.info(f"  {i+1}. rel_type='{rel.get('rel_type', 'MISSING')}', src='{rel.get('src_id', '')}', tgt='{rel.get('tgt_id', '')}')")
-    
-    # Enhanced logging for LLM post-processing diagnostics
-    logger.info("=== LLM Post-Processing Diagnostics ===")
-    logger.info(f"  - llm_response_cache available: {llm_response_cache is not None}")
-    logger.info(f"  - enable_llm_post_processing: {global_config.get('enable_llm_post_processing', True)}")
-    logger.info(f"  - relationships count: {len(all_relationships_list)}")
-    logger.info(f"  - document_text available: {document_text is not None}")
+    # Simplified post-processing diagnostics (removed verbose debug logging)
+    logger.info("=== LLM Post-Processing Status ===")
+    logger.info(f"  - Entities: {len(all_entities_list)}")
+    logger.info(f"  - Relationships: {len(all_relationships_list)}")
+    logger.info(f"  - LLM processing enabled: {global_config.get('enable_llm_post_processing', True)}")
     if document_text:
-        logger.info(f"  - document_text length: {len(document_text)} chars")
+        logger.info(f"  - Document available: {len(document_text)} chars")
     
     if (llm_response_cache and 
         global_config.get("enable_llm_post_processing", True) and 
@@ -1620,10 +1532,7 @@ async def merge_nodes_and_edges(
         if not global_config.get("enable_llm_post_processing", True):
             logger.warning("  - LLM post-processing disabled in config")
 
-    # Log extraction quality metrics (after LLM processing)
-    all_entities_list = [entity for entities in all_nodes.values() for entity in entities]
-    all_relationships_list = [edge for edges in all_edges.values() for edge in edges]
-    _log_extraction_quality(all_entities_list, all_relationships_list)
+    # Legacy extraction quality logging removed - using more accurate LLM-based quality metrics instead
 
     # Centralized processing of all nodes and edges
     entities_data = []

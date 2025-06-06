@@ -28,6 +28,7 @@ from lightrag.constants import (
     DEFAULT_CHUNK_VALIDATION_BATCH_SIZE,
     DEFAULT_CHUNK_VALIDATION_TIMEOUT,
     DEFAULT_LOG_VALIDATION_CHANGES,
+    DEFAULT_ENABLE_ENTITY_CLEANUP,
 )
 from lightrag.utils import get_env_value
 
@@ -168,6 +169,13 @@ class LightRAG:
         )
     )
     """Enable detailed logging of relationship validation changes."""
+    
+    enable_entity_cleanup: bool = field(
+        default=get_env_value(
+            "ENABLE_ENTITY_CLEANUP", DEFAULT_ENABLE_ENTITY_CLEANUP, bool
+        )
+    )
+    """Enable cleanup of orphaned entities after chunk post-processing."""
     
     enable_llm_post_processing: bool = field(
         default=get_env_value(

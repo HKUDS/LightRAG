@@ -131,7 +131,7 @@ class AdvancedLightRAG(LightRAG):
         
         self.enable_enhanced_relationship_filter = os_module.getenv(
             "ENABLE_ENHANCED_RELATIONSHIP_FILTER", 
-            "true"
+            "false"
         ).lower() in ('true', '1', 'yes', 'on')
         
         self.log_relationship_classification = os_module.getenv(
@@ -262,6 +262,20 @@ class AdvancedLightRAG(LightRAG):
         if not hasattr(self, '_query_logger') or self._query_logger is None:
             await self._init_query_logger()
         return self._query_logger
+    
+    def _get_enhanced_config(self) -> dict:
+        """Get configuration dict including enhanced filter settings."""
+        # Start with base config from dataclass
+        config = asdict(self)
+        
+        # Add enhanced filter configurations
+        config['enable_enhanced_relationship_filter'] = self.enable_enhanced_relationship_filter
+        config['log_relationship_classification'] = self.log_relationship_classification
+        config['relationship_filter_performance_tracking'] = self.relationship_filter_performance_tracking
+        config['enhanced_filter_console_logging'] = self.enhanced_filter_console_logging
+        config['enhanced_filter_monitoring_mode'] = self.enhanced_filter_monitoring_mode
+        
+        return config
 
     async def _process_entity_relation_graph(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None
@@ -275,7 +289,7 @@ class AdvancedLightRAG(LightRAG):
             
             chunk_results = await extract_entities_with_types(
                 chunk,
-                global_config=asdict(self),
+                global_config=self._get_enhanced_config(),
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
@@ -333,7 +347,7 @@ class AdvancedLightRAG(LightRAG):
                         self.relationships_vdb,
                         self.text_chunks,
                         param,
-                        asdict(self),
+                        self._get_enhanced_config(),
                         hashing_kv=self.llm_response_cache,
                         system_prompt=system_prompt,
                         chunks_vdb=self.chunks_vdb if self.enable_mix_mode else None,
@@ -344,7 +358,7 @@ class AdvancedLightRAG(LightRAG):
                         self.chunks_vdb,
                         self.text_chunks,
                         param,
-                        asdict(self),
+                        self._get_enhanced_config(),
                         hashing_kv=self.llm_response_cache,
                         system_prompt=system_prompt,
                     )
@@ -357,13 +371,13 @@ class AdvancedLightRAG(LightRAG):
                         self.chunks_vdb,
                         self.text_chunks,
                         param,
-                        asdict(self),
+                        self._get_enhanced_config(),
                         hashing_kv=self.llm_response_cache,
                         system_prompt=system_prompt,
                     )
                 elif param.mode == "bypass":
                     # Direct LLM query without knowledge retrieval
-                    use_llm_func = param.model_func or asdict(self)["llm_model_func"]
+                    use_llm_func = param.model_func or self._get_enhanced_config()["llm_model_func"]
                     param.stream = True if param.stream is None else param.stream
                     response_obj = await use_llm_func(
                         query.strip(),
@@ -416,7 +430,7 @@ class AdvancedLightRAG(LightRAG):
                     }
                 elif param.mode == "bypass":
                     # Direct LLM query without knowledge retrieval
-                    use_llm_func = param.model_func or asdict(self)["llm_model_func"]
+                    use_llm_func = param.model_func or self._get_enhanced_config()["llm_model_func"]
                     param.stream = True if param.stream is None else param.stream
                     response_obj = await use_llm_func(
                         query.strip(),
@@ -500,7 +514,7 @@ class AdvancedLightRAG(LightRAG):
                     relationships_vdb=self.relationships_vdb,
                     chunks_vdb=self.chunks_vdb,
                     text_chunks_db=self.text_chunks,
-                    global_config=asdict(self),
+                    global_config=self._get_enhanced_config(),
                     hashing_kv=self.llm_response_cache,
                 )
             else:
@@ -515,7 +529,7 @@ class AdvancedLightRAG(LightRAG):
                     relationships_vdb=self.relationships_vdb,
                     chunks_vdb=self.chunks_vdb,
                     text_chunks_db=self.text_chunks,
-                    global_config=asdict(self),
+                    global_config=self._get_enhanced_config(),
                     hashing_kv=self.llm_response_cache,
                 )
                 
@@ -568,7 +582,7 @@ class AdvancedLightRAG(LightRAG):
                     relationships_vdb=self.relationships_vdb,
                     chunks_vdb=self.chunks_vdb,
                     text_chunks_db=self.text_chunks,
-                    global_config=asdict(self),
+                    global_config=self._get_enhanced_config(),
                     hashing_kv=self.llm_response_cache,
                 )
             else:
@@ -583,7 +597,7 @@ class AdvancedLightRAG(LightRAG):
                     relationships_vdb=self.relationships_vdb,
                     chunks_vdb=self.chunks_vdb,
                     text_chunks_db=self.text_chunks,
-                    global_config=asdict(self),
+                    global_config=self._get_enhanced_config(),
                     hashing_kv=self.llm_response_cache,
                 )
                 
