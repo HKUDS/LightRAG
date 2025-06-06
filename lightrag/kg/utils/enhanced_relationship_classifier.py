@@ -115,6 +115,18 @@ class EnhancedRelationshipClassifier:
                 "require_explicit_mention": True,
                 "allow_technical_inference": True,
                 "examples": ["Scraper EXTRACTS_DATA_FROM website", "API PROVIDES_DATA_TO client"]
+            },
+            
+            "structural_composition": {
+                "description": "Part-whole and containment relationships",
+                "types": {
+                    # Structural relationships
+                    "PART_OF", "CONTAINS", "COMPRISES", "INCLUDES", "COMPOSED_OF",
+                    "MEMBER_OF", "ELEMENT_OF", "COMPONENT_OF", "SUBSET_OF"
+                },
+                "require_explicit_mention": False,
+                "allow_technical_inference": True,
+                "examples": ["HTTP request PART_OF n8n workflow", "Component PART_OF system"]
             }
         }
         
@@ -150,7 +162,28 @@ class EnhancedRelationshipClassifier:
             "CONFIGURED_BY": "development_operations",
             "HOSTED_ON": "technical_core",
             "OPERATES_ON": "system_interactions",
-            "SUPPORTS": "system_interactions"
+            "SUPPORTS": "system_interactions",
+            # CRITICAL: Add missing verb-based overrides from your analysis
+            "CONTROLS": "technical_core",
+            "STORED_IN": "system_interactions",
+            "EDITS": "development_operations",
+            "EXTRACTS": "data_flow",
+            "RETURNS": "system_interactions",
+            "AFFECTS": "system_interactions",
+            "TRIGGERS": "system_interactions",
+            "PART_OF": "structural_composition",
+            "STORES": "system_interactions",
+            "CALLS": "technical_core",
+            "SENDS_TO": "system_interactions",
+            "RECEIVES_FROM": "system_interactions",
+            # CRITICAL: Add missing relationships from debugging analysis
+            "ASSISTS": "troubleshooting_support",
+            "ASSISTS_WITH": "troubleshooting_support",
+            "EVOLVED_FROM": "system_interactions",  # Historical context
+            "DERIVED_FROM": "system_interactions",
+            "BASED_ON": "system_interactions",
+            "IMPROVED_FROM": "system_interactions",
+            "REPLACES": "system_interactions"
         }
     
     def _initialize_confidence_thresholds(self):
@@ -159,13 +192,14 @@ class EnhancedRelationshipClassifier:
         Higher thresholds for technical precision, lower for conceptual flexibility.
         """
         self.confidence_thresholds = {
-            "technical_core": 0.45,          # LOWERED: Preserve more technical relationships
-            "development_operations": 0.45,  # LOWERED: Stop filtering valid operations  
-            "system_interactions": 0.40,     # LOWERED: System operations more permissive
-            "troubleshooting_support": 0.35,  # LOWERED: Support activities permissive
-            "abstract_conceptual": 0.38,     # OPTIMIZED: Target 85-95% retention with quality filtering
-            "data_flow": 0.40,               # LOWERED: Data operations more permissive
-            "default": 0.35                   # LOWERED: More permissive fallback
+            "technical_core": 0.45,          # MODERATE: Preserve quality technical relationships
+            "development_operations": 0.45,  # MODERATE: Don't filter configures/creates  
+            "system_interactions": 0.40,     # BALANCED: System operations and historical context
+            "troubleshooting_support": 0.30,  # VERY PERMISSIVE: Always preserve debugging
+            "abstract_conceptual": 0.30,     # LOWERED: Was too high at 0.75
+            "data_flow": 0.45,               # MODERATE: Data operations
+            "structural_composition": 0.40,  # BALANCED: Structural relationships
+            "default": 0.50                   # MODERATE: Default fallback
         }
     
     def classify_relationship(self, relationship_type: str, src_entity: str = "", 
@@ -190,6 +224,26 @@ class EnhancedRelationshipClassifier:
         
         # Store current relationship type for confidence scoring
         self._current_rel_type = normalized_type
+        
+        # EMERGENCY FIX: Force classification for critical debugging verbs
+        CRITICAL_DEBUG_VERBS = {
+            "TROUBLESHOOTS": "troubleshooting_support",
+            "DEBUGS": "troubleshooting_support", 
+            "FIXES": "troubleshooting_support",
+            "RESOLVES": "troubleshooting_support",
+            "ASSISTS": "troubleshooting_support",
+            "DIAGNOSES": "troubleshooting_support",
+            "REPAIRS": "troubleshooting_support",
+            "HANDLES_ERROR": "troubleshooting_support",
+            "INVESTIGATES": "troubleshooting_support",
+            "ADDRESSES": "troubleshooting_support"
+        }
+        
+        # Force debug verb classification (emergency override)
+        if normalized_type in CRITICAL_DEBUG_VERBS:
+            category = CRITICAL_DEBUG_VERBS[normalized_type]
+            confidence = 0.90  # High confidence for critical verbs
+            return self._create_classification_result(category, confidence, normalized_type, message="Emergency debug verb override")
         
         # CRITICAL FIX: Check classification overrides first
         category = self.classification_overrides.get(normalized_type)
@@ -231,17 +285,35 @@ class EnhancedRelationshipClassifier:
                 best_match=best_match, registry_confidence=registry_confidence
             )
         
+        # EMERGENCY: Check for debug patterns if nothing matched
+        debug_patterns = ['troubleshoot', 'debug', 'fix', 'resolve', 'assist', 'diagnose', 'repair']
+        normalized_lower = normalized_type.lower()
+        for pattern in debug_patterns:
+            if pattern in normalized_lower:
+                return self._create_classification_result(
+                    "troubleshooting_support", 0.85, normalized_type,
+                    message="Emergency debug pattern match"
+                )
+        
         # No good match found - check if it's a technical pattern before defaulting to abstract
         # CRITICAL FIX: Many technical relationships were being misclassified as abstract
         technical_patterns = ['run', 'host', 'call', 'use', 'integrate', 'configure', 'deploy', 
-                            'process', 'manage', 'operate', 'connect', 'access', 'execute']
+                            'process', 'manage', 'operate', 'connect', 'access', 'execute',
+                            'control', 'store', 'edit', 'extract', 'return', 'affect', 'trigger']
         
-        normalized_lower = normalized_type.lower()
         for pattern in technical_patterns:
             if pattern in normalized_lower:
-                # This is likely a technical relationship
-                category = "technical_core"
-                confidence = 0.55  # Give technical patterns reasonable confidence
+                # This is likely a technical relationship - determine category by pattern
+                if pattern in ['control', 'store', 'manage', 'process', 'operate']:
+                    category = "system_interactions"
+                elif pattern in ['edit', 'configure', 'deploy', 'create', 'build']:
+                    category = "development_operations"
+                elif pattern in ['extract', 'transform', 'convert']:
+                    category = "data_flow"
+                else:
+                    category = "technical_core"
+                    
+                confidence = 0.45  # Give technical patterns good confidence
                 return self._create_classification_result(
                     category, confidence, normalized_type,
                     message="Matched technical pattern"
@@ -290,10 +362,10 @@ class EnhancedRelationshipClassifier:
         """
         confidence = base_confidence
         
-        # EMERGENCY FIX: Stop forcing confidence floor that causes over-filtering
-        # Only boost confidence if it's extremely low
-        if confidence < 0.2:
-            confidence = 0.25  # Much lower floor to prevent over-filtering
+        # EMERGENCY FIX: Remove problematic confidence floor that was causing 0.350 defaults
+        # Let confidence calculation work naturally without artificial floors
+        if confidence < 0.15:  # Only boost extremely low confidence
+            confidence = 0.20  # Lower floor to prevent over-filtering
         
         # MODERATE context length boost (prevent over-inflation)
         if description and len(description) > 100:
@@ -311,27 +383,38 @@ class EnhancedRelationshipClassifier:
                 'docker', 'redis', 'postgres', 'nginx', 'kubernetes', 'n8n',
                 'workflow', 'automation', 'bot', 'assistant', 'ai', 'ml',
                 'application', 'app', 'platform', 'tool', 'framework',
-                'google', 'drive', 'content', 'video', 'tagger', 'processor'
+                'google', 'drive', 'content', 'video', 'tagger', 'processor',
+                'node', 'code', 'error', 'developer', 'claude', 'model'  # Added debugging entities
             ]
+            
+            # Special boost for debugging/assistance relationships
+            debug_entities = ['developer', 'claude', 'ai', 'assistant', 'error', 'issue', 'problem']
+            src_debug = any(entity in src_entity.lower() for entity in debug_entities)
+            tgt_debug = any(entity in tgt_entity.lower() for entity in debug_entities)
+            
+            if src_debug or tgt_debug:
+                confidence += 0.15  # Moderate boost for debugging context
             
             src_technical = any(indicator in src_entity.lower() for indicator in technical_indicators)
             tgt_technical = any(indicator in tgt_entity.lower() for indicator in technical_indicators)
             
             if src_technical and tgt_technical:
-                confidence += 0.15  # Moderate boost for technical entity pairs
+                confidence += 0.10  # Moderate boost for technical entity pairs
             elif src_technical or tgt_technical:
-                confidence += 0.1   # Smaller boost for partial technical context
+                confidence += 0.08   # Small boost for partial technical context
         
-        # Technical relationship type boost with expanded patterns
-        technical_relationship_types = [
+        # Action verb boost with expanded patterns
+        action_relationship_types = [
             'runs_on', 'integrates_with', 'uses', 'troubleshoots', 'accesses',
             'connects_to', 'calls_api', 'hosts', 'deploys', 'processes',
-            'runs', 'operates', 'configured_by', 'hosted_on', 'supports'
+            'runs', 'operates', 'configured_by', 'hosted_on', 'supports',
+            'configures', 'creates', 'builds', 'debugs', 'fixes', 'assists',
+            'evolved_from', 'derived_from', 'based_on', 'improved_from', 'replaces'
         ]
         
         current_rel_type = getattr(self, '_current_rel_type', '').lower()
-        if any(tech_type in current_rel_type for tech_type in technical_relationship_types):
-            confidence += 0.12   # Moderate boost for clearly technical relationship types
+        if any(action_type in current_rel_type for action_type in action_relationship_types):
+            confidence += 0.15   # Moderate boost for action verbs - concrete relationships
         
         # Category-specific adjustments (more permissive)
         category_metadata = self.categories.get(category, {})
@@ -348,17 +431,29 @@ class EnhancedRelationshipClassifier:
             if any(tech_word in (description or "").lower() for tech_word in tech_words):
                 confidence += 0.1  # Bigger boost for technical context
         
+        # NEVER-FILTER rules for critical relationships
+        never_filter_verbs = ['troubleshoots', 'debugs', 'fixes', 'resolves', 'assists']
+        if any(verb in current_rel_type for verb in never_filter_verbs):
+            confidence = max(confidence, 0.6)  # Ensure debugging relationships pass threshold
+        
+        # Error/problem entity boost
+        error_keywords = ['error', 'issue', 'problem', 'bug', 'failure', 'exception']
+        if src_entity and tgt_entity:
+            if any(keyword in (src_entity + ' ' + tgt_entity).lower() for keyword in error_keywords):
+                confidence += 0.20  # Boost relationships involving errors
+        
         # BALANCED: Calibrated minimums for 85-95% retention target
         category_minimums = {
-            "technical_core": 0.3,            # Preserve technical relationships
-            "troubleshooting_support": 0.25,  # Support activities flexible
-            "development_operations": 0.3,    # Development operations moderate
-            "system_interactions": 0.25,      # System operations flexible
-            "data_flow": 0.3,                # Data operations moderate
-            "abstract_conceptual": 0.2        # Allow filtering of weak abstracts
+            "technical_core": 0.25,            # Preserve technical relationships
+            "troubleshooting_support": 0.80,  # NEVER filter debugging - force high confidence
+            "development_operations": 0.25,    # Development operations flexible
+            "system_interactions": 0.20,      # System operations very flexible
+            "data_flow": 0.25,                # Data operations moderate
+            "abstract_conceptual": 0.15,      # Allow filtering only very weak abstracts
+            "structural_composition": 0.20    # Structural relationships flexible
         }
         
-        min_confidence = category_minimums.get(category, 0.3)
+        min_confidence = category_minimums.get(category, 0.25)
         confidence = max(min_confidence, confidence)
         
         return max(0.0, min(confidence, 1.0))  # Clamp to [0.0, 1.0]
@@ -460,6 +555,7 @@ class EnhancedRelationshipClassifier:
             Recommendations dictionary
         """
         stats = self.get_category_stats(relationships)
+        total_relationships = len(relationships)  # FIX: Define total_relationships
         
         recommendations = {
             "overall_quality": self._assess_overall_quality(stats),

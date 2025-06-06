@@ -809,7 +809,11 @@ def _apply_relationship_quality_filter(all_edges: dict, global_config: dict = No
     """
     # Check configuration and import the enhanced classifier
     global_config = global_config or {}
-    enable_enhanced_filter = global_config.get("enable_enhanced_relationship_filter", True)
+    
+    # Debug: Log what's actually in the config
+    logger.debug(f"Enhanced filter config check: enable_enhanced_relationship_filter = {global_config.get('enable_enhanced_relationship_filter', 'NOT_FOUND')}")
+    
+    enable_enhanced_filter = global_config.get("enable_enhanced_relationship_filter", False)  # Default to False
     log_classification = global_config.get("log_relationship_classification", False)
     track_performance = global_config.get("relationship_filter_performance_tracking", True)
     monitoring_mode = global_config.get("enhanced_filter_monitoring_mode", False)
@@ -818,8 +822,8 @@ def _apply_relationship_quality_filter(all_edges: dict, global_config: dict = No
     classifier = None
     enhanced_logger = None
     
-    # Initialize enhanced logging if enabled
-    if enable_enhanced_filter or track_performance:
+    # Initialize enhanced logging ONLY if enhanced filter is enabled
+    if enable_enhanced_filter:
         try:
             from .kg.utils.enhanced_filter_logger import get_enhanced_filter_logger
             console_logging = global_config.get("enhanced_filter_console_logging", False)

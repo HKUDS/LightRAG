@@ -579,10 +579,34 @@ def configure_logging():
 
     # Get log directory path from environment variable
     log_dir = os.getenv("LOG_DIR", os.getcwd())
-    log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
+    
+    # Create timestamped session log file
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_log_filename = f"lightrag_session_{timestamp}.log"
+    log_file_path = os.path.abspath(os.path.join(log_dir, session_log_filename))
 
-    print(f"\nLightRAG log file: {log_file_path}\n")
-    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+    print(f"\nLightRAG session log file: {log_file_path}\n")
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Optional: Clean up old session logs (keep last N sessions)
+    max_session_logs = int(os.getenv("MAX_SESSION_LOGS", "10"))  # Keep last 10 sessions by default
+    try:
+        import glob
+        session_log_pattern = os.path.join(log_dir, "lightrag_session_*.log")
+        existing_logs = sorted(glob.glob(session_log_pattern))
+        
+        if len(existing_logs) >= max_session_logs:
+            # Remove oldest logs, keeping the most recent ones
+            logs_to_remove = existing_logs[:-max_session_logs + 1]  # Keep space for the new one
+            for old_log in logs_to_remove:
+                try:
+                    os.remove(old_log)
+                    print(f"Cleaned up old session log: {os.path.basename(old_log)}")
+                except OSError:
+                    pass  # Ignore if file can't be removed
+    except Exception:
+        pass  # Ignore cleanup errors
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)

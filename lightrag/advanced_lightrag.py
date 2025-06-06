@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import traceback
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, Optional, Tuple
@@ -11,6 +12,21 @@ from lightrag.base import QueryParam
 from lightrag.utils import logger
 from lightrag.query_logger import get_query_logger, LogLevel, QueryLogger
 from lightrag.advanced_operate import advanced_semantic_chunking
+try:
+    from lightrag.constants import (
+        DEFAULT_ENABLE_ENHANCED_RELATIONSHIP_FILTER,
+        DEFAULT_LOG_RELATIONSHIP_CLASSIFICATION,
+        DEFAULT_RELATIONSHIP_FILTER_PERFORMANCE_TRACKING,
+        DEFAULT_ENHANCED_FILTER_CONSOLE_LOGGING,
+        DEFAULT_ENHANCED_FILTER_MONITORING_MODE
+    )
+except ImportError:
+    # Fallback defaults if constants not available
+    DEFAULT_ENABLE_ENHANCED_RELATIONSHIP_FILTER = True
+    DEFAULT_LOG_RELATIONSHIP_CLASSIFICATION = False
+    DEFAULT_RELATIONSHIP_FILTER_PERFORMANCE_TRACKING = True
+    DEFAULT_ENHANCED_FILTER_CONSOLE_LOGGING = False
+    DEFAULT_ENHANCED_FILTER_MONITORING_MODE = False
 
 
 class AdvancedLightRAG(LightRAG):
@@ -110,6 +126,34 @@ class AdvancedLightRAG(LightRAG):
         # Initialize parent class first
         super().__init__(**kwargs)
         
+        # Read enhanced relationship filter configuration from environment
+        import os as os_module  # Avoid any potential name conflicts
+        
+        self.enable_enhanced_relationship_filter = os_module.getenv(
+            "ENABLE_ENHANCED_RELATIONSHIP_FILTER", 
+            "true"
+        ).lower() in ('true', '1', 'yes', 'on')
+        
+        self.log_relationship_classification = os_module.getenv(
+            "LOG_RELATIONSHIP_CLASSIFICATION",
+            "false"
+        ).lower() in ('true', '1', 'yes', 'on')
+        
+        self.relationship_filter_performance_tracking = os_module.getenv(
+            "RELATIONSHIP_FILTER_PERFORMANCE_TRACKING",
+            "true"
+        ).lower() in ('true', '1', 'yes', 'on')
+        
+        self.enhanced_filter_console_logging = os_module.getenv(
+            "ENHANCED_FILTER_CONSOLE_LOGGING",
+            "false"
+        ).lower() in ('true', '1', 'yes', 'on')
+        
+        self.enhanced_filter_monitoring_mode = os_module.getenv(
+            "ENHANCED_FILTER_MONITORING_MODE",
+            "false"
+        ).lower() in ('true', '1', 'yes', 'on')
+        
         # Log post-processing configuration status (after initialization)
         chunk_processing_enabled = getattr(self, 'enable_chunk_post_processing', False)
         llm_processing_enabled = getattr(self, 'enable_llm_post_processing', True)
@@ -125,10 +169,10 @@ class AdvancedLightRAG(LightRAG):
             logger.info("❌ Document-level LLM post-processing disabled")
         
         # Log enhanced relationship filter configuration status
-        enhanced_filter_enabled = getattr(self, 'enable_enhanced_relationship_filter', True)
-        log_classification = getattr(self, 'log_relationship_classification', False)
-        track_performance = getattr(self, 'relationship_filter_performance_tracking', True)
-        console_logging = getattr(self, 'enhanced_filter_console_logging', False)
+        enhanced_filter_enabled = self.enable_enhanced_relationship_filter
+        log_classification = self.log_relationship_classification
+        track_performance = self.relationship_filter_performance_tracking
+        console_logging = self.enhanced_filter_console_logging
         
         if enhanced_filter_enabled:
             logger.info("🎯 Enhanced Relationship Filter: ENABLED")
