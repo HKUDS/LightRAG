@@ -11,9 +11,6 @@ import pipmaster as pm
 if not pm.is_installed("networkx"):
     pm.install("networkx")
 
-if not pm.is_installed("graspologic"):
-    pm.install("graspologic")
-
 import networkx as nx
 from .shared_storage import (
     get_storage_lock,
