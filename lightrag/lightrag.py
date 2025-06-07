@@ -295,6 +295,11 @@ class LightRAG:
     enable_llm_cache_for_entity_extract: bool = field(default=True)
     """If True, enables caching for entity extraction steps to reduce LLM costs."""
 
+    enable_llm_cache_for_post_process: bool = field(
+        default=bool(os.getenv("ENABLE_LLM_CACHE_FOR_POST_PROCESS", "true").lower() == "true")
+    )
+    """If True, enables caching for chunk post-processing validation to reduce LLM costs."""
+
     # Extensions
     # ---
 

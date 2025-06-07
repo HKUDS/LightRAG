@@ -14,6 +14,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 import logging
 
+from lightrag.utils import use_llm_func_with_cache
+
 logger = logging.getLogger(__name__)
 
 # Chunk-level relationship validation prompt
@@ -279,10 +281,34 @@ async def _post_process_chunk_relationships(
         # Call LLM with timeout
         timeout = global_config.get("chunk_validation_timeout", 30)
         
-        llm_response = await asyncio.wait_for(
-            llm_func(validation_prompt),
-            timeout=timeout
-        )
+        # Check if post-processing cache is enabled
+        llm_response_cache = global_config.get("llm_response_cache")
+        enable_cache = global_config.get("enable_llm_cache_for_post_process", True)
+        
+        # Diagnostic logging
+        logger.info(f"Chunk {chunk_key}: Cache diagnostic - llm_response_cache exists: {llm_response_cache is not None}, enable_cache: {enable_cache}")
+        if llm_response_cache is None:
+            logger.warning(f"Chunk {chunk_key}: llm_response_cache is None - cache disabled")
+        
+        if llm_response_cache and enable_cache:
+            # Use cached LLM call
+            logger.info(f"Chunk {chunk_key}: Checking post-processing cache for {total_relationships} relationships")
+            logger.debug(f"DEBUG: cache_type=post_process, enable_cache={enable_cache}")
+            llm_response = await asyncio.wait_for(
+                use_llm_func_with_cache(
+                    validation_prompt,
+                    llm_func,
+                    llm_response_cache=llm_response_cache,
+                    cache_type="post_process"
+                ),
+                timeout=timeout
+            )
+        else:
+            # Direct LLM call without caching
+            llm_response = await asyncio.wait_for(
+                llm_func(validation_prompt),
+                timeout=timeout
+            )
         
         # Parse and validate LLM response
         cleaned_response = clean_llm_response(llm_response)
