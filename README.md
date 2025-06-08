@@ -149,6 +149,12 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 > If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
 
+### ⚠️ Important: Initialization Requirements
+
+**LightRAG requires explicit initialization before use.** You must call both `await rag.initialize_storages()` and `await initialize_pipeline_status()` after creating a LightRAG instance, otherwise you will encounter errors like:
+- `AttributeError: __aenter__` - if storages are not initialized
+- `KeyError: 'history_messages'` - if pipeline status is not initialized
+
 ### A Simple Program
 
 Use the below Python snippet to initialize LightRAG, insert text to it, and perform queries:
@@ -173,8 +179,9 @@ async def initialize_rag():
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
     )
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
+    # IMPORTANT: Both initialization calls are required!
+    await rag.initialize_storages()  # Initialize storage backends
+    await initialize_pipeline_status()  # Initialize processing pipeline
     return rag
 
 async def main():
@@ -1500,6 +1507,33 @@ Thank you to all our contributors!
 <a href="https://github.com/HKUDS/LightRAG/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=HKUDS/LightRAG" />
 </a>
+
+## Troubleshooting
+
+### Common Initialization Errors
+
+If you encounter these errors when using LightRAG:
+
+1. **`AttributeError: __aenter__`** 
+   - **Cause**: Storage backends not initialized
+   - **Solution**: Call `await rag.initialize_storages()` after creating the LightRAG instance
+
+2. **`KeyError: 'history_messages'`**
+   - **Cause**: Pipeline status not initialized  
+   - **Solution**: Call `await initialize_pipeline_status()` after initializing storages
+
+3. **Both errors in sequence**
+   - **Cause**: Neither initialization method was called
+   - **Solution**: Always follow this pattern:
+   ```python
+   rag = LightRAG(...)
+   await rag.initialize_storages()
+   await initialize_pipeline_status()
+   ```
+
+### Model Switching Issues
+
+When switching between different embedding models, you must clear the data directory to avoid errors. The only file you may want to preserve is `kv_store_llm_response_cache.json` if you wish to retain the LLM cache.
 
 ## 🌟Citation
 
