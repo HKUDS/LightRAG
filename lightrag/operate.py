@@ -453,9 +453,7 @@ async def _rebuild_single_entity(
 
     # Helper function to update entity in both graph and vector storage
     async def _update_entity_storage(
-        final_description: str, 
-        entity_type: str, 
-        file_paths: set[str]
+        final_description: str, entity_type: str, file_paths: set[str]
     ):
         # Update entity in graph storage
         updated_entity_data = {
@@ -463,7 +461,9 @@ async def _rebuild_single_entity(
             "description": final_description,
             "entity_type": entity_type,
             "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
-            "file_path": GRAPH_FIELD_SEP.join(file_paths) if file_paths else current_entity.get("file_path", "unknown_source"),
+            "file_path": GRAPH_FIELD_SEP.join(file_paths)
+            if file_paths
+            else current_entity.get("file_path", "unknown_source"),
         }
         await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
 
@@ -474,7 +474,9 @@ async def _rebuild_single_entity(
         try:
             await entities_vdb.delete([entity_vdb_id])
         except Exception as e:
-            logger.debug(f"Could not delete old entity vector record {entity_vdb_id}: {e}")
+            logger.debug(
+                f"Could not delete old entity vector record {entity_vdb_id}: {e}"
+            )
 
         # Insert new vector record
         entity_content = f"{entity_name}\n{final_description}"
@@ -510,36 +512,38 @@ async def _rebuild_single_entity(
             all_entity_data.extend(chunk_entities[chunk_id][entity_name])
 
     if not all_entity_data:
-        logger.warning(f"No cached entity data found for {entity_name}, trying to rebuild from relationships")
-        
+        logger.warning(
+            f"No cached entity data found for {entity_name}, trying to rebuild from relationships"
+        )
+
         # Get all edges connected to this entity
         edges = await knowledge_graph_inst.get_node_edges(entity_name)
         if not edges:
             logger.warning(f"No relationships found for entity {entity_name}")
             return
-        
+
         # Collect relationship data to extract entity information
         relationship_descriptions = []
         file_paths = set()
-        
+
         # Get edge data for all connected relationships
         for src_id, tgt_id in edges:
             edge_data = await knowledge_graph_inst.get_edge(src_id, tgt_id)
             if edge_data:
                 if edge_data.get("description"):
                     relationship_descriptions.append(edge_data["description"])
-                
+
                 if edge_data.get("file_path"):
                     edge_file_paths = edge_data["file_path"].split(GRAPH_FIELD_SEP)
                     file_paths.update(edge_file_paths)
-        
+
         # Generate description from relationships or fallback to current
         if relationship_descriptions:
             combined_description = GRAPH_FIELD_SEP.join(relationship_descriptions)
             final_description = await _generate_final_description(combined_description)
         else:
             final_description = current_entity.get("description", "")
-        
+
         entity_type = current_entity.get("entity_type", "UNKNOWN")
         await _update_entity_storage(final_description, entity_type, file_paths)
         return
@@ -635,11 +639,12 @@ async def _rebuild_single_relationship(
         if keywords
         else current_relationship.get("keywords", "")
     )
-    avg_weight = (
-        sum(weights) / len(weights)
-        if weights
-        else current_relationship.get("weight", 1.0)
-    )
+    # weight = (
+    #     sum(weights) / len(weights)
+    #     if weights
+    #     else current_relationship.get("weight", 1.0)
+    # )
+    weight = sum(weights) if weights else current_relationship.get("weight", 1.0)
 
     # Use summary if description is too long
     if len(combined_description) > global_config["summary_to_max_tokens"]:
@@ -657,7 +662,7 @@ async def _rebuild_single_relationship(
         **current_relationship,
         "description": final_description,
         "keywords": combined_keywords,
-        "weight": avg_weight,
+        "weight": weight,
         "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
         "file_path": GRAPH_FIELD_SEP.join(file_paths)
         if file_paths
@@ -688,7 +693,7 @@ async def _rebuild_single_relationship(
                 "content": rel_content,
                 "keywords": combined_keywords,
                 "description": final_description,
-                "weight": avg_weight,
+                "weight": weight,
                 "file_path": updated_relationship_data["file_path"],
             }
         }
@@ -838,8 +843,7 @@ async def _merge_edges_then_upsert(
                 )
 
     # Process edges_data with None checks
-    all_weights = [dp["weight"] for dp in edges_data] + already_weights
-    weight = sum(all_weights) / len(all_weights)
+    weight = sum([dp["weight"] for dp in edges_data] + already_weights)
     description = GRAPH_FIELD_SEP.join(
         sorted(
             set(
