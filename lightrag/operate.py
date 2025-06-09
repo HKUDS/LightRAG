@@ -240,6 +240,421 @@ async def _handle_single_relationship_extraction(
     )
 
 
+async def _rebuild_knowledge_from_chunks(
+    entities_to_rebuild: dict[str, set[str]],
+    relationships_to_rebuild: dict[tuple[str, str], set[str]],
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    relationships_vdb: BaseVectorStorage,
+    text_chunks: BaseKVStorage,
+    llm_response_cache: BaseKVStorage,
+    global_config: dict[str, str],
+) -> None:
+    """Rebuild entity and relationship descriptions from cached extraction results
+
+    This method uses cached LLM extraction results instead of calling LLM again,
+    following the same approach as the insert process.
+
+    Args:
+        entities_to_rebuild: Dict mapping entity_name -> set of remaining chunk_ids
+        relationships_to_rebuild: Dict mapping (src, tgt) -> set of remaining chunk_ids
+    """
+    if not entities_to_rebuild and not relationships_to_rebuild:
+        return
+
+    # Get all referenced chunk IDs
+    all_referenced_chunk_ids = set()
+    for chunk_ids in entities_to_rebuild.values():
+        all_referenced_chunk_ids.update(chunk_ids)
+    for chunk_ids in relationships_to_rebuild.values():
+        all_referenced_chunk_ids.update(chunk_ids)
+
+    logger.info(
+        f"Rebuilding knowledge from {len(all_referenced_chunk_ids)} cached chunk extractions"
+    )
+
+    # Get cached extraction results for these chunks
+    cached_results = await _get_cached_extraction_results(
+        llm_response_cache, all_referenced_chunk_ids
+    )
+
+    if not cached_results:
+        logger.warning("No cached extraction results found, cannot rebuild")
+        return
+
+    # Process cached results to get entities and relationships for each chunk
+    chunk_entities = {}  # chunk_id -> {entity_name: [entity_data]}
+    chunk_relationships = {}  # chunk_id -> {(src, tgt): [relationship_data]}
+
+    for chunk_id, extraction_result in cached_results.items():
+        try:
+            entities, relationships = await _parse_extraction_result(
+                text_chunks=text_chunks,
+                extraction_result=extraction_result,
+                chunk_id=chunk_id,
+            )
+            chunk_entities[chunk_id] = entities
+            chunk_relationships[chunk_id] = relationships
+        except Exception as e:
+            logger.error(
+                f"Failed to parse cached extraction result for chunk {chunk_id}: {e}"
+            )
+            continue
+
+    # Rebuild entities
+    for entity_name, chunk_ids in entities_to_rebuild.items():
+        try:
+            await _rebuild_single_entity(
+                knowledge_graph_inst=knowledge_graph_inst,
+                entities_vdb=entities_vdb,
+                entity_name=entity_name,
+                chunk_ids=chunk_ids,
+                chunk_entities=chunk_entities,
+                llm_response_cache=llm_response_cache,
+                global_config=global_config,
+            )
+            logger.debug(
+                f"Rebuilt entity {entity_name} from {len(chunk_ids)} cached extractions"
+            )
+        except Exception as e:
+            logger.error(f"Failed to rebuild entity {entity_name}: {e}")
+
+    # Rebuild relationships
+    for (src, tgt), chunk_ids in relationships_to_rebuild.items():
+        try:
+            await _rebuild_single_relationship(
+                knowledge_graph_inst=knowledge_graph_inst,
+                relationships_vdb=relationships_vdb,
+                src=src,
+                tgt=tgt,
+                chunk_ids=chunk_ids,
+                chunk_relationships=chunk_relationships,
+                llm_response_cache=llm_response_cache,
+                global_config=global_config,
+            )
+            logger.debug(
+                f"Rebuilt relationship {src}-{tgt} from {len(chunk_ids)} cached extractions"
+            )
+        except Exception as e:
+            logger.error(f"Failed to rebuild relationship {src}-{tgt}: {e}")
+
+    logger.info("Completed rebuilding knowledge from cached extractions")
+
+
+async def _get_cached_extraction_results(
+    llm_response_cache: BaseKVStorage, chunk_ids: set[str]
+) -> dict[str, str]:
+    """Get cached extraction results for specific chunk IDs
+
+    Args:
+        chunk_ids: Set of chunk IDs to get cached results for
+
+    Returns:
+        Dict mapping chunk_id -> extraction_result_text
+    """
+    cached_results = {}
+
+    # Get all cached data for "default" mode (entity extraction cache)
+    default_cache = await llm_response_cache.get_by_id("default") or {}
+
+    for cache_key, cache_entry in default_cache.items():
+        if (
+            isinstance(cache_entry, dict)
+            and cache_entry.get("cache_type") == "extract"
+            and cache_entry.get("chunk_id") in chunk_ids
+        ):
+            chunk_id = cache_entry["chunk_id"]
+            extraction_result = cache_entry["return"]
+            cached_results[chunk_id] = extraction_result
+
+    logger.info(
+        f"Found {len(cached_results)} cached extraction results for {len(chunk_ids)} chunk IDs"
+    )
+    return cached_results
+
+
+async def _parse_extraction_result(
+    text_chunks: BaseKVStorage, extraction_result: str, chunk_id: str
+) -> tuple[dict, dict]:
+    """Parse cached extraction result using the same logic as extract_entities
+
+    Args:
+        extraction_result: The cached LLM extraction result
+        chunk_id: The chunk ID for source tracking
+
+    Returns:
+        Tuple of (entities_dict, relationships_dict)
+    """
+
+    # Get chunk data for file_path
+    chunk_data = await text_chunks.get_by_id(chunk_id)
+    file_path = (
+        chunk_data.get("file_path", "unknown_source")
+        if chunk_data
+        else "unknown_source"
+    )
+    context_base = dict(
+        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
+        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+    )
+    maybe_nodes = defaultdict(list)
+    maybe_edges = defaultdict(list)
+
+    # Parse the extraction result using the same logic as in extract_entities
+    records = split_string_by_multi_markers(
+        extraction_result,
+        [context_base["record_delimiter"], context_base["completion_delimiter"]],
+    )
+    for record in records:
+        record = re.search(r"\((.*)\)", record)
+        if record is None:
+            continue
+        record = record.group(1)
+        record_attributes = split_string_by_multi_markers(
+            record, [context_base["tuple_delimiter"]]
+        )
+
+        # Try to parse as entity
+        entity_data = await _handle_single_entity_extraction(
+            record_attributes, chunk_id, file_path
+        )
+        if entity_data is not None:
+            maybe_nodes[entity_data["entity_name"]].append(entity_data)
+            continue
+
+        # Try to parse as relationship
+        relationship_data = await _handle_single_relationship_extraction(
+            record_attributes, chunk_id, file_path
+        )
+        if relationship_data is not None:
+            maybe_edges[
+                (relationship_data["src_id"], relationship_data["tgt_id"])
+            ].append(relationship_data)
+
+    return dict(maybe_nodes), dict(maybe_edges)
+
+
+async def _rebuild_single_entity(
+    knowledge_graph_inst: BaseGraphStorage,
+    entities_vdb: BaseVectorStorage,
+    entity_name: str,
+    chunk_ids: set[str],
+    chunk_entities: dict,
+    llm_response_cache: BaseKVStorage,
+    global_config: dict[str, str],
+) -> None:
+    """Rebuild a single entity from cached extraction results"""
+
+    # Get current entity data
+    current_entity = await knowledge_graph_inst.get_node(entity_name)
+    if not current_entity:
+        return
+
+    # Collect all entity data from relevant chunks
+    all_entity_data = []
+    for chunk_id in chunk_ids:
+        if chunk_id in chunk_entities and entity_name in chunk_entities[chunk_id]:
+            all_entity_data.extend(chunk_entities[chunk_id][entity_name])
+
+    if not all_entity_data:
+        logger.warning(f"No cached entity data found for {entity_name}")
+        return
+
+    # Merge descriptions and get the most common entity type
+    descriptions = []
+    entity_types = []
+    file_paths = set()
+
+    for entity_data in all_entity_data:
+        if entity_data.get("description"):
+            descriptions.append(entity_data["description"])
+        if entity_data.get("entity_type"):
+            entity_types.append(entity_data["entity_type"])
+        if entity_data.get("file_path"):
+            file_paths.add(entity_data["file_path"])
+
+    # Combine all descriptions
+    combined_description = (
+        GRAPH_FIELD_SEP.join(descriptions)
+        if descriptions
+        else current_entity.get("description", "")
+    )
+
+    # Get most common entity type
+    entity_type = (
+        max(set(entity_types), key=entity_types.count)
+        if entity_types
+        else current_entity.get("entity_type", "UNKNOWN")
+    )
+
+    # Use summary if description is too long
+    if len(combined_description) > global_config["summary_to_max_tokens"]:
+        final_description = await _handle_entity_relation_summary(
+            entity_name,
+            combined_description,
+            global_config,
+            llm_response_cache=llm_response_cache,
+        )
+    else:
+        final_description = combined_description
+
+    # Update entity in graph storage
+    updated_entity_data = {
+        **current_entity,
+        "description": final_description,
+        "entity_type": entity_type,
+        "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
+        "file_path": GRAPH_FIELD_SEP.join(file_paths)
+        if file_paths
+        else current_entity.get("file_path", "unknown_source"),
+    }
+    await knowledge_graph_inst.upsert_node(entity_name, updated_entity_data)
+
+    # Update entity in vector database
+    entity_vdb_id = compute_mdhash_id(entity_name, prefix="ent-")
+
+    # Delete old vector record first
+    try:
+        await entities_vdb.delete([entity_vdb_id])
+    except Exception as e:
+        logger.debug(f"Could not delete old entity vector record {entity_vdb_id}: {e}")
+
+    # Insert new vector record
+    entity_content = f"{entity_name}\n{final_description}"
+    await entities_vdb.upsert(
+        {
+            entity_vdb_id: {
+                "content": entity_content,
+                "entity_name": entity_name,
+                "source_id": updated_entity_data["source_id"],
+                "description": final_description,
+                "entity_type": entity_type,
+                "file_path": updated_entity_data["file_path"],
+            }
+        }
+    )
+
+
+async def _rebuild_single_relationship(
+    knowledge_graph_inst: BaseGraphStorage,
+    relationships_vdb: BaseVectorStorage,
+    src: str,
+    tgt: str,
+    chunk_ids: set[str],
+    chunk_relationships: dict,
+    llm_response_cache: BaseKVStorage,
+    global_config: dict[str, str],
+) -> None:
+    """Rebuild a single relationship from cached extraction results"""
+
+    # Get current relationship data
+    current_relationship = await knowledge_graph_inst.get_edge(src, tgt)
+    if not current_relationship:
+        return
+
+    # Collect all relationship data from relevant chunks
+    all_relationship_data = []
+    for chunk_id in chunk_ids:
+        if chunk_id in chunk_relationships:
+            # Check both (src, tgt) and (tgt, src) since relationships can be bidirectional
+            for edge_key in [(src, tgt), (tgt, src)]:
+                if edge_key in chunk_relationships[chunk_id]:
+                    all_relationship_data.extend(
+                        chunk_relationships[chunk_id][edge_key]
+                    )
+
+    if not all_relationship_data:
+        logger.warning(f"No cached relationship data found for {src}-{tgt}")
+        return
+
+    # Merge descriptions and keywords
+    descriptions = []
+    keywords = []
+    weights = []
+    file_paths = set()
+
+    for rel_data in all_relationship_data:
+        if rel_data.get("description"):
+            descriptions.append(rel_data["description"])
+        if rel_data.get("keywords"):
+            keywords.append(rel_data["keywords"])
+        if rel_data.get("weight"):
+            weights.append(rel_data["weight"])
+        if rel_data.get("file_path"):
+            file_paths.add(rel_data["file_path"])
+
+    # Combine descriptions and keywords
+    combined_description = (
+        GRAPH_FIELD_SEP.join(descriptions)
+        if descriptions
+        else current_relationship.get("description", "")
+    )
+    combined_keywords = (
+        ", ".join(set(keywords))
+        if keywords
+        else current_relationship.get("keywords", "")
+    )
+    avg_weight = (
+        sum(weights) / len(weights)
+        if weights
+        else current_relationship.get("weight", 1.0)
+    )
+
+    # Use summary if description is too long
+    if len(combined_description) > global_config["summary_to_max_tokens"]:
+        final_description = await _handle_entity_relation_summary(
+            f"{src}-{tgt}",
+            combined_description,
+            global_config,
+            llm_response_cache=llm_response_cache,
+        )
+    else:
+        final_description = combined_description
+
+    # Update relationship in graph storage
+    updated_relationship_data = {
+        **current_relationship,
+        "description": final_description,
+        "keywords": combined_keywords,
+        "weight": avg_weight,
+        "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
+        "file_path": GRAPH_FIELD_SEP.join(file_paths)
+        if file_paths
+        else current_relationship.get("file_path", "unknown_source"),
+    }
+    await knowledge_graph_inst.upsert_edge(src, tgt, updated_relationship_data)
+
+    # Update relationship in vector database
+    rel_vdb_id = compute_mdhash_id(src + tgt, prefix="rel-")
+    rel_vdb_id_reverse = compute_mdhash_id(tgt + src, prefix="rel-")
+
+    # Delete old vector records first (both directions to be safe)
+    try:
+        await relationships_vdb.delete([rel_vdb_id, rel_vdb_id_reverse])
+    except Exception as e:
+        logger.debug(
+            f"Could not delete old relationship vector records {rel_vdb_id}, {rel_vdb_id_reverse}: {e}"
+        )
+
+    # Insert new vector record
+    rel_content = f"{combined_keywords}\t{src}\n{tgt}\n{final_description}"
+    await relationships_vdb.upsert(
+        {
+            rel_vdb_id: {
+                "src_id": src,
+                "tgt_id": tgt,
+                "source_id": updated_relationship_data["source_id"],
+                "content": rel_content,
+                "keywords": combined_keywords,
+                "description": final_description,
+                "weight": avg_weight,
+                "file_path": updated_relationship_data["file_path"],
+            }
+        }
+    )
+
+
 async def _merge_nodes_then_upsert(
     entity_name: str,
     nodes_data: list[dict],
@@ -757,6 +1172,7 @@ async def extract_entities(
             use_llm_func,
             llm_response_cache=llm_response_cache,
             cache_type="extract",
+            chunk_id=chunk_key,
         )
         history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
 
@@ -773,6 +1189,7 @@ async def extract_entities(
                 llm_response_cache=llm_response_cache,
                 history_messages=history,
                 cache_type="extract",
+                chunk_id=chunk_key,
             )
 
             history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)

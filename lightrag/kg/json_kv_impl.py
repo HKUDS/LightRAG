@@ -172,6 +172,53 @@ class JsonKVStorage(BaseKVStorage):
         except Exception:
             return False
 
+    async def drop_cache_by_chunk_ids(self, chunk_ids: list[str] | None = None) -> bool:
+        """Delete specific cache records from storage by chunk IDs
+
+        Importance notes for in-memory storage:
+        1. Changes will be persisted to disk during the next index_done_callback
+        2. update flags to notify other processes that data persistence is needed
+
+        Args:
+            chunk_ids (list[str]): List of chunk IDs to be dropped from storage
+
+        Returns:
+             True: if the cache drop successfully
+             False: if the cache drop failed
+        """
+        if not chunk_ids:
+            return False
+
+        try:
+            async with self._storage_lock:
+                # Iterate through all cache modes to find entries with matching chunk_ids
+                for mode_key, mode_data in list(self._data.items()):
+                    if isinstance(mode_data, dict):
+                        # Check each cached entry in this mode
+                        for cache_key, cache_entry in list(mode_data.items()):
+                            if (
+                                isinstance(cache_entry, dict)
+                                and cache_entry.get("chunk_id") in chunk_ids
+                            ):
+                                # Remove this cache entry
+                                del mode_data[cache_key]
+                                logger.debug(
+                                    f"Removed cache entry {cache_key} for chunk {cache_entry.get('chunk_id')}"
+                                )
+
+                        # If the mode is now empty, remove it entirely
+                        if not mode_data:
+                            del self._data[mode_key]
+
+                # Set update flags to notify persistence is needed
+                await set_all_update_flags(self.namespace)
+
+            logger.info(f"Cleared cache for {len(chunk_ids)} chunk IDs")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing cache by chunk IDs: {e}")
+            return False
+
     async def drop(self) -> dict[str, str]:
         """Drop all data from storage and clean up resources
            This action will persistent the data to disk immediately.
