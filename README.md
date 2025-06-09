@@ -1068,7 +1068,7 @@ LightRAG now supports comprehensive multi-modal document processing through [Min
 - **Multi-Element Extraction**: Extract and index text, images, tables, formulas, and document structure
 - **Multimodal Retrieval**: Query and retrieve diverse content types (text, images, tables, formulas) within RAG workflows
 - **Seamless Integration**: Works smoothly with LightRAG core and RAG-Anything frameworks
-  
+
 **Quick Start:**
 1. Install dependencies:
    ```bash
@@ -1514,12 +1514,12 @@ Thank you to all our contributors!
 
 If you encounter these errors when using LightRAG:
 
-1. **`AttributeError: __aenter__`** 
+1. **`AttributeError: __aenter__`**
    - **Cause**: Storage backends not initialized
    - **Solution**: Call `await rag.initialize_storages()` after creating the LightRAG instance
 
 2. **`KeyError: 'history_messages'`**
-   - **Cause**: Pipeline status not initialized  
+   - **Cause**: Pipeline status not initialized
    - **Solution**: Call `await initialize_pipeline_status()` after initializing storages
 
 3. **Both errors in sequence**
