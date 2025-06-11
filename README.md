@@ -191,7 +191,7 @@ async def main():
         rag.insert("Your text")
 
         # Perform hybrid search
-        mode="hybrid"
+        mode = "hybrid"
         print(
           await rag.query(
               "What are the top themes in this story?",
