@@ -1961,10 +1961,10 @@ def create_document_routes(
                         if hasattr(storage, "db") and hasattr(storage.db, "pool"):
                             postgres_storage = storage
                             logger.info(
-                                f"DEBUG: PostgreSQL storage has valid pool connection"
+                                "DEBUG: PostgreSQL storage has valid pool connection"
                             )
                         else:
-                            logger.info(f"DEBUG: PostgreSQL storage missing db.pool")
+                            logger.info("DEBUG: PostgreSQL storage missing db.pool")
 
                     # Check for Neo4j storage
                     elif (
@@ -1977,10 +1977,10 @@ def create_document_routes(
                         if hasattr(storage, "_driver") and storage._driver is not None:
                             neo4j_storage = storage
                             logger.info(
-                                f"DEBUG: Neo4j storage has valid driver connection"
+                                "DEBUG: Neo4j storage has valid driver connection"
                             )
                         else:
-                            logger.info(f"DEBUG: Neo4j storage missing _driver")
+                            logger.info("DEBUG: Neo4j storage missing _driver")
 
                     else:
                         logger.info(

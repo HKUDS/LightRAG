@@ -3,12 +3,10 @@ Enhanced Relationship Classifier for Type-Specific Validation
 Based on actual Neo4j relationship data patterns and existing registry infrastructure.
 """
 
-import logging
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Any
 from collections import defaultdict
 
 from .relationship_registry import RelationshipTypeRegistry
-from ...utils import logger
 
 
 class EnhancedRelationshipClassifier:
@@ -809,7 +807,7 @@ class EnhancedRelationshipClassifier:
         }
 
         for category, data in stats.items():
-            category_metadata = self.categories.get(category, {})
+            # category_metadata = self.categories.get(category, {})  # noqa: F841
             current_threshold = self.confidence_thresholds.get(category, 0.6)
 
             # Category-specific insights

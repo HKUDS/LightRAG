@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import traceback
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, Optional, Tuple
@@ -364,7 +363,6 @@ class AdvancedLightRAG(LightRAG):
                     kg_query_with_details,
                     naive_query_with_details,
                     mix_kg_vector_query,
-                    query_with_keywords_and_details,
                 )
 
                 # Use enhanced query functions that return details
@@ -428,7 +426,7 @@ class AdvancedLightRAG(LightRAG):
                     raise ValueError(f"Unknown mode {param.mode}")
             else:
                 # Fallback to standard query functions without details
-                from lightrag.operate import kg_query, naive_query, query_with_keywords
+                from lightrag.operate import kg_query, naive_query
 
                 if param.mode in ["local", "global", "hybrid"]:
                     response_obj = await kg_query(

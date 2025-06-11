@@ -4,17 +4,14 @@ This script will convert relationship data from using a generic 'RELATED' type w
 property to using proper Neo4j relationship types.
 """
 
-import os
 import time
 import asyncio
 import logging
-from datetime import datetime
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, Any
 
 from ...utils import logger
 from .relationship_registry import (
     RelationshipTypeRegistry,
-    standardize_relationship_type,
 )
 
 
@@ -346,7 +343,7 @@ async def rollback_migration(
         Dict with rollback statistics
     """
     start_time = time.time()
-    registry = RelationshipTypeRegistry()
+    # registry = RelationshipTypeRegistry()  # noqa: F841
 
     # Statistics dictionary
     stats = {

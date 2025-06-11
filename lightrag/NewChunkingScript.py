@@ -26,7 +26,7 @@ import traceback
 import signal
 import threading
 import time
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -769,7 +769,7 @@ def process_folder(
     Returns:
         Dictionary with processing results
     """
-    start_time = datetime.now()
+    # start_time = datetime.now()  # noqa: F841
     logger.info(f"Processing folder: {folder_name}")
 
     # Get image URLs if specified

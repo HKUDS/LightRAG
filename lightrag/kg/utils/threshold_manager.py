@@ -1,6 +1,5 @@
 import numpy as np
-import logging
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Any
 from collections import defaultdict
 from ...utils import logger
 

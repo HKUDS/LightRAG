@@ -13,7 +13,6 @@ from .utils import (
     clean_str,
     compute_mdhash_id,
     Tokenizer,
-    is_float_regex,
     normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
@@ -41,13 +40,11 @@ from .validation import (
     DatabaseValidator,
     validate_extraction_results,
     log_validation_errors,
-    ContentSanitizer,
 )
 from .monitoring import (
     get_performance_monitor,
     get_processing_monitor,
     get_enhanced_logger,
-    start_system_monitoring,
 )
 import time
 from dotenv import load_dotenv
@@ -55,9 +52,6 @@ from lightrag.kg.utils.relationship_registry import standardize_relationship_typ
 from .chunk_post_processor import _post_process_chunk_relationships
 from .constants import (
     DEFAULT_ENABLE_CHUNK_POST_PROCESSING,
-    DEFAULT_CHUNK_VALIDATION_BATCH_SIZE,
-    DEFAULT_CHUNK_VALIDATION_TIMEOUT,
-    DEFAULT_LOG_VALIDATION_CHANGES,
     DEFAULT_ENABLE_ENTITY_CLEANUP,
 )
 
@@ -1396,14 +1390,14 @@ async def _llm_post_process_relationships(
         )
 
         # Debug: Log first 5 relationships that went into the temp file
-        logger.info(f"🔍 First 5 relationships stored in temp file:")
+        logger.info("🔍 First 5 relationships stored in temp file:")
         for i, rel in enumerate(relationships_data["relationships"][:5]):
             logger.info(
                 f"  {i+1}. {rel['src_id']} -[{rel['rel_type']}]-> {rel['tgt_id']}"
             )
 
         # Debug: Also log 5 random original relationships for comparison
-        logger.info(f"🔍 Original relationships for comparison:")
+        logger.info("🔍 Original relationships for comparison:")
         for i, rel in enumerate(all_relationships[:5]):
             logger.info(
                 f"  {i+1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}"
@@ -1500,7 +1494,7 @@ CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationshi
         }
 
         # Log results
-        logger.info(f"🎯 LLM post-processing completed:")
+        logger.info("🎯 LLM post-processing completed:")
         logger.info(f"  - Input relationships: {input_count}")
         logger.info(f"  - Validated relationships: {validated_count}")
         logger.info(f"  - Removed relationships: {removed_count}")
@@ -1511,7 +1505,7 @@ CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationshi
         logger.info(f"  - Improvement: {processing_stats['accuracy_improvement']}")
 
         # Log examples of validated relationships with preserved types
-        logger.info(f"✅ File-based relationships with preserved types:")
+        logger.info("✅ File-based relationships with preserved types:")
         for i, rel in enumerate(validated_relationships[:3]):
             logger.info(
                 f"  {i+1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}"
@@ -1553,7 +1547,7 @@ CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationshi
             formatted_relationships.append(formatted_rel)
 
         # Log final formatting examples
-        logger.info(f"📝 Final formatted relationships (should preserve types):")
+        logger.info("📝 Final formatted relationships (should preserve types):")
         for i, rel in enumerate(formatted_relationships[:3]):
             logger.info(
                 f"  {i+1}. {rel['src_id']} -[{rel['rel_type']}|{rel['neo4j_type']}]-> {rel['tgt_id']}"
@@ -1657,7 +1651,7 @@ def _preserve_original_relationship_metadata(
         if preservation_stats["total"] > 0
         else 0
     )
-    logger.info(f"🔧 Relationship preservation completed:")
+    logger.info("🔧 Relationship preservation completed:")
     logger.info(f"  - Total relationships: {preservation_stats['total']}")
     logger.info(
         f"  - Preserved original types: {preservation_stats['preserved']} ({preserved_pct:.1f}%)"

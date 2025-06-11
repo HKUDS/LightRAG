@@ -7,11 +7,10 @@ type-specific intelligence to enable continuous improvement.
 
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Any
-from collections import defaultdict, Counter
+from collections import defaultdict
 from pathlib import Path
-import logging
 
 from ...utils import logger
 

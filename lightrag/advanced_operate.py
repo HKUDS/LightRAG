@@ -47,10 +47,9 @@ import asyncio
 import json
 import time
 import traceback
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
+from typing import Any, AsyncIterator, Dict, List, Tuple
 
 from lightrag.operate import (
-    _build_query_context,
     _get_node_data,
     _get_edge_data,
     get_keywords_from_query,
@@ -60,12 +59,11 @@ from lightrag.operate import (
     save_to_cache,
     CacheData,
     get_conversation_turns,
-    use_llm_func_with_cache,
     logger,
     truncate_list_by_token_size,
 )
 from lightrag.base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage, QueryParam
-from lightrag.prompt import PROMPTS, GRAPH_FIELD_SEP
+from lightrag.prompt import PROMPTS
 from lightrag.utils import Tokenizer
 from lightrag.kg.utils.relationship_registry import standardize_relationship_type
 
@@ -1300,7 +1298,6 @@ async def _get_node_data_with_details(
         return "", "", "", retrieval_details
 
     # Use existing _get_node_data logic
-    from lightrag.operate import _get_node_data
 
     entities_context, relations_context, text_units_context = await _get_node_data(
         query,
@@ -1394,7 +1391,6 @@ async def _get_edge_data_with_details(
         return "", "", "", retrieval_details
 
     # Use existing _get_edge_data logic
-    from lightrag.operate import _get_edge_data
 
     entities_context, relations_context, text_units_context = await _get_edge_data(
         keywords,

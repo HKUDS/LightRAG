@@ -7,18 +7,14 @@ and processing them for storage in the Neo4j database.
 import json
 import asyncio
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Union, Tuple
-import logging
+from typing import List, Dict, Any, Optional
 import re
 
 from ...utils import logger
-from ...prompt import PROMPTS
 from .relationship_registry import (
     RelationshipTypeRegistry,
-    standardize_relationship_type,
 )
 from .threshold_manager import ThresholdManager
-from .neo4j_edge_utils import process_edge_properties
 
 
 class RelationshipExtractor:

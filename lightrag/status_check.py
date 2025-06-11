@@ -11,15 +11,13 @@ import json
 import sys
 import time
 import logging
-from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from datetime import datetime
+from typing import Dict, Any
 import argparse
 
 from .monitoring import (
     get_comprehensive_status,
-    get_performance_monitor,
     get_health_monitor,
-    get_processing_monitor,
     start_system_monitoring,
 )
 from . import utils
@@ -84,7 +82,7 @@ def print_system_health(health_data: Dict[str, Any]):
     max_memory = health_data.get("max_memory")
 
     if avg_cpu is not None:
-        print(f"\n📊 Recent Averages:")
+        print("\n📊 Recent Averages:")
         print(f"   CPU: {avg_cpu:.1f}% (max: {max_cpu:.1f}%)")
         print(f"   Memory: {avg_memory:.1f}% (max: {max_memory:.1f}%)")
 
@@ -158,7 +156,7 @@ def print_processing_stats(proc_data: Dict[str, Any]):
     completed_files = status.get("completed_files", 0)
     total_files = status.get("total_files", 0)
 
-    print(f"\n📍 Current Status:")
+    print("\n📍 Current Status:")
     print(f"   Stage: {current_stage}")
     if current_file:
         print(f"   File: {current_file}")
@@ -173,7 +171,7 @@ def print_processing_stats(proc_data: Dict[str, Any]):
     database = stats.get("database", {})
     validation = stats.get("validation", {})
 
-    print(f"\n📈 Extraction Results:")
+    print("\n📈 Extraction Results:")
     if entities:
         print(
             f"   🔖 Entities: {entities.get('validated', 0):,} validated "
@@ -190,7 +188,7 @@ def print_processing_stats(proc_data: Dict[str, Any]):
             f"({chunks.get('success_rate', 0):.1f}% success rate)"
         )
 
-    print(f"\n🤖 LLM Statistics:")
+    print("\n🤖 LLM Statistics:")
     if llm_calls:
         total_llm = llm_calls.get("total", 0)
         successful_llm = llm_calls.get("successful", 0)
@@ -198,7 +196,7 @@ def print_processing_stats(proc_data: Dict[str, Any]):
         print(f"   Total Calls: {total_llm:,}")
         print(f"   Successful: {successful_llm:,} ({success_rate:.1f}%)")
 
-    print(f"\n💾 Database Operations:")
+    print("\n💾 Database Operations:")
     if database:
         total_db = database.get("operations", 0)
         failures = database.get("failures", 0)
@@ -209,7 +207,7 @@ def print_processing_stats(proc_data: Dict[str, Any]):
     if validation:
         errors = validation.get("errors", 0)
         warnings = validation.get("warnings", 0)
-        print(f"\n⚠️ Validation Issues:")
+        print("\n⚠️ Validation Issues:")
         print(f"   Errors: {errors:,}")
         print(f"   Warnings: {warnings:,}")
 
