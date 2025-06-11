@@ -72,3 +72,4 @@ class RateLimitError(APIStatusError):
 class APITimeoutError(APIConnectionError):
     def __init__(self, request: httpx.Request) -> None:
         super().__init__(message="Request timed out.", request=request)
+
