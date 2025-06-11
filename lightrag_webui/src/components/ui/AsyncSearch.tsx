@@ -92,11 +92,7 @@ export function AsyncSearch<T>({
   // Handle clicks outside of the component
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (
-        containerRef.current &&
-        !containerRef.current.contains(event.target as Node) &&
-        open
-      ) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node) && open) {
         setOpen(false)
       }
     }
@@ -107,18 +103,21 @@ export function AsyncSearch<T>({
     }
   }, [open])
 
-  const fetchOptions = useCallback(async (query: string) => {
-    try {
-      setLoading(true)
-      setError(null)
-      const data = await fetcher(query)
-      setOptions(data)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch options')
-    } finally {
-      setLoading(false)
-    }
-  }, [fetcher])
+  const fetchOptions = useCallback(
+    async (query: string) => {
+      try {
+        setLoading(true)
+        setError(null)
+        const data = await fetcher(query)
+        setOptions(data)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to fetch options')
+      } finally {
+        setLoading(false)
+      }
+    },
+    [fetcher]
+  )
 
   // Load options when search term changes
   useEffect(() => {
@@ -127,9 +126,7 @@ export function AsyncSearch<T>({
     if (preload) {
       if (debouncedSearchTerm) {
         setOptions((prev) =>
-          prev.filter((option) =>
-            filterFn ? filterFn(option, debouncedSearchTerm) : true
-          )
+          prev.filter((option) => (filterFn ? filterFn(option, debouncedSearchTerm) : true))
         )
       }
     } else {
@@ -143,16 +140,19 @@ export function AsyncSearch<T>({
     fetchOptions(value)
   }, [mounted, value, fetchOptions])
 
-  const handleSelect = useCallback((currentValue: string) => {
-    onChange(currentValue)
-    requestAnimationFrame(() => {
-      // Blur the input to ensure focus event triggers on next click
-      const input = document.activeElement as HTMLElement
-      input?.blur()
-      // Close the dropdown
-      setOpen(false)
-    })
-  }, [onChange])
+  const handleSelect = useCallback(
+    (currentValue: string) => {
+      onChange(currentValue)
+      requestAnimationFrame(() => {
+        // Blur the input to ensure focus event triggers on next click
+        const input = document.activeElement as HTMLElement
+        input?.blur()
+        // Close the dropdown
+        setOpen(false)
+      })
+    },
+    [onChange]
+  )
 
   const handleFocus = useCallback(() => {
     setOpen(true)
@@ -208,7 +208,7 @@ export function AsyncSearch<T>({
                   value={getOptionValue(option)}
                   onSelect={handleSelect}
                   onMouseMove={() => onFocus(getOptionValue(option))}
-                  className="truncate cmd-item"
+                  className="cmd-item truncate"
                 >
                   {renderOption(option)}
                 </CommandItem>

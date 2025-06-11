@@ -29,7 +29,7 @@ interface EditIconProps {
 export const EditIcon = ({ onClick }: EditIconProps) => (
   <div>
     <PencilIcon
-      className="h-3 w-3 text-gray-500 hover:text-gray-700 cursor-pointer"
+      className="h-3 w-3 cursor-pointer text-gray-500 hover:text-gray-700"
       onClick={onClick}
     />
   </div>
@@ -44,7 +44,7 @@ interface PropertyValueProps {
 export const PropertyValue = ({ value, onClick, tooltip }: PropertyValueProps) => (
   <div className="flex items-center gap-1 overflow-hidden">
     <Text
-      className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis whitespace-nowrap"
+      className="hover:bg-primary/20 overflow-hidden rounded p-1 text-ellipsis whitespace-nowrap"
       tooltipClassName="max-w-80 -translate-x-15"
       text={value}
       tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}

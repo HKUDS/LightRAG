@@ -33,7 +33,9 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
       // Process rejected files and add them to fileErrors
       rejectedFiles.forEach(({ file, errors }) => {
         // Get the first error message
-        let errorMsg = errors[0]?.message || t('documentPanel.uploadDocuments.fileUploader.fileRejected', { name: file.name })
+        let errorMsg =
+          errors[0]?.message ||
+          t('documentPanel.uploadDocuments.fileUploader.fileRejected', { name: file.name })
 
         // Simplify error message for unsupported file types
         if (errorMsg.includes('file-invalid-type')) {
@@ -47,7 +49,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         }))
 
         // Add error message to fileErrors
-        setFileErrors(prev => ({
+        setFileErrors((prev) => ({
           ...prev,
           [file.name]: errorMsg
         }))
@@ -62,13 +64,13 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
       let hasSuccessfulUpload = false
 
       // Only clear errors for files that are being uploaded, keep errors for rejected files
-      setFileErrors(prev => {
-        const newErrors = { ...prev };
-        filesToUpload.forEach(file => {
-          delete newErrors[file.name];
-        });
-        return newErrors;
-      });
+      setFileErrors((prev) => {
+        const newErrors = { ...prev }
+        filesToUpload.forEach((file) => {
+          delete newErrors[file.name]
+        })
+        return newErrors
+      })
 
       // Show uploading toast
       const toastId = toast.loading(t('documentPanel.uploadDocuments.batch.uploading'))
@@ -79,12 +81,10 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
 
         // Create a collator that supports Chinese sorting
         const collator = new Intl.Collator(['zh-CN', 'en'], {
-          sensitivity: 'accent',  // consider basic characters, accents, and case
-          numeric: true           // enable numeric sorting, e.g., "File 10" will be after "File 2"
-        });
-        const sortedFiles = [...filesToUpload].sort((a, b) =>
-          collator.compare(a.name, b.name)
-        );
+          sensitivity: 'accent', // consider basic characters, accents, and case
+          numeric: true // enable numeric sorting, e.g., "File 10" will be after "File 2"
+        })
+        const sortedFiles = [...filesToUpload].sort((a, b) => collator.compare(a.name, b.name))
 
         // Upload files in sequence, not parallel
         for (const file of sortedFiles) {
@@ -96,7 +96,12 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
             }))
 
             const result = await uploadDocument(file, (percentCompleted: number) => {
-              console.debug(t('documentPanel.uploadDocuments.single.uploading', { name: file.name, percent: percentCompleted }))
+              console.debug(
+                t('documentPanel.uploadDocuments.single.uploading', {
+                  name: file.name,
+                  percent: percentCompleted
+                })
+              )
               setProgresses((pre) => ({
                 ...pre,
                 [file.name]: percentCompleted
@@ -104,14 +109,16 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
             })
 
             if (result.status === 'duplicated') {
-              uploadErrors[file.name] = t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
-              setFileErrors(prev => ({
+              uploadErrors[file.name] = t(
+                'documentPanel.uploadDocuments.fileUploader.duplicateFile'
+              )
+              setFileErrors((prev) => ({
                 ...prev,
                 [file.name]: t('documentPanel.uploadDocuments.fileUploader.duplicateFile')
               }))
             } else if (result.status !== 'success') {
               uploadErrors[file.name] = result.message
-              setFileErrors(prev => ({
+              setFileErrors((prev) => ({
                 ...prev,
                 [file.name]: result.message
               }))
@@ -127,7 +134,9 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
 
             // If it's an axios error with response data, try to extract more detailed error info
             if (err && typeof err === 'object' && 'response' in err) {
-              const axiosError = err as { response?: { status: number, data?: { detail?: string } } }
+              const axiosError = err as {
+                response?: { status: number; data?: { detail?: string } }
+              }
               if (axiosError.response?.status === 400) {
                 // Extract specific error message from backend response
                 errorMsg = axiosError.response.data?.detail || errorMsg
@@ -142,7 +151,7 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
 
             // Record error message in both local tracking and state
             uploadErrors[file.name] = errorMsg
-            setFileErrors(prev => ({
+            setFileErrors((prev) => ({
               ...prev,
               [file.name]: errorMsg
             }))
@@ -163,14 +172,16 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
         if (hasSuccessfulUpload) {
           // Refresh document list
           if (onDocumentsUploaded) {
-            onDocumentsUploaded().catch(err => {
+            onDocumentsUploaded().catch((err) => {
               console.error('Error refreshing documents:', err)
             })
           }
         }
       } catch (err) {
         console.error('Unexpected error during upload:', err)
-        toast.error(t('documentPanel.uploadDocuments.generalError', { error: errorMessage(err) }), { id: toastId })
+        toast.error(t('documentPanel.uploadDocuments.generalError', { error: errorMessage(err) }), {
+          id: toastId
+        })
       } finally {
         setIsUploading(false)
       }
@@ -193,16 +204,19 @@ export default function UploadDocumentsDialog({ onDocumentsUploaded }: UploadDoc
       }}
     >
       <DialogTrigger asChild>
-        <Button variant="default" side="bottom" tooltip={t('documentPanel.uploadDocuments.tooltip')} size="sm">
+        <Button
+          variant="default"
+          side="bottom"
+          tooltip={t('documentPanel.uploadDocuments.tooltip')}
+          size="sm"
+        >
           <UploadIcon /> {t('documentPanel.uploadDocuments.button')}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-xl" onCloseAutoFocus={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle>{t('documentPanel.uploadDocuments.title')}</DialogTitle>
-          <DialogDescription>
-            {t('documentPanel.uploadDocuments.description')}
-          </DialogDescription>
+          <DialogDescription>{t('documentPanel.uploadDocuments.description')}</DialogDescription>
         </DialogHeader>
         <FileUploader
           maxFileCount={Infinity}

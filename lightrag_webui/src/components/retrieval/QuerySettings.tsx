@@ -26,10 +26,12 @@ export default function QuerySettings() {
   }, [])
 
   return (
-    <Card className="flex shrink-0 flex-col min-w-[220px]">
+    <Card className="flex min-w-[220px] shrink-0 flex-col">
       <CardHeader className="px-4 pt-4 pb-2">
         <CardTitle>{t('retrievePanel.querySettings.parametersTitle')}</CardTitle>
-        <CardDescription className="sr-only">{t('retrievePanel.querySettings.parametersDescription')}</CardDescription>
+        <CardDescription className="sr-only">
+          {t('retrievePanel.querySettings.parametersDescription')}
+        </CardDescription>
       </CardHeader>
       <CardContent className="m-0 flex grow flex-col p-0 text-xs">
         <div className="relative size-full">
@@ -60,12 +62,24 @@ export default function QuerySettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value="naive">{t('retrievePanel.querySettings.queryModeOptions.naive')}</SelectItem>
-                    <SelectItem value="local">{t('retrievePanel.querySettings.queryModeOptions.local')}</SelectItem>
-                    <SelectItem value="global">{t('retrievePanel.querySettings.queryModeOptions.global')}</SelectItem>
-                    <SelectItem value="hybrid">{t('retrievePanel.querySettings.queryModeOptions.hybrid')}</SelectItem>
-                    <SelectItem value="mix">{t('retrievePanel.querySettings.queryModeOptions.mix')}</SelectItem>
-                    <SelectItem value="bypass">{t('retrievePanel.querySettings.queryModeOptions.bypass')}</SelectItem>
+                    <SelectItem value="naive">
+                      {t('retrievePanel.querySettings.queryModeOptions.naive')}
+                    </SelectItem>
+                    <SelectItem value="local">
+                      {t('retrievePanel.querySettings.queryModeOptions.local')}
+                    </SelectItem>
+                    <SelectItem value="global">
+                      {t('retrievePanel.querySettings.queryModeOptions.global')}
+                    </SelectItem>
+                    <SelectItem value="hybrid">
+                      {t('retrievePanel.querySettings.queryModeOptions.hybrid')}
+                    </SelectItem>
+                    <SelectItem value="mix">
+                      {t('retrievePanel.querySettings.queryModeOptions.mix')}
+                    </SelectItem>
+                    <SelectItem value="bypass">
+                      {t('retrievePanel.querySettings.queryModeOptions.bypass')}
+                    </SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -97,9 +111,15 @@ export default function QuerySettings() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
-                    <SelectItem value="Multiple Paragraphs">{t('retrievePanel.querySettings.responseFormatOptions.multipleParagraphs')}</SelectItem>
-                    <SelectItem value="Single Paragraph">{t('retrievePanel.querySettings.responseFormatOptions.singleParagraph')}</SelectItem>
-                    <SelectItem value="Bullet Points">{t('retrievePanel.querySettings.responseFormatOptions.bulletPoints')}</SelectItem>
+                    <SelectItem value="Multiple Paragraphs">
+                      {t('retrievePanel.querySettings.responseFormatOptions.multipleParagraphs')}
+                    </SelectItem>
+                    <SelectItem value="Single Paragraph">
+                      {t('retrievePanel.querySettings.responseFormatOptions.singleParagraph')}
+                    </SelectItem>
+                    <SelectItem value="Bullet Points">
+                      {t('retrievePanel.querySettings.responseFormatOptions.bulletPoints')}
+                    </SelectItem>
                   </SelectGroup>
                 </SelectContent>
               </Select>
@@ -273,7 +293,7 @@ export default function QuerySettings() {
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <label htmlFor="only_need_context" className="flex-1 ml-1 cursor-help">
+                      <label htmlFor="only_need_context" className="ml-1 flex-1 cursor-help">
                         {t('retrievePanel.querySettings.onlyNeedContext')}
                       </label>
                     </TooltipTrigger>
@@ -294,7 +314,7 @@ export default function QuerySettings() {
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <label htmlFor="only_need_prompt" className="flex-1 ml-1 cursor-help">
+                      <label htmlFor="only_need_prompt" className="ml-1 flex-1 cursor-help">
                         {t('retrievePanel.querySettings.onlyNeedPrompt')}
                       </label>
                     </TooltipTrigger>
@@ -315,7 +335,7 @@ export default function QuerySettings() {
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <label htmlFor="stream" className="flex-1 ml-1 cursor-help">
+                      <label htmlFor="stream" className="ml-1 flex-1 cursor-help">
                         {t('retrievePanel.querySettings.streamResponse')}
                       </label>
                     </TooltipTrigger>

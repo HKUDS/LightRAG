@@ -138,8 +138,20 @@ interface GraphState {
   incrementGraphDataVersion: () => void
 
   // Methods for updating graph elements and UI state together
-  updateNodeAndSelect: (nodeId: string, entityId: string, propertyName: string, newValue: string) => Promise<void>
-  updateEdgeAndSelect: (edgeId: string, dynamicId: string, sourceId: string, targetId: string, propertyName: string, newValue: string) => Promise<void>
+  updateNodeAndSelect: (
+    nodeId: string,
+    entityId: string,
+    propertyName: string,
+    newValue: string
+  ) => Promise<void>
+  updateEdgeAndSelect: (
+    edgeId: string,
+    dynamicId: string,
+    sourceId: string,
+    targetId: string,
+    propertyName: string,
+    newValue: string
+  ) => Promise<void>
 }
 
 const useGraphStoreBase = create<GraphState>()((set, get) => ({
@@ -169,7 +181,6 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
   setGraphIsEmpty: (isEmpty: boolean) => set({ graphIsEmpty: isEmpty }),
   setLastSuccessfulQueryLabel: (label: string) => set({ lastSuccessfulQueryLabel: label }),
 
-
   setIsFetching: (isFetching: boolean) => set({ isFetching }),
   setSelectedNode: (nodeId: string | null, moveToSelectedNode?: boolean) =>
     set({ selectedNode: nodeId, moveToSelectedNode }),
@@ -190,11 +201,11 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       selectedEdge: null,
       focusedEdge: null,
       rawGraph: null,
-      sigmaGraph: null,  // to avoid other components from acccessing graph objects
+      sigmaGraph: null, // to avoid other components from acccessing graph objects
       searchEngine: null,
       moveToSelectedNode: false,
       graphIsEmpty: false
-    });
+    })
   },
 
   setRawGraph: (rawGraph: RawGraph | null) =>
@@ -204,21 +215,21 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   setSigmaGraph: (sigmaGraph: DirectedGraph | null) => {
     // Replace graph instance, no need to keep WebGL context
-    set({ sigmaGraph });
+    set({ sigmaGraph })
   },
 
   setAllDatabaseLabels: (labels: string[]) => set({ allDatabaseLabels: labels }),
 
   fetchAllDatabaseLabels: async () => {
     try {
-      console.log('Fetching all database labels...');
-      const labels = await getGraphLabels();
-      set({ allDatabaseLabels: ['*', ...labels] });
-      return;
+      console.log('Fetching all database labels...')
+      const labels = await getGraphLabels()
+      set({ allDatabaseLabels: ['*', ...labels] })
+      return
     } catch (error) {
-      console.error('Failed to fetch all database labels:', error);
-      set({ allDatabaseLabels: ['*'] });
-      throw error;
+      console.error('Failed to fetch all database labels:', error)
+      set({ allDatabaseLabels: ['*'] })
+      throw error
     }
   },
 
@@ -245,10 +256,16 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
 
   // Version counter implementation
   graphDataVersion: 0,
-  incrementGraphDataVersion: () => set((state) => ({ graphDataVersion: state.graphDataVersion + 1 })),
+  incrementGraphDataVersion: () =>
+    set((state) => ({ graphDataVersion: state.graphDataVersion + 1 })),
 
   // Methods for updating graph elements and UI state together
-  updateNodeAndSelect: async (nodeId: string, entityId: string, propertyName: string, newValue: string) => {
+  updateNodeAndSelect: async (
+    nodeId: string,
+    entityId: string,
+    propertyName: string,
+    newValue: string
+  ) => {
     // Get current state
     const state = get()
     const { sigmaGraph, rawGraph } = state
@@ -264,7 +281,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       console.log('updateNodeAndSelect', nodeId, entityId, propertyName, newValue)
 
       // For entity_id changes (node renaming) with NetworkX graph storage
-      if ((nodeId === entityId) && (propertyName === 'entity_id')) {
+      if (nodeId === entityId && propertyName === 'entity_id') {
         // Create new node with updated ID but same attributes
         sigmaGraph.addNode(newValue, { ...nodeAttributes, label: newValue })
 
@@ -352,7 +369,14 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
     }
   },
 
-  updateEdgeAndSelect: async (edgeId: string, dynamicId: string, sourceId: string, targetId: string, propertyName: string, newValue: string) => {
+  updateEdgeAndSelect: async (
+    edgeId: string,
+    dynamicId: string,
+    sourceId: string,
+    targetId: string,
+    propertyName: string,
+    newValue: string
+  ) => {
     // Get current state
     const state = get()
     const { sigmaGraph, rawGraph } = state
@@ -366,7 +390,7 @@ const useGraphStoreBase = create<GraphState>()((set, get) => ({
       const edgeIndex = rawGraph.edgeIdMap[String(edgeId)]
       if (edgeIndex !== undefined && rawGraph.edges[edgeIndex]) {
         rawGraph.edges[edgeIndex].properties[propertyName] = newValue
-        if(dynamicId !== undefined && propertyName === 'keywords') {
+        if (dynamicId !== undefined && propertyName === 'keywords') {
           sigmaGraph.setEdgeAttribute(dynamicId, 'label', newValue)
         }
       }

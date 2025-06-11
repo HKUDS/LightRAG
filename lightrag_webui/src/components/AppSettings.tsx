@@ -1,7 +1,13 @@
 import { useState, useCallback } from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Button from '@/components/ui/Button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/Select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/Select'
 import { useSettingsStore } from '@/stores/settings'
 import { PaletteIcon } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
@@ -21,13 +27,19 @@ export default function AppSettings({ className }: AppSettingsProps) {
   const theme = useSettingsStore.use.theme()
   const setTheme = useSettingsStore.use.setTheme()
 
-  const handleLanguageChange = useCallback((value: string) => {
-    setLanguage(value as 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW')
-  }, [setLanguage])
+  const handleLanguageChange = useCallback(
+    (value: string) => {
+      setLanguage(value as 'en' | 'zh' | 'fr' | 'ar' | 'zh_TW')
+    },
+    [setLanguage]
+  )
 
-  const handleThemeChange = useCallback((value: string) => {
-    setTheme(value as 'light' | 'dark' | 'system')
-  }, [setTheme])
+  const handleThemeChange = useCallback(
+    (value: string) => {
+      setTheme(value as 'light' | 'dark' | 'system')
+    },
+    [setTheme]
+  )
 
   return (
     <Popover open={opened} onOpenChange={setOpened}>
