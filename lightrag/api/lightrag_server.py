@@ -29,7 +29,7 @@ from .config import (
 )
 from lightrag.utils import get_env_value
 import sys
-from lightrag import LightRAG, __version__ as core_version
+from lightrag import __version__ as core_version
 from lightrag.advanced_lightrag import AdvancedLightRAG
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
@@ -37,7 +37,6 @@ from lightrag.utils import EmbeddingFunc
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
     DEFAULT_LOG_BACKUP_COUNT,
-    DEFAULT_LOG_FILENAME,
 )
 from lightrag.api.routers.document_routes import (
     DocumentManager,
@@ -89,7 +88,13 @@ def create_app(args):
     ]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai", "anthropic"]:
+    if args.embedding_binding not in [
+        "lollms",
+        "ollama",
+        "openai",
+        "azure_openai",
+        "anthropic",
+    ]:
         raise Exception("embedding binding not supported")
 
     # Set default hosts if not provided
@@ -273,7 +278,7 @@ def create_app(args):
                 embed_model=args.embedding_model,
                 host=args.embedding_binding_host,
                 api_key=args.embedding_binding_api_key,
-            )
+            ),
         )
     elif args.embedding_binding == "ollama":
         embedding_func = EmbeddingFunc(
@@ -284,7 +289,7 @@ def create_app(args):
                 embed_model=args.embedding_model,
                 host=args.embedding_binding_host,
                 api_key=args.embedding_binding_api_key,
-            )
+            ),
         )
     elif args.embedding_binding == "azure_openai":
         embedding_func = EmbeddingFunc(
@@ -294,7 +299,7 @@ def create_app(args):
                 texts,
                 model=args.embedding_model,  # no host is used for openai,
                 api_key=args.embedding_binding_api_key,
-            )
+            ),
         )
     elif args.embedding_binding == "openai":
         embedding_func = EmbeddingFunc(
@@ -305,7 +310,7 @@ def create_app(args):
                 model=args.embedding_model,
                 base_url=args.embedding_binding_host,
                 api_key=args.embedding_binding_api_key,
-            )
+            ),
         )
     elif args.embedding_binding == "anthropic":
         embedding_func = EmbeddingFunc(
@@ -316,7 +321,7 @@ def create_app(args):
                 model=args.embedding_model,
                 base_url=args.embedding_binding_host,
                 api_key=os.getenv("VOYAGE_API_KEY") or args.embedding_binding_api_key,
-            )
+            ),
         )
     else:
         raise ValueError(f"Unsupported embedding_binding: {args.embedding_binding}")
@@ -579,26 +584,32 @@ def configure_logging():
 
     # Get log directory path from environment variable
     log_dir = os.getenv("LOG_DIR", os.getcwd())
-    
+
     # Create timestamped session log file
     from datetime import datetime
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     session_log_filename = f"lightrag_session_{timestamp}.log"
     log_file_path = os.path.abspath(os.path.join(log_dir, session_log_filename))
 
     print(f"\nLightRAG session log file: {log_file_path}\n")
     os.makedirs(log_dir, exist_ok=True)
-    
+
     # Optional: Clean up old session logs (keep last N sessions)
-    max_session_logs = int(os.getenv("MAX_SESSION_LOGS", "10"))  # Keep last 10 sessions by default
+    max_session_logs = int(
+        os.getenv("MAX_SESSION_LOGS", "10")
+    )  # Keep last 10 sessions by default
     try:
         import glob
+
         session_log_pattern = os.path.join(log_dir, "lightrag_session_*.log")
         existing_logs = sorted(glob.glob(session_log_pattern))
-        
+
         if len(existing_logs) >= max_session_logs:
             # Remove oldest logs, keeping the most recent ones
-            logs_to_remove = existing_logs[:-max_session_logs + 1]  # Keep space for the new one
+            logs_to_remove = existing_logs[
+                : -max_session_logs + 1
+            ]  # Keep space for the new one
             for old_log in logs_to_remove:
                 try:
                     os.remove(old_log)

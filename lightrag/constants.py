@@ -22,11 +22,19 @@ DEFAULT_ENABLE_CHUNK_POST_PROCESSING = False  # Disabled by default for safety
 DEFAULT_CHUNK_VALIDATION_BATCH_SIZE = 50  # Max relationships per chunk
 DEFAULT_CHUNK_VALIDATION_TIMEOUT = 30  # Timeout in seconds per chunk
 DEFAULT_LOG_VALIDATION_CHANGES = False  # Disable detailed logging by default
-DEFAULT_ENABLE_ENTITY_CLEANUP = True  # Enable entity cleanup by default when chunk post-processing is enabled
+DEFAULT_ENABLE_ENTITY_CLEANUP = (
+    True  # Enable entity cleanup by default when chunk post-processing is enabled
+)
 
 # Enhanced relationship quality filter configuration defaults
 DEFAULT_ENABLE_ENHANCED_RELATIONSHIP_FILTER = True  # Enable type-specific filtering
 DEFAULT_LOG_RELATIONSHIP_CLASSIFICATION = False  # Log detailed classification results
-DEFAULT_RELATIONSHIP_FILTER_PERFORMANCE_TRACKING = True  # Track filter performance metrics
-DEFAULT_ENHANCED_FILTER_CONSOLE_LOGGING = False  # Enable console logging for enhanced filter
-DEFAULT_ENHANCED_FILTER_MONITORING_MODE = False  # Only classify and log, don't actually filter
+DEFAULT_RELATIONSHIP_FILTER_PERFORMANCE_TRACKING = (
+    True  # Track filter performance metrics
+)
+DEFAULT_ENHANCED_FILTER_CONSOLE_LOGGING = (
+    False  # Enable console logging for enhanced filter
+)
+DEFAULT_ENHANCED_FILTER_MONITORING_MODE = (
+    False  # Only classify and log, don't actually filter
+)

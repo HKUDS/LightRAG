@@ -11,7 +11,15 @@ PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 # Generic entity types covering various domains
-PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "location", "event", "product", "technology", "concept"]
+PROMPTS["DEFAULT_ENTITY_TYPES"] = [
+    "organization",
+    "person",
+    "location",
+    "event",
+    "product",
+    "technology",
+    "concept",
+]
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
@@ -66,9 +74,9 @@ For each pair of related entities, extract the following information:
 - relationship_description: explanation as to why you think the source entity and the target entity are related to each other
 - relationship_type: Choose the most appropriate relationship type from the following list. If none fit exactly, choose "related":
   {relationship_types}
-  
+
   **IMPORTANT: For multi-word relationship types, use underscores to separate words (e.g., 'created_by', 'located_in', 'reports_to'). Do not concatenate words without separators.**
-  
+
   Examples of specific relationship types to prefer:
   {relationship_examples}
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
@@ -181,7 +189,7 @@ Output:
 ("relationship"{tuple_delimiter}"ARIA"{tuple_delimiter}"Natural Language Processing"{tuple_delimiter}"ARIA integrates natural language processing technology."{tuple_delimiter}"integrates"{tuple_delimiter}"technology integration, capability"{tuple_delimiter}9){record_delimiter}
 ("relationship"{tuple_delimiter}"ARIA"{tuple_delimiter}"Machine Learning"{tuple_delimiter}"ARIA uses advanced machine learning for personalization."{tuple_delimiter}"utilizes"{tuple_delimiter}"technology application, functionality"{tuple_delimiter}9){completion_delimiter}
 #############################
-"""
+""",
 ]
 
 PROMPTS[
@@ -235,7 +243,7 @@ For each pair of related entities, extract the following information:
 - relationship_description: explanation as to why you think the source entity and the target entity are related to each other
 - relationship_type: Choose the most appropriate relationship type from the following list. If none fit exactly, choose "related":
   {relationship_types}
-  
+
   **IMPORTANT: For multi-word relationship types, use underscores to separate words (e.g., 'created_by', 'located_in', 'reports_to'). Do not concatenate words without separators.**
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
 - relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
@@ -481,7 +489,7 @@ Review and filter these relationships for accuracy and relevance. Your goal is t
 **QUALITY SCORING** (1-10 scale):
 - 9-10: Explicitly stated, high practical value
 - 7-8: Well-supported, clear evidence
-- 5-6: Moderately supported, some evidence  
+- 5-6: Moderately supported, some evidence
 - 3-4: Weak evidence, questionable value
 - 1-2: No clear evidence, likely noise
 
@@ -495,7 +503,7 @@ Respond with valid JSON only:
   "validated_relationships": [
     {{
       "src_id": "entity1",
-      "tgt_id": "entity2", 
+      "tgt_id": "entity2",
       "rel_type": "specific_type",
       "description": "clear description of the relationship",
       "quality_score": 8,
@@ -525,7 +533,7 @@ Respond with valid JSON only:
 **CRITICAL INSTRUCTION**: You MUST preserve the exact original relationship type (rel_type) from the input relationships. Do NOT convert specific types like "works_at", "located_in", "develops", "partners_with", "leads", etc. to generic "related". The relationship types carry important semantic meaning that must be maintained.
 
 Examples of what to preserve:
-- "Dr. Chen -[\"presents_at\"]-> MIT Conference" → Keep "presents_at" 
+- "Dr. Chen -[\"presents_at\"]-> MIT Conference" → Keep "presents_at"
 - "TechCorp -[\"develops\"]-> ARIA" → Keep "develops"
 - "World Bank -[\"partners_with\"]-> Green Initiative" → Keep "partners_with"
 - "Summit -[\"located_in\"]-> Geneva" → Keep "located_in"

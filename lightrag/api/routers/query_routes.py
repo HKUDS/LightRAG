@@ -149,7 +149,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         try:
             param = request.to_query_params(False)
             query_result = await rag.aquery(request.query, param=param)
-            
+
             # Unpack the tuple returned by aquery - (response, retrieval_details)
             if isinstance(query_result, tuple) and len(query_result) == 2:
                 response, retrieval_details = query_result
@@ -184,7 +184,7 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
         try:
             param = request.to_query_params(True)
             query_result = await rag.aquery(request.query, param=param)
-            
+
             # Unpack the tuple returned by aquery - (response, retrieval_details)
             if isinstance(query_result, tuple) and len(query_result) == 2:
                 response, retrieval_details = query_result
@@ -199,11 +199,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 if response is None:
                     yield f"{json.dumps({'response': None, 'message': 'No context found or an error occurred.'})}\n"
                     return
-                    
+
                 if isinstance(response, str):
                     # If it's a string, send it all at once
                     yield f"{json.dumps({'response': response})}\n"
-                elif hasattr(response, '__aiter__'):  # Explicit async iterator check
+                elif hasattr(response, "__aiter__"):  # Explicit async iterator check
                     # If it's an async generator, send chunks one by one
                     chunk_count = 0
                     try:
@@ -211,13 +211,17 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             if chunk:  # Only send non-empty content
                                 chunk_count += 1
                                 yield f"{json.dumps({'response': chunk})}\n"
-                                
+
                                 if DEBUG_STREAMING and chunk_count % 10 == 0:
-                                    logging.debug(f"[stream_generator] Processed {chunk_count} chunks")
-                        
+                                    logging.debug(
+                                        f"[stream_generator] Processed {chunk_count} chunks"
+                                    )
+
                         if DEBUG_STREAMING:
-                            logging.info(f"[stream_generator] Completed streaming {chunk_count} chunks")
-                            
+                            logging.info(
+                                f"[stream_generator] Completed streaming {chunk_count} chunks"
+                            )
+
                     except Exception as e:
                         logging.error(f"Streaming error: {str(e)}", exc_info=True)
                         yield f"{json.dumps({'error': str(e)})}\n"

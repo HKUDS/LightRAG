@@ -141,46 +141,44 @@ class LightRAG:
 
     # Chunk-level relationship post-processing
     # ---
-    
+
     enable_chunk_post_processing: bool = field(
         default=get_env_value(
             "ENABLE_CHUNK_POST_PROCESSING", DEFAULT_ENABLE_CHUNK_POST_PROCESSING, bool
         )
     )
     """Enable chunk-level relationship validation and refinement."""
-    
+
     chunk_validation_batch_size: int = field(
         default=get_env_value(
             "CHUNK_VALIDATION_BATCH_SIZE", DEFAULT_CHUNK_VALIDATION_BATCH_SIZE, int
         )
     )
     """Maximum number of relationships to validate per chunk."""
-    
+
     chunk_validation_timeout: int = field(
         default=get_env_value(
             "CHUNK_VALIDATION_TIMEOUT", DEFAULT_CHUNK_VALIDATION_TIMEOUT, int
         )
     )
     """Timeout in seconds for chunk-level validation."""
-    
+
     log_validation_changes: bool = field(
         default=get_env_value(
             "LOG_VALIDATION_CHANGES", DEFAULT_LOG_VALIDATION_CHANGES, bool
         )
     )
     """Enable detailed logging of relationship validation changes."""
-    
+
     enable_entity_cleanup: bool = field(
         default=get_env_value(
             "ENABLE_ENTITY_CLEANUP", DEFAULT_ENABLE_ENTITY_CLEANUP, bool
         )
     )
     """Enable cleanup of orphaned entities after chunk post-processing."""
-    
+
     enable_llm_post_processing: bool = field(
-        default=get_env_value(
-            "ENABLE_LLM_POST_PROCESSING", True, bool
-        )
+        default=get_env_value("ENABLE_LLM_POST_PROCESSING", True, bool)
     )
     """Enable document-level LLM post-processing (legacy)."""
 
@@ -296,7 +294,9 @@ class LightRAG:
     """If True, enables caching for entity extraction steps to reduce LLM costs."""
 
     enable_llm_cache_for_post_process: bool = field(
-        default=bool(os.getenv("ENABLE_LLM_CACHE_FOR_POST_PROCESS", "true").lower() == "true")
+        default=bool(
+            os.getenv("ENABLE_LLM_CACHE_FOR_POST_PROCESS", "true").lower() == "true"
+        )
     )
     """If True, enables caching for chunk post-processing validation to reduce LLM costs."""
 
@@ -1003,10 +1003,12 @@ class LightRAG:
                                 self.chunk_overlap_token_size,
                                 self.chunk_token_size,
                             )
-                            
+
                             chunks: dict[str, Any] = {}
                             for index, dp in enumerate(chunk_results):
-                                chunk_key = compute_mdhash_id(dp["content"], prefix="chunk-")
+                                chunk_key = compute_mdhash_id(
+                                    dp["content"], prefix="chunk-"
+                                )
                                 chunks[chunk_key] = {
                                     **dp,
                                     "full_doc_id": doc_id,
@@ -1607,18 +1609,18 @@ class LightRAG:
 
     def clear_cache(self, modes: list[str] | None = None) -> None:
         """Clear cache data from the LLM response cache storage.
-        
+
         Args:
-            modes: Cache modes to clear. 
+            modes: Cache modes to clear.
                 If None, clears all cache.
 
         Example:
             # Clear all cache
             rag.clear_cache()
-            
-            # Clear local mode cache  
+
+            # Clear local mode cache
             rag.clear_cache(modes=["local"])
-            
+
             # Clear extraction cache
             rag.clear_cache(modes=["default"])
         """
@@ -1627,18 +1629,18 @@ class LightRAG:
 
     async def aclear_cache(self, modes: list[str] | None = None) -> None:
         """Clear cache data from the LLM response cache storage.
-        
+
         Args:
-            modes: Cache modes to clear. 
+            modes: Cache modes to clear.
                 If None, clears all cache.
 
         Example:
             # Clear all cache
             await rag.aclear_cache()
-            
-            # Clear local mode cache  
+
+            # Clear local mode cache
             await rag.aclear_cache(modes=["local"])
-            
+
             # Clear extraction cache
             await rag.aclear_cache(modes=["default"])
         """
@@ -1656,18 +1658,22 @@ class LightRAG:
             await self.llm_response_cache.drop()
         else:
             # Clear specific modes
-            logger.info(f"Clearing LLM cache for modes: {modes} ({initial_cache_count} total entries)")
-            
+            logger.info(
+                f"Clearing LLM cache for modes: {modes} ({initial_cache_count} total entries)"
+            )
+
             if initial_cache_data:
                 keys_to_delete = []
                 for key in initial_cache_data.keys():
                     # Check if key contains any of the specified modes
                     if any(mode in key for mode in modes):
                         keys_to_delete.append(key)
-                
+
                 if keys_to_delete:
                     await self.llm_response_cache.delete(keys_to_delete)
-                    logger.info(f"Deleted {len(keys_to_delete)} cache entries for modes {modes}")
+                    logger.info(
+                        f"Deleted {len(keys_to_delete)} cache entries for modes {modes}"
+                    )
                 else:
                     logger.info(f"No cache entries found for modes {modes}")
 
@@ -1677,9 +1683,11 @@ class LightRAG:
         # Verify cache was cleared
         final_cache_data = await self.llm_response_cache.get_all()
         final_cache_count = len(final_cache_data) if final_cache_data else 0
-        
+
         cleared_count = initial_cache_count - final_cache_count
-        logger.info(f"Cache clearing completed: {cleared_count} entries removed, {final_cache_count} entries remaining")
+        logger.info(
+            f"Cache clearing completed: {cleared_count} entries removed, {final_cache_count} entries remaining"
+        )
 
     async def _manual_cache_cleanup(self) -> None:
         """Manual filesystem cleanup for JsonKVStorage cache files."""
@@ -1697,7 +1705,7 @@ class LightRAG:
                 f"{self.working_dir}/kv_store_*cache*.json",
                 f"{self.working_dir}/kv_store_*llm*.json",
             ]
-            
+
             files_deleted = 0
             for pattern in cache_patterns:
                 cache_files = glob.glob(pattern)
@@ -1707,28 +1715,32 @@ class LightRAG:
                             file_size = os.path.getsize(file_path)
                             os.remove(file_path)
                             files_deleted += 1
-                            logger.debug(f"Deleted cache file: {file_path} ({file_size} bytes)")
+                            logger.debug(
+                                f"Deleted cache file: {file_path} ({file_size} bytes)"
+                            )
                     except OSError as e:
                         logger.warning(f"Failed to delete cache file {file_path}: {e}")
-            
+
             if files_deleted > 0:
-                logger.info(f"Manual cleanup: deleted {files_deleted} cache files from filesystem")
+                logger.info(
+                    f"Manual cleanup: deleted {files_deleted} cache files from filesystem"
+                )
             else:
                 logger.debug("Manual cleanup: no cache files found to delete")
-                
+
         except Exception as e:
             logger.warning(f"Manual cache cleanup failed: {e}")
 
     async def aclear_cache_comprehensive(self) -> None:
         """Comprehensive cache clearing that ensures all LLM cache is removed."""
         logger.info("🧹 Starting comprehensive cache clearing...")
-        
+
         # 1. Clear through storage interface
         await self.aclear_cache()
-        
+
         # 2. Force manual filesystem cleanup
         await self._manual_cache_cleanup()
-        
+
         # 3. Reinitialize the cache storage to ensure clean state
         try:
             await self.llm_response_cache.finalize()
@@ -1736,15 +1748,17 @@ class LightRAG:
             logger.info("✅ Cache storage reinitialized")
         except Exception as e:
             logger.warning(f"Cache storage reinitialization failed: {e}")
-        
+
         # 4. Final verification
         try:
             final_data = await self.llm_response_cache.get_all()
             if final_data and len(final_data) > 0:
-                logger.warning(f"⚠️ Cache clearing incomplete: {len(final_data)} entries still remain")
+                logger.warning(
+                    f"⚠️ Cache clearing incomplete: {len(final_data)} entries still remain"
+                )
             else:
                 logger.info("✅ Comprehensive cache clearing completed successfully")
-        except Exception as e:
+        except Exception:
             logger.info("✅ Cache appears to be completely cleared (empty)")
 
     def clear_cache_comprehensive(self) -> None:
@@ -1867,26 +1881,34 @@ class LightRAG:
             try:
                 for chunk_id in chunk_ids:
                     # Check entities (only for local storage)
-                    if hasattr(self.entities_vdb, 'client_storage'):
+                    if hasattr(self.entities_vdb, "client_storage"):
                         entities_storage = await self.entities_vdb.client_storage
                         entities = [
                             dp
                             for dp in entities_storage["data"]
                             if chunk_id in dp.get("source_id")
                         ]
-                        logger.debug(f"Chunk {chunk_id} has {len(entities)} related entities")
+                        logger.debug(
+                            f"Chunk {chunk_id} has {len(entities)} related entities"
+                        )
 
                     # Check relationships (only for local storage)
-                    if hasattr(self.relationships_vdb, 'client_storage'):
-                        relationships_storage = await self.relationships_vdb.client_storage
+                    if hasattr(self.relationships_vdb, "client_storage"):
+                        relationships_storage = (
+                            await self.relationships_vdb.client_storage
+                        )
                         relations = [
                             dp
                             for dp in relationships_storage["data"]
                             if chunk_id in dp.get("source_id")
                         ]
-                        logger.debug(f"Chunk {chunk_id} has {len(relations)} related relations")
+                        logger.debug(
+                            f"Chunk {chunk_id} has {len(relations)} related relations"
+                        )
             except AttributeError as e:
-                logger.debug(f"Skipping client_storage check for {type(self.entities_vdb).__name__}: {e}")
+                logger.debug(
+                    f"Skipping client_storage check for {type(self.entities_vdb).__name__}: {e}"
+                )
                 # For PostgreSQL and other remote storage, we'll rely on the graph-based deletion below
 
             # Continue with the original deletion process...
@@ -2013,10 +2035,12 @@ class LightRAG:
             async def process_data(data_type, vdb, chunk_id):
                 # Check data (entities or relationships)
                 # Skip for PostgreSQL storage as it doesn't have client_storage
-                if not hasattr(vdb, 'client_storage'):
-                    logger.debug(f"Skipping {data_type} check for {type(vdb).__name__} (no client_storage)")
+                if not hasattr(vdb, "client_storage"):
+                    logger.debug(
+                        f"Skipping {data_type} check for {type(vdb).__name__} (no client_storage)"
+                    )
                     return {}
-                
+
                 storage = await vdb.client_storage
                 data_with_chunk = [
                     dp

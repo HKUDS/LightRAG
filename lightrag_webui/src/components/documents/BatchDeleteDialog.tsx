@@ -54,18 +54,18 @@ export default function BatchDeleteDialog({
       setProgress(100)
 
       if (result.overall_status === 'success') {
-        toast.success(t('documentPanel.batchDelete.success', { 
-          count: result.deleted_count 
+        toast.success(t('documentPanel.batchDelete.success', {
+          count: result.deleted_count
         }))
       } else if (result.overall_status === 'partial_success') {
-        toast.warning(t('documentPanel.batchDelete.partialSuccess', { 
+        toast.warning(t('documentPanel.batchDelete.partialSuccess', {
           deleted: result.deleted_count,
           total: documents.length,
           failed: result.failed_count
         }))
       } else {
-        toast.error(t('documentPanel.batchDelete.failure', { 
-          message: result.message 
+        toast.error(t('documentPanel.batchDelete.failure', {
+          message: result.message
         }))
       }
 
@@ -75,10 +75,10 @@ export default function BatchDeleteDialog({
           .filter(r => r.status !== 'success')
           .map(r => r.doc_id)
           .slice(0, 3) // Show first 3 failed docs
-        
+
         if (failedDocs.length > 0) {
           const more = result.failed_count > 3 ? ` (+${result.failed_count - 3} more)` : ''
-          toast.error(t('documentPanel.batchDelete.failedDocs', { 
+          toast.error(t('documentPanel.batchDelete.failedDocs', {
             docs: failedDocs.join(', ') + more
           }))
         }
@@ -87,8 +87,8 @@ export default function BatchDeleteDialog({
       onDocumentsDeleted()
       onOpenChange(false)
     } catch (error) {
-      toast.error(t('documentPanel.batchDelete.error', { 
-        error: errorMessage(error) 
+      toast.error(t('documentPanel.batchDelete.error', {
+        error: errorMessage(error)
       }))
       setProgress(0)
     } finally {

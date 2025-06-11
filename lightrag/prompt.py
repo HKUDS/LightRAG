@@ -11,7 +11,15 @@ PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 # Updated entity types based on your training data
-PROMPTS["DEFAULT_ENTITY_TYPES"] = ["tool", "technology", "concept", "workflow", "artifact", "person", "organization"]
+PROMPTS["DEFAULT_ENTITY_TYPES"] = [
+    "tool",
+    "technology",
+    "concept",
+    "workflow",
+    "artifact",
+    "person",
+    "organization",
+]
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
@@ -66,9 +74,9 @@ For each pair of related entities, extract the following information:
 - relationship_description: explanation as to why you think the source entity and the target entity are related to each other
 - relationship_type: Choose the most appropriate relationship type from the following list. If none fit exactly, choose "related":
   {relationship_types}
-  
+
   **IMPORTANT: For multi-word relationship types, use underscores to separate words (e.g., 'created_by', 'integrates_with', 'calls_api'). Do not concatenate words without separators.**
-  
+
   Examples of specific relationship types to prefer:
   {relationship_examples}
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
@@ -179,7 +187,7 @@ Output:
 ("relationship"{tuple_delimiter}"Embeddings"{tuple_delimiter}"Neo4j"{tuple_delimiter}"Document embeddings are stored in Neo4j for retrieval."{tuple_delimiter}"stored_in"{tuple_delimiter}"data storage, vectorization"{tuple_delimiter}8){record_delimiter}
 ("relationship"{tuple_delimiter}"Neo4j"{tuple_delimiter}"Knowledge Graph"{tuple_delimiter}"Neo4j serves as the database for the knowledge graph implementation."{tuple_delimiter}"hosts"{tuple_delimiter}"graph storage, database"{tuple_delimiter}10){completion_delimiter}
 #############################
-"""
+""",
 ]
 
 PROMPTS[
@@ -233,7 +241,7 @@ For each pair of related entities, extract the following information:
 - relationship_description: explanation as to why you think the source entity and the target entity are related to each other
 - relationship_type: Choose the most appropriate relationship type from the following list. If none fit exactly, choose "related":
   {relationship_types}
-  
+
   **IMPORTANT: For multi-word relationship types, use underscores to separate words (e.g., 'created_by', 'integrates_with', 'calls_api'). Do not concatenate words without separators.**
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
 - relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
@@ -479,7 +487,7 @@ Review and filter these relationships for accuracy and relevance. Your goal is t
 **QUALITY SCORING** (1-10 scale):
 - 9-10: Explicitly stated, high practical value
 - 7-8: Well-supported, clear evidence
-- 5-6: Moderately supported, some evidence  
+- 5-6: Moderately supported, some evidence
 - 3-4: Weak evidence, questionable value
 - 1-2: No clear evidence, likely noise
 
@@ -493,7 +501,7 @@ Respond with valid JSON only:
   "validated_relationships": [
     {{
       "src_id": "entity1",
-      "tgt_id": "entity2", 
+      "tgt_id": "entity2",
       "rel_type": "uses",
       "description": "clear description of the relationship",
       "quality_score": 8,
@@ -523,7 +531,7 @@ Respond with valid JSON only:
 **CRITICAL INSTRUCTION**: You MUST preserve the exact original relationship type (rel_type) from the input relationships. Do NOT convert specific types like "uses", "runs_on", "processes", "implements", "stores", "creates", etc. to generic "related". The relationship types carry important semantic meaning that must be maintained.
 
 Examples of what to preserve:
-- "Gmail -[\"processes\"]-> Email Content" → Keep "processes" 
+- "Gmail -[\"processes\"]-> Email Content" → Keep "processes"
 - "n8n workflows -[\"runs_on\"]-> n8n" → Keep "runs_on"
 - "SAIL POS -[\"stores\"]-> Customer Data" → Keep "stores"
 - "Zoom -[\"implements\"]-> Screen Sharing" → Keep "implements"

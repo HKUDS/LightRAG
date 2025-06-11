@@ -684,8 +684,8 @@ export const deleteDocument = async (docId: string, fileName: string): Promise<D
  * @returns Promise with the batch deletion results
  */
 export const deleteDocumentsBatch = async (documents: Array<{ doc_id: string; file_name: string }>): Promise<BatchDeleteResponse> => {
-  const response = await axiosInstance.delete('/documents/batch', { 
-    data: { documents } 
+  const response = await axiosInstance.delete('/documents/batch', {
+    data: { documents }
   })
   return response.data
 }

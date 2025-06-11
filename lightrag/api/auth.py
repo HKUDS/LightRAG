@@ -12,7 +12,8 @@ from .config import global_args
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-#Comment to testV_V2
+
+# Comment to testV_V2
 class TokenPayload(BaseModel):
     sub: str  # Username
     exp: datetime  # Expiration time

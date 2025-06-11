@@ -80,12 +80,12 @@ LightRAG v2.0.0 represents a **fundamental breakthrough** in semantic knowledge 
 #### 1. **Semantic Relationship Preservation** (100% Type Accuracy)
 - **Problem Solved**: Fixed critical bug that converted all semantic relationships to generic "related"
 - **Solution**: Advanced LLM post-processing with file-based chunk validation
-- **Results**: 
+- **Results**:
   - ✅ 96.8% relationship retention (153/158 relationships preserved)
   - ✅ 100% semantic type preservation (no more generic conversions)
   - ✅ 35+ specific relationship types maintained throughout pipeline
 
-**Before**: `Entity A ---[related]---> Entity B`  
+**Before**: `Entity A ---[related]---> Entity B`
 **After**: `Reddit Scrape ---[runs_on]---> n8n`, `API ---[calls_api]---> FastAPI Server`
 
 #### 2. **Post-Processing Cache System** (60-80% Cost Reduction)
@@ -141,7 +141,7 @@ LightRAG v2.0 includes powerful prompt customization capabilities. The system co
 
 #### **Benefits**:
 - 🎯 **Domain-optimized** entity extraction and relationship identification
-- 🔧 **Maintains v2.0 structure** - all semantic preservation features preserved  
+- 🔧 **Maintains v2.0 structure** - all semantic preservation features preserved
 - 🤖 **AI-assisted** - Claude can adapt for any domain (legal, medical, technical, etc.)
 - ⚡ **Production-ready** - proven architecture with domain-specific improvements
 

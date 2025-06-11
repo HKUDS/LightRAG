@@ -937,7 +937,9 @@ class PGDocStatusStorage(DocStatusStorage):
         if not ids:
             return []
 
-        sql = "SELECT * FROM TLL_LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id = ANY($2)"
+        sql = (
+            "SELECT * FROM TLL_LIGHTRAG_DOC_STATUS WHERE workspace=$1 AND id = ANY($2)"
+        )
         params = {"workspace": self.db.workspace, "ids": ids}
 
         results = await self.db.query(sql, params, True)

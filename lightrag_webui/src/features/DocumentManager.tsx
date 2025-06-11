@@ -513,8 +513,8 @@ export default function DocumentManager() {
 
   const handleBatchDelete = useCallback(() => {
     if (!filteredAndSortedDocs || selectedDocuments.size === 0) return
-    
-    const docsToDelete = filteredAndSortedDocs.filter(doc => 
+
+    const docsToDelete = filteredAndSortedDocs.filter(doc =>
       selectedDocuments.has(doc.id)
     )
     setShowBatchDeleteDialog(true)
@@ -676,13 +676,13 @@ export default function DocumentManager() {
                     disabled={pipelineBusy}
                   />
                   <span className="text-sm text-gray-600 dark:text-gray-400">
-                    {selectedCount > 0 
+                    {selectedCount > 0
                       ? t('documentPanel.batchActions.selectedCount', { count: selectedCount, total: totalCount })
                       : t('documentPanel.batchActions.selectAll', { total: totalCount })
                     }
                   </span>
                 </div>
-                
+
                 {selectedCount > 0 && (
                   <Button
                     variant="destructive"
@@ -766,7 +766,7 @@ export default function DocumentManager() {
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
                       {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
-                        <TableRow 
+                        <TableRow
                           key={doc.id}
                           className={cn(
                             selectedDocuments.has(doc.id) && "bg-blue-50 dark:bg-blue-900/20"
@@ -775,7 +775,7 @@ export default function DocumentManager() {
                           <TableCell className="w-12">
                             <Checkbox
                               checked={selectedDocuments.has(doc.id)}
-                              onCheckedChange={(checked) => 
+                              onCheckedChange={(checked) =>
                                 handleSelectDocument(doc.id, !!checked)
                               }
                               disabled={pipelineBusy}
@@ -873,7 +873,7 @@ export default function DocumentManager() {
           onOpenChange={setShowDeleteDialog}
           onDocumentDeleted={handleDocumentDeleted}
         />
-        
+
         <BatchDeleteDialog
           documents={filteredAndSortedDocs?.filter(doc => selectedDocuments.has(doc.id)) || []}
           open={showBatchDeleteDialog}

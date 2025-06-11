@@ -36,10 +36,10 @@ export default function DeleteDocumentDialog({
     setIsDeleting(true)
     try {
       const result = await deleteDocument(document.id, document.file_path)
-      
+
       if (result.status === 'success') {
-        toast.success(t('documentPanel.deleteDocument.success', { 
-          fileName: document.file_path || document.id 
+        toast.success(t('documentPanel.deleteDocument.success', {
+          fileName: document.file_path || document.id
         }))
         onDocumentDeleted()
         onOpenChange(false)
@@ -50,13 +50,13 @@ export default function DeleteDocumentDialog({
       } else if (result.status === 'busy') {
         toast.error(t('documentPanel.deleteDocument.busy'))
       } else {
-        toast.error(t('documentPanel.deleteDocument.error', { 
-          error: result.message 
+        toast.error(t('documentPanel.deleteDocument.error', {
+          error: result.message
         }))
       }
     } catch (error) {
-      toast.error(t('documentPanel.deleteDocument.error', { 
-        error: errorMessage(error) 
+      toast.error(t('documentPanel.deleteDocument.error', {
+        error: errorMessage(error)
       }))
     } finally {
       setIsDeleting(false)

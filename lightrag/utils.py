@@ -1043,9 +1043,13 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     }
 
     if cache_data.cache_type == "post_process":
-        logger.info(f"Storing chunk post-processing result in cache: {cache_data.args_hash}")
+        logger.info(
+            f"Storing chunk post-processing result in cache: {cache_data.args_hash}"
+        )
     else:
-        logger.info(f" == LLM cache == saving {cache_data.mode}: {cache_data.args_hash}")
+        logger.info(
+            f" == LLM cache == saving {cache_data.mode}: {cache_data.args_hash}"
+        )
 
     # Only upsert if there's actual new content
     await hashing_kv.upsert({cache_data.mode: mode_cache})
@@ -1558,7 +1562,7 @@ async def use_llm_func_with_cache(
     # Debug logging for post-processing cache
     if cache_type == "post_process":
         logger.debug(f"use_llm_func_with_cache called with cache_type={cache_type}")
-    
+
     if llm_response_cache:
         if history_messages:
             history = json.dumps(history_messages, ensure_ascii=False)
@@ -1582,9 +1586,11 @@ async def use_llm_func_with_cache(
             statistic_data["llm_cache"] += 1
             return cached_return
         statistic_data["llm_call"] += 1
-        
+
         if cache_type == "post_process":
-            logger.info(f"Cache MISS for chunk post-processing: {arg_hash} - Processing with LLM")
+            logger.info(
+                f"Cache MISS for chunk post-processing: {arg_hash} - Processing with LLM"
+            )
 
         # Call LLM
         kwargs = {}
@@ -1598,10 +1604,14 @@ async def use_llm_func_with_cache(
         # Save to cache based on cache type
         should_save_cache = False
         if cache_type == "post_process":
-            should_save_cache = llm_response_cache.global_config.get("enable_llm_cache_for_post_process", True)
+            should_save_cache = llm_response_cache.global_config.get(
+                "enable_llm_cache_for_post_process", True
+            )
         else:
-            should_save_cache = llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract", True)
-        
+            should_save_cache = llm_response_cache.global_config.get(
+                "enable_llm_cache_for_entity_extract", True
+            )
+
         if should_save_cache:
             await save_to_cache(
                 llm_response_cache,
@@ -1788,10 +1798,10 @@ class TokenTracker:
 
 def list_of_list_to_json(data: list[list[str]]) -> list[dict[str, str]]:
     """Convert list of lists to JSON format for Neo4j integration.
-    
+
     Args:
         data: List of lists where first list contains headers
-        
+
     Returns:
         List of dictionaries with header keys and row values
     """
@@ -1816,10 +1826,10 @@ def list_of_list_to_json(data: list[list[str]]) -> list[dict[str, str]]:
 
 def xml_to_json(xml_file):
     """Parse XML file and convert to JSON format for Neo4j integration.
-    
+
     Args:
         xml_file: Path to XML file to parse
-        
+
     Returns:
         Dictionary containing nodes and edges data, or None if parsing fails
     """
