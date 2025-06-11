@@ -12,11 +12,12 @@ Entity C ---[related]---> Entity D
 
 ### After: Semantic relationship types with 100% preservation
 ```
-Reddit Scrape To DB ---[runs_on]---> n8n
-Ingestion Module ---[includes]---> Validation Stage  (
-SAIL POS ---[uses]---> Zoom
-Google Gemini Chat Model ---[integrates_with]---> n8n
-Debugging Cycle ---[troubleshoots]---> Runtime Errors
+✅ Reddit Scrape To DB -[RUNS]-> n8n  
+✅ SAIL POS -[STORES]-> SAIL POS Client Profile
+✅ Google Gemini Chat Model -[INTEGRATES_WITH]-> n8n
+✅ Debugging Cycle -[TROUBLESHOOTS]-> Runtime Errors
+✅ JavaScript Code -[HANDLES]-> Error Cases
+✅ Workflow -[CALLS_API]-> Brave Search API
 ```
 
 ## 🎯 Critical Problems Solved
