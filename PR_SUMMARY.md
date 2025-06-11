@@ -31,13 +31,8 @@ Debugging Cycle ---[troubleshoots]---> Runtime Errors
 - Implemented file-based LLM post-processing with type preservation
 - Enhanced prompt design with explicit preservation instructions
 
-### 2. **Performance Metrics Achieved** (BREAKTHROUGH ✅)
-- ✅ **Type Preservation**: 100% success rate
-- ✅ **Relationship Retention**: 96.8% (153/158 relationships kept)
-- ✅ **Quality Filtering**: Conservative approach - only 5 low-quality relationships removed
-- ✅ **Semantic Richness**: Fully maintained across all relationship types
 
-### 3. **Graph Visualization Multi-Document Support** (Enhanced ✅)
+### 2. **Graph Visualization Multi-Document Support** (Enhanced ✅)
 Fixed regression where graph visualizer failed with 3+ documents, enabling complex knowledge graph visualization.
 
 ## 🔧 Technical Implementation Details
@@ -63,15 +58,48 @@ relationship_data = dict(
 )
 ```
 
-### **File-Based LLM Post-Processing System**
-**File**: `/lightrag/operate.py` - `_llm_post_process_relationships()`
+### **Dual Post-Processing Architecture**
+
+#### **1. Full Document LLM Post-Processing** 🔧
+**File**: `/lightrag/operate.py:1081` - `_llm_post_process_relationships()`
+**Environment Variable**: `ENABLE_LLM_POST_PROCESSING=false` (disabled by default)
 
 **Technical Approach**:
-1. **Temp File Strategy**: Create JSON file with ALL relationships and preserved types
-2. **LLM Review Process**: AI reviews document context + relationship file
+1. **Temporary File Strategy**: Creates JSON file with ALL document relationships and preserved types
+2. **LLM Review Process**: AI reviews entire document context + relationship file
 3. **Filtered JSON Return**: LLM returns validated relationships in structured format
 4. **Direct Merge**: Validated relationships merge with proper type field preservation
 5. **Type Restoration**: Preservation function ensures original semantic types maintained
+
+**Performance Considerations**:
+- ⚠️ **Disabled by default** due to timeout issues with large documents
+- Can cause timeouts with hundreds of entities/relationships
+- Suitable for smaller documents or when maximum accuracy is required
+
+#### **2. Chunk-Level Post-Processing** ⚡
+**File**: `/lightrag/chunk_post_processor.py:242`
+**Environment Variable**: `ENABLE_CHUNK_POST_PROCESSING=true` (enabled by default)
+
+**Technical Approach**:
+1. **In-Memory Processing**: Processes relationships chunk-by-chunk during extraction
+2. **No Temporary Files**: Direct in-memory validation for efficiency
+3. **Incremental Validation**: Validates relationships as they're extracted
+4. **Scalable Design**: Handles large documents without timeout issues
+
+#### **3. Orphaned Entity Cleanup** 🧹
+**File**: `/lightrag/chunk_post_processor.py:400` - `cleanup_orphaned_entities()`
+**Environment Variable**: `ENABLE_ENTITY_CLEANUP=true` (enabled by default)
+
+**Technical Approach**:
+1. **Dependency Analysis**: Identifies entities with no relationship connections
+2. **Safe Removal**: Removes orphaned entities while preserving connected ones
+3. **Logging**: Optional detailed logging of cleanup operations
+4. **Future Enhancement**: Prepares for semi-automatic relationship bridging via Cypher queries
+
+**Usage Notes**:
+- Only runs when chunk post-processing is enabled
+- Prevents graph fragmentation from isolated entities
+- Maintains graph connectivity and reduces noise
 
 ### **Enhanced Prompt Engineering**
 **File**: `/lightrag/prompt.py` - `relationship_post_processing`
@@ -90,7 +118,6 @@ specific semantic types like "uses", "runs_on", "processes", "implements",
 ```
 ✅ SAIL POS -[USES]-> Zoom
 ✅ Reddit Scrape To DB -[RUNS]-> n8n  
-✅ Angelique Gates -[SHARES_SCREEN_VIA]-> Zoom
 ✅ SAIL POS -[STORES]-> SAIL POS Client Profile
 ✅ Google Gemini Chat Model -[INTEGRATES_WITH]-> n8n
 ✅ Debugging Cycle -[TROUBLESHOOTS]-> Runtime Errors
@@ -180,6 +207,24 @@ LightRAG v2.0 includes a powerful prompt customization system that allows domain
 - **Academic Research**: Papers, citations, methodologies
 
 ## 🔧 Configuration & Usage
+
+### **Environment Variables for Post-Processing Control**:
+```bash
+# Full Document LLM Post-Processing (disabled by default - can timeout on large docs)
+ENABLE_LLM_POST_PROCESSING=false
+
+# Chunk-Level Post-Processing (enabled by default - recommended)
+ENABLE_CHUNK_POST_PROCESSING=true
+
+# Orphaned Entity Cleanup (enabled by default)
+ENABLE_ENTITY_CLEANUP=true
+
+# Enhanced Relationship Filtering
+ENABLE_ENHANCED_RELATIONSHIP_FILTER=true
+
+# Cache System for Cost Reduction
+ENABLE_LLM_CACHE_FOR_POST_PROCESS=true
+```
 
 ### **Enable Enhanced Relationship Processing**:
 ```python
