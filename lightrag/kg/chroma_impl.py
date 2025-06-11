@@ -173,9 +173,9 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             )  # higher priority for query
 
             results = self._collection.query(
-                query_embeddings=embedding.tolist()
-                if not isinstance(embedding, list)
-                else embedding,
+                query_embeddings=(
+                    embedding.tolist() if not isinstance(embedding, list) else embedding
+                ),
                 n_results=top_k * 2,  # Request more results to allow for filtering
                 include=["metadatas", "distances", "documents"],
             )

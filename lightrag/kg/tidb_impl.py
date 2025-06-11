@@ -960,9 +960,11 @@ class TiDBGraphStorage(BaseGraphStorage):
             result.nodes.append(
                 KnowledgeGraphNode(
                     id=node["name"],
-                    labels=[node["entity_type"]]
-                    if node.get("entity_type")
-                    else [node["name"]],
+                    labels=(
+                        [node["entity_type"]]
+                        if node.get("entity_type")
+                        else [node["name"]]
+                    ),
                     properties=node_properties,
                 )
             )

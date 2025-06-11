@@ -112,9 +112,11 @@ async def llama_index_complete_if_cache(
         for msg in history_messages:
             formatted_messages.append(
                 ChatMessage(
-                    role=MessageRole.USER
-                    if msg["role"] == "user"
-                    else MessageRole.ASSISTANT,
+                    role=(
+                        MessageRole.USER
+                        if msg["role"] == "user"
+                        else MessageRole.ASSISTANT
+                    ),
                     content=msg["content"],
                 )
             )

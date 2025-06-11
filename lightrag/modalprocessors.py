@@ -337,9 +337,11 @@ class ImageModalProcessor(BaseModalProcessor):
             logger.error(f"Error processing image content: {e}")
             # Fallback processing
             fallback_entity = {
-                "entity_name": entity_name
-                if entity_name
-                else f"image_{compute_mdhash_id(str(modal_content))}",
+                "entity_name": (
+                    entity_name
+                    if entity_name
+                    else f"image_{compute_mdhash_id(str(modal_content))}"
+                ),
                 "entity_type": "image",
                 "summary": f"Image content: {str(modal_content)[:100]}",
             }
@@ -376,9 +378,11 @@ class ImageModalProcessor(BaseModalProcessor):
         except (json.JSONDecodeError, AttributeError, ValueError) as e:
             logger.error(f"Error parsing image analysis response: {e}")
             fallback_entity = {
-                "entity_name": entity_name
-                if entity_name
-                else f"image_{compute_mdhash_id(response)}",
+                "entity_name": (
+                    entity_name
+                    if entity_name
+                    else f"image_{compute_mdhash_id(response)}"
+                ),
                 "entity_type": "image",
                 "summary": response[:100] + "..." if len(response) > 100 else response,
             }
@@ -491,9 +495,11 @@ class TableModalProcessor(BaseModalProcessor):
         except (json.JSONDecodeError, AttributeError, ValueError) as e:
             logger.error(f"Error parsing table analysis response: {e}")
             fallback_entity = {
-                "entity_name": entity_name
-                if entity_name
-                else f"table_{compute_mdhash_id(response)}",
+                "entity_name": (
+                    entity_name
+                    if entity_name
+                    else f"table_{compute_mdhash_id(response)}"
+                ),
                 "entity_type": "table",
                 "summary": response[:100] + "..." if len(response) > 100 else response,
             }
@@ -599,9 +605,11 @@ class EquationModalProcessor(BaseModalProcessor):
         except (json.JSONDecodeError, AttributeError, ValueError) as e:
             logger.error(f"Error parsing equation analysis response: {e}")
             fallback_entity = {
-                "entity_name": entity_name
-                if entity_name
-                else f"equation_{compute_mdhash_id(response)}",
+                "entity_name": (
+                    entity_name
+                    if entity_name
+                    else f"equation_{compute_mdhash_id(response)}"
+                ),
                 "entity_type": "equation",
                 "summary": response[:100] + "..." if len(response) > 100 else response,
             }
@@ -690,9 +698,11 @@ class GenericModalProcessor(BaseModalProcessor):
         except (json.JSONDecodeError, AttributeError, ValueError) as e:
             logger.error(f"Error parsing generic analysis response: {e}")
             fallback_entity = {
-                "entity_name": entity_name
-                if entity_name
-                else f"{content_type}_{compute_mdhash_id(response)}",
+                "entity_name": (
+                    entity_name
+                    if entity_name
+                    else f"{content_type}_{compute_mdhash_id(response)}"
+                ),
                 "entity_type": content_type,
                 "summary": response[:100] + "..." if len(response) > 100 else response,
             }

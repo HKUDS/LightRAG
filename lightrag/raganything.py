@@ -636,15 +636,15 @@ class RAGAnything:
             "status": "Initialized",
             "processors": {},
             "models": {
-                "llm_model": "External function"
-                if self.llm_model_func
-                else "Not provided",
-                "vision_model": "External function"
-                if self.vision_model_func
-                else "Not provided",
-                "embedding_model": "External function"
-                if self.embedding_func
-                else "Not provided",
+                "llm_model": (
+                    "External function" if self.llm_model_func else "Not provided"
+                ),
+                "vision_model": (
+                    "External function" if self.vision_model_func else "Not provided"
+                ),
+                "embedding_model": (
+                    "External function" if self.embedding_func else "Not provided"
+                ),
             },
         }
 

@@ -155,10 +155,12 @@ def create_app(args):
     # Initialize FastAPI
     app_kwargs = {
         "title": "LightRAG Server API",
-        "description": "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
-        + "(With authentication)"
-        if api_key
-        else "",
+        "description": (
+            "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
+            + "(With authentication)"
+            if api_key
+            else ""
+        ),
         "version": __api_version__,
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
         "docs_url": "/docs",  # Explicitly set docs URL
@@ -263,31 +265,37 @@ def create_app(args):
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
         max_token_size=args.max_embed_tokens,
-        func=lambda texts: lollms_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-        )
-        if args.embedding_binding == "lollms"
-        else ollama_embed(
-            texts,
-            embed_model=args.embedding_model,
-            host=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
-        )
-        if args.embedding_binding == "ollama"
-        else azure_openai_embed(
-            texts,
-            model=args.embedding_model,  # no host is used for openai,
-            api_key=args.embedding_binding_api_key,
-        )
-        if args.embedding_binding == "azure_openai"
-        else openai_embed(
-            texts,
-            model=args.embedding_model,
-            base_url=args.embedding_binding_host,
-            api_key=args.embedding_binding_api_key,
+        func=lambda texts: (
+            lollms_embed(
+                texts,
+                embed_model=args.embedding_model,
+                host=args.embedding_binding_host,
+                api_key=args.embedding_binding_api_key,
+            )
+            if args.embedding_binding == "lollms"
+            else (
+                ollama_embed(
+                    texts,
+                    embed_model=args.embedding_model,
+                    host=args.embedding_binding_host,
+                    api_key=args.embedding_binding_api_key,
+                )
+                if args.embedding_binding == "ollama"
+                else (
+                    azure_openai_embed(
+                        texts,
+                        model=args.embedding_model,  # no host is used for openai,
+                        api_key=args.embedding_binding_api_key,
+                    )
+                    if args.embedding_binding == "azure_openai"
+                    else openai_embed(
+                        texts,
+                        model=args.embedding_model,
+                        base_url=args.embedding_binding_host,
+                        api_key=args.embedding_binding_api_key,
+                    )
+                )
+            )
         ),
     )
 
@@ -295,24 +303,30 @@ def create_app(args):
     if args.llm_binding in ["lollms", "ollama", "openai"]:
         rag = LightRAG(
             working_dir=args.working_dir,
-            llm_model_func=lollms_model_complete
-            if args.llm_binding == "lollms"
-            else ollama_model_complete
-            if args.llm_binding == "ollama"
-            else openai_alike_model_complete,
+            llm_model_func=(
+                lollms_model_complete
+                if args.llm_binding == "lollms"
+                else (
+                    ollama_model_complete
+                    if args.llm_binding == "ollama"
+                    else openai_alike_model_complete
+                )
+            ),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "host": args.llm_binding_host,
-                "timeout": args.timeout,
-                "options": {"num_ctx": args.max_tokens},
-                "api_key": args.llm_binding_api_key,
-            }
-            if args.llm_binding == "lollms" or args.llm_binding == "ollama"
-            else {},
+            llm_model_kwargs=(
+                {
+                    "host": args.llm_binding_host,
+                    "timeout": args.timeout,
+                    "options": {"num_ctx": args.max_tokens},
+                    "api_key": args.llm_binding_api_key,
+                }
+                if args.llm_binding == "lollms" or args.llm_binding == "ollama"
+                else {}
+            ),
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,

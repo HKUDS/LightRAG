@@ -876,12 +876,16 @@ async def get_best_cached_response(
                         "event": "cache_rejected_by_llm",
                         "type": cache_type,
                         "mode": mode,
-                        "original_question": original_prompt[:100] + "..."
-                        if len(original_prompt) > 100
-                        else original_prompt,
-                        "cached_question": best_prompt[:100] + "..."
-                        if len(best_prompt) > 100
-                        else best_prompt,
+                        "original_question": (
+                            original_prompt[:100] + "..."
+                            if len(original_prompt) > 100
+                            else original_prompt
+                        ),
+                        "cached_question": (
+                            best_prompt[:100] + "..."
+                            if len(best_prompt) > 100
+                            else best_prompt
+                        ),
                         "similarity_score": round(best_similarity, 4),
                         "threshold": similarity_threshold,
                     }
@@ -1030,12 +1034,14 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     mode_cache[cache_data.args_hash] = {
         "return": cache_data.content,
         "cache_type": cache_data.cache_type,
-        "embedding": cache_data.quantized.tobytes().hex()
-        if cache_data.quantized is not None
-        else None,
-        "embedding_shape": cache_data.quantized.shape
-        if cache_data.quantized is not None
-        else None,
+        "embedding": (
+            cache_data.quantized.tobytes().hex()
+            if cache_data.quantized is not None
+            else None
+        ),
+        "embedding_shape": (
+            cache_data.quantized.shape if cache_data.quantized is not None else None
+        ),
         "embedding_min": cache_data.min_val,
         "embedding_max": cache_data.max_val,
         "original_prompt": cache_data.prompt,

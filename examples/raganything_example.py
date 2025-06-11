@@ -35,10 +35,7 @@ async def process_with_rag(
         # Initialize RAGAnything
         rag = RAGAnything(
             working_dir=working_dir,
-            llm_model_func=lambda prompt,
-            system_prompt=None,
-            history_messages=[],
-            **kwargs: openai_complete_if_cache(
+            llm_model_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs: openai_complete_if_cache(
                 "gpt-4o-mini",
                 prompt,
                 system_prompt=system_prompt,
@@ -47,47 +44,49 @@ async def process_with_rag(
                 base_url=base_url,
                 **kwargs,
             ),
-            vision_model_func=lambda prompt,
-            system_prompt=None,
-            history_messages=[],
-            image_data=None,
-            **kwargs: openai_complete_if_cache(
-                "gpt-4o",
-                "",
-                system_prompt=None,
-                history_messages=[],
-                messages=[
-                    {"role": "system", "content": system_prompt}
-                    if system_prompt
-                    else None,
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
+            vision_model_func=lambda prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs: (
+                openai_complete_if_cache(
+                    "gpt-4o",
+                    "",
+                    system_prompt=None,
+                    history_messages=[],
+                    messages=[
+                        (
+                            {"role": "system", "content": system_prompt}
+                            if system_prompt
+                            else None
+                        ),
+                        (
                             {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_data}"
-                                },
-                            },
-                        ],
-                    }
-                    if image_data
-                    else {"role": "user", "content": prompt},
-                ],
-                api_key=api_key,
-                base_url=base_url,
-                **kwargs,
-            )
-            if image_data
-            else openai_complete_if_cache(
-                "gpt-4o-mini",
-                prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                api_key=api_key,
-                base_url=base_url,
-                **kwargs,
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:image/jpeg;base64,{image_data}"
+                                        },
+                                    },
+                                ],
+                            }
+                            if image_data
+                            else {"role": "user", "content": prompt}
+                        ),
+                    ],
+                    api_key=api_key,
+                    base_url=base_url,
+                    **kwargs,
+                )
+                if image_data
+                else openai_complete_if_cache(
+                    "gpt-4o-mini",
+                    prompt,
+                    system_prompt=system_prompt,
+                    history_messages=history_messages,
+                    api_key=api_key,
+                    base_url=base_url,
+                    **kwargs,
+                )
             ),
             embedding_func=lambda texts: openai_embed(
                 texts,

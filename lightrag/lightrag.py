@@ -1259,9 +1259,9 @@ class LightRAG:
                     "source_id": source_id,
                     "tokens": tokens,
                     "chunk_order_index": chunk_order_index,
-                    "full_doc_id": full_doc_id
-                    if full_doc_id is not None
-                    else source_id,
+                    "full_doc_id": (
+                        full_doc_id if full_doc_id is not None else source_id
+                    ),
                     "file_path": file_path,
                     "status": DocStatus.PROCESSED,
                 }
