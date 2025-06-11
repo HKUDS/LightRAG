@@ -106,7 +106,14 @@ specific semantic types like "uses", "runs_on", "processes", "implements",
 
 ## 🚀 Advanced Features Implemented
 
-### **1. Enhanced Entity Type System**
+### **1. VoyageAI Embedding Integration**
+- **Superior Embedding Quality**: Replaced default embeddings with VoyageAI's state-of-the-art models
+- **Model Flexibility**: Support for voyage-3-large, voyage-3, voyage-3-lite, and domain-specific models
+- **Domain Optimization**: Specialized models for code (voyage-code-3), finance (voyage-finance-2), and legal (voyage-law-2)
+- **Configurable Output**: Adjustable dimensions (256-2048) and data types (float, int8, binary)
+- **Context-Aware**: Full support for query/document input types with 32K context window
+
+### **2. Enhanced Entity Type System**
 ```python
 # Comprehensive entity categorization
 entity_types = [
@@ -115,7 +122,7 @@ entity_types = [
 ]
 ```
 
-### **2. Semantic Relationship Vocabulary (35+ Types)**
+### **3. Semantic Relationship Vocabulary (35+ Types)**
 ```python
 # Technical relationships
 "calls_api", "integrates_with", "depends_on", "implements", 
@@ -130,10 +137,47 @@ entity_types = [
 "contains", "exports_to", "shares_screen_via"
 ```
 
-### **3. LLM-Generated Relationship Strength Scoring**
+### **4. LLM-Generated Relationship Strength Scoring**
 - Semantic weight scoring (0-1) based on context analysis
 - Post-processing standardization via relationship registry
 - Triple storage format: LLM output + human-readable + Neo4j formats
+
+## 🎨 Domain-Specific Prompt Customization
+
+### **Claude-Assisted Prompt Engineering**
+LightRAG v2.0 includes a powerful prompt customization system that allows domain-specific optimization while preserving all v2.0 enhancements.
+
+#### **Quick Setup**:
+1. **Replace domain-specific prompt** with generic version:
+   ```bash
+   # Option 1: Delete and rename
+   rm lightrag/prompt.py
+   mv lightrag/genericPrompt.py lightrag/prompt.py
+   
+   # Option 2: Copy contents
+   cp lightrag/genericPrompt.py lightrag/prompt.py
+   ```
+
+2. **Customize for your domain** using Claude:
+   ```
+   Prompt to Claude:
+   "Here is the genericPrompt.py file and information about my domain: [your domain info]. 
+   Please rewrite the prompt.py file to be hyper-focused on [your specific use case], 
+   keeping the exact same structure but changing the examples and terminology to match my data."
+   ```
+
+#### **Benefits**:
+- **Maintains v2.0 Structure**: All semantic preservation and processing enhancements preserved
+- **Domain Optimization**: Tailored entity types, relationship vocabularies, and examples
+- **AI-Assisted**: Claude can adapt prompts for any domain (legal, medical, technical, financial, etc.)
+- **Production Ready**: Proven structure with domain-specific improvements
+
+#### **Example Domains**:
+- **Technical Documentation**: APIs, codebases, system architectures
+- **Legal Documents**: Contracts, regulations, case law
+- **Medical Records**: Patient data, treatment protocols, research
+- **Financial Reports**: Market data, company filings, investment analysis
+- **Academic Research**: Papers, citations, methodologies
 
 ## 🔧 Configuration & Usage
 
@@ -176,50 +220,66 @@ result = await rag.aquery("How does n8n integrate with workflows?")
 
 ### **Core Engine Files**:
 1. **`lightrag/operate.py`** - Fixed missing rel_type field, implemented file-based LLM processing, cache integration
-2. **`lightrag/prompt.py`** - Enhanced relationship extraction and post-processing prompts  
-3. **`lightrag/kg/neo4j_impl.py`** - Improved graph visualization query logic
-4. **`lightrag/lightrag.py`** - Added post-processing cache configuration
-5. **`lightrag/utils.py`** - Enhanced cache system for post-processing
-6. **`lightrag/chunk_post_processor.py`** - Cache-aware chunk processing
+2. **`lightrag/prompt.py`** - **HEAVILY MODIFIED** for domain-specific extraction with advanced semantic understanding
+   - Customized for specific use case with rich examples and domain terminology
+   - Enhanced entity and relationship extraction with contextual examples
+   - Sophisticated post-processing prompts for high-quality filtering
+3. **`lightrag/genericPrompt.py`** - **NEW** - Generic version of prompt.py maintaining v2.0 structure
+   - Serves as template for domain customization
+   - Preserves all v2.0 enhancements in generic form
+   - Base for Claude-assisted prompt customization
+4. **`lightrag/kg/neo4j_impl.py`** - Improved graph visualization query logic
+5. **`lightrag/lightrag.py`** - Added post-processing cache configuration
+6. **`lightrag/utils.py`** - Enhanced cache system for post-processing
+7. **`lightrag/chunk_post_processor.py`** - Cache-aware chunk processing
 
 ### **Advanced Operation Files**:
-7. **`lightrag/advanced_operate.py`** - Enhanced query operations with detailed retrieval tracking, advanced semantic chunking, hybrid mix mode
-8. **`lightrag/advanced_lightrag.py`** - Production-ready LightRAG wrapper with comprehensive logging, query metrics, and enhanced features
-9. **`lightrag/NewChunkingScript.py`** - Advanced semantic chunking script with markdown header analysis and webhook integration
+8. **`lightrag/advanced_operate.py`** - Enhanced query operations with detailed retrieval tracking, advanced semantic chunking, hybrid mix mode
+9. **`lightrag/advanced_lightrag.py`** - Production-ready LightRAG wrapper with comprehensive logging, query metrics, and enhanced features
+10. **`lightrag/NewChunkingScript.py`** - Advanced semantic chunking script with markdown header analysis and webhook integration
+
+### **LLM & Embedding Enhancements**:
+11. **`lightrag/llm/anthropic.py`** - Enhanced with VoyageAI embedding integration for superior embedding quality:
+    - Replaced default embeddings with VoyageAI's state-of-the-art embedding models
+    - Support for all Voyage 3 models including voyage-3-large, voyage-3, voyage-3-lite
+    - Domain-specific models: voyage-code-3, voyage-finance-2, voyage-law-2
+    - Configurable output dimensions (256, 512, 1024, 2048) and data types
+    - Full support for query/document input types and truncation handling
 
 ### **API & Database Management**:
-10. **`lightrag/api/routers/document_routes.py`** - Multi-database cascade delete implementation with UI-based deletion support
-11. **Response models** - Updated for multi-database cleanup results
+12. **`lightrag/api/routers/document_routes.py`** - Multi-database cascade delete implementation with UI-based deletion support
+13. **Response models** - Updated for multi-database cleanup results
 
 ### **Enhanced Filtering System** (DEPRECATED - Needs Further Calibration):
-12. **`lightrag/kg/utils/enhanced_relationship_classifier.py`** - Classification engine **(⚠️ DEPRECATED - requires calibration)**
-13. **`lightrag/kg/utils/relationship_filter_metrics.py`** - Performance tracking **(⚠️ DEPRECATED)**
-14. **`lightrag/kg/utils/adaptive_threshold_optimizer.py`** - Learning system **(⚠️ DEPRECATED)**
-15. **`lightrag/kg/utils/enhanced_filter_logger.py`** - Logging infrastructure **(⚠️ DEPRECATED)**
+14. **`lightrag/kg/utils/enhanced_relationship_classifier.py`** - Classification engine **(⚠️ DEPRECATED - requires calibration)**
+15. **`lightrag/kg/utils/relationship_filter_metrics.py`** - Performance tracking **(⚠️ DEPRECATED)**
+16. **`lightrag/kg/utils/adaptive_threshold_optimizer.py`** - Learning system **(⚠️ DEPRECATED)**
+17. **`lightrag/kg/utils/enhanced_filter_logger.py`** - Logging infrastructure **(⚠️ DEPRECATED)**
 
 ### **Frontend & UI Enhancements**:
-16. **`lightrag_webui/src/features/DocumentManager.tsx`** - Enhanced with batch delete functionality and UI controls
-17. **`lightrag_webui/src/components/documents/BatchDeleteDialog.tsx`** - Complete batch deletion interface with progress tracking
-18. **`lightrag_webui/src/components/documents/DeleteDocumentDialog.tsx`** - Individual document deletion with confirmation flow
-19. **`lightrag_webui/src/api/lightrag.ts`** - Updated API client with multi-database cleanup support
-20. **`lightrag_webui/src/locales/en.json`** - Enhanced UI language support for deletion operations
+18. **`lightrag_webui/src/features/DocumentManager.tsx`** - Enhanced with batch delete functionality and UI controls
+19. **`lightrag_webui/src/components/documents/BatchDeleteDialog.tsx`** - Complete batch deletion interface with progress tracking
+20. **`lightrag_webui/src/components/documents/DeleteDocumentDialog.tsx`** - Individual document deletion with confirmation flow
+21. **`lightrag_webui/src/api/lightrag.ts`** - Updated API client with multi-database cleanup support
+22. **`lightrag_webui/src/locales/en.json`** - Enhanced UI language support for deletion operations
 
 ### **Documentation & Implementation Guides**:
-21. **`docs/v2.0/RELATIONSHIP_TYPE_PRESERVATION_IMPLEMENTATION.md`** - Complete implementation guide
-22. **`docs/v2.0/GRAPH_VISUALIZER_FIX_DOCUMENTATION.md`** - Multi-document graph support
-23. **`docs/v2.0/POST_PROCESSING_CACHE_IMPLEMENTATION.md`** - Caching system documentation
-24. **`docs/v2.0/POSTGRES_CASCADE_DELETE_IMPLEMENTATION.md`** - PostgreSQL deletion guide
-25. **`docs/v2.0/NEO4J_CASCADE_DELETE_IMPLEMENTATION.md`** - Neo4j deletion implementation
-26. **`docs/v2.0/ENHANCED_RELATIONSHIP_VALIDATION_README.md`** - Filtering system guide **(⚠️ DEPRECATED)**
+23. **`docs/v2.0/RELATIONSHIP_TYPE_PRESERVATION_IMPLEMENTATION.md`** - Complete implementation guide
+24. **`docs/v2.0/GRAPH_VISUALIZER_FIX_DOCUMENTATION.md`** - Multi-document graph support
+25. **`docs/v2.0/POST_PROCESSING_CACHE_IMPLEMENTATION.md`** - Caching system documentation
+26. **`docs/v2.0/POSTGRES_CASCADE_DELETE_IMPLEMENTATION.md`** - PostgreSQL deletion guide
+27. **`docs/v2.0/NEO4J_CASCADE_DELETE_IMPLEMENTATION.md`** - Neo4j deletion implementation
+28. **`docs/v2.0/ENHANCED_RELATIONSHIP_VALIDATION_README.md`** - Filtering system guide **(⚠️ DEPRECATED)**
 
 ### **Configuration & Testing**:
-27. **`env.example`** - Updated with all new configuration options
-28. **`test_filtering.py`** - Comprehensive relationship processing tests **(⚠️ DEPRECATED)**
-29. **`requirements.txt`** - Updated dependencies for enhanced features
+29. **`env.example`** - Updated with all new configuration options
+30. **`test_filtering.py`** - Comprehensive relationship processing tests **(⚠️ DEPRECATED)**
+31. **`requirements.txt`** - Updated dependencies for enhanced features
+32. **`lightrag/api/requirements.txt`** - Added psutil and fuzzywuzzy dependencies
 
 ### **Frontend Assets**:
-30. **`lightrag_webui/`** - Multi-graph support for complex visualizations with enhanced deletion interfaces
-31. **Frontend builds** - Deployed assets supporting multiple edge types and UI deletion workflows
+33. **`lightrag_webui/`** - Multi-graph support for complex visualizations with enhanced deletion interfaces
+34. **Frontend builds** - Deployed assets supporting multiple edge types and UI deletion workflows
 
 ## ✅ Version 2.0 Ready for Production
 

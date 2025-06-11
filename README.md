@@ -124,6 +124,27 @@ result = await rag.aquery("How does n8n integrate with workflows?")
 #          n8n -[RUNS_ON]-> Reddit Scrape To DB Workflow
 ```
 
+### 🎨 Domain-Specific Customization
+
+LightRAG v2.0 includes powerful prompt customization capabilities. The system comes with domain-specific prompts, but you can easily adapt it for your use case:
+
+#### **Quick Customization Steps**:
+
+1. **Switch to generic prompts**:
+   ```bash
+   # Replace domain-specific prompts with generic version
+   cp lightrag/genericPrompt.py lightrag/prompt.py
+   ```
+
+2. **Customize with Claude**:
+   Ask Claude: *"Here is the genericPrompt.py file and information about my domain: [your domain details]. Please rewrite this to be hyper-focused on [your use case], keeping the exact same structure but changing examples and terminology to match my data."*
+
+#### **Benefits**:
+- 🎯 **Domain-optimized** entity extraction and relationship identification
+- 🔧 **Maintains v2.0 structure** - all semantic preservation features preserved  
+- 🤖 **AI-assisted** - Claude can adapt for any domain (legal, medical, technical, etc.)
+- ⚡ **Production-ready** - proven architecture with domain-specific improvements
+
 ### 📖 Implementation Documentation
 
 - [PR Summary & Complete Changelog](./PR_SUMMARY.md)
