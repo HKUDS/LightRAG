@@ -34,8 +34,32 @@ from .base import (
     QueryParam,
 )
 from .prompt import GRAPH_FIELD_SEP, PROMPTS
+from .validation import (
+    DocumentValidator,
+    EntityValidator,
+    RelationshipValidator,
+    DatabaseValidator,
+    validate_extraction_results,
+    log_validation_errors,
+    ContentSanitizer,
+)
+from .monitoring import (
+    get_performance_monitor,
+    get_processing_monitor,
+    get_enhanced_logger,
+    start_system_monitoring,
+)
 import time
 from dotenv import load_dotenv
+from lightrag.kg.utils.relationship_registry import standardize_relationship_type
+from .chunk_post_processor import _post_process_chunk_relationships
+from .constants import (
+    DEFAULT_ENABLE_CHUNK_POST_PROCESSING,
+    DEFAULT_CHUNK_VALIDATION_BATCH_SIZE,
+    DEFAULT_CHUNK_VALIDATION_TIMEOUT,
+    DEFAULT_LOG_VALIDATION_CHANGES,
+    DEFAULT_ENABLE_ENTITY_CLEANUP,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -51,6 +75,18 @@ def chunking_by_token_size(
     overlap_token_size: int = 128,
     max_token_size: int = 1024,
 ) -> list[dict[str, Any]]:
+    # Validate input content
+    validation_result = DocumentValidator.validate_content(content)
+    if not validation_result.is_valid:
+        logger.error("Content validation failed during chunking")
+        log_validation_errors(validation_result.errors, "chunking")
+        # Use original content but log the issues
+        
+    # Use sanitized content if available
+    if validation_result.sanitized_data:
+        content = validation_result.sanitized_data["content"]
+        logger.debug(f"Using sanitized content: {validation_result.sanitized_data['original_length']} -> {validation_result.sanitized_data['sanitized_length']} chars")
+    
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
     if split_by_character:
@@ -63,38 +99,52 @@ def chunking_by_token_size(
         else:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
-                if len(_tokens) > max_token_size:
-                    for start in range(
-                        0, len(_tokens), max_token_size - overlap_token_size
-                    ):
-                        chunk_content = tokenizer.decode(
-                            _tokens[start : start + max_token_size]
-                        )
-                        new_chunks.append(
-                            (min(max_token_size, len(_tokens) - start), chunk_content)
-                        )
-                else:
+                if len(_tokens) <= max_token_size:
                     new_chunks.append((len(_tokens), chunk))
-        for index, (_len, chunk) in enumerate(new_chunks):
-            results.append(
-                {
-                    "tokens": _len,
-                    "content": chunk.strip(),
-                    "chunk_order_index": index,
-                }
-            )
+                else:
+                    # If chunk is still too large, split it recursively
+                    sub_chunks = chunking_by_token_size(
+                        tokenizer, chunk, None, False, overlap_token_size, max_token_size
+                    )
+                    for sub_chunk in sub_chunks:
+                        new_chunks.append((len(tokenizer.encode(sub_chunk["content"])), sub_chunk["content"]))
     else:
-        for index, start in enumerate(
-            range(0, len(tokens), max_token_size - overlap_token_size)
-        ):
-            chunk_content = tokenizer.decode(tokens[start : start + max_token_size])
-            results.append(
-                {
-                    "tokens": min(max_token_size, len(tokens) - start),
-                    "content": chunk_content.strip(),
-                    "chunk_order_index": index,
-                }
-            )
+        new_chunks = []
+        for start in range(0, len(tokens), max_token_size - overlap_token_size):
+            end = min(start + max_token_size, len(tokens))
+            chunk_tokens = tokens[start:end]
+            chunk_content = tokenizer.decode(chunk_tokens)
+            if chunk_content.strip():
+                new_chunks.append((len(chunk_tokens), chunk_content))
+
+    for token_count, chunk_content in new_chunks:
+        # Validate each chunk
+        chunk_data = {
+            "content": chunk_content,
+            "tokens": token_count,
+        }
+        
+        chunk_validation = DocumentValidator.validate_chunk(chunk_data)
+        if chunk_validation.sanitized_data:
+            results.append(chunk_validation.sanitized_data)
+        else:
+            # Fall back to original data if validation fails
+            results.append(chunk_data)
+            if chunk_validation.has_errors():
+                log_validation_errors(chunk_validation.errors, f"chunk_{len(results)}")
+
+    if not results:
+        # Final fallback
+        chunk_data = {
+            "content": content,
+            "tokens": len(tokens),
+        }
+        chunk_validation = DocumentValidator.validate_chunk(chunk_data)
+        if chunk_validation.sanitized_data:
+            results.append(chunk_validation.sanitized_data)
+        else:
+            results.append(chunk_data)
+
     return results
 
 
@@ -186,13 +236,27 @@ async def _handle_single_entity_extraction(
         )
         return None
 
-    return dict(
+    # Create entity data structure
+    entity_data = dict(
         entity_name=entity_name,
         entity_type=entity_type,
         description=entity_description,
         source_id=chunk_key,
         file_path=file_path,
     )
+    
+    # Validate and sanitize entity data
+    validation_result = EntityValidator.validate_entity(entity_data)
+    
+    if validation_result.has_errors():
+        logger.warning(f"Entity validation failed for '{entity_name}': {[e.message for e in validation_result.errors]}")
+        return None
+    
+    if validation_result.has_warnings():
+        logger.debug(f"Entity validation warnings for '{entity_name}': {[w.message for w in validation_result.warnings]}")
+    
+    # Return sanitized data if available, otherwise original
+    return validation_result.sanitized_data if validation_result.sanitized_data else entity_data
 
 
 async def _handle_single_relationship_extraction(
@@ -200,44 +264,74 @@ async def _handle_single_relationship_extraction(
     chunk_key: str,
     file_path: str = "unknown_source",
 ):
-    if len(record_attributes) < 5 or '"relationship"' not in record_attributes[0]:
+    logger.debug(f"Attempting to parse relationship record: {record_attributes} from chunk {chunk_key}")
+    
+    # Check if this is a content_keywords record (expected and should be ignored)
+    if len(record_attributes) >= 1 and '"content_keywords"' in record_attributes[0]:
+        logger.debug(f"Skipping content_keywords record: {record_attributes[0] if len(record_attributes) > 0 else 'empty'}")
         return None
-    # add this record as edge
-    source = clean_str(record_attributes[1])
-    target = clean_str(record_attributes[2])
+    
+    if len(record_attributes) != 7 or '"relationship"' not in record_attributes[0]: # Strict check for 7 elements
+        # Only log as error if it's not a known content_keywords record
+        if len(record_attributes) >= 1 and '"content_keywords"' not in record_attributes[0]:
+            logger.warning(f"Malformed relationship record (expected 7 attributes, got {len(record_attributes)}): {record_attributes} from chunk {chunk_key}")
+        return None
 
-    # Normalize source and target entity names
-    source = normalize_extracted_info(source, is_entity=True)
-    target = normalize_extracted_info(target, is_entity=True)
+    source = normalize_extracted_info(clean_str(record_attributes[1]), is_entity=True)
+    target = normalize_extracted_info(clean_str(record_attributes[2]), is_entity=True)
+
+    if not source or not target:
+        logger.warning(f"Missing source or target for relationship in chunk {chunk_key}: src='{source}', tgt='{target}'")
+        return None
     if source == target:
-        logger.debug(
-            f"Relationship source and target are the same in: {record_attributes}"
-        )
+        logger.debug(f"Self-loop relationship skipped for {source} in chunk {chunk_key}")
         return None
 
-    edge_description = clean_str(record_attributes[3])
-    edge_description = normalize_extracted_info(edge_description)
+    edge_description = normalize_extracted_info(clean_str(record_attributes[3]))
+    raw_rel_type = clean_str(record_attributes[4]) # Actual relationship type from LLM
+    edge_keywords = normalize_extracted_info(clean_str(record_attributes[5]), is_entity=False) # Actual keywords
+    edge_keywords = edge_keywords.replace("，", ",") # Normalize Chinese comma
 
-    edge_keywords = normalize_extracted_info(
-        clean_str(record_attributes[4]), is_entity=True
-    )
-    edge_keywords = edge_keywords.replace("，", ",")
+    raw_strength_str = record_attributes[6].strip('"').strip("'")
+    weight = 0.5  # Default weight
+    try:
+        extracted_weight = float(raw_strength_str)
+        if 0.0 <= extracted_weight <= 1.0: # LLM asked for 0-1
+            weight = extracted_weight
+        elif 0.0 <= extracted_weight <= 10.0: # LLM might give 0-10
+            weight = extracted_weight / 10.0
+            logger.debug(f"Normalized relationship strength {raw_strength_str} to {weight} for {source}-{target}")
+        else:
+            logger.warning(f"Relationship strength '{raw_strength_str}' for {source}-{target} is out of 0.0-10.0 range. Defaulting to {weight}.")
+    except ValueError:
+        logger.warning(f"Invalid relationship strength '{raw_strength_str}' for {source}-{target}. Defaulting to {weight}.")
+    
+    logger.info(f"Parsed relationship from chunk {chunk_key}: {source} -[{raw_rel_type}({weight})]-> {target}, Keywords: '{edge_keywords}'")
 
-    edge_source_id = chunk_key
-    weight = (
-        float(record_attributes[-1].strip('"').strip("'"))
-        if is_float_regex(record_attributes[-1].strip('"').strip("'"))
-        else 1.0
-    )
-    return dict(
+    relationship_data = dict(
         src_id=source,
         tgt_id=target,
         weight=weight,
         description=edge_description,
+        relationship_type=raw_rel_type, # This is the raw type from LLM
+        rel_type=raw_rel_type, # CRITICAL: This field was missing - needed for LLM post-processing
         keywords=edge_keywords,
-        source_id=edge_source_id,
+        source_id=chunk_key,
         file_path=file_path,
     )
+    
+    # Validate and sanitize relationship data
+    validation_result = RelationshipValidator.validate_relationship(relationship_data)
+    
+    if validation_result.has_errors():
+        logger.warning(f"Relationship validation failed for '{source}' -> '{target}': {[e.message for e in validation_result.errors]}")
+        return None
+    
+    if validation_result.has_warnings():
+        logger.debug(f"Relationship validation warnings for '{source}' -> '{target}': {[w.message for w in validation_result.warnings]}")
+    
+    # Return sanitized data if available, otherwise original
+    return validation_result.sanitized_data if validation_result.sanitized_data else relationship_data
 
 
 async def _merge_nodes_then_upsert(
@@ -249,257 +343,1059 @@ async def _merge_nodes_then_upsert(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
 ):
-    """Get existing nodes from knowledge graph use name,if exists, merge data, else create, then upsert."""
-    already_entity_types = []
-    already_source_ids = []
-    already_description = []
-    already_file_paths = []
+    # Initialize monitoring
+    perf_monitor = get_performance_monitor()
+    proc_monitor = get_processing_monitor()
+    enhanced_logger = get_enhanced_logger("lightrag.node_merge")
+    
+    with perf_monitor.measure("merge_nodes_upsert", entity_name=entity_name, nodes_count=len(nodes_data)):
+        enhanced_logger.debug(f"Merging {len(nodes_data)} nodes for entity: {entity_name}")
+        
+        try:
+            logger.debug(f"Starting node merge for entity: {entity_name} with {len(nodes_data)} data entries")
+            
+            # Data validation for input parameters
+            if not entity_name or not entity_name.strip():
+                logger.error(f"Invalid entity_name provided: '{entity_name}'")
+                raise ValueError("Entity name cannot be empty or None")
+            
+            if not nodes_data or not isinstance(nodes_data, list):
+                logger.error(f"Invalid nodes_data provided for entity '{entity_name}': {type(nodes_data)}")
+                raise ValueError("nodes_data must be a non-empty list")
+            
+            # Validate that all nodes_data entries have required fields
+            for i, node_data in enumerate(nodes_data):
+                required_fields = ["entity_type", "description", "source_id", "file_path"]
+                for field in required_fields:
+                    if field not in node_data:
+                        logger.warning(f"Missing required field '{field}' in nodes_data[{i}] for entity '{entity_name}', using default")
+                        # Set default values for missing fields
+                        if field == "entity_type":
+                            node_data[field] = "UNKNOWN"
+                        elif field == "description":
+                            node_data[field] = f"Entity: {entity_name}"
+                        elif field == "source_id":
+                            node_data[field] = "unknown_source"
+                        elif field == "file_path":
+                            node_data[field] = "unknown_file"
+                            
+            already_entity_types = []
+            already_source_ids = []
+            already_description = []
+            already_file_paths = []
 
-    already_node = await knowledge_graph_inst.get_node(entity_name)
-    if already_node:
-        already_entity_types.append(already_node["entity_type"])
-        already_source_ids.extend(
-            split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
-        )
-        already_file_paths.extend(
-            split_string_by_multi_markers(already_node["file_path"], [GRAPH_FIELD_SEP])
-        )
-        already_description.append(already_node["description"])
+            already_node = await knowledge_graph_inst.get_node(entity_name)
+            if already_node is not None:
+                logger.debug(f"Found existing node for entity: {entity_name}")
+                
+                # Validate existing node has required fields
+                if "entity_type" not in already_node:
+                    logger.warning(f"Existing node for '{entity_name}' missing entity_type, using 'UNKNOWN'")
+                    already_node["entity_type"] = "UNKNOWN"
+                
+                already_entity_types.append(already_node["entity_type"])
+                
+                # Add data validation to prevent KeyError - get source_id with empty string default if missing
+                if already_node.get("source_id") is not None:
+                    already_source_ids.extend(
+                        split_string_by_multi_markers(already_node["source_id"], [GRAPH_FIELD_SEP])
+                    )
+                else:
+                    logger.debug(f"No source_id found in existing node for entity '{entity_name}'")
+                    
+                # Add data validation to prevent KeyError - get file_path with empty string default if missing
+                if already_node.get("file_path") is not None:
+                    already_file_paths.extend(
+                        split_string_by_multi_markers(already_node["file_path"], [GRAPH_FIELD_SEP])
+                    )
+                else:
+                    logger.debug(f"No file_path found in existing node for entity '{entity_name}'")
+                    
+                # Add data validation to prevent KeyError - get description with empty string default if missing
+                if already_node.get("description") is not None:
+                    already_description.append(already_node["description"])
+                else:
+                    logger.debug(f"No description found in existing node for entity '{entity_name}'")
+            else:
+                logger.debug(f"No existing node found for entity: {entity_name}")
 
-    entity_type = sorted(
-        Counter(
-            [dp["entity_type"] for dp in nodes_data] + already_entity_types
-        ).items(),
-        key=lambda x: x[1],
-        reverse=True,
-    )[0][0]
-    description = GRAPH_FIELD_SEP.join(
-        sorted(set([dp["description"] for dp in nodes_data] + already_description))
-    )
-    source_id = GRAPH_FIELD_SEP.join(
-        set([dp["source_id"] for dp in nodes_data] + already_source_ids)
-    )
-    file_path = GRAPH_FIELD_SEP.join(
-        set([dp["file_path"] for dp in nodes_data] + already_file_paths)
-    )
-
-    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
-
-    num_fragment = description.count(GRAPH_FIELD_SEP) + 1
-    num_new_fragment = len(set([dp["description"] for dp in nodes_data]))
-
-    if num_fragment > 1:
-        if num_fragment >= force_llm_summary_on_merge:
-            status_message = f"LLM merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
-            logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
-            description = await _handle_entity_relation_summary(
-                entity_name,
-                description,
-                global_config,
-                pipeline_status,
-                pipeline_status_lock,
-                llm_response_cache,
+            entity_type = sorted(
+                Counter(
+                    [dp["entity_type"] for dp in nodes_data] + already_entity_types
+                ).items(),
+                key=lambda x: x[1],
+                reverse=True,
+            )[0][0]
+            
+            description = GRAPH_FIELD_SEP.join(
+                sorted(set([dp["description"] for dp in nodes_data] + already_description))
             )
-        else:
-            status_message = f"Merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
-            logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+            source_id = GRAPH_FIELD_SEP.join(
+                set([dp["source_id"] for dp in nodes_data] + already_source_ids)
+            )
+            file_path = GRAPH_FIELD_SEP.join(
+                set([dp["file_path"] for dp in nodes_data] + already_file_paths)
+            )
 
-    node_data = dict(
-        entity_id=entity_name,
-        entity_type=entity_type,
-        description=description,
-        source_id=source_id,
-        file_path=file_path,
-        created_at=int(time.time()),
-    )
-    await knowledge_graph_inst.upsert_node(
-        entity_name,
-        node_data=node_data,
-    )
-    node_data["entity_name"] = entity_name
-    return node_data
+            force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
+
+            num_fragment = description.count(GRAPH_FIELD_SEP) + 1
+            num_new_fragment = len(set([dp["description"] for dp in nodes_data]))
+
+            if num_fragment > 1:
+                if num_fragment >= force_llm_summary_on_merge:
+                    status_message = f"LLM merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+                    logger.info(status_message)
+                    if pipeline_status is not None and pipeline_status_lock is not None:
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = status_message
+                            pipeline_status["history_messages"].append(status_message)
+                    description = await _handle_entity_relation_summary(
+                        entity_name,
+                        description,
+                        global_config,
+                        pipeline_status,
+                        pipeline_status_lock,
+                        llm_response_cache,
+                    )
+                else:
+                    status_message = f"Merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+                    logger.info(status_message)
+                    if pipeline_status is not None and pipeline_status_lock is not None:
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = status_message
+                            pipeline_status["history_messages"].append(status_message)
+
+            node_data = dict(
+                entity_id=entity_name,
+                entity_type=entity_type,
+                description=description,
+                source_id=source_id,
+                file_path=file_path,
+                created_at=int(time.time()),
+            )
+            
+            # Validate node data before database upsert
+            db_validation_result = DatabaseValidator.validate_node_data(node_data)
+            if db_validation_result.has_errors():
+                logger.error(f"Database validation failed for node '{entity_name}': {[e.message for e in db_validation_result.errors]}\"")
+                raise ValueError(f"Node data validation failed for '{entity_name}'")
+            
+            if db_validation_result.has_warnings():
+                logger.warning(f"Database validation warnings for node '{entity_name}': {[w.message for w in db_validation_result.warnings]}")
+            
+            # Monitor database upsert operation
+            with perf_monitor.measure("database_upsert_node", entity_name=entity_name):
+                try:
+                    await knowledge_graph_inst.upsert_node(entity_name, node_data)
+                    proc_monitor.record_database_operation(success=True)
+                    enhanced_logger.debug(f"Successfully upserted node: {entity_name}")
+                except Exception as e:
+                    proc_monitor.record_database_operation(success=False)
+                    enhanced_logger.error(f"Failed to upsert node {entity_name}: {str(e)}")
+                    raise
+            
+            logger.debug(f"Successfully upserted node for entity: {entity_name} with type: {entity_type}")
+            
+            node_data["entity_name"] = entity_name
+            return node_data
+            
+        except Exception as e:
+            logger.error(f"Error in _merge_nodes_then_upsert for entity '{entity_name}': {str(e)}")
+            logger.error(f"nodes_data: {nodes_data}")
+            # Return a basic node structure to prevent pipeline failure
+            basic_node_data = {
+                "entity_id": entity_name,
+                "entity_name": entity_name,
+                "entity_type": "UNKNOWN",
+                "description": f"Entity: {entity_name}",
+                "source_id": "error_recovery",
+                "file_path": "unknown_file",
+                "created_at": int(time.time()),
+            }
+            
+            # Try to upsert the basic node structure
+            try:
+                await knowledge_graph_inst.upsert_node(entity_name, node_data=basic_node_data)
+                logger.info(f"Created fallback node for entity '{entity_name}' after error recovery")
+                return basic_node_data
+            except Exception as fallback_error:
+                logger.error(f"Failed to create fallback node for entity '{entity_name}': {str(fallback_error)}")
+                raise e  # Re-raise the original exception if fallback fails
 
 
 async def _merge_edges_then_upsert(
     src_id: str,
     tgt_id: str,
-    edges_data: list[dict],
+    edges: list[dict], # List of edge dicts from extract_entities_with_types
     knowledge_graph_inst: BaseGraphStorage,
-    global_config: dict,
+    global_config: dict[str, Any],
     pipeline_status: dict = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
-):
-    if src_id == tgt_id:
+) -> dict | None:
+    """
+    Merge and upsert a single edge relationship between two entities.
+    
+    Args:
+        src_id: Source entity ID
+        tgt_id: Target entity ID
+        edges: List of edge data dictionaries to merge
+        knowledge_graph_inst: Knowledge graph storage instance
+        global_config: Global configuration dictionary
+        pipeline_status: Pipeline status dictionary
+        pipeline_status_lock: Lock for pipeline status
+        llm_response_cache: LLM response cache
+        
+    Returns:
+        Merged edge data dictionary or None if merge fails
+    """
+    if not edges:
+        logger.warning(f"No edges provided to merge for {src_id} -> {tgt_id}")
+        return None
+        
+    logger.debug(f"Merging {len(edges)} edge instances for {src_id} -> {tgt_id}")
+
+    # Initialize merged_edge with defaults that clearly indicate no specific type yet.
+    # We will iterate through all edges to find the best type.
+    merged_edge = {
+        "src_id": src_id,
+        "tgt_id": tgt_id,
+        "weight": 0.0,
+        "description": "",
+        "keywords": [], 
+        "source_id": [], 
+        "file_path": [], 
+        "relationship_type": "related", # Default human-readable std
+        "original_type": "related",     # Default LLM raw
+        "neo4j_type": "RELATED",        # Default Neo4j label
+        "created_at": int(time.time())
+    }
+    
+    # Iterate through all edge instances to merge their properties
+    all_original_types = []
+    all_neo4j_types = []
+
+    for i, edge_instance in enumerate(edges):
+        logger.debug(f"Processing instance {i+1}/{len(edges)} for merge {src_id}->{tgt_id}: "
+                     f"original_type='{edge_instance.get('original_type')}', "
+                     f"rel_type='{edge_instance.get('relationship_type')}', " # This is human-readable-std from advanced_operate
+                     f"neo4j_type='{edge_instance.get('neo4j_type')}'")
+
+        merged_edge["weight"] += float(edge_instance.get("weight", 0.5))
+
+        if edge_instance.get("description"):
+            if merged_edge["description"]:
+                merged_edge["description"] += f"{GRAPH_FIELD_SEP}{edge_instance['description']}"
+            else:
+                merged_edge["description"] = edge_instance["description"]
+        
+        # Keywords merging (ensure this is robust)
+        new_keywords = edge_instance.get("keywords", [])
+        current_keywords_list = merged_edge.get("keywords", [])
+        if not isinstance(current_keywords_list, list): 
+            current_keywords_list = [str(current_keywords_list)] if current_keywords_list else []
+        
+        if isinstance(new_keywords, str): 
+            new_keywords = [kw.strip() for kw in new_keywords.split(',') if kw.strip()]
+        elif not isinstance(new_keywords, list): 
+            new_keywords = [str(new_keywords).strip()] if new_keywords else []
+        
+        temp_new_keywords_list = []
+        for item_kw in new_keywords:
+            if isinstance(item_kw, str): 
+                temp_new_keywords_list.append(item_kw.strip())
+            elif isinstance(item_kw, list): # Should not happen if advanced_operate is correct
+                for sub_item_kw in item_kw: 
+                    temp_new_keywords_list.append(str(sub_item_kw).strip())
+            else: 
+                temp_new_keywords_list.append(str(item_kw).strip())
+        current_keywords_list.extend(filter(None, temp_new_keywords_list))
+        merged_edge["keywords"] = current_keywords_list
+
+        # source_id merging (robust source_id merging logic)
+        new_source_ids = edge_instance.get("source_id", [])
+        current_source_ids_list = merged_edge.get("source_id", [])
+        if not isinstance(current_source_ids_list, list): 
+            current_source_ids_list = [str(current_source_ids_list)] if current_source_ids_list else []
+        if isinstance(new_source_ids, str): 
+            new_source_ids = [sid.strip() for sid in new_source_ids.split(GRAPH_FIELD_SEP) if sid.strip()]
+        elif not isinstance(new_source_ids, list): 
+            new_source_ids = [str(new_source_ids).strip()] if new_source_ids else []
+        current_source_ids_list.extend(filter(None, new_source_ids))
+        merged_edge["source_id"] = current_source_ids_list
+
+        # file_path merging (robust file_path merging logic)
+        new_file_paths = edge_instance.get("file_path", [])
+        current_file_paths_list = merged_edge.get("file_path", [])
+        if not isinstance(current_file_paths_list, list): 
+            current_file_paths_list = [str(current_file_paths_list)] if current_file_paths_list else []
+        if isinstance(new_file_paths, str): 
+            new_file_paths = [fp.strip() for fp in new_file_paths.split(GRAPH_FIELD_SEP) if fp.strip()]
+        elif not isinstance(new_file_paths, list): 
+            new_file_paths = [str(new_file_paths).strip()] if new_file_paths else []
+        current_file_paths_list.extend(filter(None, new_file_paths))
+        merged_edge["file_path"] = current_file_paths_list
+
+        # Collect all types encountered for this merge group
+        if edge_instance.get("original_type"):
+            all_original_types.append(edge_instance["original_type"])
+        if edge_instance.get("neo4j_type"):
+            all_neo4j_types.append(edge_instance["neo4j_type"])
+    
+    # Finalize list fields
+    merged_edge["keywords"] = list(set(merged_edge["keywords"])) # Deduplicate
+    merged_edge["source_id"] = GRAPH_FIELD_SEP.join(list(set(merged_edge["source_id"])))
+    merged_edge["file_path"] = GRAPH_FIELD_SEP.join(list(set(merged_edge["file_path"])))
+
+    # Determine the best type information after iterating all instances
+    # Prioritize non-generic, non-None types.
+    # If multiple specific types exist, this logic might need further refinement (e.g., most frequent, or manual resolution flag)
+    final_original_type = "related"
+    final_neo4j_type = "RELATED"
+    
+    # Find a specific original_type if one exists
+    specific_original_types = [ot for ot in all_original_types if ot and ot.lower() != "related"]
+    if specific_original_types:
+        final_original_type = specific_original_types[0] # Take the first specific one encountered
+        logger.debug(f"For {src_id}->{tgt_id}, selected specific original_type: '{final_original_type}' from {specific_original_types}")
+    
+    # Find a specific neo4j_type if one exists
+    specific_neo4j_types = [nt for nt in all_neo4j_types if nt and nt != "RELATED"]
+    if specific_neo4j_types:
+        final_neo4j_type = specific_neo4j_types[0] # Take the first specific one
+        logger.debug(f"For {src_id}->{tgt_id}, selected specific neo4j_type: '{final_neo4j_type}' from {specific_neo4j_types}")
+    elif final_original_type != "related": # If no specific neo4j_type, but specific original_type, use enhanced standardization
+        # Use the enhanced standardize_relationship_type function from the registry
+        final_neo4j_type = standardize_relationship_type(final_original_type)
+        logger.debug(f"For {src_id}->{tgt_id}, enhanced standardization: '{final_original_type}' -> '{final_neo4j_type}'")
+
+    merged_edge["original_type"] = final_original_type
+    merged_edge["neo4j_type"] = final_neo4j_type
+    merged_edge["relationship_type"] = final_neo4j_type.lower().replace('_', ' ') # Human-readable from final Neo4j type
+    merged_edge["rel_type"] = merged_edge["relationship_type"] # Ensure consistency
+
+    # Description summarization logic
+    force_llm_summary_on_merge = global_config.get("force_llm_summary_on_merge", 6) 
+    num_fragment = merged_edge["description"].count(GRAPH_FIELD_SEP) + 1
+    if num_fragment > 1 and num_fragment >= force_llm_summary_on_merge:
+        merged_edge["description"] = await _handle_entity_relation_summary(
+             f"({src_id}, {tgt_id})", merged_edge["description"], global_config, 
+             pipeline_status, pipeline_status_lock, llm_response_cache
+        )
+    
+    # Final log before passing to upsert_edge
+    logger.info(f"Final merged_edge for {src_id}->{tgt_id}: "
+                f"neo4j_type='{merged_edge['neo4j_type']}', "
+                f"rel_type='{merged_edge['rel_type']}', "
+                f"original_type='{merged_edge['original_type']}', "
+                f"weight={merged_edge['weight']:.2f}")
+
+    try:
+        # Pass the fully populated merged_edge dictionary to upsert_edge
+        await knowledge_graph_inst.upsert_edge(src_id, tgt_id, merged_edge)
+        logger.debug(f"Successfully upserted edge: {src_id} -> {tgt_id}")
+        
+        # Return the merged edge data for vector database updates
+        return merged_edge
+        
+    except Exception as e:
+        logger.error(f"Failed to upsert edge {src_id} -> {tgt_id}: {str(e)}")
         return None
 
-    already_weights = []
-    already_source_ids = []
-    already_description = []
-    already_keywords = []
-    already_file_paths = []
 
-    if await knowledge_graph_inst.has_edge(src_id, tgt_id):
-        already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
-        # Handle the case where get_edge returns None or missing fields
-        if already_edge:
-            # Get weight with default 0.0 if missing
-            already_weights.append(already_edge.get("weight", 0.0))
+def _calculate_string_similarity(str1: str, str2: str) -> float:
+    """
+    Calculate string similarity using simple character-based approach.
+    Returns similarity ratio between 0 and 1.
+    """
+    if not str1 or not str2:
+        return 0.0
+    
+    str1, str2 = str1.lower().strip(), str2.lower().strip()
+    if str1 == str2:
+        return 1.0
+    
+    # Simple approach: count common characters
+    common_chars = sum((str1.count(c) == str2.count(c)) and str1.count(c) > 0 for c in set(str1 + str2))
+    total_chars = len(set(str1 + str2))
+    
+    return common_chars / total_chars if total_chars > 0 else 0.0
 
-            # Get source_id with empty string default if missing or None
-            if already_edge.get("source_id") is not None:
-                already_source_ids.extend(
-                    split_string_by_multi_markers(
-                        already_edge["source_id"], [GRAPH_FIELD_SEP]
-                    )
+
+def _is_abstract_entity(entity_name: str) -> bool:
+    """
+    Check if an entity name represents an abstract concept rather than a concrete entity.
+    """
+    name = entity_name.lower().strip()
+    
+    # Only filter the most obviously abstract patterns - be conservative
+    ABSTRACT_ENTITY_PATTERNS = [
+        r'^(users|user)$',  # Generic user references only
+        r'^parallel technical tasks$',  # Specific abstract concept
+        r'^business research$',  # Specific abstract concept
+        r'^data transformations$',  # Specific abstract concept
+    ]
+    
+    return any(re.match(pattern, name) for pattern in ABSTRACT_ENTITY_PATTERNS)
+
+
+# Legacy confidence scoring removed - LLM provides more accurate quality assessment
+
+
+def _validate_relationship_context(src_id: str, tgt_id: str, rel_type: str, description: str) -> bool:
+    """
+    Validate relationship context to filter out low-quality or abstract relationships.
+    """
+    # Filter relationships where entities are too similar
+    similarity = _calculate_string_similarity(src_id, tgt_id)
+    if similarity > 0.8:
+        return False
+    
+    # Check if either entity is abstract
+    if _is_abstract_entity(src_id) or _is_abstract_entity(tgt_id):
+        # Require higher standards for abstract entities
+        concrete_indicators = ['uses', 'calls', 'accesses', 'creates', 'debugs', 'runs_on']
+        return (rel_type.lower() in concrete_indicators and 
+                len(description) > 50)
+    
+    # Filter very generic relationships with poor descriptions
+    if rel_type.lower() in ['related', 'associated_with'] and len(description) < 30:
+        return False
+    
+    return True
+
+
+def _apply_relationship_quality_filter(all_edges: dict, global_config: dict = None) -> dict:
+    """
+    Enhanced post-processing filter with type-specific intelligence and comprehensive metrics.
+    
+    Uses data-driven relationship categorization based on actual Neo4j patterns to apply
+    type-specific confidence thresholds and validation rules.
+    
+    Args:
+        all_edges: Dictionary of edge lists keyed by sorted edge tuples
+        
+    Returns:
+        Filtered dictionary with type-aware relationship filtering
+    """
+    # Check configuration and import the enhanced classifier
+    global_config = global_config or {}
+    
+    # Debug: Log what's actually in the config
+    logger.debug(f"Enhanced filter config check: enable_enhanced_relationship_filter = {global_config.get('enable_enhanced_relationship_filter', 'NOT_FOUND')}")
+    
+    enable_enhanced_filter = global_config.get("enable_enhanced_relationship_filter", False)  # Default to False
+    log_classification = global_config.get("log_relationship_classification", False)
+    track_performance = global_config.get("relationship_filter_performance_tracking", True)
+    monitoring_mode = global_config.get("enhanced_filter_monitoring_mode", False)
+    
+    use_enhanced_classification = False
+    classifier = None
+    enhanced_logger = None
+    
+    # Initialize enhanced logging ONLY if enhanced filter is enabled
+    if enable_enhanced_filter:
+        try:
+            from .kg.utils.enhanced_filter_logger import get_enhanced_filter_logger
+            console_logging = global_config.get("enhanced_filter_console_logging", False)
+            enhanced_logger = get_enhanced_filter_logger(enable_console_logging=console_logging)
+        except ImportError:
+            enhanced_logger = None
+    
+    if enable_enhanced_filter:
+        try:
+            from .kg.utils.enhanced_relationship_classifier import EnhancedRelationshipClassifier
+            classifier = EnhancedRelationshipClassifier()
+            use_enhanced_classification = True
+            logger.debug("Using enhanced type-specific relationship filtering")
+        except ImportError as e:
+            logger.warning(f"Enhanced classifier not available, falling back to basic filtering: {e}")
+            if enhanced_logger:
+                enhanced_logger.log_error("EnhancedClassifier", e, "Failed to import enhanced classifier")
+    else:
+        logger.debug("Enhanced relationship filtering disabled by configuration")
+        return all_edges  # Return original edges without any filtering
+    
+    # Fallback abstract/generic relationship types for basic filtering
+    ABSTRACT_RELATIONSHIPS = {
+        'implements', 'supports', 'enables', 'involves', 'includes', 
+        'contains', 'related', 'part_of', 'applies_to', 'affects',
+        'investigates', 'analyzes', 'optimizes', 'facilitates'
+    }
+    
+    # Define synonym pairs to detect redundant relationships
+    SYNONYM_CONCEPTS = [
+        {'web scraping', 'data extraction'},
+        {'email communication', 'gmail'},
+        {'client data management', 'sail pos'},
+        {'information retrieval', 'data processing'},
+        {'workflow automation', 'automation'},
+        {'ai assistance', 'google gemini chat model'},
+        {'screen sharing', 'remote collaboration'}
+    ]
+    
+    filtered_edges = {}
+    filter_stats = {
+        'abstract_relationships': 0,
+        'synonym_relationships': 0,
+        'low_quality_relationships': 0,
+        'abstract_entities': 0,
+        'low_confidence': 0,
+        'context_validation': 0,
+        'type_specific_filtered': 0,
+        'total_before': 0,
+        'total_after': 0
+    }
+    
+    # Enhanced statistics for type-specific filtering
+    if use_enhanced_classification:
+        filter_stats.update({
+            'technical_core_filtered': 0,
+            'development_operations_filtered': 0,
+            'system_interactions_filtered': 0,
+            'troubleshooting_support_filtered': 0,
+            'abstract_conceptual_filtered': 0,
+            'data_flow_filtered': 0,
+            'category_stats': defaultdict(lambda: {'total': 0, 'kept': 0, 'filtered': 0})
+        })
+    
+    # Log filter session start
+    total_relationships = sum(len(edges) for edges in all_edges.values())
+    if enhanced_logger:
+        enhanced_logger.log_filter_session_start(total_relationships, "enhanced" if use_enhanced_classification else "basic")
+    
+    for edge_key, edges in all_edges.items():
+        filter_stats['total_before'] += len(edges)
+        filtered_edge_list = []
+        
+        for edge in edges:
+            src_id = edge.get("src_id", "").lower()
+            tgt_id = edge.get("tgt_id", "").lower()
+            rel_type = edge.get("rel_type", "").lower()
+            weight = edge.get("weight", 0)
+            description = edge.get("description", "")
+            
+            # NEW: Enhanced type-specific filtering
+            if use_enhanced_classification:
+                classification = classifier.classify_relationship(
+                    rel_type, src_id, tgt_id, description
                 )
-
-            # Get file_path with empty string default if missing or None
-            if already_edge.get("file_path") is not None:
-                already_file_paths.extend(
-                    split_string_by_multi_markers(
-                        already_edge["file_path"], [GRAPH_FIELD_SEP]
-                    )
-                )
-
-            # Get description with empty string default if missing or None
-            if already_edge.get("description") is not None:
-                already_description.append(already_edge["description"])
-
-            # Get keywords with empty string default if missing or None
-            if already_edge.get("keywords") is not None:
-                already_keywords.extend(
-                    split_string_by_multi_markers(
-                        already_edge["keywords"], [GRAPH_FIELD_SEP]
-                    )
-                )
-
-    # Process edges_data with None checks
-    weight = sum([dp["weight"] for dp in edges_data] + already_weights)
-    description = GRAPH_FIELD_SEP.join(
-        sorted(
-            set(
-                [dp["description"] for dp in edges_data if dp.get("description")]
-                + already_description
-            )
-        )
-    )
-
-    # Split all existing and new keywords into individual terms, then combine and deduplicate
-    all_keywords = set()
-    # Process already_keywords (which are comma-separated)
-    for keyword_str in already_keywords:
-        if keyword_str:  # Skip empty strings
-            all_keywords.update(k.strip() for k in keyword_str.split(",") if k.strip())
-    # Process new keywords from edges_data
-    for edge in edges_data:
-        if edge.get("keywords"):
-            all_keywords.update(
-                k.strip() for k in edge["keywords"].split(",") if k.strip()
-            )
-    # Join all unique keywords with commas
-    keywords = ",".join(sorted(all_keywords))
-
-    source_id = GRAPH_FIELD_SEP.join(
-        set(
-            [dp["source_id"] for dp in edges_data if dp.get("source_id")]
-            + already_source_ids
-        )
-    )
-    file_path = GRAPH_FIELD_SEP.join(
-        set(
-            [dp["file_path"] for dp in edges_data if dp.get("file_path")]
-            + already_file_paths
-        )
-    )
-
-    for need_insert_id in [src_id, tgt_id]:
-        if not (await knowledge_graph_inst.has_node(need_insert_id)):
-            # # Discard this edge if the node does not exist
-            # if need_insert_id == src_id:
-            #     logger.warning(
-            #         f"Discard edge: {src_id} - {tgt_id} | Source node missing"
-            #     )
-            # else:
-            #     logger.warning(
-            #         f"Discard edge: {src_id} - {tgt_id} | Target node missing"
-            #     )
-            # return None
-            await knowledge_graph_inst.upsert_node(
-                need_insert_id,
-                node_data={
-                    "entity_id": need_insert_id,
-                    "source_id": source_id,
-                    "description": description,
-                    "entity_type": "UNKNOWN",
-                    "file_path": file_path,
-                    "created_at": int(time.time()),
-                },
-            )
-
-    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
-
-    num_fragment = description.count(GRAPH_FIELD_SEP) + 1
-    num_new_fragment = len(
-        set([dp["description"] for dp in edges_data if dp.get("description")])
-    )
-
-    if num_fragment > 1:
-        if num_fragment >= force_llm_summary_on_merge:
-            status_message = f"LLM merge E: {src_id} - {tgt_id} | {num_new_fragment}+{num_fragment-num_new_fragment}"
-            logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
-            description = await _handle_entity_relation_summary(
-                f"({src_id}, {tgt_id})",
-                description,
-                global_config,
-                pipeline_status,
-                pipeline_status_lock,
-                llm_response_cache,
-            )
+                
+                category = classification["category"]
+                confidence = classification["confidence"]
+                should_keep = classification["should_keep"]
+                threshold = classification["threshold"]
+                
+                # Track category statistics
+                filter_stats['category_stats'][category]['total'] += 1
+                
+                # Enhanced logging for classification results
+                if enhanced_logger and (log_classification or not should_keep):
+                    enhanced_logger.log_classification_result(rel_type, src_id, tgt_id, classification)
+                
+                # CRITICAL FIX: Check monitoring mode
+                if monitoring_mode:
+                    # In monitoring mode, log the decision but don't actually filter
+                    if not should_keep:
+                        logger.info(f"MONITORING: Would filter {src_id} -[{rel_type}]-> {tgt_id} "
+                                   f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+                        filter_stats['category_stats'][category]['filtered'] += 1
+                    else:
+                        filter_stats['category_stats'][category]['kept'] += 1
+                        if log_classification:
+                            logger.debug(f"MONITORING: Would keep {src_id} -[{rel_type}]-> {tgt_id} "
+                                       f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+                    # Always keep the relationship in monitoring mode
+                elif not should_keep:
+                    # Filter based on type-specific confidence thresholds
+                    filter_stats['type_specific_filtered'] += 1
+                    filter_stats[f'{category}_filtered'] += 1
+                    filter_stats['category_stats'][category]['filtered'] += 1
+                    
+                    if log_classification:
+                        logger.info(f"Type-specific filter: {src_id} -[{rel_type}]-> {tgt_id} "
+                                   f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+                    else:
+                        logger.debug(f"Type-specific filter: {src_id} -[{rel_type}]-> {tgt_id} "
+                                   f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+                    continue
+                else:
+                    filter_stats['category_stats'][category]['kept'] += 1
+                    if log_classification:
+                        logger.debug(f"Type-specific keep: {src_id} -[{rel_type}]-> {tgt_id} "
+                                   f"(category: {category}, confidence: {confidence:.2f}, threshold: {threshold:.2f})")
+            
+            # FALLBACK: Basic abstract relationship filtering (if enhanced classification not available)
+            elif rel_type in ABSTRACT_RELATIONSHIPS and weight < 0.8:
+                filter_stats['abstract_relationships'] += 1
+                logger.debug(f"Filtered abstract relationship: {src_id} -[{rel_type}]-> {tgt_id} (weight: {weight})")
+                continue
+            
+            # Filter 2: Remove relationships between synonymous concepts
+            is_synonym_relationship = False
+            for synonym_group in SYNONYM_CONCEPTS:
+                if src_id in synonym_group and tgt_id in synonym_group:
+                    filter_stats['synonym_relationships'] += 1
+                    logger.debug(f"Filtered synonym relationship: {src_id} -[{rel_type}]-> {tgt_id}")
+                    is_synonym_relationship = True
+                    break
+            
+            if is_synonym_relationship:
+                continue
+            
+            # Filter 3: Remove relationships involving abstract entities
+            if _is_abstract_entity(src_id) or _is_abstract_entity(tgt_id):
+                if not _validate_relationship_context(src_id, tgt_id, rel_type, description):
+                    filter_stats['abstract_entities'] += 1
+                    logger.debug(f"Filtered abstract entity relationship: {src_id} -[{rel_type}]-> {tgt_id}")
+                    continue
+            
+            # Filter 4: Apply basic weight filtering (very lenient - only filter obvious noise)
+            weight = edge.get('weight', 1.0)
+            if weight < 0.1:  # Very lenient threshold - only filter extremely low weight relationships
+                filter_stats['low_confidence'] += 1
+                logger.debug(f"Filtered low-weight relationship: {src_id} -[{rel_type}]-> {tgt_id} (weight: {weight:.2f})")
+                continue
+            
+            # Filter 5: Skip context validation - LLM will handle this more intelligently
+            # if not _validate_relationship_context(src_id, tgt_id, rel_type, description):
+            #     filter_stats['context_validation'] += 1
+            #     logger.debug(f"Filtered context validation: {src_id} -[{rel_type}]-> {tgt_id}")
+            #     continue
+            
+            # Filter 6: Remove low-quality generic relationships (enhanced)
+            if (rel_type in ['related', 'associated_with'] and 
+                weight < 0.7 and 
+                len(description) < 30):
+                filter_stats['low_quality_relationships'] += 1
+                logger.debug(f"Filtered low-quality relationship: {src_id} -[{rel_type}]-> {tgt_id}")
+                continue
+            
+            # Keep this relationship
+            filtered_edge_list.append(edge)
+        
+        if filtered_edge_list:
+            filtered_edges[edge_key] = filtered_edge_list
+        
+        filter_stats['total_after'] += len(filtered_edge_list)
+    
+    # Log enhanced filter statistics
+    removed = filter_stats['total_before'] - filter_stats['total_after']
+    if removed > 0:
+        logger.info(f"Enhanced relationship quality filter removed {removed}/{filter_stats['total_before']} relationships:")
+        
+        if use_enhanced_classification:
+            # Log type-specific filtering results
+            logger.info(f"  - Type-specific filtered: {filter_stats['type_specific_filtered']}")
+            
+            # Log category-specific statistics
+            for category, stats in filter_stats['category_stats'].items():
+                if stats['total'] > 0:
+                    retention_rate = stats['kept'] / stats['total']
+                    logger.info(f"    • {category}: {stats['kept']}/{stats['total']} kept ({retention_rate:.1%})")
         else:
-            status_message = f"Merge E: {src_id} - {tgt_id} | {num_new_fragment}+{num_fragment-num_new_fragment}"
-            logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+            # Log basic filtering results
+            logger.info(f"  - Abstract relationships: {filter_stats['abstract_relationships']}")
+        
+        # Log remaining filter categories
+        logger.info(f"  - Synonym relationships: {filter_stats['synonym_relationships']}")
+        logger.info(f"  - Abstract entities: {filter_stats['abstract_entities']}")
+        logger.info(f"  - Low confidence: {filter_stats['low_confidence']}")
+        logger.info(f"  - Context validation: {filter_stats['context_validation']}")
+        logger.info(f"  - Low-quality relationships: {filter_stats['low_quality_relationships']}")
+        
+        # Calculate quality metrics
+        if filter_stats['total_after'] > 0:
+            quality_ratio = filter_stats['total_after'] / filter_stats['total_before']
+            logger.info(f"  - Relationship retention rate: {quality_ratio:.1%}")
+            
+            # Log enhanced quality assessment and record metrics if available
+            if use_enhanced_classification and filter_stats['category_stats']:
+                # Convert to format expected by classifier
+                relationships_for_assessment = []
+                for edge_key, edges in all_edges.items():
+                    relationships_for_assessment.extend(edges)
+                
+                try:
+                    recommendations = classifier.get_validation_recommendations(relationships_for_assessment[:100])  # Sample for performance
+                    overall_quality = recommendations.get('overall_quality', 'N/A')
+                    logger.info(f"  - Overall Quality Assessment: {overall_quality}")
+                    
+                    # Enhanced logging for quality assessment
+                    if enhanced_logger:
+                        enhanced_logger.log_quality_assessment(
+                            overall_quality, 
+                            recommendations.get('category_insights', {}).get('insights', [])
+                        )
+                except Exception as e:
+                    logger.debug(f"Could not generate quality assessment: {e}")
+                    if enhanced_logger:
+                        enhanced_logger.log_error("QualityAssessment", e, "Failed to generate quality recommendations")
+                
+                # Record metrics if performance tracking is enabled
+                if track_performance:
+                    try:
+                        from .kg.utils.relationship_filter_metrics import get_filter_metrics
+                        metrics = get_filter_metrics()
+                        metrics.record_filter_session(filter_stats, filter_stats['category_stats'])
+                        
+                        # Enhanced logging for metrics collection
+                        if enhanced_logger:
+                            summary = metrics.get_session_summary()
+                            enhanced_logger.log_metrics_collection(summary)
+                        
+                        logger.debug("Recorded filter performance metrics")
+                    except Exception as e:
+                        logger.debug(f"Could not record filter metrics: {e}")
+                        if enhanced_logger:
+                            enhanced_logger.log_error("MetricsCollection", e, "Failed to record filter metrics")
+    
+    # SANITY CHECK: Detect abnormal retention rates
+    total_before = filter_stats.get('total_before', 0)
+    total_after = filter_stats.get('total_after', 0)
+    retention_rate = total_after / max(total_before, 1)
+    
+    if retention_rate > 0.95 and total_before > 10:
+        logger.warning(f"🚨 ABNORMALLY HIGH RETENTION RATE: {retention_rate:.1%} ({total_after}/{total_before})")
+        logger.warning("   This suggests the enhanced filter may not be working properly")
+        logger.warning("   Consider adjusting confidence thresholds or checking classification logic")
+    elif retention_rate < 0.5 and total_before > 10:
+        logger.warning(f"🚨 ABNORMALLY LOW RETENTION RATE: {retention_rate:.1%} ({total_after}/{total_before})")
+        logger.warning("   This suggests the enhanced filter may be too aggressive")
+        logger.warning("   Consider lowering confidence thresholds")
+    elif 0.75 <= retention_rate <= 0.9:
+        logger.info(f"✅ HEALTHY RETENTION RATE: {retention_rate:.1%} (target: 75-90%)")
+    
+    # Log filter session end with enhanced details
+    if enhanced_logger:
+        enhanced_stats = filter_stats.get('category_stats', {}) if use_enhanced_classification else None
+        enhanced_logger.log_filter_session_end(filter_stats, enhanced_stats)
+    
+    return filtered_edges
 
-    await knowledge_graph_inst.upsert_edge(
-        src_id,
-        tgt_id,
-        edge_data=dict(
-            weight=weight,
-            description=description,
-            keywords=keywords,
-            source_id=source_id,
-            file_path=file_path,
-            created_at=int(time.time()),
-        ),
-    )
 
-    edge_data = dict(
-        src_id=src_id,
-        tgt_id=tgt_id,
-        description=description,
-        keywords=keywords,
-        source_id=source_id,
-        file_path=file_path,
-        created_at=int(time.time()),
-    )
+# Legacy extraction quality logging removed - deprecated metrics no longer needed
 
-    return edge_data
+
+async def _llm_post_process_relationships(
+    document_text: str,
+    all_entities: list,
+    all_relationships: list,
+    llm_response_cache: BaseKVStorage,
+    global_config: dict
+) -> tuple[list, dict]:
+    """
+    Use LLM to post-process and validate extracted relationships for improved accuracy.
+    
+    Args:
+        document_text: Original document content for context
+        all_entities: List of extracted entities
+        all_relationships: List of extracted relationships to validate
+        llm_response_cache: Cache for LLM responses
+        global_config: Global configuration
+        
+    Returns:
+        Tuple of (validated_relationships, processing_stats)
+    """
+    if not all_relationships:
+        return [], {"total_input": 0, "validated": 0, "removed": 0}
+    
+    # Prepare entities summary (limit for token efficiency)
+    entities_summary = "\n".join([
+        f"- {e.get('entity_name', 'Unknown')}: {e.get('entity_type', 'Unknown')}" 
+        for e in all_entities[:50]  # Limit to first 50 entities
+    ])
+    
+    # Create temporary file with all relationships in JSON format for LLM to manipulate
+    import tempfile
+    import json
+    import os
+    
+    temp_file = tempfile.NamedTemporaryFile(mode='w+', suffix='.json', delete=False)
+    temp_file_path = temp_file.name
+    
+    try:
+        # Write all relationships to temporary file with original types preserved
+        relationships_data = {
+            "relationships": [
+                {
+                    "id": f"rel_{i}",
+                    "src_id": r.get('src_id', ''),
+                    "tgt_id": r.get('tgt_id', ''),
+                    "rel_type": r.get('rel_type', 'related'),
+                    "description": r.get('description', ''),
+                    "weight": r.get('weight', 0.8),
+                    "source_id": r.get('source_id', ''),
+                    "keywords": r.get('keywords', [])
+                }
+                for i, r in enumerate(all_relationships)
+            ]
+        }
+        
+        json.dump(relationships_data, temp_file, indent=2)
+        temp_file.close()
+        
+        logger.info(f"📁 Created temporary relationships file: {temp_file_path}")
+        logger.info(f"📁 File contains {len(relationships_data['relationships'])} relationships with preserved types")
+        
+        # Debug: Log first 5 relationships that went into the temp file
+        logger.info(f"🔍 First 5 relationships stored in temp file:")
+        for i, rel in enumerate(relationships_data['relationships'][:5]):
+            logger.info(f"  {i+1}. {rel['src_id']} -[{rel['rel_type']}]-> {rel['tgt_id']}")
+        
+        # Debug: Also log 5 random original relationships for comparison
+        logger.info(f"🔍 Original relationships for comparison:")
+        for i, rel in enumerate(all_relationships[:5]):
+            logger.info(f"  {i+1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}")
+        
+        # Read file content for LLM prompt
+        with open(temp_file_path, 'r') as f:
+            relationships_file_content = f.read()
+        
+        # Prepare entities summary (limit for token efficiency)  
+        entities_summary = "\n".join([
+            f"- {e.get('entity_name', 'Unknown')}: {e.get('entity_type', 'Unknown')}" 
+            for e in all_entities[:50]  # Limit to first 50 entities
+        ])
+    
+        # Simplified prompt focused ONLY on removal, NO modification
+        prompt_text = f"""You are filtering extracted relationships based on document evidence. 
+
+DOCUMENT:
+{document_text}
+
+RELATIONSHIPS TO FILTER:
+{relationships_file_content}
+
+TASK: Remove relationships that are NOT clearly supported by the document. 
+- DO NOT modify any rel_type values
+- DO NOT change field values  
+- ONLY remove entire relationship entries if unsupported
+
+Return the filtered JSON with the same exact structure. Only keep relationships with clear document evidence.
+
+Example output (keep exact same format and field values):
+```json
+{{
+  "relationships": [
+    {{
+      "id": "rel_0",
+      "src_id": "same_as_input",
+      "tgt_id": "same_as_input", 
+      "rel_type": "same_as_input",
+      "description": "same_as_input",
+      "weight": 0.9,
+      "source_id": "same_as_input",
+      "keywords": ["same_as_input"]
+    }}
+  ]
+}}
+```
+
+CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationships."""
+
+        # Call LLM for post-processing
+        logger.info(f"Starting LLM post-processing of {len(all_relationships)} relationships...")
+        
+        # Get the LLM function from global config
+        llm_func = global_config.get("llm_model_func")
+        if not llm_func:
+            raise ValueError("No LLM function available in global_config")
+        
+        # Don't use cache for this processing since it's document-specific
+        response = await llm_func(prompt_text)
+        
+        # Clean up JSON response (remove markdown formatting if present)
+        cleaned_response = response.strip()
+        if cleaned_response.startswith("```json"):
+            cleaned_response = cleaned_response[7:]
+        if cleaned_response.endswith("```"):
+            cleaned_response = cleaned_response[:-3]
+        cleaned_response = cleaned_response.strip()
+        
+        # Parse LLM response (file-based format)
+        result = json.loads(cleaned_response)
+        validated_relationships = result.get("relationships", [])
+        
+        # Calculate processing stats
+        input_count = len(all_relationships)
+        validated_count = len(validated_relationships)
+        removed_count = input_count - validated_count
+        processing_stats = {
+            "total_input": input_count,
+            "validated": validated_count,
+            "removed": removed_count,
+            "accuracy_improvement": f"File-based processing preserved {validated_count}/{input_count} relationships with original types",
+            "average_quality_score": sum(r.get("weight", 0.8) for r in validated_relationships) / len(validated_relationships) if validated_relationships else 0
+        }
+        
+        # Log results
+        logger.info(f"🎯 LLM post-processing completed:")
+        logger.info(f"  - Input relationships: {input_count}")
+        logger.info(f"  - Validated relationships: {validated_count}")
+        logger.info(f"  - Removed relationships: {removed_count}")
+        logger.info(f"  - Retention rate: {validated_count/input_count*100:.1f}%")
+        logger.info(f"  - Average quality score: {processing_stats['average_quality_score']:.1f}")
+        logger.info(f"  - Improvement: {processing_stats['accuracy_improvement']}")
+        
+        # Log examples of validated relationships with preserved types
+        logger.info(f"✅ File-based relationships with preserved types:")
+        for i, rel in enumerate(validated_relationships[:3]):
+            logger.info(f"  {i+1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}")
+        
+        # Save validated relationships to a new temp file for debugging
+        validated_file = tempfile.NamedTemporaryFile(mode='w+', suffix='_validated.json', delete=False)
+        validated_data = {"relationships": validated_relationships}
+        json.dump(validated_data, validated_file, indent=2)
+        validated_file.close()
+        logger.info(f"📁 Saved validated relationships to: {validated_file.name}")
+        
+        # Convert file-based relationships directly to expected format (NO BROKEN PRESERVATION LOGIC)
+        formatted_relationships = []
+        from lightrag.kg.utils.relationship_registry import standardize_relationship_type
+        
+        for rel in validated_relationships:
+            rel_type = rel.get("rel_type", "related")  # Should be preserved from file
+            
+            formatted_rel = {
+                "src_id": rel.get("src_id", ""),
+                "tgt_id": rel.get("tgt_id", ""),
+                "rel_type": rel_type,  # Direct from file - SHOULD be preserved!
+                "relationship_type": rel_type,  # Human-readable type for merge process
+                "original_type": rel_type,  # Original extracted type
+                "neo4j_type": standardize_relationship_type(rel_type),  # Standardized Neo4j type
+                "description": rel.get("description", ""),
+                "weight": rel.get("weight", 0.8),
+                "quality_score": rel.get("quality_score", 6),
+                "evidence": rel.get("evidence", ""),
+                "source_id": rel.get("source_id", "file_based_processing")
+            }
+            formatted_relationships.append(formatted_rel)
+        
+        # Log final formatting examples
+        logger.info(f"📝 Final formatted relationships (should preserve types):")
+        for i, rel in enumerate(formatted_relationships[:3]):
+            logger.info(f"  {i+1}. {rel['src_id']} -[{rel['rel_type']}|{rel['neo4j_type']}]-> {rel['tgt_id']}")
+        
+        # Cleanup temp files
+        try:
+            os.unlink(temp_file_path)
+            logger.info(f"🗑️ Cleaned up temp file: {temp_file_path}")
+        except Exception as e:
+            logger.warning(f"Failed to cleanup temp file {temp_file_path}: {e}")
+        
+        return formatted_relationships, processing_stats
+        
+    except json.JSONDecodeError as e:
+        logger.warning(f"LLM post-processing failed to parse JSON: {e}")
+        logger.warning(f"Raw response: {response[:500]}...")
+        logger.warning("Falling back to original relationships")
+        return all_relationships, {"error": "JSON parsing failed"}
+        
+    except Exception as e:
+        logger.error(f"LLM post-processing failed with error: {e}")
+        logger.warning("Falling back to original relationships")
+        return all_relationships, {"error": str(e)}
+    
+    finally:
+        # Ensure temp files are cleaned up
+        try:
+            if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+        except Exception:
+            pass
+
+
+def _preserve_original_relationship_metadata(original_relationships: list, validated_relationships: list) -> list:
+    """
+    Ensure LLM-validated relationships preserve their original rel_type and source_id.
+    
+    Args:
+        original_relationships: List of original extracted relationships
+        validated_relationships: List of LLM-validated relationships
+        
+    Returns:
+        List of validated relationships with preserved metadata
+    """
+    # Create mapping of original relationships by (src_id, tgt_id) for fast lookup
+    # Using normalized names for better matching
+    original_map = {}
+    for rel in original_relationships:
+        src_id = rel.get("src_id", "").strip()
+        tgt_id = rel.get("tgt_id", "").strip()
+        # Create both directions for undirected relationships
+        for key in [(src_id, tgt_id), (tgt_id, src_id)]:
+            if key not in original_map:
+                original_map[key] = rel
+    
+    logger.info(f"🔍 Relationship preservation: Created lookup map with {len(original_map)} entries")
+    
+    # Update validated relationships to preserve original metadata
+    preserved_relationships = []
+    preservation_stats = {"preserved": 0, "not_found": 0, "total": 0}
+    
+    for validated in validated_relationships:
+        preservation_stats["total"] += 1
+        src_id = validated.get("src_id", "").strip()
+        tgt_id = validated.get("tgt_id", "").strip()
+        
+        # Try to find original relationship
+        original = None
+        for key in [(src_id, tgt_id), (tgt_id, src_id)]:
+            if key in original_map:
+                original = original_map[key]
+                break
+        
+        if original:
+            # ALWAYS preserve original rel_type - LLM is converting everything to "related"
+            original_rel_type = original.get("rel_type", "related")
+            validated["rel_type"] = original_rel_type
+            
+            # Preserve original source_id for traceability
+            original_source_id = original.get("source_id", "llm_post_processed")
+            validated["source_id"] = original_source_id
+            
+            preservation_stats["preserved"] += 1
+            logger.debug(f"✅ Preserved: {src_id} -[{original_rel_type}]-> {tgt_id}")
+        else:
+            preservation_stats["not_found"] += 1
+            logger.debug(f"❌ Not found: {src_id} -[{validated.get('rel_type', 'unknown')}]-> {tgt_id}")
+        
+        preserved_relationships.append(validated)
+    
+    # Log preservation statistics
+    preserved_pct = (preservation_stats["preserved"] / preservation_stats["total"]) * 100 if preservation_stats["total"] > 0 else 0
+    logger.info(f"🔧 Relationship preservation completed:")
+    logger.info(f"  - Total relationships: {preservation_stats['total']}")
+    logger.info(f"  - Preserved original types: {preservation_stats['preserved']} ({preserved_pct:.1f}%)")
+    logger.info(f"  - Not found in original: {preservation_stats['not_found']}")
+    
+    return preserved_relationships
+
+
+def _rebuild_edges_from_validated(validated_relationships: list) -> dict:
+    """
+    Rebuild the edges dictionary from validated relationships.
+    
+    Args:
+        validated_relationships: List of validated relationships from LLM
+        
+    Returns:
+        Dictionary of edge lists keyed by sorted edge tuples
+    """
+    edges_dict = defaultdict(list)
+    
+    for rel in validated_relationships:
+        src_id = rel.get("src_id", "")
+        tgt_id = rel.get("tgt_id", "")
+        
+        if src_id and tgt_id:
+            # Create sorted edge key for undirected graph
+            edge_key = tuple(sorted([src_id, tgt_id]))
+            edges_dict[edge_key].append(rel)
+    
+    return dict(edges_dict)
 
 
 async def merge_nodes_and_edges(
@@ -514,6 +1410,7 @@ async def merge_nodes_and_edges(
     current_file_number: int = 0,
     total_files: int = 0,
     file_path: str = "unknown_source",
+    document_text: str = None,  # Add document text parameter
 ) -> None:
     """Merge nodes and edges from extraction results
 
@@ -542,7 +1439,100 @@ async def merge_nodes_and_edges(
         # Collect edges with sorted keys for undirected graph
         for edge_key, edges in maybe_edges.items():
             sorted_edge_key = tuple(sorted(edge_key))
-            all_edges[sorted_edge_key].extend(edges)
+            # Deduplicate edges based on relationship type and properties to prevent excessive processing
+            edge_signatures_seen = set()
+            for edge in edges:
+                # Create a more comprehensive signature for the edge to identify duplicates
+                # Include source_id (chunk) to prevent same relationship from same chunk being added twice
+                edge_signature = (
+                    edge.get("src_id"),
+                    edge.get("tgt_id"), 
+                    edge.get("rel_type"),
+                    edge.get("source_id"),  # Include chunk ID to prevent intra-chunk duplicates
+                    edge.get("description", "")[:100]  # More chars for better distinction
+                )
+                
+                # Check if we've already seen this exact signature in this batch
+                if edge_signature not in edge_signatures_seen:
+                    # Also check if this relationship already exists in accumulated edges
+                    existing_sigs = {(e.get("src_id"), e.get("tgt_id"), e.get("rel_type"), e.get("source_id"), e.get("description", "")[:100]) 
+                                   for e in all_edges[sorted_edge_key]}
+                    
+                    if edge_signature not in existing_sigs:
+                        all_edges[sorted_edge_key].append(edge)
+                        edge_signatures_seen.add(edge_signature)
+                    else:
+                        logger.debug(f"Skipping cross-chunk duplicate relationship: {edge_signature[0]} -> {edge_signature[1]} ({edge_signature[2]})")
+                else:
+                    logger.debug(f"Skipping intra-batch duplicate relationship: {edge_signature[0]} -> {edge_signature[1]} ({edge_signature[2]})")
+
+    # Apply basic post-processing filters to remove redundant relationships
+    # Note: Made more lenient since LLM post-processing will do the heavy lifting
+    all_edges = _apply_relationship_quality_filter(all_edges, global_config)
+
+    # Clean up orphaned entities after chunk post-processing
+    # Note: Entity cleanup can be controlled independently from chunk post-processing
+    if (global_config.get("enable_chunk_post_processing", False) and 
+        global_config.get("enable_entity_cleanup", DEFAULT_ENABLE_ENTITY_CLEANUP)):
+        from .chunk_post_processor import cleanup_orphaned_entities
+        log_changes = global_config.get("log_validation_changes", False)
+        original_entity_count = len(all_nodes)
+        all_nodes = cleanup_orphaned_entities(all_nodes, all_edges, log_changes)
+        logger.info(f"Post-processing entity cleanup: {original_entity_count} → {len(all_nodes)} entities")
+    elif global_config.get("enable_chunk_post_processing", False):
+        logger.info(f"Entity cleanup disabled: Keeping all {len(all_nodes)} entities (some may be orphaned)")
+
+    # NEW: LLM-based post-processing for enhanced accuracy
+    all_entities_list = [entity for entities in all_nodes.values() for entity in entities]
+    all_relationships_list = [edge for edges in all_edges.values() for edge in edges]
+    
+    # Simplified post-processing diagnostics (removed verbose debug logging)
+    logger.info("=== LLM Post-Processing Status ===")
+    logger.info(f"  - Entities: {len(all_entities_list)}")
+    logger.info(f"  - Relationships: {len(all_relationships_list)}")
+    logger.info(f"  - LLM processing enabled: {global_config.get('enable_llm_post_processing', True)}")
+    if document_text:
+        logger.info(f"  - Document available: {len(document_text)} chars")
+    
+    if (llm_response_cache and 
+        global_config.get("enable_llm_post_processing", True) and 
+        len(all_relationships_list) > 0 and
+        document_text):
+        
+        logger.info("✅ Starting LLM-based relationship post-processing...")
+        
+        try:
+            validated_relationships, processing_stats = await _llm_post_process_relationships(
+                document_text,
+                all_entities_list,
+                all_relationships_list,
+                llm_response_cache,
+                global_config
+            )
+            
+            # Rebuild edges from validated relationships
+            if validated_relationships:
+                all_edges = _rebuild_edges_from_validated(validated_relationships)
+                all_relationships_list = validated_relationships
+                logger.info("LLM post-processing completed successfully")
+            else:
+                logger.warning("LLM post-processing returned no relationships, keeping originals")
+                
+        except Exception as e:
+            logger.error(f"LLM post-processing failed: {e}")
+            logger.warning("Continuing with basic filtering results")
+    else:
+        logger.warning("❌ Skipping LLM post-processing due to:")
+        if not document_text:
+            logger.warning("  - No document text available")
+        if not llm_response_cache:
+            logger.warning("  - No LLM cache available")
+        if len(all_relationships_list) == 0:
+            logger.warning("  - No relationships to process")
+        if not global_config.get("enable_llm_post_processing", True):
+            logger.warning("  - LLM post-processing disabled in config")
+
+    # Legacy extraction quality logging removed - using more accurate LLM-based quality metrics instead
 
     # Centralized processing of all nodes and edges
     entities_data = []
@@ -642,222 +1632,409 @@ async def extract_entities(
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
 ) -> list:
-    use_llm_func: callable = global_config["llm_model_func"]
-    entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
+    # Initialize monitoring
+    perf_monitor = get_performance_monitor()
+    proc_monitor = get_processing_monitor()
+    enhanced_logger = get_enhanced_logger("lightrag.extraction")
+    
+    # Start processing session
+    proc_monitor.start_session()
+    proc_monitor.update_status("entity_extraction", total_files=len(chunks))
+    
+    # Define total_chunks early for use in nested functions
+    total_chunks = len(chunks)
+    
+    # Start performance monitoring for the overall extraction process
+    with perf_monitor.measure("extract_entities_total", chunks_count=len(chunks)):
+        enhanced_logger.info(f"Starting entity extraction for {len(chunks)} chunks")
+        
+        # Add llm_response_cache to global_config for post-processing
+        if llm_response_cache is not None:
+            global_config["llm_response_cache"] = llm_response_cache
+        
+        use_llm_func: callable = global_config["llm_model_func"]
+        entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 
-    ordered_chunks = list(chunks.items())
-    # add language and example number params to prompt
-    language = global_config["addon_params"].get(
-        "language", PROMPTS["DEFAULT_LANGUAGE"]
-    )
-    entity_types = global_config["addon_params"].get(
-        "entity_types", PROMPTS["DEFAULT_ENTITY_TYPES"]
-    )
-    example_number = global_config["addon_params"].get("example_number", None)
-    if example_number and example_number < len(PROMPTS["entity_extraction_examples"]):
-        examples = "\n".join(
-            PROMPTS["entity_extraction_examples"][: int(example_number)]
+        # Track processed chunks count
+        processed_chunks = 0
+        completed_chunks = 0  # Add this counter for progress tracking
+
+        ordered_chunks = list(chunks.items())
+        # add language and example number params to prompt
+        language = global_config["addon_params"].get(
+            "language", PROMPTS["DEFAULT_LANGUAGE"]
         )
-    else:
-        examples = "\n".join(PROMPTS["entity_extraction_examples"])
+        entity_types = global_config["addon_params"].get(
+            "entity_types", PROMPTS["DEFAULT_ENTITY_TYPES"]
+        )
+        example_number = global_config["addon_params"].get("example_number", None)
+        if example_number and example_number < len(PROMPTS["entity_extraction_examples"]):
+            examples = "\n".join(
+                PROMPTS["entity_extraction_examples"][: int(example_number)]
+            )
+        else:
+            examples = "\n".join(PROMPTS["entity_extraction_examples"])
 
-    example_context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=", ".join(entity_types),
-        language=language,
-    )
-    # add example's format
-    examples = examples.format(**example_context_base)
+        example_context_base = dict(
+            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+            record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
+            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+            entity_types=", ".join(entity_types),
+            language=language,
+        )
+        # add example's format
+        examples = examples.format(**example_context_base)
 
-    entity_extract_prompt = PROMPTS["entity_extraction"]
-    context_base = dict(
-        tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
-        record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
-        completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
-        entity_types=",".join(entity_types),
-        examples=examples,
-        language=language,
-    )
-
-    continue_prompt = PROMPTS["entity_continue_extraction"].format(**context_base)
-    if_loop_prompt = PROMPTS["entity_if_loop_extraction"]
-
-    processed_chunks = 0
-    total_chunks = len(ordered_chunks)
-
-    async def _process_extraction_result(
-        result: str, chunk_key: str, file_path: str = "unknown_source"
-    ):
-        """Process a single extraction result (either initial or gleaning)
-        Args:
-            result (str): The extraction result to process
-            chunk_key (str): The chunk key for source tracking
-            file_path (str): The file path for citation
-        Returns:
-            tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
-        """
-        maybe_nodes = defaultdict(list)
-        maybe_edges = defaultdict(list)
-
-        records = split_string_by_multi_markers(
-            result,
-            [context_base["record_delimiter"], context_base["completion_delimiter"]],
+        entity_extract_prompt = PROMPTS["entity_extraction"]
+        context_base = dict(
+            tuple_delimiter=PROMPTS["DEFAULT_TUPLE_DELIMITER"],
+            record_delimiter=PROMPTS["DEFAULT_RECORD_DELIMITER"],
+            completion_delimiter=PROMPTS["DEFAULT_COMPLETION_DELIMITER"],
+            entity_types=",".join(entity_types),
+            examples=examples,
+            language=language,
+            relationship_types=global_config.get("relationship_types", "related, uses, creates, implements, integrates_with, configures, troubleshoots, optimizes"),
+            relationship_examples=global_config.get("relationship_examples", "uses: for tool usage, creates: for artifact creation, implements: for feature implementation, troubleshoots: for debugging activities"),
         )
 
-        for record in records:
-            record = re.search(r"\((.*)\)", record)
-            if record is None:
-                continue
-            record = record.group(1)
-            record_attributes = split_string_by_multi_markers(
-                record, [context_base["tuple_delimiter"]]
-            )
+        continue_prompt = PROMPTS["entity_continue_extraction"].format(**context_base)
+        if_loop_prompt = PROMPTS["entity_if_loop_extraction"]
+        
+        # Define total_chunks for logging
+        total_chunks = len(chunks)
 
-            if_entities = await _handle_single_entity_extraction(
-                record_attributes, chunk_key, file_path
-            )
-            if if_entities is not None:
-                maybe_nodes[if_entities["entity_name"]].append(if_entities)
-                continue
+        async def _process_extraction_result(
+            result: str, chunk_key: str, file_path: str = "unknown_source"
+        ):
+            with perf_monitor.measure("process_extraction_result", chunk_key=chunk_key):
+                """Process a single extraction result (either initial or gleaning)
+                Args:
+                    result (str): The extraction result to process
+                    chunk_key (str): The chunk key for source tracking
+                    file_path (str): The file path for citation
+                Returns:
+                    tuple: (nodes_dict, edges_dict) containing the extracted entities and relationships
+                """
+                maybe_nodes = defaultdict(list)
+                maybe_edges = defaultdict(list)
 
-            if_relation = await _handle_single_relationship_extraction(
-                record_attributes, chunk_key, file_path
-            )
-            if if_relation is not None:
-                maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
-                    if_relation
+                records = split_string_by_multi_markers(
+                    result,
+                    [context_base["record_delimiter"], context_base["completion_delimiter"]],
                 )
 
-        return maybe_nodes, maybe_edges
+                for record in records:
+                    record = re.search(r"\((.*)\)", record)
+                    if record is None:
+                        continue
+                    record = record.group(1)
+                    record_attributes = split_string_by_multi_markers(
+                        record, [context_base["tuple_delimiter"]]
+                    )
 
-    async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
-        """Process a single chunk
-        Args:
-            chunk_key_dp (tuple[str, TextChunkSchema]):
-                ("chunk-xxxxxx", {"tokens": int, "content": str, "full_doc_id": str, "chunk_order_index": int})
-        Returns:
-            tuple: (maybe_nodes, maybe_edges) containing extracted entities and relationships
-        """
-        nonlocal processed_chunks
-        chunk_key = chunk_key_dp[0]
-        chunk_dp = chunk_key_dp[1]
-        content = chunk_dp["content"]
-        # Get file path from chunk data or use default
-        file_path = chunk_dp.get("file_path", "unknown_source")
+                    # Skip content_keywords records entirely
+                    if len(record_attributes) >= 1 and '"content_keywords"' in record_attributes[0]:
+                        logger.debug(f"Skipping content_keywords record: {record_attributes[0] if len(record_attributes) > 0 else 'empty'}")
+                        continue
 
-        # Get initial extraction
-        hint_prompt = entity_extract_prompt.format(
-            **{**context_base, "input_text": content}
-        )
+                    if_entities = await _handle_single_entity_extraction(
+                        record_attributes, chunk_key, file_path
+                    )
+                    if if_entities is not None:
+                        maybe_nodes[if_entities["entity_name"]].append(if_entities)
+                        continue
 
-        final_result = await use_llm_func_with_cache(
-            hint_prompt,
-            use_llm_func,
-            llm_response_cache=llm_response_cache,
-            cache_type="extract",
-        )
-        history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
+                    if_relation = await _handle_single_relationship_extraction(
+                        record_attributes, chunk_key, file_path
+                    )
+                    if if_relation is not None:
+                        maybe_edges[(if_relation["src_id"], if_relation["tgt_id"])].append(
+                            if_relation
+                        )
 
-        # Process initial extraction with file path
-        maybe_nodes, maybe_edges = await _process_extraction_result(
-            final_result, chunk_key, file_path
-        )
+                # Track extraction statistics
+                entities_extracted = len(maybe_nodes) if maybe_nodes else 0
+                relationships_extracted = len(maybe_edges) if maybe_edges else 0
+                
+                # Validate and track results
+                if maybe_nodes or maybe_edges:
+                    # Flatten the defaultdict structures into lists for validation
+                    entities_list = []
+                    for entity_name, entity_instances in maybe_nodes.items():
+                        entities_list.extend(entity_instances)
+                    
+                    relationships_list = []
+                    for edge_key, edge_instances in maybe_edges.items():
+                        relationships_list.extend(edge_instances)
+                    
+                    valid_entities, valid_relationships, validation_errors = validate_extraction_results(
+                        entities_list, relationships_list
+                    )
+                    
+                    # Record processing statistics
+                    proc_monitor.record_extraction_results(
+                        entities_extracted=entities_extracted,
+                        entities_validated=len(valid_entities),
+                        entities_failed=entities_extracted - len(valid_entities),
+                        relationships_extracted=relationships_extracted,
+                        relationships_validated=len(valid_relationships),
+                        relationships_failed=relationships_extracted - len(valid_relationships)
+                    )
+                    
+                    # Record validation statistics
+                    proc_monitor.record_validation_results(
+                        errors=len([e for e in validation_errors if e.severity == "error"]),
+                        warnings=len([e for e in validation_errors if e.severity == "warning"])
+                    )
+                    
+                    enhanced_logger.debug(
+                        f"Extraction results for {chunk_key}",
+                        entities_extracted=entities_extracted,
+                        entities_validated=len(valid_entities),
+                        relationships_extracted=relationships_extracted,
+                        relationships_validated=len(valid_relationships),
+                        validation_errors=len(validation_errors)
+                    )
+                    
+                    # Rebuild defaultdict structures with validated data for consistent return format
+                    validated_nodes = defaultdict(list)
+                    for entity in valid_entities:
+                        if "entity_name" in entity:
+                            validated_nodes[entity["entity_name"]].append(entity)
+                    
+                    validated_edges = defaultdict(list)
+                    for relationship in valid_relationships:
+                        if "src_id" in relationship and "tgt_id" in relationship:
+                            edge_key = (relationship["src_id"], relationship["tgt_id"])
+                            validated_edges[edge_key].append(relationship)
+                    
+                    return validated_nodes, validated_edges
+                
+                return maybe_nodes, maybe_edges
 
-        # Process additional gleaning results
-        for now_glean_index in range(entity_extract_max_gleaning):
-            glean_result = await use_llm_func_with_cache(
-                continue_prompt,
-                use_llm_func,
-                llm_response_cache=llm_response_cache,
-                history_messages=history,
-                cache_type="extract",
-            )
+        async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
+            chunk_key, chunk_dp = chunk_key_dp
+            
+            # Monitor chunk processing
+            with perf_monitor.measure("process_single_chunk", chunk_key=chunk_key):
+                enhanced_logger.debug(f"Processing chunk: {chunk_key}")
+                
+                nonlocal processed_chunks
+                content = chunk_dp["content"]
+                # Get file path from chunk data or use default
+                file_path = chunk_dp.get("file_path", "unknown_source")
 
-            history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
+                # Get initial extraction
+                hint_prompt = entity_extract_prompt.format(
+                    **{**context_base, "input_text": content}
+                )
 
-            # Process gleaning result separately with file path
-            glean_nodes, glean_edges = await _process_extraction_result(
-                glean_result, chunk_key, file_path
-            )
+                final_result = await use_llm_func_with_cache(
+                    hint_prompt,
+                    use_llm_func,
+                    llm_response_cache=llm_response_cache,
+                    cache_type="extract",
+                )
+                history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
 
-            # Merge results - only add entities and edges with new names
-            for entity_name, entities in glean_nodes.items():
-                if (
-                    entity_name not in maybe_nodes
-                ):  # Only accetp entities with new name in gleaning stage
-                    maybe_nodes[entity_name].extend(entities)
-            for edge_key, edges in glean_edges.items():
-                if (
-                    edge_key not in maybe_edges
-                ):  # Only accetp edges with new name in gleaning stage
-                    maybe_edges[edge_key].extend(edges)
+                # Process initial extraction with file path
+                maybe_nodes, maybe_edges = await _process_extraction_result(
+                    final_result, chunk_key, file_path
+                )
 
-            if now_glean_index == entity_extract_max_gleaning - 1:
-                break
+                # Process additional gleaning results
+                for now_glean_index in range(entity_extract_max_gleaning):
+                    glean_result = await use_llm_func_with_cache(
+                        continue_prompt,
+                        use_llm_func,
+                        llm_response_cache=llm_response_cache,
+                        history_messages=history,
+                        cache_type="extract",
+                    )
 
-            if_loop_result: str = await use_llm_func_with_cache(
-                if_loop_prompt,
-                use_llm_func,
-                llm_response_cache=llm_response_cache,
-                history_messages=history,
-                cache_type="extract",
-            )
-            if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
-            if if_loop_result != "yes":
-                break
+                    history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
 
-        processed_chunks += 1
-        entities_count = len(maybe_nodes)
-        relations_count = len(maybe_edges)
-        log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+                    # Process gleaning result separately with file path
+                    glean_nodes, glean_edges = await _process_extraction_result(
+                        glean_result, chunk_key, file_path
+                    )
 
-        # Return the extracted nodes and edges for centralized processing
-        return maybe_nodes, maybe_edges
+                    # Merge results - only add entities and edges with new names
+                    for entity_name, entities in glean_nodes.items():
+                        if (
+                            entity_name not in maybe_nodes
+                        ):  # Only accetp entities with new name in gleaning stage
+                            maybe_nodes[entity_name].extend(entities)
+                    for edge_key, edges in glean_edges.items():
+                        if (
+                            edge_key not in maybe_edges
+                        ):  # Only accetp edges with new name in gleaning stage
+                            maybe_edges[edge_key].extend(edges)
 
-    # Get max async tasks limit from global_config
-    llm_model_max_async = global_config.get("llm_model_max_async", 4)
-    semaphore = asyncio.Semaphore(llm_model_max_async)
+                    if now_glean_index == entity_extract_max_gleaning - 1:
+                        break
 
-    async def _process_with_semaphore(chunk):
-        async with semaphore:
-            return await _process_single_content(chunk)
+                    if_loop_result: str = await use_llm_func_with_cache(
+                        if_loop_prompt,
+                        use_llm_func,
+                        llm_response_cache=llm_response_cache,
+                        history_messages=history,
+                        cache_type="extract",
+                    )
+                    if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
+                    if if_loop_result != "yes":
+                        break
 
-    tasks = []
-    for c in ordered_chunks:
-        task = asyncio.create_task(_process_with_semaphore(c))
-        tasks.append(task)
+                processed_chunks += 1
+                entities_count = len(maybe_nodes)
+                relations_count = len(maybe_edges)
+                log_message = f"Chunk {processed_chunks} of {total_chunks} extracted {entities_count} Ent + {relations_count} Rel"
+                logger.info(log_message)
+                if pipeline_status is not None:
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
-    # Wait for tasks to complete or for the first exception to occur
-    # This allows us to cancel remaining tasks if any task fails
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+                # Apply chunk-level relationship post-processing if enabled
+                if global_config.get("enable_chunk_post_processing", DEFAULT_ENABLE_CHUNK_POST_PROCESSING):
+                    try:
+                        maybe_edges = await _post_process_chunk_relationships(
+                            content,
+                            maybe_edges,
+                            maybe_nodes,
+                            use_llm_func,
+                            chunk_key,
+                            global_config
+                        )
+                    except Exception as e:
+                        logger.warning(f"Chunk post-processing failed for {chunk_key}: {e}")
+                        logger.info("Continuing with original relationships")
 
-    # Check if any task raised an exception
-    for task in done:
-        if task.exception():
-            # If a task failed, cancel all pending tasks
-            # This prevents unnecessary processing since the parent function will abort anyway
-            for pending_task in pending:
-                pending_task.cancel()
+                # Return the extracted nodes and edges for centralized processing
+                return maybe_nodes, maybe_edges
 
-            # Wait for cancellation to complete
-            if pending:
-                await asyncio.wait(pending)
+        # Get max async tasks limit from global_config
+        llm_model_max_async = global_config.get("llm_model_max_async", 4)
+        semaphore = asyncio.Semaphore(llm_model_max_async)
 
-            # Re-raise the exception to notify the caller
-            raise task.exception()
+        async def _process_with_semaphore(chunk):
+            async with semaphore:
+                nonlocal completed_chunks, processed_chunks
+                
+                # Monitor individual chunk processing with semaphore
+                with perf_monitor.measure("chunk_with_semaphore", chunk_key=chunk[0]):
+                    try:
+                        result = await _process_single_content(chunk)
+                        
+                        # Update progress
+                        completed_chunks += 1
+                        progress = completed_chunks / len(chunks)
+                        proc_monitor.update_status(
+                            "entity_extraction", 
+                            current_file=chunk[0],
+                            progress=progress,
+                            completed_files=completed_chunks,
+                            total_files=len(chunks)
+                        )
+                        
+                        # Record successful chunk processing
+                        proc_monitor.record_chunk_processing(processed=1, failed=0)
+                        enhanced_logger.debug(f"Completed chunk {chunk[0]} ({completed_chunks}/{len(chunks)})")
+                        
+                        return result
+                    except Exception as e:
+                        # Record failed chunk processing
+                        proc_monitor.record_chunk_processing(processed=0, failed=1)
+                        enhanced_logger.error(f"Failed to process chunk {chunk[0]}: {str(e)}")
+                        raise
 
-    # If all tasks completed successfully, collect results
-    chunk_results = [task.result() for task in tasks]
+        # Enhanced error handling for task processing
+        tasks = []
+        failed_chunks = []
+        successful_results = []
+        # Change default to fail-fast for all-or-nothing processing
+        enable_graceful_degradation = global_config.get("enable_graceful_degradation", False)
+        
+        for c in ordered_chunks:
+            task = asyncio.create_task(_process_with_semaphore(c))
+            tasks.append(task)
 
-    # Return the chunk_results for later processing in merge_nodes_and_edges
-    return chunk_results
+        # Process tasks with enhanced error handling and recovery
+        if enable_graceful_degradation:
+            # Graceful degradation mode: fail on ANY chunk failure (0% tolerance)
+            logger.info(f"Processing {len(tasks)} chunks with graceful degradation enabled (0% failure tolerance)")
+            
+            # Wait for all tasks to complete
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED)
+            
+            for i, task in enumerate(done):
+                try:
+                    if task.exception():
+                        failed_chunks.append((i, ordered_chunks[i], str(task.exception())))
+                        logger.error(f"Chunk {i} failed: {str(task.exception())}")
+                        
+                    else:
+                        result = task.result()
+                        successful_results.append(result)
+                        
+                except Exception as e:
+                    logger.error(f"Error processing task {i}: {str(e)}")
+                    failed_chunks.append((i, ordered_chunks[i], str(e)))
+            
+            # Fail immediately if ANY chunks failed (0% tolerance)
+            if failed_chunks:
+                failure_rate = len(failed_chunks) / len(tasks) * 100
+                logger.error(f"Pipeline failed: {len(failed_chunks)}/{len(tasks)} chunks failed ({failure_rate:.1f}% failure rate)")
+                
+                # Log detailed failure information for debugging
+                failure_types = {}
+                for chunk_idx, chunk_data, error_msg in failed_chunks:
+                    error_type = "general"
+                    if "rate" in error_msg.lower() and "limit" in error_msg.lower():
+                        error_type = "rate_limit"
+                    elif "timeout" in error_msg.lower():
+                        error_type = "timeout"
+                    elif "connection" in error_msg.lower() or "network" in error_msg.lower():
+                        error_type = "network"
+                    elif "total_chunks" in error_msg.lower():
+                        error_type = "variable_error"
+                        
+                    failure_types[error_type] = failure_types.get(error_type, 0) + 1
+                
+                logger.error(f"Failure breakdown: {failure_types}")
+                raise RuntimeError(f"Entity extraction failed: {len(failed_chunks)}/{len(tasks)} chunks failed. All chunks must succeed for processing to continue.")
+            else:
+                logger.info("All chunks processed successfully")
+                
+            chunk_results = successful_results
+            
+        else:
+            # Fail-fast mode: default behavior - stop on first failure
+            logger.info(f"Processing {len(tasks)} chunks with fail-fast mode (recommended)")
+            
+            # Wait for tasks to complete or for the first exception to occur
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+            # Check if any task raised an exception
+            for task in done:
+                if task.exception():
+                    # If a task failed, cancel all pending tasks
+                    for pending_task in pending:
+                        pending_task.cancel()
+
+                    # Wait for cancellation to complete
+                    if pending:
+                        await asyncio.wait(pending)
+
+                    # Re-raise the exception to notify the caller
+                    logger.error(f"Chunk processing failed in fail-fast mode: {str(task.exception())}")
+                    raise task.exception()
+
+            # If all tasks completed successfully, collect results
+            chunk_results = [task.result() for task in tasks]
+
+        # Return the chunk_results for later processing in merge_nodes_and_edges
+        return chunk_results
 
 
 async def kg_query(

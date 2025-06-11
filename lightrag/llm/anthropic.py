@@ -32,11 +32,14 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
 )
+# ⚡ IMPORTING FROM: lightrag.py ⚡
 from lightrag.utils import (
     safe_unicode_decode,
     logger,
 )
 from lightrag.api import __api_version__
+from typing import Any, Optional, List, Dict  # Added imports
+from ..base import BaseLLM  # Import the base class
 
 
 # Custom exception for retry mechanism
@@ -209,7 +212,7 @@ async def claude_3_haiku_complete(
     )
 
 
-# Embedding function (placeholder, as Anthropic does not provide embeddings)
+# Embedding function (updated to fully support all Voyage 3 models and features)
 @retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -219,18 +222,34 @@ async def claude_3_haiku_complete(
 )
 async def anthropic_embed(
     texts: list[str],
-    model: str = "voyage-3",  # Default to voyage-3 as a good general-purpose model
+    model: str = "voyage-large-3", 
     base_url: str = None,
     api_key: str = None,
+    input_type: str = "document",
+    truncation: bool = True,
+    output_dimension: int = None,
+    output_dtype: str = "float"
 ) -> np.ndarray:
     """
-    Generate embeddings using Voyage AI since Anthropic doesn't provide native embedding support.
+    Generate embeddings using Voyage AI embedding models.
 
     Args:
         texts: List of text strings to embed
-        model: Voyage AI model name (e.g., "voyage-3", "voyage-3-large", "voyage-code-3")
-        base_url: Optional custom base URL (not used for Voyage AI)
+        model: Voyage AI model name. Supported models include:
+               - voyage-3-large (best general-purpose, 1024 default dims)
+               - voyage-3 (balanced general-purpose, 1024 dims)
+               - voyage-3-lite (optimized for latency & cost, 512 dims)
+               - voyage-code-3 (optimized for code, 1024 default dims)
+               - voyage-finance-2 (optimized for finance, 1024 dims)
+               - voyage-law-2 (optimized for legal, 1024 dims)
+        base_url: Optional custom base URL (not used by Voyage AI client)
         api_key: API key for Voyage AI (defaults to VOYAGE_API_KEY environment variable)
+        input_type: Type of the input. Options: None, "query", "document"
+        truncation: Whether to truncate inputs that exceed context length
+        output_dimension: Dimension of output embeddings. 
+                          voyage-3-large and voyage-code-3 support: 256, 512, 1024 (default), 2048
+        output_dtype: Data type for embeddings. Options: "float", "int8", "uint8", "binary", "ubinary"
+                     (int8, uint8, binary, ubinary only supported by voyage-3-large and voyage-code-3)
 
     Returns:
         numpy array of shape (len(texts), embedding_dimension) containing the embeddings
@@ -245,19 +264,48 @@ async def anthropic_embed(
 
     try:
         # Initialize Voyage AI client
+        logger.debug(f"Creating Voyage AI client for model: {model}")
         voyage_client = voyageai.Client(api_key=api_key)
 
+        # Set up embedding parameters
+        embed_params = {
+            "model": model,
+            "input_type": input_type,
+            "truncation": truncation
+        }
+        
+        # Add optional parameters if specified
+        if output_dimension is not None:
+            # Verify output_dimension is valid for the model
+            if model in ["voyage-3-large", "voyage-code-3"]:
+                valid_dims = [256, 512, 1024, 2048]
+                if output_dimension not in valid_dims:
+                    logger.warning(f"Invalid output_dimension {output_dimension} for {model}. Using default.")
+                else:
+                    embed_params["output_dimension"] = output_dimension
+            else:
+                logger.warning(f"Model {model} doesn't support custom dimensions. Using default.")
+        
+        # Set output dtype if it's a valid option
+        valid_dtypes = ["float"]
+        if model in ["voyage-3-large", "voyage-code-3"]:
+            valid_dtypes.extend(["int8", "uint8", "binary", "ubinary"])
+        
+        if output_dtype in valid_dtypes:
+            embed_params["output_dtype"] = output_dtype
+        else:
+            logger.warning(f"Output dtype {output_dtype} not supported for {model}. Using float.")
+        
+        logger.debug(f"Embedding parameters: {embed_params}")
+        
         # Get embeddings
-        result = voyage_client.embed(
-            texts,
-            model=model,
-            input_type="document",  # Assuming document context; could be made configurable
-        )
+        result = voyage_client.embed(texts, **embed_params)
 
-        # Convert list of embeddings to numpy array
+        # Convert to numpy array
         embeddings = np.array(result.embeddings, dtype=np.float32)
 
         logger.debug(f"Generated embeddings for {len(texts)} texts using {model}")
+        logger.debug(f"Total tokens processed: {result.total_tokens}")
         verbose_debug(f"Embedding shape: {embeddings.shape}")
 
         return embeddings
@@ -267,7 +315,7 @@ async def anthropic_embed(
         raise
 
 
-# Optional: a helper function to get available embedding models
+# Updated to include all available Voyage models as of 2025
 def get_available_embedding_models() -> dict[str, dict]:
     """
     Returns a dictionary of available Voyage AI embedding models and their properties.
@@ -275,37 +323,132 @@ def get_available_embedding_models() -> dict[str, dict]:
     return {
         "voyage-3-large": {
             "context_length": 32000,
-            "dimension": 1024,
-            "description": "Best general-purpose and multilingual",
+            "dimensions": [256, 512, 1024, 2048], # 1024 is default
+            "output_dtypes": ["float", "int8", "uint8", "binary", "ubinary"],
+            "description": "Best general-purpose and multilingual"
         },
         "voyage-3": {
             "context_length": 32000,
-            "dimension": 1024,
-            "description": "General-purpose and multilingual",
+            "dimensions": [1024],
+            "output_dtypes": ["float"],
+            "description": "Optimized for general-purpose and multilingual retrieval"
         },
         "voyage-3-lite": {
             "context_length": 32000,
-            "dimension": 512,
-            "description": "Optimized for latency and cost",
+            "dimensions": [512],
+            "output_dtypes": ["float"],
+            "description": "Optimized for latency and cost"
         },
         "voyage-code-3": {
             "context_length": 32000,
-            "dimension": 1024,
-            "description": "Optimized for code",
+            "dimensions": [256, 512, 1024, 2048], # 1024 is default
+            "output_dtypes": ["float", "int8", "uint8", "binary", "ubinary"],
+            "description": "Optimized for code retrieval"
         },
         "voyage-finance-2": {
             "context_length": 32000,
-            "dimension": 1024,
-            "description": "Optimized for finance",
+            "dimensions": [1024],
+            "output_dtypes": ["float"],
+            "description": "Optimized for finance retrieval and RAG"
         },
         "voyage-law-2": {
             "context_length": 16000,
-            "dimension": 1024,
-            "description": "Optimized for legal",
-        },
-        "voyage-multimodal-3": {
-            "context_length": 32000,
-            "dimension": 1024,
-            "description": "Multimodal text and images",
-        },
+            "dimensions": [1024],
+            "output_dtypes": ["float"],
+            "description": "Optimized for legal retrieval and RAG"
+        }
     }
+
+
+# Define the AnthropicLLM class
+class AnthropicLLM(BaseLLM):
+    """
+    Implementation of the BaseLLM interface for Anthropic models.
+    """
+    def __init__(
+        self,
+        model: str = "claude-3-haiku-20240307",
+        api_key: str | None = None,
+        base_url: str | None = None,
+        token_tracker: Any | None = None,
+        **kwargs: Any,
+    ):
+        """
+        Initialize the AnthropicLLM client.
+
+        Args:
+            model: The Anthropic model ID to use (e.g., "claude-3-haiku-20240307").
+            api_key: Anthropic API key. If None, uses ANTHROPIC_API_KEY env var.
+            base_url: Optional base URL for the Anthropic API.
+            token_tracker: Optional token tracking object (Note: Anthropic API doesn't return token counts).
+            **kwargs: Additional default arguments for the Anthropic API call.
+        """
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url
+        self.token_tracker = token_tracker # Store but note Anthropic limitations
+        self.default_kwargs = kwargs
+
+    async def generate(self, prompt: str, **kwargs) -> str:
+        """
+        Generate text using the Anthropic API without history.
+
+        Args:
+            prompt: The prompt text to send to the model.
+            **kwargs: Additional arguments to pass to the Anthropic API, overriding defaults.
+
+        Returns:
+            The generated text (as a string, handling potential streaming).
+        """
+        merged_kwargs = {**self.default_kwargs, **kwargs}
+        response_stream = await anthropic_complete_if_cache(
+            model=self.model,
+            prompt=prompt,
+            system_prompt=None,
+            history_messages=None,
+            base_url=self.base_url,
+            api_key=self.api_key,
+            **merged_kwargs,
+        )
+
+        # Consume the async iterator to get the full string
+        full_response = ""
+        async for chunk in response_stream:
+            full_response += chunk
+        return full_response
+
+    async def generate_with_history(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+        **kwargs
+    ) -> str:
+        """
+        Generate text using the Anthropic API with conversation history.
+
+        Args:
+            prompt: The prompt text to send to the model.
+            system_prompt: Optional system prompt to set context.
+            history_messages: Optional conversation history.
+            **kwargs: Additional arguments to pass to the Anthropic API, overriding defaults.
+
+        Returns:
+            The generated text (as a string, handling potential streaming).
+        """
+        merged_kwargs = {**self.default_kwargs, **kwargs}
+        response_stream = await anthropic_complete_if_cache(
+            model=self.model,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            history_messages=history_messages or [],
+            base_url=self.base_url,
+            api_key=self.api_key,
+            **merged_kwargs,
+        )
+
+        # Consume the async iterator to get the full string
+        full_response = ""
+        async for chunk in response_stream:
+            full_response += chunk
+        return full_response
