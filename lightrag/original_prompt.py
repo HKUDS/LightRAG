@@ -14,7 +14,9 @@ PROMPTS["DEFAULT_ENTITY_TYPES"] = ["organization", "person", "geo", "event", "ca
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
-PROMPTS["entity_extraction"] = """---Goal---
+PROMPTS[
+    "entity_extraction"
+] = """---Goal---
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
 Use {language} as output language.
 
@@ -151,7 +153,8 @@ Description List: {description_list}
 Output:
 """
 
-PROMPTS["entity_continue_extraction"] = """
+PROMPTS["entity_continue_extraction"] = (
+    """
 MANY entities and relationships were missed in the last extraction.
 
 ---Remember Steps---
@@ -182,8 +185,10 @@ Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_
 
 Add them below using the same format:\n
 """.strip()
+)
 
-PROMPTS["entity_if_loop_extraction"] = """
+PROMPTS["entity_if_loop_extraction"] = (
+    """
 ---Goal---'
 
 It appears some entities may have still been missed.
@@ -192,12 +197,15 @@ It appears some entities may have still been missed.
 
 Answer ONLY by `YES` OR `NO` if there are still entities that need to be added.
 """.strip()
+)
 
 PROMPTS["fail_response"] = (
     "Sorry, I'm not able to provide an answer to that question.[no-context]"
 )
 
-PROMPTS["rag_response"] = """---Role---
+PROMPTS[
+    "rag_response"
+] = """---Role---
 
 You are a helpful assistant responding to user query about Knowledge Graph and Document Chunks provided in JSON format below.
 
@@ -231,7 +239,9 @@ When handling relationships with timestamps:
 
 Response:"""
 
-PROMPTS["keywords_extraction"] = """---Role---
+PROMPTS[
+    "keywords_extraction"
+] = """---Role---
 
 You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query and conversation history.
 
@@ -298,7 +308,9 @@ Output:
 #############################""",
 ]
 
-PROMPTS["naive_rag_response"] = """---Role---
+PROMPTS[
+    "naive_rag_response"
+] = """---Role---
 
 You are a helpful assistant responding to user query about Document Chunks provided provided in JSON format below.
 
