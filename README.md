@@ -39,9 +39,7 @@
 </div>
 
 ## 🎉 News
-
-- [X] [2025.11.06]🚀**v2.0.0 PRODUCTION READY**: Major breakthrough in semantic relationship extraction! LightRAG now preserves 100% of semantic relationship types with 96.8% accuracy, supports multi-database cascade deletion, intelligent LLM caching (60-80% cost reduction), and complete web UI document management. See [full release details](#version-20-features).
-- [X] [2025.06.04]🎯📢**MAJOR UPDATE**: LightRAG now preserves semantic relationship types with 96.8% accuracy through advanced LLM post-processing. See [Relationship Type Preservation Guide](./docs/v2.0/RELATIONSHIP_TYPE_PRESERVATION_IMPLEMENTATION.md).
+- [X] [2025.06.05]🎯📢LightRAG now supports multi-modal data handling through MinerU integration, enabling comprehensive document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-mineru-integration) for details.
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
 - [X] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
@@ -70,89 +68,6 @@
 *Figure 2: LightRAG Retrieval and Querying Flowchart - Img Caption : [Source](https://learnopencv.com/lightrag/)*
 
 </details>
-
-## Version 2.0 Features
-
-LightRAG v2.0.0 represents a **fundamental breakthrough** in semantic knowledge extraction and management. This production-ready release transforms LightRAG from basic entity linking into a sophisticated semantic relationship understanding platform.
-
-### 🚀 Key Achievements
-
-#### 1. **Semantic Relationship Preservation** (100% Type Accuracy)
-- **Problem Solved**: Fixed critical bug that converted all semantic relationships to generic "related"
-- **Solution**: Advanced LLM post-processing with file-based chunk validation
-- **Results**: 
-  - ✅ 96.8% relationship retention (153/158 relationships preserved)
-  - ✅ 100% semantic type preservation (no more generic conversions)
-  - ✅ 35+ specific relationship types maintained throughout pipeline
-
-**Before**: `Entity A ---[related]---> Entity B`  
-**After**: `Reddit Scrape ---[runs_on]---> n8n`, `API ---[calls_api]---> FastAPI Server`
-
-#### 2. **Post-Processing Cache System** (60-80% Cost Reduction)
-- **Intelligent Caching**: Content-based caching for chunk-level LLM validation
-- **Cost Impact**: 60-80% reduction in LLM calls during reprocessing
-- **Performance**: 3-5x faster document reprocessing with 100% consistency
-
-#### 3. **Multi-Database Cascade Delete**
-- **PostgreSQL Support**: Complete cleanup with smart multi-document entity management
-- **Neo4j Support**: Full graph integrity maintenance across deletions
-- **Multi-Database Coordination**: Simultaneous cleanup across all storage backends
-
-#### 4. **Web UI Document Management**
-- **Single & Batch Deletion**: Intuitive interface for document management
-- **Real-time Progress**: Visual feedback with database cleanup statistics
-- **Security**: Confirmation requirements and pipeline safety checks
-
-### 📋 Enhanced Configuration
-
-```python
-# Enable all v2.0 features
-rag = LightRAG(
-    working_dir="./knowledge_graph",
-    llm_model_func=your_llm_function,
-    enable_llm_post_processing=True,      # Semantic preservation
-    enable_llm_cache_for_post_process=True,  # Cost optimization
-    enable_chunk_post_processing=True     # Advanced validation
-)
-
-# Process documents with semantic relationships preserved
-await rag.ainsert("Your document content here")
-
-# Query with rich semantic context
-result = await rag.aquery("How does n8n integrate with workflows?")
-# Returns: n8n -[INTEGRATES_WITH]-> Google Gemini Chat Model
-#          n8n -[RUNS_ON]-> Reddit Scrape To DB Workflow
-```
-
-### 🎨 Domain-Specific Customization
-
-LightRAG v2.0 includes powerful prompt customization capabilities. The system comes with domain-specific prompts, but you can easily adapt it for your use case:
-
-#### **Quick Customization Steps**:
-
-1. **Switch to generic prompts**:
-   ```bash
-   # Replace domain-specific prompts with generic version
-   cp lightrag/genericPrompt.py lightrag/prompt.py
-   ```
-
-2. **Customize with Claude**:
-   Ask Claude: *"Here is the genericPrompt.py file and information about my domain: [your domain details]. Please rewrite this to be hyper-focused on [your use case], keeping the exact same structure but changing examples and terminology to match my data."*
-
-#### **Benefits**:
-- 🎯 **Domain-optimized** entity extraction and relationship identification
-- 🔧 **Maintains v2.0 structure** - all semantic preservation features preserved  
-- 🤖 **AI-assisted** - Claude can adapt for any domain (legal, medical, technical, etc.)
-- ⚡ **Production-ready** - proven architecture with domain-specific improvements
-
-### 📖 Implementation Documentation
-
-- [PR Summary & Complete Changelog](./PR_SUMMARY.md)
-- [Relationship Type Preservation Guide](./docs/v2.0/RELATIONSHIP_TYPE_PRESERVATION_IMPLEMENTATION.md)
-- [PostgreSQL Cascade Delete Implementation](./docs/v2.0/POSTGRES_CASCADE_DELETE_IMPLEMENTATION.md)
-- [Neo4j Cascade Delete Implementation](./docs/v2.0/NEO4J_CASCADE_DELETE_IMPLEMENTATION.md)
-- [Post-Processing Cache Implementation](./docs/v2.0/POST_PROCESSING_CACHE_IMPLEMENTATION.md)
-- [Graph Visualizer Multi-Document Support](./docs/v2.0/GRAPH_VISUALIZER_FIX_DOCUMENTATION.md)
 
 ## Installation
 
@@ -234,6 +149,12 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 > If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
 
+### ⚠️ Important: Initialization Requirements
+
+**LightRAG requires explicit initialization before use.** You must call both `await rag.initialize_storages()` and `await initialize_pipeline_status()` after creating a LightRAG instance, otherwise you will encounter errors like:
+- `AttributeError: __aenter__` - if storages are not initialized
+- `KeyError: 'history_messages'` - if pipeline status is not initialized
+
 ### A Simple Program
 
 Use the below Python snippet to initialize LightRAG, insert text to it, and perform queries:
@@ -257,13 +178,10 @@ async def initialize_rag():
         working_dir=WORKING_DIR,
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
-        # v2.0 features - enable semantic preservation and caching
-        enable_llm_post_processing=True,  # Preserves semantic relationship types
-        enable_llm_cache_for_post_process=True,  # Reduces costs by 60-80%
-        enable_chunk_post_processing=True,  # Advanced validation
     )
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
+    # IMPORTANT: Both initialization calls are required!
+    await rag.initialize_storages()  # Initialize storage backends
+    await initialize_pipeline_status()  # Initialize processing pipeline
     return rag
 
 async def main():
@@ -330,9 +248,6 @@ A full list of LightRAG init parameters:
 | **vector_db_storage_cls_kwargs** | `dict` | Additional parameters for vector database, like setting the threshold for nodes and relations retrieval | cosine_better_than_threshold: 0.2（default value changed by env var COSINE_THRESHOLD) |
 | **enable_llm_cache** | `bool` | If `TRUE`, stores LLM results in cache; repeated prompts return cached responses | `TRUE` |
 | **enable_llm_cache_for_entity_extract** | `bool` | If `TRUE`, stores LLM results in cache for entity extraction; Good for beginners to debug your application | `TRUE` |
-| **enable_llm_post_processing** | `bool` | If `TRUE`, enables advanced LLM post-processing for semantic relationship preservation (v2.0 feature) | `FALSE` |
-| **enable_llm_cache_for_post_process** | `bool` | If `TRUE`, enables caching for chunk-level post-processing, reducing costs by 60-80% (v2.0 feature) | `FALSE` |
-| **enable_chunk_post_processing** | `bool` | If `TRUE`, enables advanced chunk validation and relationship filtering (v2.0 feature) | `FALSE` |
 | **addon_params** | `dict` | Additional parameters, e.g., `{"example_number": 1, "language": "Simplified Chinese", "entity_types": ["organization", "person", "geo", "event"]}`: sets example limit, entiy/relation extraction output language | `example_number: all examples, language: English` |
 | **convert_response_to_json_func** | `callable` | Not used | `convert_response_to_json` |
 | **embedding_cache_config** | `dict` | Configuration for question-answer caching. Contains three parameters: `enabled`: Boolean value to enable/disable cache lookup functionality. When enabled, the system will check cached responses before generating new answers. `similarity_threshold`: Float value (0-1), similarity threshold. When a new question's similarity with a cached question exceeds this threshold, the cached answer will be returned directly without calling the LLM. `use_llm_check`: Boolean value to enable/disable LLM similarity verification. When enabled, LLM will be used as a secondary check to verify the similarity between questions before returning cached answers. | Default: `{"enabled": False, "similarity_threshold": 0.95, "use_llm_check": False}` |
@@ -1143,6 +1058,32 @@ When merging entities:
 
 </details>
 
+## Multimodal Document Processing (MinerU Integration)
+
+LightRAG now supports comprehensive multi-modal document processing through [MinerU](https://github.com/opendatalab/MinerU) integration, enabling advanced parsing and retrieval-augmented generation (RAG) capabilities. This powerful feature allows you to handle multi-modal documents seamlessly, extracting structured content—including text, images, tables, and formulas—from various document formats for integration into your RAG pipeline.
+
+**Key Features:**
+- **Multimodal Document Handling**: Process complex documents containing mixed content types (text, images, tables, formulas)
+- **Comprehensive Format Support**: Parse PDFs, images, DOC/DOCX/PPT/PPTX, and additional file types
+- **Multi-Element Extraction**: Extract and index text, images, tables, formulas, and document structure
+- **Multimodal Retrieval**: Query and retrieve diverse content types (text, images, tables, formulas) within RAG workflows
+- **Seamless Integration**: Works smoothly with LightRAG core and RAG-Anything frameworks
+
+**Quick Start:**
+1. Install dependencies:
+   ```bash
+   pip install "magic-pdf[full]>=1.2.2" huggingface_hub
+   ```
+2. Download MinerU model weights (refer to [MinerU Integration Guide](docs/mineru_integration_en.md))
+3. Process multi-modal documents using the new MineruParser or RAG-Anything's process_document_complete:
+   ```python
+   from lightrag.mineru_parser import MineruParser
+   content_list, md_content = MineruParser.parse_pdf('path/to/document.pdf', 'output_dir')
+   # or for any file type:
+   content_list, md_content = MineruParser.parse_document('path/to/file', 'auto', 'output_dir')
+   ```
+4. Query multimodal content with LightRAG refer to [docs/mineru_integration_en.md](docs/mineru_integration_en.md).
+
 ## Token Usage Tracking
 
 <details>
@@ -1566,6 +1507,33 @@ Thank you to all our contributors!
 <a href="https://github.com/HKUDS/LightRAG/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=HKUDS/LightRAG" />
 </a>
+
+## Troubleshooting
+
+### Common Initialization Errors
+
+If you encounter these errors when using LightRAG:
+
+1. **`AttributeError: __aenter__`**
+   - **Cause**: Storage backends not initialized
+   - **Solution**: Call `await rag.initialize_storages()` after creating the LightRAG instance
+
+2. **`KeyError: 'history_messages'`**
+   - **Cause**: Pipeline status not initialized
+   - **Solution**: Call `await initialize_pipeline_status()` after initializing storages
+
+3. **Both errors in sequence**
+   - **Cause**: Neither initialization method was called
+   - **Solution**: Always follow this pattern:
+   ```python
+   rag = LightRAG(...)
+   await rag.initialize_storages()
+   await initialize_pipeline_status()
+   ```
+
+### Model Switching Issues
+
+When switching between different embedding models, you must clear the data directory to avoid errors. The only file you may want to preserve is `kv_store_llm_response_cache.json` if you wish to retain the LLM cache.
 
 ## 🌟Citation
 

@@ -216,7 +216,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         }
         if (version < 10) {
           delete state.graphMinDegree // 删除废弃参数
-          state.graphMaxNodes = 1000  // 添加新参数
+          state.graphMaxNodes = 1000 // 添加新参数
         }
         if (version < 11) {
           state.minEdgeSize = 1

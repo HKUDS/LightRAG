@@ -9,7 +9,6 @@ import logging
 import logging.handlers
 import os
 import re
-import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from functools import wraps
 from hashlib import md5
@@ -877,12 +876,16 @@ async def get_best_cached_response(
                         "event": "cache_rejected_by_llm",
                         "type": cache_type,
                         "mode": mode,
-                        "original_question": original_prompt[:100] + "..."
-                        if len(original_prompt) > 100
-                        else original_prompt,
-                        "cached_question": best_prompt[:100] + "..."
-                        if len(best_prompt) > 100
-                        else best_prompt,
+                        "original_question": (
+                            original_prompt[:100] + "..."
+                            if len(original_prompt) > 100
+                            else original_prompt
+                        ),
+                        "cached_question": (
+                            best_prompt[:100] + "..."
+                            if len(best_prompt) > 100
+                            else best_prompt
+                        ),
                         "similarity_score": round(best_similarity, 4),
                         "threshold": similarity_threshold,
                     }
@@ -1031,21 +1034,20 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     mode_cache[cache_data.args_hash] = {
         "return": cache_data.content,
         "cache_type": cache_data.cache_type,
-        "embedding": cache_data.quantized.tobytes().hex()
-        if cache_data.quantized is not None
-        else None,
-        "embedding_shape": cache_data.quantized.shape
-        if cache_data.quantized is not None
-        else None,
+        "embedding": (
+            cache_data.quantized.tobytes().hex()
+            if cache_data.quantized is not None
+            else None
+        ),
+        "embedding_shape": (
+            cache_data.quantized.shape if cache_data.quantized is not None else None
+        ),
         "embedding_min": cache_data.min_val,
         "embedding_max": cache_data.max_val,
         "original_prompt": cache_data.prompt,
     }
 
-    if cache_data.cache_type == "post_process":
-        logger.info(f"Storing chunk post-processing result in cache: {cache_data.args_hash}")
-    else:
-        logger.info(f" == LLM cache == saving {cache_data.mode}: {cache_data.args_hash}")
+    logger.info(f" == LLM cache == saving {cache_data.mode}: {cache_data.args_hash}")
 
     # Only upsert if there's actual new content
     await hashing_kv.upsert({cache_data.mode: mode_cache})
@@ -1555,10 +1557,6 @@ async def use_llm_func_with_cache(
     Returns:
         LLM response text
     """
-    # Debug logging for post-processing cache
-    if cache_type == "post_process":
-        logger.debug(f"use_llm_func_with_cache called with cache_type={cache_type}")
-    
     if llm_response_cache:
         if history_messages:
             history = json.dumps(history_messages, ensure_ascii=False)
@@ -1575,16 +1573,10 @@ async def use_llm_func_with_cache(
             cache_type=cache_type,
         )
         if cached_return:
-            if cache_type == "post_process":
-                logger.info(f"Cache HIT for chunk post-processing: {arg_hash}")
-            else:
-                logger.debug(f"Found cache for {arg_hash}")
+            logger.debug(f"Found cache for {arg_hash}")
             statistic_data["llm_cache"] += 1
             return cached_return
         statistic_data["llm_call"] += 1
-        
-        if cache_type == "post_process":
-            logger.info(f"Cache MISS for chunk post-processing: {arg_hash} - Processing with LLM")
 
         # Call LLM
         kwargs = {}
@@ -1595,14 +1587,7 @@ async def use_llm_func_with_cache(
 
         res: str = await use_llm_func(input_text, **kwargs)
 
-        # Save to cache based on cache type
-        should_save_cache = False
-        if cache_type == "post_process":
-            should_save_cache = llm_response_cache.global_config.get("enable_llm_cache_for_post_process", True)
-        else:
-            should_save_cache = llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract", True)
-        
-        if should_save_cache:
+        if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
             await save_to_cache(
                 llm_response_cache,
                 CacheData(
@@ -1688,7 +1673,7 @@ def normalize_extracted_info(name: str, is_entity=False) -> str:
 
     if is_entity:
         # remove Chinese quotes
-        name = name.replace(""", "").replace(""", "").replace("'", "").replace("'", "")
+        name = name.replace("“", "").replace("”", "").replace("‘", "").replace("’", "")
         # remove English queotes in and around chinese
         name = re.sub(r"['\"]+(?=[\u4e00-\u9fa5])", "", name)
         name = re.sub(r"(?<=[\u4e00-\u9fa5])['\"]+", "", name)
@@ -1784,99 +1769,3 @@ class TokenTracker:
             f"Completion tokens: {usage['completion_tokens']}, "
             f"Total tokens: {usage['total_tokens']}"
         )
-
-
-def list_of_list_to_json(data: list[list[str]]) -> list[dict[str, str]]:
-    """Convert list of lists to JSON format for Neo4j integration.
-    
-    Args:
-        data: List of lists where first list contains headers
-        
-    Returns:
-        List of dictionaries with header keys and row values
-    """
-    if not data or len(data) <= 1:
-        return []
-
-    header = data[0]
-    result = []
-
-    for row in data[1:]:
-        if len(row) >= 2:
-            item = {}
-            for i, field_name in enumerate(header):
-                if i < len(row):
-                    item[field_name] = str(row[i])
-                else:
-                    item[field_name] = ""
-            result.append(item)
-
-    return result
-
-
-def xml_to_json(xml_file):
-    """Parse XML file and convert to JSON format for Neo4j integration.
-    
-    Args:
-        xml_file: Path to XML file to parse
-        
-    Returns:
-        Dictionary containing nodes and edges data, or None if parsing fails
-    """
-    try:
-        tree = ET.parse(xml_file)
-        root = tree.getroot()
-
-        # Print the root element's tag and attributes to confirm the file has been correctly loaded
-        print(f"Root element: {root.tag}")
-        print(f"Root attributes: {root.attrib}")
-
-        data = {"nodes": [], "edges": []}
-
-        # Use namespace
-        namespace = {"": "http://graphml.graphdrawing.org/xmlns"}
-
-        for node in root.findall(".//node", namespace):
-            node_data = {
-                "id": node.get("id").strip('"'),
-                "entity_type": node.find("./data[@key='d0']", namespace).text.strip('"')
-                if node.find("./data[@key='d0']", namespace) is not None
-                else "",
-                "description": node.find("./data[@key='d1']", namespace).text
-                if node.find("./data[@key='d1']", namespace) is not None
-                else "",
-                "source_id": node.find("./data[@key='d2']", namespace).text
-                if node.find("./data[@key='d2']", namespace) is not None
-                else "",
-            }
-            data["nodes"].append(node_data)
-
-        for edge in root.findall(".//edge", namespace):
-            edge_data = {
-                "source": edge.get("source").strip('"'),
-                "target": edge.get("target").strip('"'),
-                "weight": float(edge.find("./data[@key='d3']", namespace).text)
-                if edge.find("./data[@key='d3']", namespace) is not None
-                else 0.0,
-                "description": edge.find("./data[@key='d4']", namespace).text
-                if edge.find("./data[@key='d4']", namespace) is not None
-                else "",
-                "keywords": edge.find("./data[@key='d5']", namespace).text
-                if edge.find("./data[@key='d5']", namespace) is not None
-                else "",
-                "source_id": edge.find("./data[@key='d6']", namespace).text
-                if edge.find("./data[@key='d6']", namespace) is not None
-                else "",
-            }
-            data["edges"].append(edge_data)
-
-        # Print the number of nodes and edges found
-        print(f"Found {len(data['nodes'])} nodes and {len(data['edges'])} edges")
-
-        return data
-    except ET.ParseError as e:
-        print(f"Error parsing XML file: {e}")
-        return None
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        return None

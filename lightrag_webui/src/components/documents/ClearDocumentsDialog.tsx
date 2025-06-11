@@ -25,11 +25,7 @@ const Label = ({
   children,
   ...props
 }: React.LabelHTMLAttributes<HTMLLabelElement>) => (
-  <label
-    htmlFor={htmlFor}
-    className={className}
-    {...props}
-  >
+  <label htmlFor={htmlFor} className={className} {...props}>
     {children}
   </label>
 )
@@ -72,7 +68,9 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
           await clearCache()
           toast.success(t('documentPanel.clearDocuments.cacheCleared'))
         } catch (cacheErr) {
-          toast.error(t('documentPanel.clearDocuments.cacheClearFailed', { error: errorMessage(cacheErr) }))
+          toast.error(
+            t('documentPanel.clearDocuments.cacheClearFailed', { error: errorMessage(cacheErr) })
+          )
         }
       }
 
@@ -92,13 +90,18 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button variant="outline" side="bottom" tooltip={t('documentPanel.clearDocuments.tooltip')} size="sm">
-          <EraserIcon/> {t('documentPanel.clearDocuments.button')}
+        <Button
+          variant="outline"
+          side="bottom"
+          tooltip={t('documentPanel.clearDocuments.tooltip')}
+          size="sm"
+        >
+          <EraserIcon /> {t('documentPanel.clearDocuments.button')}
         </Button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-xl" onCloseAutoFocus={(e) => e.preventDefault()}>
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-red-500 dark:text-red-400 font-bold">
+          <DialogTitle className="flex items-center gap-2 font-bold text-red-500 dark:text-red-400">
             <AlertTriangleIcon className="h-5 w-5" />
             {t('documentPanel.clearDocuments.title')}
           </DialogTitle>
@@ -107,12 +110,10 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
           </DialogDescription>
         </DialogHeader>
 
-        <div className="text-red-500 dark:text-red-400 font-semibold mb-4">
+        <div className="mb-4 font-semibold text-red-500 dark:text-red-400">
           {t('documentPanel.clearDocuments.warning')}
         </div>
-        <div className="mb-4">
-          {t('documentPanel.clearDocuments.confirm')}
-        </div>
+        <div className="mb-4">{t('documentPanel.clearDocuments.confirm')}</div>
 
         <div className="space-y-4">
           <div className="space-y-2">
@@ -132,9 +133,11 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
             <Checkbox
               id="clear-cache"
               checked={clearCacheOption}
-              onCheckedChange={(checked: boolean | 'indeterminate') => setClearCacheOption(checked === true)}
+              onCheckedChange={(checked: boolean | 'indeterminate') =>
+                setClearCacheOption(checked === true)
+              }
             />
-            <Label htmlFor="clear-cache" className="text-sm font-medium cursor-pointer">
+            <Label htmlFor="clear-cache" className="cursor-pointer text-sm font-medium">
               {t('documentPanel.clearDocuments.clearCache')}
             </Label>
           </div>
@@ -144,11 +147,7 @@ export default function ClearDocumentsDialog({ onDocumentsCleared }: ClearDocume
           <Button variant="outline" onClick={() => setOpen(false)}>
             {t('common.cancel')}
           </Button>
-          <Button
-            variant="destructive"
-            onClick={handleClear}
-            disabled={!isConfirmEnabled}
-          >
+          <Button variant="destructive" onClick={handleClear} disabled={!isConfirmEnabled}>
             {t('documentPanel.clearDocuments.confirmButton')}
           </Button>
         </DialogFooter>

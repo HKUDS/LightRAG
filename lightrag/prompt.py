@@ -11,11 +11,21 @@ PROMPTS["DEFAULT_RECORD_DELIMITER"] = "##"
 PROMPTS["DEFAULT_COMPLETION_DELIMITER"] = "<|COMPLETE|>"
 
 # Updated entity types based on your training data
-PROMPTS["DEFAULT_ENTITY_TYPES"] = ["tool", "technology", "concept", "workflow", "artifact", "person", "organization"]
+PROMPTS["DEFAULT_ENTITY_TYPES"] = [
+    "tool",
+    "technology",
+    "concept",
+    "workflow",
+    "artifact",
+    "person",
+    "organization",
+]
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
-PROMPTS["entity_extraction"] = """---Goal---
+PROMPTS[
+    "entity_extraction"
+] = """---Goal---
 Given a text document about technical workflows, development sessions, or screen recordings, and a list of entity types, identify ONLY the most important and relevant entities of those types from the text and the most significant relationships among the identified entities.
 
 **STRICT QUANTITY LIMITS**:
@@ -179,7 +189,7 @@ Output:
 ("relationship"{tuple_delimiter}"Embeddings"{tuple_delimiter}"Neo4j"{tuple_delimiter}"Document embeddings are stored in Neo4j for retrieval."{tuple_delimiter}"stored_in"{tuple_delimiter}"data storage, vectorization"{tuple_delimiter}8){record_delimiter}
 ("relationship"{tuple_delimiter}"Neo4j"{tuple_delimiter}"Knowledge Graph"{tuple_delimiter}"Neo4j serves as the database for the knowledge graph implementation."{tuple_delimiter}"hosts"{tuple_delimiter}"graph storage, database"{tuple_delimiter}10){completion_delimiter}
 #############################
-"""
+""",
 ]
 
 PROMPTS[
@@ -206,7 +216,8 @@ Description List: {description_list}
 Output:
 """
 
-PROMPTS["entity_continue_extraction"] = """
+PROMPTS["entity_continue_extraction"] = (
+    """
 Some additional entities and relationships may have been missed in the last extraction.
 
 Focus on capturing ONLY concrete items that were overlooked:
@@ -247,8 +258,10 @@ Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tupl
 
 Add them below using the same format:
 """.strip()
+)
 
-PROMPTS["entity_if_loop_extraction"] = """
+PROMPTS["entity_if_loop_extraction"] = (
+    """
 ---Goal---
 
 It appears some entities may have still been missed. Check for:
@@ -261,12 +274,15 @@ It appears some entities may have still been missed. Check for:
 
 Answer ONLY by `YES` OR `NO` if there are still entities that need to be added.
 """.strip()
+)
 
 PROMPTS["fail_response"] = (
     "Sorry, I'm not able to provide an answer to that question.[no-context]"
 )
 
-PROMPTS["rag_response"] = """---Role---
+PROMPTS[
+    "rag_response"
+] = """---Role---
 
 You are a helpful assistant responding to queries about technical workflows, development sessions, and screen recordings using the Knowledge Graph and Document Chunks provided in JSON format below.
 
@@ -304,7 +320,9 @@ For technical queries:
 
 Response:"""
 
-PROMPTS["keywords_extraction"] = """---Role---
+PROMPTS[
+    "keywords_extraction"
+] = """---Role---
 
 You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query and conversation history, specifically optimized for technical workflow and development session analysis.
 
@@ -378,7 +396,9 @@ Output:
 #############################""",
 ]
 
-PROMPTS["naive_rag_response"] = """---Role---
+PROMPTS[
+    "naive_rag_response"
+] = """---Role---
 
 You are a helpful assistant responding to queries about technical workflows and development sessions using Document Chunks provided in JSON format below.
 
@@ -440,7 +460,9 @@ Similarity score criteria:
 Return only a number between 0-1, without any additional content.
 """
 
-PROMPTS["relationship_post_processing"] = """---Goal---
+PROMPTS[
+    "relationship_post_processing"
+] = """---Goal---
 You are analyzing extracted entities and relationships from a document to improve accuracy and remove noise.
 
 ---Context---

@@ -1,6 +1,5 @@
 # gunicorn_config.py
 import os
-import time
 import logging
 from lightrag.kg.shared_storage import finalize_share_data
 from lightrag.utils import setup_logger, get_env_value
@@ -29,16 +28,13 @@ loglevel = None
 certfile = None
 keyfile = None
 
-# Multi-worker configuration
-preload_app = True  # Enable preload_app option
-worker_class = "uvicorn.workers.UvicornWorker"  # Use Uvicorn worker
-timeout = int(os.getenv("WORKER_TIMEOUT", "120"))  # Worker timeout
-max_requests = int(os.getenv("WORKER_MAX_REQUESTS", "1000"))  # Worker recycling
-max_requests_jitter = int(os.getenv("WORKER_MAX_REQUESTS_JITTER", "50"))  # Jitter for recycling
+# Enable preload_app option
+preload_app = True
 
-# Worker startup configuration
-worker_tmp_dir = "/dev/shm"  # Use shared memory for better performance
-graceful_timeout = 30  # Graceful shutdown timeout
+# Use Uvicorn worker
+worker_class = "uvicorn.workers.UvicornWorker"
+
+# Other Gunicorn configurations
 
 # Logging configuration
 errorlog = os.getenv("ERROR_LOG", log_file_path)  # Default write to lightrag.log
@@ -148,18 +144,6 @@ def post_fork(server, worker):
     Executed after a worker has been forked.
     This is a good place to set up worker-specific configurations.
     """
-    worker_id = worker.pid
-    
-    # Add a small delay between worker startups to prevent Neo4j connection race conditions
-    # Workers will start with 1-2 second intervals
-    if workers and workers > 1:
-        delay = (worker_id % workers) * 1.5  # Stagger startup by 1.5 seconds per worker
-        if delay > 0:
-            print(f"Worker {worker_id}: Waiting {delay:.1f}s before Neo4j initialization...")
-            time.sleep(delay)
-    
-    print(f"Worker {worker_id}: Starting initialization...")
-    
     # Set up main loggers
     log_level = loglevel.upper() if loglevel else "INFO"
     setup_logger("uvicorn", log_level, add_filter=False, log_file_path=log_file_path)
@@ -178,5 +162,3 @@ def post_fork(server, worker):
     uvicorn_error_logger.handlers = []
     uvicorn_error_logger.setLevel(logging.CRITICAL)
     uvicorn_error_logger.propagate = False
-    
-    print(f"Worker {worker_id}: Initialization complete")

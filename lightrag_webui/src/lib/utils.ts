@@ -25,11 +25,14 @@ export function errorMessage(error: any) {
  * @param delay The delay in milliseconds
  * @returns A throttled version of the function
  */
-export function throttle<T extends (...args: any[]) => any>(fn: T, delay: number): (...args: Parameters<T>) => void {
+export function throttle<T extends (...args: any[]) => any>(
+  fn: T,
+  delay: number
+): (...args: Parameters<T>) => void {
   let lastCall = 0
   let timeoutId: ReturnType<typeof setTimeout> | null = null
 
-  return function(this: any, ...args: Parameters<T>) {
+  return function (this: any, ...args: Parameters<T>) {
     const now = Date.now()
     const remaining = delay - (now - lastCall)
 

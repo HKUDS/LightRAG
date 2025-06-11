@@ -30,7 +30,6 @@ from .config import (
 from lightrag.utils import get_env_value
 import sys
 from lightrag import LightRAG, __version__ as core_version
-from lightrag.advanced_lightrag import AdvancedLightRAG
 from lightrag.api import __api_version__
 from lightrag.types import GPTKeywordExtractionFormat
 from lightrag.utils import EmbeddingFunc
@@ -89,7 +88,7 @@ def create_app(args):
     ]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai", "anthropic"]:
+    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
         raise Exception("embedding binding not supported")
 
     # Set default hosts if not provided
@@ -156,10 +155,12 @@ def create_app(args):
     # Initialize FastAPI
     app_kwargs = {
         "title": "LightRAG Server API",
-        "description": "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
-        + "(With authentication)"
-        if api_key
-        else "",
+        "description": (
+            "Providing API for LightRAG core, Web UI and Ollama Model Emulation"
+            + "(With authentication)"
+            if api_key
+            else ""
+        ),
         "version": __api_version__,
         "openapi_url": "/openapi.json",  # Explicitly set OpenAPI schema URL
         "docs_url": "/docs",  # Explicitly set docs URL
@@ -210,8 +211,6 @@ def create_app(args):
             azure_openai_complete_if_cache,
             azure_openai_embed,
         )
-    if args.embedding_binding == "anthropic":
-        from lightrag.llm.anthropic import anthropic_embed
     if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
         from lightrag.llm.openai import openai_complete_if_cache
         from lightrag.llm.ollama import ollama_embed
@@ -263,86 +262,71 @@ def create_app(args):
             **kwargs,
         )
 
-    # Create embedding function based on binding type
-    if args.embedding_binding == "lollms":
-        embedding_func = EmbeddingFunc(
-            embedding_dim=args.embedding_dim,
-            max_token_size=args.max_embed_tokens,
-            func=lambda texts: lollms_embed(
+    embedding_func = EmbeddingFunc(
+        embedding_dim=args.embedding_dim,
+        max_token_size=args.max_embed_tokens,
+        func=lambda texts: (
+            lollms_embed(
                 texts,
                 embed_model=args.embedding_model,
                 host=args.embedding_binding_host,
                 api_key=args.embedding_binding_api_key,
             )
-        )
-    elif args.embedding_binding == "ollama":
-        embedding_func = EmbeddingFunc(
-            embedding_dim=args.embedding_dim,
-            max_token_size=args.max_embed_tokens,
-            func=lambda texts: ollama_embed(
-                texts,
-                embed_model=args.embedding_model,
-                host=args.embedding_binding_host,
-                api_key=args.embedding_binding_api_key,
+            if args.embedding_binding == "lollms"
+            else (
+                ollama_embed(
+                    texts,
+                    embed_model=args.embedding_model,
+                    host=args.embedding_binding_host,
+                    api_key=args.embedding_binding_api_key,
+                )
+                if args.embedding_binding == "ollama"
+                else (
+                    azure_openai_embed(
+                        texts,
+                        model=args.embedding_model,  # no host is used for openai,
+                        api_key=args.embedding_binding_api_key,
+                    )
+                    if args.embedding_binding == "azure_openai"
+                    else openai_embed(
+                        texts,
+                        model=args.embedding_model,
+                        base_url=args.embedding_binding_host,
+                        api_key=args.embedding_binding_api_key,
+                    )
+                )
             )
-        )
-    elif args.embedding_binding == "azure_openai":
-        embedding_func = EmbeddingFunc(
-            embedding_dim=args.embedding_dim,
-            max_token_size=args.max_embed_tokens,
-            func=lambda texts: azure_openai_embed(
-                texts,
-                model=args.embedding_model,  # no host is used for openai,
-                api_key=args.embedding_binding_api_key,
-            )
-        )
-    elif args.embedding_binding == "openai":
-        embedding_func = EmbeddingFunc(
-            embedding_dim=args.embedding_dim,
-            max_token_size=args.max_embed_tokens,
-            func=lambda texts: openai_embed(
-                texts,
-                model=args.embedding_model,
-                base_url=args.embedding_binding_host,
-                api_key=args.embedding_binding_api_key,
-            )
-        )
-    elif args.embedding_binding == "anthropic":
-        embedding_func = EmbeddingFunc(
-            embedding_dim=args.embedding_dim,
-            max_token_size=args.max_embed_tokens,
-            func=lambda texts: anthropic_embed(
-                texts,
-                model=args.embedding_model,
-                base_url=args.embedding_binding_host,
-                api_key=os.getenv("VOYAGE_API_KEY") or args.embedding_binding_api_key,
-            )
-        )
-    else:
-        raise ValueError(f"Unsupported embedding_binding: {args.embedding_binding}")
+        ),
+    )
 
     # Initialize RAG
     if args.llm_binding in ["lollms", "ollama", "openai"]:
-        rag = AdvancedLightRAG(
+        rag = LightRAG(
             working_dir=args.working_dir,
-            llm_model_func=lollms_model_complete
-            if args.llm_binding == "lollms"
-            else ollama_model_complete
-            if args.llm_binding == "ollama"
-            else openai_alike_model_complete,
+            llm_model_func=(
+                lollms_model_complete
+                if args.llm_binding == "lollms"
+                else (
+                    ollama_model_complete
+                    if args.llm_binding == "ollama"
+                    else openai_alike_model_complete
+                )
+            ),
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
             llm_model_max_token_size=args.max_tokens,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
-            llm_model_kwargs={
-                "host": args.llm_binding_host,
-                "timeout": args.timeout,
-                "options": {"num_ctx": args.max_tokens},
-                "api_key": args.llm_binding_api_key,
-            }
-            if args.llm_binding == "lollms" or args.llm_binding == "ollama"
-            else {},
+            llm_model_kwargs=(
+                {
+                    "host": args.llm_binding_host,
+                    "timeout": args.timeout,
+                    "options": {"num_ctx": args.max_tokens},
+                    "api_key": args.llm_binding_api_key,
+                }
+                if args.llm_binding == "lollms" or args.llm_binding == "ollama"
+                else {}
+            ),
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
@@ -356,15 +340,9 @@ def create_app(args):
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
             addon_params={"language": args.summary_language},
-            # Advanced features enabled by default
-            enable_mix_mode=True,
-            enable_relationship_types=True,
-            enable_semantic_weights=True,
-            enable_retrieval_details=True,
-            use_advanced_chunking=True,
         )
     else:  # azure_openai
-        rag = AdvancedLightRAG(
+        rag = LightRAG(
             working_dir=args.working_dir,
             llm_model_func=azure_openai_model_complete,
             chunk_token_size=int(args.chunk_size),
@@ -388,12 +366,6 @@ def create_app(args):
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
             addon_params={"language": args.summary_language},
-            # Advanced features enabled by default
-            enable_mix_mode=True,
-            enable_relationship_types=True,
-            enable_semantic_weights=True,
-            enable_retrieval_details=True,
-            use_advanced_chunking=True,
         )
 
     # Add routes
@@ -579,34 +551,10 @@ def configure_logging():
 
     # Get log directory path from environment variable
     log_dir = os.getenv("LOG_DIR", os.getcwd())
-    
-    # Create timestamped session log file
-    from datetime import datetime
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    session_log_filename = f"lightrag_session_{timestamp}.log"
-    log_file_path = os.path.abspath(os.path.join(log_dir, session_log_filename))
+    log_file_path = os.path.abspath(os.path.join(log_dir, DEFAULT_LOG_FILENAME))
 
-    print(f"\nLightRAG session log file: {log_file_path}\n")
-    os.makedirs(log_dir, exist_ok=True)
-    
-    # Optional: Clean up old session logs (keep last N sessions)
-    max_session_logs = int(os.getenv("MAX_SESSION_LOGS", "10"))  # Keep last 10 sessions by default
-    try:
-        import glob
-        session_log_pattern = os.path.join(log_dir, "lightrag_session_*.log")
-        existing_logs = sorted(glob.glob(session_log_pattern))
-        
-        if len(existing_logs) >= max_session_logs:
-            # Remove oldest logs, keeping the most recent ones
-            logs_to_remove = existing_logs[:-max_session_logs + 1]  # Keep space for the new one
-            for old_log in logs_to_remove:
-                try:
-                    os.remove(old_log)
-                    print(f"Cleaned up old session log: {os.path.basename(old_log)}")
-                except OSError:
-                    pass  # Ignore if file can't be removed
-    except Exception:
-        pass  # Ignore cleanup errors
+    print(f"\nLightRAG log file: {log_file_path}\n")
+    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
 
     # Get log file max size and backup count from environment variables
     log_max_bytes = get_env_value("LOG_MAX_BYTES", DEFAULT_LOG_MAX_BYTES, int)

@@ -19,14 +19,13 @@ const AppContent = () => {
 
   // Token validity check
   useEffect(() => {
-
     const checkAuth = async () => {
       try {
         const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
 
         if (token && isAuthenticated) {
-          setInitializing(false);
-          return;
+          setInitializing(false)
+          return
         }
 
         if (!token) {
@@ -44,20 +43,19 @@ const AppContent = () => {
 
     checkAuth()
 
-    return () => {
-    }
+    return () => {}
   }, [isAuthenticated])
 
   // Redirect effect for protected routes
   useEffect(() => {
     if (!initializing && !isAuthenticated) {
-      const currentPath = window.location.hash.slice(1);
+      const currentPath = window.location.hash.slice(1)
       if (currentPath !== '/login') {
-        console.log('Not authenticated, redirecting to login');
-        navigate('/login');
+        console.log('Not authenticated, redirecting to login')
+        navigate('/login')
       }
     }
-  }, [initializing, isAuthenticated, navigate]);
+  }, [initializing, isAuthenticated, navigate])
 
   // Show nothing while initializing
   if (initializing) {
@@ -67,10 +65,7 @@ const AppContent = () => {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route
-        path="/*"
-        element={isAuthenticated ? <App /> : null}
-      />
+      <Route path="/*" element={isAuthenticated ? <App /> : null} />
     </Routes>
   )
 }
@@ -80,12 +75,7 @@ const AppRouter = () => {
     <ThemeProvider>
       <Router>
         <AppContent />
-        <Toaster
-          position="bottom-center"
-          theme="system"
-          closeButton
-          richColors
-        />
+        <Toaster position="bottom-center" theme="system" closeButton richColors />
       </Router>
     </ThemeProvider>
   )

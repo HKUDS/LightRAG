@@ -11,35 +11,13 @@ __pycache__/
 .venv/
 env/
 venv/
-# Project-specific virtual environments
-TLL_RobustVenv/
-TLLLightragVenv/
-*/TLL_RobustVenv/
-*/TLLLightragVenv/
-**/TLL_RobustVenv/
-**/TLLLightragVenv/
-# Additional venv patterns
-*Venv/
-*venv/
-*.venv/
-
-# Environment files
 *.env*
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
 .env_example
 
 # Build / Distribution
 dist/
 build/
 site/
-*.whl
-*.egg
-*.deb
-*.rpm
 
 # Logs / Reports
 *.log
@@ -47,7 +25,6 @@ site/
 *.logfire
 *.coverage/
 log/
-logs/
 
 # Caches
 .cache/
@@ -57,11 +34,6 @@ logs/
 .gradio/
 .history/
 temp/
-tmp/
-# Python bytecode cache
-*.pyc
-*.pyo
-*.pyd
 
 # IDE / Editor Files
 .idea/
@@ -98,25 +70,3 @@ test_*
 
 # Cline files
 memory-bank/
-
-# Sensitive data (API keys, passwords, etc.)
-*.key
-*.pem
-*.p12
-*.pfx
-secrets/
-config.ini
-
-# Temporary and generated files
-graph_data.json
-*.tmp
-*.temp
-*.bak
-*.swp
-*.swo
-*~
-
-# Operating system files
-Thumbs.db
-ehthumbs.db
-Desktop.ini

@@ -31,15 +31,21 @@ def xml_to_json(xml_file):
         for node in root.findall(".//node", namespace):
             node_data = {
                 "id": node.get("id").strip('"'),
-                "entity_type": node.find("./data[@key='d1']", namespace).text.strip('"')
-                if node.find("./data[@key='d1']", namespace) is not None
-                else "",
-                "description": node.find("./data[@key='d2']", namespace).text
-                if node.find("./data[@key='d2']", namespace) is not None
-                else "",
-                "source_id": node.find("./data[@key='d3']", namespace).text
-                if node.find("./data[@key='d3']", namespace) is not None
-                else "",
+                "entity_type": (
+                    node.find("./data[@key='d1']", namespace).text.strip('"')
+                    if node.find("./data[@key='d1']", namespace) is not None
+                    else ""
+                ),
+                "description": (
+                    node.find("./data[@key='d2']", namespace).text
+                    if node.find("./data[@key='d2']", namespace) is not None
+                    else ""
+                ),
+                "source_id": (
+                    node.find("./data[@key='d3']", namespace).text
+                    if node.find("./data[@key='d3']", namespace) is not None
+                    else ""
+                ),
             }
             data["nodes"].append(node_data)
 
@@ -47,18 +53,26 @@ def xml_to_json(xml_file):
             edge_data = {
                 "source": edge.get("source").strip('"'),
                 "target": edge.get("target").strip('"'),
-                "weight": float(edge.find("./data[@key='d5']", namespace).text)
-                if edge.find("./data[@key='d5']", namespace) is not None
-                else 0.0,
-                "description": edge.find("./data[@key='d6']", namespace).text
-                if edge.find("./data[@key='d6']", namespace) is not None
-                else "",
-                "keywords": edge.find("./data[@key='d7']", namespace).text
-                if edge.find("./data[@key='d7']", namespace) is not None
-                else "",
-                "source_id": edge.find("./data[@key='d8']", namespace).text
-                if edge.find("./data[@key='d8']", namespace) is not None
-                else "",
+                "weight": (
+                    float(edge.find("./data[@key='d5']", namespace).text)
+                    if edge.find("./data[@key='d5']", namespace) is not None
+                    else 0.0
+                ),
+                "description": (
+                    edge.find("./data[@key='d6']", namespace).text
+                    if edge.find("./data[@key='d6']", namespace) is not None
+                    else ""
+                ),
+                "keywords": (
+                    edge.find("./data[@key='d7']", namespace).text
+                    if edge.find("./data[@key='d7']", namespace) is not None
+                    else ""
+                ),
+                "source_id": (
+                    edge.find("./data[@key='d8']", namespace).text
+                    if edge.find("./data[@key='d8']", namespace) is not None
+                    else ""
+                ),
             }
             data["edges"].append(edge_data)
 

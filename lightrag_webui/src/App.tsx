@@ -24,8 +24,8 @@ function App() {
   const currentTab = useSettingsStore.use.currentTab()
   const [apiKeyAlertOpen, setApiKeyAlertOpen] = useState(false)
   const [initializing, setInitializing] = useState(true) // Add initializing state
-  const versionCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
-  const healthCheckInitializedRef = useRef(false); // Prevent duplicate health checks in Vite dev mode
+  const versionCheckRef = useRef(false) // Prevent duplicate calls in Vite dev mode
+  const healthCheckInitializedRef = useRef(false) // Prevent duplicate health checks in Vite dev mode
 
   const handleApiKeyAlertOpenChange = useCallback((open: boolean) => {
     setApiKeyAlertOpen(open)
@@ -35,75 +35,76 @@ function App() {
   }, [])
 
   // Track component mount status with useRef
-  const isMountedRef = useRef(true);
+  const isMountedRef = useRef(true)
 
   // Set up mount/unmount status tracking
   useEffect(() => {
-    isMountedRef.current = true;
+    isMountedRef.current = true
 
     // Handle page reload/unload
     const handleBeforeUnload = () => {
-      isMountedRef.current = false;
-    };
+      isMountedRef.current = false
+    }
 
-    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('beforeunload', handleBeforeUnload)
 
     return () => {
-      isMountedRef.current = false;
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, []);
+      isMountedRef.current = false
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [])
 
   // Health check - can be disabled
   useEffect(() => {
     // Only execute if health check is enabled and ApiKeyAlert is closed
-    if (!enableHealthCheck || apiKeyAlertOpen) return;
+    if (!enableHealthCheck || apiKeyAlertOpen) return
 
     // Health check function
     const performHealthCheck = async () => {
       try {
         // Only perform health check if component is still mounted
         if (isMountedRef.current) {
-          await useBackendState.getState().check();
+          await useBackendState.getState().check()
         }
       } catch (error) {
-        console.error('Health check error:', error);
+        console.error('Health check error:', error)
       }
-    };
+    }
 
     // On first mount or when enableHealthCheck becomes true and apiKeyAlertOpen is false,
     // perform an immediate health check
     if (!healthCheckInitializedRef.current) {
-      healthCheckInitializedRef.current = true;
+      healthCheckInitializedRef.current = true
       // Immediate health check on first load
-      performHealthCheck();
+      performHealthCheck()
     }
 
     // Set interval for periodic execution
-    const interval = setInterval(performHealthCheck, healthCheckInterval * 1000);
-    return () => clearInterval(interval);
-  }, [enableHealthCheck, apiKeyAlertOpen]);
+    const interval = setInterval(performHealthCheck, healthCheckInterval * 1000)
+    return () => clearInterval(interval)
+  }, [enableHealthCheck, apiKeyAlertOpen])
 
   // Version check - independent and executed only once
   useEffect(() => {
     const checkVersion = async () => {
       // Prevent duplicate calls in Vite dev mode
-      if (versionCheckRef.current) return;
-      versionCheckRef.current = true;
+      if (versionCheckRef.current) return
+      versionCheckRef.current = true
 
       // Check if version info was already obtained in login page
-      const versionCheckedFromLogin = sessionStorage.getItem('VERSION_CHECKED_FROM_LOGIN') === 'true';
+      const versionCheckedFromLogin =
+        sessionStorage.getItem('VERSION_CHECKED_FROM_LOGIN') === 'true'
       if (versionCheckedFromLogin) {
-        setInitializing(false); // Skip initialization if already checked
-        return;
+        setInitializing(false) // Skip initialization if already checked
+        return
       }
 
       try {
-        setInitializing(true); // Start initialization
+        setInitializing(true) // Start initialization
 
         // Get version info
-        const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
-        const status = await getAuthStatus();
+        const token = localStorage.getItem('LIGHTRAG-API-TOKEN')
+        const status = await getAuthStatus()
 
         // If auth is not configured and a new token is returned, use the new token
         if (!status.auth_configured && status.access_token) {
@@ -114,33 +115,41 @@ function App() {
             status.api_version,
             status.webui_title || null,
             status.webui_description || null
-          );
-        } else if (token && (status.core_version || status.api_version || status.webui_title || status.webui_description)) {
+          )
+        } else if (
+          token &&
+          (status.core_version ||
+            status.api_version ||
+            status.webui_title ||
+            status.webui_description)
+        ) {
           // Otherwise use the old token (if it exists)
-          const isGuestMode = status.auth_mode === 'disabled' || useAuthStore.getState().isGuestMode;
-          useAuthStore.getState().login(
-            token,
-            isGuestMode,
-            status.core_version,
-            status.api_version,
-            status.webui_title || null,
-            status.webui_description || null
-          );
+          const isGuestMode = status.auth_mode === 'disabled' || useAuthStore.getState().isGuestMode
+          useAuthStore
+            .getState()
+            .login(
+              token,
+              isGuestMode,
+              status.core_version,
+              status.api_version,
+              status.webui_title || null,
+              status.webui_description || null
+            )
         }
 
         // Set flag to indicate version info has been checked
-        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true')
       } catch (error) {
-        console.error('Failed to get version info:', error);
+        console.error('Failed to get version info:', error)
       } finally {
         // Ensure initializing is set to false even if there's an error
-        setInitializing(false);
+        setInitializing(false)
       }
-    };
+    }
 
     // Execute version check
-    checkVersion();
-  }, []); // Empty dependency array ensures it only runs once on mount
+    checkVersion()
+  }, []) // Empty dependency array ensures it only runs once on mount
 
   const handleTabChange = useCallback(
     (tab: string) => useSettingsStore.getState().setCurrentTab(tab as any),
@@ -163,7 +172,7 @@ function App() {
           <div className="flex h-screen w-screen flex-col">
             {/* Simplified header during initialization - matches SiteHeader structure */}
             <header className="border-border/40 bg-background/95 supports-[backdrop-filter]:bg-background/60 sticky top-0 z-50 flex h-10 w-full border-b px-4 backdrop-blur">
-              <div className="min-w-[200px] w-auto flex items-center">
+              <div className="flex w-auto min-w-[200px] items-center">
                 <a href={webuiPrefix} className="flex items-center gap-2">
                   <ZapIcon className="size-4 text-emerald-400" aria-hidden="true" />
                   <span className="font-bold md:inline-block">{SiteInfo.name}</span>
@@ -171,18 +180,16 @@ function App() {
               </div>
 
               {/* Empty middle section to maintain layout */}
-              <div className="flex h-10 flex-1 items-center justify-center">
-              </div>
+              <div className="flex h-10 flex-1 items-center justify-center"></div>
 
               {/* Empty right section to maintain layout */}
-              <nav className="w-[200px] flex items-center justify-end">
-              </nav>
+              <nav className="flex w-[200px] items-center justify-end"></nav>
             </header>
 
             {/* Loading indicator in content area */}
             <div className="flex flex-1 items-center justify-center">
               <div className="text-center">
-                <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
+                <div className="border-primary mb-2 h-8 w-8 animate-spin rounded-full border-4 border-t-transparent"></div>
                 <p>Initializing...</p>
               </div>
             </div>
@@ -192,21 +199,33 @@ function App() {
           <main className="flex h-screen w-screen overflow-hidden">
             <Tabs
               defaultValue={currentTab}
-              className="!m-0 flex grow flex-col !p-0 overflow-hidden"
+              className="!m-0 flex grow flex-col overflow-hidden !p-0"
               onValueChange={handleTabChange}
             >
               <SiteHeader />
               <div className="relative grow">
-                <TabsContent value="documents" className="absolute top-0 right-0 bottom-0 left-0 overflow-auto">
+                <TabsContent
+                  value="documents"
+                  className="absolute top-0 right-0 bottom-0 left-0 overflow-auto"
+                >
                   <DocumentManager />
                 </TabsContent>
-                <TabsContent value="knowledge-graph" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
+                <TabsContent
+                  value="knowledge-graph"
+                  className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
+                >
                   <GraphViewer />
                 </TabsContent>
-                <TabsContent value="retrieval" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
+                <TabsContent
+                  value="retrieval"
+                  className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
+                >
                   <RetrievalTesting />
                 </TabsContent>
-                <TabsContent value="api" className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden">
+                <TabsContent
+                  value="api"
+                  className="absolute top-0 right-0 bottom-0 left-0 overflow-hidden"
+                >
                   <ApiSite />
                 </TabsContent>
               </div>
