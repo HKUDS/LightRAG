@@ -28,10 +28,7 @@ PROMPTS[
 ] = """---Goal---
 Given a text document about technical workflows, development sessions, or screen recordings, and a list of entity types, identify ONLY the most important and relevant entities of those types from the text and the most significant relationships among the identified entities.
 
-**STRICT QUANTITY LIMITS**:
-- Extract MAXIMUM 12 entities per text chunk
-- Extract MAXIMUM 8 relationships per text chunk
-- Focus on the most important and frequently mentioned items only
+** Focus on the most important and frequently mentioned items only **
 
 **Entity Priority (extract in this order)**:
 1. Named software tools and platforms mentioned multiple times
