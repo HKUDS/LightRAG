@@ -239,6 +239,8 @@ class LightRAG:
     # TODO：deprecated, remove in the future, use WORKSPACE instead
     namespace_prefix: str = field(default="")
     """Prefix for namespacing stored data across different environments."""
+    
+    workspace: str = field(default="default")
 
     enable_llm_cache: bool = field(default=True)
     """Enables caching for LLM responses to avoid redundant computations."""
@@ -382,6 +384,7 @@ class LightRAG:
                 self
             ),  # Add global_config to ensure cache works properly
             embedding_func=self.embedding_func,
+            workspace=self.workspace,
         )
 
         self.full_docs: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
@@ -389,6 +392,7 @@ class LightRAG:
                 self.namespace_prefix, NameSpace.KV_STORE_FULL_DOCS
             ),
             embedding_func=self.embedding_func,
+            workspace=self.workspace,
         )
 
         # TODO: deprecating, text_chunks is redundant with chunks_vdb
@@ -397,12 +401,14 @@ class LightRAG:
                 self.namespace_prefix, NameSpace.KV_STORE_TEXT_CHUNKS
             ),
             embedding_func=self.embedding_func,
+            workspace=self.workspace,
         )
         self.chunk_entity_relation_graph: BaseGraphStorage = self.graph_storage_cls(  # type: ignore
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION
             ),
             embedding_func=self.embedding_func,
+            workspace=self.workspace,
         )
 
         self.entities_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
@@ -411,6 +417,7 @@ class LightRAG:
             ),
             embedding_func=self.embedding_func,
             meta_fields={"entity_name", "source_id", "content", "file_path"},
+            workspace=self.workspace,
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=make_namespace(
@@ -418,6 +425,7 @@ class LightRAG:
             ),
             embedding_func=self.embedding_func,
             meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path"},
+            workspace=self.workspace,
         )
         self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
             namespace=make_namespace(
@@ -425,6 +433,7 @@ class LightRAG:
             ),
             embedding_func=self.embedding_func,
             meta_fields={"full_doc_id", "content", "file_path"},
+            workspace=self.workspace,
         )
 
         # Initialize document status storage
@@ -432,6 +441,7 @@ class LightRAG:
             namespace=make_namespace(self.namespace_prefix, NameSpace.DOC_STATUS),
             global_config=global_config,
             embedding_func=None,
+            workspace=self.workspace,
         )
 
         # Directly use llm_response_cache, don't create a new object
