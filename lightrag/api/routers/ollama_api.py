@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-import logging
+from lightrag.utils import logger
 import time
 import json
 import re
@@ -278,7 +278,7 @@ class OllamaAPI:
                                     else:
                                         error_msg = f"Provider error: {error_msg}"
 
-                                    logging.error(f"Stream error: {error_msg}")
+                                    logger.error(f"Stream error: {error_msg}")
 
                                     # Send error message to client
                                     error_data = {
@@ -496,7 +496,7 @@ class OllamaAPI:
                                     else:
                                         error_msg = f"Provider error: {error_msg}"
 
-                                    logging.error(f"Stream error: {error_msg}")
+                                    logger.error(f"Stream error: {error_msg}")
 
                                     # Send error message to client
                                     error_data = {
