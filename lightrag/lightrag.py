@@ -1006,7 +1006,7 @@ class LightRAG:
                         except Exception as e:
                             # Log error and update pipeline status
                             logger.error(traceback.format_exc())
-                            error_msg = f"Failed to extrat document {current_file_number}/{total_files}: {file_path}"
+                            error_msg = f"Failed to extract document {current_file_number}/{total_files}: {file_path}"
                             logger.error(error_msg)
                             async with pipeline_status_lock:
                                 pipeline_status["latest_message"] = error_msg
