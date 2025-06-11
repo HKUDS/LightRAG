@@ -534,3 +534,4 @@ async def rollback_migration(
         stats["errors"] += 1
         stats["execution_time"] = time.time() - start_time
         return stats
+
