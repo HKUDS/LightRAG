@@ -95,6 +95,29 @@ class OllamaTagResponse(BaseModel):
     models: List[OllamaModel]
 
 
+class OllamaRunningModelDetails(BaseModel):
+    parent_model: str
+    format: str
+    family: str
+    families: List[str]
+    parameter_size: str
+    quantization_level: str
+
+
+class OllamaRunningModel(BaseModel):
+    name: str
+    model: str
+    size: int
+    digest: str
+    details: OllamaRunningModelDetails
+    expires_at: str
+    size_vram: int
+
+
+class OllamaPsResponse(BaseModel):
+    models: List[OllamaRunningModel]
+
+
 async def parse_request_body(request: Request, model_class: Type[BaseModel]) -> BaseModel:
     """
     Parse request body based on Content-Type header.
@@ -234,6 +257,32 @@ class OllamaAPI:
                             "parameter_size": "13B",
                             "quantization_level": "Q4_0",
                         },
+                    }
+                ]
+            )
+            
+        @self.router.get("/ps", dependencies=[Depends(combined_auth)])
+        async def get_running_models():
+            """List Running Models - returns currently running models"""
+            return OllamaPsResponse(
+                models=[
+                    {
+                        "name": self.ollama_server_infos.LIGHTRAG_MODEL,
+                        "model": self.ollama_server_infos.LIGHTRAG_MODEL,
+                        "size": self.ollama_server_infos.LIGHTRAG_SIZE,
+                        "digest": self.ollama_server_infos.LIGHTRAG_DIGEST,
+                        "details": {
+                            "parent_model": "",
+                            "format": "gguf",
+                            "family": "llama",
+                            "families": [
+                                "llama"
+                            ],
+                            "parameter_size": "7.2B",
+                            "quantization_level": "Q4_0"
+                        },
+                        "expires_at": "2050-12-31T14:38:31.83753-07:00",
+                        "size_vram": self.ollama_server_infos.LIGHTRAG_SIZE
                     }
                 ]
             )
