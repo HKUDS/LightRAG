@@ -118,20 +118,22 @@ class OllamaPsResponse(BaseModel):
     models: List[OllamaRunningModel]
 
 
-async def parse_request_body(request: Request, model_class: Type[BaseModel]) -> BaseModel:
+async def parse_request_body(
+    request: Request, model_class: Type[BaseModel]
+) -> BaseModel:
     """
     Parse request body based on Content-Type header.
     Supports both application/json and application/octet-stream.
-    
+
     Args:
         request: The FastAPI Request object
         model_class: The Pydantic model class to parse the request into
-        
+
     Returns:
         An instance of the provided model_class
     """
     content_type = request.headers.get("content-type", "").lower()
-    
+
     try:
         if content_type.startswith("application/json"):
             # FastAPI already handles JSON parsing for us
@@ -139,23 +141,19 @@ async def parse_request_body(request: Request, model_class: Type[BaseModel]) -> 
         elif content_type.startswith("application/octet-stream"):
             # Manually parse octet-stream as JSON
             body_bytes = await request.body()
-            body = json.loads(body_bytes.decode('utf-8'))
+            body = json.loads(body_bytes.decode("utf-8"))
         else:
             # Try to parse as JSON for any other content type
             body_bytes = await request.body()
-            body = json.loads(body_bytes.decode('utf-8'))
-        
+            body = json.loads(body_bytes.decode("utf-8"))
+
         # Create an instance of the model
         return model_class(**body)
     except json.JSONDecodeError:
-        raise HTTPException(
-            status_code=400, 
-            detail="Invalid JSON in request body"
-        )
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
     except Exception as e:
         raise HTTPException(
-            status_code=400,
-            detail=f"Error parsing request body: {str(e)}"
+            status_code=400, detail=f"Error parsing request body: {str(e)}"
         )
 
 
@@ -260,7 +258,7 @@ class OllamaAPI:
                     }
                 ]
             )
-            
+
         @self.router.get("/ps", dependencies=[Depends(combined_auth)])
         async def get_running_models():
             """List Running Models - returns currently running models"""
@@ -275,19 +273,19 @@ class OllamaAPI:
                             "parent_model": "",
                             "format": "gguf",
                             "family": "llama",
-                            "families": [
-                                "llama"
-                            ],
+                            "families": ["llama"],
                             "parameter_size": "7.2B",
-                            "quantization_level": "Q4_0"
+                            "quantization_level": "Q4_0",
                         },
                         "expires_at": "2050-12-31T14:38:31.83753-07:00",
-                        "size_vram": self.ollama_server_infos.LIGHTRAG_SIZE
+                        "size_vram": self.ollama_server_infos.LIGHTRAG_SIZE,
                     }
                 ]
             )
 
-        @self.router.post("/generate", dependencies=[Depends(combined_auth)], include_in_schema=True)
+        @self.router.post(
+            "/generate", dependencies=[Depends(combined_auth)], include_in_schema=True
+        )
         async def generate(raw_request: Request):
             """Handle generate completion requests acting as an Ollama model
             For compatibility purpose, the request is not processed by LightRAG,
@@ -297,7 +295,7 @@ class OllamaAPI:
             try:
                 # Parse the request body manually
                 request = await parse_request_body(raw_request, OllamaGenerateRequest)
-                
+
                 query = request.prompt
                 start_time = time.time_ns()
                 prompt_tokens = estimate_tokens(query)
@@ -457,7 +455,9 @@ class OllamaAPI:
                 trace_exception(e)
                 raise HTTPException(status_code=500, detail=str(e))
 
-        @self.router.post("/chat", dependencies=[Depends(combined_auth)], include_in_schema=True)
+        @self.router.post(
+            "/chat", dependencies=[Depends(combined_auth)], include_in_schema=True
+        )
         async def chat(raw_request: Request):
             """Process chat completion requests acting as an Ollama model
             Routes user queries through LightRAG by selecting query mode based on prefix indicators.
@@ -467,7 +467,7 @@ class OllamaAPI:
             try:
                 # Parse the request body manually
                 request = await parse_request_body(raw_request, OllamaChatRequest)
-                
+
                 # Get all messages
                 messages = request.messages
                 if not messages:
