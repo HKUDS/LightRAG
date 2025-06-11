@@ -579,6 +579,11 @@ class OllamaAPI:
                                 data = {
                                     "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                     "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": "",
+                                        "images": None,
+                                    },
                                     "done": True,
                                     "total_duration": total_time,
                                     "load_duration": 0,
