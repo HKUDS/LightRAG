@@ -112,7 +112,7 @@ async def migrate_neo4j_relationships(
                 batch_query = """
                 MATCH (src)-[r:RELATED]->(tgt)
                 WHERE EXISTS(r.rel_type)
-                RETURN ID(r) AS rel_id, src.entity_id AS source, tgt.entity_id AS target, 
+                RETURN ID(r) AS rel_id, src.entity_id AS source, tgt.entity_id AS target,
                        r.rel_type AS rel_type, properties(r) AS properties
                 SKIP $offset
                 LIMIT $limit
@@ -534,3 +534,4 @@ async def rollback_migration(
         stats["errors"] += 1
         stats["execution_time"] = time.time() - start_time
         return stats
+
