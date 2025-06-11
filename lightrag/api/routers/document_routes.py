@@ -266,9 +266,9 @@ class DeleteDocumentResponse(BaseModel):
     )
     message: str = Field(description="Message describing the operation result")
     doc_id: str = Field(description="Document ID that was processed")
-    database_cleanup: Optional[Dict[str, int]] = Field(
+    database_cleanup: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Summary of database cleanup operations (if PostgreSQL cascade delete was performed)"
+        description="Summary of database cleanup operations from all configured databases (PostgreSQL, Neo4j, etc.)"
     )
 
     class Config:
@@ -278,12 +278,19 @@ class DeleteDocumentResponse(BaseModel):
                 "message": "Document deleted successfully",
                 "doc_id": "doc_123456",
                 "database_cleanup": {
-                    "entities_updated": 3,
-                    "entities_deleted": 1,
-                    "relations_deleted": 5,
-                    "chunks_deleted": 13,
-                    "doc_status_deleted": 1,
-                    "doc_full_deleted": 1
+                    "postgresql": {
+                        "entities_updated": 3,
+                        "entities_deleted": 1,
+                        "relations_deleted": 5,
+                        "chunks_deleted": 13,
+                        "doc_status_deleted": 1,
+                        "doc_full_deleted": 1
+                    },
+                    "neo4j": {
+                        "entities_updated": 2,
+                        "entities_deleted": 1,
+                        "relationships_deleted": 4
+                    }
                 }
             }
         }
@@ -863,6 +870,76 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
+
+
+async def execute_neo4j_cascade_delete(neo4j_storage, file_name: str) -> Dict[str, int]:
+    """
+    Execute Neo4j cascade delete queries for a specific document file.
+    
+    Args:
+        neo4j_storage: Neo4j storage instance with _driver attribute
+        file_name: Name of the file to delete from the graph
+        
+    Returns:
+        Dictionary with counts of updated/deleted entities and relationships
+    """
+    try:
+        async with neo4j_storage._driver.session() as session:
+            # 1. Update multi-file entities (remove file from path)
+            update_query = """
+            MATCH (n)
+            WHERE n.file_path CONTAINS $file_name
+              AND n.file_path <> $file_name
+            SET n.file_path = 
+                CASE
+                    WHEN n.file_path STARTS WITH $file_name + '<SEP>'
+                    THEN substring(n.file_path, size($file_name + '<SEP>'))
+                    
+                    WHEN n.file_path ENDS WITH '<SEP>' + $file_name
+                    THEN substring(n.file_path, 0, size(n.file_path) - size('<SEP>' + $file_name))
+                    
+                    WHEN n.file_path CONTAINS '<SEP>' + $file_name + '<SEP>'
+                    THEN replace(n.file_path, '<SEP>' + $file_name + '<SEP>', '<SEP>')
+                    
+                    ELSE n.file_path
+                END
+            RETURN count(n) as entities_updated
+            """
+            
+            update_result = await session.run(update_query, file_name=file_name)
+            entities_updated = (await update_result.single())["entities_updated"]
+            
+            # 2. Delete single-file entities
+            delete_entities_query = """
+            MATCH (n)
+            WHERE n.file_path = $file_name
+            DETACH DELETE n
+            RETURN count(n) as entities_deleted
+            """
+            
+            delete_entities_result = await session.run(delete_entities_query, file_name=file_name)
+            entities_deleted = (await delete_entities_result.single())["entities_deleted"]
+            
+            # 3. Delete relationships
+            delete_relationships_query = """
+            MATCH ()-[r]->()
+            WHERE r.file_path CONTAINS $file_name
+            DELETE r
+            RETURN count(r) as relationships_deleted
+            """
+            
+            delete_relationships_result = await session.run(delete_relationships_query, file_name=file_name)
+            relationships_deleted = (await delete_relationships_result.single())["relationships_deleted"]
+            
+            return {
+                "entities_updated": entities_updated,
+                "entities_deleted": entities_deleted, 
+                "relationships_deleted": relationships_deleted
+            }
+            
+    except Exception as e:
+        logger.error(f"Error executing Neo4j cascade delete for {file_name}: {str(e)}")
+        raise
 
 
 def create_document_routes(
@@ -1555,8 +1632,9 @@ def create_document_routes(
         deleted_count = 0
         failed_count = 0
 
-        # Find PostgreSQL storage backend once for all deletions
+        # Find storage backends once for all deletions
         postgres_storage = None
+        neo4j_storage = None
         storage_backends = [
             rag.chunk_entity_relation_graph,
             rag.entities_vdb,
@@ -1568,10 +1646,15 @@ def create_document_routes(
         ]
         
         for storage in storage_backends:
+            # Check for PostgreSQL storage
             if hasattr(storage, '__class__') and ('Postgres' in storage.__class__.__name__ or storage.__class__.__name__.startswith('PG')):
                 if hasattr(storage, 'db') and hasattr(storage.db, 'pool'):
                     postgres_storage = storage
-                    break
+            
+            # Check for Neo4j storage
+            elif hasattr(storage, '__class__') and 'Neo4J' in storage.__class__.__name__:
+                if hasattr(storage, '_driver') and storage._driver is not None:
+                    neo4j_storage = storage
 
         try:
             # Process each document individually
@@ -1617,9 +1700,16 @@ def create_document_routes(
                     if not file_deleted:
                         logger.warning(f"Could not find or delete any input file for document {doc_id} (tried: {file_names_to_try})")
 
-                    # Execute PostgreSQL cascade delete if available, otherwise use regular delete
+                    # Execute database-specific cascade delete if available, otherwise use regular delete
                     database_cleanup = None
-                    if postgres_storage and postgres_storage.db.pool:
+                    deleted_via_db_function = False
+                    
+                    # Execute database-specific cascade deletes for all available backends
+                    postgres_cleanup = None
+                    neo4j_cleanup = None
+                    
+                    # Try PostgreSQL cascade delete if PostgreSQL is active
+                    if postgres_storage and hasattr(postgres_storage, 'db') and hasattr(postgres_storage.db, 'pool') and postgres_storage.db.pool:
                         try:
                             async with postgres_storage.db.pool.acquire() as conn:
                                 result = await conn.fetch(
@@ -1627,17 +1717,37 @@ def create_document_routes(
                                     doc_id,
                                     file_name
                                 )
-                                database_cleanup = {
+                                postgres_cleanup = {
                                     row['operation']: row['rows_affected']
                                     for row in result
                                 }
-                                logger.info(f"PostgreSQL cascade delete completed for doc {doc_id}: {database_cleanup}")
+                                logger.info(f"PostgreSQL cascade delete completed for doc {doc_id}: {postgres_cleanup}")
+                                deleted_via_db_function = True
                         except Exception as e:
                             logger.warning(f"Failed to execute PostgreSQL cascade delete for {doc_id}: {str(e)}")
-                            # Fall back to regular delete if PostgreSQL function fails
-                            await rag.adelete_by_doc_id(doc_id)
                     else:
-                        # No PostgreSQL storage found, use regular delete
+                        logger.info(f"PostgreSQL not configured/active, skipping PostgreSQL deletion for doc {doc_id}")
+                    
+                    # Try Neo4j cascade delete if Neo4j is active
+                    if neo4j_storage and hasattr(neo4j_storage, '_driver') and neo4j_storage._driver is not None:
+                        try:
+                            neo4j_cleanup = await execute_neo4j_cascade_delete(neo4j_storage, file_name)
+                            logger.info(f"Neo4j cascade delete completed for doc {doc_id}: {neo4j_cleanup}")
+                            deleted_via_db_function = True
+                        except Exception as e:
+                            logger.warning(f"Failed to execute Neo4j cascade delete for {doc_id}: {str(e)}")
+                    else:
+                        logger.info(f"Neo4j not configured/active, skipping Neo4j deletion for doc {doc_id}")
+                    
+                    # Combine cleanup results from both databases
+                    database_cleanup = {}
+                    if postgres_cleanup:
+                        database_cleanup['postgresql'] = postgres_cleanup
+                    if neo4j_cleanup:
+                        database_cleanup['neo4j'] = neo4j_cleanup
+                    
+                    # Fall back to regular delete if no database-specific deletion succeeded
+                    if not deleted_via_db_function:
                         await rag.adelete_by_doc_id(doc_id)
                     
                     results.append(DeleteDocumentResponse(
@@ -1765,11 +1875,11 @@ def create_document_routes(
             if not file_deleted:
                 logger.warning(f"Could not find or delete any input file for document {doc_id} (tried: {file_names_to_try})")
 
-            # Execute PostgreSQL cascade delete if available, otherwise use regular delete
+            # Execute database-specific cascade delete if available, otherwise use regular delete
             database_cleanup = None
-            deleted_via_postgres = False
+            deleted_via_db_function = False
             try:
-                # Check if any storage backend is PostgreSQL
+                # Check for available storage backends
                 storage_backends = [
                     rag.chunk_entity_relation_graph,
                     rag.entities_vdb,
@@ -1780,46 +1890,87 @@ def create_document_routes(
                     rag.doc_status
                 ]
                 
-                # Find PostgreSQL storage backend with database connection
+                # Find storage backends
                 postgres_storage = None
-                logger.info(f"DEBUG: Looking for PostgreSQL storage in {len(storage_backends)} backends")
+                neo4j_storage = None
+                logger.info(f"DEBUG: Looking for storage backends in {len(storage_backends)} backends")
+                
                 for storage in storage_backends:
                     logger.info(f"DEBUG: Storage type: {type(storage).__name__}")
+                    
+                    # Check for PostgreSQL storage
                     if hasattr(storage, '__class__') and ('Postgres' in storage.__class__.__name__ or storage.__class__.__name__.startswith('PG')):
                         logger.info(f"DEBUG: Found PostgreSQL storage: {storage.__class__.__name__}")
                         if hasattr(storage, 'db') and hasattr(storage.db, 'pool'):
                             postgres_storage = storage
                             logger.info(f"DEBUG: PostgreSQL storage has valid pool connection")
-                            break
                         else:
                             logger.info(f"DEBUG: PostgreSQL storage missing db.pool")
+                    
+                    # Check for Neo4j storage
+                    elif hasattr(storage, '__class__') and 'Neo4J' in storage.__class__.__name__:
+                        logger.info(f"DEBUG: Found Neo4j storage: {storage.__class__.__name__}")
+                        if hasattr(storage, '_driver') and storage._driver is not None:
+                            neo4j_storage = storage
+                            logger.info(f"DEBUG: Neo4j storage has valid driver connection")
+                        else:
+                            logger.info(f"DEBUG: Neo4j storage missing _driver")
+                    
                     else:
-                        logger.info(f"DEBUG: Storage {storage.__class__.__name__} is not PostgreSQL")
+                        logger.info(f"DEBUG: Storage {storage.__class__.__name__} is not a supported database type")
                 
-                if postgres_storage and postgres_storage.db.pool:
-                    async with postgres_storage.db.pool.acquire() as conn:
-                        # Execute the cascade delete function
-                        result = await conn.fetch(
-                            "SELECT * FROM delete_lightrag_document_with_summary($1, $2)",
-                            doc_id,
-                            request.file_name
-                        )
-                        
-                        # Convert result to dictionary
-                        database_cleanup = {
-                            row['operation']: row['rows_affected']
-                            for row in result
-                        }
-                        
-                        logger.info(f"PostgreSQL cascade delete completed for doc {doc_id}: {database_cleanup}")
-                        deleted_via_postgres = True
+                # Execute database-specific cascade deletes only for active/configured databases
+                postgres_cleanup = None
+                neo4j_cleanup = None
+                
+                # Try PostgreSQL cascade delete if PostgreSQL is active
+                if postgres_storage and hasattr(postgres_storage, 'db') and hasattr(postgres_storage.db, 'pool') and postgres_storage.db.pool:
+                    try:
+                        async with postgres_storage.db.pool.acquire() as conn:
+                            # Execute the cascade delete function
+                            result = await conn.fetch(
+                                "SELECT * FROM delete_lightrag_document_with_summary($1, $2)",
+                                doc_id,
+                                request.file_name
+                            )
+                            
+                            # Convert result to dictionary
+                            postgres_cleanup = {
+                                row['operation']: row['rows_affected']
+                                for row in result
+                            }
+                            
+                            logger.info(f"PostgreSQL cascade delete completed for doc {doc_id}: {postgres_cleanup}")
+                            deleted_via_db_function = True
+                    except Exception as e:
+                        logger.warning(f"Failed to execute PostgreSQL cascade delete for {doc_id}: {str(e)}")
+                else:
+                    logger.info(f"PostgreSQL not configured/active, skipping PostgreSQL deletion for doc {doc_id}")
+                
+                # Try Neo4j cascade delete if Neo4j is active
+                if neo4j_storage and hasattr(neo4j_storage, '_driver') and neo4j_storage._driver is not None:
+                    try:
+                        neo4j_cleanup = await execute_neo4j_cascade_delete(neo4j_storage, request.file_name)
+                        logger.info(f"Neo4j cascade delete completed for doc {doc_id}: {neo4j_cleanup}")
+                        deleted_via_db_function = True
+                    except Exception as e:
+                        logger.warning(f"Failed to execute Neo4j cascade delete for {doc_id}: {str(e)}")
+                else:
+                    logger.info(f"Neo4j not configured/active, skipping Neo4j deletion for doc {doc_id}")
+                
+                # Combine cleanup results from active databases
+                database_cleanup = {}
+                if postgres_cleanup:
+                    database_cleanup['postgresql'] = postgres_cleanup
+                if neo4j_cleanup:
+                    database_cleanup['neo4j'] = neo4j_cleanup
                         
             except Exception as e:
-                logger.warning(f"Failed to execute PostgreSQL cascade delete: {str(e)}")
+                logger.warning(f"Failed to execute database cascade delete: {str(e)}")
                 # Will fall back to regular delete below
             
-            # If PostgreSQL deletion didn't happen or failed, use regular delete
-            if not deleted_via_postgres:
+            # If no database-specific deletion succeeded, use regular delete
+            if not deleted_via_db_function:
                 await rag.adelete_by_doc_id(doc_id)
 
             return DeleteDocumentResponse(
