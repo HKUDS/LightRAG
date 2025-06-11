@@ -205,12 +205,12 @@ result = await rag.aquery("How does n8n integrate with workflows?")
 20. **`lightrag_webui/src/locales/en.json`** - Enhanced UI language support for deletion operations
 
 ### **Documentation & Implementation Guides**:
-21. **`RELATIONSHIP_TYPE_PRESERVATION_IMPLEMENTATION.md`** - Complete implementation guide
-22. **`GRAPH_VISUALIZER_FIX_DOCUMENTATION.md`** - Multi-document graph support
-23. **`POST_PROCESSING_CACHE_IMPLEMENTATION.md`** - Caching system documentation
-24. **`POSTGRES_CASCADE_DELETE_IMPLEMENTATION.md`** - PostgreSQL deletion guide
-25. **`NEO4J_CASCADE_DELETE_IMPLEMENTATION.md`** - Neo4j deletion implementation
-26. **`ENHANCED_RELATIONSHIP_VALIDATION_README.md`** - Filtering system guide **(⚠️ DEPRECATED)**
+21. **`docs/v2.0/RELATIONSHIP_TYPE_PRESERVATION_IMPLEMENTATION.md`** - Complete implementation guide
+22. **`docs/v2.0/GRAPH_VISUALIZER_FIX_DOCUMENTATION.md`** - Multi-document graph support
+23. **`docs/v2.0/POST_PROCESSING_CACHE_IMPLEMENTATION.md`** - Caching system documentation
+24. **`docs/v2.0/POSTGRES_CASCADE_DELETE_IMPLEMENTATION.md`** - PostgreSQL deletion guide
+25. **`docs/v2.0/NEO4J_CASCADE_DELETE_IMPLEMENTATION.md`** - Neo4j deletion implementation
+26. **`docs/v2.0/ENHANCED_RELATIONSHIP_VALIDATION_README.md`** - Filtering system guide **(⚠️ DEPRECATED)**
 
 ### **Configuration & Testing**:
 27. **`env.example`** - Updated with all new configuration options
