@@ -114,6 +114,25 @@ export type DocActionResponse = {
   message: string
 }
 
+export type DeleteDocumentResponse = {
+  status: 'success' | 'not_found' | 'busy' | 'error'
+  message: string
+  doc_id: string
+  database_cleanup?: Record<string, number>
+}
+
+export type BatchDeleteRequest = {
+  documents: Array<{ doc_id: string; file_name: string }>
+}
+
+export type BatchDeleteResponse = {
+  overall_status: 'success' | 'partial_success' | 'failure'
+  message: string
+  results: DeleteDocumentResponse[]
+  deleted_count: number
+  failed_count: number
+}
+
 export type DocStatus = 'pending' | 'processing' | 'processed' | 'failed'
 
 export type DocStatusResponse = {
@@ -644,4 +663,29 @@ export const checkEntityNameExists = async (entityName: string): Promise<boolean
     console.error('Error checking entity name:', error)
     return false
   }
+}
+
+/**
+ * Delete a single document by ID
+ * @param docId The document ID to delete
+ * @param fileName The file name of the document (required for PostgreSQL cascade delete)
+ * @returns Promise with the deletion result
+ */
+export const deleteDocument = async (docId: string, fileName: string): Promise<DeleteDocumentResponse> => {
+  const response = await axiosInstance.delete(`/documents/${docId}`, {
+    data: { file_name: fileName }
+  })
+  return response.data
+}
+
+/**
+ * Delete multiple documents in batch
+ * @param documents Array of documents with doc_id and file_name to delete
+ * @returns Promise with the batch deletion results
+ */
+export const deleteDocumentsBatch = async (documents: Array<{ doc_id: string; file_name: string }>): Promise<BatchDeleteResponse> => {
+  const response = await axiosInstance.delete('/documents/batch', { 
+    data: { documents } 
+  })
+  return response.data
 }

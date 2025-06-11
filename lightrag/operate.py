@@ -1648,6 +1648,10 @@ async def extract_entities(
     with perf_monitor.measure("extract_entities_total", chunks_count=len(chunks)):
         enhanced_logger.info(f"Starting entity extraction for {len(chunks)} chunks")
         
+        # Add llm_response_cache to global_config for post-processing
+        if llm_response_cache is not None:
+            global_config["llm_response_cache"] = llm_response_cache
+        
         use_llm_func: callable = global_config["llm_model_func"]
         entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
 

@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
 from ..utils_api import get_combined_auth_dependency
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, validator
 
 from ascii_colors import trace_exception
 
@@ -91,13 +91,11 @@ class QueryRequest(BaseModel):
         description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
     )
 
-    @field_validator("query", mode="after")
-    @classmethod
+    @validator("query")
     def query_strip_after(cls, query: str) -> str:
         return query.strip()
 
-    @field_validator("conversation_history", mode="after")
-    @classmethod
+    @validator("conversation_history")
     def conversation_history_role_check(
         cls, conversation_history: List[Dict[str, Any]] | None
     ) -> List[Dict[str, Any]] | None:

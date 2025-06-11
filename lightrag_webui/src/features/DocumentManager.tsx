@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
 import Button from '@/components/ui/Button'
+import Checkbox from '@/components/ui/Checkbox'
 import { cn } from '@/lib/utils'
 import {
   Table,
@@ -15,13 +16,15 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/com
 import EmptyCard from '@/components/ui/EmptyCard'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
+import DeleteDocumentDialog from '@/components/documents/DeleteDocumentDialog'
+import BatchDeleteDialog from '@/components/documents/BatchDeleteDialog'
 
 import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus, DocStatusResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon, TrashIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
 type StatusFilter = DocStatus | 'all';
@@ -172,6 +175,12 @@ export default function DocumentManager() {
 
   // State for document status filter
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+
+  // State for document selection and deletion
+  const [selectedDocuments, setSelectedDocuments] = useState<Set<string>>(new Set())
+  const [documentToDelete, setDocumentToDelete] = useState<DocStatusResponse | null>(null)
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
+  const [showBatchDeleteDialog, setShowBatchDeleteDialog] = useState(false)
 
 
   // Handle sort column click
@@ -468,6 +477,61 @@ export default function DocumentManager() {
     // This effect ensures the component re-renders when sort state changes
   }, [sortField, sortDirection]);
 
+  // Clear selection only when filter changes, not on document refresh
+  useEffect(() => {
+    setSelectedDocuments(new Set())
+  }, [statusFilter])
+
+  // Selection handlers
+  const handleSelectDocument = useCallback((docId: string, selected: boolean) => {
+    setSelectedDocuments(prev => {
+      const newSelection = new Set(prev)
+      if (selected) {
+        newSelection.add(docId)
+      } else {
+        newSelection.delete(docId)
+      }
+      return newSelection
+    })
+  }, [])
+
+  const handleSelectAll = useCallback(() => {
+    if (!filteredAndSortedDocs) return
+    const allDocIds = new Set(filteredAndSortedDocs.map(doc => doc.id))
+    setSelectedDocuments(allDocIds)
+  }, [filteredAndSortedDocs])
+
+  const handleDeselectAll = useCallback(() => {
+    setSelectedDocuments(new Set())
+  }, [])
+
+  // Delete handlers
+  const handleDeleteDocument = useCallback((doc: DocStatusResponse) => {
+    setDocumentToDelete(doc)
+    setShowDeleteDialog(true)
+  }, [])
+
+  const handleBatchDelete = useCallback(() => {
+    if (!filteredAndSortedDocs || selectedDocuments.size === 0) return
+    
+    const docsToDelete = filteredAndSortedDocs.filter(doc => 
+      selectedDocuments.has(doc.id)
+    )
+    setShowBatchDeleteDialog(true)
+  }, [filteredAndSortedDocs, selectedDocuments])
+
+  const handleDocumentDeleted = useCallback(() => {
+    // Clear selection and refresh documents
+    setSelectedDocuments(new Set())
+    fetchDocuments()
+  }, [fetchDocuments])
+
+  // Computed values for selection
+  const selectedCount = selectedDocuments.size
+  const totalCount = filteredAndSortedDocs?.length || 0
+  const allSelected = totalCount > 0 && selectedCount === totalCount
+  const someSelected = selectedCount > 0 && selectedCount < totalCount
+
   return (
     <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
       <CardHeader className="py-2 px-6">
@@ -594,6 +658,46 @@ export default function DocumentManager() {
             <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
           </CardHeader>
 
+          {/* Batch Actions Bar */}
+          {docs && totalCount > 0 && (
+            <div className="flex-none px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <Checkbox
+                    checked={allSelected}
+                    indeterminate={someSelected}
+                    onCheckedChange={(checked) => {
+                      if (checked) {
+                        handleSelectAll()
+                      } else {
+                        handleDeselectAll()
+                      }
+                    }}
+                    disabled={pipelineBusy}
+                  />
+                  <span className="text-sm text-gray-600 dark:text-gray-400">
+                    {selectedCount > 0 
+                      ? t('documentPanel.batchActions.selectedCount', { count: selectedCount, total: totalCount })
+                      : t('documentPanel.batchActions.selectAll', { total: totalCount })
+                    }
+                  </span>
+                </div>
+                
+                {selectedCount > 0 && (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleBatchDelete}
+                    disabled={pipelineBusy}
+                  >
+                    <TrashIcon className="mr-2 h-4 w-4" />
+                    {t('documentPanel.batchActions.deleteSelected', { count: selectedCount })}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
           <CardContent className="flex-1 relative p-0" ref={cardContentRef}>
             {!docs && (
               <div className="absolute inset-0 p-0">
@@ -609,6 +713,9 @@ export default function DocumentManager() {
                   <Table className="w-full">
                     <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
                       <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
+                        <TableHead className="w-12">
+                          <span className="sr-only">{t('common.select')}</span>
+                        </TableHead>
                         <TableHead
                           onClick={() => handleSort('id')}
                           className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
@@ -652,11 +759,28 @@ export default function DocumentManager() {
                             )}
                           </div>
                         </TableHead>
+                        <TableHead className="w-20 text-center">
+                          {t('documentPanel.documentManager.columns.actions')}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
                       {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
-                        <TableRow key={doc.id}>
+                        <TableRow 
+                          key={doc.id}
+                          className={cn(
+                            selectedDocuments.has(doc.id) && "bg-blue-50 dark:bg-blue-900/20"
+                          )}
+                        >
+                          <TableCell className="w-12">
+                            <Checkbox
+                              checked={selectedDocuments.has(doc.id)}
+                              onCheckedChange={(checked) => 
+                                handleSelectDocument(doc.id, !!checked)
+                              }
+                              disabled={pipelineBusy}
+                            />
+                          </TableCell>
                           <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
                             {showFileName ? (
                               <>
@@ -718,6 +842,20 @@ export default function DocumentManager() {
                           <TableCell className="truncate">
                             {new Date(doc.updated_at).toLocaleString()}
                           </TableCell>
+                          <TableCell className="w-20 text-center">
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleDeleteDocument(doc)}
+                              disabled={pipelineBusy}
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20 p-1 h-8 w-8"
+                            >
+                              <TrashIcon className="h-4 w-4" />
+                              <span className="sr-only">
+                                {t('documentPanel.deleteDocument.buttonLabel')}
+                              </span>
+                            </Button>
+                          </TableCell>
                         </TableRow>
                       ))}
                     </TableBody>
@@ -727,6 +865,21 @@ export default function DocumentManager() {
             )}
           </CardContent>
         </Card>
+
+        {/* Delete Dialogs */}
+        <DeleteDocumentDialog
+          document={documentToDelete}
+          open={showDeleteDialog}
+          onOpenChange={setShowDeleteDialog}
+          onDocumentDeleted={handleDocumentDeleted}
+        />
+        
+        <BatchDeleteDialog
+          documents={filteredAndSortedDocs?.filter(doc => selectedDocuments.has(doc.id)) || []}
+          open={showBatchDeleteDialog}
+          onOpenChange={setShowBatchDeleteDialog}
+          onDocumentsDeleted={handleDocumentDeleted}
+        />
       </CardContent>
     </Card>
   )

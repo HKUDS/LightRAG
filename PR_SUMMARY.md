@@ -2,7 +2,7 @@
 
 ## 🚀 MAJOR BREAKTHROUGH: Semantic Relationship Preservation System
 
-**Transforms LightRAG from basic entity linking to sophisticated semantic relationship understanding with 96.8% accuracy**
+**Transforms LightRAG from basic entity linking to sophisticated semantic relationship understanding with outstanding accuracy**
 
 ### Before: Generic "related" relationships
 ```
@@ -12,8 +12,8 @@ Entity C ---[related]---> Entity D
 
 ### After: Semantic relationship types with 100% preservation
 ```
-n8n ---[runs_on]---> Reddit Scrape To DB
-Angelique Gates ---[shares_screen_via]---> Zoom
+Reddit Scrape To DB ---[runs_on]---> n8n
+Ingestion Module ---[includes]---> Validation Stage  (
 SAIL POS ---[uses]---> Zoom
 Google Gemini Chat Model ---[integrates_with]---> n8n
 Debugging Cycle ---[troubleshoots]---> Runtime Errors
@@ -176,38 +176,50 @@ result = await rag.aquery("How does n8n integrate with workflows?")
 
 ### **Core Engine Files**:
 1. **`lightrag/operate.py`** - Fixed missing rel_type field, implemented file-based LLM processing, cache integration
-2. **`lightrag/prompt.py`** - Enhanced relationship extraction and post-processing prompts
+2. **`lightrag/prompt.py`** - Enhanced relationship extraction and post-processing prompts  
 3. **`lightrag/kg/neo4j_impl.py`** - Improved graph visualization query logic
 4. **`lightrag/lightrag.py`** - Added post-processing cache configuration
 5. **`lightrag/utils.py`** - Enhanced cache system for post-processing
 6. **`lightrag/chunk_post_processor.py`** - Cache-aware chunk processing
 
-### **API & Database Management**:
-7. **`lightrag/api/routers/document_routes.py`** - Multi-database cascade delete implementation
-8. **Response models** - Updated for multi-database cleanup results
+### **Advanced Operation Files**:
+7. **`lightrag/advanced_operate.py`** - Enhanced query operations with detailed retrieval tracking, advanced semantic chunking, hybrid mix mode
+8. **`lightrag/advanced_lightrag.py`** - Production-ready LightRAG wrapper with comprehensive logging, query metrics, and enhanced features
+9. **`lightrag/NewChunkingScript.py`** - Advanced semantic chunking script with markdown header analysis and webhook integration
 
-### **Enhanced Filtering System**:
-9. **`lightrag/kg/utils/enhanced_relationship_classifier.py`** - Classification engine
-10. **`lightrag/kg/utils/relationship_filter_metrics.py`** - Performance tracking
-11. **`lightrag/kg/utils/adaptive_threshold_optimizer.py`** - Learning system
-12. **`lightrag/kg/utils/enhanced_filter_logger.py`** - Logging infrastructure
+### **API & Database Management**:
+10. **`lightrag/api/routers/document_routes.py`** - Multi-database cascade delete implementation with UI-based deletion support
+11. **Response models** - Updated for multi-database cleanup results
+
+### **Enhanced Filtering System** (DEPRECATED - Needs Further Calibration):
+12. **`lightrag/kg/utils/enhanced_relationship_classifier.py`** - Classification engine **(⚠️ DEPRECATED - requires calibration)**
+13. **`lightrag/kg/utils/relationship_filter_metrics.py`** - Performance tracking **(⚠️ DEPRECATED)**
+14. **`lightrag/kg/utils/adaptive_threshold_optimizer.py`** - Learning system **(⚠️ DEPRECATED)**
+15. **`lightrag/kg/utils/enhanced_filter_logger.py`** - Logging infrastructure **(⚠️ DEPRECATED)**
+
+### **Frontend & UI Enhancements**:
+16. **`lightrag_webui/src/features/DocumentManager.tsx`** - Enhanced with batch delete functionality and UI controls
+17. **`lightrag_webui/src/components/documents/BatchDeleteDialog.tsx`** - Complete batch deletion interface with progress tracking
+18. **`lightrag_webui/src/components/documents/DeleteDocumentDialog.tsx`** - Individual document deletion with confirmation flow
+19. **`lightrag_webui/src/api/lightrag.ts`** - Updated API client with multi-database cleanup support
+20. **`lightrag_webui/src/locales/en.json`** - Enhanced UI language support for deletion operations
 
 ### **Documentation & Implementation Guides**:
-13. **`RELATIONSHIP_TYPE_PRESERVATION_IMPLEMENTATION.md`** - Complete implementation guide
-14. **`GRAPH_VISUALIZER_FIX_DOCUMENTATION.md`** - Multi-document graph support
-15. **`POST_PROCESSING_CACHE_IMPLEMENTATION.md`** - Caching system documentation
-16. **`POSTGRES_CASCADE_DELETE_IMPLEMENTATION.md`** - PostgreSQL deletion guide
-17. **`NEO4J_CASCADE_DELETE_IMPLEMENTATION.md`** - Neo4j deletion implementation
-18. **`ENHANCED_RELATIONSHIP_VALIDATION_README.md`** - Filtering system guide
+21. **`RELATIONSHIP_TYPE_PRESERVATION_IMPLEMENTATION.md`** - Complete implementation guide
+22. **`GRAPH_VISUALIZER_FIX_DOCUMENTATION.md`** - Multi-document graph support
+23. **`POST_PROCESSING_CACHE_IMPLEMENTATION.md`** - Caching system documentation
+24. **`POSTGRES_CASCADE_DELETE_IMPLEMENTATION.md`** - PostgreSQL deletion guide
+25. **`NEO4J_CASCADE_DELETE_IMPLEMENTATION.md`** - Neo4j deletion implementation
+26. **`ENHANCED_RELATIONSHIP_VALIDATION_README.md`** - Filtering system guide **(⚠️ DEPRECATED)**
 
 ### **Configuration & Testing**:
-19. **`env.example`** - Updated with all new configuration options
-20. **`test_filtering.py`** - Comprehensive relationship processing tests
-21. **`requirements.txt`** - Updated dependencies for enhanced features
+27. **`env.example`** - Updated with all new configuration options
+28. **`test_filtering.py`** - Comprehensive relationship processing tests **(⚠️ DEPRECATED)**
+29. **`requirements.txt`** - Updated dependencies for enhanced features
 
 ### **Frontend Assets**:
-22. **`lightrag_webui/`** - Multi-graph support for complex visualizations
-23. **Frontend builds** - Deployed assets supporting multiple edge types
+30. **`lightrag_webui/`** - Multi-graph support for complex visualizations with enhanced deletion interfaces
+31. **Frontend builds** - Deployed assets supporting multiple edge types and UI deletion workflows
 
 ## ✅ Version 2.0 Ready for Production
 
@@ -250,11 +262,22 @@ The enhancement transforms LightRAG from a basic entity linking system into a so
 
 ---
 
-## 🎨 Enhanced Relationship Validation System - Additional Feature
+## ⚠️ Enhanced Relationship Validation System - DEPRECATED Feature
 
-### **Intelligent Type-Specific Quality Filtering**
+### **Status: DEPRECATED in Favor of LLM-Based Extraction**
 
-Building on the semantic relationship preservation system, we've added an **Enhanced Relationship Validation System** that provides intelligent, type-aware quality filtering with adaptive learning capabilities.
+**IMPORTANT**: The Enhanced Relationship Validation System described below has been **DEPRECATED** in favor of the superior LLM-based chunk validation approach. While the implementation exists and functions, it requires **significant calibration** before being production-ready and is **NOT recommended** for current use.
+
+### **Why Deprecated**: 
+The LLM-based chunk validation system (described in the main sections above) provides:
+- **Superior accuracy** with context-aware validation
+- **Better semantic understanding** of relationships
+- **More reliable filtering** based on actual document content
+- **Flexible adaptation** to different document types
+
+### **Legacy Implementation** (For Reference Only)
+
+~~Building on the semantic relationship preservation system, we've added an **Enhanced Relationship Validation System** that provides intelligent, type-aware quality filtering with adaptive learning capabilities.~~
 
 ### **Problem Solved**
 The original quality filter used a one-size-fits-all approach, treating technical relationships like `runs_on` the same as abstract relationships like `related_to`. This led to valuable technical relationships being incorrectly filtered out.
@@ -335,8 +358,10 @@ ENHANCED_FILTER_CONSOLE_LOGGING=false
 - **Quality**: Higher signal-to-noise ratio
 - **Debugging**: Preserves all troubleshooting relationships
 
-### **Key Achievement**
-Successfully demonstrated that intelligent filtering creates **better knowledge graphs** by removing noise while preserving all valuable technical, operational, and debugging relationships. The system achieves the perfect balance between comprehensive capture and quality control.
+### **Legacy Achievement** (DEPRECATED)
+~~Successfully demonstrated that intelligent filtering creates **better knowledge graphs** by removing noise while preserving all valuable technical, operational, and debugging relationships. The system achieves the perfect balance between comprehensive capture and quality control.~~
+
+**Current Recommendation**: Use the **LLM-based chunk validation system** instead, which provides superior results with context-aware relationship validation.
 
 ---
 
@@ -440,8 +465,9 @@ These enhancements work together to create a sophisticated, cost-effective, and 
 2. **Intelligent Filtering** ensures only high-quality relationships are kept (87.5% optimal retention)
 3. **Post-Processing Cache** reduces costs by 60-80% when reprocessing documents
 4. **PostgreSQL Cascade Delete** provides complete database cleanup with integrity management
-5. **Neo4j Cascade Delete** extends cleanup to multi-database environments
+5. **Neo4j Cascade Delete** extends cleanup to multi-database environments  
 6. **Multi-Database Coordination** ensures comprehensive data lifecycle management
+7. **UI-Based Document Management** enables single and batch document deletion through intuitive web interface
 
 The result is a production-ready system that creates clean, actionable knowledge graphs with rich semantic relationships, provides complete data management across multiple storage backends, and maintains cost efficiency through intelligent caching - suitable for enterprise-grade knowledge extraction and analysis tasks.
 
@@ -774,3 +800,147 @@ Successfully implemented intelligent multi-database deletion that:
 - **Ensures data integrity** through sophisticated multi-file entity handling
 
 This completes the database management trilogy: PostgreSQL cascade delete, Neo4j cascade delete, and intelligent multi-database coordination for complete document lifecycle management in complex storage environments.
+
+---
+
+## 🖥️ UI-Based Document Management System - Complete Web Interface
+
+### **Comprehensive Document Deletion Through Web UI**
+
+Building on the multi-database cascade delete system, we've implemented a **complete web-based document management interface** that enables both single and batch document deletion operations through an intuitive UI, eliminating the need for command-line operations.
+
+### **Problem Solved**
+Previously, document deletion required command-line access or direct API calls, making it inaccessible to non-technical users and difficult to manage multiple documents efficiently. Users needed a simple, secure way to manage their knowledge graph content through the web interface.
+
+### **Solution Implemented**
+
+#### **1. Single Document Deletion Interface**
+**Location**: `lightrag_webui/src/components/documents/DeleteDocumentDialog.tsx`
+
+**Features**:
+- **Confirmation Dialog**: Secure deletion requiring exact "DELETE" text input
+- **Document Preview**: Shows document details before deletion
+- **Real-time Status**: Progress indicators and success/error messaging
+- **Database Cleanup Display**: Shows detailed cleanup results from all databases
+- **Error Handling**: Comprehensive error reporting with retry options
+
+#### **2. Batch Document Deletion Interface**
+**Location**: `lightrag_webui/src/components/documents/BatchDeleteDialog.tsx`
+
+**Features**:
+- **Multi-Selection**: Checkbox-based document selection with "Select All" functionality
+- **Batch Progress Tracking**: Real-time progress bars for bulk operations
+- **Individual Status**: Per-document success/failure status display
+- **Secure Confirmation**: Requires typing "DELETE" to proceed with batch operations
+- **Partial Success Handling**: Graceful handling of mixed success/failure scenarios
+- **Database Cleanup Aggregation**: Combined cleanup statistics across all documents
+
+#### **3. Enhanced Document Manager Integration**
+**Location**: `lightrag_webui/src/features/DocumentManager.tsx`
+
+**UI Components**:
+- **Selection Controls**: "Select All" / "Deselect All" buttons
+- **Batch Action Bar**: Appears when documents are selected
+- **Delete Buttons**: Both individual and batch delete options
+- **Status Indicators**: Visual feedback for document states
+- **Pipeline Safety**: Prevents deletion during active processing
+
+### **API Integration**
+
+#### **Enhanced API Client**
+**Location**: `lightrag_webui/src/api/lightrag.ts`
+
+**Functions**:
+```typescript
+// Individual document deletion
+async deleteDocument(docId: string, fileName: string): Promise<DeleteDocumentResponse>
+
+// Batch document deletion  
+async deleteDocumentsBatch(documents: Array<{doc_id: string, file_name: string}>): Promise<BatchDeleteResponse>
+```
+
+**Response Handling**:
+- **Multi-Database Results**: Properly handles PostgreSQL and Neo4j cleanup data
+- **Error Classification**: Distinguishes between network, validation, and processing errors
+- **Progress Callbacks**: Real-time updates during batch operations
+
+### **User Experience Features**
+
+#### **1. Security Measures**
+- **Confirmation Requirements**: Users must type "DELETE" to confirm operations
+- **Preview Information**: Shows document details before deletion
+- **Pipeline Protection**: Prevents deletion during active document processing
+- **Irreversible Warnings**: Clear messaging about permanent deletion
+
+#### **2. Progress Feedback**
+- **Real-time Progress Bars**: Visual progress during batch operations
+- **Individual Status Icons**: Success/failure indicators per document
+- **Database Cleanup Reports**: Detailed statistics from all storage backends
+- **Error Details**: Specific error messages for troubleshooting
+
+#### **3. Accessibility & Usability**
+- **Keyboard Navigation**: Full keyboard support for all operations
+- **Screen Reader Compatible**: Proper ARIA labels and descriptions
+- **Responsive Design**: Works on desktop, tablet, and mobile devices
+- **Internationalization**: Support for multiple languages
+
+### **Language Support**
+**Location**: `lightrag_webui/src/locales/en.json`
+
+**UI Strings Added**:
+```json
+{
+  "selectAll": "Select All",
+  "selectedCount": "{{count}} selected",
+  "deleteSelected": "Delete Selected",
+  "confirmDelete": "Type DELETE to confirm",
+  "deleteProgress": "Deleting {{current}} of {{total}}...",
+  "deleteSuccess": "Successfully deleted {{count}} documents",
+  "deletePartialSuccess": "Deleted {{success}} of {{total}} documents"
+}
+```
+
+### **Real-World Usage Scenarios**
+
+#### **1. Individual Document Management**
+1. User browses document list in web interface
+2. Clicks delete button on specific document
+3. Confirms deletion by typing "DELETE"
+4. Views real-time cleanup progress and database statistics
+5. Receives confirmation of successful deletion
+
+#### **2. Bulk Document Cleanup**
+1. User selects multiple documents using checkboxes
+2. Clicks "Delete Selected" from batch action bar
+3. Reviews document list in confirmation dialog
+4. Confirms batch deletion by typing "DELETE"
+5. Monitors progress bar and individual document status
+6. Reviews combined cleanup statistics
+
+### **Performance & Reliability**
+
+#### **Batch Operation Optimization**:
+- **Parallel Processing**: Multiple documents deleted concurrently (where safe)
+- **Progress Streaming**: Real-time updates without blocking UI
+- **Error Isolation**: Individual failures don't stop batch operation
+- **Resume Capability**: Can retry failed documents independently
+
+#### **Database Integration**:
+- **Multi-Database Coordination**: Seamless PostgreSQL + Neo4j cleanup
+- **Cleanup Reporting**: Detailed statistics from all storage backends
+- **Integrity Preservation**: Multi-document entity handling
+- **Graceful Degradation**: Works with any database configuration
+
+### **Configuration**
+No additional configuration required - the UI automatically detects and integrates with existing database setups and API configurations.
+
+### **Key Achievement**
+Successfully implemented a **complete web-based document management system** that:
+- **Eliminates command-line dependency** for document deletion operations
+- **Provides intuitive UI controls** for both single and batch operations
+- **Ensures data integrity** through multi-database cascade deletion
+- **Delivers comprehensive feedback** with detailed cleanup reporting
+- **Maintains security** through confirmation requirements and pipeline safety
+- **Supports all storage configurations** from single to multi-database setups
+
+Users can now manage their entire LightRAG knowledge graph through the web interface, making the system accessible to non-technical users while maintaining the power and reliability of the underlying cascade deletion system.

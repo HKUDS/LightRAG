@@ -36,7 +36,8 @@
     "cancel": "Cancel",
     "save": "Save",
     "saving": "Saving...",
-    "saveFailed": "Save failed"
+    "saveFailed": "Save failed",
+    "select": "Select"
   },
   "documentPanel": {
     "clearDocuments": {
@@ -105,7 +106,8 @@
         "chunks": "Chunks",
         "created": "Created",
         "updated": "Updated",
-        "metadata": "Metadata"
+        "metadata": "Metadata",
+        "actions": "Actions"
       },
       "status": {
         "all": "All",
@@ -124,6 +126,44 @@
       "hideButton": "Hide",
       "showFileNameTooltip": "Show file name",
       "hideFileNameTooltip": "Hide file name"
+    },
+    "batchActions": {
+      "selectAll": "Select all ({{total}})",
+      "selectedCount": "{{count}} of {{total}} selected",
+      "deleteSelected": "Delete Selected ({{count}})"
+    },
+    "deleteDocument": {
+      "title": "Delete Document",
+      "description": "Are you sure you want to delete this document? This action cannot be undone.",
+      "buttonLabel": "Delete document",
+      "fileName": "File Name",
+      "documentId": "Document ID",
+      "status": "Status",
+      "warning": "Warning",
+      "warningText": "This will permanently delete the document and all its related entities and relationships that are not shared with other documents.",
+      "confirm": "Delete",
+      "deleting": "Deleting...",
+      "success": "Document '{{fileName}}' deleted successfully",
+      "notFound": "Document not found",
+      "busy": "Cannot delete document while pipeline is busy",
+      "error": "Failed to delete document: {{error}}"
+    },
+    "batchDelete": {
+      "title": "Delete Multiple Documents",
+      "description": "You are about to delete {{count}} documents.",
+      "andMore": "... and {{count}} more",
+      "warning": "Permanent Action",
+      "warningText": "This will permanently delete all selected documents and their related data. Entities and relationships that are shared with other documents will be preserved.",
+      "confirmationLabel": "Type DELETE to confirm",
+      "confirmationHint": "You must type 'DELETE' exactly to proceed",
+      "confirmationError": "Please type 'DELETE' to confirm deletion",
+      "confirm": "Delete {{count}} Documents",
+      "deleting": "Deleting documents...",
+      "success": "Successfully deleted {{count}} documents",
+      "partialSuccess": "Partially successful: {{deleted}} of {{total}} documents deleted ({{failed}} failed)",
+      "failure": "Failed to delete documents: {{message}}",
+      "failedDocs": "Failed to delete: {{docs}}",
+      "error": "Error during batch deletion: {{error}}"
     },
     "pipelineStatus": {
       "title": "Pipeline Status",

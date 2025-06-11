@@ -1863,24 +1863,31 @@ class LightRAG:
             # TODO: self.entities_vdb.client_storage only works for local storage, need to fix this
 
             # 3. Before deleting, check the related entities and relationships for these chunks
-            for chunk_id in chunk_ids:
-                # Check entities
-                entities_storage = await self.entities_vdb.client_storage
-                entities = [
-                    dp
-                    for dp in entities_storage["data"]
-                    if chunk_id in dp.get("source_id")
-                ]
-                logger.debug(f"Chunk {chunk_id} has {len(entities)} related entities")
+            # Skip this check for PostgreSQL storage as it doesn't have client_storage
+            try:
+                for chunk_id in chunk_ids:
+                    # Check entities (only for local storage)
+                    if hasattr(self.entities_vdb, 'client_storage'):
+                        entities_storage = await self.entities_vdb.client_storage
+                        entities = [
+                            dp
+                            for dp in entities_storage["data"]
+                            if chunk_id in dp.get("source_id")
+                        ]
+                        logger.debug(f"Chunk {chunk_id} has {len(entities)} related entities")
 
-                # Check relationships
-                relationships_storage = await self.relationships_vdb.client_storage
-                relations = [
-                    dp
-                    for dp in relationships_storage["data"]
-                    if chunk_id in dp.get("source_id")
-                ]
-                logger.debug(f"Chunk {chunk_id} has {len(relations)} related relations")
+                    # Check relationships (only for local storage)
+                    if hasattr(self.relationships_vdb, 'client_storage'):
+                        relationships_storage = await self.relationships_vdb.client_storage
+                        relations = [
+                            dp
+                            for dp in relationships_storage["data"]
+                            if chunk_id in dp.get("source_id")
+                        ]
+                        logger.debug(f"Chunk {chunk_id} has {len(relations)} related relations")
+            except AttributeError as e:
+                logger.debug(f"Skipping client_storage check for {type(self.entities_vdb).__name__}: {e}")
+                # For PostgreSQL and other remote storage, we'll rely on the graph-based deletion below
 
             # Continue with the original deletion process...
 
@@ -2005,6 +2012,11 @@ class LightRAG:
 
             async def process_data(data_type, vdb, chunk_id):
                 # Check data (entities or relationships)
+                # Skip for PostgreSQL storage as it doesn't have client_storage
+                if not hasattr(vdb, 'client_storage'):
+                    logger.debug(f"Skipping {data_type} check for {type(vdb).__name__} (no client_storage)")
+                    return {}
+                
                 storage = await vdb.client_storage
                 data_with_chunk = [
                     dp
