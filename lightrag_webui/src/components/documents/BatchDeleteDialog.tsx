@@ -9,7 +9,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
+  DialogTitle
 } from '@/components/ui/Dialog'
 import Progress from '@/components/ui/Progress'
 import { deleteDocumentsBatch, type DocStatusResponse } from '@/api/lightrag'
@@ -44,7 +44,7 @@ export default function BatchDeleteDialog({
     setProgress(0)
 
     try {
-      const documentsToDelete = documents.map(doc => ({
+      const documentsToDelete = documents.map((doc) => ({
         doc_id: doc.id,
         file_name: doc.file_path
       }))
@@ -54,42 +54,52 @@ export default function BatchDeleteDialog({
       setProgress(100)
 
       if (result.overall_status === 'success') {
-        toast.success(t('documentPanel.batchDelete.success', { 
-          count: result.deleted_count 
-        }))
+        toast.success(
+          t('documentPanel.batchDelete.success', {
+            count: result.deleted_count
+          })
+        )
       } else if (result.overall_status === 'partial_success') {
-        toast.warning(t('documentPanel.batchDelete.partialSuccess', { 
-          deleted: result.deleted_count,
-          total: documents.length,
-          failed: result.failed_count
-        }))
+        toast.warning(
+          t('documentPanel.batchDelete.partialSuccess', {
+            deleted: result.deleted_count,
+            total: documents.length,
+            failed: result.failed_count
+          })
+        )
       } else {
-        toast.error(t('documentPanel.batchDelete.failure', { 
-          message: result.message 
-        }))
+        toast.error(
+          t('documentPanel.batchDelete.failure', {
+            message: result.message
+          })
+        )
       }
 
       // Show detailed results if there were any failures
       if (result.failed_count > 0) {
         const failedDocs = result.results
-          .filter(r => r.status !== 'success')
-          .map(r => r.doc_id)
+          .filter((r) => r.status !== 'success')
+          .map((r) => r.doc_id)
           .slice(0, 3) // Show first 3 failed docs
-        
+
         if (failedDocs.length > 0) {
           const more = result.failed_count > 3 ? ` (+${result.failed_count - 3} more)` : ''
-          toast.error(t('documentPanel.batchDelete.failedDocs', { 
-            docs: failedDocs.join(', ') + more
-          }))
+          toast.error(
+            t('documentPanel.batchDelete.failedDocs', {
+              docs: failedDocs.join(', ') + more
+            })
+          )
         }
       }
 
       onDocumentsDeleted()
       onOpenChange(false)
     } catch (error) {
-      toast.error(t('documentPanel.batchDelete.error', { 
-        error: errorMessage(error) 
-      }))
+      toast.error(
+        t('documentPanel.batchDelete.error', {
+          error: errorMessage(error)
+        })
+      )
       setProgress(0)
     } finally {
       setIsDeleting(false)
@@ -109,7 +119,7 @@ export default function BatchDeleteDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[500px] overflow-hidden p-6">
+      <DialogContent className="overflow-hidden p-6 sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <TrashIcon className="h-5 w-5 text-red-500" />
@@ -120,27 +130,35 @@ export default function BatchDeleteDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="py-4 space-y-4">
+        <div className="space-y-4 py-4">
           {/* Document List Preview */}
-          <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 border overflow-hidden">
-            <div className="space-y-1 max-h-32 overflow-y-auto border rounded p-2">
+          <div className="overflow-hidden rounded-lg border bg-gray-50 p-4 dark:bg-gray-800">
+            <div className="max-h-32 space-y-1 overflow-y-auto rounded border p-2">
               {documents.slice(0, 5).map((doc) => (
                 <div key={doc.id} className="flex items-center justify-between text-sm">
-                  <span className="ml-2 text-sm text-gray-900 dark:text-gray-100 font-mono break-all flex-1 mr-2">
+                  <span className="mr-2 ml-2 flex-1 font-mono text-sm break-all text-gray-900 dark:text-gray-100">
                     {getDisplayFileName(doc)}
                   </span>
-                  <span className="text-gray-500 text-xs">
+                  <span className="text-xs text-gray-500">
                     {doc.status === 'processed' && (
-                      <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
+                      <span className="text-green-600">
+                        {t('documentPanel.documentManager.status.completed')}
+                      </span>
                     )}
                     {doc.status === 'processing' && (
-                      <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
+                      <span className="text-blue-600">
+                        {t('documentPanel.documentManager.status.processing')}
+                      </span>
                     )}
                     {doc.status === 'pending' && (
-                      <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>
+                      <span className="text-yellow-600">
+                        {t('documentPanel.documentManager.status.pending')}
+                      </span>
                     )}
                     {doc.status === 'failed' && (
-                      <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
+                      <span className="text-red-600">
+                        {t('documentPanel.documentManager.status.failed')}
+                      </span>
                     )}
                   </span>
                 </div>
@@ -154,9 +172,9 @@ export default function BatchDeleteDialog({
           </div>
 
           {/* Warning */}
-          <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg">
+          <div className="rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-700 dark:bg-red-900/20">
             <div className="flex items-start gap-2">
-              <AlertTriangleIcon className="h-5 w-5 text-red-600 dark:text-red-400 mt-0.5 flex-shrink-0" />
+              <AlertTriangleIcon className="mt-0.5 h-5 w-5 flex-shrink-0 text-red-600 dark:text-red-400" />
               <div className="space-y-1">
                 <p className="text-sm font-medium text-red-800 dark:text-red-200">
                   {t('documentPanel.batchDelete.warning')}
@@ -199,11 +217,7 @@ export default function BatchDeleteDialog({
         </div>
 
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={isDeleting}
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isDeleting}>
             {t('common.cancel')}
           </Button>
           <Button

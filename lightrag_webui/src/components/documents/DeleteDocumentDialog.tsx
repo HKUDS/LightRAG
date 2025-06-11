@@ -8,7 +8,7 @@ import {
   DialogDescription,
   DialogFooter,
   DialogHeader,
-  DialogTitle,
+  DialogTitle
 } from '@/components/ui/Dialog'
 import { deleteDocument, type DocStatusResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
@@ -36,11 +36,13 @@ export default function DeleteDocumentDialog({
     setIsDeleting(true)
     try {
       const result = await deleteDocument(document.id, document.file_path)
-      
+
       if (result.status === 'success') {
-        toast.success(t('documentPanel.deleteDocument.success', { 
-          fileName: document.file_path || document.id 
-        }))
+        toast.success(
+          t('documentPanel.deleteDocument.success', {
+            fileName: document.file_path || document.id
+          })
+        )
         onDocumentDeleted()
         onOpenChange(false)
       } else if (result.status === 'not_found') {
@@ -50,14 +52,18 @@ export default function DeleteDocumentDialog({
       } else if (result.status === 'busy') {
         toast.error(t('documentPanel.deleteDocument.busy'))
       } else {
-        toast.error(t('documentPanel.deleteDocument.error', { 
-          error: result.message 
-        }))
+        toast.error(
+          t('documentPanel.deleteDocument.error', {
+            error: result.message
+          })
+        )
       }
     } catch (error) {
-      toast.error(t('documentPanel.deleteDocument.error', { 
-        error: errorMessage(error) 
-      }))
+      toast.error(
+        t('documentPanel.deleteDocument.error', {
+          error: errorMessage(error)
+        })
+      )
     } finally {
       setIsDeleting(false)
     }
@@ -75,25 +81,23 @@ export default function DeleteDocumentDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[425px] overflow-hidden p-6">
+      <DialogContent className="overflow-hidden p-6 sm:max-w-[425px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <TrashIcon className="h-5 w-5 text-red-500" />
             {t('documentPanel.deleteDocument.title')}
           </DialogTitle>
-          <DialogDescription>
-            {t('documentPanel.deleteDocument.description')}
-          </DialogDescription>
+          <DialogDescription>{t('documentPanel.deleteDocument.description')}</DialogDescription>
         </DialogHeader>
 
         <div className="py-4">
-          <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 border overflow-hidden">
+          <div className="overflow-hidden rounded-lg border bg-gray-50 p-4 dark:bg-gray-800">
             <div className="space-y-2">
               <div>
                 <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
                   {t('documentPanel.deleteDocument.fileName')}:
                 </span>
-                <span className="ml-2 text-sm text-gray-900 dark:text-gray-100 font-mono break-all">
+                <span className="ml-2 font-mono text-sm break-all text-gray-900 dark:text-gray-100">
                   {getDisplayFileName(document)}
                 </span>
               </div>
@@ -101,7 +105,7 @@ export default function DeleteDocumentDialog({
                 <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
                   {t('documentPanel.deleteDocument.documentId')}:
                 </span>
-                <span className="ml-2 text-sm text-gray-900 dark:text-gray-100 font-mono truncate block max-w-full">
+                <span className="ml-2 block max-w-full truncate font-mono text-sm text-gray-900 dark:text-gray-100">
                   {document.id}
                 </span>
               </div>
@@ -111,23 +115,31 @@ export default function DeleteDocumentDialog({
                 </span>
                 <span className="ml-2 text-sm">
                   {document.status === 'processed' && (
-                    <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
+                    <span className="text-green-600">
+                      {t('documentPanel.documentManager.status.completed')}
+                    </span>
                   )}
                   {document.status === 'processing' && (
-                    <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
+                    <span className="text-blue-600">
+                      {t('documentPanel.documentManager.status.processing')}
+                    </span>
                   )}
                   {document.status === 'pending' && (
-                    <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>
+                    <span className="text-yellow-600">
+                      {t('documentPanel.documentManager.status.pending')}
+                    </span>
                   )}
                   {document.status === 'failed' && (
-                    <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
+                    <span className="text-red-600">
+                      {t('documentPanel.documentManager.status.failed')}
+                    </span>
                   )}
                 </span>
               </div>
             </div>
           </div>
 
-          <div className="mt-4 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-700 rounded-lg">
+          <div className="mt-4 rounded-lg border border-yellow-200 bg-yellow-50 p-3 dark:border-yellow-700 dark:bg-yellow-900/20">
             <p className="text-sm text-yellow-800 dark:text-yellow-200">
               <strong>{t('documentPanel.deleteDocument.warning')}:</strong>{' '}
               {t('documentPanel.deleteDocument.warningText')}
@@ -136,18 +148,10 @@ export default function DeleteDocumentDialog({
         </div>
 
         <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={isDeleting}
-          >
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={isDeleting}>
             {t('common.cancel')}
           </Button>
-          <Button
-            variant="destructive"
-            onClick={handleDelete}
-            disabled={isDeleting}
-          >
+          <Button variant="destructive" onClick={handleDelete} disabled={isDeleting}>
             {isDeleting ? (
               <>
                 <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
