@@ -219,7 +219,7 @@ class RelationshipExtractor:
             # Check for required fields
             if not all(k in rel for k in ["source", "target", "relationship_type"]):
                 logger.warning(
-                    f"Skipping relationship {i+1} with missing required fields: {rel}"
+                    f"Skipping relationship {i + 1} with missing required fields: {rel}"
                 )
                 validation_stats["missing_fields"] += 1
                 continue

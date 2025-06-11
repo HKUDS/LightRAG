@@ -338,7 +338,7 @@ class RelationshipFilterMetrics:
                 for filter_type, count in dominant_filters:
                     recommendations.append(
                         f"'{filter_type}' is filtering {count}/{total_filtered} relationships "
-                        f"({count/total_filtered:.1%}). Review if this is appropriate."
+                        f"({count / total_filtered:.1%}). Review if this is appropriate."
                     )
 
         return recommendations[:5]  # Limit to top 5 recommendations

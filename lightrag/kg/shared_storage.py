@@ -289,7 +289,20 @@ def initialize_share_data(workers: int = 1):
         workers (int): Number of worker processes. If 1, single-process mode is used.
                       If > 1, multi-process mode with shared memory is used.
     """
-    global _manager, _workers, _is_multiprocess, _storage_lock, _internal_lock, _pipeline_status_lock, _graph_db_lock, _data_init_lock, _shared_dicts, _init_flags, _initialized, _update_flags, _async_locks
+    global \
+        _manager, \
+        _workers, \
+        _is_multiprocess, \
+        _storage_lock, \
+        _internal_lock, \
+        _pipeline_status_lock, \
+        _graph_db_lock, \
+        _data_init_lock, \
+        _shared_dicts, \
+        _init_flags, \
+        _initialized, \
+        _update_flags, \
+        _async_locks
 
     # Check if already initialized
     if _initialized:
@@ -510,7 +523,19 @@ def finalize_share_data():
     In multi-process mode, it shuts down the Manager and releases all shared objects.
     In single-process mode, it simply resets the global variables.
     """
-    global _manager, _is_multiprocess, _storage_lock, _internal_lock, _pipeline_status_lock, _graph_db_lock, _data_init_lock, _shared_dicts, _init_flags, _initialized, _update_flags, _async_locks
+    global \
+        _manager, \
+        _is_multiprocess, \
+        _storage_lock, \
+        _internal_lock, \
+        _pipeline_status_lock, \
+        _graph_db_lock, \
+        _data_init_lock, \
+        _shared_dicts, \
+        _init_flags, \
+        _initialized, \
+        _update_flags, \
+        _async_locks
 
     # Check if already initialized
     if not _initialized:

@@ -473,7 +473,7 @@ def semantic_chunk_text(
                     enhanced_header = f"{header_prefix} {section_title}"
                     if section_prefix:
                         enhanced_header += f" - Full Section Start: {section_prefix}"
-                    enhanced_header += f" (Part {i+1}/{len(sub_chunks)})"
+                    enhanced_header += f" (Part {i + 1}/{len(sub_chunks)})"
 
                     # Include the enhanced header with each sub-chunk
                     sub_section_text = f"{enhanced_header}\n{sub_chunk}"

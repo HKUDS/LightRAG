@@ -2000,13 +2000,10 @@ class Neo4JStorage(BaseGraphStorage):
             Dictionary with edge properties
         """
         # Use actual relationship type in query instead of generic "related"
-        query = (
-            """
+        query = """
         MATCH (src:base {entity_id: $source_id})-[r:%s]->(tgt:base {entity_id: $target_id})
         RETURN properties(r) as properties
-        """
-            % rel_type.upper()
-        )  # Note: rel_type is directly embedded here.
+        """ % rel_type.upper()  # Note: rel_type is directly embedded here.
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:

@@ -269,12 +269,16 @@ def monitor_system(duration: int, interval: int = 10):
             cpu_status = (
                 "🔴"
                 if current_health.cpu_percent > 90
-                else "🟡" if current_health.cpu_percent > 70 else "🟢"
+                else "🟡"
+                if current_health.cpu_percent > 70
+                else "🟢"
             )
             memory_status = (
                 "🔴"
                 if current_health.memory_percent > 90
-                else "🟡" if current_health.memory_percent > 70 else "🟢"
+                else "🟡"
+                if current_health.memory_percent > 70
+                else "🟢"
             )
 
             print(f"{cpu_status} CPU: {current_health.cpu_percent:.1f}%")

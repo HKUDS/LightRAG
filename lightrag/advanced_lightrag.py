@@ -367,33 +367,33 @@ class AdvancedLightRAG(LightRAG):
 
                 # Use enhanced query functions that return details
                 if param.mode in ["local", "global", "hybrid"]:
-                    response_obj, retrieval_details_for_log = (
-                        await kg_query_with_details(
-                            query.strip(),
-                            self.chunk_entity_relation_graph,
-                            self.entities_vdb,
-                            self.relationships_vdb,
-                            self.text_chunks,
-                            param,
-                            self._get_enhanced_config(),
-                            hashing_kv=self.llm_response_cache,
-                            system_prompt=system_prompt,
-                            chunks_vdb=(
-                                self.chunks_vdb if self.enable_mix_mode else None
-                            ),
-                        )
+                    (
+                        response_obj,
+                        retrieval_details_for_log,
+                    ) = await kg_query_with_details(
+                        query.strip(),
+                        self.chunk_entity_relation_graph,
+                        self.entities_vdb,
+                        self.relationships_vdb,
+                        self.text_chunks,
+                        param,
+                        self._get_enhanced_config(),
+                        hashing_kv=self.llm_response_cache,
+                        system_prompt=system_prompt,
+                        chunks_vdb=(self.chunks_vdb if self.enable_mix_mode else None),
                     )
                 elif param.mode == "naive":
-                    response_obj, retrieval_details_for_log = (
-                        await naive_query_with_details(
-                            query.strip(),
-                            self.chunks_vdb,
-                            self.text_chunks,
-                            param,
-                            self._get_enhanced_config(),
-                            hashing_kv=self.llm_response_cache,
-                            system_prompt=system_prompt,
-                        )
+                    (
+                        response_obj,
+                        retrieval_details_for_log,
+                    ) = await naive_query_with_details(
+                        query.strip(),
+                        self.chunks_vdb,
+                        self.text_chunks,
+                        param,
+                        self._get_enhanced_config(),
+                        hashing_kv=self.llm_response_cache,
+                        system_prompt=system_prompt,
                     )
                 elif param.mode == "mix" and self.enable_mix_mode:
                     response_obj, retrieval_details_for_log = await mix_kg_vector_query(

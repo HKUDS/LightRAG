@@ -1061,9 +1061,10 @@ async def mix_kg_vector_query(
 
     # Execute both retrievals in parallel
     t_start_hybrid = time.perf_counter()
-    (kg_context_str, kg_ret_details), (vector_context_str, vec_ret_details) = (
-        await asyncio.gather(get_kg_context(), get_vector_context())
-    )
+    (
+        (kg_context_str, kg_ret_details),
+        (vector_context_str, vec_ret_details),
+    ) = await asyncio.gather(get_kg_context(), get_vector_context())
     combined_retrieval_details["timings"]["hybrid_retrieval_ms"] = (
         time.perf_counter() - t_start_hybrid
     ) * 1000
@@ -1179,25 +1180,31 @@ async def _build_query_context_with_details(
     retrieval_details = {}
 
     if query_param.mode == "local":
-        entities_context, relations_context, text_units_context, details = (
-            await _get_node_data_with_details(
-                ll_keywords,
-                knowledge_graph_inst,
-                entities_vdb,
-                text_chunks_db,
-                query_param,
-            )
+        (
+            entities_context,
+            relations_context,
+            text_units_context,
+            details,
+        ) = await _get_node_data_with_details(
+            ll_keywords,
+            knowledge_graph_inst,
+            entities_vdb,
+            text_chunks_db,
+            query_param,
         )
         retrieval_details = details
     elif query_param.mode == "global":
-        entities_context, relations_context, text_units_context, details = (
-            await _get_edge_data_with_details(
-                hl_keywords,
-                knowledge_graph_inst,
-                relationships_vdb,
-                text_chunks_db,
-                query_param,
-            )
+        (
+            entities_context,
+            relations_context,
+            text_units_context,
+            details,
+        ) = await _get_edge_data_with_details(
+            hl_keywords,
+            knowledge_graph_inst,
+            relationships_vdb,
+            text_chunks_db,
+            query_param,
         )
         retrieval_details = details
     else:  # hybrid mode

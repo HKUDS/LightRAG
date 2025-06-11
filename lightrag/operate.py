@@ -520,7 +520,7 @@ async def _merge_nodes_then_upsert(
 
             if num_fragment > 1:
                 if num_fragment >= force_llm_summary_on_merge:
-                    status_message = f"LLM merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+                    status_message = f"LLM merge N: {entity_name} | {num_new_fragment}+{num_fragment - num_new_fragment}"
                     logger.info(status_message)
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
@@ -535,7 +535,7 @@ async def _merge_nodes_then_upsert(
                         llm_response_cache,
                     )
                 else:
-                    status_message = f"Merge N: {entity_name} | {num_new_fragment}+{num_fragment-num_new_fragment}"
+                    status_message = f"Merge N: {entity_name} | {num_new_fragment}+{num_fragment - num_new_fragment}"
                     logger.info(status_message)
                     if pipeline_status is not None and pipeline_status_lock is not None:
                         async with pipeline_status_lock:
@@ -670,7 +670,7 @@ async def _merge_edges_then_upsert(
 
     for i, edge_instance in enumerate(edges):
         logger.debug(
-            f"Processing instance {i+1}/{len(edges)} for merge {src_id}->{tgt_id}: "
+            f"Processing instance {i + 1}/{len(edges)} for merge {src_id}->{tgt_id}: "
             f"original_type='{edge_instance.get('original_type')}', "
             f"rel_type='{edge_instance.get('relationship_type')}', "  # This is human-readable-std from advanced_operate
             f"neo4j_type='{edge_instance.get('neo4j_type')}'"
@@ -680,9 +680,9 @@ async def _merge_edges_then_upsert(
 
         if edge_instance.get("description"):
             if merged_edge["description"]:
-                merged_edge[
-                    "description"
-                ] += f"{GRAPH_FIELD_SEP}{edge_instance['description']}"
+                merged_edge["description"] += (
+                    f"{GRAPH_FIELD_SEP}{edge_instance['description']}"
+                )
             else:
                 merged_edge["description"] = edge_instance["description"]
 
@@ -1393,14 +1393,14 @@ async def _llm_post_process_relationships(
         logger.info("🔍 First 5 relationships stored in temp file:")
         for i, rel in enumerate(relationships_data["relationships"][:5]):
             logger.info(
-                f"  {i+1}. {rel['src_id']} -[{rel['rel_type']}]-> {rel['tgt_id']}"
+                f"  {i + 1}. {rel['src_id']} -[{rel['rel_type']}]-> {rel['tgt_id']}"
             )
 
         # Debug: Also log 5 random original relationships for comparison
         logger.info("🔍 Original relationships for comparison:")
         for i, rel in enumerate(all_relationships[:5]):
             logger.info(
-                f"  {i+1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}"
+                f"  {i + 1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}"
             )
 
         # Read file content for LLM prompt
@@ -1498,7 +1498,7 @@ CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationshi
         logger.info(f"  - Input relationships: {input_count}")
         logger.info(f"  - Validated relationships: {validated_count}")
         logger.info(f"  - Removed relationships: {removed_count}")
-        logger.info(f"  - Retention rate: {validated_count/input_count*100:.1f}%")
+        logger.info(f"  - Retention rate: {validated_count / input_count * 100:.1f}%")
         logger.info(
             f"  - Average quality score: {processing_stats['average_quality_score']:.1f}"
         )
@@ -1508,7 +1508,7 @@ CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationshi
         logger.info("✅ File-based relationships with preserved types:")
         for i, rel in enumerate(validated_relationships[:3]):
             logger.info(
-                f"  {i+1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}"
+                f"  {i + 1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}"
             )
 
         # Save validated relationships to a new temp file for debugging
@@ -1550,7 +1550,7 @@ CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationshi
         logger.info("📝 Final formatted relationships (should preserve types):")
         for i, rel in enumerate(formatted_relationships[:3]):
             logger.info(
-                f"  {i+1}. {rel['src_id']} -[{rel['rel_type']}|{rel['neo4j_type']}]-> {rel['tgt_id']}"
+                f"  {i + 1}. {rel['src_id']} -[{rel['rel_type']}|{rel['neo4j_type']}]-> {rel['tgt_id']}"
             )
 
         # Cleanup temp files
@@ -1813,18 +1813,18 @@ async def merge_nodes_and_edges(
         and len(all_relationships_list) > 0
         and document_text
     ):
-
         logger.info("✅ Starting LLM-based relationship post-processing...")
 
         try:
-            validated_relationships, processing_stats = (
-                await _llm_post_process_relationships(
-                    document_text,
-                    all_entities_list,
-                    all_relationships_list,
-                    llm_response_cache,
-                    global_config,
-                )
+            (
+                validated_relationships,
+                processing_stats,
+            ) = await _llm_post_process_relationships(
+                document_text,
+                all_entities_list,
+                all_relationships_list,
+                llm_response_cache,
+                global_config,
             )
 
             # Rebuild edges from validated relationships

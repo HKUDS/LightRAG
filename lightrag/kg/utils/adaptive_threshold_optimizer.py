@@ -177,9 +177,9 @@ class AdaptiveThresholdOptimizer:
                 category_analysis["recommended_action"] = action
 
                 # Record adjustment
-                self.category_performance[category][
-                    "last_adjustment"
-                ] = datetime.now().isoformat()
+                self.category_performance[category]["last_adjustment"] = (
+                    datetime.now().isoformat()
+                )
                 self.category_performance[category]["adjustment_count"] += 1
 
                 logger.info(
