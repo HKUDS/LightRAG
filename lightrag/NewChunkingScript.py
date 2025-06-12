@@ -769,7 +769,7 @@ def process_folder(
     Returns:
         Dictionary with processing results
     """
-    start_time = datetime.now()
+    # start_time = datetime.now()  # noqa: F841
     logger.info(f"Processing folder: {folder_name}")
 
     # Get image URLs if specified

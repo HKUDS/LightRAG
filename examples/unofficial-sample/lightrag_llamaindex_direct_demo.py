@@ -9,10 +9,9 @@ from llama_index.llms.openai import OpenAI
 from llama_index.embeddings.openai import OpenAIEmbedding
 import asyncio
 import nest_asyncio
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 nest_asyncio.apply()
-
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 # Configure working directory
 WORKING_DIR = "./index_default"

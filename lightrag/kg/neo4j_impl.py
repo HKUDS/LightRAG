@@ -1143,67 +1143,68 @@ class Neo4JStorage(BaseGraphStorage):
             edge_degrees[(src, tgt)] = degrees.get(src, 0) + degrees.get(tgt, 0)
         return edge_degrees
 
-    async def get_edge(
-        self, source_id: str, target_id: str, rel_type: str = "related"
-    ) -> Dict[str, Any]:
-        """
-        Get properties of an edge between two nodes.
-
-        Args:
-            source_id: Source entity ID
-            target_id: Target entity ID
-            rel_type: Relationship type
-
-        Returns:
-            Dictionary with edge properties
-        """
-        query = """
-        MATCH (src:base {entity_id: $source_id})-[r:related {rel_type: $rel_type}]->(tgt:base {entity_id: $target_id})
-        RETURN properties(r) as properties
-        """
-
-        try:
-            async with self._driver.session(database=self._DATABASE) as session:
-                utils.logger.debug(
-                    f"Executing Cypher query in get_edge: {query} with params: {{'source_id': '{source_id}', 'target_id': '{target_id}', 'rel_type': '{rel_type}'}}"
-                )
-                result = await session.run(
-                    query, source_id=source_id, target_id=target_id, rel_type=rel_type
-                )
-                record = await result.single()
-                await result.consume()
-
-                # If no edge is found, return default properties using threshold manager
-                if not record or not record.get("properties"):
-                    threshold = self.threshold_manager.get_threshold(rel_type)
-                    return {
-                        "weight": threshold,
-                        "source_id": None,
-                        "description": None,
-                        "keywords": None,
-                    }
-
-                # Extract properties
-                props = record["properties"]
-
-                # Ensure weight is a float
-                if "weight" in props:
-                    props["weight"] = float(props["weight"])
-                else:
-                    # Use dynamic threshold if weight is missing
-                    props["weight"] = self.threshold_manager.get_threshold(rel_type)
-
-                return props
-
-        except Exception as e:
-            utils.logger.error(f"Error getting edge: {str(e)}")
-            threshold = self.threshold_manager.get_threshold(rel_type)
-            return {
-                "weight": threshold,
-                "source_id": None,
-                "description": None,
-                "keywords": None,
-            }
+    # OLD get_edge method - commented out to fix F811 duplicate definition
+    # async def get_edge(
+    #     self, source_id: str, target_id: str, rel_type: str = "related"
+    # ) -> Dict[str, Any]:
+    #     """
+    #     Get properties of an edge between two nodes.
+    #
+    #     Args:
+    #         source_id: Source entity ID
+    #         target_id: Target entity ID
+    #         rel_type: Relationship type
+    #
+    #     Returns:
+    #         Dictionary with edge properties
+    #     """
+    #     query = """
+    #     MATCH (src:base {entity_id: $source_id})-[r:related {rel_type: $rel_type}]->(tgt:base {entity_id: $target_id})
+    #     RETURN properties(r) as properties
+    #     """
+    #
+    #     try:
+    #         async with self._driver.session(database=self._DATABASE) as session:
+    #             utils.logger.debug(
+    #                 f"Executing Cypher query in get_edge: {query} with params: {{'source_id': '{source_id}', 'target_id': '{target_id}', 'rel_type': '{rel_type}'}}"
+    #             )
+    #             result = await session.run(
+    #                 query, source_id=source_id, target_id=target_id, rel_type=rel_type
+    #             )
+    #             record = await result.single()
+    #             await result.consume()
+    #
+    #             # If no edge is found, return default properties using threshold manager
+    #             if not record or not record.get("properties"):
+    #                 threshold = self.threshold_manager.get_threshold(rel_type)
+    #                 return {
+    #                     "weight": threshold,
+    #                     "source_id": None,
+    #                     "description": None,
+    #                     "keywords": None,
+    #                 }
+    #
+    #             # Extract properties
+    #             props = record["properties"]
+    #
+    #             # Ensure weight is a float
+    #             if "weight" in props:
+    #                 props["weight"] = float(props["weight"])
+    #             else:
+    #                 # Use dynamic threshold if weight is missing
+    #                 props["weight"] = self.threshold_manager.get_threshold(rel_type)
+    #
+    #             return props
+    #
+    #     except Exception as e:
+    #         utils.logger.error(f"Error getting edge: {str(e)}")
+    #         threshold = self.threshold_manager.get_threshold(rel_type)
+    #         return {
+    #             "weight": threshold,
+    #             "source_id": None,
+    #             "description": None,
+    #             "keywords": None,
+    #         }
 
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]

@@ -194,7 +194,7 @@ class PerformanceMonitor:
     def measure(self, operation_name: str, **metadata):
         """Context manager for measuring operation performance"""
         operation_id = self.start_operation(operation_name)
-        start_time = time.time()
+        # start_time = time.time()  # noqa: F841
 
         try:
             yield operation_id

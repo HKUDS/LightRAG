@@ -299,7 +299,7 @@ class AdaptiveThresholdOptimizer:
                 last_adjustment_time = datetime.fromisoformat(last_adjustment)
                 if datetime.now() - last_adjustment_time < timedelta(hours=1):
                     return False, "none", "Recently adjusted (within 1 hour)"
-            except:
+            except Exception:
                 pass  # Ignore parsing errors
 
         # Precision too low (false positives)

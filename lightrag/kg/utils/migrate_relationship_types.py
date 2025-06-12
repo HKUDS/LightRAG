@@ -343,7 +343,7 @@ async def rollback_migration(
         Dict with rollback statistics
     """
     start_time = time.time()
-    registry = RelationshipTypeRegistry()
+    # registry = RelationshipTypeRegistry()  # noqa: F841
 
     # Statistics dictionary
     stats = {
@@ -534,4 +534,3 @@ async def rollback_migration(
         stats["errors"] += 1
         stats["execution_time"] = time.time() - start_time
         return stats
-
