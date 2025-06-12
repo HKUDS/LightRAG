@@ -897,7 +897,7 @@ class PGVectorStorage(BaseVectorStorage):
 
     @property
     async def client_storage(self):
-        result = self.get_all_chunk_ids()
+        result = await self.get_all_chunk_ids()
         return {"data": list(result.values())}
 
 
