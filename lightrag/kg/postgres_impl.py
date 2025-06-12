@@ -877,6 +877,11 @@ class PGVectorStorage(BaseVectorStorage):
             return {"status": "error", "message": str(e)}
 
     async def get_all_chunk_ids(self) -> dict[str, Any]:
+        """Get all chunk_ids from storage
+
+        Returns:
+            Dictionary containing all stored chunk_ids
+        """
         table_name = namespace_to_table_name(self.namespace)
         if not table_name:
             logger.error(f"Unknown namespace for get_all: {self.namespace}")
