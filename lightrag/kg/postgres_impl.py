@@ -876,6 +876,30 @@ class PGVectorStorage(BaseVectorStorage):
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    async def get_all_chunk_ids(self) -> dict[str, Any]:
+        table_name = namespace_to_table_name(self.namespace)
+        if not table_name:
+            logger.error(f"Unknown namespace for get_all: {self.namespace}")
+            return {}
+
+        sql = f"SELECT chunk_ids FROM {table_name} WHERE workspace=$1"
+        params = {"workspace": self.db.workspace}
+
+        try:
+            results = await self.db.query(sql, params, multirows=True)
+            result_dict = {}
+            for i, row in enumerate(results):
+                result_dict[i] = {"source_id": row["chunk_ids"]}
+            return result_dict
+        except Exception as e:
+            logger.error(f"Error retrieving chunk_ids from {self.namespace}: {e}")
+            return {}
+
+    @property
+    async def client_storage(self):
+        result = self.get_all_chunk_ids()
+        return {"data": list(result.values())}
+
 
 @final
 @dataclass
