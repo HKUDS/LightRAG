@@ -9,10 +9,9 @@ from llama_index.llms.litellm import LiteLLM
 from llama_index.embeddings.litellm import LiteLLMEmbedding
 import asyncio
 import nest_asyncio
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 nest_asyncio.apply()
-
-from lightrag.kg.shared_storage import initialize_pipeline_status
 
 # Configure working directory
 WORKING_DIR = "./index_default"
