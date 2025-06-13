@@ -147,11 +147,13 @@ class QueryLogger:
         entry = {
             "timestamp": datetime.now().isoformat(),
             "query": query_text,
+
             "response": (
                 response_text[:500]
                 if self.log_level == LogLevel.MINIMAL
                 else response_text
             ),
+
         }
 
         # Add standard fields (STANDARD and VERBOSE levels)
