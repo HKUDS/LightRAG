@@ -886,17 +886,17 @@ async def execute_neo4j_cascade_delete(neo4j_storage, file_name: str) -> Dict[st
             MATCH (n)
             WHERE n.file_path CONTAINS $file_name
               AND n.file_path <> $file_name
-            SET n.file_path = 
+            SET n.file_path =
                 CASE
                     WHEN n.file_path STARTS WITH $file_name + '<SEP>'
                     THEN substring(n.file_path, size($file_name + '<SEP>'))
-                    
+
                     WHEN n.file_path ENDS WITH '<SEP>' + $file_name
                     THEN substring(n.file_path, 0, size(n.file_path) - size('<SEP>' + $file_name))
-                    
+
                     WHEN n.file_path CONTAINS '<SEP>' + $file_name + '<SEP>'
                     THEN replace(n.file_path, '<SEP>' + $file_name + '<SEP>', '<SEP>')
-                    
+
                     ELSE n.file_path
                 END
             RETURN count(n) as entities_updated

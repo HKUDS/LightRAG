@@ -1049,4 +1049,3 @@ Successfully implemented a **complete web-based document management system** tha
 - **Supports all storage configurations** from single to multi-database setups
 
 Users can now manage their entire LightRAG knowledge graph through the web interface, making the system accessible to non-technical users while maintaining the power and reliability of the underlying cascade deletion system.
-

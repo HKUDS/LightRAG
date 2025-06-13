@@ -817,7 +817,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                 # If exact match fails, try flexible matching
                 flexible_query = """
-                MATCH (n:base) 
+                MATCH (n:base)
                 WHERE toLower(n.entity_id) CONTAINS toLower($term)
                    OR toLower(n.description) CONTAINS toLower($term)
                 RETURN count(n) > 0 AS node_exists
@@ -919,7 +919,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                 # If exact match fails, try flexible matching
                 flexible_query = """
-                MATCH (n:base) 
+                MATCH (n:base)
                 WHERE toLower(n.entity_id) CONTAINS toLower($term)
                    OR toLower(n.description) CONTAINS toLower($term)
                 RETURN n LIMIT 1
@@ -1252,7 +1252,7 @@ class Neo4JStorage(BaseGraphStorage):
         query = """
         UNWIND $pairs AS pair
         MATCH (a:base {entity_id: pair.src})-[r]-(b:base {entity_id: pair.tgt})
-        RETURN pair.src AS source, pair.tgt AS target, properties(r) AS properties, 
+        RETURN pair.src AS source, pair.tgt AS target, properties(r) AS properties,
                type(r) AS neo4j_type, r.original_type AS original_type, r.rel_type AS rel_type
         """
 
@@ -1900,8 +1900,8 @@ class Neo4JStorage(BaseGraphStorage):
         query = f"""
         MATCH (src:base {{entity_id: $source_id}}), (tgt:base {{entity_id: $target_id}})
         MERGE (src)-[r:{neo4j_label_to_use}]->(tgt)
-        ON CREATE SET r = $properties_for_db 
-        ON MATCH SET r += $properties_for_db 
+        ON CREATE SET r = $properties_for_db
+        ON MATCH SET r += $properties_for_db
         RETURN r
         """
 

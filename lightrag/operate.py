@@ -1416,7 +1416,7 @@ async def _llm_post_process_relationships(
         )
 
         # Simplified prompt focused ONLY on removal, NO modification
-        prompt_text = f"""You are filtering extracted relationships based on document evidence. 
+        prompt_text = f"""You are filtering extracted relationships based on document evidence.
 
 DOCUMENT:
 {document_text}
@@ -1424,9 +1424,9 @@ DOCUMENT:
 RELATIONSHIPS TO FILTER:
 {relationships_file_content}
 
-TASK: Remove relationships that are NOT clearly supported by the document. 
+TASK: Remove relationships that are NOT clearly supported by the document.
 - DO NOT modify any rel_type values
-- DO NOT change field values  
+- DO NOT change field values
 - ONLY remove entire relationship entries if unsupported
 
 Return the filtered JSON with the same exact structure. Only keep relationships with clear document evidence.
@@ -1438,7 +1438,7 @@ Example output (keep exact same format and field values):
     {{
       "id": "rel_0",
       "src_id": "same_as_input",
-      "tgt_id": "same_as_input", 
+      "tgt_id": "same_as_input",
       "rel_type": "same_as_input",
       "description": "same_as_input",
       "weight": 0.9,
