@@ -598,24 +598,3 @@ class StoragesStatus(str, Enum):
     CREATED = "created"
     INITIALIZED = "initialized"
     FINALIZED = "finalized"
-
-
-@dataclass
-class BaseLLM(ABC):
-    """Base class for LLM implementations."""
-
-    @abstractmethod
-    async def generate(self, prompt: str, **kwargs) -> str:
-        """Generate a response from the LLM."""
-        pass
-
-    @abstractmethod
-    async def generate_with_history(
-        self,
-        prompt: str,
-        system_prompt: str | None = None,
-        history_messages: list[dict[str, Any]] | None = None,
-        **kwargs,
-    ) -> str:
-        """Generate a response with conversation history."""
-        pass

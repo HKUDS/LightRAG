@@ -3,7 +3,7 @@
 ## Problem Summary
 The graph visualizer worked fine with 1-2 documents but failed with 3+ documents, showing the error:
 ```
-UsageGraphError: Graph.addEdge: an edge linking "OpenAI Operator" to "User" already exists.
+UsageGraphError: Graph.addEdge: an edge linking "OpenAI Operator" to "User" already exists. 
 If you really want to add multiple edges linking those nodes, you should create a multi graph by using the 'multi' option.
 ```
 
@@ -23,7 +23,7 @@ The problem had **two layers**:
 - The composite ID approach worked when relationships were truly unique
 - Edge conflicts were minimal
 
-### Why It Failed With 3+ Documents
+### Why It Failed With 3+ Documents  
 - Multiple documents often create relationships between the same entities with different properties
 - Example: Document 1 creates "OpenAI Operator -> WORKS_WITH -> User" (weight: 0.8)
 - Document 2 creates "OpenAI Operator -> WORKS_WITH -> User" (weight: 0.6, different context)
@@ -45,7 +45,7 @@ grep -r "DirectedGraph\|UndirectedGraph" lightrag_webui/src/
 
 ### Step 2: Examined Backend Edge Handling
 ```bash
-# Found the Neo4j implementation
+# Found the Neo4j implementation 
 grep -n "get_knowledge_graph" lightrag/kg/neo4j_impl.py
 ```
 
@@ -66,7 +66,7 @@ This meant distinct Neo4j relationships with different properties but same sourc
 Neo4j (multiple distinct relationships)
     ↓
 Backend (filtered to "unique" edges by composite key)
-    ↓
+    ↓  
 Frontend (regular graph that can't handle multiple edges anyway)
     ↓
 Error when trying to add "duplicate" edge
@@ -85,7 +85,7 @@ Error when trying to add "duplicate" edge
 import Graph, { UndirectedGraph } from 'graphology'
 const graph = new UndirectedGraph()
 
-// NEW
+// NEW  
 import Graph, { MultiUndirectedGraph } from 'graphology'
 const graph = new MultiUndirectedGraph()
 ```
@@ -97,7 +97,7 @@ import { DirectedGraph } from 'graphology'
 sigmaGraph: DirectedGraph | null
 
 // NEW
-import { MultiUndirectedGraph } from 'graphology'
+import { MultiUndirectedGraph } from 'graphology'  
 sigmaGraph: MultiUndirectedGraph | null
 ```
 
@@ -114,7 +114,7 @@ sigmaGraph: MultiUndirectedGraph | null
 # OLD Cypher Query
 RETURN startNode(rel) as start_node, endNode(rel) as end_node, rel, type(rel) as rel_type
 
-# NEW Cypher Query
+# NEW Cypher Query  
 RETURN startNode(rel) as start_node, endNode(rel) as end_node, rel, type(rel) as rel_type, elementId(rel) as rel_id
 ```
 
@@ -133,7 +133,7 @@ if rel_id not in seen_edges:  # Use Neo4j's unique relationship ID
 # OLD Edge ID Assignment
 id=f"{rel_source}_{rel_target}_{rel_type}"
 
-# NEW Edge ID Assignment
+# NEW Edge ID Assignment  
 id=rel_id  # Use Neo4j's unique relationship ID
 ```
 
@@ -154,7 +154,7 @@ This critical fix ensures that edges only connect nodes that exist in the fronte
 
 ### Phase 3: Frontend Build Process
 
-**Why rebuild was needed**:
+**Why rebuild was needed**: 
 - The compiled JavaScript bundle in `lightrag/api/webui/assets/` still contained the old `UndirectedGraph` code
 - Vite.js compiles TypeScript to JavaScript and bundles it for production
 - The server serves the compiled bundle, not the source files
@@ -173,7 +173,7 @@ server: {
   proxy: import.meta.env.VITE_API_PROXY === 'true' && ...
 }
 
-// NEW vite.config.ts
+// NEW vite.config.ts  
 base: '/webui/',  // Direct constant
 server: {
   proxy: {}  // Simplified for build
@@ -192,7 +192,7 @@ npm run build-no-bun
 - **Without this**: Even with perfect backend data, frontend would reject multiple edges between same nodes
 - **With this**: Frontend can now handle parallel edges and display them distinctly
 
-### Backend Unique ID Usage
+### Backend Unique ID Usage  
 - **Without this**: Distinct relationships from multiple documents get filtered out as "duplicates"
 - **With this**: Every actual Neo4j relationship gets sent to frontend with truly unique ID
 
@@ -209,7 +209,7 @@ const graph = new UndirectedGraph()
 graph.addEdge('A', 'B', 'edge1') // ✅ Works
 graph.addEdge('A', 'B', 'edge2') // ❌ Throws "already exists" error
 
-// Multi Graph
+// Multi Graph  
 const graph = new MultiUndirectedGraph()
 graph.addEdge('A', 'B', 'edge1') // ✅ Works
 graph.addEdge('A', 'B', 'edge2') // ✅ Works - parallel edge
@@ -236,7 +236,7 @@ Development          Compilation           Chunking    Optimization   Production
 # Find graph initialization points
 grep -r "UndirectedGraph\|DirectedGraph" lightrag_webui/src/
 
-# Find Neo4j edge handling
+# Find Neo4j edge handling  
 grep -n "get_knowledge_graph" lightrag/kg/neo4j_impl.py
 
 # Check TypeScript compilation
@@ -250,7 +250,7 @@ ls -la ../lightrag/api/webui/assets/feature-graph-*.js
 ```
 
 ## Result
-- ✅ Graph visualizer now supports multiple documents
+- ✅ Graph visualizer now supports multiple documents  
 - ✅ No more "Graph.addEdge already exists" errors
 - ✅ Distinct relationships display properly
 - ✅ All edge properties preserved and accessible
@@ -260,7 +260,7 @@ The fix ensures that every distinct relationship from Neo4j gets a unique identi
 
 ## Additional Fix: Duplicate Edge Prevention in createSigmaGraph (2025-04-06)
 
-After the git restore incident, the error recurred because the `createSigmaGraph` function in `useLightragGraph.tsx` was missing duplicate edge checking.
+After the git restore incident, the error recurred because the `createSigmaGraph` function in `useLightragGraph.tsx` was missing duplicate edge checking. 
 
 ### The Problem
 In the `createSigmaGraph` function around line 366, edges were being added without checking for duplicates:

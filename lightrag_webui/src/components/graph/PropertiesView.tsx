@@ -106,21 +106,23 @@ const refineNodeProperties = (node: RawNodeType): NodeType => {
       const edges = state.sigmaGraph.edges(node.id)
 
       for (const edgeId of edges) {
-        if (!state.sigmaGraph.hasEdge(edgeId)) continue;
+        if (!state.sigmaGraph.hasEdge(edgeId)) continue
 
         const edge = state.rawGraph.getEdge(edgeId, true)
         if (edge) {
           const isTarget = node.id === edge.source
           const neighbourId = isTarget ? edge.target : edge.source
 
-          if (!state.sigmaGraph.hasNode(neighbourId)) continue;
+          if (!state.sigmaGraph.hasNode(neighbourId)) continue
 
           const neighbour = state.rawGraph.getNode(neighbourId)
           if (neighbour) {
             relationships.push({
               type: 'Neighbour',
               id: neighbourId,
-              label: neighbour.properties['entity_id'] ? neighbour.properties['entity_id'] : neighbour.labels.join(', ')
+              label: neighbour.properties['entity_id']
+                ? neighbour.properties['entity_id']
+                : neighbour.labels.join(', ')
             })
           }
         }
@@ -229,9 +231,12 @@ const PropertyRow = ({
   // For non-editable fields, use the regular Text component
   return (
     <div className="flex items-center gap-2">
-      <span className="text-primary/60 tracking-wide whitespace-nowrap">{getPropertyNameTranslation(name)}</span>:
+      <span className="text-primary/60 tracking-wide whitespace-nowrap">
+        {getPropertyNameTranslation(name)}
+      </span>
+      :
       <Text
-        className="hover:bg-primary/20 rounded p-1 overflow-hidden text-ellipsis"
+        className="hover:bg-primary/20 overflow-hidden rounded p-1 text-ellipsis"
         tooltipClassName="max-w-80 -translate-x-13"
         text={value}
         tooltip={tooltip || (typeof value === 'string' ? value : JSON.stringify(value, null, 2))}
@@ -255,8 +260,10 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex justify-between items-center">
-        <h3 className="text-md pl-1 font-bold tracking-wide text-blue-700">{t('graphPanel.propertiesView.node.title')}</h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-md pl-1 font-bold tracking-wide text-blue-700">
+          {t('graphPanel.propertiesView.node.title')}
+        </h3>
         <div className="flex gap-3">
           <Button
             size="icon"
@@ -289,12 +296,14 @@ const NodePropertiesView = ({ node }: { node: NodeType }) => {
         />
         <PropertyRow name={t('graphPanel.propertiesView.node.degree')} value={node.degree} />
       </div>
-      <h3 className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.node.properties')}</h3>
+      <h3 className="text-md pl-1 font-bold tracking-wide text-amber-700">
+        {t('graphPanel.propertiesView.node.properties')}
+      </h3>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(node.properties)
           .sort()
           .map((name) => {
-            if (name === 'created_at') return null; // Hide created_at property
+            if (name === 'created_at') return null // Hide created_at property
             return (
               <PropertyRow
                 key={name}
@@ -337,10 +346,14 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
   const { t } = useTranslation()
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-md pl-1 font-bold tracking-wide text-violet-700">{t('graphPanel.propertiesView.edge.title')}</h3>
+      <h3 className="text-md pl-1 font-bold tracking-wide text-violet-700">
+        {t('graphPanel.propertiesView.edge.title')}
+      </h3>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         <PropertyRow name={t('graphPanel.propertiesView.edge.id')} value={edge.id} />
-        {edge.type && <PropertyRow name={t('graphPanel.propertiesView.edge.type')} value={edge.type} />}
+        {edge.type && (
+          <PropertyRow name={t('graphPanel.propertiesView.edge.type')} value={edge.type} />
+        )}
         <PropertyRow
           name={t('graphPanel.propertiesView.edge.source')}
           value={edge.sourceNode ? edge.sourceNode.labels.join(', ') : edge.source}
@@ -356,12 +369,14 @@ const EdgePropertiesView = ({ edge }: { edge: EdgeType }) => {
           }}
         />
       </div>
-      <h3 className="text-md pl-1 font-bold tracking-wide text-amber-700">{t('graphPanel.propertiesView.edge.properties')}</h3>
+      <h3 className="text-md pl-1 font-bold tracking-wide text-amber-700">
+        {t('graphPanel.propertiesView.edge.properties')}
+      </h3>
       <div className="bg-primary/5 max-h-96 overflow-auto rounded p-1">
         {Object.keys(edge.properties)
           .sort()
           .map((name) => {
-            if (name === 'created_at') return null; // Hide created_at property
+            if (name === 'created_at') return null // Hide created_at property
             return (
               <PropertyRow
                 key={name}

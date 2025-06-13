@@ -6,9 +6,11 @@ for relationship type-specific confidence thresholds based on performance feedba
 """
 
 import json
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
+import statistics
 
 from .threshold_manager import ThresholdManager
 from .relationship_filter_metrics import get_filter_metrics
@@ -177,9 +179,9 @@ class AdaptiveThresholdOptimizer:
                 category_analysis["recommended_action"] = action
 
                 # Record adjustment
-                self.category_performance[category]["last_adjustment"] = (
-                    datetime.now().isoformat()
-                )
+                self.category_performance[category][
+                    "last_adjustment"
+                ] = datetime.now().isoformat()
                 self.category_performance[category]["adjustment_count"] += 1
 
                 logger.info(
@@ -299,7 +301,7 @@ class AdaptiveThresholdOptimizer:
                 last_adjustment_time = datetime.fromisoformat(last_adjustment)
                 if datetime.now() - last_adjustment_time < timedelta(hours=1):
                     return False, "none", "Recently adjusted (within 1 hour)"
-            except Exception:
+            except:
                 pass  # Ignore parsing errors
 
         # Precision too low (false positives)

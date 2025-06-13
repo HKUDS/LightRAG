@@ -7,10 +7,11 @@ type-specific intelligence to enable continuous improvement.
 
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any
-from collections import defaultdict
+from collections import defaultdict, Counter
 from pathlib import Path
+import logging
 
 from ...utils import logger
 
@@ -205,9 +206,9 @@ class RelationshipFilterMetrics:
                 category_analysis[category] = {
                     "average_retention": avg_rate,
                     "session_count": len(rates),
-                    "trend": "stable"
-                    if len(rates) < 3
-                    else self._calculate_trend(rates),
+                    "trend": (
+                        "stable" if len(rates) < 3 else self._calculate_trend(rates)
+                    ),
                 }
 
         # Generate recommendations
@@ -217,9 +218,11 @@ class RelationshipFilterMetrics:
             "summary_stats": {
                 "total_sessions": len(sessions),
                 "recent_retention_average": sum(retention_trend) / len(retention_trend),
-                "retention_trend": self._calculate_trend(retention_trend)
-                if len(retention_trend) >= 3
-                else "insufficient_data",
+                "retention_trend": (
+                    self._calculate_trend(retention_trend)
+                    if len(retention_trend) >= 3
+                    else "insufficient_data"
+                ),
             },
             "category_performance": category_analysis,
             "recommendations": recommendations,
@@ -419,12 +422,16 @@ class RelationshipFilterMetrics:
                 "session_count": len(self.session_metrics["filter_sessions"]),
                 "classification_count": len(self.session_metrics["classifications"]),
                 "time_range": {
-                    "start": self.session_metrics["filter_sessions"][0]["timestamp"]
-                    if self.session_metrics["filter_sessions"]
-                    else None,
-                    "end": self.session_metrics["filter_sessions"][-1]["timestamp"]
-                    if self.session_metrics["filter_sessions"]
-                    else None,
+                    "start": (
+                        self.session_metrics["filter_sessions"][0]["timestamp"]
+                        if self.session_metrics["filter_sessions"]
+                        else None
+                    ),
+                    "end": (
+                        self.session_metrics["filter_sessions"][-1]["timestamp"]
+                        if self.session_metrics["filter_sessions"]
+                        else None
+                    ),
                 },
             },
             "session_summary": self.get_session_summary(),

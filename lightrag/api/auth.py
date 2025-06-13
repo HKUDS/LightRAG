@@ -13,7 +13,6 @@ from .config import global_args
 load_dotenv(dotenv_path=".env", override=False)
 
 
-# Comment to testV_V2
 class TokenPayload(BaseModel):
     sub: str  # Username
     exp: datetime  # Expiration time

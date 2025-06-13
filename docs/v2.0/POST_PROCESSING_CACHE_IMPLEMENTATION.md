@@ -135,7 +135,7 @@ rag = LightRAG(
 ## Files Modified
 
 1. **`lightrag/chunk_post_processor.py`**: Added cache logic and diagnostic logging
-2. **`lightrag/operate.py`**: Fixed cache object passing to global_config
+2. **`lightrag/operate.py`**: Fixed cache object passing to global_config  
 3. **`lightrag/lightrag.py`**: Added configuration flag with env variable support
 4. **`lightrag/utils.py`**: Enhanced cache saving logic and logging for post-processing
 5. **`env.example`**: Added `ENABLE_LLM_CACHE_FOR_POST_PROCESS=true`

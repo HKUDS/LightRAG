@@ -12,7 +12,7 @@ The LightRAG system was converting ALL relationship types to generic "related" d
 Original: n8n -["runs_on"]-> Reddit Scrape To DB
 Result:   n8n -["related"]-> Reddit Scrape To DB
 
-Original: Angelique Gates -["shares_screen_via"]-> Zoom
+Original: Angelique Gates -["shares_screen_via"]-> Zoom  
 Result:   Angelique Gates -["related"]-> Zoom
 ```
 
@@ -35,7 +35,7 @@ relationship_data = dict(
 relationship_data = dict(
     src_id=source,
     tgt_id=target,
-    relationship_type=raw_rel_type,
+    relationship_type=raw_rel_type, 
     rel_type=raw_rel_type,  # CRITICAL: Added this field
 )
 ```
@@ -45,7 +45,7 @@ relationship_data = dict(
 
 **Implementation**:
 1. Create temp JSON file with ALL relationships and preserved types
-2. LLM reviews document + file, returns filtered JSON
+2. LLM reviews document + file, returns filtered JSON  
 3. Validated relationships go directly to merge with proper type fields
 4. Added preservation function to ensure original types are maintained
 
@@ -54,8 +54,8 @@ relationship_data = dict(
 
 **Key Instructions**:
 ```
-**CRITICAL**: You MUST preserve the exact original relationship type (rel_type)
-from the input relationships. Do NOT convert specific types like "uses",
+**CRITICAL**: You MUST preserve the exact original relationship type (rel_type) 
+from the input relationships. Do NOT convert specific types like "uses", 
 "runs_on", "processes", "implements" to generic "related".
 ```
 
@@ -93,7 +93,7 @@ from the input relationships. Do NOT convert specific types like "uses",
 ### **Technical Approach**:
 
 1. **Temp File Creation**: Store all relationships with original types
-2. **LLM Processing**: Filter based on document evidence only
+2. **LLM Processing**: Filter based on document evidence only  
 3. **Type Preservation**: Force restoration of original `rel_type` values
 4. **Standardization**: Convert to proper Neo4j relationship labels
 
@@ -115,7 +115,7 @@ global_config["enable_llm_post_processing"] = True
 
 1. **Semantic Richness**: Maintained specific relationship types
 2. **Quality Filtering**: 96.8% retention with intelligent removal
-3. **Accuracy**: Achieved target 85-90% relationship accuracy
+3. **Accuracy**: Achieved target 85-90% relationship accuracy  
 4. **Traceability**: Preserved original source IDs
 5. **Performance**: Conservative filtering prevents over-removal
 
@@ -148,7 +148,7 @@ result = await rag.aquery("How does n8n relate to workflows?")
 
 The implementation successfully:
 - ✅ Preserves all original relationship types
-- ✅ Maintains semantic richness of knowledge graph
+- ✅ Maintains semantic richness of knowledge graph  
 - ✅ Achieves 96.8% relationship retention
 - ✅ Provides intelligent quality filtering
 - ✅ Supports complex relationship vocabularies

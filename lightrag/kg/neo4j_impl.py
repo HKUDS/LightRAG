@@ -5,7 +5,7 @@ import asyncpg
 from threading import Lock
 from dataclasses import dataclass
 from datetime import datetime  # Added missing import
-from typing import final, Dict, List, Optional, Any, Union
+from typing import final, Dict, List, Tuple, Optional, Any, Union
 import configparser
 import time
 
@@ -28,11 +28,13 @@ from ..validation import (
 from .utils.semantic_utils import (
     process_relationship_weight,
     calculate_semantic_weight,
+    get_default_threshold_manager,
     set_default_threshold_manager,
 )
 from .utils.threshold_manager import ThresholdManager
 from .utils.relationship_registry import (
     RelationshipTypeRegistry,
+    standardize_relationship_type,
 )
 import pipmaster as pm
 
@@ -817,7 +819,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                 # If exact match fails, try flexible matching
                 flexible_query = """
-                MATCH (n:base)
+                MATCH (n:base) 
                 WHERE toLower(n.entity_id) CONTAINS toLower($term)
                    OR toLower(n.description) CONTAINS toLower($term)
                 RETURN count(n) > 0 AS node_exists
@@ -919,7 +921,7 @@ class Neo4JStorage(BaseGraphStorage):
 
                 # If exact match fails, try flexible matching
                 flexible_query = """
-                MATCH (n:base)
+                MATCH (n:base) 
                 WHERE toLower(n.entity_id) CONTAINS toLower($term)
                    OR toLower(n.description) CONTAINS toLower($term)
                 RETURN n LIMIT 1
@@ -1143,68 +1145,67 @@ class Neo4JStorage(BaseGraphStorage):
             edge_degrees[(src, tgt)] = degrees.get(src, 0) + degrees.get(tgt, 0)
         return edge_degrees
 
-    # OLD get_edge method - commented out to fix F811 duplicate definition
-    # async def get_edge(
-    #     self, source_id: str, target_id: str, rel_type: str = "related"
-    # ) -> Dict[str, Any]:
-    #     """
-    #     Get properties of an edge between two nodes.
-    #
-    #     Args:
-    #         source_id: Source entity ID
-    #         target_id: Target entity ID
-    #         rel_type: Relationship type
-    #
-    #     Returns:
-    #         Dictionary with edge properties
-    #     """
-    #     query = """
-    #     MATCH (src:base {entity_id: $source_id})-[r:related {rel_type: $rel_type}]->(tgt:base {entity_id: $target_id})
-    #     RETURN properties(r) as properties
-    #     """
-    #
-    #     try:
-    #         async with self._driver.session(database=self._DATABASE) as session:
-    #             utils.logger.debug(
-    #                 f"Executing Cypher query in get_edge: {query} with params: {{'source_id': '{source_id}', 'target_id': '{target_id}', 'rel_type': '{rel_type}'}}"
-    #             )
-    #             result = await session.run(
-    #                 query, source_id=source_id, target_id=target_id, rel_type=rel_type
-    #             )
-    #             record = await result.single()
-    #             await result.consume()
-    #
-    #             # If no edge is found, return default properties using threshold manager
-    #             if not record or not record.get("properties"):
-    #                 threshold = self.threshold_manager.get_threshold(rel_type)
-    #                 return {
-    #                     "weight": threshold,
-    #                     "source_id": None,
-    #                     "description": None,
-    #                     "keywords": None,
-    #                 }
-    #
-    #             # Extract properties
-    #             props = record["properties"]
-    #
-    #             # Ensure weight is a float
-    #             if "weight" in props:
-    #                 props["weight"] = float(props["weight"])
-    #             else:
-    #                 # Use dynamic threshold if weight is missing
-    #                 props["weight"] = self.threshold_manager.get_threshold(rel_type)
-    #
-    #             return props
-    #
-    #     except Exception as e:
-    #         utils.logger.error(f"Error getting edge: {str(e)}")
-    #         threshold = self.threshold_manager.get_threshold(rel_type)
-    #         return {
-    #             "weight": threshold,
-    #             "source_id": None,
-    #             "description": None,
-    #             "keywords": None,
-    #         }
+    async def get_edge(
+        self, source_id: str, target_id: str, rel_type: str = "related"
+    ) -> Dict[str, Any]:
+        """
+        Get properties of an edge between two nodes.
+
+        Args:
+            source_id: Source entity ID
+            target_id: Target entity ID
+            rel_type: Relationship type
+
+        Returns:
+            Dictionary with edge properties
+        """
+        query = """
+        MATCH (src:base {entity_id: $source_id})-[r:related {rel_type: $rel_type}]->(tgt:base {entity_id: $target_id})
+        RETURN properties(r) as properties
+        """
+
+        try:
+            async with self._driver.session(database=self._DATABASE) as session:
+                utils.logger.debug(
+                    f"Executing Cypher query in get_edge: {query} with params: {{'source_id': '{source_id}', 'target_id': '{target_id}', 'rel_type': '{rel_type}'}}"
+                )
+                result = await session.run(
+                    query, source_id=source_id, target_id=target_id, rel_type=rel_type
+                )
+                record = await result.single()
+                await result.consume()
+
+                # If no edge is found, return default properties using threshold manager
+                if not record or not record.get("properties"):
+                    threshold = self.threshold_manager.get_threshold(rel_type)
+                    return {
+                        "weight": threshold,
+                        "source_id": None,
+                        "description": None,
+                        "keywords": None,
+                    }
+
+                # Extract properties
+                props = record["properties"]
+
+                # Ensure weight is a float
+                if "weight" in props:
+                    props["weight"] = float(props["weight"])
+                else:
+                    # Use dynamic threshold if weight is missing
+                    props["weight"] = self.threshold_manager.get_threshold(rel_type)
+
+                return props
+
+        except Exception as e:
+            utils.logger.error(f"Error getting edge: {str(e)}")
+            threshold = self.threshold_manager.get_threshold(rel_type)
+            return {
+                "weight": threshold,
+                "source_id": None,
+                "description": None,
+                "keywords": None,
+            }
 
     async def get_edges_batch(
         self, pairs: list[dict[str, str]]
@@ -1252,7 +1253,7 @@ class Neo4JStorage(BaseGraphStorage):
         query = """
         UNWIND $pairs AS pair
         MATCH (a:base {entity_id: pair.src})-[r]-(b:base {entity_id: pair.tgt})
-        RETURN pair.src AS source, pair.tgt AS target, properties(r) AS properties,
+        RETURN pair.src AS source, pair.tgt AS target, properties(r) AS properties, 
                type(r) AS neo4j_type, r.original_type AS original_type, r.rel_type AS rel_type
         """
 
@@ -1900,8 +1901,8 @@ class Neo4JStorage(BaseGraphStorage):
         query = f"""
         MATCH (src:base {{entity_id: $source_id}}), (tgt:base {{entity_id: $target_id}})
         MERGE (src)-[r:{neo4j_label_to_use}]->(tgt)
-        ON CREATE SET r = $properties_for_db
-        ON MATCH SET r += $properties_for_db
+        ON CREATE SET r = $properties_for_db 
+        ON MATCH SET r += $properties_for_db 
         RETURN r
         """
 
@@ -2000,10 +2001,13 @@ class Neo4JStorage(BaseGraphStorage):
             Dictionary with edge properties
         """
         # Use actual relationship type in query instead of generic "related"
-        query = """
+        query = (
+            """
         MATCH (src:base {entity_id: $source_id})-[r:%s]->(tgt:base {entity_id: $target_id})
         RETURN properties(r) as properties
-        """ % rel_type.upper()  # Note: rel_type is directly embedded here.
+        """
+            % rel_type.upper()
+        )  # Note: rel_type is directly embedded here.
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:

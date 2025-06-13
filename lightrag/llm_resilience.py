@@ -180,7 +180,7 @@ async def enhanced_llm_call(
         "llm_call_total", prompt_type=prompt_type, max_retries=max_retries
     ):
         enhanced_logger.debug(
-            "Starting LLM call", prompt_type=prompt_type, prompt_length=len(prompt)
+            f"Starting LLM call", prompt_type=prompt_type, prompt_length=len(prompt)
         )
 
         retry_count = 0

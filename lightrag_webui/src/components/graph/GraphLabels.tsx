@@ -56,15 +56,17 @@ const GraphLabels = () => {
           const matchedLabels = new Set(result)
 
           // Perform middle-content matching on all labels
-          const middleMatchResults = labels.filter(label => {
+          const middleMatchResults = labels.filter((label) => {
             // Skip already matched labels
             if (matchedLabels.has(label)) return false
 
             // Match if label contains query string but doesn't start with it
-            return label &&
-                   typeof label === 'string' &&
-                   !label.toLowerCase().startsWith(query.toLowerCase()) &&
-                   label.toLowerCase().includes(query.toLowerCase())
+            return (
+              label &&
+              typeof label === 'string' &&
+              !label.toLowerCase().startsWith(query.toLowerCase()) &&
+              label.toLowerCase().includes(query.toLowerCase())
+            )
           })
 
           // Merge results
@@ -72,32 +74,28 @@ const GraphLabels = () => {
         }
       }
 
-      return result.length <= labelListLimit
-        ? result
-        : [...result.slice(0, labelListLimit), '...']
+      return result.length <= labelListLimit ? result : [...result.slice(0, labelListLimit), '...']
     },
     [getSearchEngine]
   )
 
   // Validate label
   useEffect(() => {
-
     if (labelsFetchAttempted) {
       if (allDatabaseLabels.length > 1) {
         if (label && label !== '*' && !allDatabaseLabels.includes(label)) {
-          console.log(`Label "${label}" not in available labels, setting to "*"`);
-          useSettingsStore.getState().setQueryLabel('*');
+          console.log(`Label "${label}" not in available labels, setting to "*"`)
+          useSettingsStore.getState().setQueryLabel('*')
         } else {
-          console.log(`Label "${label}" is valid`);
+          console.log(`Label "${label}" is valid`)
         }
       } else if (label && allDatabaseLabels.length <= 1 && label && label !== '*') {
-        console.log('Available labels list is empty, setting label to empty');
-        useSettingsStore.getState().setQueryLabel('');
+        console.log('Available labels list is empty, setting label to empty')
+        useSettingsStore.getState().setQueryLabel('')
       }
       useGraphStore.getState().setLabelsFetchAttempted(false)
     }
-
-  }, [allDatabaseLabels, label, labelsFetchAttempted]);
+  }, [allDatabaseLabels, label, labelsFetchAttempted])
 
   const handleRefresh = useCallback(() => {
     // Reset fetch status flags
@@ -120,7 +118,7 @@ const GraphLabels = () => {
         useSettingsStore.getState().setQueryLabel(currentLabel)
       }, 0)
     }
-  }, []);
+  }, [])
 
   return (
     <div className="flex items-center">
@@ -148,25 +146,25 @@ const GraphLabels = () => {
         placeholder={t('graphPanel.graphLabels.placeholder')}
         value={label !== null ? label : '*'}
         onChange={(newLabel) => {
-          const currentLabel = useSettingsStore.getState().queryLabel;
+          const currentLabel = useSettingsStore.getState().queryLabel
 
           // select the last item means query all
           if (newLabel === '...') {
-            newLabel = '*';
+            newLabel = '*'
           }
 
           // Handle reselecting the same label
           if (newLabel === currentLabel && newLabel !== '*') {
-            newLabel = '*';
+            newLabel = '*'
           }
 
           // Reset graphDataFetchAttempted flag to ensure data fetch is triggered
-          useGraphStore.getState().setGraphDataFetchAttempted(false);
+          useGraphStore.getState().setGraphDataFetchAttempted(false)
 
           // Update the label to trigger data loading
-          useSettingsStore.getState().setQueryLabel(newLabel);
+          useSettingsStore.getState().setQueryLabel(newLabel)
         }}
-        clearable={false}  // Prevent clearing value on reselect
+        clearable={false} // Prevent clearing value on reselect
       />
     </div>
   )

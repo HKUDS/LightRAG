@@ -13,6 +13,7 @@ from .utils import (
     clean_str,
     compute_mdhash_id,
     Tokenizer,
+    is_float_regex,
     normalize_extracted_info,
     pack_user_ass_to_openai_messages,
     split_string_by_multi_markers,
@@ -40,11 +41,13 @@ from .validation import (
     DatabaseValidator,
     validate_extraction_results,
     log_validation_errors,
+    ContentSanitizer,
 )
 from .monitoring import (
     get_performance_monitor,
     get_processing_monitor,
     get_enhanced_logger,
+    start_system_monitoring,
 )
 import time
 from dotenv import load_dotenv
@@ -52,6 +55,9 @@ from lightrag.kg.utils.relationship_registry import standardize_relationship_typ
 from .chunk_post_processor import _post_process_chunk_relationships
 from .constants import (
     DEFAULT_ENABLE_CHUNK_POST_PROCESSING,
+    DEFAULT_CHUNK_VALIDATION_BATCH_SIZE,
+    DEFAULT_CHUNK_VALIDATION_TIMEOUT,
+    DEFAULT_LOG_VALIDATION_CHANGES,
     DEFAULT_ENABLE_ENTITY_CLEANUP,
 )
 
@@ -680,9 +686,9 @@ async def _merge_edges_then_upsert(
 
         if edge_instance.get("description"):
             if merged_edge["description"]:
-                merged_edge["description"] += (
-                    f"{GRAPH_FIELD_SEP}{edge_instance['description']}"
-                )
+                merged_edge[
+                    "description"
+                ] += f"{GRAPH_FIELD_SEP}{edge_instance['description']}"
             else:
                 merged_edge["description"] = edge_instance["description"]
 
@@ -1390,14 +1396,14 @@ async def _llm_post_process_relationships(
         )
 
         # Debug: Log first 5 relationships that went into the temp file
-        logger.info("🔍 First 5 relationships stored in temp file:")
+        logger.info(f"🔍 First 5 relationships stored in temp file:")
         for i, rel in enumerate(relationships_data["relationships"][:5]):
             logger.info(
                 f"  {i+1}. {rel['src_id']} -[{rel['rel_type']}]-> {rel['tgt_id']}"
             )
 
         # Debug: Also log 5 random original relationships for comparison
-        logger.info("🔍 Original relationships for comparison:")
+        logger.info(f"🔍 Original relationships for comparison:")
         for i, rel in enumerate(all_relationships[:5]):
             logger.info(
                 f"  {i+1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}"
@@ -1416,7 +1422,7 @@ async def _llm_post_process_relationships(
         )
 
         # Simplified prompt focused ONLY on removal, NO modification
-        prompt_text = f"""You are filtering extracted relationships based on document evidence.
+        prompt_text = f"""You are filtering extracted relationships based on document evidence. 
 
 DOCUMENT:
 {document_text}
@@ -1424,9 +1430,9 @@ DOCUMENT:
 RELATIONSHIPS TO FILTER:
 {relationships_file_content}
 
-TASK: Remove relationships that are NOT clearly supported by the document.
+TASK: Remove relationships that are NOT clearly supported by the document. 
 - DO NOT modify any rel_type values
-- DO NOT change field values
+- DO NOT change field values  
 - ONLY remove entire relationship entries if unsupported
 
 Return the filtered JSON with the same exact structure. Only keep relationships with clear document evidence.
@@ -1438,7 +1444,7 @@ Example output (keep exact same format and field values):
     {{
       "id": "rel_0",
       "src_id": "same_as_input",
-      "tgt_id": "same_as_input",
+      "tgt_id": "same_as_input", 
       "rel_type": "same_as_input",
       "description": "same_as_input",
       "weight": 0.9,
@@ -1485,16 +1491,16 @@ CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationshi
             "validated": validated_count,
             "removed": removed_count,
             "accuracy_improvement": f"File-based processing preserved {validated_count}/{input_count} relationships with original types",
-            "average_quality_score": sum(
-                r.get("weight", 0.8) for r in validated_relationships
-            )
-            / len(validated_relationships)
-            if validated_relationships
-            else 0,
+            "average_quality_score": (
+                sum(r.get("weight", 0.8) for r in validated_relationships)
+                / len(validated_relationships)
+                if validated_relationships
+                else 0
+            ),
         }
 
         # Log results
-        logger.info("🎯 LLM post-processing completed:")
+        logger.info(f"🎯 LLM post-processing completed:")
         logger.info(f"  - Input relationships: {input_count}")
         logger.info(f"  - Validated relationships: {validated_count}")
         logger.info(f"  - Removed relationships: {removed_count}")
@@ -1505,7 +1511,7 @@ CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationshi
         logger.info(f"  - Improvement: {processing_stats['accuracy_improvement']}")
 
         # Log examples of validated relationships with preserved types
-        logger.info("✅ File-based relationships with preserved types:")
+        logger.info(f"✅ File-based relationships with preserved types:")
         for i, rel in enumerate(validated_relationships[:3]):
             logger.info(
                 f"  {i+1}. {rel.get('src_id', '')} -[{rel.get('rel_type', '')}]-> {rel.get('tgt_id', '')}"
@@ -1547,7 +1553,7 @@ CRITICAL: Preserve ALL field values exactly. Only remove unsupported relationshi
             formatted_relationships.append(formatted_rel)
 
         # Log final formatting examples
-        logger.info("📝 Final formatted relationships (should preserve types):")
+        logger.info(f"📝 Final formatted relationships (should preserve types):")
         for i, rel in enumerate(formatted_relationships[:3]):
             logger.info(
                 f"  {i+1}. {rel['src_id']} -[{rel['rel_type']}|{rel['neo4j_type']}]-> {rel['tgt_id']}"
@@ -1651,7 +1657,7 @@ def _preserve_original_relationship_metadata(
         if preservation_stats["total"] > 0
         else 0
     )
-    logger.info("🔧 Relationship preservation completed:")
+    logger.info(f"🔧 Relationship preservation completed:")
     logger.info(f"  - Total relationships: {preservation_stats['total']}")
     logger.info(
         f"  - Preserved original types: {preservation_stats['preserved']} ({preserved_pct:.1f}%)"
@@ -1813,18 +1819,18 @@ async def merge_nodes_and_edges(
         and len(all_relationships_list) > 0
         and document_text
     ):
+
         logger.info("✅ Starting LLM-based relationship post-processing...")
 
         try:
-            (
-                validated_relationships,
-                processing_stats,
-            ) = await _llm_post_process_relationships(
-                document_text,
-                all_entities_list,
-                all_relationships_list,
-                llm_response_cache,
-                global_config,
+            validated_relationships, processing_stats = (
+                await _llm_post_process_relationships(
+                    document_text,
+                    all_entities_list,
+                    all_relationships_list,
+                    llm_response_cache,
+                    global_config,
+                )
             )
 
             # Rebuild edges from validated relationships
@@ -2594,9 +2600,10 @@ async def extract_keywords_only(
     if cached_response is not None:
         try:
             keywords_data = json.loads(cached_response)
-            return keywords_data["high_level_keywords"], keywords_data[
-                "low_level_keywords"
-            ]
+            return (
+                keywords_data["high_level_keywords"],
+                keywords_data["low_level_keywords"],
+            )
         except (json.JSONDecodeError, KeyError):
             logger.warning(
                 "Invalid cache format for keywords, proceeding with extraction"

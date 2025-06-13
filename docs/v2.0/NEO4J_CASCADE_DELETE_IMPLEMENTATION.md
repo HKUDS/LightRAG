@@ -22,7 +22,7 @@ The system now detects all active database backends and executes cleanup operati
 if postgres_storage and hasattr(postgres_storage, 'db') and hasattr(postgres_storage.db, 'pool') and postgres_storage.db.pool:
     # Execute PostgreSQL cascade delete
 
-# Detect active Neo4j storage
+# Detect active Neo4j storage  
 if neo4j_storage and hasattr(neo4j_storage, '_driver') and neo4j_storage._driver is not None:
     # Execute Neo4j cascade delete
 ```
@@ -49,28 +49,28 @@ async def execute_neo4j_cascade_delete(neo4j_storage, file_name: str) -> Dict[st
         MATCH (n)
         WHERE n.file_path CONTAINS $file_name
           AND n.file_path <> $file_name
-        SET n.file_path =
+        SET n.file_path = 
             CASE
                 WHEN n.file_path STARTS WITH $file_name + '<SEP>'
                 THEN substring(n.file_path, size($file_name + '<SEP>'))
-
+                
                 WHEN n.file_path ENDS WITH '<SEP>' + $file_name
                 THEN substring(n.file_path, 0, size(n.file_path) - size('<SEP>' + $file_name))
-
+                
                 WHEN n.file_path CONTAINS '<SEP>' + $file_name + '<SEP>'
                 THEN replace(n.file_path, '<SEP>' + $file_name + '<SEP>', '<SEP>')
-
+                
                 ELSE n.file_path
             END
         """
-
+        
         # 2. Delete single-file entities
         delete_entities_query = """
         MATCH (n)
         WHERE n.file_path = $file_name
         DETACH DELETE n
         """
-
+        
         # 3. Delete relationships
         delete_relationships_query = """
         MATCH ()-[r]->()
@@ -190,17 +190,17 @@ database_cleanup: Optional[Dict[str, Any]] = Field(
 When an entity exists in multiple documents, we update its `file_path` to remove only the deleted document:
 
 ```cypher
-SET n.file_path =
+SET n.file_path = 
     CASE
         WHEN n.file_path STARTS WITH $file_name + '<SEP>'
         THEN substring(n.file_path, size($file_name + '<SEP>'))
-
+        
         WHEN n.file_path ENDS WITH '<SEP>' + $file_name
         THEN substring(n.file_path, 0, size(n.file_path) - size('<SEP>' + $file_name))
-
+        
         WHEN n.file_path CONTAINS '<SEP>' + $file_name + '<SEP>'
         THEN replace(n.file_path, '<SEP>' + $file_name + '<SEP>', '<SEP>')
-
+        
         ELSE n.file_path
     END
 ```
@@ -271,7 +271,7 @@ INFO: Neo4j not configured/active, skipping Neo4j deletion for doc doc-123
 ## Testing Results
 
 ✅ **Individual Document Deletion**: Works with both PostgreSQL and Neo4j
-✅ **Batch Document Deletion**: Handles multiple documents across both databases
+✅ **Batch Document Deletion**: Handles multiple documents across both databases  
 ✅ **Single Database**: Gracefully skips non-configured databases
 ✅ **Error Recovery**: Continues operation if one database fails
 ✅ **Response Structure**: Returns combined cleanup results
@@ -282,7 +282,7 @@ INFO: Neo4j not configured/active, skipping Neo4j deletion for doc doc-123
 - No changes required - continues to work as before
 - Now returns results under `database_cleanup.postgresql` key
 
-### Existing Neo4j Users
+### Existing Neo4j Users  
 - Automatic detection and cleanup now works
 - Results returned under `database_cleanup.neo4j` key
 

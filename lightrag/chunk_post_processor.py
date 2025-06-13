@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
 import logging
 
@@ -46,7 +46,7 @@ Return JSON with this exact structure:
     "validated_relationships": [
         {{
             "src_id": "entity1",
-            "tgt_id": "entity2",
+            "tgt_id": "entity2", 
             "rel_type": "relationship_type",
             "weight": 0.85,
             "description": "Updated description based on chunk",
@@ -57,7 +57,7 @@ Return JSON with this exact structure:
     ],
     "summary": {{
         "kept": 2,
-        "adjusted": 1,
+        "adjusted": 1, 
         "modified": 1,
         "removed": 1,
         "total_processed": 5

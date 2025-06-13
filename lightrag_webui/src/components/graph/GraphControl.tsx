@@ -53,18 +53,18 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       // Ensure sigma binding to sigmaGraph
       try {
         if (typeof sigma.setGraph === 'function') {
-          sigma.setGraph(sigmaGraph as unknown as AbstractGraph<NodeType, EdgeType>);
-          console.log('Binding graph to sigma instance');
+          sigma.setGraph(sigmaGraph as unknown as AbstractGraph<NodeType, EdgeType>)
+          console.log('Binding graph to sigma instance')
         } else {
-          (sigma as any).graph = sigmaGraph;
-          console.warn('Simgma missing setGraph function, set graph property directly');
+          ;(sigma as any).graph = sigmaGraph
+          console.warn('Simgma missing setGraph function, set graph property directly')
         }
       } catch (error) {
-        console.error('Error setting graph on sigma instance:', error);
+        console.error('Error setting graph on sigma instance:', error)
       }
 
-      assignLayout();
-      console.log('Initial layout applied to graph');
+      assignLayout()
+      console.log('Initial layout applied to graph')
     }
   }, [sigma, sigmaGraph, assignLayout, maxIterations])
 
@@ -75,13 +75,13 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
   useEffect(() => {
     if (sigma) {
       // Double-check that the store has the sigma instance
-      const currentInstance = useGraphStore.getState().sigmaInstance;
+      const currentInstance = useGraphStore.getState().sigmaInstance
       if (!currentInstance) {
-        console.log('Setting sigma instance from GraphControl');
-        useGraphStore.getState().setSigmaInstance(sigma);
+        console.log('Setting sigma instance from GraphControl')
+        useGraphStore.getState().setSigmaInstance(sigma)
       }
     }
-  }, [sigma]);
+  }, [sigma])
 
   /**
    * When component mount
@@ -157,7 +157,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       let minWeight = Number.MAX_SAFE_INTEGER
       let maxWeight = 0
 
-      graph.forEachEdge(edge => {
+      graph.forEachEdge((edge) => {
         // Get original weight (before scaling)
         const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
         if (typeof weight === 'number') {
@@ -170,16 +170,17 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
       const weightRange = maxWeight - minWeight
       if (weightRange > 0) {
         const sizeScale = maxEdgeSize - minEdgeSize
-        graph.forEachEdge(edge => {
+        graph.forEachEdge((edge) => {
           const weight = graph.getEdgeAttribute(edge, 'originalWeight') || 1
           if (typeof weight === 'number') {
-            const scaledSize = minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5)
+            const scaledSize =
+              minEdgeSize + sizeScale * Math.pow((weight - minWeight) / weightRange, 0.5)
             graph.setEdgeAttribute(edge, 'size', scaledSize)
           }
         })
       } else {
         // If all weights are the same, use default size
-        graph.forEachEdge(edge => {
+        graph.forEachEdge((edge) => {
           graph.setEdgeAttribute(edge, 'size', minEdgeSize)
         })
       }
@@ -227,7 +228,7 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
                 }
               }
             } catch (error) {
-              console.error('Error in nodeReducer:', error);
+              console.error('Error in nodeReducer:', error)
             }
           } else if (_focusedEdge && graph.hasEdge(_focusedEdge)) {
             if (graph.extremities(_focusedEdge).includes(node)) {
@@ -269,11 +270,11 @@ const GraphControl = ({ disableHoverEffect }: { disableHoverEffect?: boolean }) 
                 }
               }
             } catch (error) {
-              console.error('Error in edgeReducer:', error);
+              console.error('Error in edgeReducer:', error)
             }
           } else {
-            const _selectedEdge = selectedEdge && graph.hasEdge(selectedEdge) ? selectedEdge : null;
-            const _focusedEdge = focusedEdge && graph.hasEdge(focusedEdge) ? focusedEdge : null;
+            const _selectedEdge = selectedEdge && graph.hasEdge(selectedEdge) ? selectedEdge : null
+            const _focusedEdge = focusedEdge && graph.hasEdge(focusedEdge) ? focusedEdge : null
 
             if (_selectedEdge || _focusedEdge) {
               if (edge === _selectedEdge) {

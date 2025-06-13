@@ -35,7 +35,7 @@ Despite successful LLM extraction of custom relationship types like "integrates 
 The issue was identified in the **`_merge_edges_then_upsert` function** in `lightrag/operate.py` where:
 
 1. **Type Information Loss**: Merge logic was defaulting type fields to "related" or `None`
-2. **Poor Type Prioritization**: Function wasn't properly prioritizing specific types over generic ones
+2. **Poor Type Prioritization**: Function wasn't properly prioritizing specific types over generic ones  
 3. **Inconsistent Type Fields**: Type information from individual edge instances was being lost during aggregation
 
 ---
@@ -65,7 +65,7 @@ The core fix was a complete rewrite of the `_merge_edges_then_upsert` function:
 #### Algorithm Flow:
 ```python
 1. Initialize merged_edge with default values
-2. Iterate through all edge instances collecting type information
+2. Iterate through all edge instances collecting type information  
 3. Find first specific (non-generic) original_type and neo4j_type
 4. If no specific neo4j_type found but specific original_type exists, derive Neo4j format
 5. Assign final type values with consistency across all type fields
@@ -77,7 +77,7 @@ The core fix was a complete rewrite of the `_merge_edges_then_upsert` function:
 all_original_types = []
 all_neo4j_types = []
 
-# Find specific types (prioritize non-generic)
+# Find specific types (prioritize non-generic)  
 specific_original_types = [ot for ot in all_original_types if ot and ot.lower() != "related"]
 specific_neo4j_types = [nt for nt in all_neo4j_types if nt and nt != "RELATED"]
 
@@ -113,7 +113,7 @@ INFO: Neo4j Upsert: WordPress Permalink-[ADDRESSES]->WordPress Troubleshooting w
 
 ### Relationship Types Successfully Preserved
 - 🎯 **ADDRESSES** - WordPress Permalink addressing WordPress Troubleshooting
-- 🎯 **TARGETS** - Intermittent Failure targeting WordPress Troubleshooting
+- 🎯 **TARGETS** - Intermittent Failure targeting WordPress Troubleshooting  
 - 🎯 **OPTIMIZES** - Caching optimizing Loading Issue Diagnosis
 - 🎯 **INDICATES** - Error Message indicating Loading Error
 - 🎯 **ENABLES** - Context Handoff enabling Operator-User Handoff
@@ -131,11 +131,11 @@ Warning: neo4j_type missing in input properties...
 Result: Generic, meaningless relationship types
 ```
 
-### AFTER Fix ✅
+### AFTER Fix ✅  
 ```
 Log: INFO: Final merged_edge for ... -> ...: neo4j_type='INTEGRATES_WITH', rel_type='integrates with', ...
 Neo4j: Relationships stored with correct custom types (INTEGRATES_WITH, DEPENDS_ON, etc.)
-Warning: No warnings about missing type information
+Warning: No warnings about missing type information  
 Result: Semantic, meaningful relationship types preserved
 ```
 
@@ -153,7 +153,7 @@ This implementation was guided by comprehensive Product Requirements Documents:
 ### Supporting PRDs:
 - **`lightragPRD_6.3.25.md`**: Original problem identification and relationship parsing fixes
 - **`lightragPRD_6.3.25_Part 2.md`**: RelationshipTypeRegistry and standardization logic
-- **`lightragPRD_6.3.25_Part 3.md`**: Neo4j storage integration requirements
+- **`lightragPRD_6.3.25_Part 3.md`**: Neo4j storage integration requirements  
 - **`lightragPRD_6.3.25_Part 4.md`**: Graph visualization and data integrity concerns
 
 ---
@@ -170,7 +170,7 @@ This implementation was guided by comprehensive Product Requirements Documents:
 ```python
 # Priority order for type selection:
 1. First specific neo4j_type found (non-"RELATED")
-2. First specific original_type found (non-"related")
+2. First specific original_type found (non-"related")  
 3. Derive neo4j_type from original_type if needed
 4. Fallback to "RELATED"/"related" only if no specific types exist
 ```
@@ -190,19 +190,19 @@ This implementation was guided by comprehensive Product Requirements Documents:
 
 ## 🧪 **Testing & Validation**
 
-### Comprehensive Test Suite
+### Comprehensive Test Suite  
 Created `test_relationship_merge_fix.py` validating:
 
 1. **✅ Specific Type Preservation**: Edges with specific types maintain them correctly
 2. **✅ Mixed Type Prioritization**: Specific types take priority over generic types
-3. **✅ Generic Type Handling**: All-generic edges remain generic as expected
+3. **✅ Generic Type Handling**: All-generic edges remain generic as expected  
 4. **✅ Type Derivation**: Missing `neo4j_type` correctly derived from `original_type`
 
 ### Test Results
 ```
 ✓ Test Case 1 passed: Specific types preserved correctly
 ✓ Test Case 2 passed: Specific type prioritized over generic
-✓ Test Case 3 passed: Generic types handled correctly
+✓ Test Case 3 passed: Generic types handled correctly  
 ✓ Test Case 4 passed: Type derivation works correctly
 ```
 
@@ -220,12 +220,12 @@ Created `test_relationship_merge_fix.py` validating:
 - Custom relationship types extracted by LLM are maintained throughout pipeline
 - No loss of semantic information during processing
 
-### 2. **Improved Graph Quality**
+### 2. **Improved Graph Quality**  
 - More meaningful and specific relationship types in knowledge graph
 - Better representation of domain knowledge
 
 ### 3. **Enhanced Visualization**
-- Graph visualizers display typed edges correctly
+- Graph visualizers display typed edges correctly  
 - Better user experience and interpretation
 
 ### 4. **Advanced Query Capabilities**
@@ -276,4 +276,4 @@ For questions, issues, or contributions related to this relationship type propag
 
 ---
 
-*This README documents a critical milestone in LightRAG's evolution toward more intelligent and semantically-aware knowledge graph construction.*
+*This README documents a critical milestone in LightRAG's evolution toward more intelligent and semantically-aware knowledge graph construction.* 

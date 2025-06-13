@@ -69,7 +69,7 @@ This document details the implementation of the **Advanced Relationship Validati
       "development_operations": {
           "types": ["CREATES", "CONFIGURES", "DEVELOPS", "BUILDS", ...],
           "confidence_threshold": 0.75,  # Clear evidence needed
-          "require_explicit_mention": True
+          "require_explicit_mention": True  
       },
       "troubleshooting_support": {
           "types": ["TROUBLESHOOTS", "DEBUGS", "SOLVES", "RESOLVES", ...],
@@ -85,11 +85,11 @@ This document details the implementation of the **Advanced Relationship Validati
   def _apply_context_adjustments(self, base_confidence, category, src_entity, tgt_entity, description):
       # Context length boost
       if len(description) > 50: confidence += 0.05
-
-      # Technical entity detection
+      
+      # Technical entity detection  
       technical_indicators = ['api', 'database', 'server', 'service', ...]
       if both_entities_technical: confidence += 0.1
-
+      
       # Category-specific rules
       if category_requires_explicit_mention and not sufficient_description:
           confidence -= 0.1
@@ -104,7 +104,7 @@ This document details the implementation of the **Advanced Relationship Validati
 def _apply_relationship_quality_filter(all_edges: dict, global_config: dict = None) -> dict:
     # Check configuration
     enable_enhanced = global_config.get("enable_enhanced_relationship_filter", True)
-
+    
     # Import enhanced classifier with fallback
     try:
         from .kg.utils.enhanced_relationship_classifier import EnhancedRelationshipClassifier
@@ -113,7 +113,7 @@ def _apply_relationship_quality_filter(all_edges: dict, global_config: dict = No
     except ImportError:
         logger.warning("Enhanced classifier unavailable, using basic filtering")
         use_enhanced = False
-
+    
     # Main filtering loop
     for edge in edges:
         if use_enhanced:
@@ -145,7 +145,7 @@ class RelationshipFilterMetrics:
             "filter_breakdown": {...},
             "category_stats": {...}  # Enhanced stats if available
         }
-
+        
     def get_performance_analysis(self):
         return {
             "category_performance": {...},
@@ -166,7 +166,7 @@ def _assess_overall_quality(self, stats):
         "data_flow": 2.0,
         "abstract_conceptual": 1.0  # Least critical
     }
-
+    
     weighted_confidence = sum(
         data["avg_confidence"] * weight * data["count"]
         for category, data in stats.items()
@@ -183,11 +183,11 @@ class AdaptiveThresholdOptimizer:
         # Precision too low (false positives)
         if precision < self.target_precision - 0.1:
             return True, "increase_threshold"
-
-        # Recall too low (false negatives)
+            
+        # Recall too low (false negatives)  
         if recall < self.target_recall - 0.1:
             return True, "decrease_threshold"
-
+            
         # Extreme retention rates
         if retention_rate < 0.3 or retention_rate > 0.98:
             return True, "adjust_threshold"
@@ -205,7 +205,7 @@ class AdaptiveThresholdOptimizer:
 ```python
 # New configuration constants
 DEFAULT_ENABLE_ENHANCED_RELATIONSHIP_FILTER = True
-DEFAULT_LOG_RELATIONSHIP_CLASSIFICATION = False
+DEFAULT_LOG_RELATIONSHIP_CLASSIFICATION = False  
 DEFAULT_RELATIONSHIP_FILTER_PERFORMANCE_TRACKING = True
 ```
 
@@ -233,7 +233,7 @@ ENABLE_ENHANCED_RELATIONSHIP_FILTER=true
 # Optional: Detailed classification logging (can be verbose)
 LOG_RELATIONSHIP_CLASSIFICATION=false
 
-# Optional: Performance metrics collection
+# Optional: Performance metrics collection 
 RELATIONSHIP_FILTER_PERFORMANCE_TRACKING=true
 ```
 
@@ -302,7 +302,7 @@ track_performance = global_config.get("relationship_filter_performance_tracking"
 
 ### The Calibration Journey
 
-**Initial State (48.1% retention)**:
+**Initial State (48.1% retention)**: 
 - System was overly aggressive, filtering out valuable relationships
 - Technical relationships were being misclassified as abstract
 - Critical debugging and operational relationships were lost
@@ -317,7 +317,7 @@ track_performance = global_config.get("relationship_filter_performance_tracking"
 ```python
 PRODUCTION_THRESHOLDS = {
     "technical_core": 0.45,              # From 0.8 → 0.6 → 0.45
-    "development_operations": 0.40,      # From 0.75 → 0.55 → 0.40
+    "development_operations": 0.40,      # From 0.75 → 0.55 → 0.40  
     "troubleshooting_support": 0.35,     # From 0.65 → 0.45 → 0.35
     "system_interactions": 0.40,         # From 0.7 → 0.5 → 0.40
     "data_flow": 0.40,                  # From 0.7 → 0.5 → 0.40
@@ -371,12 +371,12 @@ def _is_technical_relationship(self, rel_type, src_entity, tgt_entity, descripti
     # Direct technical type matching
     if rel_type.lower() in ['runs_on', 'calls_api', 'uses_database', 'implements_protocol']:
         return True
-
+    
     # Entity-based detection
     technical_entities = ['api', 'server', 'database', 'service', 'protocol', 'framework']
     if any(term in src_entity.lower() or term in tgt_entity.lower() for term in technical_entities):
         return True
-
+        
     # Description-based detection
     technical_actions = ['install', 'configure', 'deploy', 'execute', 'compile', 'debug']
     if any(action in description.lower() for action in technical_actions):
@@ -405,7 +405,7 @@ def _is_technical_relationship(self, rel_type, src_entity, tgt_entity, descripti
 ```
 Category Performance:
   - technical_core: 92.3% retention (1,701/1,845 relationships)
-  - development_operations: 88.5% retention (474/536 relationships)
+  - development_operations: 88.5% retention (474/536 relationships)  
   - troubleshooting_support: 91.2% retention (356/390 relationships)
   - system_interactions: 86.7% retention (312/360 relationships)
   - data_flow: 84.9% retention (237/279 relationships)
@@ -429,7 +429,7 @@ Overall Assessment: EXCELLENT
 - Every relationship serves a purpose
 - Queries return relevant, actionable results
 
-**The Reality**:
+**The Reality**: 
 > 70.4% retention with high-quality relationships is infinitely better than 95% retention with noise. The filtered 29.6% were relationships that added no value and only confused the graph structure.
 
 ### Production Configuration
@@ -447,7 +447,7 @@ RELATIONSHIP_FILTER_PERFORMANCE_TRACKING=true
 ### Success Indicators
 
 1. **Stable Retention**: 85-90% consistently across different document types
-2. **High Confidence**: Average confidence >0.65 for kept relationships
+2. **High Confidence**: Average confidence >0.65 for kept relationships  
 3. **Clean Graphs**: Visualizations show clear, meaningful connections
 4. **Fast Queries**: Reduced noise improves query performance
 5. **User Satisfaction**: "The graph finally makes sense!"
@@ -530,10 +530,10 @@ The system **extends** rather than **replaces** the existing 6-tier quality filt
 # Original filters are preserved
 ORIGINAL_FILTERS = [
     "abstract_relationships",    # Enhanced with type-specific logic
-    "synonym_relationships",     # Preserved as-is
+    "synonym_relationships",     # Preserved as-is  
     "abstract_entities",         # Preserved as-is
     "low_confidence",           # Preserved as-is
-    "context_validation",       # Preserved as-is
+    "context_validation",       # Preserved as-is  
     "low_quality_relationships" # Preserved as-is
 ]
 
@@ -560,7 +560,7 @@ suggestions = self.registry.get_relationship_suggestions(relationship_type)
 # Reads current thresholds
 current_threshold = threshold_manager.get_threshold(relationship_type)
 
-# Updates thresholds adaptively
+# Updates thresholds adaptively  
 threshold_manager.update_threshold(relationship_type, new_threshold)
 
 # Preserves existing threshold logic
@@ -581,7 +581,7 @@ def test_relationship_classification():
     assert result["confidence"] > 0.8
     assert result["should_keep"] == True
 
-# Metrics Collection
+# Metrics Collection  
 def test_metrics_collection():
     metrics = RelationshipFilterMetrics()
     metrics.record_filter_session(test_stats)
@@ -595,7 +595,7 @@ def test_metrics_collection():
 def test_enhanced_filter_pipeline():
     test_edges = {...}  # Real relationship data
     filtered_edges = _apply_relationship_quality_filter(test_edges, global_config)
-
+    
     # Verify enhanced filtering worked
     assert "category_stats" in filter_logs
     assert retention_rate > 0.85
@@ -743,7 +743,7 @@ Based on actual Neo4j relationship data patterns:
 ### Planned Improvements
 
 1. **Multi-Model Validation**: Use multiple LLMs for consensus on uncertain relationships
-2. **Cross-Document Learning**: Learn patterns across entire document corpus
+2. **Cross-Document Learning**: Learn patterns across entire document corpus  
 3. **Active Learning**: Flag uncertain cases for human review
 4. **Domain Adaptation**: Extend categories for non-technical domains
 5. **Real-time Optimization**: Dynamic threshold adjustment during processing

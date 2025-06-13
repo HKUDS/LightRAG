@@ -23,13 +23,12 @@ PROMPTS["DEFAULT_ENTITY_TYPES"] = [
 
 PROMPTS["DEFAULT_USER_PROMPT"] = "n/a"
 
-PROMPTS["entity_extraction"] = """---Goal---
+PROMPTS[
+    "entity_extraction"
+] = """---Goal---
 Given a text document about technical workflows, development sessions, or screen recordings, and a list of entity types, identify ONLY the most important and relevant entities of those types from the text and the most significant relationships among the identified entities.
 
-**STRICT QUANTITY LIMITS**:
-- Extract MAXIMUM 12 entities per text chunk
-- Extract MAXIMUM 8 relationships per text chunk
-- Focus on the most important and frequently mentioned items only
+** Focus on the most important and frequently mentioned items only **
 
 **Entity Priority (extract in this order)**:
 1. Named software tools and platforms mentioned multiple times
@@ -74,9 +73,9 @@ For each pair of related entities, extract the following information:
 - relationship_description: explanation as to why you think the source entity and the target entity are related to each other
 - relationship_type: Choose the most appropriate relationship type from the following list. If none fit exactly, choose "related":
   {relationship_types}
-
+  
   **IMPORTANT: For multi-word relationship types, use underscores to separate words (e.g., 'created_by', 'integrates_with', 'calls_api'). Do not concatenate words without separators.**
-
+  
   Examples of specific relationship types to prefer:
   {relationship_examples}
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
@@ -214,7 +213,8 @@ Description List: {description_list}
 Output:
 """
 
-PROMPTS["entity_continue_extraction"] = """
+PROMPTS["entity_continue_extraction"] = (
+    """
 Some additional entities and relationships may have been missed in the last extraction.
 
 Focus on capturing ONLY concrete items that were overlooked:
@@ -241,7 +241,7 @@ For each pair of related entities, extract the following information:
 - relationship_description: explanation as to why you think the source entity and the target entity are related to each other
 - relationship_type: Choose the most appropriate relationship type from the following list. If none fit exactly, choose "related":
   {relationship_types}
-
+  
   **IMPORTANT: For multi-word relationship types, use underscores to separate words (e.g., 'created_by', 'integrates_with', 'calls_api'). Do not concatenate words without separators.**
 - relationship_strength: a numeric score indicating strength of the relationship between the source entity and target entity
 - relationship_keywords: one or more high-level key words that summarize the overarching nature of the relationship, focusing on concepts or themes rather than specific details
@@ -255,8 +255,10 @@ Format each relationship as ("relationship"{tuple_delimiter}<source_entity>{tupl
 
 Add them below using the same format:
 """.strip()
+)
 
-PROMPTS["entity_if_loop_extraction"] = """
+PROMPTS["entity_if_loop_extraction"] = (
+    """
 ---Goal---
 
 It appears some entities may have still been missed. Check for:
@@ -269,12 +271,15 @@ It appears some entities may have still been missed. Check for:
 
 Answer ONLY by `YES` OR `NO` if there are still entities that need to be added.
 """.strip()
+)
 
 PROMPTS["fail_response"] = (
     "Sorry, I'm not able to provide an answer to that question.[no-context]"
 )
 
-PROMPTS["rag_response"] = """---Role---
+PROMPTS[
+    "rag_response"
+] = """---Role---
 
 You are a helpful assistant responding to queries about technical workflows, development sessions, and screen recordings using the Knowledge Graph and Document Chunks provided in JSON format below.
 
@@ -312,7 +317,9 @@ For technical queries:
 
 Response:"""
 
-PROMPTS["keywords_extraction"] = """---Role---
+PROMPTS[
+    "keywords_extraction"
+] = """---Role---
 
 You are a helpful assistant tasked with identifying both high-level and low-level keywords in the user's query and conversation history, specifically optimized for technical workflow and development session analysis.
 
@@ -386,7 +393,9 @@ Output:
 #############################""",
 ]
 
-PROMPTS["naive_rag_response"] = """---Role---
+PROMPTS[
+    "naive_rag_response"
+] = """---Role---
 
 You are a helpful assistant responding to queries about technical workflows and development sessions using Document Chunks provided in JSON format below.
 
@@ -448,7 +457,9 @@ Similarity score criteria:
 Return only a number between 0-1, without any additional content.
 """
 
-PROMPTS["relationship_post_processing"] = """---Goal---
+PROMPTS[
+    "relationship_post_processing"
+] = """---Goal---
 You are analyzing extracted entities and relationships from a document to improve accuracy and remove noise.
 
 ---Context---
@@ -487,7 +498,7 @@ Review and filter these relationships for accuracy and relevance. Your goal is t
 **QUALITY SCORING** (1-10 scale):
 - 9-10: Explicitly stated, high practical value
 - 7-8: Well-supported, clear evidence
-- 5-6: Moderately supported, some evidence
+- 5-6: Moderately supported, some evidence  
 - 3-4: Weak evidence, questionable value
 - 1-2: No clear evidence, likely noise
 
@@ -501,7 +512,7 @@ Respond with valid JSON only:
   "validated_relationships": [
     {{
       "src_id": "entity1",
-      "tgt_id": "entity2",
+      "tgt_id": "entity2", 
       "rel_type": "uses",
       "description": "clear description of the relationship",
       "quality_score": 8,
@@ -531,7 +542,7 @@ Respond with valid JSON only:
 **CRITICAL INSTRUCTION**: You MUST preserve the exact original relationship type (rel_type) from the input relationships. Do NOT convert specific types like "uses", "runs_on", "processes", "implements", "stores", "creates", etc. to generic "related". The relationship types carry important semantic meaning that must be maintained.
 
 Examples of what to preserve:
-- "Gmail -[\"processes\"]-> Email Content" → Keep "processes"
+- "Gmail -[\"processes\"]-> Email Content" → Keep "processes" 
 - "n8n workflows -[\"runs_on\"]-> n8n" → Keep "runs_on"
 - "SAIL POS -[\"stores\"]-> Customer Data" → Keep "stores"
 - "Zoom -[\"implements\"]-> Screen Sharing" → Keep "implements"

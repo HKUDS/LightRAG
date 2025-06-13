@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSettingsStore } from '@/stores/settings'
 import Button from '@/components/ui/Button'
-import Checkbox from '@/components/ui/Checkbox'
 import { cn } from '@/lib/utils'
 import {
   Table,
@@ -16,40 +15,41 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/com
 import EmptyCard from '@/components/ui/EmptyCard'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
-import DeleteDocumentDialog from '@/components/documents/DeleteDocumentDialog'
-import BatchDeleteDialog from '@/components/documents/BatchDeleteDialog'
 
-import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus, DocStatusResponse } from '@/api/lightrag'
+import {
+  getDocuments,
+  scanNewDocuments,
+  DocsStatusesResponse,
+  DocStatus,
+  DocStatusResponse
+} from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
 import { toast } from 'sonner'
 import { useBackendState } from '@/stores/state'
 
-import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon, TrashIcon } from 'lucide-react'
+import { RefreshCwIcon, ActivityIcon, ArrowUpIcon, ArrowDownIcon, FilterIcon } from 'lucide-react'
 import PipelineStatusDialog from '@/components/documents/PipelineStatusDialog'
 
-type StatusFilter = DocStatus | 'all';
-
+type StatusFilter = DocStatus | 'all'
 
 const getDisplayFileName = (doc: DocStatusResponse, maxLength: number = 20): string => {
   // Check if file_path exists and is a non-empty string
   if (!doc.file_path || typeof doc.file_path !== 'string' || doc.file_path.trim() === '') {
-    return doc.id;
+    return doc.id
   }
 
   // Try to extract filename from path
-  const parts = doc.file_path.split('/');
-  const fileName = parts[parts.length - 1];
+  const parts = doc.file_path.split('/')
+  const fileName = parts[parts.length - 1]
 
   // Ensure extracted filename is valid
   if (!fileName || fileName.trim() === '') {
-    return doc.id;
+    return doc.id
   }
 
   // If filename is longer than maxLength, truncate it and add ellipsis
-  return fileName.length > maxLength
-    ? fileName.slice(0, maxLength) + '...'
-    : fileName;
-};
+  return fileName.length > maxLength ? fileName.slice(0, maxLength) + '...' : fileName
+}
 
 const pulseStyle = `
 /* Tooltip styles */
@@ -133,32 +133,32 @@ const pulseStyle = `
   animation: pulse 2s infinite;
   border: 1px solid;
 }
-`;
+`
 
 // Type definitions for sort field and direction
-type SortField = 'created_at' | 'updated_at' | 'id';
-type SortDirection = 'asc' | 'desc';
+type SortField = 'created_at' | 'updated_at' | 'id'
+type SortDirection = 'asc' | 'desc'
 
 export default function DocumentManager() {
   // Track component mount status
-  const isMountedRef = useRef(true);
+  const isMountedRef = useRef(true)
 
   // Set up mount/unmount status tracking
   useEffect(() => {
-    isMountedRef.current = true;
+    isMountedRef.current = true
 
     // Handle page reload/unload
     const handleBeforeUnload = () => {
-      isMountedRef.current = false;
-    };
+      isMountedRef.current = false
+    }
 
-    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('beforeunload', handleBeforeUnload)
 
     return () => {
-      isMountedRef.current = false;
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-    };
-  }, []);
+      isMountedRef.current = false
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  }, [])
 
   const [showPipelineStatus, setShowPipelineStatus] = useState(false)
   const { t, i18n } = useTranslation()
@@ -174,20 +174,13 @@ export default function DocumentManager() {
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc')
 
   // State for document status filter
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-
-  // State for document selection and deletion
-  const [selectedDocuments, setSelectedDocuments] = useState<Set<string>>(new Set())
-  const [documentToDelete, setDocumentToDelete] = useState<DocStatusResponse | null>(null)
-  const [showDeleteDialog, setShowDeleteDialog] = useState(false)
-  const [showBatchDeleteDialog, setShowBatchDeleteDialog] = useState(false)
-
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
 
   // Handle sort column click
   const handleSort = (field: SortField) => {
     if (sortField === field) {
       // Toggle sort direction if clicking the same field
-      setSortDirection(prev => prev === 'asc' ? 'desc' : 'asc')
+      setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'))
     } else {
       // Set new sort field with default desc direction
       setSortField(field)
@@ -196,86 +189,89 @@ export default function DocumentManager() {
   }
 
   // Sort documents based on current sort field and direction
-  const sortDocuments = useCallback((documents: DocStatusResponse[]) => {
-    return [...documents].sort((a, b) => {
-      let valueA, valueB;
+  const sortDocuments = useCallback(
+    (documents: DocStatusResponse[]) => {
+      return [...documents].sort((a, b) => {
+        let valueA, valueB
 
-      // Special handling for ID field based on showFileName setting
-      if (sortField === 'id' && showFileName) {
-        valueA = getDisplayFileName(a);
-        valueB = getDisplayFileName(b);
-      } else if (sortField === 'id') {
-        valueA = a.id;
-        valueB = b.id;
-      } else {
-        // Date fields
-        valueA = new Date(a[sortField]).getTime();
-        valueB = new Date(b[sortField]).getTime();
-      }
+        // Special handling for ID field based on showFileName setting
+        if (sortField === 'id' && showFileName) {
+          valueA = getDisplayFileName(a)
+          valueB = getDisplayFileName(b)
+        } else if (sortField === 'id') {
+          valueA = a.id
+          valueB = b.id
+        } else {
+          // Date fields
+          valueA = new Date(a[sortField]).getTime()
+          valueB = new Date(b[sortField]).getTime()
+        }
 
-      // Apply sort direction
-      const sortMultiplier = sortDirection === 'asc' ? 1 : -1;
+        // Apply sort direction
+        const sortMultiplier = sortDirection === 'asc' ? 1 : -1
 
-      // Compare values
-      if (typeof valueA === 'string' && typeof valueB === 'string') {
-        return sortMultiplier * valueA.localeCompare(valueB);
-      } else {
-        return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0);
-      }
-    });
-  }, [sortField, sortDirection, showFileName]);
+        // Compare values
+        if (typeof valueA === 'string' && typeof valueB === 'string') {
+          return sortMultiplier * valueA.localeCompare(valueB)
+        } else {
+          return sortMultiplier * (valueA > valueB ? 1 : valueA < valueB ? -1 : 0)
+        }
+      })
+    },
+    [sortField, sortDirection, showFileName]
+  )
 
   // Define a new type that includes status information
-  type DocStatusWithStatus = DocStatusResponse & { status: DocStatus };
+  type DocStatusWithStatus = DocStatusResponse & { status: DocStatus }
 
   const filteredAndSortedDocs = useMemo(() => {
-    if (!docs) return null;
+    if (!docs) return null
 
     // Create a flat array of documents with status information
-    const allDocuments: DocStatusWithStatus[] = [];
+    const allDocuments: DocStatusWithStatus[] = []
 
     if (statusFilter === 'all') {
       // When filter is 'all', include documents from all statuses
       Object.entries(docs.statuses).forEach(([status, documents]) => {
-        documents.forEach(doc => {
+        documents.forEach((doc) => {
           allDocuments.push({
             ...doc,
             status: status as DocStatus
-          });
-        });
-      });
+          })
+        })
+      })
     } else {
       // When filter is specific status, only include documents from that status
-      const documents = docs.statuses[statusFilter] || [];
-      documents.forEach(doc => {
+      const documents = docs.statuses[statusFilter] || []
+      documents.forEach((doc) => {
         allDocuments.push({
           ...doc,
           status: statusFilter
-        });
-      });
+        })
+      })
     }
 
     // Sort all documents together if sort field and direction are specified
     if (sortField && sortDirection) {
-      return sortDocuments(allDocuments);
+      return sortDocuments(allDocuments)
     }
 
-    return allDocuments;
-  }, [docs, sortField, sortDirection, statusFilter, sortDocuments]);
+    return allDocuments
+  }, [docs, sortField, sortDirection, statusFilter, sortDocuments])
 
   // Calculate document counts for each status
   const documentCounts = useMemo(() => {
-    if (!docs) return { all: 0 } as Record<string, number>;
+    if (!docs) return { all: 0 } as Record<string, number>
 
-    const counts: Record<string, number> = { all: 0 };
+    const counts: Record<string, number> = { all: 0 }
 
     Object.entries(docs.statuses).forEach(([status, documents]) => {
-      counts[status as DocStatus] = documents.length;
-      counts.all += documents.length;
-    });
+      counts[status as DocStatus] = documents.length
+      counts.all += documents.length
+    })
 
-    return counts;
-  }, [docs]);
+    return counts
+  }, [docs])
 
   // Store previous status counts
   const prevStatusCounts = useRef({
@@ -296,79 +292,79 @@ export default function DocumentManager() {
   }, [])
 
   // Reference to the card content element
-  const cardContentRef = useRef<HTMLDivElement>(null);
+  const cardContentRef = useRef<HTMLDivElement>(null)
 
   // Add tooltip position adjustment for fixed positioning
   useEffect(() => {
-    if (!docs) return;
+    if (!docs) return
 
     // Function to position tooltips
     const positionTooltips = () => {
       // Get all tooltip containers
-      const containers = document.querySelectorAll<HTMLElement>('.tooltip-container');
+      const containers = document.querySelectorAll<HTMLElement>('.tooltip-container')
 
-      containers.forEach(container => {
-        const tooltip = container.querySelector<HTMLElement>('.tooltip');
-        if (!tooltip) return;
+      containers.forEach((container) => {
+        const tooltip = container.querySelector<HTMLElement>('.tooltip')
+        if (!tooltip) return
 
         // Skip tooltips that aren't visible
-        if (!tooltip.classList.contains('visible')) return;
+        if (!tooltip.classList.contains('visible')) return
 
         // Get container position
-        const rect = container.getBoundingClientRect();
+        const rect = container.getBoundingClientRect()
 
         // Position tooltip above the container
-        tooltip.style.left = `${rect.left}px`;
-        tooltip.style.top = `${rect.top - 5}px`;
-        tooltip.style.transform = 'translateY(-100%)';
-      });
-    };
+        tooltip.style.left = `${rect.left}px`
+        tooltip.style.top = `${rect.top - 5}px`
+        tooltip.style.transform = 'translateY(-100%)'
+      })
+    }
 
     // Set up event listeners
     const handleMouseOver = (e: MouseEvent) => {
       // Check if target or its parent is a tooltip container
-      const target = e.target as HTMLElement;
-      const container = target.closest('.tooltip-container');
-      if (!container) return;
+      const target = e.target as HTMLElement
+      const container = target.closest('.tooltip-container')
+      if (!container) return
 
       // Find tooltip and make it visible
-      const tooltip = container.querySelector<HTMLElement>('.tooltip');
+      const tooltip = container.querySelector<HTMLElement>('.tooltip')
       if (tooltip) {
-        tooltip.classList.add('visible');
+        tooltip.classList.add('visible')
         // Position immediately without delay
-        positionTooltips();
+        positionTooltips()
       }
-    };
+    }
 
     const handleMouseOut = (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      const container = target.closest('.tooltip-container');
-      if (!container) return;
+      const target = e.target as HTMLElement
+      const container = target.closest('.tooltip-container')
+      if (!container) return
 
-      const tooltip = container.querySelector<HTMLElement>('.tooltip');
+      const tooltip = container.querySelector<HTMLElement>('.tooltip')
       if (tooltip) {
-        tooltip.classList.remove('visible');
+        tooltip.classList.remove('visible')
       }
-    };
+    }
 
-    document.addEventListener('mouseover', handleMouseOver);
-    document.addEventListener('mouseout', handleMouseOut);
+    document.addEventListener('mouseover', handleMouseOver)
+    document.addEventListener('mouseout', handleMouseOut)
 
     return () => {
-      document.removeEventListener('mouseover', handleMouseOver);
-      document.removeEventListener('mouseout', handleMouseOut);
-    };
-  }, [docs]);
+      document.removeEventListener('mouseover', handleMouseOver)
+      document.removeEventListener('mouseout', handleMouseOut)
+    }
+  }, [docs])
 
   const fetchDocuments = useCallback(async () => {
     try {
       // Check if component is still mounted before starting the request
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current) return
 
-      const docs = await getDocuments();
+      const docs = await getDocuments()
 
       // Check again if component is still mounted after the request completes
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current) return
 
       // Only update state if component is still mounted
       if (isMountedRef.current) {
@@ -390,7 +386,9 @@ export default function DocumentManager() {
     } catch (err) {
       // Only show error if component is still mounted
       if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) }))
+        toast.error(
+          t('documentPanel.documentManager.errors.loadFailed', { error: errorMessage(err) })
+        )
       }
     }
   }, [setDocs, t])
@@ -405,18 +403,20 @@ export default function DocumentManager() {
   const scanDocuments = useCallback(async () => {
     try {
       // Check if component is still mounted before starting the request
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current) return
 
-      const { status } = await scanNewDocuments();
+      const { status } = await scanNewDocuments()
 
       // Check again if component is still mounted after the request completes
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current) return
 
-      toast.message(status);
+      toast.message(status)
     } catch (err) {
       // Only show error if component is still mounted
       if (isMountedRef.current) {
-        toast.error(t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) }));
+        toast.error(
+          t('documentPanel.documentManager.errors.scanFailed', { error: errorMessage(err) })
+        )
       }
     }
   }, [t])
@@ -436,7 +436,11 @@ export default function DocumentManager() {
       } catch (err) {
         // Only show error if component is still mounted
         if (isMountedRef.current) {
-          toast.error(t('documentPanel.documentManager.errors.scanProgressFailed', { error: errorMessage(err) }))
+          toast.error(
+            t('documentPanel.documentManager.errors.scanProgressFailed', {
+              error: errorMessage(err)
+            })
+          )
         }
       }
     }, 5000)
@@ -448,7 +452,7 @@ export default function DocumentManager() {
 
   // Monitor docs changes to check status counts and trigger health check if needed
   useEffect(() => {
-    if (!docs) return;
+    if (!docs) return
 
     // Get new status counts
     const newStatusCounts = {
@@ -459,9 +463,9 @@ export default function DocumentManager() {
     }
 
     // Check if any status count has changed
-    const hasStatusCountChange = (Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>).some(
-      status => newStatusCounts[status] !== prevStatusCounts.current[status]
-    )
+    const hasStatusCountChange = (
+      Object.keys(newStatusCounts) as Array<keyof typeof newStatusCounts>
+    ).some((status) => newStatusCounts[status] !== prevStatusCounts.current[status])
 
     // Trigger health check if changes detected and component is still mounted
     if (hasStatusCountChange && isMountedRef.current) {
@@ -470,75 +474,20 @@ export default function DocumentManager() {
 
     // Update previous status counts
     prevStatusCounts.current = newStatusCounts
-  }, [docs]);
+  }, [docs])
 
   // Add dependency on sort state to re-render when sort changes
   useEffect(() => {
     // This effect ensures the component re-renders when sort state changes
-  }, [sortField, sortDirection]);
-
-  // Clear selection only when filter changes, not on document refresh
-  useEffect(() => {
-    setSelectedDocuments(new Set())
-  }, [statusFilter])
-
-  // Selection handlers
-  const handleSelectDocument = useCallback((docId: string, selected: boolean) => {
-    setSelectedDocuments(prev => {
-      const newSelection = new Set(prev)
-      if (selected) {
-        newSelection.add(docId)
-      } else {
-        newSelection.delete(docId)
-      }
-      return newSelection
-    })
-  }, [])
-
-  const handleSelectAll = useCallback(() => {
-    if (!filteredAndSortedDocs) return
-    const allDocIds = new Set(filteredAndSortedDocs.map(doc => doc.id))
-    setSelectedDocuments(allDocIds)
-  }, [filteredAndSortedDocs])
-
-  const handleDeselectAll = useCallback(() => {
-    setSelectedDocuments(new Set())
-  }, [])
-
-  // Delete handlers
-  const handleDeleteDocument = useCallback((doc: DocStatusResponse) => {
-    setDocumentToDelete(doc)
-    setShowDeleteDialog(true)
-  }, [])
-
-  const handleBatchDelete = useCallback(() => {
-    if (!filteredAndSortedDocs || selectedDocuments.size === 0) return
-
-    const docsToDelete = filteredAndSortedDocs.filter(doc =>
-      selectedDocuments.has(doc.id)
-    )
-    setShowBatchDeleteDialog(true)
-  }, [filteredAndSortedDocs, selectedDocuments])
-
-  const handleDocumentDeleted = useCallback(() => {
-    // Clear selection and refresh documents
-    setSelectedDocuments(new Set())
-    fetchDocuments()
-  }, [fetchDocuments])
-
-  // Computed values for selection
-  const selectedCount = selectedDocuments.size
-  const totalCount = filteredAndSortedDocs?.length || 0
-  const allSelected = totalCount > 0 && selectedCount === totalCount
-  const someSelected = selectedCount > 0 && selectedCount < totalCount
+  }, [sortField, sortDirection])
 
   return (
-    <Card className="!rounded-none !overflow-hidden flex flex-col h-full min-h-0">
-      <CardHeader className="py-2 px-6">
+    <Card className="flex h-full min-h-0 flex-col !overflow-hidden !rounded-none">
+      <CardHeader className="px-6 py-2">
         <CardTitle className="text-lg">{t('documentPanel.documentManager.title')}</CardTitle>
       </CardHeader>
-      <CardContent className="flex-1 flex flex-col min-h-0 overflow-auto">
-        <div className="flex gap-2 mb-2">
+      <CardContent className="flex min-h-0 flex-1 flex-col overflow-auto">
+        <div className="mb-2 flex gap-2">
           <div className="flex gap-2">
             <Button
               variant="outline"
@@ -555,9 +504,7 @@ export default function DocumentManager() {
               side="bottom"
               tooltip={t('documentPanel.documentManager.pipelineStatusTooltip')}
               size="sm"
-              className={cn(
-                pipelineBusy && 'pipeline-busy'
-              )}
+              className={cn(pipelineBusy && 'pipeline-busy')}
             >
               <ActivityIcon /> {t('documentPanel.documentManager.pipelineStatusButton')}
             </Button>
@@ -565,15 +512,12 @@ export default function DocumentManager() {
           <div className="flex-1" />
           <ClearDocumentsDialog onDocumentsCleared={fetchDocuments} />
           <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
-          <PipelineStatusDialog
-            open={showPipelineStatus}
-            onOpenChange={setShowPipelineStatus}
-          />
+          <PipelineStatusDialog open={showPipelineStatus} onOpenChange={setShowPipelineStatus} />
         </div>
 
-        <Card className="flex-1 flex flex-col border rounded-md min-h-0 mb-2">
-          <CardHeader className="flex-none py-2 px-4">
-            <div className="flex justify-between items-center">
+        <Card className="mb-2 flex min-h-0 flex-1 flex-col rounded-md border">
+          <CardHeader className="flex-none px-4 py-2">
+            <div className="flex items-center justify-between">
               <CardTitle>{t('documentPanel.documentManager.uploadedTitle')}</CardTitle>
               <div className="flex items-center gap-2">
                 <FilterIcon className="h-4 w-4" />
@@ -583,7 +527,8 @@ export default function DocumentManager() {
                     variant={statusFilter === 'all' ? 'secondary' : 'outline'}
                     onClick={() => setStatusFilter('all')}
                     className={cn(
-                      statusFilter === 'all' && 'bg-gray-100 dark:bg-gray-900 font-medium border border-gray-400 dark:border-gray-500 shadow-sm'
+                      statusFilter === 'all' &&
+                        'border border-gray-400 bg-gray-100 font-medium shadow-sm dark:border-gray-500 dark:bg-gray-900'
                     )}
                   >
                     {t('documentPanel.documentManager.status.all')} ({documentCounts.all})
@@ -594,10 +539,12 @@ export default function DocumentManager() {
                     onClick={() => setStatusFilter('processed')}
                     className={cn(
                       documentCounts.processed > 0 ? 'text-green-600' : 'text-gray-500',
-                      statusFilter === 'processed' && 'bg-green-100 dark:bg-green-900/30 font-medium border border-green-400 dark:border-green-600 shadow-sm'
+                      statusFilter === 'processed' &&
+                        'border border-green-400 bg-green-100 font-medium shadow-sm dark:border-green-600 dark:bg-green-900/30'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.completed')} ({documentCounts.processed || 0})
+                    {t('documentPanel.documentManager.status.completed')} (
+                    {documentCounts.processed || 0})
                   </Button>
                   <Button
                     size="sm"
@@ -605,10 +552,12 @@ export default function DocumentManager() {
                     onClick={() => setStatusFilter('processing')}
                     className={cn(
                       documentCounts.processing > 0 ? 'text-blue-600' : 'text-gray-500',
-                      statusFilter === 'processing' && 'bg-blue-100 dark:bg-blue-900/30 font-medium border border-blue-400 dark:border-blue-600 shadow-sm'
+                      statusFilter === 'processing' &&
+                        'border border-blue-400 bg-blue-100 font-medium shadow-sm dark:border-blue-600 dark:bg-blue-900/30'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.processing')} ({documentCounts.processing || 0})
+                    {t('documentPanel.documentManager.status.processing')} (
+                    {documentCounts.processing || 0})
                   </Button>
                   <Button
                     size="sm"
@@ -616,10 +565,12 @@ export default function DocumentManager() {
                     onClick={() => setStatusFilter('pending')}
                     className={cn(
                       documentCounts.pending > 0 ? 'text-yellow-600' : 'text-gray-500',
-                      statusFilter === 'pending' && 'bg-yellow-100 dark:bg-yellow-900/30 font-medium border border-yellow-400 dark:border-yellow-600 shadow-sm'
+                      statusFilter === 'pending' &&
+                        'border border-yellow-400 bg-yellow-100 font-medium shadow-sm dark:border-yellow-600 dark:bg-yellow-900/30'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.pending')} ({documentCounts.pending || 0})
+                    {t('documentPanel.documentManager.status.pending')} (
+                    {documentCounts.pending || 0})
                   </Button>
                   <Button
                     size="sm"
@@ -627,18 +578,17 @@ export default function DocumentManager() {
                     onClick={() => setStatusFilter('failed')}
                     className={cn(
                       documentCounts.failed > 0 ? 'text-red-600' : 'text-gray-500',
-                      statusFilter === 'failed' && 'bg-red-100 dark:bg-red-900/30 font-medium border border-red-400 dark:border-red-600 shadow-sm'
+                      statusFilter === 'failed' &&
+                        'border border-red-400 bg-red-100 font-medium shadow-sm dark:border-red-600 dark:bg-red-900/30'
                     )}
                   >
-                    {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0})
+                    {t('documentPanel.documentManager.status.failed')} ({documentCounts.failed || 0}
+                    )
                   </Button>
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <label
-                  htmlFor="toggle-filename-btn"
-                  className="text-sm text-gray-500"
-                >
+                <label htmlFor="toggle-filename-btn" className="text-sm text-gray-500">
                   {t('documentPanel.documentManager.fileNameLabel')}
                 </label>
                 <Button
@@ -646,59 +596,20 @@ export default function DocumentManager() {
                   variant="outline"
                   size="sm"
                   onClick={() => setShowFileName(!showFileName)}
-                  className="border-gray-200 dark:border-gray-700 hover:bg-gray-100 dark:hover:bg-gray-800"
+                  className="border-gray-200 hover:bg-gray-100 dark:border-gray-700 dark:hover:bg-gray-800"
                 >
                   {showFileName
                     ? t('documentPanel.documentManager.hideButton')
-                    : t('documentPanel.documentManager.showButton')
-                  }
+                    : t('documentPanel.documentManager.showButton')}
                 </Button>
               </div>
             </div>
-            <CardDescription aria-hidden="true" className="hidden">{t('documentPanel.documentManager.uploadedDescription')}</CardDescription>
+            <CardDescription aria-hidden="true" className="hidden">
+              {t('documentPanel.documentManager.uploadedDescription')}
+            </CardDescription>
           </CardHeader>
 
-          {/* Batch Actions Bar */}
-          {docs && totalCount > 0 && (
-            <div className="flex-none px-4 py-2 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <Checkbox
-                    checked={allSelected}
-                    indeterminate={someSelected}
-                    onCheckedChange={(checked) => {
-                      if (checked) {
-                        handleSelectAll()
-                      } else {
-                        handleDeselectAll()
-                      }
-                    }}
-                    disabled={pipelineBusy}
-                  />
-                  <span className="text-sm text-gray-600 dark:text-gray-400">
-                    {selectedCount > 0
-                      ? t('documentPanel.batchActions.selectedCount', { count: selectedCount, total: totalCount })
-                      : t('documentPanel.batchActions.selectAll', { total: totalCount })
-                    }
-                  </span>
-                </div>
-
-                {selectedCount > 0 && (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={handleBatchDelete}
-                    disabled={pipelineBusy}
-                  >
-                    <TrashIcon className="mr-2 h-4 w-4" />
-                    {t('documentPanel.batchActions.deleteSelected', { count: selectedCount })}
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
-
-          <CardContent className="flex-1 relative p-0" ref={cardContentRef}>
+          <CardContent className="relative flex-1 p-0" ref={cardContentRef}>
             {!docs && (
               <div className="absolute inset-0 p-0">
                 <EmptyCard
@@ -709,22 +620,23 @@ export default function DocumentManager() {
             )}
             {docs && (
               <div className="absolute inset-0 flex flex-col p-0">
-                <div className="absolute inset-[-1px] flex flex-col p-0 border rounded-md border-gray-200 dark:border-gray-700 overflow-hidden">
+                <div className="absolute inset-[-1px] flex flex-col overflow-hidden rounded-md border border-gray-200 p-0 dark:border-gray-700">
                   <Table className="w-full">
-                    <TableHeader className="sticky top-0 bg-background z-10 shadow-sm">
-                      <TableRow className="border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/75 shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)]">
-                        <TableHead className="w-12">
-                          <span className="sr-only">{t('common.select')}</span>
-                        </TableHead>
+                    <TableHeader className="bg-background sticky top-0 z-10 shadow-sm">
+                      <TableRow className="bg-card/95 supports-[backdrop-filter]:bg-card/75 border-b shadow-[inset_0_-1px_0_rgba(0,0,0,0.1)] backdrop-blur">
                         <TableHead
                           onClick={() => handleSort('id')}
-                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                          className="cursor-pointer select-none hover:bg-gray-200 dark:hover:bg-gray-800"
                         >
                           <div className="flex items-center">
                             {t('documentPanel.documentManager.columns.id')}
                             {sortField === 'id' && (
                               <span className="ml-1">
-                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                                {sortDirection === 'asc' ? (
+                                  <ArrowUpIcon size={14} />
+                                ) : (
+                                  <ArrowDownIcon size={14} />
+                                )}
                               </span>
                             )}
                           </div>
@@ -735,129 +647,109 @@ export default function DocumentManager() {
                         <TableHead>{t('documentPanel.documentManager.columns.chunks')}</TableHead>
                         <TableHead
                           onClick={() => handleSort('created_at')}
-                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                          className="cursor-pointer select-none hover:bg-gray-200 dark:hover:bg-gray-800"
                         >
                           <div className="flex items-center">
                             {t('documentPanel.documentManager.columns.created')}
                             {sortField === 'created_at' && (
                               <span className="ml-1">
-                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                                {sortDirection === 'asc' ? (
+                                  <ArrowUpIcon size={14} />
+                                ) : (
+                                  <ArrowDownIcon size={14} />
+                                )}
                               </span>
                             )}
                           </div>
                         </TableHead>
                         <TableHead
                           onClick={() => handleSort('updated_at')}
-                          className="cursor-pointer hover:bg-gray-200 dark:hover:bg-gray-800 select-none"
+                          className="cursor-pointer select-none hover:bg-gray-200 dark:hover:bg-gray-800"
                         >
                           <div className="flex items-center">
                             {t('documentPanel.documentManager.columns.updated')}
                             {sortField === 'updated_at' && (
                               <span className="ml-1">
-                                {sortDirection === 'asc' ? <ArrowUpIcon size={14} /> : <ArrowDownIcon size={14} />}
+                                {sortDirection === 'asc' ? (
+                                  <ArrowUpIcon size={14} />
+                                ) : (
+                                  <ArrowDownIcon size={14} />
+                                )}
                               </span>
                             )}
                           </div>
                         </TableHead>
-                        <TableHead className="w-20 text-center">
-                          {t('documentPanel.documentManager.columns.actions')}
-                        </TableHead>
                       </TableRow>
                     </TableHeader>
-                    <TableBody className="text-sm overflow-auto">
-                      {filteredAndSortedDocs && filteredAndSortedDocs.map((doc) => (
-                        <TableRow
-                          key={doc.id}
-                          className={cn(
-                            selectedDocuments.has(doc.id) && "bg-blue-50 dark:bg-blue-900/20"
-                          )}
-                        >
-                          <TableCell className="w-12">
-                            <Checkbox
-                              checked={selectedDocuments.has(doc.id)}
-                              onCheckedChange={(checked) =>
-                                handleSelectDocument(doc.id, !!checked)
-                              }
-                              disabled={pipelineBusy}
-                            />
-                          </TableCell>
-                          <TableCell className="truncate font-mono overflow-visible max-w-[250px]">
-                            {showFileName ? (
-                              <>
-                                <div className="group relative overflow-visible tooltip-container">
-                                  <div className="truncate">
-                                    {getDisplayFileName(doc, 30)}
+                    <TableBody className="overflow-auto text-sm">
+                      {filteredAndSortedDocs &&
+                        filteredAndSortedDocs.map((doc) => (
+                          <TableRow key={doc.id}>
+                            <TableCell className="max-w-[250px] truncate overflow-visible font-mono">
+                              {showFileName ? (
+                                <>
+                                  <div className="group tooltip-container relative overflow-visible">
+                                    <div className="truncate">{getDisplayFileName(doc, 30)}</div>
+                                    <div className="tooltip invisible group-hover:visible">
+                                      {doc.file_path}
+                                    </div>
                                   </div>
-                                  <div className="invisible group-hover:visible tooltip">
+                                  <div className="text-xs text-gray-500">{doc.id}</div>
+                                </>
+                              ) : (
+                                <div className="group tooltip-container relative overflow-visible">
+                                  <div className="truncate">{doc.id}</div>
+                                  <div className="tooltip invisible group-hover:visible">
                                     {doc.file_path}
                                   </div>
                                 </div>
-                                <div className="text-xs text-gray-500">{doc.id}</div>
-                              </>
-                            ) : (
-                              <div className="group relative overflow-visible tooltip-container">
-                                <div className="truncate">
-                                  {doc.id}
-                                </div>
-                                <div className="invisible group-hover:visible tooltip">
-                                  {doc.file_path}
+                              )}
+                            </TableCell>
+                            <TableCell className="max-w-xs min-w-45 truncate overflow-visible">
+                              <div className="group tooltip-container relative overflow-visible">
+                                <div className="truncate">{doc.content_summary}</div>
+                                <div className="tooltip invisible group-hover:visible">
+                                  {doc.content_summary}
                                 </div>
                               </div>
-                            )}
-                          </TableCell>
-                          <TableCell className="max-w-xs min-w-45 truncate overflow-visible">
-                            <div className="group relative overflow-visible tooltip-container">
-                              <div className="truncate">
-                                {doc.content_summary}
-                              </div>
-                              <div className="invisible group-hover:visible tooltip">
-                                {doc.content_summary}
-                              </div>
-                            </div>
-                          </TableCell>
-                          <TableCell>
-                            {doc.status === 'processed' && (
-                              <span className="text-green-600">{t('documentPanel.documentManager.status.completed')}</span>
-                            )}
-                            {doc.status === 'processing' && (
-                              <span className="text-blue-600">{t('documentPanel.documentManager.status.processing')}</span>
-                            )}
-                            {doc.status === 'pending' && (
-                              <span className="text-yellow-600">{t('documentPanel.documentManager.status.pending')}</span>
-                            )}
-                            {doc.status === 'failed' && (
-                              <span className="text-red-600">{t('documentPanel.documentManager.status.failed')}</span>
-                            )}
-                            {doc.error && (
-                              <span className="ml-2 text-red-500" title={doc.error}>
-                                ⚠️
-                              </span>
-                            )}
-                          </TableCell>
-                          <TableCell>{doc.content_length ?? '-'}</TableCell>
-                          <TableCell>{doc.chunks_count ?? '-'}</TableCell>
-                          <TableCell className="truncate">
-                            {new Date(doc.created_at).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="truncate">
-                            {new Date(doc.updated_at).toLocaleString()}
-                          </TableCell>
-                          <TableCell className="w-20 text-center">
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => handleDeleteDocument(doc)}
-                              disabled={pipelineBusy}
-                              className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/20 p-1 h-8 w-8"
-                            >
-                              <TrashIcon className="h-4 w-4" />
-                              <span className="sr-only">
-                                {t('documentPanel.deleteDocument.buttonLabel')}
-                              </span>
-                            </Button>
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                            </TableCell>
+                            <TableCell>
+                              {doc.status === 'processed' && (
+                                <span className="text-green-600">
+                                  {t('documentPanel.documentManager.status.completed')}
+                                </span>
+                              )}
+                              {doc.status === 'processing' && (
+                                <span className="text-blue-600">
+                                  {t('documentPanel.documentManager.status.processing')}
+                                </span>
+                              )}
+                              {doc.status === 'pending' && (
+                                <span className="text-yellow-600">
+                                  {t('documentPanel.documentManager.status.pending')}
+                                </span>
+                              )}
+                              {doc.status === 'failed' && (
+                                <span className="text-red-600">
+                                  {t('documentPanel.documentManager.status.failed')}
+                                </span>
+                              )}
+                              {doc.error && (
+                                <span className="ml-2 text-red-500" title={doc.error}>
+                                  ⚠️
+                                </span>
+                              )}
+                            </TableCell>
+                            <TableCell>{doc.content_length ?? '-'}</TableCell>
+                            <TableCell>{doc.chunks_count ?? '-'}</TableCell>
+                            <TableCell className="truncate">
+                              {new Date(doc.created_at).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="truncate">
+                              {new Date(doc.updated_at).toLocaleString()}
+                            </TableCell>
+                          </TableRow>
+                        ))}
                     </TableBody>
                   </Table>
                 </div>
@@ -865,21 +757,6 @@ export default function DocumentManager() {
             )}
           </CardContent>
         </Card>
-
-        {/* Delete Dialogs */}
-        <DeleteDocumentDialog
-          document={documentToDelete}
-          open={showDeleteDialog}
-          onOpenChange={setShowDeleteDialog}
-          onDocumentDeleted={handleDocumentDeleted}
-        />
-
-        <BatchDeleteDialog
-          documents={filteredAndSortedDocs?.filter(doc => selectedDocuments.has(doc.id)) || []}
-          open={showBatchDeleteDialog}
-          onOpenChange={setShowBatchDeleteDialog}
-          onDocumentsDeleted={handleDocumentDeleted}
-        />
       </CardContent>
     </Card>
   )

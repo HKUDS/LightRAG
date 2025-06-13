@@ -47,9 +47,10 @@ import asyncio
 import json
 import time
 import traceback
-from typing import Any, AsyncIterator, Dict, List, Tuple
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from lightrag.operate import (
+    _build_query_context,
     _get_node_data,
     _get_edge_data,
     get_keywords_from_query,
@@ -59,11 +60,12 @@ from lightrag.operate import (
     save_to_cache,
     CacheData,
     get_conversation_turns,
+    use_llm_func_with_cache,
     logger,
     truncate_list_by_token_size,
 )
 from lightrag.base import BaseGraphStorage, BaseKVStorage, BaseVectorStorage, QueryParam
-from lightrag.prompt import PROMPTS
+from lightrag.prompt import PROMPTS, GRAPH_FIELD_SEP
 from lightrag.utils import Tokenizer
 from lightrag.kg.utils.relationship_registry import standardize_relationship_type
 
@@ -802,9 +804,9 @@ async def naive_query_with_details(
         {
             "id": c.get("id", r.get("id", "unknown")),
             "score": r.get("score", 0.0),
-            "content_summary": (c.get("content", "")[:50] + "...")
-            if c.get("content")
-            else "",
+            "content_summary": (
+                (c.get("content", "")[:50] + "...") if c.get("content") else ""
+            ),
             "file_path": c.get("file_path", "unknown_source"),
         }
         for c, r in zip(truncated_chunks, results[: len(truncated_chunks)])
@@ -1036,9 +1038,9 @@ async def mix_kg_vector_query(
                 {
                     "id": c.get("id", res.get("id", "unknown")),
                     "score": res.get("score", 0.0),
-                    "content_summary": (c.get("content", "")[:50] + "...")
-                    if c.get("content")
-                    else "",
+                    "content_summary": (
+                        (c.get("content", "")[:50] + "...") if c.get("content") else ""
+                    ),
                     "file_path": c.get("file_path", "unknown_source"),
                 }
                 for c, res in zip(truncated_chunks, results[: len(truncated_chunks)])
@@ -1061,10 +1063,9 @@ async def mix_kg_vector_query(
 
     # Execute both retrievals in parallel
     t_start_hybrid = time.perf_counter()
-    (
-        (kg_context_str, kg_ret_details),
-        (vector_context_str, vec_ret_details),
-    ) = await asyncio.gather(get_kg_context(), get_vector_context())
+    (kg_context_str, kg_ret_details), (vector_context_str, vec_ret_details) = (
+        await asyncio.gather(get_kg_context(), get_vector_context())
+    )
     combined_retrieval_details["timings"]["hybrid_retrieval_ms"] = (
         time.perf_counter() - t_start_hybrid
     ) * 1000
@@ -1102,12 +1103,16 @@ async def mix_kg_vector_query(
         if system_prompt
         else PROMPTS.get("mix_rag_response", PROMPTS["rag_response"])
     ).format(
-        kg_context=kg_context_str
-        if kg_context_str
-        else "No relevant knowledge graph information found",
-        vector_context=vector_context_str
-        if vector_context_str
-        else "No relevant text information found",
+        kg_context=(
+            kg_context_str
+            if kg_context_str
+            else "No relevant knowledge graph information found"
+        ),
+        vector_context=(
+            vector_context_str
+            if vector_context_str
+            else "No relevant text information found"
+        ),
         response_type=query_param.response_type,
         history=history_context,
     )
@@ -1176,31 +1181,25 @@ async def _build_query_context_with_details(
     retrieval_details = {}
 
     if query_param.mode == "local":
-        (
-            entities_context,
-            relations_context,
-            text_units_context,
-            details,
-        ) = await _get_node_data_with_details(
-            ll_keywords,
-            knowledge_graph_inst,
-            entities_vdb,
-            text_chunks_db,
-            query_param,
+        entities_context, relations_context, text_units_context, details = (
+            await _get_node_data_with_details(
+                ll_keywords,
+                knowledge_graph_inst,
+                entities_vdb,
+                text_chunks_db,
+                query_param,
+            )
         )
         retrieval_details = details
     elif query_param.mode == "global":
-        (
-            entities_context,
-            relations_context,
-            text_units_context,
-            details,
-        ) = await _get_edge_data_with_details(
-            hl_keywords,
-            knowledge_graph_inst,
-            relationships_vdb,
-            text_chunks_db,
-            query_param,
+        entities_context, relations_context, text_units_context, details = (
+            await _get_edge_data_with_details(
+                hl_keywords,
+                knowledge_graph_inst,
+                relationships_vdb,
+                text_chunks_db,
+                query_param,
+            )
         )
         retrieval_details = details
     else:  # hybrid mode
@@ -1301,6 +1300,7 @@ async def _get_node_data_with_details(
         return "", "", "", retrieval_details
 
     # Use existing _get_node_data logic
+    from lightrag.operate import _get_node_data
 
     entities_context, relations_context, text_units_context = await _get_node_data(
         query,
@@ -1320,9 +1320,11 @@ async def _get_node_data_with_details(
                 "name": e.get("entity", ""),
                 "type": e.get("type", "UNKNOWN"),
                 "rank": e.get("rank", 0),
-                "description_summary": (e.get("description", "")[:50] + "...")
-                if e.get("description")
-                else "",
+                "description_summary": (
+                    (e.get("description", "")[:50] + "...")
+                    if e.get("description")
+                    else ""
+                ),
             }
             for e in entities_context
         ]
@@ -1334,9 +1336,11 @@ async def _get_node_data_with_details(
                 "source": r.get("entity1", ""),
                 "target": r.get("entity2", ""),
                 "weight": r.get("weight", 0.0),
-                "description_summary": (r.get("description", "")[:50] + "...")
-                if r.get("description")
-                else "",
+                "description_summary": (
+                    (r.get("description", "")[:50] + "...")
+                    if r.get("description")
+                    else ""
+                ),
             }
             for r in relations_context
         ]
@@ -1346,9 +1350,9 @@ async def _get_node_data_with_details(
         retrieval_details["retrieved_chunks_summary"] = [
             {
                 "id": str(c.get("id", "unknown")),
-                "content_summary": (c.get("content", "")[:50] + "...")
-                if c.get("content")
-                else "",
+                "content_summary": (
+                    (c.get("content", "")[:50] + "...") if c.get("content") else ""
+                ),
                 "file_path": c.get("file_path", "unknown_source"),
             }
             for c in text_units_context
@@ -1390,6 +1394,7 @@ async def _get_edge_data_with_details(
         return "", "", "", retrieval_details
 
     # Use existing _get_edge_data logic
+    from lightrag.operate import _get_edge_data
 
     entities_context, relations_context, text_units_context = await _get_edge_data(
         keywords,
@@ -1409,9 +1414,11 @@ async def _get_edge_data_with_details(
                 "name": e.get("entity", ""),
                 "type": e.get("type", "UNKNOWN"),
                 "rank": e.get("rank", 0),
-                "description_summary": (e.get("description", "")[:50] + "...")
-                if e.get("description")
-                else "",
+                "description_summary": (
+                    (e.get("description", "")[:50] + "...")
+                    if e.get("description")
+                    else ""
+                ),
             }
             for e in entities_context
         ]
@@ -1425,9 +1432,11 @@ async def _get_edge_data_with_details(
                 "source": r.get("entity1", ""),
                 "target": r.get("entity2", ""),
                 "weight": r.get("weight", 0.0),
-                "description_summary": (r.get("description", "")[:50] + "...")
-                if r.get("description")
-                else "",
+                "description_summary": (
+                    (r.get("description", "")[:50] + "...")
+                    if r.get("description")
+                    else ""
+                ),
             }
             for r in relations_context
         ]
@@ -1437,9 +1446,9 @@ async def _get_edge_data_with_details(
         retrieval_details["retrieved_chunks_summary"] = [
             {
                 "id": str(c.get("id", "unknown")),
-                "content_summary": (c.get("content", "")[:50] + "...")
-                if c.get("content")
-                else "",
+                "content_summary": (
+                    (c.get("content", "")[:50] + "...") if c.get("content") else ""
+                ),
                 "file_path": c.get("file_path", "unknown_source"),
             }
             for c in text_units_context

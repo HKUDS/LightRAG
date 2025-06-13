@@ -16,11 +16,11 @@ import type { QueryMode } from '@/api/lightrag'
 const generateUniqueId = () => {
   // Use crypto.randomUUID() if available
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
+    return crypto.randomUUID()
   }
   // Fallback to timestamp + random string for browsers without crypto.randomUUID
-  return `id-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-};
+  return `id-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`
+}
 
 export default function RetrievalTesting() {
   const { t } = useTranslation()
@@ -103,7 +103,7 @@ export default function RetrievalTesting() {
         if (!allowedModes.includes(mode)) {
           setInputError(
             t('retrievePanel.retrieval.queryModeError', {
-              modes: 'naive, local, global, hybrid, mix, bypass',
+              modes: 'naive, local, global, hybrid, mix, bypass'
             })
           )
           return
@@ -233,71 +233,72 @@ export default function RetrievalTesting() {
 
   // Add event listeners to detect when user manually interacts with the container
   useEffect(() => {
-    const container = messagesContainerRef.current;
-    if (!container) return;
+    const container = messagesContainerRef.current
+    if (!container) return
 
     // Handle significant mouse wheel events - only disable auto-scroll for deliberate scrolling
     const handleWheel = (e: WheelEvent) => {
       // Only consider significant wheel movements (more than 10px)
       if (Math.abs(e.deltaY) > 10 && !isFormInteractionRef.current) {
-        shouldFollowScrollRef.current = false;
+        shouldFollowScrollRef.current = false
       }
-    };
+    }
 
     // Handle scroll events - only disable auto-scroll if not programmatically triggered
     // and if it's a significant scroll
     const handleScroll = throttle(() => {
       // If this is a programmatic scroll, don't disable auto-scroll
       if (programmaticScrollRef.current) {
-        programmaticScrollRef.current = false;
-        return;
+        programmaticScrollRef.current = false
+        return
       }
 
       // Check if scrolled to bottom or very close to bottom
-      const container = messagesContainerRef.current;
+      const container = messagesContainerRef.current
       if (container) {
-        const isAtBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 20;
+        const isAtBottom =
+          container.scrollHeight - container.scrollTop - container.clientHeight < 20
 
         // If at bottom, enable auto-scroll, otherwise disable it
         if (isAtBottom) {
-          shouldFollowScrollRef.current = true;
+          shouldFollowScrollRef.current = true
         } else if (!isFormInteractionRef.current && !isReceivingResponseRef.current) {
-          shouldFollowScrollRef.current = false;
+          shouldFollowScrollRef.current = false
         }
       }
-    }, 30);
+    }, 30)
 
     // Add event listeners - only listen for wheel and scroll events
-    container.addEventListener('wheel', handleWheel as EventListener);
-    container.addEventListener('scroll', handleScroll as EventListener);
+    container.addEventListener('wheel', handleWheel as EventListener)
+    container.addEventListener('scroll', handleScroll as EventListener)
 
     return () => {
-      container.removeEventListener('wheel', handleWheel as EventListener);
-      container.removeEventListener('scroll', handleScroll as EventListener);
-    };
-  }, []);
+      container.removeEventListener('wheel', handleWheel as EventListener)
+      container.removeEventListener('scroll', handleScroll as EventListener)
+    }
+  }, [])
 
   // Add event listeners to the form area to prevent disabling auto-scroll when interacting with form
   useEffect(() => {
-    const form = document.querySelector('form');
-    if (!form) return;
+    const form = document.querySelector('form')
+    if (!form) return
 
     const handleFormMouseDown = () => {
       // Set flag to indicate form interaction
-      isFormInteractionRef.current = true;
+      isFormInteractionRef.current = true
 
       // Reset the flag after a short delay
       setTimeout(() => {
-        isFormInteractionRef.current = false;
-      }, 500); // Give enough time for the form interaction to complete
-    };
+        isFormInteractionRef.current = false
+      }, 500) // Give enough time for the form interaction to complete
+    }
 
-    form.addEventListener('mousedown', handleFormMouseDown);
+    form.addEventListener('mousedown', handleFormMouseDown)
 
     return () => {
-      form.removeEventListener('mousedown', handleFormMouseDown);
-    };
-  }, []);
+      form.removeEventListener('mousedown', handleFormMouseDown)
+    }
+  }, [])
 
   // Use a longer debounce time for better performance with large message updates
   const debouncedMessages = useDebounce(messages, 150)
@@ -309,14 +310,13 @@ export default function RetrievalTesting() {
     }
   }, [debouncedMessages, scrollToBottom])
 
-
   const clearMessages = useCallback(() => {
     setMessages([])
     useSettingsStore.getState().setRetrievalHistory([])
   }, [setMessages])
 
   return (
-    <div className="flex size-full gap-2 px-2 pb-12 overflow-hidden">
+    <div className="flex size-full gap-2 overflow-hidden px-2 pb-12">
       <div className="flex grow flex-col gap-4">
         <div className="relative grow">
           <div
@@ -324,7 +324,7 @@ export default function RetrievalTesting() {
             className="bg-primary-foreground/60 absolute inset-0 flex flex-col overflow-auto rounded-lg border p-2"
             onClick={() => {
               if (shouldFollowScrollRef.current) {
-                shouldFollowScrollRef.current = false;
+                shouldFollowScrollRef.current = false
               }
             }}
           >
@@ -334,7 +334,8 @@ export default function RetrievalTesting() {
                   {t('retrievePanel.retrieval.startPrompt')}
                 </div>
               ) : (
-                messages.map((message) => { // Remove unused idx
+                messages.map((message) => {
+                  // Remove unused idx
                   // isComplete logic is now handled internally based on message.mermaidRendered
                   return (
                     <div
@@ -343,7 +344,7 @@ export default function RetrievalTesting() {
                     >
                       {<ChatMessage message={message} />}
                     </div>
-                  );
+                  )
                 })
               )}
               <div ref={messagesEndRef} className="pb-1" />
@@ -362,7 +363,7 @@ export default function RetrievalTesting() {
             <EraserIcon />
             {t('retrievePanel.retrieval.clear')}
           </Button>
-          <div className="flex-1 relative">
+          <div className="relative flex-1">
             <label htmlFor="query-input" className="sr-only">
               {t('retrievePanel.retrieval.placeholder')}
             </label>
@@ -379,7 +380,7 @@ export default function RetrievalTesting() {
             />
             {/* Error message below input */}
             {inputError && (
-              <div className="absolute left-0 top-full mt-1 text-xs text-red-500">{inputError}</div>
+              <div className="absolute top-full left-0 mt-1 text-xs text-red-500">{inputError}</div>
             )}
           </div>
           <Button type="submit" variant="default" disabled={isLoading} size="sm">

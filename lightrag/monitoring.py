@@ -16,8 +16,10 @@ import threading
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Any
-from datetime import datetime
+from typing import Dict, List, Optional, Any, Callable
+from datetime import datetime, timedelta
+import json
+import asyncio
 from contextlib import asynccontextmanager, contextmanager
 from . import utils
 
@@ -194,7 +196,7 @@ class PerformanceMonitor:
     def measure(self, operation_name: str, **metadata):
         """Context manager for measuring operation performance"""
         operation_id = self.start_operation(operation_name)
-        # start_time = time.time()  # noqa: F841
+        start_time = time.time()
 
         try:
             yield operation_id

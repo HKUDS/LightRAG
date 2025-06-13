@@ -17,17 +17,14 @@ const Legend: React.FC<LegendProps> = ({ className }) => {
   }
 
   return (
-    <Card className={`p-2 max-w-xs ${className}`}>
-      <h3 className="text-sm font-medium mb-2">{t('graphPanel.legend')}</h3>
+    <Card className={`max-w-xs p-2 ${className}`}>
+      <h3 className="mb-2 text-sm font-medium">{t('graphPanel.legend')}</h3>
       <ScrollArea className="max-h-80">
         <div className="flex flex-col gap-1">
           {Array.from(typeColorMap.entries()).map(([type, color]) => (
             <div key={type} className="flex items-center gap-2">
-              <div
-                className="w-4 h-4 rounded-full"
-                style={{ backgroundColor: color }}
-              />
-              <span className="text-xs truncate" title={type}>
+              <div className="h-4 w-4 rounded-full" style={{ backgroundColor: color }} />
+              <span className="truncate text-xs" title={type}>
                 {t(`graphPanel.nodeTypes.${type.toLowerCase()}`, type)}
               </span>
             </div>

@@ -10,19 +10,19 @@ import PropertyEditDialog from './PropertyEditDialog'
  * Interface for the EditablePropertyRow component props
  */
 interface EditablePropertyRowProps {
-  name: string                  // Property name to display and edit
-  value: any                    // Initial value of the property
-  onClick?: () => void          // Optional click handler for the property value
-  nodeId?: string               // ID of the node (for node type)
-  entityId?: string             // ID of the entity (for node type)
-  edgeId?: string               // ID of the edge (for edge type)
+  name: string // Property name to display and edit
+  value: any // Initial value of the property
+  onClick?: () => void // Optional click handler for the property value
+  nodeId?: string // ID of the node (for node type)
+  entityId?: string // ID of the entity (for node type)
+  edgeId?: string // ID of the edge (for edge type)
   dynamicId?: string
-  entityType?: 'node' | 'edge'  // Type of graph entity
-  sourceId?: string            // Source node ID (for edge type)
-  targetId?: string            // Target node ID (for edge type)
-  onValueChange?: (newValue: any) => void  // Optional callback when value changes
-  isEditable?: boolean         // Whether this property can be edited
-  tooltip?: string             // Optional tooltip to display on hover
+  entityType?: 'node' | 'edge' // Type of graph entity
+  sourceId?: string // Source node ID (for edge type)
+  targetId?: string // Target node ID (for edge type)
+  onValueChange?: (newValue: any) => void // Optional callback when value changes
+  isEditable?: boolean // Whether this property can be edited
+  tooltip?: string // Optional tooltip to display on hover
 }
 
 /**
@@ -81,7 +81,7 @@ const EditablePropertyRow = ({
             toast.error(t('graphPanel.propertiesView.errors.duplicateName'))
             return
           }
-          updatedData = { 'entity_name': value }
+          updatedData = { entity_name: value }
         }
 
         await updateEntity(entityId, updatedData, true)
@@ -96,7 +96,9 @@ const EditablePropertyRow = ({
         const updatedData = { [name]: value }
         await updateRelation(sourceId, targetId, updatedData)
         try {
-          await useGraphStore.getState().updateEdgeAndSelect(edgeId, dynamicId, sourceId, targetId, name, value)
+          await useGraphStore
+            .getState()
+            .updateEdgeAndSelect(edgeId, dynamicId, sourceId, targetId, name, value)
         } catch (error) {
           console.error(`Error updating edge ${sourceId}->${targetId} in graph:`, error)
           throw new Error('Failed to update edge in graph')
@@ -122,7 +124,10 @@ const EditablePropertyRow = ({
       <PropertyValue
         value={currentValue}
         onClick={onClick}
-        tooltip={tooltip || (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))}
+        tooltip={
+          tooltip ||
+          (typeof currentValue === 'string' ? currentValue : JSON.stringify(currentValue, null, 2))
+        }
       />
       <PropertyEditDialog
         isOpen={isEditing}

@@ -4,7 +4,6 @@ asyncpg
 distro
 dotenv
 fastapi
-fuzzywuzzy
 graspologic>=3.4.1
 httpcore
 httpx
@@ -13,7 +12,6 @@ numpy
 openai
 passlib[bcrypt]
 pipmaster
-psutil
 pydantic
 PyJWT
 python-dotenv

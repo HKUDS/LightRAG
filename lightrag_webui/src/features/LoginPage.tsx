@@ -19,21 +19,20 @@ const LoginPage = () => {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [checkingAuth, setCheckingAuth] = useState(true)
-  const authCheckRef = useRef(false); // Prevent duplicate calls in Vite dev mode
+  const authCheckRef = useRef(false) // Prevent duplicate calls in Vite dev mode
 
   useEffect(() => {
     console.log('LoginPage mounted')
-  }, []);
+  }, [])
 
   // Check if authentication is configured, skip login if not
   useEffect(() => {
-
     const checkAuthConfig = async () => {
       // Prevent duplicate calls in Vite dev mode
       if (authCheckRef.current) {
-        return;
+        return
       }
-      authCheckRef.current = true;
+      authCheckRef.current = true
 
       try {
         // If already authenticated, redirect to home
@@ -47,12 +46,19 @@ const LoginPage = () => {
 
         // Set session flag for version check to avoid duplicate checks in App component
         if (status.core_version || status.api_version) {
-          sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+          sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true')
         }
 
         if (!status.auth_configured && status.access_token) {
           // If auth is not configured, use the guest token and redirect
-          login(status.access_token, true, status.core_version, status.api_version, status.webui_title || null, status.webui_description || null)
+          login(
+            status.access_token,
+            true,
+            status.core_version,
+            status.api_version,
+            status.webui_title || null,
+            status.webui_description || null
+          )
           if (status.message) {
             toast.info(status.message)
           }
@@ -61,12 +67,11 @@ const LoginPage = () => {
         }
 
         // Only set checkingAuth to false if we need to show the login page
-        setCheckingAuth(false);
-
+        setCheckingAuth(false)
       } catch (error) {
         console.error('Failed to check auth configuration:', error)
         // Also set checkingAuth to false in case of error
-        setCheckingAuth(false);
+        setCheckingAuth(false)
       }
       // Removed finally block as we're setting checkingAuth earlier
     }
@@ -75,8 +80,7 @@ const LoginPage = () => {
     checkAuthConfig()
 
     // Cleanup function to prevent state updates after unmount
-    return () => {
-    }
+    return () => {}
   }, [isAuthenticated, login, navigate])
 
   // Don't render anything while checking auth
@@ -115,16 +119,26 @@ const LoginPage = () => {
 
       // Check authentication mode
       const isGuestMode = response.auth_mode === 'disabled'
-      login(response.access_token, isGuestMode, response.core_version, response.api_version, response.webui_title || null, response.webui_description || null)
+      login(
+        response.access_token,
+        isGuestMode,
+        response.core_version,
+        response.api_version,
+        response.webui_title || null,
+        response.webui_description || null
+      )
 
       // Set session flag for version check
       if (response.core_version || response.api_version) {
-        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true');
+        sessionStorage.setItem('VERSION_CHECKED_FROM_LOGIN', 'true')
       }
 
       if (isGuestMode) {
         // Show authentication disabled notification
-        toast.info(response.message || t('login.authDisabled', 'Authentication is disabled. Using guest access.'))
+        toast.info(
+          response.message ||
+            t('login.authDisabled', 'Authentication is disabled. Using guest access.')
+        )
       } else {
         toast.success(t('login.successMessage'))
       }
@@ -147,27 +161,25 @@ const LoginPage = () => {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-100 dark:from-gray-900 dark:to-gray-800">
       <div className="absolute top-4 right-4 flex items-center gap-2">
-        <AppSettings className="bg-white/30 dark:bg-gray-800/30 backdrop-blur-sm rounded-md" />
+        <AppSettings className="rounded-md bg-white/30 backdrop-blur-sm dark:bg-gray-800/30" />
       </div>
-      <Card className="w-full max-w-[480px] shadow-lg mx-4">
-        <CardHeader className="flex items-center justify-center space-y-2 pb-8 pt-6">
+      <Card className="mx-4 w-full max-w-[480px] shadow-lg">
+        <CardHeader className="flex items-center justify-center space-y-2 pt-6 pb-8">
           <div className="flex flex-col items-center space-y-4">
             <div className="flex items-center gap-3">
               <img src="logo.svg" alt="LightRAG Logo" className="h-12 w-12" />
               <ZapIcon className="size-10 text-emerald-400" aria-hidden="true" />
             </div>
-            <div className="text-center space-y-2">
+            <div className="space-y-2 text-center">
               <h1 className="text-3xl font-bold tracking-tight">LightRAG</h1>
-              <p className="text-muted-foreground text-sm">
-                {t('login.description')}
-              </p>
+              <p className="text-muted-foreground text-sm">{t('login.description')}</p>
             </div>
           </div>
         </CardHeader>
         <CardContent className="px-8 pb-8">
           <form onSubmit={handleSubmit} className="space-y-6">
             <div className="flex items-center gap-4">
-              <label htmlFor="username-input" className="text-sm font-medium w-16 shrink-0">
+              <label htmlFor="username-input" className="w-16 shrink-0 text-sm font-medium">
                 {t('login.username')}
               </label>
               <Input
@@ -180,7 +192,7 @@ const LoginPage = () => {
               />
             </div>
             <div className="flex items-center gap-4">
-              <label htmlFor="password-input" className="text-sm font-medium w-16 shrink-0">
+              <label htmlFor="password-input" className="w-16 shrink-0 text-sm font-medium">
                 {t('login.password')}
               </label>
               <Input
@@ -195,7 +207,7 @@ const LoginPage = () => {
             </div>
             <Button
               type="submit"
-              className="w-full h-11 text-base font-medium mt-2"
+              className="mt-2 h-11 w-full text-base font-medium"
               disabled={loading}
             >
               {loading ? t('login.loggingIn') : t('login.loginButton')}
