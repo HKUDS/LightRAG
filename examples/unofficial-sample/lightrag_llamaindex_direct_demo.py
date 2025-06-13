@@ -12,7 +12,7 @@ import nest_asyncio
 
 nest_asyncio.apply()
 
-from lightrag.kg.shared_storage import initialize_pipeline_status
+# from lightrag.kg.shared_storage import initialize_pipeline_status  # noqa: E402
 
 # Configure working directory
 WORKING_DIR = "./index_default"
@@ -95,7 +95,7 @@ async def initialize_rag():
     )
 
     await rag.initialize_storages()
-    await initialize_pipeline_status()
+    # await initialize_pipeline_status()  # noqa: F821
 
     return rag
 

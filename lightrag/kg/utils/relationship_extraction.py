@@ -7,18 +7,14 @@ and processing them for storage in the Neo4j database.
 import json
 import asyncio
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Union, Tuple
-import logging
+from typing import List, Dict, Any, Optional
 import re
 
 from ...utils import logger
-from ...prompt import PROMPTS
 from .relationship_registry import (
     RelationshipTypeRegistry,
-    standardize_relationship_type,
 )
 from .threshold_manager import ThresholdManager
-from .neo4j_edge_utils import process_edge_properties
 
 
 class RelationshipExtractor:
@@ -73,7 +69,7 @@ class RelationshipExtractor:
         # Prepare the prompt
         prompt_template = """
         Extract relationships between entities in the following text.
-        
+
         For each relationship, identify:
         1. Source entity
         2. Target entity
@@ -81,12 +77,12 @@ class RelationshipExtractor:
         4. Relationship weight (0.0 to 1.0)
         5. Brief description of the relationship
         6. Keywords relevant to this relationship
-        
+
         Valid relationship types include:
         {relationship_types}
-        
+
         Text: {text}
-        
+
         Output as JSON in the following format:
         [
           {{
@@ -223,7 +219,7 @@ class RelationshipExtractor:
             # Check for required fields
             if not all(k in rel for k in ["source", "target", "relationship_type"]):
                 logger.warning(
-                    f"Skipping relationship {i+1} with missing required fields: {rel}"
+                    f"Skipping relationship {i + 1} with missing required fields: {rel}"
                 )
                 validation_stats["missing_fields"] += 1
                 continue
@@ -351,16 +347,16 @@ class RelationshipExtractor:
             Float weight between 0.0 and 1.0
         """
         prompt = f"""
-        Analyze the strength of the relationship between '{source}' and '{target}' 
+        Analyze the strength of the relationship between '{source}' and '{target}'
         of type '{relationship_type}' based on the following context.
-        
+
         Context: {context}
-        
+
         On a scale of 0.0 to 1.0, how strong is this relationship? Consider:
         - How explicitly is the relationship stated? (implicit = lower, explicit = higher)
         - How central is this relationship to the context? (peripheral = lower, central = higher)
         - How certain are you of this relationship? (uncertain = lower, certain = higher)
-        
+
         Provide a single decimal number between 0.0 and 1.0 as your answer.
         """
 
@@ -422,15 +418,15 @@ class RelationshipExtractor:
         prompt = f"""
         Analyze the relationship between '{source}' and '{target}' of type '{rel_type}'
         based on this context:
-        
+
         {context}
-        
+
         Please provide the following information about this relationship in JSON format:
         1. A detailed description of how {source} {rel_type} {target}
         2. A confidence score between 0.0 and 1.0 indicating how certain you are about this relationship
         3. Up to 5 keywords that characterize this relationship
         4. Any potential business value or strategic insight from this relationship
-        
+
         Return your analysis as a valid JSON object with these fields:
         "description", "confidence", "keywords", "business_value"
         """

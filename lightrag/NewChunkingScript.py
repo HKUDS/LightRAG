@@ -26,7 +26,7 @@ import traceback
 import signal
 import threading
 import time
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -473,7 +473,7 @@ def semantic_chunk_text(
                     enhanced_header = f"{header_prefix} {section_title}"
                     if section_prefix:
                         enhanced_header += f" - Full Section Start: {section_prefix}"
-                    enhanced_header += f" (Part {i+1}/{len(sub_chunks)})"
+                    enhanced_header += f" (Part {i + 1}/{len(sub_chunks)})"
 
                     # Include the enhanced header with each sub-chunk
                     sub_section_text = f"{enhanced_header}\n{sub_chunk}"
@@ -769,7 +769,7 @@ def process_folder(
     Returns:
         Dictionary with processing results
     """
-    start_time = datetime.now()
+    # start_time = datetime.now()  # noqa: F841
     logger.info(f"Processing folder: {folder_name}")
 
     # Get image URLs if specified

@@ -39,7 +39,7 @@ def simple_neo4j_standardize(rel_type: str) -> str:
 
 **Results**:
 - `"part of"` → **PART_OF**
-- `"manages traffic for"` → **MANAGES_TRAFFIC_FOR** 
+- `"manages traffic for"` → **MANAGES_TRAFFIC_FOR**
 - `"integrates with"` → **INTEGRATES_WITH**
 - `"protects against"` → **PROTECTS_AGAINST**
 
@@ -89,7 +89,7 @@ def simple_neo4j_standardize(rel_type: str) -> str:
 ### Before Fix:
 ```bash
 INFO: Neo4j Upsert: Load Balancer-[RELATED]->Server
-INFO: Neo4j Upsert: Gutenberg-[RELATED]->Content Editor  
+INFO: Neo4j Upsert: Gutenberg-[RELATED]->Content Editor
 INFO: Neo4j Upsert: Google Analytics-[RELATED]->Analytics Tracking
 ```
 
@@ -108,7 +108,7 @@ INFO: Neo4j Upsert: Security Plugin-[PROTECTS_AGAINST]->Malware
 **Now**: Rich, semantic graph with diverse relationship types:
 
 - **PART_OF** relationships for taxonomies
-- **INTEGRATES_WITH** for system connections  
+- **INTEGRATES_WITH** for system connections
 - **MANAGES_TRAFFIC_FOR** for infrastructure
 - **USED_FOR** for tool purposes
 - **PROTECTS_AGAINST** for security
@@ -120,7 +120,7 @@ INFO: Neo4j Upsert: Security Plugin-[PROTECTS_AGAINST]->Malware
 - ✅ Compatible with WebUI and all current workflows
 - ✅ Maintains all existing data structures
 
-### Forward Compatibility  
+### Forward Compatibility
 - ✅ Universal approach works for any LLM output
 - ✅ No domain-specific dependencies
 - ✅ Easy to extend or modify
@@ -130,7 +130,7 @@ INFO: Neo4j Upsert: Security Plugin-[PROTECTS_AGAINST]->Malware
 **Tested relationship types**:
 ```
 'part of' -> PART_OF
-'uses' -> USES  
+'uses' -> USES
 'manages traffic for' -> MANAGES_TRAFFIC_FOR
 'is a type of' -> IS_A_TYPE_OF
 'integrates with' -> INTEGRATES_WITH
@@ -151,7 +151,7 @@ This implementation is ready for contribution back to the main LightRAG project 
 ## Files Modified
 
 1. `lightrag/advanced_operate.py` - Main formatting logic
-2. `lightrag/kg/neo4j_impl.py` - Property handling fixes  
+2. `lightrag/kg/neo4j_impl.py` - Property handling fixes
 3. `lightrag/operate.py` - Type information preservation
 
 ## Next Steps
@@ -165,4 +165,4 @@ This implementation is ready for contribution back to the main LightRAG project 
 
 **Status**: ✅ **COMPLETE** - Universal relationship formatting implemented
 **Impact**: 🎯 **HIGH** - Preserves semantic meaning, works for any domain
-**Readiness**: 🚀 **CONTRIBUTION READY** - Clean, universal solution 
+**Readiness**: 🚀 **CONTRIBUTION READY** - Clean, universal solution

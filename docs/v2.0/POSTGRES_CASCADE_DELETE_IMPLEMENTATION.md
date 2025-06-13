@@ -59,7 +59,7 @@ async with postgres_storage.db.pool.acquire() as conn:
 ### Deletion Flow
 
 1. **File Deletion**: First attempts to delete the physical file from the input directory
-2. **Database Deletion**: 
+2. **Database Deletion**:
    - If PostgreSQL is detected: Executes the cascade delete function
    - If PostgreSQL is not found or fails: Falls back to regular `adelete_by_doc_id()` method
 3. **Result Reporting**: Returns detailed cleanup statistics from the PostgreSQL function
@@ -119,55 +119,55 @@ DECLARE
     v_doc_full_deleted INTEGER;
 BEGIN
     -- 1. Update multi-file entities FIRST
-    UPDATE public.tll_lightrag_vdb_entity 
-    SET file_path = 
-        CASE 
-            WHEN file_path LIKE p_file_name || '<SEP>%' 
+    UPDATE public.tll_lightrag_vdb_entity
+    SET file_path =
+        CASE
+            WHEN file_path LIKE p_file_name || '<SEP>%'
             THEN SUBSTRING(file_path FROM LENGTH(p_file_name || '<SEP>') + 1)
-            
-            WHEN file_path LIKE '%<SEP>' || p_file_name 
+
+            WHEN file_path LIKE '%<SEP>' || p_file_name
             THEN LEFT(file_path, LENGTH(file_path) - LENGTH('<SEP>' || p_file_name))
-            
-            WHEN file_path LIKE '%<SEP>' || p_file_name || '<SEP>%' 
+
+            WHEN file_path LIKE '%<SEP>' || p_file_name || '<SEP>%'
             THEN REPLACE(file_path, '<SEP>' || p_file_name || '<SEP>', '<SEP>')
-            
+
             ELSE file_path
         END
     WHERE file_path LIKE '%' || p_file_name || '%'
       AND file_path != p_file_name;
-    
+
     GET DIAGNOSTICS v_entity_updated = ROW_COUNT;
-    
+
     -- 2. Delete single-file entities
-    DELETE FROM public.tll_lightrag_vdb_entity 
+    DELETE FROM public.tll_lightrag_vdb_entity
     WHERE file_path = p_file_name;
-    
+
     GET DIAGNOSTICS v_entity_deleted = ROW_COUNT;
-    
+
     -- 3. Delete from relation table
-    DELETE FROM public.tll_lightrag_vdb_relation 
+    DELETE FROM public.tll_lightrag_vdb_relation
     WHERE file_path LIKE '%' || p_file_name || '%';
-    
+
     GET DIAGNOSTICS v_relation_deleted = ROW_COUNT;
-    
+
     -- 4. Delete from chunks table (MUST be before doc_full!)
-    DELETE FROM public.tll_lightrag_doc_chunks 
+    DELETE FROM public.tll_lightrag_doc_chunks
     WHERE full_doc_id = p_doc_id;
-    
+
     GET DIAGNOSTICS v_chunks_deleted = ROW_COUNT;
-    
+
     -- 5. Delete from doc_status
-    DELETE FROM public.tll_lightrag_doc_status 
+    DELETE FROM public.tll_lightrag_doc_status
     WHERE id = p_doc_id;
-    
+
     GET DIAGNOSTICS v_doc_status_deleted = ROW_COUNT;
-    
+
     -- 6. Delete from doc_full (LAST because chunks reference it)
-    DELETE FROM public.tll_lightrag_doc_full 
+    DELETE FROM public.tll_lightrag_doc_full
     WHERE id = p_doc_id;
-    
+
     GET DIAGNOSTICS v_doc_full_deleted = ROW_COUNT;
-    
+
     -- Return summary
     RETURN QUERY
     SELECT 'entities_updated'::VARCHAR, v_entity_updated
@@ -181,7 +181,7 @@ BEGIN
     SELECT 'doc_status_deleted'::VARCHAR, v_doc_status_deleted
     UNION ALL
     SELECT 'doc_full_deleted'::VARCHAR, v_doc_full_deleted;
-    
+
 EXCEPTION
     WHEN OTHERS THEN
         RAISE EXCEPTION 'Error during delete operation: %', SQLERRM;

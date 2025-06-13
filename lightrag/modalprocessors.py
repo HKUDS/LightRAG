@@ -276,7 +276,7 @@ class ImageModalProcessor(BaseModalProcessor):
                     - Include technical details if relevant (charts, diagrams, etc.)
                     - Always use specific names instead of pronouns",
                     "entity_info": {{
-                        "entity_name": "{entity_name if entity_name else 'unique descriptive name for this image'}",
+                        "entity_name": "{entity_name if entity_name else "unique descriptive name for this image"}",
                         "entity_type": "image",
                         "summary": "concise summary of the image content and its significance (max 100 words)"
                     }}
@@ -284,8 +284,8 @@ class ImageModalProcessor(BaseModalProcessor):
 
                 Additional context:
                 - Image Path: {image_path}
-                - Captions: {captions if captions else 'None'}
-                - Footnotes: {footnotes if footnotes else 'None'}
+                - Captions: {captions if captions else "None"}
+                - Footnotes: {footnotes if footnotes else "None"}
 
                 Focus on providing accurate, detailed visual analysis that would be useful for knowledge retrieval."""
 
@@ -324,8 +324,8 @@ class ImageModalProcessor(BaseModalProcessor):
             modal_chunk = f"""
                     Image Content Analysis:
                     Image Path: {image_path}
-                    Captions: {', '.join(captions) if captions else 'None'}
-                    Footnotes: {', '.join(footnotes) if footnotes else 'None'}
+                    Captions: {", ".join(captions) if captions else "None"}
+                    Footnotes: {", ".join(footnotes) if footnotes else "None"}
 
                     Visual Analysis: {enhanced_caption}"""
 
@@ -427,7 +427,7 @@ class TableModalProcessor(BaseModalProcessor):
                 - Significance of the data presented
                 Always use specific names and values instead of general references.",
                 "entity_info": {{
-                    "entity_name": "{entity_name if entity_name else 'descriptive name for this table'}",
+                    "entity_name": "{entity_name if entity_name else "descriptive name for this table"}",
                     "entity_type": "table",
                     "summary": "concise summary of the table's purpose and key findings (max 100 words)"
                 }}
@@ -435,9 +435,9 @@ class TableModalProcessor(BaseModalProcessor):
 
             Table Information:
             Image Path: {table_img_path}
-            Caption: {table_caption if table_caption else 'None'}
+            Caption: {table_caption if table_caption else "None"}
             Body: {table_body}
-            Footnotes: {table_footnote if table_footnote else 'None'}
+            Footnotes: {table_footnote if table_footnote else "None"}
 
             Focus on extracting meaningful insights and relationships from the tabular data."""
 
@@ -456,9 +456,9 @@ class TableModalProcessor(BaseModalProcessor):
         # Build complete table content
         modal_chunk = f"""Table Analysis:
             Image Path: {table_img_path}
-            Caption: {', '.join(table_caption) if table_caption else 'None'}
+            Caption: {", ".join(table_caption) if table_caption else "None"}
             Structure: {table_body}
-            Footnotes: {', '.join(table_footnote) if table_footnote else 'None'}
+            Footnotes: {", ".join(table_footnote) if table_footnote else "None"}
 
             Analysis: {enhanced_caption}"""
 
@@ -543,7 +543,7 @@ class EquationModalProcessor(BaseModalProcessor):
                 - Practical applications or use cases
                 Always use specific mathematical terminology.",
                 "entity_info": {{
-                    "entity_name": "{entity_name if entity_name else 'descriptive name for this equation'}",
+                    "entity_name": "{entity_name if entity_name else "descriptive name for this equation"}",
                     "entity_type": "equation",
                     "summary": "concise summary of the equation's purpose and significance (max 100 words)"
                 }}
@@ -639,7 +639,7 @@ class GenericModalProcessor(BaseModalProcessor):
                 - Relevant details for knowledge retrieval
                 Always use specific terminology appropriate for {content_type} content.",
                 "entity_info": {{
-                    "entity_name": "{entity_name if entity_name else f'descriptive name for this {content_type}'}",
+                    "entity_name": "{entity_name if entity_name else f"descriptive name for this {content_type}"}",
                     "entity_type": "{content_type}",
                     "summary": "concise summary of the content's purpose and key points (max 100 words)"
                 }}

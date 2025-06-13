@@ -35,7 +35,10 @@ async def process_with_rag(
         # Initialize RAGAnything
         rag = RAGAnything(
             working_dir=working_dir,
-            llm_model_func=lambda prompt, system_prompt=None, history_messages=[], **kwargs: openai_complete_if_cache(
+            llm_model_func=lambda prompt,
+            system_prompt=None,
+            history_messages=[],
+            **kwargs: openai_complete_if_cache(
                 "gpt-4o-mini",
                 prompt,
                 system_prompt=system_prompt,
@@ -44,7 +47,11 @@ async def process_with_rag(
                 base_url=base_url,
                 **kwargs,
             ),
-            vision_model_func=lambda prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs: (
+            vision_model_func=lambda prompt,
+            system_prompt=None,
+            history_messages=[],
+            image_data=None,
+            **kwargs: (
                 openai_complete_if_cache(
                     "gpt-4o",
                     "",

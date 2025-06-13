@@ -39,7 +39,7 @@ from lightrag.utils import (
     logger,
 )
 from lightrag.api import __api_version__
-from typing import Any, Optional, List, Dict  # Added imports
+from typing import Optional, List, Dict  # Added imports
 from ..base import BaseLLM  # Import the base class
 
 

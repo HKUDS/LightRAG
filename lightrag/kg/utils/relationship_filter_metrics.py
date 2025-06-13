@@ -7,11 +7,10 @@ type-specific intelligence to enable continuous improvement.
 
 import json
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Dict, List, Optional, Any
-from collections import defaultdict, Counter
+from collections import defaultdict
 from pathlib import Path
-import logging
 
 from ...utils import logger
 
@@ -339,7 +338,7 @@ class RelationshipFilterMetrics:
                 for filter_type, count in dominant_filters:
                     recommendations.append(
                         f"'{filter_type}' is filtering {count}/{total_filtered} relationships "
-                        f"({count/total_filtered:.1%}). Review if this is appropriate."
+                        f"({count / total_filtered:.1%}). Review if this is appropriate."
                     )
 
         return recommendations[:5]  # Limit to top 5 recommendations

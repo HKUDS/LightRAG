@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import traceback
 from datetime import datetime
 from typing import Any, AsyncIterator, Dict, Optional, Tuple
@@ -364,38 +363,37 @@ class AdvancedLightRAG(LightRAG):
                     kg_query_with_details,
                     naive_query_with_details,
                     mix_kg_vector_query,
-                    query_with_keywords_and_details,
                 )
 
                 # Use enhanced query functions that return details
                 if param.mode in ["local", "global", "hybrid"]:
-                    response_obj, retrieval_details_for_log = (
-                        await kg_query_with_details(
-                            query.strip(),
-                            self.chunk_entity_relation_graph,
-                            self.entities_vdb,
-                            self.relationships_vdb,
-                            self.text_chunks,
-                            param,
-                            self._get_enhanced_config(),
-                            hashing_kv=self.llm_response_cache,
-                            system_prompt=system_prompt,
-                            chunks_vdb=(
-                                self.chunks_vdb if self.enable_mix_mode else None
-                            ),
-                        )
+                    (
+                        response_obj,
+                        retrieval_details_for_log,
+                    ) = await kg_query_with_details(
+                        query.strip(),
+                        self.chunk_entity_relation_graph,
+                        self.entities_vdb,
+                        self.relationships_vdb,
+                        self.text_chunks,
+                        param,
+                        self._get_enhanced_config(),
+                        hashing_kv=self.llm_response_cache,
+                        system_prompt=system_prompt,
+                        chunks_vdb=(self.chunks_vdb if self.enable_mix_mode else None),
                     )
                 elif param.mode == "naive":
-                    response_obj, retrieval_details_for_log = (
-                        await naive_query_with_details(
-                            query.strip(),
-                            self.chunks_vdb,
-                            self.text_chunks,
-                            param,
-                            self._get_enhanced_config(),
-                            hashing_kv=self.llm_response_cache,
-                            system_prompt=system_prompt,
-                        )
+                    (
+                        response_obj,
+                        retrieval_details_for_log,
+                    ) = await naive_query_with_details(
+                        query.strip(),
+                        self.chunks_vdb,
+                        self.text_chunks,
+                        param,
+                        self._get_enhanced_config(),
+                        hashing_kv=self.llm_response_cache,
+                        system_prompt=system_prompt,
                     )
                 elif param.mode == "mix" and self.enable_mix_mode:
                     response_obj, retrieval_details_for_log = await mix_kg_vector_query(
@@ -428,7 +426,7 @@ class AdvancedLightRAG(LightRAG):
                     raise ValueError(f"Unknown mode {param.mode}")
             else:
                 # Fallback to standard query functions without details
-                from lightrag.operate import kg_query, naive_query, query_with_keywords
+                from lightrag.operate import kg_query, naive_query
 
                 if param.mode in ["local", "global", "hybrid"]:
                     response_obj = await kg_query(

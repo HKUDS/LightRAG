@@ -58,14 +58,14 @@ elif final_original_type != "related":
 Created comprehensive test suite (`test_relationship_merge_fix.py`) that validates:
 
 1. **Specific Type Preservation**: Edges with specific types maintain them correctly
-2. **Mixed Type Prioritization**: When generic and specific types are mixed, specific types take priority  
+2. **Mixed Type Prioritization**: When generic and specific types are mixed, specific types take priority
 3. **Generic Type Handling**: All-generic edges remain generic as expected
 4. **Type Derivation**: Missing `neo4j_type` is correctly derived from `original_type`
 
 ### Test Results:
 ```
 ✓ Test Case 1 passed: Specific types preserved correctly
-✓ Test Case 2 passed: Specific type prioritized over generic  
+✓ Test Case 2 passed: Specific type prioritized over generic
 ✓ Test Case 3 passed: Generic types handled correctly
 ✓ Test Case 4 passed: Type derivation works correctly
 ```
@@ -84,7 +84,7 @@ Created comprehensive test suite (`test_relationship_merge_fix.py`) that validat
 
 ## Files Modified
 
-1. **`lightrag/operate.py`**: 
+1. **`lightrag/operate.py`**:
    - Complete rewrite of `_merge_edges_then_upsert` function
    - Enhanced type collection and prioritization logic
    - Improved logging for debugging
@@ -113,4 +113,4 @@ Created comprehensive test suite (`test_relationship_merge_fix.py`) that validat
 
 ✅ **Complete**: All PRD requirements have been successfully implemented and tested.
 
-The relationship type propagation issue has been resolved and the system now correctly preserves and stores custom relationship types extracted from documents. 
+The relationship type propagation issue has been resolved and the system now correctly preserves and stores custom relationship types extracted from documents.
