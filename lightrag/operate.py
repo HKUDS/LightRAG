@@ -170,11 +170,8 @@ async def _handle_single_entity_extraction(
 
     # Clean and validate entity type
     entity_type = clean_str(record_attributes[2]).strip('"')
-    if not entity_type.strip() or entity_type.startswith('("'):
-        logger.warning(
-            f"Entity extraction error: invalid entity type in: {record_attributes}"
-        )
-        return None
+    # Fix the prefix or suffix error of the entity type
+    entity_type = re.sub(r'[()]', '', entity_type)
 
     # Clean and validate description
     entity_description = clean_str(record_attributes[3])
