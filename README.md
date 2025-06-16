@@ -39,7 +39,7 @@
 </div>
 
 ## 🎉 News
-- [X] [2025.06.05]🎯📢LightRAG now supports multi-modal data handling through MinerU integration, enabling comprehensive document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-mineru-integration) for details.
+- [X] [2025.06.05]🎯📢LightRAG now supports comprehensive multimodal data handling through RAG-Anything integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
 - [X] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
@@ -1058,31 +1058,59 @@ When merging entities:
 
 </details>
 
-## Multimodal Document Processing (MinerU Integration)
+## Multimodal Document Processing (RAG-Anything Integration)
 
-LightRAG now supports comprehensive multi-modal document processing through [MinerU](https://github.com/opendatalab/MinerU) integration, enabling advanced parsing and retrieval-augmented generation (RAG) capabilities. This powerful feature allows you to handle multi-modal documents seamlessly, extracting structured content—including text, images, tables, and formulas—from various document formats for integration into your RAG pipeline.
+LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/RAG-Anything), a comprehensive **All-in-One Multimodal Document Processing RAG system** built specifically for LightRAG. RAG-Anything enables advanced parsing and retrieval-augmented generation (RAG) capabilities, allowing you to handle multimodal documents seamlessly and extract structured content—including text, images, tables, and formulas—from various document formats for integration into your RAG pipeline.
 
 **Key Features:**
-- **Multimodal Document Handling**: Process complex documents containing mixed content types (text, images, tables, formulas)
-- **Comprehensive Format Support**: Parse PDFs, images, DOC/DOCX/PPT/PPTX, and additional file types
-- **Multi-Element Extraction**: Extract and index text, images, tables, formulas, and document structure
-- **Multimodal Retrieval**: Query and retrieve diverse content types (text, images, tables, formulas) within RAG workflows
-- **Seamless Integration**: Works smoothly with LightRAG core and RAG-Anything frameworks
+- **End-to-End Multimodal Pipeline**: Complete workflow from document ingestion and parsing to intelligent multimodal query answering
+- **Universal Document Support**: Seamless processing of PDFs, Office documents (DOC/DOCX/PPT/PPTX/XLS/XLSX), images, and diverse file formats
+- **Specialized Content Analysis**: Dedicated processors for images, tables, mathematical equations, and heterogeneous content types
+- **Multimodal Knowledge Graph**: Automatic entity extraction and cross-modal relationship discovery for enhanced understanding
+- **Hybrid Intelligent Retrieval**: Advanced search capabilities spanning textual and multimodal content with contextual understanding
 
 **Quick Start:**
-1. Install dependencies:
+1. Install RAG-Anything:
    ```bash
-   pip install "magic-pdf[full]>=1.2.2" huggingface_hub
+   pip install raganything
    ```
-2. Download MinerU model weights (refer to [MinerU Integration Guide](docs/mineru_integration_en.md))
-3. Process multi-modal documents using the new MineruParser or RAG-Anything's process_document_complete:
+2. Process multimodal documents:
    ```python
-   from lightrag.mineru_parser import MineruParser
-   content_list, md_content = MineruParser.parse_pdf('path/to/document.pdf', 'output_dir')
-   # or for any file type:
-   content_list, md_content = MineruParser.parse_document('path/to/file', 'auto', 'output_dir')
+   import asyncio
+   from raganything import RAGAnything
+   from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+
+   async def main():
+       # Initialize RAGAnything with LightRAG integration
+       rag = RAGAnything(
+           working_dir="./rag_storage",
+           llm_model_func=lambda prompt, **kwargs: openai_complete_if_cache(
+               "gpt-4o-mini", prompt, api_key="your-api-key", **kwargs
+           ),
+           embedding_func=lambda texts: openai_embed(
+               texts, model="text-embedding-3-large", api_key="your-api-key"
+           ),
+           embedding_dim=3072,
+       )
+
+       # Process multimodal documents
+       await rag.process_document_complete(
+           file_path="path/to/your/document.pdf",
+           output_dir="./output"
+       )
+
+       # Query multimodal content
+       result = await rag.query_with_multimodal(
+           "What are the main findings shown in the figures and tables?",
+           mode="hybrid"
+       )
+       print(result)
+
+   if __name__ == "__main__":
+       asyncio.run(main())
    ```
-4. Query multimodal content with LightRAG refer to [docs/mineru_integration_en.md](docs/mineru_integration_en.md).
+
+For detailed documentation and advanced usage, please refer to the [RAG-Anything repository](https://github.com/HKUDS/RAG-Anything).
 
 ## Token Usage Tracking
 
