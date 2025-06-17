@@ -39,7 +39,7 @@
 </div>
 
 ## 🎉 News
-- [X] [2025.06.16]🎯📢Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an **All-in-One Multimodal RAG System** for seamless text, image, table, and equation processing.
+- [X] [2025.06.16]🎯📢Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an All-in-One Multimodal RAG System for seamless text, image, table, and equation processing.
 - [X] [2025.06.05]🎯📢LightRAG now supports comprehensive multimodal data handling through [RAG-Anything](https://github.com/HKUDS/RAG-Anything) integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
