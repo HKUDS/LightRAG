@@ -31,6 +31,24 @@ export type MessageWithError = Message & {
 // Restore original component definition and export
 export const ChatMessage = ({ message }: { message: MessageWithError }) => { // Remove isComplete prop
   const { t } = useTranslation()
+  const { theme } = useTheme()
+  const [katexPlugin, setKatexPlugin] = useState<any>(null)
+
+  // Load KaTeX dynamically
+  useEffect(() => {
+    const loadKaTeX = async () => {
+      try {
+        const [{ default: rehypeKatex }] = await Promise.all([
+          import('rehype-katex'),
+          import('katex/dist/katex.min.css')
+        ])
+        setKatexPlugin(() => rehypeKatex)
+      } catch (error) {
+        console.error('Failed to load KaTeX:', error)
+      }
+    }
+    loadKaTeX()
+  }, [])
   const handleCopyMarkdown = useCallback(async () => {
     if (message.content) {
       try {
@@ -53,9 +71,19 @@ export const ChatMessage = ({ message }: { message: MessageWithError }) => { // 
     >
       <div className="relative">
         <ReactMarkdown
-          className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1"
+          className="prose dark:prose-invert max-w-none text-sm break-words prose-headings:mt-4 prose-headings:mb-2 prose-p:my-2 prose-ul:my-2 prose-ol:my-2 prose-li:my-1 [&_.katex]:text-current [&_.katex-display]:my-4 [&_.katex-display]:overflow-x-auto"
           remarkPlugins={[remarkGfm, remarkMath]}
-          rehypePlugins={[rehypeReact]}
+          rehypePlugins={[
+            ...(katexPlugin ? [[
+              katexPlugin,
+              {
+                errorColor: theme === 'dark' ? '#ef4444' : '#dc2626',
+                throwOnError: false,
+                displayMode: false
+              }
+            ] as any] : []),
+            rehypeReact
+          ]}
           skipHtml={false}
           // Memoize the components object to prevent unnecessary re-renders of ReactMarkdown children
           components={useMemo(() => ({

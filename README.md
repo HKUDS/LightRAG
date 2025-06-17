@@ -39,7 +39,8 @@
 </div>
 
 ## 🎉 News
-
+- [X] [2025.06.16]🎯📢Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an All-in-One Multimodal RAG System for seamless text, image, table, and equation processing.
+- [X] [2025.06.05]🎯📢LightRAG now supports comprehensive multimodal data handling through [RAG-Anything](https://github.com/HKUDS/RAG-Anything) integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
 - [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
 - [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
 - [X] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
@@ -149,6 +150,12 @@ For a streaming response implementation example, please see `examples/lightrag_o
 
 > If you would like to integrate LightRAG into your project, we recommend utilizing the REST API provided by the LightRAG Server. LightRAG Core is typically intended for embedded applications or for researchers who wish to conduct studies and evaluations.
 
+### ⚠️ Important: Initialization Requirements
+
+**LightRAG requires explicit initialization before use.** You must call both `await rag.initialize_storages()` and `await initialize_pipeline_status()` after creating a LightRAG instance, otherwise you will encounter errors like:
+- `AttributeError: __aenter__` - if storages are not initialized
+- `KeyError: 'history_messages'` - if pipeline status is not initialized
+
 ### A Simple Program
 
 Use the below Python snippet to initialize LightRAG, insert text to it, and perform queries:
@@ -173,8 +180,9 @@ async def initialize_rag():
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
     )
-    await rag.initialize_storages()
-    await initialize_pipeline_status()
+    # IMPORTANT: Both initialization calls are required!
+    await rag.initialize_storages()  # Initialize storage backends
+    await initialize_pipeline_status()  # Initialize processing pipeline
     return rag
 
 async def main():
@@ -1051,6 +1059,60 @@ When merging entities:
 
 </details>
 
+## Multimodal Document Processing (RAG-Anything Integration)
+
+LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/RAG-Anything), a comprehensive **All-in-One Multimodal Document Processing RAG system** built specifically for LightRAG. RAG-Anything enables advanced parsing and retrieval-augmented generation (RAG) capabilities, allowing you to handle multimodal documents seamlessly and extract structured content—including text, images, tables, and formulas—from various document formats for integration into your RAG pipeline.
+
+**Key Features:**
+- **End-to-End Multimodal Pipeline**: Complete workflow from document ingestion and parsing to intelligent multimodal query answering
+- **Universal Document Support**: Seamless processing of PDFs, Office documents (DOC/DOCX/PPT/PPTX/XLS/XLSX), images, and diverse file formats
+- **Specialized Content Analysis**: Dedicated processors for images, tables, mathematical equations, and heterogeneous content types
+- **Multimodal Knowledge Graph**: Automatic entity extraction and cross-modal relationship discovery for enhanced understanding
+- **Hybrid Intelligent Retrieval**: Advanced search capabilities spanning textual and multimodal content with contextual understanding
+
+**Quick Start:**
+1. Install RAG-Anything:
+   ```bash
+   pip install raganything
+   ```
+2. Process multimodal documents:
+   ```python
+   import asyncio
+   from raganything import RAGAnything
+   from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+
+   async def main():
+       # Initialize RAGAnything with LightRAG integration
+       rag = RAGAnything(
+           working_dir="./rag_storage",
+           llm_model_func=lambda prompt, **kwargs: openai_complete_if_cache(
+               "gpt-4o-mini", prompt, api_key="your-api-key", **kwargs
+           ),
+           embedding_func=lambda texts: openai_embed(
+               texts, model="text-embedding-3-large", api_key="your-api-key"
+           ),
+           embedding_dim=3072,
+       )
+
+       # Process multimodal documents
+       await rag.process_document_complete(
+           file_path="path/to/your/document.pdf",
+           output_dir="./output"
+       )
+
+       # Query multimodal content
+       result = await rag.query_with_multimodal(
+           "What are the main findings shown in the figures and tables?",
+           mode="hybrid"
+       )
+       print(result)
+
+   if __name__ == "__main__":
+       asyncio.run(main())
+   ```
+
+For detailed documentation and advanced usage, please refer to the [RAG-Anything repository](https://github.com/HKUDS/RAG-Anything).
+
 ## Token Usage Tracking
 
 <details>
@@ -1474,6 +1536,33 @@ Thank you to all our contributors!
 <a href="https://github.com/HKUDS/LightRAG/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=HKUDS/LightRAG" />
 </a>
+
+## Troubleshooting
+
+### Common Initialization Errors
+
+If you encounter these errors when using LightRAG:
+
+1. **`AttributeError: __aenter__`**
+   - **Cause**: Storage backends not initialized
+   - **Solution**: Call `await rag.initialize_storages()` after creating the LightRAG instance
+
+2. **`KeyError: 'history_messages'`**
+   - **Cause**: Pipeline status not initialized
+   - **Solution**: Call `await initialize_pipeline_status()` after initializing storages
+
+3. **Both errors in sequence**
+   - **Cause**: Neither initialization method was called
+   - **Solution**: Always follow this pattern:
+   ```python
+   rag = LightRAG(...)
+   await rag.initialize_storages()
+   await initialize_pipeline_status()
+   ```
+
+### Model Switching Issues
+
+When switching between different embedding models, you must clear the data directory to avoid errors. The only file you may want to preserve is `kv_store_llm_response_cache.json` if you wish to retain the LLM cache.
 
 ## 🌟Citation
 
