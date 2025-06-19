@@ -4,7 +4,7 @@
 
 ## 🎉 新闻
 
-- [X] [2025.06.05]🎯📢LightRAG现已集成MinerU，支持多模态文档解析与RAG（PDF、图片、Office、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#multimodal-document-processing-mineru-integration)。
+- [X] [2025.06.05]🎯📢LightRAG现已集成RAG-Anything，支持全面的多模态文档解析与RAG能力（PDF、图片、Office文档、表格、公式等）。详见下方[多模态处理模块](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#多模态文档处理rag-anything集成)。
 - [X] [2025.03.18]🎯📢LightRAG现已支持引文功能。
 - [X] [2025.02.05]🎯📢我们团队发布了[VideoRAG](https://github.com/HKUDS/VideoRAG)，用于理解超长上下文视频。
 - [X] [2025.01.13]🎯📢我们团队发布了[MiniRAG](https://github.com/HKUDS/MiniRAG)，使用小型模型简化RAG。
@@ -1003,31 +1003,59 @@ rag.merge_entities(
 
 </details>
 
-## 多模态文档处理（MinerU集成）
+## 多模态文档处理（RAG-Anything集成）
 
-LightRAG 现已支持通过 [MinerU](https://github.com/opendatalab/MinerU) 实现多模态文档解析与检索增强生成（RAG）。您可以从 PDF、图片、Office 文档中提取结构化内容（文本、图片、表格、公式等），并在 RAG 流程中使用。
+LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现无缝集成，这是一个专为 LightRAG 构建的**全能多模态文档处理RAG系统**。RAG-Anything 提供先进的解析和检索增强生成（RAG）能力，让您能够无缝处理多模态文档，并从各种文档格式中提取结构化内容——包括文本、图片、表格和公式——以集成到您的RAG流程中。
 
 **主要特性：**
-- 支持解析 PDF、图片、DOC/DOCX/PPT/PPTX 等多种格式
-- 提取并索引文本、图片、表格、公式及文档结构
-- 在 RAG 中查询和检索多模态内容（文本、图片、表格、公式）
-- 与 LightRAG Core 及 RAGAnything 无缝集成
+- **端到端多模态流程**：从文档摄取解析到智能多模态问答的完整工作流程
+- **通用文档支持**：无缝处理PDF、Office文档（DOC/DOCX/PPT/PPTX/XLS/XLSX）、图片和各种文件格式
+- **专业内容分析**：针对图片、表格、数学公式和异构内容类型的专用处理器
+- **多模态知识图谱**：自动实体提取和跨模态关系发现以增强理解
+- **混合智能检索**：覆盖文本和多模态内容的高级搜索能力，具备上下文理解
 
 **快速开始：**
-1. 安装依赖：
+1. 安装RAG-Anything：
    ```bash
-   pip install "magic-pdf[full]>=1.2.2" huggingface_hub
+   pip install raganything
    ```
-2. 下载 MinerU 模型权重（详见 [MinerU 集成指南](docs/mineru_integration_zh.md)）
-3. 使用新版 `MineruParser` 或 RAGAnything 的 `process_document_complete` 处理文件：
+2. 处理多模态文档：
    ```python
-   from lightrag.mineru_parser import MineruParser
-   content_list, md_content = MineruParser.parse_pdf('path/to/document.pdf', 'output_dir')
-   # 或自动识别类型：
-   content_list, md_content = MineruParser.parse_document('path/to/file', 'auto', 'output_dir')
-   ```
-4. 使用 LightRAG 查询多模态内容请参见 [docs/mineru_integration_zh.md](docs/mineru_integration_zh.md)。
+   import asyncio
+   from raganything import RAGAnything
+   from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 
+   async def main():
+       # 使用LightRAG集成初始化RAGAnything
+       rag = RAGAnything(
+           working_dir="./rag_storage",
+           llm_model_func=lambda prompt, **kwargs: openai_complete_if_cache(
+               "gpt-4o-mini", prompt, api_key="your-api-key", **kwargs
+           ),
+           embedding_func=lambda texts: openai_embed(
+               texts, model="text-embedding-3-large", api_key="your-api-key"
+           ),
+           embedding_dim=3072,
+       )
+
+       # 处理多模态文档
+       await rag.process_document_complete(
+           file_path="path/to/your/document.pdf",
+           output_dir="./output"
+       )
+
+       # 查询多模态内容
+       result = await rag.query_with_multimodal(
+           "图表中显示的主要发现是什么？",
+           mode="hybrid"
+       )
+       print(result)
+
+   if __name__ == "__main__":
+       asyncio.run(main())
+   ```
+
+如需详细文档和高级用法，请参阅 [RAG-Anything 仓库](https://github.com/HKUDS/RAG-Anything)。
 
 ## Token统计功能
 

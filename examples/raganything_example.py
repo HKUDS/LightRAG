@@ -12,7 +12,7 @@ import os
 import argparse
 import asyncio
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.raganything import RAGAnything
+from raganything.raganything import RAGAnything
 
 
 async def process_with_rag(
