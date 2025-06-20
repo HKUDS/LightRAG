@@ -6,6 +6,7 @@ STORAGE_IMPLEMENTATIONS = {
             "PGKVStorage",
             "MongoKVStorage",
             # "TiDBKVStorage",
+            "ESKVStorage",
         ],
         "required_methods": ["get_by_id", "upsert"],
     },
@@ -31,6 +32,7 @@ STORAGE_IMPLEMENTATIONS = {
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
             # "TiDBVectorDBStorage",
+            "ESVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
     },
@@ -39,6 +41,7 @@ STORAGE_IMPLEMENTATIONS = {
             "JsonDocStatusStorage",
             "PGDocStatusStorage",
             "MongoDocStatusStorage",
+            "ESDocStatusStorage",
         ],
         "required_methods": ["get_docs_by_status"],
     },
@@ -50,6 +53,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "JsonKVStorage": [],
     "MongoKVStorage": [],
     "RedisKVStorage": ["REDIS_URI"],
+    "ESKVStorage": ["ES_HOST", "ES_USERNAME", "ES_PASSWORD"],
     # "TiDBKVStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "PGKVStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     # Graph Storage Implementations
@@ -71,6 +75,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     # Vector Storage Implementations
     "NanoVectorDBStorage": [],
     "MilvusVectorDBStorage": [],
+    "ESVectorDBStorage": ["ES_HOST", "ES_USERNAME", "ES_PASSWORD"],
     "ChromaVectorDBStorage": [],
     # "TiDBVectorDBStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "PGVectorStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
@@ -81,6 +86,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     "JsonDocStatusStorage": [],
     "PGDocStatusStorage": ["POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DATABASE"],
     "MongoDocStatusStorage": [],
+    "ESDocStatusStorage": ["ES_HOST", "ES_USERNAME", "ES_PASSWORD"],
 }
 
 # Storage implementation module mapping
@@ -108,6 +114,9 @@ STORAGES = {
     "PGDocStatusStorage": ".kg.postgres_impl",
     "FaissVectorDBStorage": ".kg.faiss_impl",
     "QdrantVectorDBStorage": ".kg.qdrant_impl",
+    "ESKVStorage": ".kg.es_impl",
+    "ESDocStatusStorage": ".kg.es_impl",
+    "ESVectorDBStorage": ".kg.es_impl",
 }
 
 
