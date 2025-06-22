@@ -1710,17 +1710,17 @@ class LightRAG:
             chunk_ids = set(related_chunks.keys())
             logger.info(f"Found {len(chunk_ids)} chunks to delete")
 
-            # 3. **OPTIMIZATION 1**: Clear LLM cache for related chunks
-            logger.info("Clearing LLM cache for related chunks...")
-            cache_cleared = await self.llm_response_cache.drop_cache_by_chunk_ids(
-                list(chunk_ids)
-            )
-            if cache_cleared:
-                logger.info(f"Successfully cleared cache for {len(chunk_ids)} chunks")
-            else:
-                logger.warning(
-                    "Failed to clear chunk cache or cache clearing not supported"
-                )
+            # # 3. **OPTIMIZATION 1**: Clear LLM cache for related chunks
+            # logger.info("Clearing LLM cache for related chunks...")
+            # cache_cleared = await self.llm_response_cache.drop_cache_by_chunk_ids(
+            #     list(chunk_ids)
+            # )
+            # if cache_cleared:
+            #     logger.info(f"Successfully cleared cache for {len(chunk_ids)} chunks")
+            # else:
+            #     logger.warning(
+            #         "Failed to clear chunk cache or cache clearing not supported"
+            #     )
 
             # 4. Analyze entities and relationships that will be affected
             entities_to_delete = set()

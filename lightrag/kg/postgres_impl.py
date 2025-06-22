@@ -106,6 +106,35 @@ class PostgreSQLDB:
         ):
             pass
 
+    async def _migrate_llm_cache_add_chunk_id(self):
+        """Add chunk_id column to LIGHTRAG_LLM_CACHE table if it doesn't exist"""
+        try:
+            # Check if chunk_id column exists
+            check_column_sql = """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'lightrag_llm_cache'
+            AND column_name = 'chunk_id'
+            """
+
+            column_info = await self.query(check_column_sql)
+            if not column_info:
+                logger.info("Adding chunk_id column to LIGHTRAG_LLM_CACHE table")
+                add_column_sql = """
+                ALTER TABLE LIGHTRAG_LLM_CACHE
+                ADD COLUMN chunk_id VARCHAR(255) NULL
+                """
+                await self.execute(add_column_sql)
+                logger.info(
+                    "Successfully added chunk_id column to LIGHTRAG_LLM_CACHE table"
+                )
+            else:
+                logger.info(
+                    "chunk_id column already exists in LIGHTRAG_LLM_CACHE table"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to add chunk_id column to LIGHTRAG_LLM_CACHE: {e}")
+
     async def _migrate_timestamp_columns(self):
         """Migrate timestamp columns in tables to timezone-aware types, assuming original data is in UTC time"""
         # Tables and columns that need migration
@@ -201,6 +230,13 @@ class PostgreSQLDB:
             await self._migrate_timestamp_columns()
         except Exception as e:
             logger.error(f"PostgreSQL, Failed to migrate timestamp columns: {e}")
+            # Don't throw an exception, allow the initialization process to continue
+
+        # Migrate LLM cache table to add chunk_id field if needed
+        try:
+            await self._migrate_llm_cache_add_chunk_id()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to migrate LLM cache chunk_id field: {e}")
             # Don't throw an exception, allow the initialization process to continue
 
     async def query(
@@ -497,6 +533,7 @@ class PGKVStorage(BaseKVStorage):
                         "original_prompt": v["original_prompt"],
                         "return_value": v["return"],
                         "mode": mode,
+                        "chunk_id": v.get("chunk_id"),
                     }
 
                     await self.db.execute(upsert_sql, _data)
@@ -2357,6 +2394,7 @@ TABLES = {
 	                mode varchar(32) NOT NULL,
                     original_prompt TEXT,
                     return_value TEXT,
+                    chunk_id VARCHAR(255) NULL,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     update_time TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, mode, id)
@@ -2389,10 +2427,10 @@ SQL_TEMPLATES = {
                                 chunk_order_index, full_doc_id, file_path
                                 FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
                             """,
-    "get_by_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
+    "get_by_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode, chunk_id
                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode=$2
                                """,
-    "get_by_mode_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
+    "get_by_mode_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode, chunk_id
                            FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode=$2 AND id=$3
                           """,
     "get_by_ids_full_docs": """SELECT id, COALESCE(content, '') as content
@@ -2402,7 +2440,7 @@ SQL_TEMPLATES = {
                                   chunk_order_index, full_doc_id, file_path
                                    FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id IN ({ids})
                                 """,
-    "get_by_ids_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode
+    "get_by_ids_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode, chunk_id
                                  FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode= IN ({ids})
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",
@@ -2411,12 +2449,13 @@ SQL_TEMPLATES = {
                         ON CONFLICT (workspace,id) DO UPDATE
                            SET content = $2, update_time = CURRENT_TIMESTAMP
                        """,
-    "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,mode)
-                                      VALUES ($1, $2, $3, $4, $5)
+    "upsert_llm_response_cache": """INSERT INTO LIGHTRAG_LLM_CACHE(workspace,id,original_prompt,return_value,mode,chunk_id)
+                                      VALUES ($1, $2, $3, $4, $5, $6)
                                       ON CONFLICT (workspace,mode,id) DO UPDATE
                                       SET original_prompt = EXCLUDED.original_prompt,
                                       return_value=EXCLUDED.return_value,
                                       mode=EXCLUDED.mode,
+                                      chunk_id=EXCLUDED.chunk_id,
                                       update_time = CURRENT_TIMESTAMP
                                      """,
     "upsert_chunk": """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,
