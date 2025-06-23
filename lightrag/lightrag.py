@@ -1908,11 +1908,14 @@ Rebuilt: {len(entities_to_rebuild)} entities, {len(relationships_to_rebuild)} re
                 status_code=500,
             )
 
-    async def adelete_by_entity(self, entity_name: str) -> None:
+    async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.
 
         Args:
-            entity_name: Name of the entity to delete
+            entity_name: Name of the entity to delete.
+
+        Returns:
+            DeletionResult: An object containing the outcome of the deletion process.
         """
         from .utils_graph import adelete_by_entity
 
@@ -1923,16 +1926,29 @@ Rebuilt: {len(entities_to_rebuild)} entities, {len(relationships_to_rebuild)} re
             entity_name,
         )
 
-    def delete_by_entity(self, entity_name: str) -> None:
+    def delete_by_entity(self, entity_name: str) -> DeletionResult:
+        """Synchronously delete an entity and all its relationships.
+
+        Args:
+            entity_name: Name of the entity to delete.
+
+        Returns:
+            DeletionResult: An object containing the outcome of the deletion process.
+        """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(self.adelete_by_entity(entity_name))
 
-    async def adelete_by_relation(self, source_entity: str, target_entity: str) -> None:
+    async def adelete_by_relation(
+        self, source_entity: str, target_entity: str
+    ) -> DeletionResult:
         """Asynchronously delete a relation between two entities.
 
         Args:
-            source_entity: Name of the source entity
-            target_entity: Name of the target entity
+            source_entity: Name of the source entity.
+            target_entity: Name of the target entity.
+
+        Returns:
+            DeletionResult: An object containing the outcome of the deletion process.
         """
         from .utils_graph import adelete_by_relation
 
@@ -1943,7 +1959,18 @@ Rebuilt: {len(entities_to_rebuild)} entities, {len(relationships_to_rebuild)} re
             target_entity,
         )
 
-    def delete_by_relation(self, source_entity: str, target_entity: str) -> None:
+    def delete_by_relation(
+        self, source_entity: str, target_entity: str
+    ) -> DeletionResult:
+        """Synchronously delete a relation between two entities.
+
+        Args:
+            source_entity: Name of the source entity.
+            target_entity: Name of the target entity.
+
+        Returns:
+            DeletionResult: An object containing the outcome of the deletion process.
+        """
         loop = always_get_an_event_loop()
         return loop.run_until_complete(
             self.adelete_by_relation(source_entity, target_entity)
