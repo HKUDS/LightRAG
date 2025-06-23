@@ -84,10 +84,12 @@ async def adelete_by_relation(
                 return
 
             # Delete relation from vector database
-            relation_id = compute_mdhash_id(
-                source_entity + target_entity, prefix="rel-"
-            )
-            await relationships_vdb.delete([relation_id])
+            rel_ids_to_delete = [
+                    compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
+                    compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
+                ]
+            
+            await relationships_vdb.delete(rel_ids_to_delete)
 
             # Delete relation from knowledge graph
             await chunk_entity_relation_graph.remove_edges(
