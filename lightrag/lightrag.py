@@ -1901,15 +1901,12 @@ Rebuilt: {len(entities_to_rebuild)} entities, {len(relationships_to_rebuild)} re
         """
         from .utils_graph import adelete_by_entity
 
-        # Use graph database lock to ensure atomic merges and updates
-        graph_db_lock = get_graph_db_lock(enable_logging=False)
-        async with graph_db_lock:
-            return await adelete_by_entity(
-                self.chunk_entity_relation_graph,
-                self.entities_vdb,
-                self.relationships_vdb,
-                entity_name,
-            )
+        return await adelete_by_entity(
+            self.chunk_entity_relation_graph,
+            self.entities_vdb,
+            self.relationships_vdb,
+            entity_name,
+        )
 
     def delete_by_entity(self, entity_name: str) -> None:
         loop = always_get_an_event_loop()
@@ -1924,15 +1921,12 @@ Rebuilt: {len(entities_to_rebuild)} entities, {len(relationships_to_rebuild)} re
         """
         from .utils_graph import adelete_by_relation
 
-        # Use graph database lock to ensure atomic merges and updates
-        graph_db_lock = get_graph_db_lock(enable_logging=False)
-        async with graph_db_lock:
-            return await adelete_by_relation(
-                self.chunk_entity_relation_graph,
-                self.relationships_vdb,
-                source_entity,
-                target_entity,
-            )
+        return await adelete_by_relation(
+            self.chunk_entity_relation_graph,
+            self.relationships_vdb,
+            source_entity,
+            target_entity,
+        )
 
     def delete_by_relation(self, source_entity: str, target_entity: str) -> None:
         loop = always_get_an_event_loop()
