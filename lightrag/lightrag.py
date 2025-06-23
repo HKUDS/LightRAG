@@ -1698,10 +1698,10 @@ class LightRAG:
 
         Returns:
             DeletionResult: An object containing the outcome of the deletion process.
-                - `success` (bool): True if the deletion was successful, False otherwise.
+                - `status` (str): "success", "not_found", or "failure".
+                - `doc_id` (str): The ID of the document attempted to be deleted.
                 - `message` (str): A summary of the operation's result.
-                - `deleted_ids` (dict[str, list[str]]): A dictionary detailing the IDs of
-                  all deleted items, categorized by storage type (e.g., "chunks", "entities").
+                - `status_code` (int): HTTP status code (e.g., 200, 404, 500).
         """
         try:
             # 1. Get the document status and related data
@@ -1902,7 +1902,7 @@ Rebuilt: {len(entities_to_rebuild)} entities, {len(relationships_to_rebuild)} re
             logger.error(error_message)
             logger.error(traceback.format_exc())
             return DeletionResult(
-                status="failure",
+                status="fail",
                 doc_id=doc_id,
                 message=error_message,
                 status_code=500,

@@ -1341,12 +1341,12 @@ def create_document_routes(
         )
 
     @router.delete(
-        "/delete_by_doc_id",
+        "/delete_document",
         response_model=DeleteDocByIdResponse,
         dependencies=[Depends(combined_auth)],
         summary="Delete a document and all its associated data by its ID.",
     )
-    async def delete_by_doc_id(
+    async def delete_document(
         delete_request: DeleteDocRequest,
     ) -> DeleteDocByIdResponse:
         """
