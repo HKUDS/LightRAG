@@ -1775,12 +1775,21 @@ class LightRAG:
                     )
                     if node_edges:
                         for src, tgt in node_edges:
+                            # To avoid processing the same edge twice in an undirected graph
+                            if (
+                                (tgt, src) in relationships_to_delete
+                                or (tgt, src) in relationships_to_rebuild
+                            ):
+                                continue
+
                             edge_data = await self.chunk_entity_relation_graph.get_edge(
                                 src, tgt
                             )
                             if edge_data and "source_id" in edge_data:
                                 # Split source_id using GRAPH_FIELD_SEP
-                                sources = set(edge_data["source_id"].split(GRAPH_FIELD_SEP))
+                                sources = set(
+                                    edge_data["source_id"].split(GRAPH_FIELD_SEP)
+                                )
                                 remaining_sources = sources - chunk_ids
 
                                 if not remaining_sources:
@@ -1790,7 +1799,9 @@ class LightRAG:
                                     )
                                 elif remaining_sources != sources:
                                     # Relationship needs to be rebuilt from remaining chunks
-                                    relationships_to_rebuild[(src, tgt)] = remaining_sources
+                                    relationships_to_rebuild[
+                                        (src, tgt)
+                                    ] = remaining_sources
                                     logger.debug(
                                         f"Relationship {src}-{tgt} will be rebuilt from {len(remaining_sources)} remaining chunks"
                                     )
