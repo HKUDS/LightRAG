@@ -1,0 +1,28 @@
+{{- if and .Values.ingress.enabled .Values.ingress.forwardAuth.enabled }}
+apiVersion: traefik.io/v1alpha1 # Use traefik.containo.us/v1alpha1 if using older Traefik
+kind: Middleware
+metadata:
+  # Use the helper for the Middleware resource name
+  name: {{ .Values.ingress.forwardAuth.name | quote }}
+  # Middleware MUST be in the same namespace as the Ingress that uses it
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lightrag-minimal.labels" . | nindent 4 }}
+spec:
+  forwardAuth:
+    # Required fields from values.yaml
+    address: {{ .Values.ingress.forwardAuth.address | quote }}
+    trustForwardHeader: {{ .Values.ingress.forwardAuth.trustForwardHeader | default true }}
+
+    # Optional headers to send to the authentication service
+    {{- if .Values.ingress.forwardAuth.authRequestHeaders }}
+    authRequestHeaders:
+      {{- toYaml .Values.ingress.forwardAuth.authRequestHeaders | nindent 6 }}
+    {{- end }}
+
+    # Optional headers to copy from the authentication service's response
+    {{- if .Values.ingress.forwardAuth.authResponseHeaders }}
+    authResponseHeaders:
+      {{- toYaml .Values.ingress.forwardAuth.authResponseHeaders | nindent 6 }}
+    {{- end }}
+{{- end }}

@@ -1,0 +1,148 @@
+version: '3.8'
+
+# Docker All-in-One Stack
+# Neo4j + Qdrant + Redis + MongoDB
+# Best for: Containerized deployments, cloud environments
+
+services:
+  # LightRAG Application
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:latest
+    container_name: lightrag-aio
+    env_file:
+      - .env
+    environment:
+      # All-in-One Storage Configuration
+      LIGHTRAG_GRAPH_STORAGE: Neo4JStorage
+      LIGHTRAG_VECTOR_STORAGE: QdrantVectorDBStorage
+      LIGHTRAG_KV_STORAGE: RedisKVStorage
+      LIGHTRAG_DOC_STATUS_STORAGE: MongoDocStatusStorage
+      
+      # Service Connection Details
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USERNAME: neo4j
+      NEO4J_PASSWORD: lightrag_neo4j_pass
+      
+      QDRANT_URL: http://qdrant:6333
+      
+      REDIS_URI: redis://redis:6379
+      
+      MONGO_URI: mongodb://lightrag_user:lightrag_pass@mongodb:27017/lightrag?authSource=admin
+      MONGO_DATABASE: lightrag
+      
+      # Performance settings
+      MAX_ASYNC: 6
+      MAX_TOKENS: 32768
+      ENABLE_LLM_CACHE: true
+      ENABLE_LLM_CACHE_FOR_EXTRACT: true
+    ports:
+      - "9621:9621"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      neo4j:
+        condition: service_started
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ./data/inputs:/app/inputs
+      - ./data/rag_storage:/app/rag_storage
+    networks:
+      - lightrag-aio-network
+    restart: unless-stopped
+
+  # MongoDB for Document Status Storage
+  mongodb:
+    image: mongo:7
+    container_name: lightrag-aio-mongodb
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: admin_pass
+      MONGO_INITDB_DATABASE: lightrag
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init-aio:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.runCommand('ping').ok", "--quiet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lightrag-aio-network
+    restart: unless-stopped
+
+  # Redis for KV Storage
+  redis:
+    image: redis:7-alpine
+    container_name: lightrag-aio-redis
+    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lightrag-aio-network
+    restart: unless-stopped
+
+  # Neo4j for Graph Storage
+  neo4j:
+    image: neo4j:5.15
+    container_name: lightrag-aio-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/lightrag_neo4j_pass
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_dbms_security_procedures_unrestricted: apoc.*
+      NEO4J_dbms_memory_heap_initial__size: 512M
+      NEO4J_dbms_memory_heap_max__size: 1G
+      NEO4J_dbms_memory_pagecache_size: 512M
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    networks:
+      - lightrag-aio-network
+    restart: unless-stopped
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: lightrag-aio-qdrant
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+      QDRANT__LOG_LEVEL: INFO
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - lightrag-aio-network
+    restart: unless-stopped
+
+volumes:
+  mongodb_data:
+  redis_data:
+  neo4j_data:
+  neo4j_logs:
+  qdrant_data:
+
+networks:
+  lightrag-aio-network:
+    driver: bridge

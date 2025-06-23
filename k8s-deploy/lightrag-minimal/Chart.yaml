@@ -1,0 +1,13 @@
+apiVersion: v2
+name: lightrag-minimal
+description: A minimal Helm chart for LightRAG with PostgreSQL and NetworkX storage
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+maintainers:
+  - name: Apolo Copilot Team
+dependencies:
+  - name: postgresql
+    version: "~12.0.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: postgresql.enabled

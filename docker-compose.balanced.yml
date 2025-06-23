@@ -1,0 +1,122 @@
+version: '3.8'
+
+# Production Balanced Stack
+# NetworkX + Qdrant + Redis + PostgreSQL  
+# Best for: Production deployments prioritizing simplicity
+
+services:
+  # LightRAG Application
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:latest
+    container_name: lightrag-balanced
+    env_file:
+      - .env
+    environment:
+      # Balanced Storage Configuration
+      LIGHTRAG_GRAPH_STORAGE: NetworkXStorage
+      LIGHTRAG_VECTOR_STORAGE: QdrantVectorDBStorage
+      LIGHTRAG_KV_STORAGE: RedisKVStorage
+      LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
+      
+      # Service Connection Details
+      QDRANT_URL: http://qdrant:6333
+      
+      REDIS_URI: redis://redis:6379
+      
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: lightrag_user
+      POSTGRES_PASSWORD: lightrag_pass
+      POSTGRES_DATABASE: lightrag
+      
+      # Performance settings
+      MAX_ASYNC: 6
+      MAX_TOKENS: 32768
+      ENABLE_LLM_CACHE: true
+      ENABLE_LLM_CACHE_FOR_EXTRACT: true
+    ports:
+      - "9621:9621"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    volumes:
+      - ./data/inputs:/app/inputs
+      - ./data/rag_storage:/app/rag_storage
+    networks:
+      - lightrag-balanced-network
+    restart: unless-stopped
+
+  # PostgreSQL for Document Status Storage
+  postgres:
+    image: postgres:16
+    container_name: lightrag-balanced-postgres
+    environment:
+      POSTGRES_DB: lightrag
+      POSTGRES_USER: lightrag_user
+      POSTGRES_PASSWORD: lightrag_pass
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lightrag_user -d lightrag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lightrag-balanced-network
+    restart: unless-stopped
+
+  # Redis for KV Storage
+  redis:
+    image: redis:7-alpine
+    container_name: lightrag-balanced-redis
+    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - lightrag-balanced-network
+    restart: unless-stopped
+
+  # Qdrant Vector Database
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: lightrag-balanced-qdrant
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+      QDRANT__LOG_LEVEL: INFO
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - lightrag-balanced-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+
+networks:
+  lightrag-balanced-network:
+    driver: bridge

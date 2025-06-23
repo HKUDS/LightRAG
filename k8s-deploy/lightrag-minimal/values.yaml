@@ -1,0 +1,162 @@
+# LightRAG Minimal Configuration
+# Matches docker-compose.minimal.yml setup
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/hkuds/lightrag
+  tag: latest
+  pullPolicy: IfNotPresent
+
+nameOverride: ""
+fullnameOverride: ""
+
+service:
+  type: ClusterIP
+  port: 9621
+  targetPort: 9621
+
+ingress:
+  enabled: false
+  className: ""
+  clusterName: ""
+  annotations: {}
+  hosts:
+    - host: lightrag-minimal.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  forwardAuth:
+    enabled: false
+    # name: forwardauth
+    # address: http://forwardauth:8080
+    # trustForwardHeader: true
+    # authRequestHeaders:
+    #   - "Cookie"
+    #   - "Authorization"
+
+# Resource limits and requests
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+# Persistence for data volumes
+persistence:
+  enabled: true
+  ragStorage:
+    accessMode: ReadWriteOnce
+    size: 20Gi
+    storageClass: ""
+  inputs:
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    storageClass: ""
+
+# PostgreSQL configuration (embedded chart with pgvector)
+postgresql:
+  enabled: true
+  # Use pgvector image instead of standard PostgreSQL
+  image:
+    registry: docker.io
+    repository: pgvector/pgvector
+    tag: pg16
+  auth:
+    database: lightrag
+    username: lightrag_user
+    password: lightrag_pass
+  primary:
+    persistence:
+      enabled: true
+      size: 20Gi
+    resources:
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+      requests:
+        cpu: 250m
+        memory: 512Mi
+    initdb:
+      scripts:
+        00-pgvector.sql: |
+          CREATE EXTENSION IF NOT EXISTS vector;
+
+# LightRAG Environment Configuration
+# This matches the minimal docker-compose setup
+env:
+  # Server configuration
+  HOST: "0.0.0.0"
+  PORT: "9621"
+  
+  # Web UI configuration
+  WEBUI_TITLE: "Apolo Copilot - LightRAG"
+  WEBUI_DESCRIPTION: "Simple and Fast Graph Based RAG System for Apolo Documentation"
+  
+  # LLM configuration
+  LLM_BINDING: "openai"
+  LLM_MODEL: "gpt-4o-mini"
+  LLM_BINDING_HOST: ""
+  # LLM_BINDING_API_KEY: Set via secret
+  
+  # Embedding configuration
+  EMBEDDING_BINDING: "openai"
+  EMBEDDING_MODEL: "text-embedding-ada-002"
+  EMBEDDING_DIM: "1536"
+  # EMBEDDING_BINDING_API_KEY: Set via secret
+  
+  # Storage configuration - Minimal setup
+  LIGHTRAG_KV_STORAGE: "PGKVStorage"
+  LIGHTRAG_VECTOR_STORAGE: "PGVectorStorage"
+  LIGHTRAG_DOC_STATUS_STORAGE: "PGDocStatusStorage"
+  LIGHTRAG_GRAPH_STORAGE: "NetworkXStorage"  # Local storage, no external DB needed
+  
+  # PostgreSQL connection (internal service)
+  POSTGRES_HOST: "{{ include \"lightrag-minimal.fullname\" . }}-postgresql"
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: "lightrag_user"
+  POSTGRES_DATABASE: "lightrag"
+  POSTGRES_WORKSPACE: "default"
+
+# Secret configuration for API keys
+secrets:
+  # Create a secret with your OpenAI API key
+  openaiApiKey: ""  # Set this or create manually
+  
+# Node selector and affinity
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Security context
+securityContext: {}
+podSecurityContext: {}
+
+# Service account
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Pod annotations
+podAnnotations: {}
+
+# Auto scaling (disabled by default for minimal setup)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+# Health checks
+healthCheck:
+  enabled: true
+  path: "/health"
+  initialDelaySeconds: 60
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 5

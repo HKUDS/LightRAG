@@ -1,0 +1,54 @@
+✅ LightRAG deployment successful!
+
+1. Wait for all pods to be ready:
+  kubectl wait --namespace {{ .Release.Namespace }} --for=condition=ready pod -l app.kubernetes.io/name=postgresql --timeout=120s
+  kubectl wait --namespace {{ .Release.Namespace }} --for=condition=ready pod -l app.kubernetes.io/name={{ include "lightrag-minimal.name" . }} --timeout=120s
+
+2. Access your application:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  {{- range .paths }}
+  🌐 Web UI: http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}webui
+  📚 API Docs: http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}{{ .path }}docs
+  {{- end }}
+{{- end }}
+{{- else }}
+  # Start port forwarding (run in background):
+  kubectl port-forward --namespace {{ .Release.Namespace }} svc/{{ include "lightrag-minimal.fullname" . }} 9621:9621 &
+  
+  🌐 Web UI: http://localhost:9621/webui
+  📚 API Docs: http://localhost:9621/docs
+  🔍 Health Check: http://localhost:9621/health
+{{- end }}
+
+3. Verify deployment health:
+  curl http://localhost:9621/health
+  # Expected: {"status": "healthy", "configuration": {...}}
+
+4. Load your documents:
+  # Install httpx if needed: pip install httpx
+  
+  # Files mode (file path references) - Default
+  python ../../../load_docs.py /path/to/your/docs --endpoint http://localhost:9621
+  
+  # URLs mode (website URL references) - Recommended for public docs
+  # Note: Local file structure must match your docs site URL structure
+  python ../../../load_docs.py /path/to/docs --mode urls \
+    --base-url https://docs.example.com/ --endpoint http://localhost:9621
+
+5. Monitor your deployment:
+  # Check pods status
+  kubectl get pods --namespace {{ .Release.Namespace }}
+  
+  # View logs
+  kubectl logs --namespace {{ .Release.Namespace }} -l app.kubernetes.io/name={{ include "lightrag-minimal.name" . }} -f
+
+Configuration Summary:
+🗄️  Storage: PostgreSQL with pgvector + NetworkX graph storage
+🔒 Persistence: {{ if .Values.persistence.ragStorage.enabled }}Enabled{{ else }}Disabled{{ end }} ({{ .Values.persistence.ragStorage.size }} storage)
+💻 Resources: {{ .Values.resources.limits.cpu }} CPU, {{ .Values.resources.limits.memory }} memory
+🐘 PostgreSQL: pgvector/pgvector:pg16 with {{ .Values.postgresql.primary.persistence.size }} storage
+🤖 LLM Model: {{ .Values.env.LLM_MODEL }}
+📊 Concurrency: MAX_ASYNC={{ .Values.env.MAX_ASYNC }}, MAX_PARALLEL_INSERT={{ .Values.env.MAX_PARALLEL_INSERT }}
+
+📖 For detailed usage instructions, see the README.md in the chart directory.

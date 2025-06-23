@@ -1,0 +1,157 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "lightrag-minimal.fullname" . }}
+  labels:
+    {{- include "lightrag-minimal.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "lightrag-minimal.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- include "lightrag-minimal.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "lightrag-minimal.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+          env:
+            # Basic server configuration
+            - name: HOST
+              value: {{ .Values.env.HOST | quote }}
+            - name: PORT
+              value: {{ .Values.env.PORT | quote }}
+            
+            # Web UI configuration
+            - name: WEBUI_TITLE
+              value: {{ .Values.env.WEBUI_TITLE | quote }}
+            - name: WEBUI_DESCRIPTION
+              value: {{ .Values.env.WEBUI_DESCRIPTION | quote }}
+            
+            # LLM configuration
+            - name: LLM_BINDING
+              value: {{ .Values.env.LLM_BINDING | quote }}
+            - name: LLM_MODEL
+              value: {{ .Values.env.LLM_MODEL | quote }}
+            - name: LLM_BINDING_HOST
+              value: {{ .Values.env.LLM_BINDING_HOST | quote }}
+            - name: LLM_BINDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightrag-minimal.secretName" . }}
+                  key: openai-api-key
+            
+            # Embedding configuration
+            - name: EMBEDDING_BINDING
+              value: {{ .Values.env.EMBEDDING_BINDING | quote }}
+            - name: EMBEDDING_MODEL
+              value: {{ .Values.env.EMBEDDING_MODEL | quote }}
+            - name: EMBEDDING_DIM
+              value: {{ .Values.env.EMBEDDING_DIM | quote }}
+            - name: EMBEDDING_BINDING_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightrag-minimal.secretName" . }}
+                  key: openai-api-key
+            
+            # Storage configuration
+            - name: LIGHTRAG_KV_STORAGE
+              value: {{ .Values.env.LIGHTRAG_KV_STORAGE | quote }}
+            - name: LIGHTRAG_VECTOR_STORAGE
+              value: {{ .Values.env.LIGHTRAG_VECTOR_STORAGE | quote }}
+            - name: LIGHTRAG_DOC_STATUS_STORAGE
+              value: {{ .Values.env.LIGHTRAG_DOC_STATUS_STORAGE | quote }}
+            - name: LIGHTRAG_GRAPH_STORAGE
+              value: {{ .Values.env.LIGHTRAG_GRAPH_STORAGE | quote }}
+            
+            # PostgreSQL configuration
+            - name: POSTGRES_HOST
+              value: {{ include "lightrag-minimal.postgresqlHost" . | quote }}
+            - name: POSTGRES_PORT
+              value: {{ .Values.env.POSTGRES_PORT | quote }}
+            - name: POSTGRES_USER
+              value: {{ .Values.env.POSTGRES_USER | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "lightrag-minimal.secretName" . }}
+                  key: postgres-password
+            - name: POSTGRES_DATABASE
+              value: {{ .Values.env.POSTGRES_DATABASE | quote }}
+            - name: POSTGRES_WORKSPACE
+              value: {{ .Values.env.POSTGRES_WORKSPACE | quote }}
+          
+          {{- if .Values.healthCheck.enabled }}
+          livenessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: http
+            initialDelaySeconds: {{ .Values.healthCheck.initialDelaySeconds }}
+            periodSeconds: {{ .Values.healthCheck.periodSeconds }}
+            timeoutSeconds: {{ .Values.healthCheck.timeoutSeconds }}
+            failureThreshold: {{ .Values.healthCheck.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: {{ .Values.healthCheck.path }}
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          {{- end }}
+          
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          
+          {{- if .Values.persistence.enabled }}
+          volumeMounts:
+            - name: rag-storage
+              mountPath: /app/rag_storage
+            - name: inputs
+              mountPath: /app/inputs
+          {{- end }}
+      
+      {{- if .Values.persistence.enabled }}
+      volumes:
+        - name: rag-storage
+          persistentVolumeClaim:
+            claimName: {{ include "lightrag-minimal.fullname" . }}-rag-storage
+        - name: inputs
+          persistentVolumeClaim:
+            claimName: {{ include "lightrag-minimal.fullname" . }}-inputs
+      {{- end }}
+      
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,15 @@
+{{- /* Create strip-headers Middleware only if ingress is enabled */}}
+{{- if and .Values.ingress.enabled .Values.ingress.forwardAuth.enabled }}
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: strip-headers
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "lightrag.labels" . | nindent 4 }}
+spec:
+  headers:
+    customRequestHeaders:
+      Authorization: ""  # Empty value removes header
+      Cookie: ""
+{{- end }}

@@ -1,0 +1,120 @@
+# Production Values
+# Optimized for production with HA, scaling, and monitoring
+
+# Environment configuration
+env:
+  LLM_MODEL: "gpt-4o"
+  WEBUI_TITLE: "Apolo Copilot - LightRAG"
+  WEBUI_DESCRIPTION: "Production LightRAG for Apolo Documentation"
+  
+  # OpenAI API Configuration
+  LLM_BINDING: "openai"
+  LLM_BINDING_HOST: "https://api.openai.com/v1"
+  EMBEDDING_BINDING: "openai"
+  EMBEDDING_BINDING_HOST: "https://api.openai.com/v1"
+  EMBEDDING_MODEL: "text-embedding-ada-002"
+  EMBEDDING_DIM: "1536"
+  
+  # Concurrency settings (conservative for API stability)
+  MAX_ASYNC: "4"
+  MAX_PARALLEL_INSERT: "2"
+  
+  # LLM Configuration
+  ENABLE_LLM_CACHE: "true"
+  ENABLE_LLM_CACHE_FOR_EXTRACT: "true"
+  TIMEOUT: "240"
+  TEMPERATURE: "0"
+  MAX_TOKENS: "32768"
+
+# Production resources
+resources:
+  limits:
+    cpu: 4000m
+    memory: 8Gi
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+
+# Production storage with fast storage class
+persistence:
+  ragStorage:
+    size: 100Gi
+    storageClass: "fast-ssd"  # Adjust for your cluster
+  inputs:
+    size: 50Gi
+    storageClass: "fast-ssd"
+
+# PostgreSQL with production resources
+postgresql:
+  # Use pgvector image for vector support
+  image:
+    registry: docker.io
+    repository: pgvector/pgvector
+    tag: pg16
+  auth:
+    password: "secure-production-password"  # Use external secret in real production
+  primary:
+    persistence:
+      size: 200Gi
+      storageClass: "fast-ssd"
+    resources:
+      limits:
+        cpu: 2000m
+        memory: 4Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+
+# OpenAI API key (use external secret manager in production)
+secrets:
+  openaiApiKey: "${OPENAI_API_KEY}"
+
+# Enable ingress for production
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: lightrag.yourdomain.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: lightrag-tls
+      hosts:
+        - lightrag.yourdomain.com
+
+# Enable autoscaling for production
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Production security context
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+
+# Node affinity for production workloads
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - lightrag-minimal
+        topologyKey: kubernetes.io/hostname

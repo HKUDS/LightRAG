@@ -7,6 +7,10 @@ __pycache__/
 *.tar.gz
 *.ini
 
+apolo-documentation/
+init-scripts/
+mongo-init/
+rag_storage_test/
 # Virtual Environment
 .venv/
 env/

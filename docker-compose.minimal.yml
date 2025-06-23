@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: lightrag-postgres-minimal
+    environment:
+      POSTGRES_DB: lightrag
+      POSTGRES_USER: lightrag_user
+      POSTGRES_PASSWORD: lightrag_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lightrag_user -d lightrag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  lightrag:
+    image: ghcr.io/hkuds/lightrag:latest
+    container_name: lightrag-minimal
+    env_file:
+      - .env
+    environment:
+      # Pass API key from host
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      LLM_BINDING_API_KEY: ${OPENAI_API_KEY}
+      EMBEDDING_BINDING_API_KEY: ${OPENAI_API_KEY}
+      # Use mixed storage - PostgreSQL for vectors and KV, NetworkX for graph
+      LIGHTRAG_KV_STORAGE: PGKVStorage
+      LIGHTRAG_VECTOR_STORAGE: PGVectorStorage
+      LIGHTRAG_DOC_STATUS_STORAGE: PGDocStatusStorage
+      LIGHTRAG_GRAPH_STORAGE: NetworkXStorage
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: lightrag_user
+      POSTGRES_PASSWORD: lightrag_pass
+      POSTGRES_DATABASE: lightrag
+    ports:
+      - "9621:9621"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data/inputs:/app/inputs
+      - ./data/rag_storage:/app/rag_storage
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: lightrag-minimal-network
