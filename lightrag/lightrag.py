@@ -1679,14 +1679,29 @@ class LightRAG:
         return found_statuses
 
     async def adelete_by_doc_id(self, doc_id: str) -> DeletionResult:
-        """Delete a document and all its related data with cache cleanup and reconstruction
+        """Delete a document and all its related data, including chunks, graph elements, and cached entries.
 
-        Optimized version that:
-        1. Clears LLM cache for related chunks
-        2. Rebuilds entity and relationship descriptions from remaining chunks
+        This method orchestrates a comprehensive deletion process for a given document ID.
+        It ensures that not only the document itself but also all its derived and associated
+        data across different storage layers are removed. This includes:
+        1.  **Document and Status**: Deletes the document from `full_docs` and its status from `doc_status`.
+        2.  **Chunks**: Removes all associated text chunks from `chunks_vdb`.
+        3.  **Graph Data**:
+            - Deletes related entities from `entities_vdb`.
+            - Deletes related relationships from `relationships_vdb`.
+            - Removes corresponding nodes and edges from the `chunk_entity_relation_graph`.
+        4.  **Graph Reconstruction**: If entities or relationships are partially affected, it triggers
+            a reconstruction of their data from the remaining chunks to ensure consistency.
 
         Args:
-            doc_id: Document ID to delete
+            doc_id (str): The unique identifier of the document to be deleted.
+
+        Returns:
+            DeletionResult: An object containing the outcome of the deletion process.
+                - `success` (bool): True if the deletion was successful, False otherwise.
+                - `message` (str): A summary of the operation's result.
+                - `deleted_ids` (dict[str, list[str]]): A dictionary detailing the IDs of
+                  all deleted items, categorized by storage type (e.g., "chunks", "entities").
         """
         try:
             # 1. Get the document status and related data
