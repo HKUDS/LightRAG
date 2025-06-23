@@ -1382,6 +1382,7 @@ def create_document_routes(
         """
         Deletes a specific document and all its associated data, including its status,
         text chunks, vector embeddings, and any related graph data.
+        It is disabled when llm cache for entity extraction is disabled.
 
         This operation is irreversible and will interact with the pipeline status.
 
@@ -1399,6 +1400,13 @@ def create_document_routes(
             HTTPException:
               - 500: If an unexpected internal error occurs.
         """
+        # The rag object is initialized from the server startup args,
+        # so we can access its properties here.
+        if not rag.enable_llm_cache_for_entity_extract:
+            raise HTTPException(
+                status_code=403,
+                detail="Operation not allowed when LLM cache for entity extraction is disabled.",
+            )
         from lightrag.kg.shared_storage import (
             get_namespace_data,
             get_pipeline_status_lock,
