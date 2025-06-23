@@ -289,25 +289,31 @@ class PostgreSQLDB:
         sql: str,
         data: dict[str, Any] | None = None,
         upsert: bool = False,
+        ignore_if_exists: bool = False,
         with_age: bool = False,
         graph_name: str | None = None,
     ):
         try:
             async with self.pool.acquire() as connection:  # type: ignore
                 if with_age and graph_name:
-                    await self.configure_age(connection, graph_name)  # type: ignore
+                    await self.configure_age(connection, graph_name)
                 elif with_age and not graph_name:
                     raise ValueError("Graph name is required when with_age is True")
 
                 if data is None:
-                    await connection.execute(sql)  # type: ignore
+                    await connection.execute(sql)
                 else:
-                    await connection.execute(sql, *data.values())  # type: ignore
+                    await connection.execute(sql, *data.values())
         except (
             asyncpg.exceptions.UniqueViolationError,
             asyncpg.exceptions.DuplicateTableError,
+            asyncpg.exceptions.DuplicateObjectError,  # Catch "already exists" error
+            asyncpg.exceptions.InvalidSchemaNameError,  # Also catch for AGE extension "already exists"
         ) as e:
-            if upsert:
+            if ignore_if_exists:
+                # If the flag is set, just ignore these specific errors
+                pass
+            elif upsert:
                 print("Key value duplicate, but upsert succeeded.")
             else:
                 logger.error(f"Upsert error: {e}")
@@ -1212,16 +1218,15 @@ class PGGraphStorage(BaseGraphStorage):
         ]
 
         for query in queries:
-            try:
-                await self.db.execute(
-                    query,
-                    upsert=True,
-                    with_age=True,
-                    graph_name=self.graph_name,
-                )
-                # logger.info(f"Successfully executed: {query}")
-            except Exception:
-                continue
+            # Use the new flag to silently ignore "already exists" errors
+            # at the source, preventing log spam.
+            await self.db.execute(
+                query,
+                upsert=True,
+                ignore_if_exists=True,  # Pass the new flag
+                with_age=True,
+                graph_name=self.graph_name,
+            )
 
     async def finalize(self):
         if self.db is not None:
