@@ -1336,7 +1336,9 @@ def create_document_routes(
             description="Status of the deletion operation"
         )
         message: str = Field(description="Message describing the operation result")
-        doc_id: Optional[str] = Field(default=None, description="The ID of the document.")
+        doc_id: Optional[str] = Field(
+            default=None, description="The ID of the document."
+        )
 
     @router.delete(
         "/delete_by_doc_id",
@@ -1477,4 +1479,3 @@ def create_document_routes(
             raise HTTPException(status_code=500, detail=str(e))
 
     return router
-

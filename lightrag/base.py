@@ -614,9 +614,11 @@ class StoragesStatus(str, Enum):
     INITIALIZED = "initialized"
     FINALIZED = "finalized"
 
+
 @dataclass
 class DeletionResult:
     """Represents the result of a deletion operation."""
+
     status: Literal["success", "not_found", "failure"]
     doc_id: str
     message: str

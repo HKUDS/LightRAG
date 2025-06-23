@@ -1746,11 +1746,12 @@ class LightRAG:
             # Use graph database lock to ensure atomic merges and updates
             graph_db_lock = get_graph_db_lock(enable_logging=False)
             async with graph_db_lock:
-
                 # Process entities
                 all_labels = await self.chunk_entity_relation_graph.get_all_labels()
                 for node_label in all_labels:
-                    node_data = await self.chunk_entity_relation_graph.get_node(node_label)
+                    node_data = await self.chunk_entity_relation_graph.get_node(
+                        node_label
+                    )
                     if node_data and "source_id" in node_data:
                         # Split source_id using GRAPH_FIELD_SEP
                         sources = set(node_data["source_id"].split(GRAPH_FIELD_SEP))
@@ -1776,10 +1777,10 @@ class LightRAG:
                     if node_edges:
                         for src, tgt in node_edges:
                             # To avoid processing the same edge twice in an undirected graph
-                            if (
-                                (tgt, src) in relationships_to_delete
-                                or (tgt, src) in relationships_to_rebuild
-                            ):
+                            if (tgt, src) in relationships_to_delete or (
+                                tgt,
+                                src,
+                            ) in relationships_to_rebuild:
                                 continue
 
                             edge_data = await self.chunk_entity_relation_graph.get_edge(
@@ -1799,9 +1800,9 @@ class LightRAG:
                                     )
                                 elif remaining_sources != sources:
                                     # Relationship needs to be rebuilt from remaining chunks
-                                    relationships_to_rebuild[
-                                        (src, tgt)
-                                    ] = remaining_sources
+                                    relationships_to_rebuild[(src, tgt)] = (
+                                        remaining_sources
+                                    )
                                     logger.debug(
                                         f"Relationship {src}-{tgt} will be rebuilt from {len(remaining_sources)} remaining chunks"
                                     )
