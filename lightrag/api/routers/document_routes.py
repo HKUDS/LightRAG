@@ -1438,14 +1438,19 @@ def create_document_routes(
 
         try:
             result = await rag.adelete_by_doc_id(doc_id)
-            response_data = {
-                "doc_id": result.doc_id,
-                "message": result.message,
-                "status": result.status,
-            }
             if "history_messages" in pipeline_status:
                 pipeline_status["history_messages"].append(result.message)
-            return DeleteDocByIdResponse(**response_data)
+
+            if result.status == "not_found":
+                raise HTTPException(status_code=404, detail=result.message)
+            if result.status == "fail":
+                raise HTTPException(status_code=500, detail=result.message)
+
+            return DeleteDocByIdResponse(
+                doc_id=result.doc_id,
+                message=result.message,
+                status=result.status,
+            )
 
         except Exception as e:
             error_msg = f"Error deleting document {doc_id}: {str(e)}"
