@@ -766,9 +766,6 @@ class Neo4JStorage(BaseGraphStorage):
                     result = await tx.run(
                         query, entity_id=node_id, properties=properties
                     )
-                    logger.debug(
-                        f"Upserted node with entity_id '{node_id}' and properties: {properties}"
-                    )
                     await result.consume()  # Ensure result is fully consumed
 
                 await session.execute_write(execute_upsert)
@@ -824,12 +821,7 @@ class Neo4JStorage(BaseGraphStorage):
                         properties=edge_properties,
                     )
                     try:
-                        records = await result.fetch(2)
-                        if records:
-                            logger.debug(
-                                f"Upserted edge from '{source_node_id}' to '{target_node_id}'"
-                                f"with properties: {edge_properties}"
-                            )
+                        await result.fetch(2)
                     finally:
                         await result.consume()  # Ensure result is consumed
 
