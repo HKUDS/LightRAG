@@ -48,6 +48,7 @@ from .base import (
     QueryParam,
     StorageNameSpace,
     StoragesStatus,
+    DeletionResult,
 )
 from .namespace import NameSpace, make_namespace
 from .operate import (
@@ -1677,7 +1678,7 @@ class LightRAG:
         # Return the dictionary containing statuses only for the found document IDs
         return found_statuses
 
-    async def adelete_by_doc_id(self, doc_id: str) -> None:
+    async def adelete_by_doc_id(self, doc_id: str) -> DeletionResult:
         """Delete a document and all its related data with cache cleanup and reconstruction
 
         Optimized version that:
@@ -1691,7 +1692,12 @@ class LightRAG:
             # 1. Get the document status and related data
             if not await self.doc_status.get_by_id(doc_id):
                 logger.warning(f"Document {doc_id} not found")
-                return
+                return DeletionResult(
+                    status="not_found",
+                    doc_id=doc_id,
+                    message=f"Document {doc_id} not found.",
+                    status_code=404,
+                )
 
             logger.info(f"Starting optimized deletion for document {doc_id}")
 
@@ -1706,7 +1712,15 @@ class LightRAG:
 
             if not related_chunks:
                 logger.warning(f"No chunks found for document {doc_id}")
-                return
+                # Still need to delete the doc status and full doc
+                await self.full_docs.delete([doc_id])
+                await self.doc_status.delete([doc_id])
+                return DeletionResult(
+                    status="success",
+                    doc_id=doc_id,
+                    message=f"Document {doc_id} found but had no associated chunks. Document entry deleted.",
+                    status_code=200,
+                )
 
             chunk_ids = set(related_chunks.keys())
             logger.info(f"Found {len(chunk_ids)} chunks to delete")
@@ -1844,15 +1858,28 @@ class LightRAG:
             # 10. Ensure all indexes are updated
             await self._insert_done()
 
-            logger.info(
-                f"Successfully deleted document {doc_id}. "
-                f"Deleted: {len(entities_to_delete)} entities, {len(relationships_to_delete)} relationships. "
-                f"Rebuilt: {len(entities_to_rebuild)} entities, {len(relationships_to_rebuild)} relationships."
+            success_message = f"""Successfully deleted document {doc_id}.
+Deleted: {len(entities_to_delete)} entities, {len(relationships_to_delete)} relationships.
+Rebuilt: {len(entities_to_rebuild)} entities, {len(relationships_to_rebuild)} relationships."""
+
+            logger.info(success_message)
+            return DeletionResult(
+                status="success",
+                doc_id=doc_id,
+                message=success_message,
+                status_code=200,
             )
 
         except Exception as e:
-            logger.error(f"Error while deleting document {doc_id}: {e}")
-            raise
+            error_message = f"Error while deleting document {doc_id}: {e}"
+            logger.error(error_message)
+            logger.error(traceback.format_exc())
+            return DeletionResult(
+                status="failure",
+                doc_id=doc_id,
+                message=error_message,
+                status_code=500,
+            )
 
     async def adelete_by_entity(self, entity_name: str) -> None:
         """Asynchronously delete an entity and all its relationships.
