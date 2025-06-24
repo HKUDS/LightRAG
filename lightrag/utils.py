@@ -990,6 +990,7 @@ class CacheData:
     max_val: float | None = None
     mode: str = "default"
     cache_type: str = "query"
+    chunk_id: str | None = None
 
 
 async def save_to_cache(hashing_kv, cache_data: CacheData):
@@ -1030,6 +1031,7 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
     mode_cache[cache_data.args_hash] = {
         "return": cache_data.content,
         "cache_type": cache_data.cache_type,
+        "chunk_id": cache_data.chunk_id if cache_data.chunk_id is not None else None,
         "embedding": cache_data.quantized.tobytes().hex()
         if cache_data.quantized is not None
         else None,
@@ -1534,6 +1536,7 @@ async def use_llm_func_with_cache(
     max_tokens: int = None,
     history_messages: list[dict[str, str]] = None,
     cache_type: str = "extract",
+    chunk_id: str | None = None,
 ) -> str:
     """Call LLM function with cache support
 
@@ -1547,6 +1550,7 @@ async def use_llm_func_with_cache(
         max_tokens: Maximum tokens for generation
         history_messages: History messages list
         cache_type: Type of cache
+        chunk_id: Chunk identifier to store in cache
 
     Returns:
         LLM response text
@@ -1589,6 +1593,7 @@ async def use_llm_func_with_cache(
                     content=res,
                     prompt=_prompt,
                     cache_type=cache_type,
+                    chunk_id=chunk_id,
                 ),
             )
 
