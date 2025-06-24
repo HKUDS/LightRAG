@@ -267,7 +267,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         return counts
 
     async def get_docs_by_status(
-        self, status: DocStatus
+            self, status: DocStatus
     ) -> dict[str, DocProcessingStatus]:
         """Get all documents with a specific status"""
         cursor = self._data.find({"status": status.value})
@@ -311,6 +311,20 @@ class MongoDocStatusStorage(DocStatusStorage):
             logger.error(f"Error dropping doc status {self._collection_name}: {e}")
             return {"status": "error", "message": str(e)}
 
+    async def delete(self, ids: list[str]) -> None:
+        try:
+            if not ids or len(ids) <= 0:
+                return
+            result = await self._data.delete_many({"_id": {"$in": ids}})
+            deleted_count = result.deleted_count
+
+            logger.info(
+                f"Dropped {deleted_count} documents from doc status {self._collection_name}"
+            )
+
+        except PyMongoError as e:
+            logger.error(f"Error dropping doc status {self._collection_name}: {e}")
+
 
 @final
 @dataclass
@@ -351,7 +365,7 @@ class MongoGraphStorage(BaseGraphStorage):
     #
 
     async def _graph_lookup(
-        self, start_node_id: str, max_depth: int = None
+            self, start_node_id: str, max_depth: int = None
     ) -> List[dict]:
         """
         Performs a $graphLookup starting from 'start_node_id' and returns
@@ -554,7 +568,7 @@ class MongoGraphStorage(BaseGraphStorage):
         return await self.collection.find_one({"_id": node_id})
 
     async def get_edge(
-        self, source_node_id: str, target_node_id: str
+            self, source_node_id: str, target_node_id: str
     ) -> dict[str, str] | None:
         pipeline = [
             {"$match": {"_id": source_node_id}},
@@ -625,7 +639,7 @@ class MongoGraphStorage(BaseGraphStorage):
         await self.collection.update_one({"_id": node_id}, update_doc, upsert=True)
 
     async def upsert_edge(
-        self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
+            self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         """
         Upsert an edge from source_node_id -> target_node_id with optional 'relation'.
@@ -688,7 +702,7 @@ class MongoGraphStorage(BaseGraphStorage):
         return labels
 
     async def get_knowledge_graph(
-        self, node_label: str, max_depth: int = 5
+            self, node_label: str, max_depth: int = 5
     ) -> KnowledgeGraph:
         """
         Get complete connected subgraph for specified node (including the starting node itself)
@@ -784,12 +798,12 @@ class MongoGraphStorage(BaseGraphStorage):
                                     k: v
                                     for k, v in doc.items()
                                     if k
-                                    not in [
-                                        "_id",
-                                        "edges",
-                                        "connected_nodes",
-                                        "depth",
-                                    ]
+                                       not in [
+                                           "_id",
+                                           "edges",
+                                           "connected_nodes",
+                                           "depth",
+                                       ]
                                 },
                             )
                         )
@@ -1014,7 +1028,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         ]
         contents = [v["content"] for v in data.values()]
         batches = [
-            contents[i : i + self._max_batch_size]
+            contents[i: i + self._max_batch_size]
             for i in range(0, len(contents), self._max_batch_size)
         ]
 
@@ -1034,7 +1048,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         return list_data
 
     async def query(
-        self, query: str, top_k: int, ids: list[str] | None = None
+            self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
         """Queries the vector database using Atlas Vector Search."""
         # Generate the embedding
