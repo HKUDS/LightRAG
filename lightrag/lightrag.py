@@ -1762,6 +1762,7 @@ class LightRAG:
             graph_db_lock = get_graph_db_lock(enable_logging=False)
             async with graph_db_lock:
                 # Process entities
+                # TODO There is performance when iterating get_all_labels for PostgresSQL
                 all_labels = await self.chunk_entity_relation_graph.get_all_labels()
                 for node_label in all_labels:
                     node_data = await self.chunk_entity_relation_graph.get_node(
@@ -1785,6 +1786,7 @@ class LightRAG:
                             )
 
                 # Process relationships
+                # TODO There is performance when iterating get_all_labels for PostgresSQL
                 for node_label in all_labels:
                     node_edges = await self.chunk_entity_relation_graph.get_node_edges(
                         node_label
