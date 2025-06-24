@@ -319,11 +319,11 @@ class MongoDocStatusStorage(DocStatusStorage):
             deleted_count = result.deleted_count
 
             logger.info(
-                f"Dropped {deleted_count} documents from doc status {self._collection_name}"
+                f"Deleted {deleted_count} documents from doc status {self._collection_name}"
             )
 
         except PyMongoError as e:
-            logger.error(f"Error dropping doc status {self._collection_name}: {e}")
+            logger.error(f"Error deleting doc status {self._collection_name}: {e}")
 
 
 @final
