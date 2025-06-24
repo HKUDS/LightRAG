@@ -1376,10 +1376,14 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
         summary="Delete a document and all its associated data by its ID.",
     )
+
+    # TODO This method needs to be modified to be asynchronous (please do not use)
     async def delete_document(
         delete_request: DeleteDocRequest,
     ) -> DeleteDocByIdResponse:
         """
+        This method needs to be modified to be asynchronous (please do not use)
+
         Deletes a specific document and all its associated data, including its status,
         text chunks, vector embeddings, and any related graph data.
         It is disabled when llm cache for entity extraction is disabled.
