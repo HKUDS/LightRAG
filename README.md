@@ -988,6 +988,89 @@ These operations maintain data consistency across both the graph database and ve
 
 </details>
 
+## Delete Functions
+
+LightRAG provides comprehensive deletion capabilities, allowing you to delete documents, entities, and relationships.
+
+<details>
+<summary> <b>Delete Entities</b> </summary>
+
+You can delete entities by their name along with all associated relationships:
+
+```python
+# Delete entity and all its relationships (synchronous version)
+rag.delete_by_entity("Google")
+
+# Asynchronous version
+await rag.adelete_by_entity("Google")
+```
+
+When deleting an entity:
+- Removes the entity node from the knowledge graph
+- Deletes all associated relationships
+- Removes related embedding vectors from the vector database
+- Maintains knowledge graph integrity
+
+</details>
+
+<details>
+<summary> <b>Delete Relations</b> </summary>
+
+You can delete relationships between two specific entities:
+
+```python
+# Delete relationship between two entities (synchronous version)
+rag.delete_by_relation("Google", "Gmail")
+
+# Asynchronous version
+await rag.adelete_by_relation("Google", "Gmail")
+```
+
+When deleting a relationship:
+- Removes the specified relationship edge
+- Deletes the relationship's embedding vector from the vector database
+- Preserves both entity nodes and their other relationships
+
+</details>
+
+<details>
+<summary> <b>Delete by Document ID</b> </summary>
+
+You can delete an entire document and all its related knowledge through document ID:
+
+```python
+# Delete by document ID (asynchronous version)
+await rag.adelete_by_doc_id("doc-12345")
+```
+
+Optimized processing when deleting by document ID:
+- **Smart Cleanup**: Automatically identifies and removes entities and relationships that belong only to this document
+- **Preserve Shared Knowledge**: If entities or relationships exist in other documents, they are preserved and their descriptions are rebuilt
+- **Cache Optimization**: Clears related LLM cache to reduce storage overhead
+- **Incremental Rebuilding**: Reconstructs affected entity and relationship descriptions from remaining documents
+
+The deletion process includes:
+1. Delete all text chunks related to the document
+2. Identify and delete entities and relationships that belong only to this document
+3. Rebuild entities and relationships that still exist in other documents
+4. Update all related vector indexes
+5. Clean up document status records
+
+Note: Deletion by document ID is an asynchronous operation as it involves complex knowledge graph reconstruction processes.
+
+</details>
+
+**Important Reminders:**
+
+1. **Irreversible Operations**: All deletion operations are irreversible, please use with caution
+2. **Performance Considerations**: Deleting large amounts of data may take some time, especially deletion by document ID
+3. **Data Consistency**: Deletion operations automatically maintain consistency between the knowledge graph and vector database
+4. **Backup Recommendations**: Consider backing up data before performing important deletion operations
+
+**Batch Deletion Recommendations:**
+- For batch deletion operations, consider using asynchronous methods for better performance
+- For large-scale deletions, consider processing in batches to avoid excessive system load
+
 ## Entity Merging
 
 <details>
