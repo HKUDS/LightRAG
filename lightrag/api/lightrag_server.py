@@ -355,7 +355,13 @@ def create_app(args):
         )
 
     # Add routes
-    app.include_router(create_document_routes(rag, doc_manager, api_key))
+    app.include_router(
+        create_document_routes(
+            rag,
+            doc_manager,
+            api_key,
+        )
+    )
     app.include_router(create_query_routes(rag, api_key, args.top_k))
     app.include_router(create_graph_routes(rag, api_key))
 
