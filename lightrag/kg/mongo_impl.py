@@ -17,6 +17,8 @@ from ..base import (
 from ..namespace import NameSpace, is_namespace
 from ..utils import logger, compute_mdhash_id
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+from ..constants import GRAPH_FIELD_SEP
+
 import pipmaster as pm
 
 if not pm.is_installed("pymongo"):
@@ -353,33 +355,33 @@ class MongoGraphStorage(BaseGraphStorage):
             self.collection = None
             self.edge_collection = None
 
-    #
-    # -------------------------------------------------------------------------
-    # HELPER: $graphLookup pipeline
-    # -------------------------------------------------------------------------
-    #
+    # Sample entity document
+    # "source_ids" is Array representation of "source_id" split by GRAPH_FIELD_SEP
 
-    # Sample entity_relation document
     # {
     #     "_id" : "CompanyA",
-    #     "created_at" : 1749904575,
-    #     "description" : "A major technology company",
-    #     "edges" : [
-    #         {
-    #             "target" : "ProductX",
-    #             "relation": "Develops", // To distinguish multiple same-target relations
-    #             "weight" : Double("1"),
-    #             "description" : "CompanyA develops ProductX",
-    #             "keywords" : "develop, produce",
-    #             "source_id" : "chunk-eeec0036b909839e8ec4fa150c939eec",
-    #             "file_path" : "custom_kg",
-    #             "created_at" : 1749904575
-    #         }
-    #     ],
     #     "entity_id" : "CompanyA",
     #     "entity_type" : "Organization",
+    #     "description" : "A major technology company",
+    #     "source_id" : "chunk-eeec0036b909839e8ec4fa150c939eec",
+    #     "source_ids": ["chunk-eeec0036b909839e8ec4fa150c939eec"],
     #     "file_path" : "custom_kg",
-    #     "source_id" : "chunk-eeec0036b909839e8ec4fa150c939eec"
+    #     "created_at" : 1749904575
+    # }
+
+    # Sample relation document
+    # {
+    #     "_id" : ObjectId("6856ac6e7c6bad9b5470b678"), // MongoDB build-in ObjectId
+    #     "description" : "CompanyA develops ProductX",
+    #     "source_node_id" : "CompanyA",
+    #     "target_node_id" : "ProductX",
+    #     "relationship": "Develops", // To distinguish multiple same-target relations
+    #     "weight" : Double("1"),
+    #     "keywords" : "develop, produce",
+    #     "source_id" : "chunk-eeec0036b909839e8ec4fa150c939eec",
+    #     "source_ids": ["chunk-eeec0036b909839e8ec4fa150c939eec"],
+    #     "file_path" : "custom_kg",
+    #     "created_at" : 1749904575
     # }
 
     #
@@ -567,6 +569,45 @@ class MongoGraphStorage(BaseGraphStorage):
 
         return result
 
+    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        """Get all nodes that are associated with the given chunk_ids.
+
+        Args:
+            chunk_ids (list[str]): A list of chunk IDs to find associated nodes for.
+
+        Returns:
+            list[dict]: A list of nodes, where each node is a dictionary of its properties.
+                        An empty list if no matching nodes are found.
+        """
+        if not chunk_ids:
+            return []
+
+        cursor = self.collection.find({"source_ids": {"$in": chunk_ids}})
+        return [doc async for doc in cursor]
+
+    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        """Get all edges that are associated with the given chunk_ids.
+
+        Args:
+            chunk_ids (list[str]): A list of chunk IDs to find associated edges for.
+
+        Returns:
+            list[dict]: A list of edges, where each edge is a dictionary of its properties.
+                        An empty list if no matching edges are found.
+        """
+        if not chunk_ids:
+            return []
+
+        cursor = self.edge_collection.find({"source_ids": {"$in": chunk_ids}})
+
+        edges = []
+        async for edge in cursor:
+            edge["source"] = edge["source_node_id"]
+            edge["target"] = edge["target_node_id"]
+            edges.append(edge)
+
+        return edges
+
     #
     # -------------------------------------------------------------------------
     # UPSERTS
@@ -578,6 +619,11 @@ class MongoGraphStorage(BaseGraphStorage):
         Insert or update a node document.
         """
         update_doc = {"$set": {**node_data}}
+        if node_data.get("source_id", ""):
+            update_doc["$set"]["source_ids"] = node_data["source_id"].split(
+                GRAPH_FIELD_SEP
+            )
+
         await self.collection.update_one({"_id": node_id}, update_doc, upsert=True)
 
     async def upsert_edge(
@@ -590,9 +636,15 @@ class MongoGraphStorage(BaseGraphStorage):
         # Ensure source node exists
         await self.upsert_node(source_node_id, {})
 
+        update_doc = {"$set": edge_data}
+        if edge_data.get("source_id", ""):
+            update_doc["$set"]["source_ids"] = edge_data["source_id"].split(
+                GRAPH_FIELD_SEP
+            )
+
         await self.edge_collection.update_one(
             {"source_node_id": source_node_id, "target_node_id": target_node_id},
-            {"$set": edge_data},
+            update_doc,
             upsert=True,
         )
 
@@ -789,14 +841,16 @@ class MongoGraphStorage(BaseGraphStorage):
         if not edges:
             return
 
-        await self.edge_collection.delete_many(
-            {
-                "$or": [
-                    {"source_node_id": source_id, "target_node_id": target_id}
-                    for source_id, target_id in edges
-                ]
-            }
-        )
+        all_edge_pairs = []
+        for source_id, target_id in edges:
+            all_edge_pairs.append(
+                {"source_node_id": source_id, "target_node_id": target_id}
+            )
+            all_edge_pairs.append(
+                {"source_node_id": target_id, "target_node_id": source_id}
+            )
+
+        await self.edge_collection.delete_many({"$or": all_edge_pairs})
 
         logger.debug(f"Successfully deleted edges: {edges}")
 
