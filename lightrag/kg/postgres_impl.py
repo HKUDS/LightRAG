@@ -1701,10 +1701,11 @@ class PGGraphStorage(BaseGraphStorage):
                         )
 
                 # Remove the 'base' label if present in a 'labels' property
-                if "labels" in node_dict:
-                    node_dict["labels"] = [
-                        label for label in node_dict["labels"] if label != "base"
-                    ]
+                # if "labels" in node_dict:
+                #     node_dict["labels"] = [
+                #         label for label in node_dict["labels"] if label != "base"
+                #     ]
+
                 nodes_dict[result["node_id"]] = node_dict
 
         return nodes_dict
@@ -1833,14 +1834,14 @@ class PGGraphStorage(BaseGraphStorage):
         forward_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
                      WITH [{src_array}] AS sources, [{tgt_array}] AS targets
                      UNWIND range(0, size(sources)-1) AS i
-                     MATCH (a:base {{entity_id: sources[i]}})-[r:DIRECTED]->(b:base {{entity_id: targets[i]}})
+                     MATCH (a:base {{entity_id: sources[i]}})-[r]->(b:base {{entity_id: targets[i]}})
                      RETURN sources[i] AS source, targets[i] AS target, properties(r) AS edge_properties
                    $$) AS (source text, target text, edge_properties agtype)"""
 
         backward_query = f"""SELECT * FROM cypher('{self.graph_name}', $$
                      WITH [{src_array}] AS sources, [{tgt_array}] AS targets
                      UNWIND range(0, size(sources)-1) AS i
-                     MATCH (a:base {{entity_id: sources[i]}})<-[r:DIRECTED]-(b:base {{entity_id: targets[i]}})
+                     MATCH (a:base {{entity_id: sources[i]}})<-[r]-(b:base {{entity_id: targets[i]}})
                      RETURN sources[i] AS source, targets[i] AS target, properties(r) AS edge_properties
                    $$) AS (source text, target text, edge_properties agtype)"""
 
