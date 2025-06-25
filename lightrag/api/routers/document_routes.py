@@ -803,9 +803,7 @@ async def background_delete_document(rag: LightRAG, doc_id: str):
             }
         )
         # Use slice assignment to clear the list in place
-        pipeline_status["history_messages"][:] = [
-            f"Starting deletion for doc_id: {doc_id}"
-        ]
+        pipeline_status["history_messages"][:] = ["Starting document deletion process"]
 
     try:
         result = await rag.adelete_by_doc_id(doc_id)
@@ -823,7 +821,7 @@ async def background_delete_document(rag: LightRAG, doc_id: str):
     finally:
         async with pipeline_status_lock:
             pipeline_status["busy"] = False
-            completion_msg = f"Document deletion process for {doc_id} completed."
+            completion_msg = "Document deletion process completed."
             pipeline_status["latest_message"] = completion_msg
             if "history_messages" in pipeline_status:
                 pipeline_status["history_messages"].append(completion_msg)
