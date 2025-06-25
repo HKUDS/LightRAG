@@ -528,14 +528,14 @@ export default function DocumentManager() {
           </div>
           <div className="flex-1" />
           {isSelectionMode && (
-            <DeleteDocumentsDialog 
+            <DeleteDocumentsDialog
               selectedDocIds={selectedDocIds}
               totalCompletedCount={documentCounts.processed || 0}
               onDocumentsDeleted={handleDocumentsDeleted}
             />
           )}
           {isSelectionMode ? (
-            <DeselectDocumentsDialog 
+            <DeselectDocumentsDialog
               selectedCount={selectedDocIds.length}
               onDeselect={handleDeselectAll}
             />

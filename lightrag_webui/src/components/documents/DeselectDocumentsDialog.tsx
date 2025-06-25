@@ -37,10 +37,10 @@ export default function DeselectDocumentsDialog({ selectedCount, onDeselect }: D
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button 
-          variant="outline" 
-          side="bottom" 
-          tooltip={t('documentPanel.deselectDocuments.tooltip')} 
+        <Button
+          variant="outline"
+          side="bottom"
+          tooltip={t('documentPanel.deselectDocuments.tooltip')}
           size="sm"
         >
           <XIcon/> {t('documentPanel.deselectDocuments.button')}

@@ -104,10 +104,10 @@ export default function DeleteDocumentsDialog({ selectedDocIds, totalCompletedCo
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button 
-          variant="destructive" 
-          side="bottom" 
-          tooltip={t('documentPanel.deleteDocuments.tooltip', { count: selectedDocIds.length })} 
+        <Button
+          variant="destructive"
+          side="bottom"
+          tooltip={t('documentPanel.deleteDocuments.tooltip', { count: selectedDocIds.length })}
           size="sm"
         >
           <TrashIcon/> {t('documentPanel.deleteDocuments.button')}
@@ -127,7 +127,7 @@ export default function DeleteDocumentsDialog({ selectedDocIds, totalCompletedCo
         <div className="text-red-500 dark:text-red-400 font-semibold mb-4">
           {t('documentPanel.deleteDocuments.warning')}
         </div>
-        
+
         <div className="mb-4">
           {t('documentPanel.deleteDocuments.confirm', { count: selectedDocIds.length })}
         </div>
