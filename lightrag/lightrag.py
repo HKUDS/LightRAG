@@ -1961,12 +1961,6 @@ class LightRAG:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e
 
-            async with pipeline_status_lock:
-                log_message = f"Successfully deleted document {doc_id}"
-                logger.info(log_message)
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
-
             return DeletionResult(
                 status="success",
                 doc_id=doc_id,
