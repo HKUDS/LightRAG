@@ -33,7 +33,8 @@ from .base import (
     TextChunkSchema,
     QueryParam,
 )
-from .prompt import GRAPH_FIELD_SEP, PROMPTS
+from .prompt import PROMPTS
+from .constants import GRAPH_FIELD_SEP
 import time
 from dotenv import load_dotenv
 

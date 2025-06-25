@@ -16,6 +16,7 @@ import logging
 from ..utils import logger
 from ..base import BaseGraphStorage
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
+from ..constants import GRAPH_FIELD_SEP
 import pipmaster as pm
 
 if not pm.is_installed("neo4j"):
@@ -724,6 +725,47 @@ class Neo4JStorage(BaseGraphStorage):
 
             await result.consume()  # Ensure results are fully consumed
             return edges_dict
+
+    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            query = """
+            UNWIND $chunk_ids AS chunk_id
+            MATCH (n:base)
+            WHERE n.source_id IS NOT NULL AND chunk_id IN split(n.source_id, $sep)
+            RETURN DISTINCT n
+            """
+            result = await session.run(query, chunk_ids=chunk_ids, sep=GRAPH_FIELD_SEP)
+            nodes = []
+            async for record in result:
+                node = record["n"]
+                node_dict = dict(node)
+                # Add node id (entity_id) to the dictionary for easier access
+                node_dict["id"] = node_dict.get("entity_id")
+                nodes.append(node_dict)
+            await result.consume()
+            return nodes
+
+    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            query = """
+            UNWIND $chunk_ids AS chunk_id
+            MATCH (a:base)-[r]-(b:base)
+            WHERE r.source_id IS NOT NULL AND chunk_id IN split(r.source_id, $sep)
+            RETURN DISTINCT a.entity_id AS source, b.entity_id AS target, properties(r) AS properties
+            """
+            result = await session.run(query, chunk_ids=chunk_ids, sep=GRAPH_FIELD_SEP)
+            edges = []
+            async for record in result:
+                edge_properties = record["properties"]
+                edge_properties["source"] = record["source"]
+                edge_properties["target"] = record["target"]
+                edges.append(edge_properties)
+            await result.consume()
+            return edges
 
     @retry(
         stop=stop_after_attempt(3),
