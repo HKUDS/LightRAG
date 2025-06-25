@@ -6,6 +6,7 @@ from datetime import timezone
 from dataclasses import dataclass, field
 from typing import Any, Union, final
 import numpy as np
+import re
 import configparser
 
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
@@ -1128,6 +1129,8 @@ class PGGraphQueryException(Exception):
 @final
 @dataclass
 class PGGraphStorage(BaseGraphStorage):
+    _schema_lock = asyncio.Lock()
+
     def __post_init__(self):
         self.graph_name = self.namespace or os.environ.get("AGE_GRAPH_NAME", "lightrag")
         self.db: PostgreSQLDB | None = None
@@ -1148,19 +1151,77 @@ class PGGraphStorage(BaseGraphStorage):
         normalized_id = normalized_id.replace("\\", "\\\\")
         normalized_id = normalized_id.replace('"', '\\"')
         return normalized_id
+    
 
-    async def initialize(self):
+    async def _extract_index_name(self, query_str: str) -> str | None:
+        """
+        Extracts index name from CREATE INDEX query.
+
+        Args:
+            query_str: SQL query string containing CREATE INDEX statement
+
+        Returns:
+            Extracted index name or None if not found or not a CREATE INDEX query
+        """
+        if "CREATE INDEX" not in query_str:
+            return None
+        
+        match = re.search(r'CREATE\s+INDEX\s+CONCURRENTLY\s+(\w+)', query_str, re.IGNORECASE)
+        if match:
+            return match.group(1)
+        return None
+
+    async def _index_exists(self, index_name: str) -> bool:
+        """
+        Checks if index exists in the database.
+
+        Args:
+            index_name: Name of the index to check
+
+        Returns:
+            Boolean indicating whether the index exists in the database
+        """
+        query = """
+        SELECT 1 FROM pg_indexes 
+        WHERE indexname = $1
+        """
+        try:
+            result = await self.db.query(
+                query, 
+                {"index_name": index_name}, 
+                with_age=True, 
+                graph_name=self.graph_name
+            )
+            return result is not None and len(result) > 0
+        except Exception as e:
+            logger.warning(f"Error checking index existence: {e}")
+            return False
+
+    async def initialize(self) -> None:
+        """
+        Initializes the graph and creates necessary indexes with protection against concurrent access.
+        
+        This method performs three stages of initialization:
+        1. Creates graph and labels unconditionally
+        2. Creates indexes if they don't already exist (with schema locking)
+        3. Performs final configuration operations
+
+        Returns:
+            None
+        """
         if self.db is None:
             self.db = await ClientManager.get_client()
 
-        # Execute each statement separately and ignore errors
-        queries = [
+        # Commands that must be executed unconditionally (graph and label creation)
+        base_queries = [
             f"SELECT create_graph('{self.graph_name}')",
             f"SELECT create_vlabel('{self.graph_name}', 'base');",
             f"SELECT create_elabel('{self.graph_name}', 'DIRECTED');",
-            # f'CREATE INDEX CONCURRENTLY vertex_p_idx ON {self.graph_name}."_ag_label_vertex" (id)',
+        ]
+        
+        # Index creation commands that require existence check
+        index_queries = [
             f'CREATE INDEX CONCURRENTLY vertex_idx_node_id ON {self.graph_name}."_ag_label_vertex" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
-            # f'CREATE INDEX CONCURRENTLY edge_p_idx ON {self.graph_name}."_ag_label_edge" (id)',
             f'CREATE INDEX CONCURRENTLY edge_sid_idx ON {self.graph_name}."_ag_label_edge" (start_id)',
             f'CREATE INDEX CONCURRENTLY edge_eid_idx ON {self.graph_name}."_ag_label_edge" (end_id)',
             f'CREATE INDEX CONCURRENTLY edge_seid_idx ON {self.graph_name}."_ag_label_edge" (start_id,end_id)',
@@ -1171,10 +1232,14 @@ class PGGraphStorage(BaseGraphStorage):
             f'CREATE INDEX CONCURRENTLY entity_p_idx ON {self.graph_name}."base" (id)',
             f'CREATE INDEX CONCURRENTLY entity_idx_node_id ON {self.graph_name}."base" (ag_catalog.agtype_access_operator(properties, \'"entity_id"\'::agtype))',
             f'CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON {self.graph_name}."base" using gin(properties)',
+        ]
+        
+        # Additional operations to be performed at the end
+        final_queries = [
             f'ALTER TABLE {self.graph_name}."DIRECTED" CLUSTER ON directed_sid_idx',
         ]
 
-        for query in queries:
+        for query in base_queries:
             try:
                 await self.db.execute(
                     query,
@@ -1182,8 +1247,41 @@ class PGGraphStorage(BaseGraphStorage):
                     with_age=True,
                     graph_name=self.graph_name,
                 )
-                # logger.info(f"Successfully executed: {query}")
-            except Exception:
+            except Exception as e:
+                logger.debug(f"Base query execution exception (expected): {str(e)[:100]}...")
+                continue
+
+        # Use global lock for index creation
+        async with PGGraphStorage._schema_lock:
+            for query in index_queries:
+                index_name = await self._extract_index_name(query)
+                if index_name and await self._index_exists(index_name):
+                    logger.debug(f"Index {index_name} already exists, skipping creation")
+                    continue
+                    
+                try:
+                    logger.info(f"Creating index {index_name}")
+                    await self.db.execute(
+                        query,
+                        upsert=True,
+                        with_age=True,
+                        graph_name=self.graph_name,
+                    )
+                    logger.info(f"Successfully created index {index_name}")
+                except Exception as e:
+                    logger.warning(f"Error creating index {index_name}: {str(e)[:100]}...")
+                    continue
+        
+        for query in final_queries:
+            try:
+                await self.db.execute(
+                    query,
+                    upsert=True,
+                    with_age=True,
+                    graph_name=self.graph_name,
+                )
+            except Exception as e:
+                logger.warning(f"Final query execution error: {str(e)[:100]}...")
                 continue
 
     async def finalize(self):
