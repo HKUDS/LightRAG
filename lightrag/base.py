@@ -14,6 +14,7 @@ from typing import (
 )
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
+from .constants import GRAPH_FIELD_SEP
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -457,6 +458,67 @@ class BaseGraphStorage(StorageNameSpace, ABC):
         return result
 
     @abstractmethod
+    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        """Get all nodes that are associated with the given chunk_ids.
+
+        Args:
+            chunk_ids (list[str]): A list of chunk IDs to find associated nodes for.
+
+        Returns:
+            list[dict]: A list of nodes, where each node is a dictionary of its properties.
+                        An empty list if no matching nodes are found.
+        """
+        # Default implementation iterates through all nodes, which is inefficient.
+        # This method should be overridden by subclasses for better performance.
+        all_nodes = []
+        all_labels = await self.get_all_labels()
+        for label in all_labels:
+            node = await self.get_node(label)
+            if node and "source_id" in node:
+                source_ids = set(node["source_id"].split(GRAPH_FIELD_SEP))
+                if not source_ids.isdisjoint(chunk_ids):
+                    all_nodes.append(node)
+        return all_nodes
+
+    @abstractmethod
+    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        """Get all edges that are associated with the given chunk_ids.
+
+        Args:
+            chunk_ids (list[str]): A list of chunk IDs to find associated edges for.
+
+        Returns:
+            list[dict]: A list of edges, where each edge is a dictionary of its properties.
+                        An empty list if no matching edges are found.
+        """
+        # Default implementation iterates through all nodes and their edges, which is inefficient.
+        # This method should be overridden by subclasses for better performance.
+        all_edges = []
+        all_labels = await self.get_all_labels()
+        processed_edges = set()
+
+        for label in all_labels:
+            edges = await self.get_node_edges(label)
+            if edges:
+                for src_id, tgt_id in edges:
+                    # Avoid processing the same edge twice in an undirected graph
+                    edge_tuple = tuple(sorted((src_id, tgt_id)))
+                    if edge_tuple in processed_edges:
+                        continue
+                    processed_edges.add(edge_tuple)
+
+                    edge = await self.get_edge(src_id, tgt_id)
+                    if edge and "source_id" in edge:
+                        source_ids = set(edge["source_id"].split(GRAPH_FIELD_SEP))
+                        if not source_ids.isdisjoint(chunk_ids):
+                            # Add source and target to the edge dict for easier processing later
+                            edge_with_nodes = edge.copy()
+                            edge_with_nodes["source"] = src_id
+                            edge_with_nodes["target"] = tgt_id
+                            all_edges.append(edge_with_nodes)
+        return all_edges
+
+    @abstractmethod
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Insert a new node or update an existing node in the graph.
 
@@ -623,3 +685,4 @@ class DeletionResult:
     doc_id: str
     message: str
     status_code: int = 200
+    file_path: str | None = None

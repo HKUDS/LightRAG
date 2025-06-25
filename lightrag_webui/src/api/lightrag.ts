@@ -114,6 +114,12 @@ export type DocActionResponse = {
   message: string
 }
 
+export type DeleteDocResponse = {
+  status: 'deletion_started' | 'busy' | 'not_allowed'
+  message: string
+  doc_id: string
+}
+
 export type DocStatus = 'pending' | 'processing' | 'processed' | 'failed'
 
 export type DocStatusResponse = {
@@ -512,6 +518,13 @@ export const clearCache = async (modes?: string[]): Promise<{
   message: string
 }> => {
   const response = await axiosInstance.post('/documents/clear_cache', { modes })
+  return response.data
+}
+
+export const deleteDocuments = async (docIds: string[], deleteFile: boolean = false): Promise<DeleteDocResponse> => {
+  const response = await axiosInstance.delete('/documents/delete_document', {
+    data: { doc_ids: docIds, delete_file: deleteFile }
+  })
   return response.data
 }
 
