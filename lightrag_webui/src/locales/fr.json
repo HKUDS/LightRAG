@@ -56,6 +56,32 @@
       "failed": "Échec de l'effacement des documents :\n{{message}}",
       "error": "Échec de l'effacement des documents :\n{{error}}"
     },
+    "deleteDocuments": {
+      "button": "Supprimer",
+      "tooltip": "Supprimer les documents sélectionnés",
+      "title": "Supprimer les documents",
+      "description": "Cette action supprimera définitivement les documents sélectionnés du système",
+      "warning": "ATTENTION : Cette action supprimera définitivement les documents sélectionnés et ne peut pas être annulée !",
+      "confirm": "Voulez-vous vraiment supprimer {{count}} document(s) sélectionné(s) ?",
+      "confirmPrompt": "Tapez 'yes' pour confirmer cette action",
+      "confirmPlaceholder": "Tapez yes pour confirmer",
+      "confirmButton": "OUI",
+      "deleteFileOption": "Supprimer également les fichiers téléchargés",
+      "deleteFileTooltip": "Cochez cette option pour supprimer également les fichiers téléchargés correspondants sur le serveur",
+      "success": "Pipeline de suppression de documents démarré avec succès",
+      "failed": "Échec de la suppression des documents :\n{{message}}",
+      "error": "Échec de la suppression des documents :\n{{error}}",
+      "busy": "Le pipeline est occupé, veuillez réessayer plus tard",
+      "notAllowed": "Aucune autorisation pour effectuer cette opération",
+      "cannotDeleteAll": "Impossible de supprimer tous les documents. Si vous devez supprimer tous les documents, veuillez utiliser la fonction Effacer les documents."
+    },
+    "deselectDocuments": {
+      "button": "Désélectionner",
+      "tooltip": "Désélectionner tous les documents sélectionnés",
+      "title": "Désélectionner les documents",
+      "description": "Cette action effacera tous les documents sélectionnés ({{count}} sélectionnés)",
+      "confirmButton": "Tout désélectionner"
+    },
     "uploadDocuments": {
       "button": "Télécharger",
       "tooltip": "Télécharger des documents",
@@ -105,7 +131,8 @@
         "chunks": "Fragments",
         "created": "Créé",
         "updated": "Mis à jour",
-        "metadata": "Métadonnées"
+        "metadata": "Métadonnées",
+        "select": "Sélectionner"
       },
       "status": {
         "all": "Tous",

@@ -56,6 +56,32 @@
       "failed": "Clear Documents Failed:\n{{message}}",
       "error": "Clear Documents Failed:\n{{error}}"
     },
+    "deleteDocuments": {
+      "button": "Delete",
+      "tooltip": "Delete selected documents",
+      "title": "Delete Documents",
+      "description": "This will permanently delete the selected documents from the system",
+      "warning": "WARNING: This action will permanently delete the selected documents and cannot be undone!",
+      "confirm": "Do you really want to delete {{count}} selected document(s)?",
+      "confirmPrompt": "Type 'yes' to confirm this action",
+      "confirmPlaceholder": "Type yes to confirm",
+      "confirmButton": "YES",
+      "deleteFileOption": "Also delete uploaded files",
+      "deleteFileTooltip": "Check this option to also delete the corresponding uploaded files on the server",
+      "success": "Document deletion pipeline started successfully",
+      "failed": "Delete Documents Failed:\n{{message}}",
+      "error": "Delete Documents Failed:\n{{error}}",
+      "busy": "Pipeline is busy, please try again later",
+      "notAllowed": "No permission to perform this operation",
+      "cannotDeleteAll": "Cannot delete all documents. If you need to delete all documents, please use the Clear Documents feature."
+    },
+    "deselectDocuments": {
+      "button": "Deselect",
+      "tooltip": "Deselect all selected documents",
+      "title": "Deselect Documents",
+      "description": "This will clear all selected documents ({{count}} selected)",
+      "confirmButton": "Deselect All"
+    },
     "uploadDocuments": {
       "button": "Upload",
       "tooltip": "Upload documents",
@@ -105,7 +131,8 @@
         "chunks": "Chunks",
         "created": "Created",
         "updated": "Updated",
-        "metadata": "Metadata"
+        "metadata": "Metadata",
+        "select": "Select"
       },
       "status": {
         "all": "All",

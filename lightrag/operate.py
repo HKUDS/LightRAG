@@ -270,7 +270,7 @@ async def _rebuild_knowledge_from_chunks(
     for chunk_ids in relationships_to_rebuild.values():
         all_referenced_chunk_ids.update(chunk_ids)
 
-    logger.info(
+    logger.debug(
         f"Rebuilding knowledge from {len(all_referenced_chunk_ids)} cached chunk extractions"
     )
 
@@ -339,7 +339,7 @@ async def _rebuild_knowledge_from_chunks(
         except Exception as e:
             logger.error(f"Failed to rebuild relationship {src}-{tgt}: {e}")
 
-    logger.info("Completed rebuilding knowledge from cached extractions")
+    logger.debug("Completed rebuilding knowledge from cached extractions")
 
 
 async def _get_cached_extraction_results(
@@ -368,7 +368,7 @@ async def _get_cached_extraction_results(
             extraction_result = cache_entry["return"]
             cached_results[chunk_id] = extraction_result
 
-    logger.info(
+    logger.debug(
         f"Found {len(cached_results)} cached extraction results for {len(chunk_ids)} chunk IDs"
     )
     return cached_results

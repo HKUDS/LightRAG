@@ -56,6 +56,32 @@
       "failed": "清空文档失败：\n{{message}}",
       "error": "清空文档失败：\n{{error}}"
     },
+    "deleteDocuments": {
+      "button": "删除",
+      "tooltip": "删除选中的文档",
+      "title": "删除文档",
+      "description": "此操作将永久删除选中的文档",
+      "warning": "警告：此操作将永久删除选中的文档，无法恢复！",
+      "confirm": "确定要删除 {{count}} 个选中的文档吗？",
+      "confirmPrompt": "请输入 yes 确认操作",
+      "confirmPlaceholder": "输入 yes 确认",
+      "confirmButton": "确定",
+      "deleteFileOption": "同时删除上传文件",
+      "deleteFileTooltip": "选中此选项将同时删除服务器上对应的上传文件",
+      "success": "文档删除流水线启动成功",
+      "failed": "删除文档失败：\n{{message}}",
+      "error": "删除文档失败：\n{{error}}",
+      "busy": "流水线被占用，请稍后再试",
+      "notAllowed": "没有操作权限",
+      "cannotDeleteAll": "无法删除所有文档。如确实需要删除所有文档请使用清空文档功能。"
+    },
+    "deselectDocuments": {
+      "button": "取消选择",
+      "tooltip": "取消选择所有文档",
+      "title": "取消选择文档",
+      "description": "此操作将清除所有选中的文档（已选择 {{count}} 个）",
+      "confirmButton": "取消全部选择"
+    },
     "uploadDocuments": {
       "button": "上传",
       "tooltip": "上传文档",
@@ -105,7 +131,8 @@
         "chunks": "分块",
         "created": "创建时间",
         "updated": "更新时间",
-        "metadata": "元数据"
+        "metadata": "元数据",
+        "select": "选择"
       },
       "status": {
         "all": "全部",
