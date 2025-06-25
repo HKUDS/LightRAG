@@ -14,6 +14,7 @@ STORAGE_IMPLEMENTATIONS = {
             "NetworkXStorage",
             "Neo4JStorage",
             "PGGraphStorage",
+            "NebulaStorage",
             # "AGEStorage",
             # "MongoGraphStorage",
             # "TiDBGraphStorage",
@@ -55,6 +56,7 @@ STORAGE_ENV_REQUIREMENTS: dict[str, list[str]] = {
     # Graph Storage Implementations
     "NetworkXStorage": [],
     "Neo4JStorage": ["NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD"],
+    "NebulaStorage": ["NEBULA_HOSTS", "NEBULA_USER", "NEBULA_PASSWORD","NEBULA_POOL_SIZE"],
     "MongoGraphStorage": [],
     # "TiDBGraphStorage": ["TIDB_USER", "TIDB_PASSWORD", "TIDB_DATABASE"],
     "AGEStorage": [
@@ -90,6 +92,7 @@ STORAGES = {
     "NanoVectorDBStorage": ".kg.nano_vector_db_impl",
     "JsonDocStatusStorage": ".kg.json_doc_status_impl",
     "Neo4JStorage": ".kg.neo4j_impl",
+     "NebulaStorage": ".kg.nebula_impl",
     "MilvusVectorDBStorage": ".kg.milvus_impl",
     "MongoKVStorage": ".kg.mongo_impl",
     "MongoDocStatusStorage": ".kg.mongo_impl",
