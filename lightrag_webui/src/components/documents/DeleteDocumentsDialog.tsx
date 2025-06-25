@@ -43,6 +43,7 @@ export default function DeleteDocumentsDialog({ selectedDocIds, totalCompletedCo
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
   const [confirmText, setConfirmText] = useState('')
+  const [deleteFile, setDeleteFile] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
   const isConfirmEnabled = confirmText.toLowerCase() === 'yes' && !isDeleting
 
@@ -50,6 +51,7 @@ export default function DeleteDocumentsDialog({ selectedDocIds, totalCompletedCo
   useEffect(() => {
     if (!open) {
       setConfirmText('')
+      setDeleteFile(false)
       setIsDeleting(false)
     }
   }, [open])
@@ -65,7 +67,7 @@ export default function DeleteDocumentsDialog({ selectedDocIds, totalCompletedCo
 
     setIsDeleting(true)
     try {
-      const result = await deleteDocuments(selectedDocIds)
+      const result = await deleteDocuments(selectedDocIds, deleteFile)
 
       if (result.status === 'deletion_started') {
         toast.success(t('documentPanel.deleteDocuments.success', { count: selectedDocIds.length }))
@@ -99,7 +101,7 @@ export default function DeleteDocumentsDialog({ selectedDocIds, totalCompletedCo
     } finally {
       setIsDeleting(false)
     }
-  }, [isConfirmEnabled, selectedDocIds, totalCompletedCount, setOpen, t, onDocumentsDeleted])
+  }, [isConfirmEnabled, selectedDocIds, totalCompletedCount, deleteFile, setOpen, t, onDocumentsDeleted])
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -145,6 +147,20 @@ export default function DeleteDocumentsDialog({ selectedDocIds, totalCompletedCo
               className="w-full"
               disabled={isDeleting}
             />
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <input
+              type="checkbox"
+              id="delete-file"
+              checked={deleteFile}
+              onChange={(e) => setDeleteFile(e.target.checked)}
+              disabled={isDeleting}
+              className="h-4 w-4 text-red-600 focus:ring-red-500 border-gray-300 rounded"
+            />
+            <Label htmlFor="delete-file" className="text-sm font-medium cursor-pointer">
+              {t('documentPanel.deleteDocuments.deleteFileOption')}
+            </Label>
           </div>
         </div>
 

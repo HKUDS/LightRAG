@@ -1694,6 +1694,7 @@ class LightRAG:
                 - `doc_id` (str): The ID of the document attempted to be deleted.
                 - `message` (str): A summary of the operation's result.
                 - `status_code` (int): HTTP status code (e.g., 200, 404, 500).
+                - `file_path` (str | None): The file path of the deleted document, if available.
         """
         deletion_operations_started = False
         original_exception = None
@@ -1961,11 +1962,15 @@ class LightRAG:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e
 
+            # Get file path from document status for return value
+            file_path = doc_status_data.get("file_path") if doc_status_data else None
+
             return DeletionResult(
                 status="success",
                 doc_id=doc_id,
                 message=log_message,
                 status_code=200,
+                file_path=file_path,
             )
 
         except Exception as e:

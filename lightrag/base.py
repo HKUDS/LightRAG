@@ -685,3 +685,4 @@ class DeletionResult:
     doc_id: str
     message: str
     status_code: int = 200
+    file_path: str | None = None

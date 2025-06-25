@@ -261,6 +261,10 @@ Attributes:
 
 class DeleteDocRequest(BaseModel):
     doc_ids: List[str] = Field(..., description="The IDs of the documents to delete.")
+    delete_file: bool = Field(
+        default=False,
+        description="Whether to delete the corresponding file in the upload directory.",
+    )
 
     @field_validator("doc_ids", mode="after")
     @classmethod
@@ -793,7 +797,12 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         logger.error(traceback.format_exc())
 
 
-async def background_delete_documents(rag: LightRAG, doc_ids: List[str]):
+async def background_delete_documents(
+    rag: LightRAG,
+    doc_manager: DocumentManager,
+    doc_ids: List[str],
+    delete_file: bool = False,
+):
     """Background task to delete multiple documents"""
     from lightrag.kg.shared_storage import (
         get_namespace_data,
@@ -847,6 +856,46 @@ async def background_delete_documents(rag: LightRAG, doc_ids: List[str]):
 
                     async with pipeline_status_lock:
                         pipeline_status["history_messages"].append(success_msg)
+
+                    # Handle file deletion if requested and file_path is available
+                    if (
+                        delete_file
+                        and result.file_path
+                        and result.file_path != "unknown_source"
+                    ):
+                        try:
+                            file_path = doc_manager.input_dir / result.file_path
+                            if file_path.exists():
+                                file_path.unlink()
+                                file_delete_msg = (
+                                    f"Successfully deleted file: {result.file_path}"
+                                )
+                                logger.info(file_delete_msg)
+                                async with pipeline_status_lock:
+                                    pipeline_status["history_messages"].append(
+                                        file_delete_msg
+                                    )
+                            else:
+                                file_not_found_msg = (
+                                    f"File not found for deletion: {result.file_path}"
+                                )
+                                logger.warning(file_not_found_msg)
+                                async with pipeline_status_lock:
+                                    pipeline_status["history_messages"].append(
+                                        file_not_found_msg
+                                    )
+                        except Exception as file_error:
+                            file_error_msg = f"Failed to delete file {result.file_path}: {str(file_error)}"
+                            logger.error(file_error_msg)
+                            async with pipeline_status_lock:
+                                pipeline_status["history_messages"].append(
+                                    file_error_msg
+                                )
+                    elif delete_file:
+                        no_file_msg = f"No valid file path found for document {doc_id}"
+                        logger.warning(no_file_msg)
+                        async with pipeline_status_lock:
+                            pipeline_status["history_messages"].append(no_file_msg)
                 else:
                     failed_deletions.append(doc_id)
                     error_msg = f"Failed to delete document {i}/{total_docs}: {doc_id} - {result.message}"
@@ -1395,7 +1444,7 @@ def create_document_routes(
         This operation is irreversible and will interact with the pipeline status.
 
         Args:
-            delete_request (DeleteDocRequest): The request containing the document IDs.
+            delete_request (DeleteDocRequest): The request containing the document IDs and delete_file options.
             background_tasks: FastAPI BackgroundTasks for async processing
 
         Returns:
@@ -1433,7 +1482,13 @@ def create_document_routes(
                 )
 
             # Add deletion task to background tasks
-            background_tasks.add_task(background_delete_documents, rag, doc_ids)
+            background_tasks.add_task(
+                background_delete_documents,
+                rag,
+                doc_manager,
+                doc_ids,
+                delete_request.delete_file,
+            )
 
             return DeleteDocByIdResponse(
                 status="deletion_started",
