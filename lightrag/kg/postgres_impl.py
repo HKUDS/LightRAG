@@ -2000,7 +2000,7 @@ class PGGraphStorage(BaseGraphStorage):
                             f"Failed to parse node string in batch: {node_dict}"
                         )
 
-                node_dict["id"] = node_dict["entity_id"]                
+                node_dict["id"] = node_dict["entity_id"]
                 nodes.append(node_dict)
 
         return nodes
