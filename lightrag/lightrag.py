@@ -1705,10 +1705,10 @@ class LightRAG:
         """
         deletion_operations_started = False
         original_exception = None
-        
+
         try:
             logger.info(f"Starting deletion process for document {doc_id}")
-            
+
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
             if not doc_status_data:
@@ -1731,7 +1731,9 @@ class LightRAG:
                     if isinstance(chunk_data, dict)
                     and chunk_data.get("full_doc_id") == doc_id
                 }
-                logger.info(f"Retrieved {len(all_chunks)} total chunks, {len(related_chunks)} related to document {doc_id}")
+                logger.info(
+                    f"Retrieved {len(all_chunks)} total chunks, {len(related_chunks)} related to document {doc_id}"
+                )
             except Exception as e:
                 logger.error(f"Failed to retrieve chunks for document {doc_id}: {e}")
                 raise Exception(f"Failed to retrieve document chunks: {e}") from e
@@ -1746,9 +1748,11 @@ class LightRAG:
                     await self.doc_status.delete([doc_id])
                     logger.info(f"Deleted document {doc_id} with no associated chunks")
                 except Exception as e:
-                    logger.error(f"Failed to delete document {doc_id} with no chunks: {e}")
+                    logger.error(
+                        f"Failed to delete document {doc_id} with no chunks: {e}"
+                    )
                     raise Exception(f"Failed to delete document entry: {e}") from e
-                
+
                 return DeletionResult(
                     status="success",
                     doc_id=doc_id,
@@ -1773,7 +1777,9 @@ class LightRAG:
             async with graph_db_lock:
                 try:
                     # Get all affected nodes and edges in batch
-                    logger.info(f"Analyzing affected entities and relationships for {len(chunk_ids)} chunks")
+                    logger.info(
+                        f"Analyzing affected entities and relationships for {len(chunk_ids)} chunks"
+                    )
                     affected_nodes = (
                         await self.chunk_entity_relation_graph.get_nodes_by_chunk_ids(
                             list(chunk_ids)
@@ -1784,7 +1790,9 @@ class LightRAG:
                             list(chunk_ids)
                         )
                     )
-                    logger.info(f"Found {len(affected_nodes)} affected nodes and {len(affected_edges)} affected edges")
+                    logger.info(
+                        f"Found {len(affected_nodes)} affected nodes and {len(affected_edges)} affected edges"
+                    )
                 except Exception as e:
                     logger.error(f"Failed to analyze affected graph elements: {e}")
                     raise Exception(f"Failed to analyze graph dependencies: {e}") from e
@@ -1822,11 +1830,13 @@ class LightRAG:
                                 relationships_to_delete.add(edge_tuple)
                             elif remaining_sources != sources:
                                 relationships_to_rebuild[edge_tuple] = remaining_sources
-                    
-                    logger.info(f"Analysis complete: {len(entities_to_delete)} entities to delete, "
-                              f"{len(entities_to_rebuild)} entities to rebuild, "
-                              f"{len(relationships_to_delete)} relationships to delete, "
-                              f"{len(relationships_to_rebuild)} relationships to rebuild")
+
+                    logger.info(
+                        f"Analysis complete: {len(entities_to_delete)} entities to delete, "
+                        f"{len(entities_to_rebuild)} entities to rebuild, "
+                        f"{len(relationships_to_delete)} relationships to delete, "
+                        f"{len(relationships_to_rebuild)} relationships to rebuild"
+                    )
                 except Exception as e:
                     logger.error(f"Failed to process graph analysis results: {e}")
                     raise Exception(f"Failed to process graph dependencies: {e}") from e
@@ -1837,7 +1847,9 @@ class LightRAG:
                         logger.info(f"Deleting {len(chunk_ids)} chunks from storage")
                         await self.chunks_vdb.delete(chunk_ids)
                         await self.text_chunks.delete(chunk_ids)
-                        logger.info(f"Successfully deleted {len(chunk_ids)} chunks from storage")
+                        logger.info(
+                            f"Successfully deleted {len(chunk_ids)} chunks from storage"
+                        )
                     except Exception as e:
                         logger.error(f"Failed to delete chunks: {e}")
                         raise Exception(f"Failed to delete document chunks: {e}") from e
@@ -1857,7 +1869,9 @@ class LightRAG:
                         await self.chunk_entity_relation_graph.remove_nodes(
                             list(entities_to_delete)
                         )
-                        logger.info(f"Successfully deleted {len(entities_to_delete)} entities")
+                        logger.info(
+                            f"Successfully deleted {len(entities_to_delete)} entities"
+                        )
                     except Exception as e:
                         logger.error(f"Failed to delete entities: {e}")
                         raise Exception(f"Failed to delete entities: {e}") from e
@@ -1865,7 +1879,9 @@ class LightRAG:
                 # 7. Delete relationships that have no remaining sources
                 if relationships_to_delete:
                     try:
-                        logger.info(f"Deleting {len(relationships_to_delete)} relationships")
+                        logger.info(
+                            f"Deleting {len(relationships_to_delete)} relationships"
+                        )
                         # Delete from vector database
                         rel_ids_to_delete = []
                         for src, tgt in relationships_to_delete:
@@ -1881,7 +1897,9 @@ class LightRAG:
                         await self.chunk_entity_relation_graph.remove_edges(
                             list(relationships_to_delete)
                         )
-                        logger.info(f"Successfully deleted {len(relationships_to_delete)} relationships")
+                        logger.info(
+                            f"Successfully deleted {len(relationships_to_delete)} relationships"
+                        )
                     except Exception as e:
                         logger.error(f"Failed to delete relationships: {e}")
                         raise Exception(f"Failed to delete relationships: {e}") from e
@@ -1889,7 +1907,9 @@ class LightRAG:
                 # 8. Rebuild entities and relationships from remaining chunks
                 if entities_to_rebuild or relationships_to_rebuild:
                     try:
-                        logger.info(f"Rebuilding {len(entities_to_rebuild)} entities and {len(relationships_to_rebuild)} relationships")
+                        logger.info(
+                            f"Rebuilding {len(entities_to_rebuild)} entities and {len(relationships_to_rebuild)} relationships"
+                        )
                         await _rebuild_knowledge_from_chunks(
                             entities_to_rebuild=entities_to_rebuild,
                             relationships_to_rebuild=relationships_to_rebuild,
@@ -1900,10 +1920,14 @@ class LightRAG:
                             llm_response_cache=self.llm_response_cache,
                             global_config=asdict(self),
                         )
-                        logger.info(f"Successfully rebuilt {len(entities_to_rebuild)} entities and {len(relationships_to_rebuild)} relationships")
+                        logger.info(
+                            f"Successfully rebuilt {len(entities_to_rebuild)} entities and {len(relationships_to_rebuild)} relationships"
+                        )
                     except Exception as e:
                         logger.error(f"Failed to rebuild knowledge from chunks: {e}")
-                        raise Exception(f"Failed to rebuild knowledge graph: {e}") from e
+                        raise Exception(
+                            f"Failed to rebuild knowledge graph: {e}"
+                        ) from e
 
             # 9. Delete original document and status
             try:
@@ -1935,19 +1959,23 @@ class LightRAG:
                 message=error_message,
                 status_code=500,
             )
-        
+
         finally:
             # ALWAYS ensure persistence if any deletion operations were started
             if deletion_operations_started:
                 try:
-                    logger.info(f"Ensuring data persistence for document {doc_id} deletion")
+                    logger.info(
+                        f"Ensuring data persistence for document {doc_id} deletion"
+                    )
                     await self._insert_done()
-                    logger.info(f"Data persistence completed successfully for document {doc_id} deletion")
+                    logger.info(
+                        f"Data persistence completed successfully for document {doc_id} deletion"
+                    )
                 except Exception as persistence_error:
                     persistence_error_msg = f"Failed to persist data after deletion attempt for {doc_id}: {persistence_error}"
                     logger.error(persistence_error_msg)
                     logger.error(traceback.format_exc())
-                    
+
                     # If there was no original exception, this persistence error becomes the main error
                     if original_exception is None:
                         return DeletionResult(
@@ -1959,7 +1987,9 @@ class LightRAG:
                     # If there was an original exception, log the persistence error but don't override the original error
                     # The original error result was already returned in the except block
             else:
-                logger.debug(f"No deletion operations were started for document {doc_id}, skipping persistence")
+                logger.debug(
+                    f"No deletion operations were started for document {doc_id}, skipping persistence"
+                )
 
     async def adelete_by_entity(self, entity_name: str) -> DeletionResult:
         """Asynchronously delete an entity and all its relationships.

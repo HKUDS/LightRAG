@@ -841,7 +841,7 @@ def create_document_routes(
         except Exception as e:
             logger.error(f"Error checking doc_id existence: {str(e)}")
             return False
-    
+
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -1323,7 +1323,6 @@ def create_document_routes(
         dependencies=[Depends(combined_auth)],
         summary="Delete a document and all its associated data by its ID.",
     )
-
     async def delete_document(
         delete_request: DeleteDocRequest,
         background_tasks: BackgroundTasks,
@@ -1355,11 +1354,8 @@ def create_document_routes(
         # Check if doc_id exists first - return error immediately if not found
         doc_id = delete_request.doc_id
         if not await check_doc_id_exists(doc_id):
-            raise HTTPException(
-                status_code=404,
-                detail=f"Document {doc_id} not found."
-            )
-        
+            raise HTTPException(status_code=404, detail=f"Document {doc_id} not found.")
+
         # The rag object is initialized from the server startup args,
         # so we can access its properties here.
         if not rag.enable_llm_cache_for_entity_extract:
