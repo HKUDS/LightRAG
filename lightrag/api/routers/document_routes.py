@@ -782,9 +782,66 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
         logger.error(traceback.format_exc())
 
 
+async def background_delete_document(rag: LightRAG, doc_id: str):
+    """Background task to delete a document"""
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_pipeline_status_lock,
+    )
+
+    pipeline_status = await get_namespace_data("pipeline_status")
+    pipeline_status_lock = get_pipeline_status_lock()
+
+    # Set pipeline status to busy for deletion
+    async with pipeline_status_lock:
+        pipeline_status.update(
+            {
+                "busy": True,
+                "job_name": f"Deleting Document: {doc_id}",
+                "job_start": datetime.now().isoformat(),
+                "latest_message": "Starting document deletion process",
+            }
+        )
+        # Use slice assignment to clear the list in place
+        pipeline_status["history_messages"][:] = [
+            f"Starting deletion for doc_id: {doc_id}"
+        ]
+
+    try:
+        result = await rag.adelete_by_doc_id(doc_id)
+        if "history_messages" in pipeline_status:
+            pipeline_status["history_messages"].append(result.message)
+
+        logger.info(f"Document deletion completed for {doc_id}: {result.status}")
+
+    except Exception as e:
+        error_msg = f"Error deleting document {doc_id}: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        if "history_messages" in pipeline_status:
+            pipeline_status["history_messages"].append(error_msg)
+    finally:
+        async with pipeline_status_lock:
+            pipeline_status["busy"] = False
+            completion_msg = f"Document deletion process for {doc_id} completed."
+            pipeline_status["latest_message"] = completion_msg
+            if "history_messages" in pipeline_status:
+                pipeline_status["history_messages"].append(completion_msg)
+
+
 def create_document_routes(
     rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
+    # Check if doc_id exists in the system - add this check at the beginning
+    async def check_doc_id_exists(doc_id: str) -> bool:
+        """Check if document ID exists in the system"""
+        try:
+            doc_status = await rag.doc_status.get_by_id(doc_id)
+            return doc_status is not None
+        except Exception as e:
+            logger.error(f"Error checking doc_id existence: {str(e)}")
+            return False
+    
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
 
@@ -1254,13 +1311,11 @@ def create_document_routes(
     class DeleteDocByIdResponse(BaseModel):
         """Response model for single document deletion operation."""
 
-        status: Literal["success", "fail", "not_found", "busy"] = Field(
+        status: Literal["deletion_started", "busy", "not_allowed"] = Field(
             description="Status of the deletion operation"
         )
         message: str = Field(description="Message describing the operation result")
-        doc_id: Optional[str] = Field(
-            default=None, description="The ID of the document."
-        )
+        doc_id: str = Field(description="The ID of the document to delete")
 
     @router.delete(
         "/delete_document",
@@ -1269,100 +1324,78 @@ def create_document_routes(
         summary="Delete a document and all its associated data by its ID.",
     )
 
-    # TODO This method needs to be modified to be asynchronous (please do not use)
     async def delete_document(
         delete_request: DeleteDocRequest,
+        background_tasks: BackgroundTasks,
     ) -> DeleteDocByIdResponse:
         """
-        This method needs to be modified to be asynchronous (please do not use)
+        Delete a document and all its associated data by its ID using background processing.
 
         Deletes a specific document and all its associated data, including its status,
         text chunks, vector embeddings, and any related graph data.
+        The deletion process runs in the background to avoid blocking the client connection.
         It is disabled when llm cache for entity extraction is disabled.
 
         This operation is irreversible and will interact with the pipeline status.
 
         Args:
             delete_request (DeleteDocRequest): The request containing the document ID.
+            background_tasks: FastAPI BackgroundTasks for async processing
 
         Returns:
             DeleteDocByIdResponse: The result of the deletion operation.
-                - status="success": The document was successfully deleted.
-                - status="not_found": The document with the specified ID was not found.
-                - status="fail": The deletion operation failed.
+                - status="deletion_started": The document deletion has been initiated in the background.
                 - status="busy": The pipeline is busy with another operation.
+                - status="not_allowed": Operation not allowed when LLM cache for entity extraction is disabled.
 
         Raises:
             HTTPException:
-              - 500: If an unexpected internal error occurs.
+              - 500: If an unexpected internal error occurs during initialization.
         """
+        # Check if doc_id exists first - return error immediately if not found
+        doc_id = delete_request.doc_id
+        if not await check_doc_id_exists(doc_id):
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document {doc_id} not found."
+            )
+        
         # The rag object is initialized from the server startup args,
         # so we can access its properties here.
         if not rag.enable_llm_cache_for_entity_extract:
-            raise HTTPException(
-                status_code=403,
-                detail="Operation not allowed when LLM cache for entity extraction is disabled.",
+            return DeleteDocByIdResponse(
+                status="not_allowed",
+                message="Operation not allowed when LLM cache for entity extraction is disabled.",
+                doc_id=delete_request.doc_id,
             )
-        from lightrag.kg.shared_storage import (
-            get_namespace_data,
-            get_pipeline_status_lock,
-        )
 
-        doc_id = delete_request.doc_id
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status_lock = get_pipeline_status_lock()
+        try:
+            from lightrag.kg.shared_storage import get_namespace_data
 
-        async with pipeline_status_lock:
+            pipeline_status = await get_namespace_data("pipeline_status")
+
+            # Check if pipeline is busy
             if pipeline_status.get("busy", False):
                 return DeleteDocByIdResponse(
                     status="busy",
                     message="Cannot delete document while pipeline is busy",
                     doc_id=doc_id,
                 )
-            pipeline_status.update(
-                {
-                    "busy": True,
-                    "job_name": f"Deleting Document: {doc_id}",
-                    "job_start": datetime.now().isoformat(),
-                    "latest_message": "Starting document deletion process",
-                }
-            )
-            # Use slice assignment to clear the list in place
-            pipeline_status["history_messages"][:] = [
-                f"Starting deletion for doc_id: {doc_id}"
-            ]
 
-        try:
-            result = await rag.adelete_by_doc_id(doc_id)
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(result.message)
-
-            if result.status == "not_found":
-                raise HTTPException(status_code=404, detail=result.message)
-            if result.status == "fail":
-                raise HTTPException(status_code=500, detail=result.message)
+            # Add deletion task to background tasks
+            background_tasks.add_task(background_delete_document, rag, doc_id)
 
             return DeleteDocByIdResponse(
-                doc_id=result.doc_id,
-                message=result.message,
-                status=result.status,
+                status="deletion_started",
+                message=f"Document deletion for '{doc_id}' has been initiated. Processing will continue in background.",
+                doc_id=doc_id,
             )
 
         except Exception as e:
-            error_msg = f"Error deleting document {doc_id}: {str(e)}"
+            error_msg = f"Error initiating document deletion for {delete_request.doc_id}: {str(e)}"
             logger.error(error_msg)
             logger.error(traceback.format_exc())
-            if "history_messages" in pipeline_status:
-                pipeline_status["history_messages"].append(error_msg)
-            # Re-raise as HTTPException for consistent error handling by FastAPI
             raise HTTPException(status_code=500, detail=error_msg)
-        finally:
-            async with pipeline_status_lock:
-                pipeline_status["busy"] = False
-                completion_msg = f"Document deletion process for {doc_id} completed."
-                pipeline_status["latest_message"] = completion_msg
-                if "history_messages" in pipeline_status:
-                    pipeline_status["history_messages"].append(completion_msg)
 
     @router.post(
         "/clear_cache",
