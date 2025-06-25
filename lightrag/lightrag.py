@@ -1712,6 +1712,7 @@ class LightRAG:
         try:
             # 1. Get the document status and related data
             doc_status_data = await self.doc_status.get_by_id(doc_id)
+            file_path = doc_status_data.get("file_path") if doc_status_data else None
             if not doc_status_data:
                 logger.warning(f"Document {doc_id} not found")
                 return DeletionResult(
@@ -1719,6 +1720,7 @@ class LightRAG:
                     doc_id=doc_id,
                     message=f"Document {doc_id} not found.",
                     status_code=404,
+                    file_path="",
                 )
 
             # 2. Get all chunks related to this document
@@ -1770,6 +1772,7 @@ class LightRAG:
                     doc_id=doc_id,
                     message=log_message,
                     status_code=200,
+                    file_path=file_path,
                 )
 
             chunk_ids = set(related_chunks.keys())
@@ -1962,9 +1965,6 @@ class LightRAG:
                 logger.error(f"Failed to delete document and status: {e}")
                 raise Exception(f"Failed to delete document and status: {e}") from e
 
-            # Get file path from document status for return value
-            file_path = doc_status_data.get("file_path") if doc_status_data else None
-
             return DeletionResult(
                 status="success",
                 doc_id=doc_id,
@@ -1983,6 +1983,7 @@ class LightRAG:
                 doc_id=doc_id,
                 message=error_message,
                 status_code=500,
+                file_path=file_path,
             )
 
         finally:
@@ -2002,6 +2003,7 @@ class LightRAG:
                             doc_id=doc_id,
                             message=f"Deletion completed but failed to persist changes: {persistence_error}",
                             status_code=500,
+                            file_path=file_path,
                         )
                     # If there was an original exception, log the persistence error but don't override the original error
                     # The original error result was already returned in the except block
