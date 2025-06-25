@@ -1,7 +1,6 @@
 from __future__ import annotations
 from typing import Any
 
-GRAPH_FIELD_SEP = "<SEP>"
 
 PROMPTS: dict[str, Any] = {}
 

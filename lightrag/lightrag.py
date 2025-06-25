@@ -60,7 +60,7 @@ from .operate import (
     query_with_keywords,
     _rebuild_knowledge_from_chunks,
 )
-from .prompt import GRAPH_FIELD_SEP
+from .constants import GRAPH_FIELD_SEP
 from .utils import (
     Tokenizer,
     TiktokenTokenizer,
@@ -1761,68 +1761,54 @@ class LightRAG:
             # Use graph database lock to ensure atomic merges and updates
             graph_db_lock = get_graph_db_lock(enable_logging=False)
             async with graph_db_lock:
-                # Process entities
-                # TODO There is performance when iterating get_all_labels for PostgresSQL
-                all_labels = await self.chunk_entity_relation_graph.get_all_labels()
-                for node_label in all_labels:
-                    node_data = await self.chunk_entity_relation_graph.get_node(
-                        node_label
+                # Get all affected nodes and edges in batch
+                affected_nodes = (
+                    await self.chunk_entity_relation_graph.get_nodes_by_chunk_ids(
+                        list(chunk_ids)
                     )
-                    if node_data and "source_id" in node_data:
-                        # Split source_id using GRAPH_FIELD_SEP
+                )
+                affected_edges = (
+                    await self.chunk_entity_relation_graph.get_edges_by_chunk_ids(
+                        list(chunk_ids)
+                    )
+                )
+
+                # logger.info(f"chunk_ids: {chunk_ids}")
+                # logger.info(f"affected_nodes: {affected_nodes}")
+                # logger.info(f"affected_edges: {affected_edges}")
+
+                # Process entities
+                for node_data in affected_nodes:
+                    node_label = node_data.get("entity_id")
+                    if node_label and "source_id" in node_data:
                         sources = set(node_data["source_id"].split(GRAPH_FIELD_SEP))
                         remaining_sources = sources - chunk_ids
 
                         if not remaining_sources:
                             entities_to_delete.add(node_label)
-                            logger.debug(
-                                f"Entity {node_label} marked for deletion - no remaining sources"
-                            )
                         elif remaining_sources != sources:
-                            # Entity needs to be rebuilt from remaining chunks
                             entities_to_rebuild[node_label] = remaining_sources
-                            logger.debug(
-                                f"Entity {node_label} will be rebuilt from {len(remaining_sources)} remaining chunks"
-                            )
 
                 # Process relationships
-                # TODO There is performance when iterating get_all_labels for PostgresSQL
-                for node_label in all_labels:
-                    node_edges = await self.chunk_entity_relation_graph.get_node_edges(
-                        node_label
-                    )
-                    if node_edges:
-                        for src, tgt in node_edges:
-                            # To avoid processing the same edge twice in an undirected graph
-                            if (tgt, src) in relationships_to_delete or (
-                                tgt,
-                                src,
-                            ) in relationships_to_rebuild:
-                                continue
+                for edge_data in affected_edges:
+                    src = edge_data.get("source")
+                    tgt = edge_data.get("target")
 
-                            edge_data = await self.chunk_entity_relation_graph.get_edge(
-                                src, tgt
-                            )
-                            if edge_data and "source_id" in edge_data:
-                                # Split source_id using GRAPH_FIELD_SEP
-                                sources = set(
-                                    edge_data["source_id"].split(GRAPH_FIELD_SEP)
-                                )
-                                remaining_sources = sources - chunk_ids
+                    if src and tgt and "source_id" in edge_data:
+                        edge_tuple = tuple(sorted((src, tgt)))
+                        if (
+                            edge_tuple in relationships_to_delete
+                            or edge_tuple in relationships_to_rebuild
+                        ):
+                            continue
 
-                                if not remaining_sources:
-                                    relationships_to_delete.add((src, tgt))
-                                    logger.debug(
-                                        f"Relationship {src}-{tgt} marked for deletion - no remaining sources"
-                                    )
-                                elif remaining_sources != sources:
-                                    # Relationship needs to be rebuilt from remaining chunks
-                                    relationships_to_rebuild[(src, tgt)] = (
-                                        remaining_sources
-                                    )
-                                    logger.debug(
-                                        f"Relationship {src}-{tgt} will be rebuilt from {len(remaining_sources)} remaining chunks"
-                                    )
+                        sources = set(edge_data["source_id"].split(GRAPH_FIELD_SEP))
+                        remaining_sources = sources - chunk_ids
+
+                        if not remaining_sources:
+                            relationships_to_delete.add(edge_tuple)
+                        elif remaining_sources != sources:
+                            relationships_to_rebuild[edge_tuple] = remaining_sources
 
                 # 5. Delete chunks from storage
                 if chunk_ids:
