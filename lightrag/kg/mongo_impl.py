@@ -697,7 +697,12 @@ class MongoGraphStorage(BaseGraphStorage):
             [id1, id2, ...]  # Alphabetically sorted id list
         """
 
-        cursor = self.collection.find({}, projection={"_id": 1}, sort=[("_id", 1)])
+        # Use aggregation with allowDiskUse for large datasets
+        pipeline = [
+            {"$project": {"_id": 1}},
+            {"$sort": {"_id": 1}}
+        ]
+        cursor = await self.collection.aggregate(pipeline, allowDiskUse=True)
         labels = []
         async for doc in cursor:
             labels.append(doc["_id"])
