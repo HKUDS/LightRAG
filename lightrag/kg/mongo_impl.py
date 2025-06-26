@@ -527,7 +527,9 @@ class MongoGraphStorage(BaseGraphStorage):
             {"$group": {"_id": "$source_node_id", "degree": {"$sum": 1}}},
         ]
 
-        cursor = await self.edge_collection.aggregate(outbound_pipeline, allowDiskUse=True)
+        cursor = await self.edge_collection.aggregate(
+            outbound_pipeline, allowDiskUse=True
+        )
         async for doc in cursor:
             merged_results[doc.get("_id")] = doc.get("degree")
 
@@ -537,7 +539,9 @@ class MongoGraphStorage(BaseGraphStorage):
             {"$group": {"_id": "$target_node_id", "degree": {"$sum": 1}}},
         ]
 
-        cursor = await self.edge_collection.aggregate(inbound_pipeline, allowDiskUse=True)
+        cursor = await self.edge_collection.aggregate(
+            inbound_pipeline, allowDiskUse=True
+        )
         async for doc in cursor:
             merged_results[doc.get("_id")] = merged_results.get(
                 doc.get("_id"), 0
@@ -698,10 +702,7 @@ class MongoGraphStorage(BaseGraphStorage):
         """
 
         # Use aggregation with allowDiskUse for large datasets
-        pipeline = [
-            {"$project": {"_id": 1}},
-            {"$sort": {"_id": 1}}
-        ]
+        pipeline = [{"$project": {"_id": 1}}, {"$sort": {"_id": 1}}]
         cursor = await self.collection.aggregate(pipeline, allowDiskUse=True)
         labels = []
         async for doc in cursor:
