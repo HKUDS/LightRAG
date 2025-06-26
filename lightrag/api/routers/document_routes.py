@@ -65,35 +65,37 @@ temp_prefix = "__tmp__"
 def sanitize_filename(filename: str, input_dir: Path) -> str:
     """
     Sanitize uploaded filename to prevent Path Traversal attacks.
-    
+
     Args:
         filename: The original filename from the upload
         input_dir: The target input directory
-        
+
     Returns:
         str: Sanitized filename that is safe to use
-        
+
     Raises:
         HTTPException: If the filename is unsafe or invalid
     """
     # Basic validation
     if not filename or not filename.strip():
         raise HTTPException(status_code=400, detail="Filename cannot be empty")
-    
+
     # Remove path separators and traversal sequences
-    clean_name = filename.replace('/', '').replace('\\', '')
-    clean_name = clean_name.replace('..', '')
-    
+    clean_name = filename.replace("/", "").replace("\\", "")
+    clean_name = clean_name.replace("..", "")
+
     # Remove control characters and null bytes
-    clean_name = ''.join(c for c in clean_name if ord(c) >= 32 and c != '\x7f')
-    
+    clean_name = "".join(c for c in clean_name if ord(c) >= 32 and c != "\x7f")
+
     # Remove leading/trailing whitespace and dots
-    clean_name = clean_name.strip().strip('.')
-    
+    clean_name = clean_name.strip().strip(".")
+
     # Check if anything is left after sanitization
     if not clean_name:
-        raise HTTPException(status_code=400, detail="Invalid filename after sanitization")
-    
+        raise HTTPException(
+            status_code=400, detail="Invalid filename after sanitization"
+        )
+
     # Verify the final path stays within the input directory
     try:
         final_path = (input_dir / clean_name).resolve()
@@ -101,7 +103,7 @@ def sanitize_filename(filename: str, input_dir: Path) -> str:
             raise HTTPException(status_code=400, detail="Unsafe filename detected")
     except (OSError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid filename")
-    
+
     return clean_name
 
 
@@ -1031,7 +1033,7 @@ def create_document_routes(
         try:
             # Sanitize filename to prevent Path Traversal attacks
             safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
-            
+
             if not doc_manager.is_supported_file(safe_filename):
                 raise HTTPException(
                     status_code=400,
