@@ -1109,8 +1109,9 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
    ```
 2. 处理多模态文档：
     <details>
-    <summary> <b> RAGAnything 使用实例 </b></summary>
-        ```python
+    <summary> <b> RAGAnything 使用示例 </b></summary>
+
+    ```python
         import asyncio
         from raganything import RAGAnything
         from lightrag import LightRAG
@@ -1198,7 +1199,8 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
 
         if __name__ == "__main__":
             asyncio.run(load_existing_lightrag())
-        ```
+    ```
+
     </details>
 
 如需详细文档和高级用法，请参阅 [RAG-Anything 仓库](https://github.com/HKUDS/RAG-Anything)。
