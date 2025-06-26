@@ -159,6 +159,10 @@ class MongoKVStorage(BaseKVStorage):
         if not ids:
             return
 
+        # Convert to list if it's a set (MongoDB BSON cannot encode sets)
+        if isinstance(ids, set):
+            ids = list(ids)
+
         try:
             result = await self._data.delete_many({"_id": {"$in": ids}})
             logger.info(
@@ -1043,6 +1047,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
         logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
         if not ids:
             return
+
+        # Convert to list if it's a set (MongoDB BSON cannot encode sets)
+        if isinstance(ids, set):
+            ids = list(ids)
 
         try:
             result = await self._data.delete_many({"_id": {"$in": ids}})
