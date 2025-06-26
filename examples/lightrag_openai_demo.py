@@ -82,6 +82,7 @@ async def initialize_rag():
         working_dir=WORKING_DIR,
         embedding_func=openai_embed,
         llm_model_func=gpt_4o_mini_complete,
+        graph_storage="MemgraphStorage",
     )
 
     await rag.initialize_storages()
