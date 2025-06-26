@@ -12,6 +12,7 @@ import os
 import argparse
 import asyncio
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+from lightrag.utils import EmbeddingFunc
 from raganything.raganything import RAGAnything
 
 
@@ -89,14 +90,16 @@ async def process_with_rag(
                 base_url=base_url,
                 **kwargs,
             ),
-            embedding_func=lambda texts: openai_embed(
-                texts,
-                model="text-embedding-3-large",
-                api_key=api_key,
-                base_url=base_url,
+            embedding_func=EmbeddingFunc(
+                embedding_dim=3072,
+                max_token_size=8192,
+                func=lambda texts: openai_embed(
+                    texts,
+                    model="text-embedding-3-large",
+                    api_key=api_key,
+                    base_url=base_url,
+                ),
             ),
-            embedding_dim=3072,
-            max_token_size=8192,
         )
 
         # Process document
