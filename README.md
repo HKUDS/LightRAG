@@ -1159,6 +1159,9 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
    pip install raganything
    ```
 2. Process multimodal documents:
+
+<details>
+  <summary> <b> RAGAnything Usage Example </b></summary>
     ```python
     import asyncio
     from raganything import RAGAnything
@@ -1248,6 +1251,7 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
     if __name__ == "__main__":
         asyncio.run(load_existing_lightrag())
     ```
+</details>
 
 For detailed documentation and advanced usage, please refer to the [RAG-Anything repository](https://github.com/HKUDS/RAG-Anything).
 
