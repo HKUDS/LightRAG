@@ -107,6 +107,19 @@ class MongoKVStorage(BaseKVStorage):
         existing_ids = {str(x["_id"]) async for x in cursor}
         return keys - existing_ids
 
+    async def get_all(self) -> dict[str, Any]:
+        """Get all data from storage
+
+        Returns:
+            Dictionary containing all stored data
+        """
+        cursor = self._data.find({})
+        result = {}
+        async for doc in cursor:
+            doc_id = doc.pop("_id")
+            result[doc_id] = doc
+        return result
+
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
