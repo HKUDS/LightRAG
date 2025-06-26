@@ -56,6 +56,32 @@
       "failed": "清空文件失敗：\n{{message}}",
       "error": "清空文件失敗：\n{{error}}"
     },
+    "deleteDocuments": {
+      "button": "刪除",
+      "tooltip": "刪除選取的文件",
+      "title": "刪除文件",
+      "description": "此操作將永久刪除選取的文件",
+      "warning": "警告：此操作將永久刪除選取的文件，無法復原！",
+      "confirm": "確定要刪除 {{count}} 個選取的文件嗎？",
+      "confirmPrompt": "請輸入 yes 確認操作",
+      "confirmPlaceholder": "輸入 yes 以確認",
+      "confirmButton": "確定",
+      "deleteFileOption": "同時刪除上傳檔案",
+      "deleteFileTooltip": "選取此選項將同時刪除伺服器上對應的上傳檔案",
+      "success": "文件刪除流水線啟動成功",
+      "failed": "刪除文件失敗：\n{{message}}",
+      "error": "刪除文件失敗：\n{{error}}",
+      "busy": "pipeline 被佔用，請稍後再試",
+      "notAllowed": "沒有操作權限",
+      "cannotDeleteAll": "無法刪除所有文件。如確實需要刪除所有文件請使用清空文件功能。"
+    },
+    "deselectDocuments": {
+      "button": "取消選取",
+      "tooltip": "取消選取所有文件",
+      "title": "取消選取文件",
+      "description": "此操作將清除所有選取的文件（已選取 {{count}} 個）",
+      "confirmButton": "取消全部選取"
+    },
     "uploadDocuments": {
       "button": "上傳",
       "tooltip": "上傳文件",
@@ -105,7 +131,8 @@
         "chunks": "分塊",
         "created": "建立時間",
         "updated": "更新時間",
-        "metadata": "元資料"
+        "metadata": "元資料",
+        "select": "選擇"
       },
       "status": {
         "all": "全部",

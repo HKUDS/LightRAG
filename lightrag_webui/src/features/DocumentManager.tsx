@@ -13,8 +13,11 @@ import {
 } from '@/components/ui/Table'
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card'
 import EmptyCard from '@/components/ui/EmptyCard'
+import Checkbox from '@/components/ui/Checkbox'
 import UploadDocumentsDialog from '@/components/documents/UploadDocumentsDialog'
 import ClearDocumentsDialog from '@/components/documents/ClearDocumentsDialog'
+import DeleteDocumentsDialog from '@/components/documents/DeleteDocumentsDialog'
+import DeselectDocumentsDialog from '@/components/documents/DeselectDocumentsDialog'
 
 import { getDocuments, scanNewDocuments, DocsStatusesResponse, DocStatus, DocStatusResponse } from '@/api/lightrag'
 import { errorMessage } from '@/lib/utils'
@@ -173,6 +176,25 @@ export default function DocumentManager() {
   // State for document status filter
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
+  // State for document selection
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([])
+  const isSelectionMode = selectedDocIds.length > 0
+
+  // Handle checkbox change for individual documents
+  const handleDocumentSelect = useCallback((docId: string, checked: boolean) => {
+    setSelectedDocIds(prev => {
+      if (checked) {
+        return [...prev, docId]
+      } else {
+        return prev.filter(id => id !== docId)
+      }
+    })
+  }, [])
+
+  // Handle deselect all documents
+  const handleDeselectAll = useCallback(() => {
+    setSelectedDocIds([])
+  }, [])
 
   // Handle sort column click
   const handleSort = (field: SortField) => {
@@ -463,6 +485,12 @@ export default function DocumentManager() {
     prevStatusCounts.current = newStatusCounts
   }, [docs]);
 
+  // Handle documents deleted callback
+  const handleDocumentsDeleted = useCallback(async () => {
+    setSelectedDocIds([])
+    await fetchDocuments()
+  }, [fetchDocuments])
+
   // Add dependency on sort state to re-render when sort changes
   useEffect(() => {
     // This effect ensures the component re-renders when sort state changes
@@ -499,7 +527,21 @@ export default function DocumentManager() {
             </Button>
           </div>
           <div className="flex-1" />
-          <ClearDocumentsDialog onDocumentsCleared={fetchDocuments} />
+          {isSelectionMode && (
+            <DeleteDocumentsDialog
+              selectedDocIds={selectedDocIds}
+              totalCompletedCount={documentCounts.processed || 0}
+              onDocumentsDeleted={handleDocumentsDeleted}
+            />
+          )}
+          {isSelectionMode ? (
+            <DeselectDocumentsDialog
+              selectedCount={selectedDocIds.length}
+              onDeselect={handleDeselectAll}
+            />
+          ) : (
+            <ClearDocumentsDialog onDocumentsCleared={fetchDocuments} />
+          )}
           <UploadDocumentsDialog onDocumentsUploaded={fetchDocuments} />
           <PipelineStatusDialog
             open={showPipelineStatus}
@@ -652,6 +694,9 @@ export default function DocumentManager() {
                             )}
                           </div>
                         </TableHead>
+                        <TableHead className="w-16 text-center">
+                          {t('documentPanel.documentManager.columns.select')}
+                        </TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody className="text-sm overflow-auto">
@@ -717,6 +762,14 @@ export default function DocumentManager() {
                           </TableCell>
                           <TableCell className="truncate">
                             {new Date(doc.updated_at).toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Checkbox
+                              checked={selectedDocIds.includes(doc.id)}
+                              onCheckedChange={(checked) => handleDocumentSelect(doc.id, checked === true)}
+                              disabled={doc.status !== 'processed'}
+                              className="mx-auto"
+                            />
                           </TableCell>
                         </TableRow>
                       ))}
