@@ -537,7 +537,7 @@ class MemgraphStorage(BaseGraphStorage):
         """
         try:
             async with self._driver.session(database=self._DATABASE) as session:
-                query = "DROP GRAPH"
+                query = "MATCH (n) DETACH DELETE n"
                 result = await session.run(query)
                 await result.consume()
                 logger.info(
