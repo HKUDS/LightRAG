@@ -9,6 +9,7 @@
 - NetworkXStorage
 - Neo4JStorage
 - PGGraphStorage
+- MemgraphStorage
 """
 
 import asyncio
