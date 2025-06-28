@@ -226,7 +226,9 @@ class PostgreSQLDB:
                 return
 
             # 4. Perform the migration
-            logger.info("Starting data migration from LIGHTRAG_DOC_CHUNKS to LIGHTRAG_VDB_CHUNKS...")
+            logger.info(
+                "Starting data migration from LIGHTRAG_DOC_CHUNKS to LIGHTRAG_VDB_CHUNKS..."
+            )
             migration_sql = """
             INSERT INTO LIGHTRAG_VDB_CHUNKS (
                 id, workspace, full_doc_id, chunk_order_index, tokens, content,
