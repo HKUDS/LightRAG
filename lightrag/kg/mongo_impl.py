@@ -419,11 +419,21 @@ class MongoGraphStorage(BaseGraphStorage):
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """
-        Check if there's a direct single-hop edge from source_node_id to target_node_id.
+        Check if there's a direct single-hop edge between source_node_id and target_node_id.
         """
-        # Direct check if the target_node appears among the edges array.
         doc = await self.edge_collection.find_one(
-            {"source_node_id": source_node_id, "target_node_id": target_node_id},
+            {
+                "$or": [
+                    {
+                        "source_node_id": source_node_id,
+                        "target_node_id": target_node_id,
+                    },
+                    {
+                        "source_node_id": target_node_id,
+                        "target_node_id": source_node_id,
+                    },
+                ]
+            },
             {"_id": 1},
         )
         return doc is not None
@@ -680,7 +690,7 @@ class MongoGraphStorage(BaseGraphStorage):
     async def delete_node(self, node_id: str) -> None:
         """
         1) Remove node's doc entirely.
-        2) Remove inbound edges from any doc that references node_id.
+        2) Remove inbound & outbound edges from any doc that references node_id.
         """
         # Remove all edges
         await self.edge_collection.delete_many(
