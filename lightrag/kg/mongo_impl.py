@@ -1043,11 +1043,21 @@ class MongoGraphStorage(BaseGraphStorage):
     async def get_knowledge_graph(
         self,
         node_label: str,
-        max_depth: int = 5,
+        max_depth: int = 3,
         max_nodes: int = MAX_GRAPH_NODES,
     ) -> KnowledgeGraph:
         """
-        Get complete connected subgraph for specified node (including the starting node itself)
+        Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
+
+        Args:
+            node_label: Label of the starting node, * means all nodes
+            max_depth: Maximum depth of the subgraph, Defaults to 3
+            max_nodes: Maxiumu nodes to return, Defaults to 1000
+
+        Returns:
+            KnowledgeGraph object containing nodes and edges, with an is_truncated flag
+            indicating whether the graph was truncated due to max_nodes limit
+
         If a graph is like this and starting from B:
         A → B ← C ← F, B -> E, C → D
 
@@ -1065,13 +1075,6 @@ class MongoGraphStorage(BaseGraphStorage):
         F → C
         C → B
         C → D
-
-        Args:
-            node_label: Label of the nodes to start from
-            max_depth: Maximum depth of traversal (default: 5)
-
-        Returns:
-            KnowledgeGraph object containing nodes and edges of the subgraph
         """
         result = KnowledgeGraph()
         start = time.perf_counter()
