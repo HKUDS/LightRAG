@@ -817,7 +817,7 @@ class MongoGraphStorage(BaseGraphStorage):
                                         "connectFromField": "source_node_id",
                                         "connectToField": "target_node_id",
                                         "as": "connected_edges",
-                                        "maxDepth": 3,
+                                        "maxDepth": max_depth,
                                         "depthField": "depth",
                                     }
                                 },
