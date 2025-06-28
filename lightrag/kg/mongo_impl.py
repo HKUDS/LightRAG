@@ -809,7 +809,7 @@ class MongoGraphStorage(BaseGraphStorage):
                         "$unionWith": {
                             "coll": "chunk_entity_relation",
                             "pipeline": [
-                                {"$match": {"_id": "LightRAG"}},
+                                {"$match": {"_id": label}},
                                 {
                                     "$graphLookup": {
                                         "from": "chunk_entity_relation_edges",
