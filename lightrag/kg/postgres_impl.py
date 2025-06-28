@@ -189,6 +189,62 @@ class PostgreSQLDB:
                     # Log error but don't interrupt the process
                     logger.warning(f"Failed to migrate {table_name}.{column_name}: {e}")
 
+    async def _migrate_doc_chunks_to_vdb_chunks(self):
+        """
+        Migrate data from LIGHTRAG_DOC_CHUNKS to LIGHTRAG_VDB_CHUNKS if specific conditions are met.
+        This migration is intended for users who are upgrading and have an older table structure
+        where LIGHTRAG_DOC_CHUNKS contained a `content_vector` column.
+
+        """
+        try:
+            # 1. Check if the new table LIGHTRAG_VDB_CHUNKS is empty
+            vdb_chunks_count_sql = "SELECT COUNT(1) as count FROM LIGHTRAG_VDB_CHUNKS"
+            vdb_chunks_count_result = await self.query(vdb_chunks_count_sql)
+            if vdb_chunks_count_result and vdb_chunks_count_result["count"] > 0:
+                logger.info(
+                    "Skipping migration: LIGHTRAG_VDB_CHUNKS already contains data."
+                )
+                return
+
+            # 2. Check if `content_vector` column exists in the old table
+            check_column_sql = """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'lightrag_doc_chunks' AND column_name = 'content_vector'
+            """
+            column_exists = await self.query(check_column_sql)
+            if not column_exists:
+                logger.info(
+                    "Skipping migration: `content_vector` not found in LIGHTRAG_DOC_CHUNKS"
+                )
+                return
+
+            # 3. Check if the old table LIGHTRAG_DOC_CHUNKS has data
+            doc_chunks_count_sql = "SELECT COUNT(1) as count FROM LIGHTRAG_DOC_CHUNKS"
+            doc_chunks_count_result = await self.query(doc_chunks_count_sql)
+            if not doc_chunks_count_result or doc_chunks_count_result["count"] == 0:
+                logger.info("Skipping migration: LIGHTRAG_DOC_CHUNKS is empty.")
+                return
+
+            # 4. Perform the migration
+            logger.info("Starting data migration from LIGHTRAG_DOC_CHUNKS to LIGHTRAG_VDB_CHUNKS...")
+            migration_sql = """
+            INSERT INTO LIGHTRAG_VDB_CHUNKS (
+                id, workspace, full_doc_id, chunk_order_index, tokens, content,
+                content_vector, file_path, create_time, update_time
+            )
+            SELECT
+                id, workspace, full_doc_id, chunk_order_index, tokens, content,
+                content_vector, file_path, create_time, update_time
+            FROM LIGHTRAG_DOC_CHUNKS
+            ON CONFLICT (workspace, id) DO NOTHING;
+            """
+            await self.execute(migration_sql)
+            logger.info("Data migration to LIGHTRAG_VDB_CHUNKS completed successfully.")
+
+        except Exception as e:
+            logger.error(f"Failed during data migration to LIGHTRAG_VDB_CHUNKS: {e}")
+            # Do not re-raise, to allow the application to start
+
     async def check_tables(self):
         # First create all tables
         for k, v in TABLES.items():
@@ -239,6 +295,12 @@ class PostgreSQLDB:
         except Exception as e:
             logger.error(f"PostgreSQL, Failed to migrate LLM cache chunk_id field: {e}")
             # Don't throw an exception, allow the initialization process to continue
+
+        # Finally, attempt to migrate old doc chunks data if needed
+        try:
+            await self._migrate_doc_chunks_to_vdb_chunks()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to migrate doc_chunks to vdb_chunks: {e}")
 
     async def query(
         self,
