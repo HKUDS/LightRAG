@@ -1647,7 +1647,7 @@ async def _get_vector_context(
             f"Truncate chunks from {len(valid_chunks)} to {len(maybe_trun_chunks)} (max tokens:{query_param.max_token_for_text_unit})"
         )
         logger.info(
-            f"Vector query: {len(maybe_trun_chunks)} chunks, top_k: {query_param.top_k}"
+            f"Query chunks: {len(maybe_trun_chunks)} chunks, top_k: {query_param.top_k}"
         )
 
         if not maybe_trun_chunks:
@@ -1871,7 +1871,7 @@ async def _get_node_data(
     )
 
     logger.info(
-        f"Local query uses {len(node_datas)} entites, {len(use_relations)} relations, {len(use_text_units)} chunks"
+        f"Local query: {len(node_datas)} entites, {len(use_relations)} relations, {len(use_text_units)} chunks"
     )
 
     # build prompt
@@ -2180,7 +2180,7 @@ async def _get_edge_data(
         ),
     )
     logger.info(
-        f"Global query uses {len(use_entities)} entites, {len(edge_datas)} relations, {len(use_text_units)} chunks"
+        f"Global query: {len(use_entities)} entites, {len(edge_datas)} relations, {len(use_text_units)} chunks"
     )
 
     relations_context = []
