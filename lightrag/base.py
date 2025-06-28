@@ -297,6 +297,8 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
+    """All operations related to edges in graph should be undirected."""
+
     embedding_func: EmbeddingFunc
 
     @abstractmethod
