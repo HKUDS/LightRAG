@@ -663,7 +663,7 @@ class MongoGraphStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         """
-        Upsert an edge from source_node_id -> target_node_id with optional 'relation'.
+        Upsert an edge between source_node_id and target_node_id with optional 'relation'.
         If an edge with the same target exists, we remove it and re-insert with updated data.
         """
         # Ensure source node exists
@@ -675,8 +675,22 @@ class MongoGraphStorage(BaseGraphStorage):
                 GRAPH_FIELD_SEP
             )
 
+        edge_data["source_node_id"] = source_node_id
+        edge_data["target_node_id"] = target_node_id
+
         await self.edge_collection.update_one(
-            {"source_node_id": source_node_id, "target_node_id": target_node_id},
+            {
+                "$or": [
+                    {
+                        "source_node_id": source_node_id,
+                        "target_node_id": target_node_id,
+                    },
+                    {
+                        "source_node_id": target_node_id,
+                        "target_node_id": source_node_id,
+                    },
+                ]
+            },
             update_doc,
             upsert=True,
         )
