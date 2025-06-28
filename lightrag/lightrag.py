@@ -394,13 +394,13 @@ class LightRAG:
             embedding_func=self.embedding_func,
         )
 
-        # TODO: deprecating, text_chunks is redundant with chunks_vdb
         self.text_chunks: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.KV_STORE_TEXT_CHUNKS
             ),
             embedding_func=self.embedding_func,
         )
+
         self.chunk_entity_relation_graph: BaseGraphStorage = self.graph_storage_cls(  # type: ignore
             namespace=make_namespace(
                 self.namespace_prefix, NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION

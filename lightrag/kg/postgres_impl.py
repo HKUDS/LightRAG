@@ -520,7 +520,21 @@ class PGKVStorage(BaseKVStorage):
             return
 
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
-            pass
+            current_time = datetime.datetime.now(timezone.utc)
+            for k, v in data.items():
+                upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
+                _data = {
+                    "workspace": self.db.workspace,
+                    "id": k,
+                    "tokens": v["tokens"],
+                    "chunk_order_index": v["chunk_order_index"],
+                    "full_doc_id": v["full_doc_id"],
+                    "content": v["content"],
+                    "file_path": v["file_path"],
+                    "create_time": current_time,
+                    "update_time": current_time,
+                }
+                await self.db.execute(upsert_sql, _data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_FULL_DOCS):
             for k, v in data.items():
                 upsert_sql = SQL_TEMPLATES["upsert_doc_full"]
@@ -2409,7 +2423,7 @@ class PGGraphStorage(BaseGraphStorage):
 NAMESPACE_TABLE_MAP = {
     NameSpace.KV_STORE_FULL_DOCS: "LIGHTRAG_DOC_FULL",
     NameSpace.KV_STORE_TEXT_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
-    NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_DOC_CHUNKS",
+    NameSpace.VECTOR_STORE_CHUNKS: "LIGHTRAG_VDB_CHUNKS",
     NameSpace.VECTOR_STORE_ENTITIES: "LIGHTRAG_VDB_ENTITY",
     NameSpace.VECTOR_STORE_RELATIONSHIPS: "LIGHTRAG_VDB_RELATION",
     NameSpace.DOC_STATUS: "LIGHTRAG_DOC_STATUS",
@@ -2444,11 +2458,25 @@ TABLES = {
                     chunk_order_index INTEGER,
                     tokens INTEGER,
                     content TEXT,
-                    content_vector VECTOR,
                     file_path VARCHAR(256),
                     create_time TIMESTAMP(0) WITH TIME ZONE,
                     update_time TIMESTAMP(0) WITH TIME ZONE,
 	                CONSTRAINT LIGHTRAG_DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
+                    )"""
+    },
+    "LIGHTRAG_VDB_CHUNKS": {
+        "ddl": """CREATE TABLE LIGHTRAG_VDB_CHUNKS (
+                    id VARCHAR(255),
+                    workspace VARCHAR(255),
+                    full_doc_id VARCHAR(256),
+                    chunk_order_index INTEGER,
+                    tokens INTEGER,
+                    content TEXT,
+                    content_vector VECTOR,
+                    file_path VARCHAR(256),
+                    create_time TIMESTAMP(0) WITH TIME ZONE,
+                    update_time TIMESTAMP(0) WITH TIME ZONE,
+	                CONSTRAINT LIGHTRAG_VDB_CHUNKS_PK PRIMARY KEY (workspace, id)
                     )"""
     },
     "LIGHTRAG_VDB_ENTITY": {
@@ -2551,7 +2579,20 @@ SQL_TEMPLATES = {
                                       chunk_id=EXCLUDED.chunk_id,
                                       update_time = CURRENT_TIMESTAMP
                                      """,
-    "upsert_chunk": """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,
+    "upsert_text_chunk": """INSERT INTO LIGHTRAG_DOC_CHUNKS (workspace, id, tokens,
+                      chunk_order_index, full_doc_id, content, file_path,
+                      create_time, update_time)
+                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                      ON CONFLICT (workspace,id) DO UPDATE
+                      SET tokens=EXCLUDED.tokens,
+                      chunk_order_index=EXCLUDED.chunk_order_index,
+                      full_doc_id=EXCLUDED.full_doc_id,
+                      content = EXCLUDED.content,
+                      file_path=EXCLUDED.file_path,
+                      update_time = EXCLUDED.update_time
+                     """,
+    # SQL for VectorStorage
+    "upsert_chunk": """INSERT INTO LIGHTRAG_VDB_CHUNKS (workspace, id, tokens,
                       chunk_order_index, full_doc_id, content, content_vector, file_path,
                       create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -2564,7 +2605,6 @@ SQL_TEMPLATES = {
                       file_path=EXCLUDED.file_path,
                       update_time = EXCLUDED.update_time
                      """,
-    # SQL for VectorStorage
     "upsert_entity": """INSERT INTO LIGHTRAG_VDB_ENTITY (workspace, id, entity_name, content,
                       content_vector, chunk_ids, file_path, create_time, update_time)
                       VALUES ($1, $2, $3, $4, $5, $6::varchar[], $7, $8, $9)
@@ -2625,7 +2665,7 @@ SQL_TEMPLATES = {
     "chunks": """
         WITH relevant_chunks AS (
             SELECT id as chunk_id
-            FROM LIGHTRAG_DOC_CHUNKS
+            FROM LIGHTRAG_VDB_CHUNKS
             WHERE $2::varchar[] IS NULL OR full_doc_id = ANY($2::varchar[])
         )
         SELECT id, content, file_path, EXTRACT(EPOCH FROM create_time)::BIGINT as created_at FROM
