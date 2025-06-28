@@ -722,7 +722,27 @@ class MongoGraphStorage(BaseGraphStorage):
                 not in [
                     "_id",
                     "connected_edges",
+                    "source_ids",
                     "edge_count",
+                ]
+            },
+        )
+
+    def _construct_graph_edge(self, edge_id: str, edge: dict[str, str]):
+        return KnowledgeGraphEdge(
+            id=edge_id,
+            type=edge.get("relationship", ""),
+            source=edge["source_node_id"],
+            target=edge["target_node_id"],
+            properties={
+                k: v
+                for k, v in edge.items()
+                if k
+                not in [
+                    "_id",
+                    "source_node_id",
+                    "target_node_id",
+                    "relationship",
                 ]
             },
         )
@@ -810,15 +830,16 @@ class MongoGraphStorage(BaseGraphStorage):
                             "coll": "chunk_entity_relation",
                             "pipeline": [
                                 {"$match": {"_id": label}},
+                                {"$project": project_doc},
                                 {
                                     "$graphLookup": {
-                                        "from": "chunk_entity_relation_edges",
+                                        "from": self._edge_collection_name,
                                         "startWith": "$_id",
                                         "connectFromField": "source_node_id",
                                         "connectToField": "target_node_id",
-                                        "as": "connected_edges",
                                         "maxDepth": max_depth,
                                         "depthField": "depth",
+                                        "as": "connected_edges",
                                     }
                                 },
                             ],
@@ -891,25 +912,7 @@ class MongoGraphStorage(BaseGraphStorage):
 
                 edge_id = f"{edge['source_node_id']}-{edge['target_node_id']}"
                 if edge_id not in seen_edges:
-                    result.edges.append(
-                        KnowledgeGraphEdge(
-                            id=edge_id,
-                            type=edge.get("relationship", ""),
-                            source=edge["source_node_id"],
-                            target=edge["target_node_id"],
-                            properties={
-                                k: v
-                                for k, v in edge.items()
-                                if k
-                                not in [
-                                    "_id",
-                                    "source_node_id",
-                                    "target_node_id",
-                                    "relationship",
-                                ]
-                            },
-                        )
-                    )
+                    result.edges.append(self._construct_graph_edge(edge_id, edge))
                     seen_edges.add(edge_id)
 
             logger.info(
