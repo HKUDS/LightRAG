@@ -1390,7 +1390,7 @@ async def kg_query(
     )
 
     if query_param.only_need_context:
-        return context
+        return context if context is not None else PROMPTS["fail_response"]
     if context is None:
         return PROMPTS["fail_response"]
 
