@@ -1943,13 +1943,9 @@ class LightRAG:
                             text_chunks=self.text_chunks,
                             llm_response_cache=self.llm_response_cache,
                             global_config=asdict(self),
+                            pipeline_status=pipeline_status,
+                            pipeline_status_lock=pipeline_status_lock,
                         )
-
-                        async with pipeline_status_lock:
-                            log_message = f"Successfully rebuilt {len(entities_to_rebuild)} entities and {len(relationships_to_rebuild)} relations"
-                            logger.info(log_message)
-                            pipeline_status["latest_message"] = log_message
-                            pipeline_status["history_messages"].append(log_message)
 
                     except Exception as e:
                         logger.error(f"Failed to rebuild knowledge from chunks: {e}")
