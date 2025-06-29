@@ -470,17 +470,6 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             list[dict]: A list of nodes, where each node is a dictionary of its properties.
                         An empty list if no matching nodes are found.
         """
-        # Default implementation iterates through all nodes, which is inefficient.
-        # This method should be overridden by subclasses for better performance.
-        all_nodes = []
-        all_labels = await self.get_all_labels()
-        for label in all_labels:
-            node = await self.get_node(label)
-            if node and "source_id" in node:
-                source_ids = set(node["source_id"].split(GRAPH_FIELD_SEP))
-                if not source_ids.isdisjoint(chunk_ids):
-                    all_nodes.append(node)
-        return all_nodes
 
     @abstractmethod
     async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
