@@ -8,6 +8,7 @@
 支持的图存储类型包括：
 - NetworkXStorage
 - Neo4JStorage
+- MongoDBStorage
 - PGGraphStorage
 """
 
