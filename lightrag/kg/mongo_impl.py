@@ -98,7 +98,17 @@ class MongoKVStorage(BaseKVStorage):
             self._data = None
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        return await self._data.find_one({"_id": id})
+        if id == "default":
+            # Find all documents with _id starting with "default_"
+            cursor = self._data.find({"_id": {"$regex": "^default_"}})
+            result = {}
+            async for doc in cursor:
+                # Use the complete _id as key
+                result[doc["_id"]] = doc
+            return result if result else None
+        else:
+            # Original behavior for non-"default" ids
+            return await self._data.find_one({"_id": id})
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})

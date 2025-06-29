@@ -504,14 +504,22 @@ class PGKVStorage(BaseKVStorage):
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """Get doc_full data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
-        params = {"workspace": self.db.workspace, "id": id}
         if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
+            # For LLM cache, the id parameter actually represents the mode
+            params = {"workspace": self.db.workspace, "mode": id}
             array_res = await self.db.query(sql, params, multirows=True)
             res = {}
             for row in array_res:
-                res[row["id"]] = row
+                # Dynamically add cache_type field based on mode
+                row_with_cache_type = dict(row)
+                if id == "default":
+                    row_with_cache_type["cache_type"] = "extract"
+                else:
+                    row_with_cache_type["cache_type"] = "unknown"
+                res[row["id"]] = row_with_cache_type
             return res if res else None
         else:
+            params = {"workspace": self.db.workspace, "id": id}
             response = await self.db.query(sql, params)
             return response if response else None
 
