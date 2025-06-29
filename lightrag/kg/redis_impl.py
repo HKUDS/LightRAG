@@ -86,39 +86,32 @@ class RedisKVStorage(BaseKVStorage):
                     result = {}
                     pattern = f"{self.namespace}:*"
                     cursor = 0
-
+                    
                     while True:
-                        cursor, keys = await redis.scan(
-                            cursor, match=pattern, count=100
-                        )
-
+                        cursor, keys = await redis.scan(cursor, match=pattern, count=100)
+                        
                         if keys:
                             # Batch get values for these keys
                             pipe = redis.pipeline()
                             for key in keys:
                                 pipe.get(key)
                             values = await pipe.execute()
-
+                            
                             # Check each value for cache_type == "extract"
                             for key, value in zip(keys, values):
                                 if value:
                                     try:
                                         data = json.loads(value)
-                                        if (
-                                            isinstance(data, dict)
-                                            and data.get("cache_type") == "extract"
-                                        ):
+                                        if isinstance(data, dict) and data.get("cache_type") == "extract":
                                             # Extract cache key (remove namespace prefix)
-                                            cache_key = key.replace(
-                                                f"{self.namespace}:", ""
-                                            )
+                                            cache_key = key.replace(f"{self.namespace}:", "")
                                             result[cache_key] = data
                                     except json.JSONDecodeError:
                                         continue
-
+                        
                         if cursor == 0:
                             break
-
+                    
                     return result if result else None
                 except Exception as e:
                     logger.error(f"Error scanning Redis for extract cache entries: {e}")
