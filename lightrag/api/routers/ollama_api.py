@@ -234,7 +234,7 @@ class OllamaAPI:
         @self.router.get("/version", dependencies=[Depends(combined_auth)])
         async def get_version():
             """Get Ollama version information"""
-            return OllamaVersionResponse(version="0.5.4")
+            return OllamaVersionResponse(version="0.9.3")
 
         @self.router.get("/tags", dependencies=[Depends(combined_auth)])
         async def get_tags():
@@ -244,9 +244,9 @@ class OllamaAPI:
                     {
                         "name": self.ollama_server_infos.LIGHTRAG_MODEL,
                         "model": self.ollama_server_infos.LIGHTRAG_MODEL,
+                        "modified_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
                         "size": self.ollama_server_infos.LIGHTRAG_SIZE,
                         "digest": self.ollama_server_infos.LIGHTRAG_DIGEST,
-                        "modified_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
                         "details": {
                             "parent_model": "",
                             "format": "gguf",
@@ -337,7 +337,10 @@ class OllamaAPI:
                                 data = {
                                     "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                     "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "response": "",
                                     "done": True,
+                                    "done_reason": "stop",
+                                    "context": [],
                                     "total_duration": total_time,
                                     "load_duration": 0,
                                     "prompt_eval_count": prompt_tokens,
@@ -377,6 +380,7 @@ class OllamaAPI:
                                         "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                         "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
                                         "response": f"\n\nError: {error_msg}",
+                                        "error": f"\n\nError: {error_msg}",
                                         "done": False,
                                     }
                                     yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
@@ -385,6 +389,7 @@ class OllamaAPI:
                                     final_data = {
                                         "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                         "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                        "response": "",
                                         "done": True,
                                     }
                                     yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
@@ -399,7 +404,10 @@ class OllamaAPI:
                                 data = {
                                     "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                     "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "response": "",
                                     "done": True,
+                                    "done_reason": "stop",
+                                    "context": [],
                                     "total_duration": total_time,
                                     "load_duration": 0,
                                     "prompt_eval_count": prompt_tokens,
@@ -444,6 +452,8 @@ class OllamaAPI:
                         "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
                         "response": str(response_text),
                         "done": True,
+                        "done_reason": "stop",
+                        "context": [],
                         "total_duration": total_time,
                         "load_duration": 0,
                         "prompt_eval_count": prompt_tokens,
@@ -557,6 +567,12 @@ class OllamaAPI:
                                 data = {
                                     "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                     "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                    "message": {
+                                        "role": "assistant",
+                                        "content": "",
+                                        "images": None,
+                                    },
+                                    "done_reason": "stop",
                                     "done": True,
                                     "total_duration": total_time,
                                     "load_duration": 0,
@@ -605,6 +621,7 @@ class OllamaAPI:
                                             "content": f"\n\nError: {error_msg}",
                                             "images": None,
                                         },
+                                        "error": f"\n\nError: {error_msg}",
                                         "done": False,
                                     }
                                     yield f"{json.dumps(error_data, ensure_ascii=False)}\n"
@@ -613,6 +630,11 @@ class OllamaAPI:
                                     final_data = {
                                         "model": self.ollama_server_infos.LIGHTRAG_MODEL,
                                         "created_at": self.ollama_server_infos.LIGHTRAG_CREATED_AT,
+                                        "message": {
+                                            "role": "assistant",
+                                            "content": "",
+                                            "images": None,
+                                        },
                                         "done": True,
                                     }
                                     yield f"{json.dumps(final_data, ensure_ascii=False)}\n"
@@ -633,6 +655,7 @@ class OllamaAPI:
                                         "content": "",
                                         "images": None,
                                     },
+                                    "done_reason": "stop",
                                     "done": True,
                                     "total_duration": total_time,
                                     "load_duration": 0,
@@ -697,6 +720,7 @@ class OllamaAPI:
                             "content": str(response_text),
                             "images": None,
                         },
+                        "done_reason": "stop",
                         "done": True,
                         "total_duration": total_time,
                         "load_duration": 0,
