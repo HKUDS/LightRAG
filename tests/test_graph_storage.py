@@ -10,6 +10,7 @@
 - Neo4JStorage
 - MongoDBStorage
 - PGGraphStorage
+- MemgraphStorage
 """
 
 import asyncio
