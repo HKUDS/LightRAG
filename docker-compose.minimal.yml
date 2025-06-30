@@ -12,6 +12,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./init-db:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U lightrag_user -d lightrag"]
       interval: 10s
@@ -19,7 +20,7 @@ services:
       retries: 5
 
   lightrag:
-    image: ghcr.io/hkuds/lightrag:latest
+    image: ghcr.io/hkuds/lightrag:1.3.8
     container_name: lightrag-minimal
     env_file:
       - .env

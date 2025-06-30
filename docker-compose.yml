@@ -1,12 +1,12 @@
 services:
   lightrag:
     container_name: lightrag
-    image: ghcr.io/hkuds/lightrag:latest
+    image: ghcr.io/hkuds/lightrag:1.3.8
     build:
       context: .
       dockerfile: Dockerfile
       tags:
-        - ghcr.io/hkuds/lightrag:latest
+        - ghcr.io/hkuds/lightrag:1.3.8
     ports:
       - "${PORT:-9621}:9621"
     volumes:
