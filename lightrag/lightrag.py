@@ -22,6 +22,7 @@ from typing import (
     Dict,
 )
 from lightrag.constants import (
+    DEFAULT_MAX_GLEANING,
     DEFAULT_MAX_TOKEN_SUMMARY,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
 )
@@ -124,7 +125,9 @@ class LightRAG:
     # Entity extraction
     # ---
 
-    entity_extract_max_gleaning: int = field(default=1)
+    entity_extract_max_gleaning: int = field(
+        default=get_env_value("MAX_GLEANING", DEFAULT_MAX_GLEANING, int)
+    )
     """Maximum number of entity extraction attempts for ambiguous content."""
 
     summary_to_max_tokens: int = field(
