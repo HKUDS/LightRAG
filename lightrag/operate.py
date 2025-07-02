@@ -25,6 +25,7 @@ from .utils import (
     CacheData,
     get_conversation_turns,
     use_llm_func_with_cache,
+    update_chunk_cache_list,
 )
 from .base import (
     BaseGraphStorage,
@@ -103,8 +104,6 @@ async def _handle_entity_relation_summary(
     entity_or_relation_name: str,
     description: str,
     global_config: dict,
-    pipeline_status: dict = None,
-    pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
 ) -> str:
     """Handle entity relation summary
@@ -247,7 +246,7 @@ async def _rebuild_knowledge_from_chunks(
     knowledge_graph_inst: BaseGraphStorage,
     entities_vdb: BaseVectorStorage,
     relationships_vdb: BaseVectorStorage,
-    text_chunks: BaseKVStorage,
+    text_chunks_storage: BaseKVStorage,
     llm_response_cache: BaseKVStorage,
     global_config: dict[str, str],
     pipeline_status: dict | None = None,
@@ -261,6 +260,7 @@ async def _rebuild_knowledge_from_chunks(
     Args:
         entities_to_rebuild: Dict mapping entity_name -> set of remaining chunk_ids
         relationships_to_rebuild: Dict mapping (src, tgt) -> set of remaining chunk_ids
+        text_chunks_data: Pre-loaded chunk data dict {chunk_id: chunk_data}
     """
     if not entities_to_rebuild and not relationships_to_rebuild:
         return
@@ -273,6 +273,8 @@ async def _rebuild_knowledge_from_chunks(
         all_referenced_chunk_ids.update(chunk_ids)
     for chunk_ids in relationships_to_rebuild.values():
         all_referenced_chunk_ids.update(chunk_ids)
+    # sort all_referenced_chunk_ids to get a stable order in merge stage
+    all_referenced_chunk_ids = sorted(all_referenced_chunk_ids)
 
     status_message = f"Rebuilding knowledge from {len(all_referenced_chunk_ids)} cached chunk extractions"
     logger.info(status_message)
@@ -281,9 +283,11 @@ async def _rebuild_knowledge_from_chunks(
             pipeline_status["latest_message"] = status_message
             pipeline_status["history_messages"].append(status_message)
 
-    # Get cached extraction results for these chunks
+    # Get cached extraction results for these chunks using storage
     cached_results = await _get_cached_extraction_results(
-        llm_response_cache, all_referenced_chunk_ids
+        llm_response_cache,
+        all_referenced_chunk_ids,
+        text_chunks_storage=text_chunks_storage,
     )
 
     if not cached_results:
@@ -299,15 +303,25 @@ async def _rebuild_knowledge_from_chunks(
     chunk_entities = {}  # chunk_id -> {entity_name: [entity_data]}
     chunk_relationships = {}  # chunk_id -> {(src, tgt): [relationship_data]}
 
-    for chunk_id, extraction_result in cached_results.items():
+    for chunk_id, extraction_results in cached_results.items():
         try:
-            entities, relationships = await _parse_extraction_result(
-                text_chunks=text_chunks,
-                extraction_result=extraction_result,
-                chunk_id=chunk_id,
-            )
-            chunk_entities[chunk_id] = entities
-            chunk_relationships[chunk_id] = relationships
+            # Handle multiple extraction results per chunk
+            chunk_entities[chunk_id] = defaultdict(list)
+            chunk_relationships[chunk_id] = defaultdict(list)
+
+            for extraction_result in extraction_results:
+                entities, relationships = await _parse_extraction_result(
+                    text_chunks_storage=text_chunks_storage,
+                    extraction_result=extraction_result,
+                    chunk_id=chunk_id,
+                )
+
+                # Merge entities and relationships from this extraction result
+                for entity_name, entity_list in entities.items():
+                    chunk_entities[chunk_id][entity_name].extend(entity_list)
+                for rel_key, rel_list in relationships.items():
+                    chunk_relationships[chunk_id][rel_key].extend(rel_list)
+
         except Exception as e:
             status_message = (
                 f"Failed to parse cached extraction result for chunk {chunk_id}: {e}"
@@ -387,43 +401,76 @@ async def _rebuild_knowledge_from_chunks(
 
 
 async def _get_cached_extraction_results(
-    llm_response_cache: BaseKVStorage, chunk_ids: set[str]
-) -> dict[str, str]:
+    llm_response_cache: BaseKVStorage,
+    chunk_ids: set[str],
+    text_chunks_storage: BaseKVStorage,
+) -> dict[str, list[str]]:
     """Get cached extraction results for specific chunk IDs
 
     Args:
+        llm_response_cache: LLM response cache storage
         chunk_ids: Set of chunk IDs to get cached results for
+        text_chunks_data: Pre-loaded chunk data (optional, for performance)
+        text_chunks_storage: Text chunks storage (fallback if text_chunks_data is None)
 
     Returns:
-        Dict mapping chunk_id -> extraction_result_text
+        Dict mapping chunk_id -> list of extraction_result_text
     """
     cached_results = {}
 
-    # Get all cached data (flattened cache structure)
-    all_cache = await llm_response_cache.get_all()
+    # Collect all LLM cache IDs from chunks
+    all_cache_ids = set()
 
-    for cache_key, cache_entry in all_cache.items():
+    # Read from storage
+    chunk_data_list = await text_chunks_storage.get_by_ids(list(chunk_ids))
+    for chunk_id, chunk_data in zip(chunk_ids, chunk_data_list):
+        if chunk_data and isinstance(chunk_data, dict):
+            llm_cache_list = chunk_data.get("llm_cache_list", [])
+            if llm_cache_list:
+                all_cache_ids.update(llm_cache_list)
+        else:
+            logger.warning(
+                f"Chunk {chunk_id} data is invalid or None: {type(chunk_data)}"
+            )
+
+    if not all_cache_ids:
+        logger.warning(f"No LLM cache IDs found for {len(chunk_ids)} chunk IDs")
+        return cached_results
+
+    # Batch get LLM cache entries
+    cache_data_list = await llm_response_cache.get_by_ids(list(all_cache_ids))
+
+    # Process cache entries and group by chunk_id
+    valid_entries = 0
+    for cache_id, cache_entry in zip(all_cache_ids, cache_data_list):
         if (
-            isinstance(cache_entry, dict)
+            cache_entry is not None
+            and isinstance(cache_entry, dict)
             and cache_entry.get("cache_type") == "extract"
             and cache_entry.get("chunk_id") in chunk_ids
         ):
             chunk_id = cache_entry["chunk_id"]
             extraction_result = cache_entry["return"]
-            cached_results[chunk_id] = extraction_result
+            valid_entries += 1
 
-    logger.debug(
-        f"Found {len(cached_results)} cached extraction results for {len(chunk_ids)} chunk IDs"
+            # Support multiple LLM caches per chunk
+            if chunk_id not in cached_results:
+                cached_results[chunk_id] = []
+            cached_results[chunk_id].append(extraction_result)
+
+    logger.info(
+        f"Found {valid_entries} valid cache entries, {len(cached_results)} chunks with results"
     )
     return cached_results
 
 
 async def _parse_extraction_result(
-    text_chunks: BaseKVStorage, extraction_result: str, chunk_id: str
+    text_chunks_storage: BaseKVStorage, extraction_result: str, chunk_id: str
 ) -> tuple[dict, dict]:
     """Parse cached extraction result using the same logic as extract_entities
 
     Args:
+        text_chunks_storage: Text chunks storage to get chunk data
         extraction_result: The cached LLM extraction result
         chunk_id: The chunk ID for source tracking
 
@@ -431,8 +478,8 @@ async def _parse_extraction_result(
         Tuple of (entities_dict, relationships_dict)
     """
 
-    # Get chunk data for file_path
-    chunk_data = await text_chunks.get_by_id(chunk_id)
+    # Get chunk data for file_path from storage
+    chunk_data = await text_chunks_storage.get_by_id(chunk_id)
     file_path = (
         chunk_data.get("file_path", "unknown_source")
         if chunk_data
@@ -805,8 +852,6 @@ async def _merge_nodes_then_upsert(
                 entity_name,
                 description,
                 global_config,
-                pipeline_status,
-                pipeline_status_lock,
                 llm_response_cache,
             )
         else:
@@ -969,8 +1014,6 @@ async def _merge_edges_then_upsert(
                 f"({src_id}, {tgt_id})",
                 description,
                 global_config,
-                pipeline_status,
-                pipeline_status_lock,
                 llm_response_cache,
             )
         else:
@@ -1146,6 +1189,7 @@ async def extract_entities(
     pipeline_status: dict = None,
     pipeline_status_lock=None,
     llm_response_cache: BaseKVStorage | None = None,
+    text_chunks_storage: BaseKVStorage | None = None,
 ) -> list:
     use_llm_func: callable = global_config["llm_model_func"]
     entity_extract_max_gleaning = global_config["entity_extract_max_gleaning"]
@@ -1252,6 +1296,9 @@ async def extract_entities(
         # Get file path from chunk data or use default
         file_path = chunk_dp.get("file_path", "unknown_source")
 
+        # Create cache keys collector for batch processing
+        cache_keys_collector = []
+
         # Get initial extraction
         hint_prompt = entity_extract_prompt.format(
             **{**context_base, "input_text": content}
@@ -1263,7 +1310,10 @@ async def extract_entities(
             llm_response_cache=llm_response_cache,
             cache_type="extract",
             chunk_id=chunk_key,
+            cache_keys_collector=cache_keys_collector,
         )
+
+        # Store LLM cache reference in chunk (will be handled by use_llm_func_with_cache)
         history = pack_user_ass_to_openai_messages(hint_prompt, final_result)
 
         # Process initial extraction with file path
@@ -1280,6 +1330,7 @@ async def extract_entities(
                 history_messages=history,
                 cache_type="extract",
                 chunk_id=chunk_key,
+                cache_keys_collector=cache_keys_collector,
             )
 
             history += pack_user_ass_to_openai_messages(continue_prompt, glean_result)
@@ -1310,10 +1361,20 @@ async def extract_entities(
                 llm_response_cache=llm_response_cache,
                 history_messages=history,
                 cache_type="extract",
+                cache_keys_collector=cache_keys_collector,
             )
             if_loop_result = if_loop_result.strip().strip('"').strip("'").lower()
             if if_loop_result != "yes":
                 break
+
+        # Batch update chunk's llm_cache_list with all collected cache keys
+        if cache_keys_collector and text_chunks_storage:
+            await update_chunk_cache_list(
+                chunk_key,
+                text_chunks_storage,
+                cache_keys_collector,
+                "entity_extraction",
+            )
 
         processed_chunks += 1
         entities_count = len(maybe_nodes)

@@ -202,6 +202,12 @@ class RedisKVStorage(BaseKVStorage):
             return
         async with self._get_redis_connection() as redis:
             try:
+                # For text_chunks namespace, ensure llm_cache_list field exists
+                if "text_chunks" in self.namespace:
+                    for chunk_id, chunk_data in data.items():
+                        if "llm_cache_list" not in chunk_data:
+                            chunk_data["llm_cache_list"] = []
+
                 pipe = redis.pipeline()
                 for k, v in data.items():
                     pipe.set(f"{self.namespace}:{k}", json.dumps(v))
@@ -601,6 +607,11 @@ class RedisDocStatusStorage(DocStatusStorage):
         logger.debug(f"Inserting {len(data)} records to {self.namespace}")
         async with self._get_redis_connection() as redis:
             try:
+                # Ensure chunks_list field exists for new documents
+                for doc_id, doc_data in data.items():
+                    if "chunks_list" not in doc_data:
+                        doc_data["chunks_list"] = []
+
                 pipe = redis.pipeline()
                 for k, v in data.items():
                     pipe.set(f"{self.namespace}:{k}", json.dumps(v))

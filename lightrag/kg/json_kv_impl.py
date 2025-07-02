@@ -109,6 +109,11 @@ class JsonKVStorage(BaseKVStorage):
             return
         logger.debug(f"Inserting {len(data)} records to {self.namespace}")
         async with self._storage_lock:
+            # For text_chunks namespace, ensure llm_cache_list field exists
+            if "text_chunks" in self.namespace:
+                for chunk_id, chunk_data in data.items():
+                    if "llm_cache_list" not in chunk_data:
+                        chunk_data["llm_cache_list"] = []
             self._data.update(data)
             await set_all_update_flags(self.namespace)
 
