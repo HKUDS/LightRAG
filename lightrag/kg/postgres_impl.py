@@ -603,7 +603,7 @@ class PGKVStorage(BaseKVStorage):
 
         try:
             results = await self.db.query(sql, params, multirows=True)
-            
+
             # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
             if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
                 processed_results = {}
@@ -611,19 +611,21 @@ class PGKVStorage(BaseKVStorage):
                     # Parse flattened key to extract cache_type
                     key_parts = row["id"].split(":")
                     cache_type = key_parts[1] if len(key_parts) >= 3 else "unknown"
-                    
+
                     # Map field names and add cache_type for compatibility
                     processed_row = {
                         **row,
-                        "return": row.get("return_value", ""),  # Map return_value to return
+                        "return": row.get(
+                            "return_value", ""
+                        ),  # Map return_value to return
                         "cache_type": cache_type,  # Add cache_type from key
                         "original_prompt": row.get("original_prompt", ""),
                         "chunk_id": row.get("chunk_id"),
-                        "mode": row.get("mode", "default")
+                        "mode": row.get("mode", "default"),
                     }
                     processed_results[row["id"]] = processed_row
                 return processed_results
-            
+
             # For other namespaces, return as-is
             return {row["id"]: row for row in results}
         except Exception as e:
