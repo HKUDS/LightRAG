@@ -15,7 +15,6 @@ from ..base import (
     DocStatus,
     DocStatusStorage,
 )
-from ..namespace import NameSpace, is_namespace
 from ..utils import logger, compute_mdhash_id
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
@@ -98,17 +97,8 @@ class MongoKVStorage(BaseKVStorage):
             self._data = None
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        if id == "default":
-            # Find all documents with _id starting with "default_"
-            cursor = self._data.find({"_id": {"$regex": "^default_"}})
-            result = {}
-            async for doc in cursor:
-                # Use the complete _id as key
-                result[doc["_id"]] = doc
-            return result if result else None
-        else:
-            # Original behavior for non-"default" ids
-            return await self._data.find_one({"_id": id})
+        # Unified handling for flattened keys
+        return await self._data.find_one({"_id": id})
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
@@ -133,43 +123,21 @@ class MongoKVStorage(BaseKVStorage):
         return result
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
-        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            update_tasks: list[Any] = []
-            for mode, items in data.items():
-                for k, v in items.items():
-                    key = f"{mode}_{k}"
-                    data[mode][k]["_id"] = f"{mode}_{k}"
-                    update_tasks.append(
-                        self._data.update_one(
-                            {"_id": key}, {"$setOnInsert": v}, upsert=True
-                        )
-                    )
-            await asyncio.gather(*update_tasks)
-        else:
-            update_tasks = []
-            for k, v in data.items():
-                data[k]["_id"] = k
-                update_tasks.append(
-                    self._data.update_one({"_id": k}, {"$set": v}, upsert=True)
-                )
-            await asyncio.gather(*update_tasks)
+        # Unified handling for all namespaces with flattened keys
+        # Use bulk_write for better performance
+        from pymongo import UpdateOne
 
-    async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
-        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            res = {}
-            v = await self._data.find_one({"_id": mode + "_" + id})
-            if v:
-                res[id] = v
-                logger.debug(f"llm_response_cache find one by:{id}")
-                return res
-            else:
-                return None
-        else:
-            return None
+        operations = []
+        for k, v in data.items():
+            v["_id"] = k  # Use flattened key as _id
+            operations.append(UpdateOne({"_id": k}, {"$set": v}, upsert=True))
+
+        if operations:
+            await self._data.bulk_write(operations)
 
     async def index_done_callback(self) -> None:
         # Mongo handles persistence automatically
@@ -209,8 +177,8 @@ class MongoKVStorage(BaseKVStorage):
             return False
 
         try:
-            # Build regex pattern to match documents with the specified modes
-            pattern = f"^({'|'.join(modes)})_"
+            # Build regex pattern to match flattened key format: mode:cache_type:hash
+            pattern = f"^({'|'.join(modes)}):"
             result = await self._data.delete_many({"_id": {"$regex": pattern}})
             logger.info(f"Deleted {result.deleted_count} documents by modes: {modes}")
             return True
@@ -274,7 +242,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         return data - existing_ids
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
         update_tasks: list[Any] = []
@@ -1282,7 +1250,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
             logger.debug("vector index already exist")
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
@@ -1371,7 +1339,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         Args:
             ids: List of vector IDs to be deleted
         """
-        logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
+        logger.debug(f"Deleting {len(ids)} vectors from {self.namespace}")
         if not ids:
             return
 

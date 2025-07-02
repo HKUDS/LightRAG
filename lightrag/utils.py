@@ -14,7 +14,6 @@ from functools import wraps
 from hashlib import md5
 from typing import Any, Protocol, Callable, TYPE_CHECKING, List
 import numpy as np
-from lightrag.prompt import PROMPTS
 from dotenv import load_dotenv
 from lightrag.constants import (
     DEFAULT_LOG_MAX_BYTES,
@@ -278,11 +277,10 @@ def convert_response_to_json(response: str) -> dict[str, Any]:
         raise e from None
 
 
-def compute_args_hash(*args: Any, cache_type: str | None = None) -> str:
+def compute_args_hash(*args: Any) -> str:
     """Compute a hash for the given arguments.
     Args:
         *args: Arguments to hash
-        cache_type: Type of cache (e.g., 'keywords', 'query', 'extract')
     Returns:
         str: Hash string
     """
@@ -290,11 +288,38 @@ def compute_args_hash(*args: Any, cache_type: str | None = None) -> str:
 
     # Convert all arguments to strings and join them
     args_str = "".join([str(arg) for arg in args])
-    if cache_type:
-        args_str = f"{cache_type}:{args_str}"
 
     # Compute MD5 hash
     return hashlib.md5(args_str.encode()).hexdigest()
+
+
+def generate_cache_key(mode: str, cache_type: str, hash_value: str) -> str:
+    """Generate a flattened cache key in the format {mode}:{cache_type}:{hash}
+
+    Args:
+        mode: Cache mode (e.g., 'default', 'local', 'global')
+        cache_type: Type of cache (e.g., 'extract', 'query', 'keywords')
+        hash_value: Hash value from compute_args_hash
+
+    Returns:
+        str: Flattened cache key
+    """
+    return f"{mode}:{cache_type}:{hash_value}"
+
+
+def parse_cache_key(cache_key: str) -> tuple[str, str, str] | None:
+    """Parse a flattened cache key back into its components
+
+    Args:
+        cache_key: Flattened cache key in format {mode}:{cache_type}:{hash}
+
+    Returns:
+        tuple[str, str, str] | None: (mode, cache_type, hash) or None if invalid format
+    """
+    parts = cache_key.split(":", 2)
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    return None
 
 
 def compute_mdhash_id(content: str, prefix: str = "") -> str:
@@ -783,131 +808,6 @@ def process_combine_contexts(*context_lists):
     return combined_data
 
 
-async def get_best_cached_response(
-    hashing_kv,
-    current_embedding,
-    similarity_threshold=0.95,
-    mode="default",
-    use_llm_check=False,
-    llm_func=None,
-    original_prompt=None,
-    cache_type=None,
-) -> str | None:
-    logger.debug(
-        f"get_best_cached_response:  mode={mode} cache_type={cache_type} use_llm_check={use_llm_check}"
-    )
-    mode_cache = await hashing_kv.get_by_id(mode)
-    if not mode_cache:
-        return None
-
-    best_similarity = -1
-    best_response = None
-    best_prompt = None
-    best_cache_id = None
-
-    # Only iterate through cache entries for this mode
-    for cache_id, cache_data in mode_cache.items():
-        # Skip if cache_type doesn't match
-        if cache_type and cache_data.get("cache_type") != cache_type:
-            continue
-
-        # Check if cache data is valid
-        if cache_data["embedding"] is None:
-            continue
-
-        try:
-            # Safely convert cached embedding
-            cached_quantized = np.frombuffer(
-                bytes.fromhex(cache_data["embedding"]), dtype=np.uint8
-            ).reshape(cache_data["embedding_shape"])
-
-            # Ensure min_val and max_val are valid float values
-            embedding_min = cache_data.get("embedding_min")
-            embedding_max = cache_data.get("embedding_max")
-
-            if (
-                embedding_min is None
-                or embedding_max is None
-                or embedding_min >= embedding_max
-            ):
-                logger.warning(
-                    f"Invalid embedding min/max values: min={embedding_min}, max={embedding_max}"
-                )
-                continue
-
-            cached_embedding = dequantize_embedding(
-                cached_quantized,
-                embedding_min,
-                embedding_max,
-            )
-        except Exception as e:
-            logger.warning(f"Error processing cached embedding: {str(e)}")
-            continue
-
-        similarity = cosine_similarity(current_embedding, cached_embedding)
-        if similarity > best_similarity:
-            best_similarity = similarity
-            best_response = cache_data["return"]
-            best_prompt = cache_data["original_prompt"]
-            best_cache_id = cache_id
-
-    if best_similarity > similarity_threshold:
-        # If LLM check is enabled and all required parameters are provided
-        if (
-            use_llm_check
-            and llm_func
-            and original_prompt
-            and best_prompt
-            and best_response is not None
-        ):
-            compare_prompt = PROMPTS["similarity_check"].format(
-                original_prompt=original_prompt, cached_prompt=best_prompt
-            )
-
-            try:
-                llm_result = await llm_func(compare_prompt)
-                llm_result = llm_result.strip()
-                llm_similarity = float(llm_result)
-
-                # Replace vector similarity with LLM similarity score
-                best_similarity = llm_similarity
-                if best_similarity < similarity_threshold:
-                    log_data = {
-                        "event": "cache_rejected_by_llm",
-                        "type": cache_type,
-                        "mode": mode,
-                        "original_question": original_prompt[:100] + "..."
-                        if len(original_prompt) > 100
-                        else original_prompt,
-                        "cached_question": best_prompt[:100] + "..."
-                        if len(best_prompt) > 100
-                        else best_prompt,
-                        "similarity_score": round(best_similarity, 4),
-                        "threshold": similarity_threshold,
-                    }
-                    logger.debug(json.dumps(log_data, ensure_ascii=False))
-                    logger.info(f"Cache rejected by LLM(mode:{mode} tpye:{cache_type})")
-                    return None
-            except Exception as e:  # Catch all possible exceptions
-                logger.warning(f"LLM similarity check failed: {e}")
-                return None  # Return None directly when LLM check fails
-
-        prompt_display = (
-            best_prompt[:50] + "..." if len(best_prompt) > 50 else best_prompt
-        )
-        log_data = {
-            "event": "cache_hit",
-            "type": cache_type,
-            "mode": mode,
-            "similarity": round(best_similarity, 4),
-            "cache_id": best_cache_id,
-            "original_prompt": prompt_display,
-        }
-        logger.debug(json.dumps(log_data, ensure_ascii=False))
-        return best_response
-    return None
-
-
 def cosine_similarity(v1, v2):
     """Calculate cosine similarity between two vectors"""
     dot_product = np.dot(v1, v2)
@@ -957,7 +857,7 @@ async def handle_cache(
     mode="default",
     cache_type=None,
 ):
-    """Generic cache handling function"""
+    """Generic cache handling function with flattened cache keys"""
     if hashing_kv is None:
         return None, None, None, None
 
@@ -968,15 +868,14 @@ async def handle_cache(
         if not hashing_kv.global_config.get("enable_llm_cache_for_entity_extract"):
             return None, None, None, None
 
-    if exists_func(hashing_kv, "get_by_mode_and_id"):
-        mode_cache = await hashing_kv.get_by_mode_and_id(mode, args_hash) or {}
-    else:
-        mode_cache = await hashing_kv.get_by_id(mode) or {}
-    if args_hash in mode_cache:
-        logger.debug(f"Non-embedding cached hit(mode:{mode} type:{cache_type})")
-        return mode_cache[args_hash]["return"], None, None, None
+    # Use flattened cache key format: {mode}:{cache_type}:{hash}
+    flattened_key = generate_cache_key(mode, cache_type, args_hash)
+    cache_entry = await hashing_kv.get_by_id(flattened_key)
+    if cache_entry:
+        logger.debug(f"Flattened cache hit(key:{flattened_key})")
+        return cache_entry["return"], None, None, None
 
-    logger.debug(f"Non-embedding cached missed(mode:{mode} type:{cache_type})")
+    logger.debug(f"Cache missed(mode:{mode} type:{cache_type})")
     return None, None, None, None
 
 
@@ -994,7 +893,7 @@ class CacheData:
 
 
 async def save_to_cache(hashing_kv, cache_data: CacheData):
-    """Save data to cache, with improved handling for streaming responses and duplicate content.
+    """Save data to cache using flattened key structure.
 
     Args:
         hashing_kv: The key-value storage for caching
@@ -1009,26 +908,21 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         logger.debug("Streaming response detected, skipping cache")
         return
 
-    # Get existing cache data
-    if exists_func(hashing_kv, "get_by_mode_and_id"):
-        mode_cache = (
-            await hashing_kv.get_by_mode_and_id(cache_data.mode, cache_data.args_hash)
-            or {}
-        )
-    else:
-        mode_cache = await hashing_kv.get_by_id(cache_data.mode) or {}
+    # Use flattened cache key format: {mode}:{cache_type}:{hash}
+    flattened_key = generate_cache_key(
+        cache_data.mode, cache_data.cache_type, cache_data.args_hash
+    )
 
     # Check if we already have identical content cached
-    if cache_data.args_hash in mode_cache:
-        existing_content = mode_cache[cache_data.args_hash].get("return")
+    existing_cache = await hashing_kv.get_by_id(flattened_key)
+    if existing_cache:
+        existing_content = existing_cache.get("return")
         if existing_content == cache_data.content:
-            logger.info(
-                f"Cache content unchanged for {cache_data.args_hash}, skipping update"
-            )
+            logger.info(f"Cache content unchanged for {flattened_key}, skipping update")
             return
 
-    # Update cache with new content
-    mode_cache[cache_data.args_hash] = {
+    # Create cache entry with flattened structure
+    cache_entry = {
         "return": cache_data.content,
         "cache_type": cache_data.cache_type,
         "chunk_id": cache_data.chunk_id if cache_data.chunk_id is not None else None,
@@ -1043,10 +937,10 @@ async def save_to_cache(hashing_kv, cache_data: CacheData):
         "original_prompt": cache_data.prompt,
     }
 
-    logger.info(f" == LLM cache == saving {cache_data.mode}: {cache_data.args_hash}")
+    logger.info(f" == LLM cache == saving: {flattened_key}")
 
-    # Only upsert if there's actual new content
-    await hashing_kv.upsert({cache_data.mode: mode_cache})
+    # Save using flattened key
+    await hashing_kv.upsert({flattened_key: cache_entry})
 
 
 def safe_unicode_decode(content):

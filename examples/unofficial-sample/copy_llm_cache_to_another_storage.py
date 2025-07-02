@@ -52,18 +52,23 @@ async def copy_from_postgres_to_json():
         embedding_func=None,
     )
 
+    # Get all cache data using the new flattened structure
+    all_data = await from_llm_response_cache.get_all()
+
+    # Convert flattened data to hierarchical structure for JsonKVStorage
     kv = {}
-    for c_id in await from_llm_response_cache.all_keys():
-        print(f"Copying {c_id}")
-        workspace = c_id["workspace"]
-        mode = c_id["mode"]
-        _id = c_id["id"]
-        postgres_db.workspace = workspace
-        obj = await from_llm_response_cache.get_by_mode_and_id(mode, _id)
-        if mode not in kv:
-            kv[mode] = {}
-        kv[mode][_id] = obj[_id]
-        print(f"Object {obj}")
+    for flattened_key, cache_entry in all_data.items():
+        # Parse flattened key: {mode}:{cache_type}:{hash}
+        parts = flattened_key.split(":", 2)
+        if len(parts) == 3:
+            mode, cache_type, hash_value = parts
+            if mode not in kv:
+                kv[mode] = {}
+            kv[mode][hash_value] = cache_entry
+            print(f"Copying {flattened_key} -> {mode}[{hash_value}]")
+        else:
+            print(f"Skipping invalid key format: {flattened_key}")
+
     await to_llm_response_cache.upsert(kv)
     await to_llm_response_cache.index_done_callback()
     print("Mission accomplished!")
@@ -85,13 +90,24 @@ async def copy_from_json_to_postgres():
         db=postgres_db,
     )
 
-    for mode in await from_llm_response_cache.all_keys():
-        print(f"Copying {mode}")
-        caches = await from_llm_response_cache.get_by_id(mode)
-        for k, v in caches.items():
-            item = {mode: {k: v}}
-            print(f"\tCopying {item}")
-            await to_llm_response_cache.upsert(item)
+    # Get all cache data from JsonKVStorage (hierarchical structure)
+    all_data = await from_llm_response_cache.get_all()
+
+    # Convert hierarchical data to flattened structure for PGKVStorage
+    flattened_data = {}
+    for mode, mode_data in all_data.items():
+        print(f"Processing mode: {mode}")
+        for hash_value, cache_entry in mode_data.items():
+            # Determine cache_type from cache entry or use default
+            cache_type = cache_entry.get("cache_type", "extract")
+            # Create flattened key: {mode}:{cache_type}:{hash}
+            flattened_key = f"{mode}:{cache_type}:{hash_value}"
+            flattened_data[flattened_key] = cache_entry
+            print(f"\tConverting {mode}[{hash_value}] -> {flattened_key}")
+
+    # Upsert the flattened data
+    await to_llm_response_cache.upsert(flattened_data)
+    print("Mission accomplished!")
 
 
 if __name__ == "__main__":
