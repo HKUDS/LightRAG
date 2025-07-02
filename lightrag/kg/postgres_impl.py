@@ -247,6 +247,116 @@ class PostgreSQLDB:
             logger.error(f"Failed during data migration to LIGHTRAG_VDB_CHUNKS: {e}")
             # Do not re-raise, to allow the application to start
 
+    async def _check_llm_cache_needs_migration(self):
+        """Check if LLM cache data needs migration by examining the first record"""
+        try:
+            # Only query the first record to determine format
+            check_sql = """
+            SELECT id FROM LIGHTRAG_LLM_CACHE
+            ORDER BY create_time ASC
+            LIMIT 1
+            """
+            result = await self.query(check_sql)
+
+            if result and result.get("id"):
+                # If id doesn't contain colon, it's old format
+                return ":" not in result["id"]
+
+            return False  # No data or already new format
+        except Exception as e:
+            logger.warning(f"Failed to check LLM cache migration status: {e}")
+            return False
+
+    async def _migrate_llm_cache_to_flattened_keys(self):
+        """Migrate LLM cache to flattened key format, recalculating hash values"""
+        try:
+            # Get all old format data
+            old_data_sql = """
+            SELECT id, mode, original_prompt, return_value, chunk_id,
+                   create_time, update_time
+            FROM LIGHTRAG_LLM_CACHE
+            WHERE id NOT LIKE '%:%'
+            """
+
+            old_records = await self.query(old_data_sql, multirows=True)
+
+            if not old_records:
+                logger.info("No old format LLM cache data found, skipping migration")
+                return
+
+            logger.info(
+                f"Found {len(old_records)} old format cache records, starting migration..."
+            )
+
+            # Import hash calculation function
+            from ..utils import compute_args_hash
+
+            migrated_count = 0
+
+            # Migrate data in batches
+            for record in old_records:
+                try:
+                    # Recalculate hash using correct method
+                    new_hash = compute_args_hash(
+                        record["mode"], record["original_prompt"]
+                    )
+
+                    # Generate new flattened key
+                    cache_type = "extract"  # Default type
+                    new_key = f"{record['mode']}:{cache_type}:{new_hash}"
+
+                    # Insert new format data
+                    insert_sql = """
+                    INSERT INTO LIGHTRAG_LLM_CACHE
+                    (workspace, id, mode, original_prompt, return_value, chunk_id, create_time, update_time)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ON CONFLICT (workspace, mode, id) DO NOTHING
+                    """
+
+                    await self.execute(
+                        insert_sql,
+                        {
+                            "workspace": self.workspace,
+                            "id": new_key,
+                            "mode": record["mode"],
+                            "original_prompt": record["original_prompt"],
+                            "return_value": record["return_value"],
+                            "chunk_id": record["chunk_id"],
+                            "create_time": record["create_time"],
+                            "update_time": record["update_time"],
+                        },
+                    )
+
+                    # Delete old data
+                    delete_sql = """
+                    DELETE FROM LIGHTRAG_LLM_CACHE
+                    WHERE workspace=$1 AND mode=$2 AND id=$3
+                    """
+                    await self.execute(
+                        delete_sql,
+                        {
+                            "workspace": self.workspace,
+                            "mode": record["mode"],
+                            "id": record["id"],  # Old id
+                        },
+                    )
+
+                    migrated_count += 1
+
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to migrate cache record {record['id']}: {e}"
+                    )
+                    continue
+
+            logger.info(
+                f"Successfully migrated {migrated_count} cache records to flattened format"
+            )
+
+        except Exception as e:
+            logger.error(f"LLM cache migration failed: {e}")
+            # Don't raise exception, allow system to continue startup
+
     async def check_tables(self):
         # First create all tables
         for k, v in TABLES.items():
@@ -303,6 +413,13 @@ class PostgreSQLDB:
             await self._migrate_doc_chunks_to_vdb_chunks()
         except Exception as e:
             logger.error(f"PostgreSQL, Failed to migrate doc_chunks to vdb_chunks: {e}")
+
+        # Check and migrate LLM cache to flattened keys if needed
+        try:
+            if await self._check_llm_cache_needs_migration():
+                await self._migrate_llm_cache_to_flattened_keys()
+        except Exception as e:
+            logger.error(f"PostgreSQL, LLM cache migration failed: {e}")
 
     async def query(
         self,
@@ -487,76 +604,49 @@ class PGKVStorage(BaseKVStorage):
         try:
             results = await self.db.query(sql, params, multirows=True)
 
+            # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
             if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-                result_dict = {}
+                processed_results = {}
                 for row in results:
-                    mode = row["mode"]
-                    if mode not in result_dict:
-                        result_dict[mode] = {}
-                    result_dict[mode][row["id"]] = row
-                return result_dict
-            else:
-                return {row["id"]: row for row in results}
+                    # Parse flattened key to extract cache_type
+                    key_parts = row["id"].split(":")
+                    cache_type = key_parts[1] if len(key_parts) >= 3 else "unknown"
+
+                    # Map field names and add cache_type for compatibility
+                    processed_row = {
+                        **row,
+                        "return": row.get(
+                            "return_value", ""
+                        ),  # Map return_value to return
+                        "cache_type": cache_type,  # Add cache_type from key
+                        "original_prompt": row.get("original_prompt", ""),
+                        "chunk_id": row.get("chunk_id"),
+                        "mode": row.get("mode", "default"),
+                    }
+                    processed_results[row["id"]] = processed_row
+                return processed_results
+
+            # For other namespaces, return as-is
+            return {row["id"]: row for row in results}
         except Exception as e:
             logger.error(f"Error retrieving all data from {self.namespace}: {e}")
             return {}
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
-        """Get doc_full data by id."""
+        """Get data by id."""
         sql = SQL_TEMPLATES["get_by_id_" + self.namespace]
-        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            # For LLM cache, the id parameter actually represents the mode
-            params = {"workspace": self.db.workspace, "mode": id}
-            array_res = await self.db.query(sql, params, multirows=True)
-            res = {}
-            for row in array_res:
-                # Dynamically add cache_type field based on mode
-                row_with_cache_type = dict(row)
-                if id == "default":
-                    row_with_cache_type["cache_type"] = "extract"
-                else:
-                    row_with_cache_type["cache_type"] = "unknown"
-                res[row["id"]] = row_with_cache_type
-            return res if res else None
-        else:
-            params = {"workspace": self.db.workspace, "id": id}
-            response = await self.db.query(sql, params)
-            return response if response else None
-
-    async def get_by_mode_and_id(self, mode: str, id: str) -> Union[dict, None]:
-        """Specifically for llm_response_cache."""
-        sql = SQL_TEMPLATES["get_by_mode_id_" + self.namespace]
-        params = {"workspace": self.db.workspace, "mode": mode, "id": id}
-        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            array_res = await self.db.query(sql, params, multirows=True)
-            res = {}
-            for row in array_res:
-                res[row["id"]] = row
-            return res
-        else:
-            return None
+        params = {"workspace": self.db.workspace, "id": id}
+        response = await self.db.query(sql, params)
+        return response if response else None
 
     # Query by id
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
-        """Get doc_chunks data by id"""
+        """Get data by ids"""
         sql = SQL_TEMPLATES["get_by_ids_" + self.namespace].format(
             ids=",".join([f"'{id}'" for id in ids])
         )
         params = {"workspace": self.db.workspace}
-        if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            array_res = await self.db.query(sql, params, multirows=True)
-            modes = set()
-            dict_res: dict[str, dict] = {}
-            for row in array_res:
-                modes.add(row["mode"])
-            for mode in modes:
-                if mode not in dict_res:
-                    dict_res[mode] = {}
-            for row in array_res:
-                dict_res[row["mode"]][row["id"]] = row
-            return [{k: v} for k, v in dict_res.items()]
-        else:
-            return await self.db.query(sql, params, multirows=True)
+        return await self.db.query(sql, params, multirows=True)
 
     async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
         """Specifically for llm_response_cache."""
@@ -617,19 +707,18 @@ class PGKVStorage(BaseKVStorage):
                 }
                 await self.db.execute(upsert_sql, _data)
         elif is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
-            for mode, items in data.items():
-                for k, v in items.items():
-                    upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
-                    _data = {
-                        "workspace": self.db.workspace,
-                        "id": k,
-                        "original_prompt": v["original_prompt"],
-                        "return_value": v["return"],
-                        "mode": mode,
-                        "chunk_id": v.get("chunk_id"),
-                    }
+            for k, v in data.items():
+                upsert_sql = SQL_TEMPLATES["upsert_llm_response_cache"]
+                _data = {
+                    "workspace": self.db.workspace,
+                    "id": k,  # Use flattened key as id
+                    "original_prompt": v["original_prompt"],
+                    "return_value": v["return"],
+                    "mode": v.get("mode", "default"),  # Get mode from data
+                    "chunk_id": v.get("chunk_id"),
+                }
 
-                    await self.db.execute(upsert_sql, _data)
+                await self.db.execute(upsert_sql, _data)
 
     async def index_done_callback(self) -> None:
         # PG handles persistence automatically
@@ -1035,8 +1124,8 @@ class PGDocStatusStorage(DocStatusStorage):
             else:
                 exist_keys = []
             new_keys = set([s for s in keys if s not in exist_keys])
-            print(f"keys: {keys}")
-            print(f"new_keys: {new_keys}")
+            # print(f"keys: {keys}")
+            # print(f"new_keys: {new_keys}")
             return new_keys
         except Exception as e:
             logger.error(
@@ -2621,7 +2710,7 @@ SQL_TEMPLATES = {
                                 FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode, chunk_id
-                                FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode=$2
+                                FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id=$2
                                """,
     "get_by_mode_id_llm_response_cache": """SELECT id, original_prompt, COALESCE(return_value, '') as "return", mode, chunk_id
                            FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND mode=$2 AND id=$3

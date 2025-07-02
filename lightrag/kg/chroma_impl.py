@@ -109,7 +109,7 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             raise
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 
@@ -234,7 +234,6 @@ class ChromaVectorDBStorage(BaseVectorStorage):
             ids: List of vector IDs to be deleted
         """
         try:
-            logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
             self._collection.delete(ids=ids)
             logger.debug(
                 f"Successfully deleted {len(ids)} vectors from {self.namespace}"

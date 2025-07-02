@@ -257,7 +257,7 @@ class TiDBKVStorage(BaseKVStorage):
 
     ################ INSERT full_doc AND chunks ################
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
         left_data = {k: v for k, v in data.items() if k not in self._data}
@@ -454,11 +454,9 @@ class TiDBVectorDBStorage(BaseVectorStorage):
 
     ###### INSERT entities And relationships ######
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
-
-        logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} vectors to {self.namespace}")
 
         # Get current time as UNIX timestamp
         import time

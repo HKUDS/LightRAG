@@ -85,7 +85,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
 

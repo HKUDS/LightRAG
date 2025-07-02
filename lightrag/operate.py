@@ -399,10 +399,10 @@ async def _get_cached_extraction_results(
     """
     cached_results = {}
 
-    # Get all cached data for "default" mode (entity extraction cache)
-    default_cache = await llm_response_cache.get_by_id("default") or {}
+    # Get all cached data (flattened cache structure)
+    all_cache = await llm_response_cache.get_all()
 
-    for cache_key, cache_entry in default_cache.items():
+    for cache_key, cache_entry in all_cache.items():
         if (
             isinstance(cache_entry, dict)
             and cache_entry.get("cache_type") == "extract"
@@ -1387,7 +1387,7 @@ async def kg_query(
         use_model_func = partial(use_model_func, _priority=5)
 
     # Handle cache
-    args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
+    args_hash = compute_args_hash(query_param.mode, query)
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
@@ -1546,7 +1546,7 @@ async def extract_keywords_only(
     """
 
     # 1. Handle cache if needed - add cache type for keywords
-    args_hash = compute_args_hash(param.mode, text, cache_type="keywords")
+    args_hash = compute_args_hash(param.mode, text)
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
     )
@@ -2413,7 +2413,7 @@ async def naive_query(
         use_model_func = partial(use_model_func, _priority=5)
 
     # Handle cache
-    args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
+    args_hash = compute_args_hash(query_param.mode, query)
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
@@ -2529,7 +2529,7 @@ async def kg_query_with_keywords(
         # Apply higher priority (5) to query relation LLM function
         use_model_func = partial(use_model_func, _priority=5)
 
-    args_hash = compute_args_hash(query_param.mode, query, cache_type="query")
+    args_hash = compute_args_hash(query_param.mode, query)
     cached_response, quantized, min_val, max_val = await handle_cache(
         hashing_kv, args_hash, query, query_param.mode, cache_type="query"
     )
