@@ -828,7 +828,7 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
-        logger.info(f"Found {total_files} new files to index.")
+        logger.info(f"Found {total_files} files to index.")
 
         if not new_files:
             return
