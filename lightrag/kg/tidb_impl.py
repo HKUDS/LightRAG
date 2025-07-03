@@ -520,11 +520,6 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                 }
                 await self.db.execute(SQL_TEMPLATES["upsert_relationship"], param)
 
-    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
-        SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
-        params = {"workspace": self.db.workspace, "status": status}
-        return await self.db.query(SQL, params, multirows=True)
-
     async def delete(self, ids: list[str]) -> None:
         """Delete vectors with specified IDs from the storage.
 

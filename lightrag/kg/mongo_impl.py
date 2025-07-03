@@ -133,6 +133,11 @@ class MongoKVStorage(BaseKVStorage):
 
         operations = []
         for k, v in data.items():
+            # For text_chunks namespace, ensure llm_cache_list field exists
+            if self.namespace.endswith("text_chunks"):
+                if "llm_cache_list" not in v:
+                    v["llm_cache_list"] = []
+
             v["_id"] = k  # Use flattened key as _id
             operations.append(UpdateOne({"_id": k}, {"$set": v}, upsert=True))
 
@@ -247,6 +252,9 @@ class MongoDocStatusStorage(DocStatusStorage):
             return
         update_tasks: list[Any] = []
         for k, v in data.items():
+            # Ensure chunks_list field exists and is an array
+            if "chunks_list" not in v:
+                v["chunks_list"] = []
             data[k]["_id"] = k
             update_tasks.append(
                 self._data.update_one({"_id": k}, {"$set": v}, upsert=True)
@@ -279,6 +287,7 @@ class MongoDocStatusStorage(DocStatusStorage):
                 updated_at=doc.get("updated_at"),
                 chunks_count=doc.get("chunks_count", -1),
                 file_path=doc.get("file_path", doc["_id"]),
+                chunks_list=doc.get("chunks_list", []),
             )
             for doc in result
         }
