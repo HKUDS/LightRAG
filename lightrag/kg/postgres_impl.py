@@ -752,6 +752,8 @@ class PGKVStorage(BaseKVStorage):
                         "original_prompt": row.get("original_prompt", ""),
                         "chunk_id": row.get("chunk_id"),
                         "mode": row.get("mode", "default"),
+                        "create_time": row.get("create_time", 0),
+                        "update_time": row.get("update_time", 0),
                     }
                     processed_results[row["id"]] = processed_row
                 return processed_results
@@ -767,6 +769,8 @@ class PGKVStorage(BaseKVStorage):
                         except json.JSONDecodeError:
                             llm_cache_list = []
                     row["llm_cache_list"] = llm_cache_list
+                    row["create_time"] = row.get("create_time", 0)
+                    row["update_time"] = row.get("update_time", 0)
                     processed_results[row["id"]] = row
                 return processed_results
 
@@ -791,6 +795,8 @@ class PGKVStorage(BaseKVStorage):
                 except json.JSONDecodeError:
                     llm_cache_list = []
             response["llm_cache_list"] = llm_cache_list
+            response["create_time"] = response.get("create_time", 0)
+            response["update_time"] = response.get("update_time", 0)
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if response and is_namespace(
@@ -804,6 +810,8 @@ class PGKVStorage(BaseKVStorage):
                 "original_prompt": response.get("original_prompt", ""),
                 "chunk_id": response.get("chunk_id"),
                 "mode": response.get("mode", "default"),
+                "create_time": response.get("create_time", 0),
+                "update_time": response.get("update_time", 0),
             }
 
         return response if response else None
@@ -827,6 +835,8 @@ class PGKVStorage(BaseKVStorage):
                     except json.JSONDecodeError:
                         llm_cache_list = []
                 result["llm_cache_list"] = llm_cache_list
+                result["create_time"] = result.get("create_time", 0)
+                result["update_time"] = result.get("update_time", 0)
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if results and is_namespace(
@@ -842,6 +852,8 @@ class PGKVStorage(BaseKVStorage):
                     "original_prompt": row.get("original_prompt", ""),
                     "chunk_id": row.get("chunk_id"),
                     "mode": row.get("mode", "default"),
+                    "create_time": row.get("create_time", 0),
+                    "update_time": row.get("update_time", 0),
                 }
                 processed_results.append(processed_row)
             return processed_results
@@ -2941,10 +2953,12 @@ SQL_TEMPLATES = {
                             """,
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
                                 chunk_order_index, full_doc_id, file_path,
-                                COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list
+                                COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
+                                create_time, update_time
                                 FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
                             """,
-    "get_by_id_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type
+    "get_by_id_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type,
+                                create_time, update_time
                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id=$2
                                """,
     "get_by_mode_id_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id
@@ -2955,10 +2969,12 @@ SQL_TEMPLATES = {
                             """,
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
                                   chunk_order_index, full_doc_id, file_path,
-                                  COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list
+                                  COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
+                                  create_time, update_time
                                    FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id IN ({ids})
                                 """,
-    "get_by_ids_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type
+    "get_by_ids_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type,
+                                 create_time, update_time
                                  FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id IN ({ids})
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",

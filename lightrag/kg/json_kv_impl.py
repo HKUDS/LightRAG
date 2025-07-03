@@ -78,22 +78,49 @@ class JsonKVStorage(BaseKVStorage):
             Dictionary containing all stored data
         """
         async with self._storage_lock:
-            return dict(self._data)
+            result = {}
+            for key, value in self._data.items():
+                if value:
+                    # Create a copy to avoid modifying the original data
+                    data = dict(value)
+                    # Ensure time fields are present, provide default values for old data
+                    data.setdefault("create_time", 0)
+                    data.setdefault("update_time", 0)
+                    result[key] = data
+                else:
+                    result[key] = value
+            return result
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         async with self._storage_lock:
-            return self._data.get(id)
+            result = self._data.get(id)
+            if result:
+                # Create a copy to avoid modifying the original data
+                result = dict(result)
+                # Ensure time fields are present, provide default values for old data
+                result.setdefault("create_time", 0)
+                result.setdefault("update_time", 0)
+                # Ensure _id field contains the clean ID
+                result["_id"] = id
+            return result
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         async with self._storage_lock:
-            return [
-                (
-                    {k: v for k, v in self._data[id].items()}
-                    if self._data.get(id, None)
-                    else None
-                )
-                for id in ids
-            ]
+            results = []
+            for id in ids:
+                data = self._data.get(id, None)
+                if data:
+                    # Create a copy to avoid modifying the original data
+                    result = {k: v for k, v in data.items()}
+                    # Ensure time fields are present, provide default values for old data
+                    result.setdefault("create_time", 0)
+                    result.setdefault("update_time", 0)
+                    # Ensure _id field contains the clean ID
+                    result["_id"] = id
+                    results.append(result)
+                else:
+                    results.append(None)
+            return results
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         async with self._storage_lock:
@@ -107,13 +134,29 @@ class JsonKVStorage(BaseKVStorage):
         """
         if not data:
             return
+
+        import time
+
+        current_time = int(time.time())  # Get current Unix timestamp
+
         logger.debug(f"Inserting {len(data)} records to {self.namespace}")
         async with self._storage_lock:
-            # For text_chunks namespace, ensure llm_cache_list field exists
-            if "text_chunks" in self.namespace:
-                for chunk_id, chunk_data in data.items():
-                    if "llm_cache_list" not in chunk_data:
-                        chunk_data["llm_cache_list"] = []
+            # Add timestamps to data based on whether key exists
+            for k, v in data.items():
+                # For text_chunks namespace, ensure llm_cache_list field exists
+                if "text_chunks" in self.namespace:
+                    if "llm_cache_list" not in v:
+                        v["llm_cache_list"] = []
+
+                # Add timestamps based on whether key exists
+                if k in self._data:  # Key exists, only update update_time
+                    v["update_time"] = current_time
+                else:  # New key, set both create_time and update_time
+                    v["create_time"] = current_time
+                    v["update_time"] = current_time
+
+                v["_id"] = k
+
             self._data.update(data)
             await set_all_update_flags(self.namespace)
 

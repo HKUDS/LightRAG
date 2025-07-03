@@ -132,7 +132,13 @@ class RedisKVStorage(BaseKVStorage):
         async with self._get_redis_connection() as redis:
             try:
                 data = await redis.get(f"{self.namespace}:{id}")
-                return json.loads(data) if data else None
+                if data:
+                    result = json.loads(data)
+                    # Ensure time fields are present, provide default values for old data
+                    result.setdefault("create_time", 0)
+                    result.setdefault("update_time", 0)
+                    return result
+                return None
             except json.JSONDecodeError as e:
                 logger.error(f"JSON decode error for id {id}: {e}")
                 return None
@@ -144,7 +150,19 @@ class RedisKVStorage(BaseKVStorage):
                 for id in ids:
                     pipe.get(f"{self.namespace}:{id}")
                 results = await pipe.execute()
-                return [json.loads(result) if result else None for result in results]
+
+                processed_results = []
+                for result in results:
+                    if result:
+                        data = json.loads(result)
+                        # Ensure time fields are present for all documents
+                        data.setdefault("create_time", 0)
+                        data.setdefault("update_time", 0)
+                        processed_results.append(data)
+                    else:
+                        processed_results.append(None)
+
+                return processed_results
             except json.JSONDecodeError as e:
                 logger.error(f"JSON decode error in batch get: {e}")
                 return [None] * len(ids)
@@ -176,7 +194,11 @@ class RedisKVStorage(BaseKVStorage):
                         # Extract the ID part (after namespace:)
                         key_id = key.split(":", 1)[1]
                         try:
-                            result[key_id] = json.loads(value)
+                            data = json.loads(value)
+                            # Ensure time fields are present for all documents
+                            data.setdefault("create_time", 0)
+                            data.setdefault("update_time", 0)
+                            result[key_id] = data
                         except json.JSONDecodeError as e:
                             logger.error(f"JSON decode error for key {key}: {e}")
                             continue
@@ -200,21 +222,41 @@ class RedisKVStorage(BaseKVStorage):
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         if not data:
             return
+
+        import time
+
+        current_time = int(time.time())  # Get current Unix timestamp
+
         async with self._get_redis_connection() as redis:
             try:
-                # For text_chunks namespace, ensure llm_cache_list field exists
-                if "text_chunks" in self.namespace:
-                    for chunk_id, chunk_data in data.items():
-                        if "llm_cache_list" not in chunk_data:
-                            chunk_data["llm_cache_list"] = []
+                # Check which keys already exist to determine create vs update
+                pipe = redis.pipeline()
+                for k in data.keys():
+                    pipe.exists(f"{self.namespace}:{k}")
+                exists_results = await pipe.execute()
 
+                # Add timestamps to data
+                for i, (k, v) in enumerate(data.items()):
+                    # For text_chunks namespace, ensure llm_cache_list field exists
+                    if "text_chunks" in self.namespace:
+                        if "llm_cache_list" not in v:
+                            v["llm_cache_list"] = []
+
+                    # Add timestamps based on whether key exists
+                    if exists_results[i]:  # Key exists, only update update_time
+                        v["update_time"] = current_time
+                    else:  # New key, set both create_time and update_time
+                        v["create_time"] = current_time
+                        v["update_time"] = current_time
+
+                    v["_id"] = k
+
+                # Store the data
                 pipe = redis.pipeline()
                 for k, v in data.items():
                     pipe.set(f"{self.namespace}:{k}", json.dumps(v))
                 await pipe.execute()
 
-                for k in data:
-                    data[k]["_id"] = k
             except json.JSONEncodeError as e:
                 logger.error(f"JSON encode error during upsert: {e}")
                 raise

@@ -273,8 +273,6 @@ async def _rebuild_knowledge_from_chunks(
         all_referenced_chunk_ids.update(chunk_ids)
     for chunk_ids in relationships_to_rebuild.values():
         all_referenced_chunk_ids.update(chunk_ids)
-    # sort all_referenced_chunk_ids to get a stable order in merge stage
-    all_referenced_chunk_ids = sorted(all_referenced_chunk_ids)
 
     status_message = f"Rebuilding knowledge from {len(all_referenced_chunk_ids)} cached chunk extractions"
     logger.info(status_message)
@@ -464,12 +462,22 @@ async def _get_cached_extraction_results(
         ):
             chunk_id = cache_entry["chunk_id"]
             extraction_result = cache_entry["return"]
+            create_time = cache_entry.get(
+                "create_time", 0
+            )  # Get creation time, default to 0
             valid_entries += 1
 
             # Support multiple LLM caches per chunk
             if chunk_id not in cached_results:
                 cached_results[chunk_id] = []
-            cached_results[chunk_id].append(extraction_result)
+            # Store tuple with extraction result and creation time for sorting
+            cached_results[chunk_id].append((extraction_result, create_time))
+
+    # Sort extraction results by create_time for each chunk
+    for chunk_id in cached_results:
+        # Sort by create_time (x[1]), then extract only extraction_result (x[0])
+        cached_results[chunk_id].sort(key=lambda x: x[1])
+        cached_results[chunk_id] = [item[0] for item in cached_results[chunk_id]]
 
     logger.info(
         f"Found {valid_entries} valid cache entries, {len(cached_results)} chunks with results"
