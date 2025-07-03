@@ -98,11 +98,21 @@ class MongoKVStorage(BaseKVStorage):
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         # Unified handling for flattened keys
-        return await self._data.find_one({"_id": id})
+        doc = await self._data.find_one({"_id": id})
+        if doc:
+            # Ensure time fields are present, provide default values for old data
+            doc.setdefault("create_time", 0)
+            doc.setdefault("update_time", 0)
+        return doc
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         cursor = self._data.find({"_id": {"$in": ids}})
-        return await cursor.to_list()
+        docs = await cursor.to_list()
+        # Ensure time fields are present for all documents
+        for doc in docs:
+            doc.setdefault("create_time", 0)
+            doc.setdefault("update_time", 0)
+        return docs
 
     async def filter_keys(self, keys: set[str]) -> set[str]:
         cursor = self._data.find({"_id": {"$in": list(keys)}}, {"_id": 1})
@@ -119,6 +129,9 @@ class MongoKVStorage(BaseKVStorage):
         result = {}
         async for doc in cursor:
             doc_id = doc.pop("_id")
+            # Ensure time fields are present for all documents
+            doc.setdefault("create_time", 0)
+            doc.setdefault("update_time", 0)
             result[doc_id] = doc
         return result
 
@@ -132,9 +145,29 @@ class MongoKVStorage(BaseKVStorage):
         from pymongo import UpdateOne
 
         operations = []
+        current_time = int(time.time())  # Get current Unix timestamp
+
         for k, v in data.items():
+            # For text_chunks namespace, ensure llm_cache_list field exists
+            if self.namespace.endswith("text_chunks"):
+                if "llm_cache_list" not in v:
+                    v["llm_cache_list"] = []
+
             v["_id"] = k  # Use flattened key as _id
-            operations.append(UpdateOne({"_id": k}, {"$set": v}, upsert=True))
+            v["update_time"] = current_time  # Always update update_time
+
+            operations.append(
+                UpdateOne(
+                    {"_id": k},
+                    {
+                        "$set": v,  # Update all fields including update_time
+                        "$setOnInsert": {
+                            "create_time": current_time
+                        },  # Set create_time only on insert
+                    },
+                    upsert=True,
+                )
+            )
 
         if operations:
             await self._data.bulk_write(operations)
@@ -247,6 +280,9 @@ class MongoDocStatusStorage(DocStatusStorage):
             return
         update_tasks: list[Any] = []
         for k, v in data.items():
+            # Ensure chunks_list field exists and is an array
+            if "chunks_list" not in v:
+                v["chunks_list"] = []
             data[k]["_id"] = k
             update_tasks.append(
                 self._data.update_one({"_id": k}, {"$set": v}, upsert=True)
@@ -279,6 +315,7 @@ class MongoDocStatusStorage(DocStatusStorage):
                 updated_at=doc.get("updated_at"),
                 chunks_count=doc.get("chunks_count", -1),
                 file_path=doc.get("file_path", doc["_id"]),
+                chunks_list=doc.get("chunks_list", []),
             )
             for doc in result
         }

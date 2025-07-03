@@ -349,6 +349,7 @@ class LightRAG:
 
         # Fix global_config now
         global_config = asdict(self)
+
         _print_config = ",\n  ".join([f"{k} = {v}" for k, v in global_config.items()])
         logger.debug(f"LightRAG init with param:\n  {_print_config}\n")
 
@@ -952,6 +953,7 @@ class LightRAG:
                                     **dp,
                                     "full_doc_id": doc_id,
                                     "file_path": file_path,  # Add file path to each chunk
+                                    "llm_cache_list": [],  # Initialize empty LLM cache list for each chunk
                                 }
                                 for dp in self.chunking_func(
                                     self.tokenizer,
@@ -963,14 +965,17 @@ class LightRAG:
                                 )
                             }
 
-                            # Process document (text chunks and full docs) in parallel
-                            # Create tasks with references for potential cancellation
+                            # Process document in two stages
+                            # Stage 1: Process text chunks and docs (parallel execution)
                             doc_status_task = asyncio.create_task(
                                 self.doc_status.upsert(
                                     {
                                         doc_id: {
                                             "status": DocStatus.PROCESSING,
                                             "chunks_count": len(chunks),
+                                            "chunks_list": list(
+                                                chunks.keys()
+                                            ),  # Save chunks list
                                             "content": status_doc.content,
                                             "content_summary": status_doc.content_summary,
                                             "content_length": status_doc.content_length,
@@ -986,11 +991,6 @@ class LightRAG:
                             chunks_vdb_task = asyncio.create_task(
                                 self.chunks_vdb.upsert(chunks)
                             )
-                            entity_relation_task = asyncio.create_task(
-                                self._process_entity_relation_graph(
-                                    chunks, pipeline_status, pipeline_status_lock
-                                )
-                            )
                             full_docs_task = asyncio.create_task(
                                 self.full_docs.upsert(
                                     {doc_id: {"content": status_doc.content}}
@@ -999,14 +999,26 @@ class LightRAG:
                             text_chunks_task = asyncio.create_task(
                                 self.text_chunks.upsert(chunks)
                             )
-                            tasks = [
+
+                            # First stage tasks (parallel execution)
+                            first_stage_tasks = [
                                 doc_status_task,
                                 chunks_vdb_task,
-                                entity_relation_task,
                                 full_docs_task,
                                 text_chunks_task,
                             ]
-                            await asyncio.gather(*tasks)
+                            entity_relation_task = None
+
+                            # Execute first stage tasks
+                            await asyncio.gather(*first_stage_tasks)
+
+                            # Stage 2: Process entity relation graph (after text_chunks are saved)
+                            entity_relation_task = asyncio.create_task(
+                                self._process_entity_relation_graph(
+                                    chunks, pipeline_status, pipeline_status_lock
+                                )
+                            )
+                            await entity_relation_task
                             file_extraction_stage_ok = True
 
                         except Exception as e:
@@ -1021,14 +1033,14 @@ class LightRAG:
                                 )
                                 pipeline_status["history_messages"].append(error_msg)
 
-                                # Cancel other tasks as they are no longer meaningful
-                                for task in [
-                                    chunks_vdb_task,
-                                    entity_relation_task,
-                                    full_docs_task,
-                                    text_chunks_task,
-                                ]:
-                                    if not task.done():
+                                # Cancel tasks that are not yet completed
+                                all_tasks = first_stage_tasks + (
+                                    [entity_relation_task]
+                                    if entity_relation_task
+                                    else []
+                                )
+                                for task in all_tasks:
+                                    if task and not task.done():
                                         task.cancel()
 
                             # Persistent llm cache
@@ -1078,6 +1090,9 @@ class LightRAG:
                                     doc_id: {
                                         "status": DocStatus.PROCESSED,
                                         "chunks_count": len(chunks),
+                                        "chunks_list": list(
+                                            chunks.keys()
+                                        ),  # 保留 chunks_list
                                         "content": status_doc.content,
                                         "content_summary": status_doc.content_summary,
                                         "content_length": status_doc.content_length,
@@ -1196,6 +1211,7 @@ class LightRAG:
                 pipeline_status=pipeline_status,
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
+                text_chunks_storage=self.text_chunks,
             )
             return chunk_results
         except Exception as e:
@@ -1726,28 +1742,10 @@ class LightRAG:
                     file_path="",
                 )
 
-            # 2. Get all chunks related to this document
-            try:
-                all_chunks = await self.text_chunks.get_all()
-                related_chunks = {
-                    chunk_id: chunk_data
-                    for chunk_id, chunk_data in all_chunks.items()
-                    if isinstance(chunk_data, dict)
-                    and chunk_data.get("full_doc_id") == doc_id
-                }
+            # 2. Get chunk IDs from document status
+            chunk_ids = set(doc_status_data.get("chunks_list", []))
 
-                # Update pipeline status after getting chunks count
-                async with pipeline_status_lock:
-                    log_message = f"Retrieved {len(related_chunks)} of {len(all_chunks)} related chunks"
-                    logger.info(log_message)
-                    pipeline_status["latest_message"] = log_message
-                    pipeline_status["history_messages"].append(log_message)
-
-            except Exception as e:
-                logger.error(f"Failed to retrieve chunks for document {doc_id}: {e}")
-                raise Exception(f"Failed to retrieve document chunks: {e}") from e
-
-            if not related_chunks:
+            if not chunk_ids:
                 logger.warning(f"No chunks found for document {doc_id}")
                 # Mark that deletion operations have started
                 deletion_operations_started = True
@@ -1778,7 +1776,6 @@ class LightRAG:
                     file_path=file_path,
                 )
 
-            chunk_ids = set(related_chunks.keys())
             # Mark that deletion operations have started
             deletion_operations_started = True
 
@@ -1802,25 +1799,11 @@ class LightRAG:
                         )
                     )
 
-                    # Update pipeline status after getting affected_nodes
-                    async with pipeline_status_lock:
-                        log_message = f"Found {len(affected_nodes)} affected entities"
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
-
                     affected_edges = (
                         await self.chunk_entity_relation_graph.get_edges_by_chunk_ids(
                             list(chunk_ids)
                         )
                     )
-
-                    # Update pipeline status after getting affected_edges
-                    async with pipeline_status_lock:
-                        log_message = f"Found {len(affected_edges)} affected relations"
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to analyze affected graph elements: {e}")
@@ -1838,6 +1821,14 @@ class LightRAG:
                                 entities_to_delete.add(node_label)
                             elif remaining_sources != sources:
                                 entities_to_rebuild[node_label] = remaining_sources
+
+                    async with pipeline_status_lock:
+                        log_message = (
+                            f"Found {len(entities_to_rebuild)} affected entities"
+                        )
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
                     # Process relationships
                     for edge_data in affected_edges:
@@ -1859,6 +1850,14 @@ class LightRAG:
                                 relationships_to_delete.add(edge_tuple)
                             elif remaining_sources != sources:
                                 relationships_to_rebuild[edge_tuple] = remaining_sources
+
+                    async with pipeline_status_lock:
+                        log_message = (
+                            f"Found {len(relationships_to_rebuild)} affected relations"
+                        )
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to process graph analysis results: {e}")
@@ -1943,7 +1942,7 @@ class LightRAG:
                             knowledge_graph_inst=self.chunk_entity_relation_graph,
                             entities_vdb=self.entities_vdb,
                             relationships_vdb=self.relationships_vdb,
-                            text_chunks=self.text_chunks,
+                            text_chunks_storage=self.text_chunks,
                             llm_response_cache=self.llm_response_cache,
                             global_config=asdict(self),
                             pipeline_status=pipeline_status,
