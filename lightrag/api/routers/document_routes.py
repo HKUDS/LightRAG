@@ -861,8 +861,13 @@ async def background_delete_documents(
     successful_deletions = []
     failed_deletions = []
 
-    # Set pipeline status to busy for deletion
+    # Double-check pipeline status before proceeding
     async with pipeline_status_lock:
+        if pipeline_status.get("busy", False):
+            logger.warning("Error: Unexpected pipeline busy state, aborting deletion.")
+            return  # Abort deletion operation
+        
+        # Set pipeline status to busy for deletion
         pipeline_status.update(
             {
                 "busy": True,
@@ -971,12 +976,23 @@ async def background_delete_documents(
         async with pipeline_status_lock:
             pipeline_status["history_messages"].append(error_msg)
     finally:
-        # Final summary
+        # Final summary and check for pending requests
         async with pipeline_status_lock:
             pipeline_status["busy"] = False
             completion_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
             pipeline_status["latest_message"] = completion_msg
             pipeline_status["history_messages"].append(completion_msg)
+            
+            # Check if there are pending document indexing requests
+            has_pending_request = pipeline_status.get("request_pending", False)
+
+        # If there are pending requests, start document processing pipeline
+        if has_pending_request:
+            try:
+                logger.info("Processing pending document indexing requests after deletion")
+                await rag.apipeline_process_enqueue_documents()
+            except Exception as e:
+                logger.error(f"Error processing pending documents after deletion: {e}")
 
 
 def create_document_routes(
