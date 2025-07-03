@@ -160,7 +160,9 @@ class PostgreSQLDB:
                 )
 
                 # Migrate existing data: extract cache_type from flattened keys
-                logger.info("Migrating existing LLM cache data to populate cache_type field")
+                logger.info(
+                    "Migrating existing LLM cache data to populate cache_type field"
+                )
                 update_sql = """
                 UPDATE LIGHTRAG_LLM_CACHE
                 SET cache_type = CASE
@@ -176,7 +178,9 @@ class PostgreSQLDB:
                     "cache_type column already exists in LIGHTRAG_LLM_CACHE table"
                 )
         except Exception as e:
-            logger.warning(f"Failed to add cache_type column to LIGHTRAG_LLM_CACHE: {e}")
+            logger.warning(
+                f"Failed to add cache_type column to LIGHTRAG_LLM_CACHE: {e}"
+            )
 
     async def _migrate_timestamp_columns(self):
         """Migrate timestamp columns in tables to timezone-aware types, assuming original data is in UTC time"""
@@ -345,7 +349,7 @@ class PostgreSQLDB:
 
                     # Determine cache_type based on mode
                     cache_type = "extract" if record["mode"] == "default" else "unknown"
-                    
+
                     # Generate new flattened key
                     new_key = f"{record['mode']}:{cache_type}:{new_hash}"
 
@@ -519,7 +523,9 @@ class PostgreSQLDB:
         try:
             await self._migrate_llm_cache_add_cache_type()
         except Exception as e:
-            logger.error(f"PostgreSQL, Failed to migrate LLM cache cache_type field: {e}")
+            logger.error(
+                f"PostgreSQL, Failed to migrate LLM cache cache_type field: {e}"
+            )
             # Don't throw an exception, allow the initialization process to continue
 
         # Finally, attempt to migrate old doc chunks data if needed
@@ -787,7 +793,9 @@ class PGKVStorage(BaseKVStorage):
             response["llm_cache_list"] = llm_cache_list
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
-        if response and is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
+        if response and is_namespace(
+            self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+        ):
             # Map field names and add cache_type for compatibility
             response = {
                 **response,
@@ -821,7 +829,9 @@ class PGKVStorage(BaseKVStorage):
                 result["llm_cache_list"] = llm_cache_list
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
-        if results and is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
+        if results and is_namespace(
+            self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
+        ):
             processed_results = []
             for row in results:
                 # Map field names and add cache_type for compatibility
@@ -901,7 +911,9 @@ class PGKVStorage(BaseKVStorage):
                     "return_value": v["return"],
                     "mode": v.get("mode", "default"),  # Get mode from data
                     "chunk_id": v.get("chunk_id"),
-                    "cache_type": v.get("cache_type", "extract"),  # Get cache_type from data
+                    "cache_type": v.get(
+                        "cache_type", "extract"
+                    ),  # Get cache_type from data
                 }
 
                 await self.db.execute(upsert_sql, _data)
