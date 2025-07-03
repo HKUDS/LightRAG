@@ -11,9 +11,74 @@ This example shows how to:
 import os
 import argparse
 import asyncio
+import logging
+import logging.config
+from pathlib import Path
+
+# Add project root directory to Python path
+import sys
+
+sys.path.append(str(Path(__file__).parent.parent))
+
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-from lightrag.utils import EmbeddingFunc
-from raganything.raganything import RAGAnything
+from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
+from raganything import RAGAnything, RAGAnythingConfig
+
+
+def configure_logging():
+    """Configure logging for the application"""
+    # Get log directory path from environment variable or use current directory
+    log_dir = os.getenv("LOG_DIR", os.getcwd())
+    log_file_path = os.path.abspath(os.path.join(log_dir, "raganything_example.log"))
+
+    print(f"\nRAGAnything example log file: {log_file_path}\n")
+    os.makedirs(os.path.dirname(log_dir), exist_ok=True)
+
+    # Get log file max size and backup count from environment variables
+    log_max_bytes = int(os.getenv("LOG_MAX_BYTES", 10485760))  # Default 10MB
+    log_backup_count = int(os.getenv("LOG_BACKUP_COUNT", 5))  # Default 5 backups
+
+    logging.config.dictConfig(
+        {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "format": "%(levelname)s: %(message)s",
+                },
+                "detailed": {
+                    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+                },
+            },
+            "handlers": {
+                "console": {
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stderr",
+                },
+                "file": {
+                    "formatter": "detailed",
+                    "class": "logging.handlers.RotatingFileHandler",
+                    "filename": log_file_path,
+                    "maxBytes": log_max_bytes,
+                    "backupCount": log_backup_count,
+                    "encoding": "utf-8",
+                },
+            },
+            "loggers": {
+                "lightrag": {
+                    "handlers": ["console", "file"],
+                    "level": "INFO",
+                    "propagate": False,
+                },
+            },
+        }
+    )
+
+    # Set the logger level to INFO
+    logger.setLevel(logging.INFO)
+    # Enable verbose debug if needed
+    set_verbose_debug(os.getenv("VERBOSE", "false").lower() == "true")
 
 
 async def process_with_rag(
@@ -31,75 +96,84 @@ async def process_with_rag(
         output_dir: Output directory for RAG results
         api_key: OpenAI API key
         base_url: Optional base URL for API
+        working_dir: Working directory for RAG storage
     """
     try:
-        # Initialize RAGAnything
-        rag = RAGAnything(
-            working_dir=working_dir,
-            llm_model_func=lambda prompt,
-            system_prompt=None,
-            history_messages=[],
-            **kwargs: openai_complete_if_cache(
+        # Create RAGAnything configuration
+        config = RAGAnythingConfig(
+            working_dir=working_dir or "./rag_storage",
+            mineru_parse_method="auto",
+            enable_image_processing=True,
+            enable_table_processing=True,
+            enable_equation_processing=True,
+        )
+
+        # Define LLM model function
+        def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwargs):
+            return openai_complete_if_cache(
                 "gpt-4o-mini",
                 prompt,
                 system_prompt=system_prompt,
                 history_messages=history_messages,
-                api_key=api_key,
-                base_url=base_url,
-                **kwargs,
-            ),
-            vision_model_func=lambda prompt,
-            system_prompt=None,
-            history_messages=[],
-            image_data=None,
-            **kwargs: openai_complete_if_cache(
-                "gpt-4o",
-                "",
-                system_prompt=None,
-                history_messages=[],
-                messages=[
-                    {"role": "system", "content": system_prompt}
-                    if system_prompt
-                    else None,
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": prompt},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{image_data}"
-                                },
-                            },
-                        ],
-                    }
-                    if image_data
-                    else {"role": "user", "content": prompt},
-                ],
                 api_key=api_key,
                 base_url=base_url,
                 **kwargs,
             )
-            if image_data
-            else openai_complete_if_cache(
-                "gpt-4o-mini",
-                prompt,
-                system_prompt=system_prompt,
-                history_messages=history_messages,
-                api_key=api_key,
-                base_url=base_url,
-                **kwargs,
-            ),
-            embedding_func=EmbeddingFunc(
-                embedding_dim=3072,
-                max_token_size=8192,
-                func=lambda texts: openai_embed(
-                    texts,
-                    model="text-embedding-3-large",
+
+        # Define vision model function for image processing
+        def vision_model_func(
+            prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs
+        ):
+            if image_data:
+                return openai_complete_if_cache(
+                    "gpt-4o",
+                    "",
+                    system_prompt=None,
+                    history_messages=[],
+                    messages=[
+                        {"role": "system", "content": system_prompt}
+                        if system_prompt
+                        else None,
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": prompt},
+                                {
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": f"data:image/jpeg;base64,{image_data}"
+                                    },
+                                },
+                            ],
+                        }
+                        if image_data
+                        else {"role": "user", "content": prompt},
+                    ],
                     api_key=api_key,
                     base_url=base_url,
-                ),
+                    **kwargs,
+                )
+            else:
+                return llm_model_func(prompt, system_prompt, history_messages, **kwargs)
+
+        # Define embedding function
+        embedding_func = EmbeddingFunc(
+            embedding_dim=3072,
+            max_token_size=8192,
+            func=lambda texts: openai_embed(
+                texts,
+                model="text-embedding-3-large",
+                api_key=api_key,
+                base_url=base_url,
             ),
+        )
+
+        # Initialize RAGAnything with new dataclass structure
+        rag = RAGAnything(
+            config=config,
+            llm_model_func=llm_model_func,
+            vision_model_func=vision_model_func,
+            embedding_func=embedding_func,
         )
 
         # Process document
@@ -114,14 +188,17 @@ async def process_with_rag(
             "Tell me about the experimental results and data tables",
         ]
 
-        print("\nQuerying processed document:")
+        logger.info("\nQuerying processed document:")
         for query in queries:
-            print(f"\nQuery: {query}")
+            logger.info(f"\nQuery: {query}")
             result = await rag.query_with_multimodal(query, mode="hybrid")
-            print(f"Answer: {result}")
+            logger.info(f"Answer: {result}")
 
     except Exception as e:
-        print(f"Error processing with RAG: {str(e)}")
+        logger.error(f"Error processing with RAG: {str(e)}")
+        import traceback
+
+        logger.error(traceback.format_exc())
 
 
 def main():
@@ -135,11 +212,19 @@ def main():
         "--output", "-o", default="./output", help="Output directory path"
     )
     parser.add_argument(
-        "--api-key", required=True, help="OpenAI API key for RAG processing"
+        "--api-key",
+        default=os.getenv("OPENAI_API_KEY"),
+        help="OpenAI API key (defaults to OPENAI_API_KEY env var)",
     )
     parser.add_argument("--base-url", help="Optional base URL for API")
 
     args = parser.parse_args()
+
+    # Check if API key is provided
+    if not args.api_key:
+        logger.error("Error: OpenAI API key is required")
+        logger.error("Set OPENAI_API_KEY environment variable or use --api-key option")
+        return
 
     # Create output directory if specified
     if args.output:
@@ -154,4 +239,12 @@ def main():
 
 
 if __name__ == "__main__":
+    # Configure logging first
+    configure_logging()
+
+    print("RAGAnything Example")
+    print("=" * 30)
+    print("Processing document with multimodal RAG pipeline")
+    print("=" * 30)
+
     main()
