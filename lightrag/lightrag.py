@@ -1799,25 +1799,11 @@ class LightRAG:
                         )
                     )
 
-                    # Update pipeline status after getting affected_nodes
-                    async with pipeline_status_lock:
-                        log_message = f"Found {len(affected_nodes)} affected entities"
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
-
                     affected_edges = (
                         await self.chunk_entity_relation_graph.get_edges_by_chunk_ids(
                             list(chunk_ids)
                         )
                     )
-
-                    # Update pipeline status after getting affected_edges
-                    async with pipeline_status_lock:
-                        log_message = f"Found {len(affected_edges)} affected relations"
-                        logger.info(log_message)
-                        pipeline_status["latest_message"] = log_message
-                        pipeline_status["history_messages"].append(log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to analyze affected graph elements: {e}")
@@ -1835,6 +1821,14 @@ class LightRAG:
                                 entities_to_delete.add(node_label)
                             elif remaining_sources != sources:
                                 entities_to_rebuild[node_label] = remaining_sources
+
+                    async with pipeline_status_lock:
+                        log_message = (
+                            f"Found {len(entities_to_rebuild)} affected entities"
+                        )
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
                     # Process relationships
                     for edge_data in affected_edges:
@@ -1856,6 +1850,14 @@ class LightRAG:
                                 relationships_to_delete.add(edge_tuple)
                             elif remaining_sources != sources:
                                 relationships_to_rebuild[edge_tuple] = remaining_sources
+
+                    async with pipeline_status_lock:
+                        log_message = (
+                            f"Found {len(relationships_to_rebuild)} affected relations"
+                        )
+                        logger.info(log_message)
+                        pipeline_status["latest_message"] = log_message
+                        pipeline_status["history_messages"].append(log_message)
 
                 except Exception as e:
                     logger.error(f"Failed to process graph analysis results: {e}")
