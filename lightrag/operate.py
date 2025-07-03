@@ -284,6 +284,7 @@ async def _rebuild_knowledge_from_chunks(
             pipeline_status["history_messages"].append(status_message)
 
     # Get cached extraction results for these chunks using storage
+    #    cached_results： chunk_id -> [list of extraction result from LLM cache sorted by created_at]
     cached_results = await _get_cached_extraction_results(
         llm_response_cache,
         all_referenced_chunk_ids,
@@ -309,6 +310,7 @@ async def _rebuild_knowledge_from_chunks(
             chunk_entities[chunk_id] = defaultdict(list)
             chunk_relationships[chunk_id] = defaultdict(list)
 
+            # process multiple LLM extraction results for a single chunk_id
             for extraction_result in extraction_results:
                 entities, relationships = await _parse_extraction_result(
                     text_chunks_storage=text_chunks_storage,
@@ -317,10 +319,21 @@ async def _rebuild_knowledge_from_chunks(
                 )
 
                 # Merge entities and relationships from this extraction result
+                # Only keep the first occurrence of each entity_name in the same chunk_id
                 for entity_name, entity_list in entities.items():
-                    chunk_entities[chunk_id][entity_name].extend(entity_list)
+                    if (
+                        entity_name not in chunk_entities[chunk_id]
+                        or len(chunk_entities[chunk_id][entity_name]) == 0
+                    ):
+                        chunk_entities[chunk_id][entity_name].extend(entity_list)
+
+                # Only keep the first occurrence of each rel_key in the same chunk_id
                 for rel_key, rel_list in relationships.items():
-                    chunk_relationships[chunk_id][rel_key].extend(rel_list)
+                    if (
+                        rel_key not in chunk_relationships[chunk_id]
+                        or len(chunk_relationships[chunk_id][rel_key]) == 0
+                    ):
+                        chunk_relationships[chunk_id][rel_key].extend(rel_list)
 
         except Exception as e:
             status_message = (
