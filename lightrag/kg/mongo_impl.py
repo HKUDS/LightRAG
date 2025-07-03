@@ -153,14 +153,19 @@ class MongoKVStorage(BaseKVStorage):
                 if "llm_cache_list" not in v:
                     v["llm_cache_list"] = []
 
-            v["_id"] = k  # Use flattened key as _id
-            v["update_time"] = current_time  # Always update update_time
+            # Create a copy of v for $set operation, excluding create_time to avoid conflicts
+            v_for_set = v.copy()
+            v_for_set["_id"] = k  # Use flattened key as _id
+            v_for_set["update_time"] = current_time  # Always update update_time
+
+            # Remove create_time from $set to avoid conflict with $setOnInsert
+            v_for_set.pop("create_time", None)
 
             operations.append(
                 UpdateOne(
                     {"_id": k},
                     {
-                        "$set": v,  # Update all fields including update_time
+                        "$set": v_for_set,  # Update all fields except create_time
                         "$setOnInsert": {
                             "create_time": current_time
                         },  # Set create_time only on insert
