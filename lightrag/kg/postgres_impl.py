@@ -744,6 +744,8 @@ class PGKVStorage(BaseKVStorage):
             if is_namespace(self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE):
                 processed_results = {}
                 for row in results:
+                    create_time = row.get("create_time", 0)
+                    update_time = row.get("update_time", 0)
                     # Map field names and add cache_type for compatibility
                     processed_row = {
                         **row,
@@ -752,8 +754,8 @@ class PGKVStorage(BaseKVStorage):
                         "original_prompt": row.get("original_prompt", ""),
                         "chunk_id": row.get("chunk_id"),
                         "mode": row.get("mode", "default"),
-                        "create_time": row.get("create_time", 0),
-                        "update_time": row.get("update_time", 0),
+                        "create_time": create_time,
+                        "update_time": create_time if update_time == 0 else update_time,
                     }
                     processed_results[row["id"]] = processed_row
                 return processed_results
@@ -769,8 +771,12 @@ class PGKVStorage(BaseKVStorage):
                         except json.JSONDecodeError:
                             llm_cache_list = []
                     row["llm_cache_list"] = llm_cache_list
-                    row["create_time"] = row.get("create_time", 0)
-                    row["update_time"] = row.get("update_time", 0)
+                    create_time = row.get("create_time", 0)
+                    update_time = row.get("update_time", 0)
+                    row["create_time"] = create_time
+                    row["update_time"] = (
+                        create_time if update_time == 0 else update_time
+                    )
                     processed_results[row["id"]] = row
                 return processed_results
 
@@ -795,13 +801,17 @@ class PGKVStorage(BaseKVStorage):
                 except json.JSONDecodeError:
                     llm_cache_list = []
             response["llm_cache_list"] = llm_cache_list
-            response["create_time"] = response.get("create_time", 0)
-            response["update_time"] = response.get("update_time", 0)
+            create_time = response.get("create_time", 0)
+            update_time = response.get("update_time", 0)
+            response["create_time"] = create_time
+            response["update_time"] = create_time if update_time == 0 else update_time
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if response and is_namespace(
             self.namespace, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
         ):
+            create_time = response.get("create_time", 0)
+            update_time = response.get("update_time", 0)
             # Map field names and add cache_type for compatibility
             response = {
                 **response,
@@ -810,8 +820,8 @@ class PGKVStorage(BaseKVStorage):
                 "original_prompt": response.get("original_prompt", ""),
                 "chunk_id": response.get("chunk_id"),
                 "mode": response.get("mode", "default"),
-                "create_time": response.get("create_time", 0),
-                "update_time": response.get("update_time", 0),
+                "create_time": create_time,
+                "update_time": create_time if update_time == 0 else update_time,
             }
 
         return response if response else None
@@ -835,8 +845,10 @@ class PGKVStorage(BaseKVStorage):
                     except json.JSONDecodeError:
                         llm_cache_list = []
                 result["llm_cache_list"] = llm_cache_list
-                result["create_time"] = result.get("create_time", 0)
-                result["update_time"] = result.get("update_time", 0)
+                create_time = result.get("create_time", 0)
+                update_time = result.get("update_time", 0)
+                result["create_time"] = create_time
+                result["update_time"] = create_time if update_time == 0 else update_time
 
         # Special handling for LLM cache to ensure compatibility with _get_cached_extraction_results
         if results and is_namespace(
@@ -844,6 +856,8 @@ class PGKVStorage(BaseKVStorage):
         ):
             processed_results = []
             for row in results:
+                create_time = row.get("create_time", 0)
+                update_time = row.get("update_time", 0)
                 # Map field names and add cache_type for compatibility
                 processed_row = {
                     **row,
@@ -852,8 +866,8 @@ class PGKVStorage(BaseKVStorage):
                     "original_prompt": row.get("original_prompt", ""),
                     "chunk_id": row.get("chunk_id"),
                     "mode": row.get("mode", "default"),
-                    "create_time": row.get("create_time", 0),
-                    "update_time": row.get("update_time", 0),
+                    "create_time": create_time,
+                    "update_time": create_time if update_time == 0 else update_time,
                 }
                 processed_results.append(processed_row)
             return processed_results
