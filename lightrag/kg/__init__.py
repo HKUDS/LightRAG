@@ -25,11 +25,11 @@ STORAGE_IMPLEMENTATIONS = {
         "implementations": [
             "NanoVectorDBStorage",
             "MilvusVectorDBStorage",
-            "ChromaVectorDBStorage",
             "PGVectorStorage",
             "FaissVectorDBStorage",
             "QdrantVectorDBStorage",
             "MongoVectorDBStorage",
+            # "ChromaVectorDBStorage",
             # "TiDBVectorDBStorage",
         ],
         "required_methods": ["query", "upsert"],
