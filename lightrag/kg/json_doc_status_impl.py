@@ -118,6 +118,10 @@ class JsonDocStatusStorage(DocStatusStorage):
             return
         logger.debug(f"Inserting {len(data)} records to {self.namespace}")
         async with self._storage_lock:
+            # Ensure chunks_list field exists for new documents
+            for doc_id, doc_data in data.items():
+                if "chunks_list" not in doc_data:
+                    doc_data["chunks_list"] = []
             self._data.update(data)
             await set_all_update_flags(self.namespace)
 

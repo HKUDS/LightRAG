@@ -7,6 +7,7 @@ consistency and makes maintenance easier.
 """
 
 # Default values for environment variables
+DEFAULT_MAX_GLEANING = 1
 DEFAULT_MAX_TOKEN_SUMMARY = 500
 DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 6
 DEFAULT_WOKERS = 2

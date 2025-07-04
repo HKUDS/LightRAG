@@ -257,7 +257,7 @@ class TiDBKVStorage(BaseKVStorage):
 
     ################ INSERT full_doc AND chunks ################
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
         left_data = {k: v for k, v in data.items() if k not in self._data}
@@ -454,11 +454,9 @@ class TiDBVectorDBStorage(BaseVectorStorage):
 
     ###### INSERT entities And relationships ######
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
-        logger.info(f"Inserting {len(data)} to {self.namespace}")
         if not data:
             return
-
-        logger.info(f"Inserting {len(data)} vectors to {self.namespace}")
+        logger.debug(f"Inserting {len(data)} vectors to {self.namespace}")
 
         # Get current time as UNIX timestamp
         import time
@@ -521,11 +519,6 @@ class TiDBVectorDBStorage(BaseVectorStorage):
                     "timestamp": item["timestamp"],
                 }
                 await self.db.execute(SQL_TEMPLATES["upsert_relationship"], param)
-
-    async def get_by_status(self, status: str) -> Union[list[dict[str, Any]], None]:
-        SQL = SQL_TEMPLATES["get_by_status_" + self.namespace]
-        params = {"workspace": self.db.workspace, "status": status}
-        return await self.db.query(SQL, params, multirows=True)
 
     async def delete(self, ids: list[str]) -> None:
         """Delete vectors with specified IDs from the storage.

@@ -17,13 +17,12 @@ from .shared_storage import (
     set_all_update_flags,
 )
 
-import faiss  # type: ignore
-
 USE_GPU = os.getenv("FAISS_USE_GPU", "0") == "1"
 FAISS_PACKAGE = "faiss-gpu" if USE_GPU else "faiss-cpu"
-
 if not pm.is_installed(FAISS_PACKAGE):
     pm.install(FAISS_PACKAGE)
+
+import faiss  # type: ignore
 
 
 @final

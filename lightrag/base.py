@@ -297,6 +297,8 @@ class BaseKVStorage(StorageNameSpace, ABC):
 
 @dataclass
 class BaseGraphStorage(StorageNameSpace, ABC):
+    """All operations related to edges in graph should be undirected."""
+
     embedding_func: EmbeddingFunc
 
     @abstractmethod
@@ -468,17 +470,6 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             list[dict]: A list of nodes, where each node is a dictionary of its properties.
                         An empty list if no matching nodes are found.
         """
-        # Default implementation iterates through all nodes, which is inefficient.
-        # This method should be overridden by subclasses for better performance.
-        all_nodes = []
-        all_labels = await self.get_all_labels()
-        for label in all_labels:
-            node = await self.get_node(label)
-            if node and "source_id" in node:
-                source_ids = set(node["source_id"].split(GRAPH_FIELD_SEP))
-                if not source_ids.isdisjoint(chunk_ids):
-                    all_nodes.append(node)
-        return all_nodes
 
     @abstractmethod
     async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
@@ -643,6 +634,8 @@ class DocProcessingStatus:
     """ISO format timestamp when document was last updated"""
     chunks_count: int | None = None
     """Number of chunks after splitting, used for processing"""
+    chunks_list: list[str] | None = field(default_factory=list)
+    """List of chunk IDs associated with this document, used for deletion"""
     error: str | None = None
     """Error message if failed"""
     metadata: dict[str, Any] = field(default_factory=dict)

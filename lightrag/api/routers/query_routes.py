@@ -183,6 +183,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 if isinstance(response, str):
                     # If it's a string, send it all at once
                     yield f"{json.dumps({'response': response})}\n"
+                elif response is None:
+                    # Handle None response (e.g., when only_need_context=True but no context found)
+                    yield f"{json.dumps({'response': 'No relevant context found for the query.'})}\n"
                 else:
                     # If it's an async generator, send chunks one by one
                     try:
