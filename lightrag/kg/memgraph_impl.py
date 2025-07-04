@@ -660,16 +660,23 @@ class MemgraphStorage(BaseGraphStorage):
         ) as session:
             try:
                 if node_label == "*":
+                    # First check if database has any nodes
                     count_query = "MATCH (n) RETURN count(n) as total"
                     count_result = None
+                    total_count = 0
                     try:
                         count_result = await session.run(count_query)
                         count_record = await count_result.single()
-                        if count_record and count_record["total"] > max_nodes:
-                            result.is_truncated = True
-                            logger.info(
-                                f"Graph truncated: {count_record['total']} nodes found, limited to {max_nodes}"
-                            )
+                        if count_record:
+                            total_count = count_record["total"]
+                            if total_count == 0:
+                                logger.debug("No nodes found in database")
+                                return result
+                            if total_count > max_nodes:
+                                result.is_truncated = True
+                                logger.info(
+                                    f"Graph truncated: {total_count} nodes found, limited to {max_nodes}"
+                                )
                     finally:
                         if count_result:
                             await count_result.consume()
@@ -695,6 +702,9 @@ class MemgraphStorage(BaseGraphStorage):
                             main_query, {"max_nodes": max_nodes}
                         )
                         record = await result_set.single()
+                        if not record:
+                            logger.debug("No record returned from main query")
+                            return result
                     finally:
                         if result_set:
                             await result_set.consume()
@@ -738,14 +748,22 @@ class MemgraphStorage(BaseGraphStorage):
                         )
                         record = await result_set.single()
                         if not record:
-                            logger.debug(f"No record found for node {node_label}")
+                            logger.debug(f"No nodes found for entity_id: {node_label}")
                             return result
+
+                        # Check if the query indicates truncation
+                        if "is_truncated" in record and record["is_truncated"]:
+                            result.is_truncated = True
+                            logger.info(
+                                f"Graph truncated: breadth-first search limited to {max_nodes} nodes"
+                            )
 
                     finally:
                         if result_set:
                             await result_set.consume()
 
-                if record:
+                # Process the record if it exists
+                if record and record["node_info"]:
                     for node_info in record["node_info"]:
                         node = node_info["node"]
                         node_id = node.id
@@ -759,28 +777,30 @@ class MemgraphStorage(BaseGraphStorage):
                                 )
                             )
 
-                    for rel in record["relationships"]:
-                        edge_id = rel.id
-                        if edge_id not in seen_edges:
-                            seen_edges.add(edge_id)
-                            start = rel.start_node
-                            end = rel.end_node
-                            result.edges.append(
-                                KnowledgeGraphEdge(
-                                    id=f"{edge_id}",
-                                    type=rel.type,
-                                    source=f"{start.id}",
-                                    target=f"{end.id}",
-                                    properties=dict(rel),
+                    if "relationships" in record and record["relationships"]:
+                        for rel in record["relationships"]:
+                            edge_id = rel.id
+                            if edge_id not in seen_edges:
+                                seen_edges.add(edge_id)
+                                start = rel.start_node
+                                end = rel.end_node
+                                result.edges.append(
+                                    KnowledgeGraphEdge(
+                                        id=f"{edge_id}",
+                                        type=rel.type,
+                                        source=f"{start.id}",
+                                        target=f"{end.id}",
+                                        properties=dict(rel),
+                                    )
                                 )
-                            )
 
-                    logger.info(
-                        f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
-                    )
-
-                    return result
+                logger.info(
+                    f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
+                )
 
             except Exception as e:
                 logger.error(f"Error getting knowledge graph: {str(e)}")
-                return result
+                # Return empty but properly initialized KnowledgeGraph on error
+                return KnowledgeGraph()
+
+        return result
