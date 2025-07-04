@@ -27,14 +27,6 @@ ingress:
         - path: /
           pathType: Prefix
   tls: []
-  forwardAuth:
-    enabled: false
-    # name: forwardauth
-    # address: http://forwardauth:8080
-    # trustForwardHeader: true
-    # authRequestHeaders:
-    #   - "Cookie"
-    #   - "Authorization"
 
 # Resource limits and requests
 resources:
