@@ -181,18 +181,54 @@ async def process_with_rag(
             file_path=file_path, output_dir=output_dir, parse_method="auto"
         )
 
-        # Example queries
-        queries = [
+        # Example queries - demonstrating different query approaches
+        logger.info("\nQuerying processed document:")
+
+        # 1. Pure text queries using aquery()
+        text_queries = [
             "What is the main content of the document?",
-            "Describe the images and figures in the document",
-            "Tell me about the experimental results and data tables",
+            "What are the key topics discussed?",
         ]
 
-        logger.info("\nQuerying processed document:")
-        for query in queries:
-            logger.info(f"\nQuery: {query}")
-            result = await rag.query_with_multimodal(query, mode="hybrid")
+        for query in text_queries:
+            logger.info(f"\n[Text Query]: {query}")
+            result = await rag.aquery(query, mode="hybrid")
             logger.info(f"Answer: {result}")
+
+        # 2. Multimodal query with specific multimodal content using aquery_with_multimodal()
+        logger.info(
+            "\n[Multimodal Query]: Analyzing performance data in context of document"
+        )
+        multimodal_result = await rag.aquery_with_multimodal(
+            "Compare this performance data with any similar results mentioned in the document",
+            multimodal_content=[
+                {
+                    "type": "table",
+                    "table_data": """Method,Accuracy,Processing_Time
+                                RAGAnything,95.2%,120ms
+                                Traditional_RAG,87.3%,180ms
+                                Baseline,82.1%,200ms""",
+                    "table_caption": "Performance comparison results",
+                }
+            ],
+            mode="hybrid",
+        )
+        logger.info(f"Answer: {multimodal_result}")
+
+        # 3. Another multimodal query with equation content
+        logger.info("\n[Multimodal Query]: Mathematical formula analysis")
+        equation_result = await rag.aquery_with_multimodal(
+            "Explain this formula and relate it to any mathematical concepts in the document",
+            multimodal_content=[
+                {
+                    "type": "equation",
+                    "latex": "F1 = 2 \\cdot \\frac{precision \\cdot recall}{precision + recall}",
+                    "equation_caption": "F1-score calculation formula",
+                }
+            ],
+            mode="hybrid",
+        )
+        logger.info(f"Answer: {equation_result}")
 
     except Exception as e:
         logger.error(f"Error processing with RAG: {str(e)}")
