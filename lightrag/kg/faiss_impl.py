@@ -165,7 +165,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             meta["__vector__"] = embeddings[i].tolist()
             self._id_to_meta.update({fid: meta})
 
-        logger.info(f"Upserted {len(list_data)} vectors into Faiss index.")
+        logger.debug(f"Upserted {len(list_data)} vectors into Faiss index.")
         return [m["__id__"] for m in list_data]
 
     async def query(
@@ -228,7 +228,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-        logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
+        logger.debug(f"Deleting {len(ids)} vectors from {self.namespace}")
         to_remove = []
         for cid in ids:
             fid = self._find_faiss_id_by_custom_id(cid)
@@ -330,7 +330,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         and rebuild in-memory structures so we can query.
         """
         if not os.path.exists(self._faiss_index_file):
-            logger.warning("No existing Faiss index file found. Starting fresh.")
+            logger.warning(f"No existing Faiss index file found for {self.namespace}")
             return
 
         try:
