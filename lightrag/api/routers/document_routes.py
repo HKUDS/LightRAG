@@ -714,6 +714,10 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
 
         # Insert into the RAG queue
         if content:
+            # Check if content contains only whitespace characters
+            if not content.strip():
+                logger.warning(f"File contains only whitespace characters. file_paths={file_path.name}")
+
             await rag.apipeline_enqueue_documents(content, file_paths=file_path.name)
             logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
