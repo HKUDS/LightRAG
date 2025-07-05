@@ -965,6 +965,9 @@ class LightRAG:
                                 )
                             }
 
+                            if not chunks:
+                                logger.error("No document chunks to process")
+
                             # Process document in two stages
                             # Stage 1: Process text chunks and docs (parallel execution)
                             doc_status_task = asyncio.create_task(
