@@ -11,7 +11,7 @@ authors = [
 description = "LightRAG: Simple and Fast Retrieval-Augmented Generation"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python :: 3",
@@ -91,3 +91,6 @@ version = {attr = "lightrag.__version__"}
 
 [tool.setuptools.package-data]
 lightrag = ["api/webui/**/*"]
+
+[tool.ruff]
+target-version = "py310"
