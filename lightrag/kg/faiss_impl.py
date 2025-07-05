@@ -4,9 +4,7 @@ import asyncio
 from typing import Any, final
 import json
 import numpy as np
-
 from dataclasses import dataclass
-import pipmaster as pm
 
 from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
@@ -17,11 +15,7 @@ from .shared_storage import (
     set_all_update_flags,
 )
 
-USE_GPU = os.getenv("FAISS_USE_GPU", "0") == "1"
-FAISS_PACKAGE = "faiss-gpu" if USE_GPU else "faiss-cpu"
-if not pm.is_installed(FAISS_PACKAGE):
-    pm.install(FAISS_PACKAGE)
-
+# You must manually install faiss-cpu or faiss-gpu before using FAISS vector db
 import faiss  # type: ignore
 
 
@@ -165,7 +159,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             meta["__vector__"] = embeddings[i].tolist()
             self._id_to_meta.update({fid: meta})
 
-        logger.info(f"Upserted {len(list_data)} vectors into Faiss index.")
+        logger.debug(f"Upserted {len(list_data)} vectors into Faiss index.")
         return [m["__id__"] for m in list_data]
 
     async def query(
@@ -228,7 +222,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-        logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
+        logger.debug(f"Deleting {len(ids)} vectors from {self.namespace}")
         to_remove = []
         for cid in ids:
             fid = self._find_faiss_id_by_custom_id(cid)
@@ -330,7 +324,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         and rebuild in-memory structures so we can query.
         """
         if not os.path.exists(self._faiss_index_file):
-            logger.warning("No existing Faiss index file found. Starting fresh.")
+            logger.warning(f"No existing Faiss index file found for {self.namespace}")
             return
 
         try:

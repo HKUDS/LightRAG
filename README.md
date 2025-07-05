@@ -819,6 +819,8 @@ For production level scenarios you will most likely want to leverage an enterpri
 
 <details>
 <summary> <b>Using Faiss for Storage</b> </summary>
+You must manually install faiss-cpu or faiss-gpu before using FAISS vector db.
+Manually install `faiss-cpu` or `faiss-gpu` before using FAISS vector db.
 
 - Install the required dependencies:
 

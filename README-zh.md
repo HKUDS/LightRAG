@@ -757,6 +757,8 @@ async def initialize_rag():
 
 <details>
 <summary> <b>使用Faiss进行存储</b> </summary>
+在使用Faiss向量数据库之前必须手工安装`faiss-cpu`或`faiss-gpu`。
+
 
 - 安装所需依赖：
 
