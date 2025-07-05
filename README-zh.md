@@ -757,6 +757,8 @@ async def initialize_rag():
 
 <details>
 <summary> <b>使用Faiss进行存储</b> </summary>
+在使用Faiss向量数据库之前必须手工安装`faiss-cpu`或`faiss-gpu`。
+
 
 - 安装所需依赖：
 
@@ -818,7 +820,7 @@ rag = LightRAG(
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- 如有必要可以删除
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
@@ -1164,17 +1166,17 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
         from lightrag.llm.openai import openai_complete_if_cache, openai_embed
         from lightrag.utils import EmbeddingFunc
         import os
-
+    
         async def load_existing_lightrag():
             # 首先，创建或加载现有的 LightRAG 实例
             lightrag_working_dir = "./existing_lightrag_storage"
-
+    
             # 检查是否存在之前的 LightRAG 实例
             if os.path.exists(lightrag_working_dir) and os.listdir(lightrag_working_dir):
                 print("✅ Found existing LightRAG instance, loading...")
             else:
                 print("❌ No existing LightRAG instance found, will create new one")
-
+    
             # 使用您的配置创建/加载 LightRAG 实例
             lightrag_instance = LightRAG(
                 working_dir=lightrag_working_dir,
@@ -1197,10 +1199,10 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
                     ),
                 )
             )
-
+    
             # 初始化存储（如果有现有数据，这将加载现有数据）
             await lightrag_instance.initialize_storages()
-
+    
             # 现在使用现有的 LightRAG 实例初始化 RAGAnything
             rag = RAGAnything(
                 lightrag=lightrag_instance,  # 传递现有的 LightRAG 实例
@@ -1229,20 +1231,20 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
                 )
                 # 注意：working_dir、llm_model_func、embedding_func 等都从 lightrag_instance 继承
             )
-
+    
             # 查询现有的知识库
             result = await rag.query_with_multimodal(
                 "What data has been processed in this LightRAG instance?",
                 mode="hybrid"
             )
             print("Query result:", result)
-
+    
             # 向现有的 LightRAG 实例添加新的多模态文档
             await rag.process_document_complete(
                 file_path="path/to/new/multimodal_document.pdf",
                 output_dir="./output"
             )
-
+    
         if __name__ == "__main__":
             asyncio.run(load_existing_lightrag())
     ```

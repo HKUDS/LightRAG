@@ -17,11 +17,7 @@ from .shared_storage import (
     set_all_update_flags,
 )
 
-USE_GPU = os.getenv("FAISS_USE_GPU", "0") == "1"
-FAISS_PACKAGE = "faiss-gpu" if USE_GPU else "faiss-cpu"
-if not pm.is_installed(FAISS_PACKAGE):
-    pm.install(FAISS_PACKAGE)
-
+# You must manually install faiss-cpu or faiss-gpu before using FAISS vector db
 import faiss  # type: ignore
 
 
