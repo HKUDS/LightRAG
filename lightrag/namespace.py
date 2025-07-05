@@ -17,10 +17,6 @@ class NameSpace:
     DOC_STATUS = "doc_status"
 
 
-def make_namespace(prefix: str, base_namespace: str):
-    return prefix + base_namespace
-
-
 def is_namespace(namespace: str, base_namespace: str | Iterable[str]):
     if isinstance(base_namespace, str):
         return namespace.endswith(base_namespace)
