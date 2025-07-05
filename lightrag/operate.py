@@ -168,6 +168,13 @@ async def _handle_single_entity_extraction(
     # Normalize entity name
     entity_name = normalize_extracted_info(entity_name, is_entity=True)
 
+    # Check if entity name became empty after normalization
+    if not entity_name or not entity_name.strip():
+        logger.warning(
+            f"Entity extraction error: entity name became empty after normalization. Original: '{record_attributes[1]}'"
+        )
+        return None
+
     # Clean and validate entity type
     entity_type = clean_str(record_attributes[2]).strip('"')
     if not entity_type.strip() or entity_type.startswith('("'):
@@ -209,6 +216,20 @@ async def _handle_single_relationship_extraction(
     # Normalize source and target entity names
     source = normalize_extracted_info(source, is_entity=True)
     target = normalize_extracted_info(target, is_entity=True)
+
+    # Check if source or target became empty after normalization
+    if not source or not source.strip():
+        logger.warning(
+            f"Relationship extraction error: source entity became empty after normalization. Original: '{record_attributes[1]}'"
+        )
+        return None
+
+    if not target or not target.strip():
+        logger.warning(
+            f"Relationship extraction error: target entity became empty after normalization. Original: '{record_attributes[2]}'"
+        )
+        return None
+
     if source == target:
         logger.debug(
             f"Relationship source and target are the same in: {record_attributes}"
