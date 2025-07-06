@@ -263,7 +263,9 @@
       "kvStorage": "Stockage clé-valeur",
       "docStatusStorage": "Stockage de l'état des documents",
       "graphStorage": "Stockage du graphe",
-      "vectorStorage": "Stockage vectoriel"
+      "vectorStorage": "Stockage vectoriel",
+      "workspace": "Espace de travail",
+      "maxGraphNodes": "Nombre maximum de nœuds du graphe"
     },
     "propertiesView": {
       "editProperty": "Modifier {{property}}",

@@ -474,6 +474,8 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
+                    "workspace": args.workspace,
+                    "max_graph_nodes": os.getenv("MAX_GRAPH_NODES"),
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),

@@ -263,7 +263,9 @@
       "kvStorage": "KV Storage",
       "docStatusStorage": "Doc Status Storage",
       "graphStorage": "Graph Storage",
-      "vectorStorage": "Vector Storage"
+      "vectorStorage": "Vector Storage",
+      "workspace": "Workspace",
+      "maxGraphNodes": "Max Graph Nodes"
     },
     "propertiesView": {
       "editProperty": "Edit {{property}}",
