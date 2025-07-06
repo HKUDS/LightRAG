@@ -510,6 +510,29 @@ class PostgreSQLDB:
                     f"PostgreSQL, Failed to create index on table {k}, Got: {e}"
                 )
 
+            # Create composite index for (workspace, id) columns in each table
+            try:
+                composite_index_name = f"idx_{k.lower()}_workspace_id"
+                check_composite_index_sql = f"""
+                SELECT 1 FROM pg_indexes
+                WHERE indexname = '{composite_index_name}'
+                AND tablename = '{k.lower()}'
+                """
+                composite_index_exists = await self.query(check_composite_index_sql)
+
+                if not composite_index_exists:
+                    create_composite_index_sql = (
+                        f"CREATE INDEX {composite_index_name} ON {k}(workspace, id)"
+                    )
+                    logger.info(
+                        f"PostgreSQL, Creating composite index {composite_index_name} on table {k}"
+                    )
+                    await self.execute(create_composite_index_sql)
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL, Failed to create composite index on table {k}, Got: {e}"
+                )
+
         # After all tables are created, attempt to migrate timestamp fields
         try:
             await self._migrate_timestamp_columns()
