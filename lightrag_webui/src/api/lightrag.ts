@@ -40,6 +40,8 @@ export type LightragStatus = {
     doc_status_storage: string
     graph_storage: string
     vector_storage: string
+    workspace?: string
+    max_graph_nodes?: string
   }
   update_status?: Record<string, any>
   core_version?: string

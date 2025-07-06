@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import datetime
 from datetime import timezone
 from dataclasses import dataclass, field
@@ -319,7 +320,7 @@ class PostgreSQLDB:
             # Get all old format data
             old_data_sql = """
             SELECT id, mode, original_prompt, return_value, chunk_id,
-                   create_time, update_time
+                workspace, create_time, update_time
             FROM LIGHTRAG_LLM_CACHE
             WHERE id NOT LIKE '%:%'
             """
@@ -364,7 +365,9 @@ class PostgreSQLDB:
                     await self.execute(
                         insert_sql,
                         {
-                            "workspace": self.workspace,
+                            "workspace": record[
+                                "workspace"
+                            ],  # Use original record's workspace
                             "id": new_key,
                             "mode": record["mode"],
                             "original_prompt": record["original_prompt"],
@@ -384,7 +387,9 @@ class PostgreSQLDB:
                     await self.execute(
                         delete_sql,
                         {
-                            "workspace": self.workspace,
+                            "workspace": record[
+                                "workspace"
+                            ],  # Use original record's workspace
                             "mode": record["mode"],
                             "id": record["id"],  # Old id
                         },
@@ -503,6 +508,29 @@ class PostgreSQLDB:
             except Exception as e:
                 logger.error(
                     f"PostgreSQL, Failed to create index on table {k}, Got: {e}"
+                )
+
+            # Create composite index for (workspace, id) columns in each table
+            try:
+                composite_index_name = f"idx_{k.lower()}_workspace_id"
+                check_composite_index_sql = f"""
+                SELECT 1 FROM pg_indexes
+                WHERE indexname = '{composite_index_name}'
+                AND tablename = '{k.lower()}'
+                """
+                composite_index_exists = await self.query(check_composite_index_sql)
+
+                if not composite_index_exists:
+                    create_composite_index_sql = (
+                        f"CREATE INDEX {composite_index_name} ON {k}(workspace, id)"
+                    )
+                    logger.info(
+                        f"PostgreSQL, Creating composite index {composite_index_name} on table {k}"
+                    )
+                    await self.execute(create_composite_index_sql)
+            except Exception as e:
+                logger.error(
+                    f"PostgreSQL, Failed to create composite index on table {k}, Got: {e}"
                 )
 
         # After all tables are created, attempt to migrate timestamp fields
@@ -670,7 +698,7 @@ class ClientManager:
             ),
             "workspace": os.environ.get(
                 "POSTGRES_WORKSPACE",
-                config.get("postgres", "workspace", fallback="default"),
+                config.get("postgres", "workspace", fallback=None),
             ),
             "max_connections": os.environ.get(
                 "POSTGRES_MAX_CONNECTIONS",
@@ -716,6 +744,18 @@ class PGKVStorage(BaseKVStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
+            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
+            if self.db.workspace:
+                # Use PostgreSQLDB's workspace (highest priority)
+                final_workspace = self.db.workspace
+            elif hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (medium priority)
+                final_workspace = self.workspace
+                self.db.workspace = final_workspace
+            else:
+                # Use "default" for compatibility (lowest priority)
+                final_workspace = "default"
+                self.db.workspace = final_workspace
 
     async def finalize(self):
         if self.db is not None:
@@ -1047,6 +1087,18 @@ class PGVectorStorage(BaseVectorStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
+            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
+            if self.db.workspace:
+                # Use PostgreSQLDB's workspace (highest priority)
+                final_workspace = self.db.workspace
+            elif hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (medium priority)
+                final_workspace = self.workspace
+                self.db.workspace = final_workspace
+            else:
+                # Use "default" for compatibility (lowest priority)
+                final_workspace = "default"
+                self.db.workspace = final_workspace
 
     async def finalize(self):
         if self.db is not None:
@@ -1328,6 +1380,18 @@ class PGDocStatusStorage(DocStatusStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
+            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > "default"
+            if self.db.workspace:
+                # Use PostgreSQLDB's workspace (highest priority)
+                final_workspace = self.db.workspace
+            elif hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (medium priority)
+                final_workspace = self.workspace
+                self.db.workspace = final_workspace
+            else:
+                # Use "default" for compatibility (lowest priority)
+                final_workspace = "default"
+                self.db.workspace = final_workspace
 
     async def finalize(self):
         if self.db is not None:
@@ -1606,8 +1670,33 @@ class PGGraphQueryException(Exception):
 @dataclass
 class PGGraphStorage(BaseGraphStorage):
     def __post_init__(self):
-        self.graph_name = self.namespace or os.environ.get("AGE_GRAPH_NAME", "lightrag")
+        # Graph name will be dynamically generated in initialize() based on workspace
         self.db: PostgreSQLDB | None = None
+
+    def _get_workspace_graph_name(self) -> str:
+        """
+        Generate graph name based on workspace and namespace for data isolation.
+        Rules:
+        - If workspace is empty: graph_name = namespace
+        - If workspace has value: graph_name = workspace_namespace
+
+        Args:
+            None
+
+        Returns:
+            str: The graph name for the current workspace
+        """
+        workspace = getattr(self, "workspace", None)
+        namespace = self.namespace or os.environ.get("AGE_GRAPH_NAME", "lightrag")
+
+        if workspace and workspace.strip():
+            # Ensure names comply with PostgreSQL identifier specifications
+            safe_workspace = re.sub(r"[^a-zA-Z0-9_]", "_", workspace.strip())
+            safe_namespace = re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
+            return f"{safe_workspace}_{safe_namespace}"
+        else:
+            # When workspace is empty, use namespace directly
+            return re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
 
     @staticmethod
     def _normalize_node_id(node_id: str) -> str:
@@ -1629,6 +1718,27 @@ class PGGraphStorage(BaseGraphStorage):
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
+            # Implement workspace priority: PostgreSQLDB.workspace > self.workspace > None
+            if self.db.workspace:
+                # Use PostgreSQLDB's workspace (highest priority)
+                final_workspace = self.db.workspace
+            elif hasattr(self, "workspace") and self.workspace:
+                # Use storage class's workspace (medium priority)
+                final_workspace = self.workspace
+                self.db.workspace = final_workspace
+            else:
+                # Use None for compatibility (lowest priority)
+                final_workspace = None
+                self.db.workspace = final_workspace
+
+        # Dynamically generate graph name based on workspace
+        self.workspace = self.db.workspace
+        self.graph_name = self._get_workspace_graph_name()
+
+        # Log the graph initialization for debugging
+        logger.info(
+            f"PostgreSQL Graph initialized: workspace='{self.workspace}', graph_name='{self.graph_name}'"
+        )
 
         # Execute each statement separately and ignore errors
         queries = [
@@ -2833,7 +2943,10 @@ class PGGraphStorage(BaseGraphStorage):
                             $$) AS (result agtype)"""
 
             await self._query(drop_query, readonly=False)
-            return {"status": "success", "message": "graph data dropped"}
+            return {
+                "status": "success",
+                "message": f"workspace '{self.workspace}' graph data dropped",
+            }
         except Exception as e:
             logger.error(f"Error dropping graph: {e}")
             return {"status": "error", "message": str(e)}

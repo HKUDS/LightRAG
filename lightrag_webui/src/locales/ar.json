@@ -263,7 +263,9 @@
       "kvStorage": "تخزين المفتاح-القيمة",
       "docStatusStorage": "تخزين حالة المستند",
       "graphStorage": "تخزين الرسم البياني",
-      "vectorStorage": "تخزين المتجهات"
+      "vectorStorage": "تخزين المتجهات",
+      "workspace": "مساحة العمل",
+      "maxGraphNodes": "الحد الأقصى لعقد الرسم البياني"
     },
     "propertiesView": {
       "editProperty": "تعديل {{property}}",

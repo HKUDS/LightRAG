@@ -25,6 +25,7 @@ if not pm.is_installed("pymongo"):
     pm.install("pymongo")
 
 from pymongo import AsyncMongoClient  # type: ignore
+from pymongo import UpdateOne  # type: ignore
 from pymongo.asynchronous.database import AsyncDatabase  # type: ignore
 from pymongo.asynchronous.collection import AsyncCollection  # type: ignore
 from pymongo.operations import SearchIndexModel  # type: ignore
@@ -81,7 +82,39 @@ class MongoKVStorage(BaseKVStorage):
     db: AsyncDatabase = field(default=None)
     _data: AsyncCollection = field(default=None)
 
+    def __init__(self, namespace, global_config, embedding_func, workspace=None):
+        super().__init__(
+            namespace=namespace,
+            workspace=workspace or "",
+            global_config=global_config,
+            embedding_func=embedding_func,
+        )
+        self.__post_init__()
+
     def __post_init__(self):
+        # Check for MONGODB_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all MongoDB storage instances
+        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
+        if mongodb_workspace and mongodb_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = mongodb_workspace.strip()
+            logger.info(
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        # Build namespace with workspace prefix for data isolation
+        if effective_workspace:
+            self.namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+        # When workspace is empty, keep the original namespace unchanged
+
         self._collection_name = self.namespace
 
     async def initialize(self):
@@ -142,7 +175,6 @@ class MongoKVStorage(BaseKVStorage):
 
         # Unified handling for all namespaces with flattened keys
         # Use bulk_write for better performance
-        from pymongo import UpdateOne
 
         operations = []
         current_time = int(time.time())  # Get current Unix timestamp
@@ -252,7 +284,39 @@ class MongoDocStatusStorage(DocStatusStorage):
     db: AsyncDatabase = field(default=None)
     _data: AsyncCollection = field(default=None)
 
+    def __init__(self, namespace, global_config, embedding_func, workspace=None):
+        super().__init__(
+            namespace=namespace,
+            workspace=workspace or "",
+            global_config=global_config,
+            embedding_func=embedding_func,
+        )
+        self.__post_init__()
+
     def __post_init__(self):
+        # Check for MONGODB_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all MongoDB storage instances
+        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
+        if mongodb_workspace and mongodb_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = mongodb_workspace.strip()
+            logger.info(
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        # Build namespace with workspace prefix for data isolation
+        if effective_workspace:
+            self.namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+        # When workspace is empty, keep the original namespace unchanged
+
         self._collection_name = self.namespace
 
     async def initialize(self):
@@ -367,12 +431,36 @@ class MongoGraphStorage(BaseGraphStorage):
     # edge collection storing source_node_id, target_node_id, and edge_properties
     edgeCollection: AsyncCollection = field(default=None)
 
-    def __init__(self, namespace, global_config, embedding_func):
+    def __init__(self, namespace, global_config, embedding_func, workspace=None):
         super().__init__(
             namespace=namespace,
+            workspace=workspace or "",
             global_config=global_config,
             embedding_func=embedding_func,
         )
+        # Check for MONGODB_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all MongoDB storage instances
+        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
+        if mongodb_workspace and mongodb_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = mongodb_workspace.strip()
+            logger.info(
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        # Build namespace with workspace prefix for data isolation
+        if effective_workspace:
+            self.namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+        # When workspace is empty, keep the original namespace unchanged
+
         self._collection_name = self.namespace
         self._edge_collection_name = f"{self._collection_name}_edges"
 
@@ -1230,8 +1318,52 @@ class MongoGraphStorage(BaseGraphStorage):
 class MongoVectorDBStorage(BaseVectorStorage):
     db: AsyncDatabase | None = field(default=None)
     _data: AsyncCollection | None = field(default=None)
+    _index_name: str = field(default="", init=False)
+
+    def __init__(
+        self, namespace, global_config, embedding_func, workspace=None, meta_fields=None
+    ):
+        super().__init__(
+            namespace=namespace,
+            workspace=workspace or "",
+            global_config=global_config,
+            embedding_func=embedding_func,
+            meta_fields=meta_fields or set(),
+        )
+        self.__post_init__()
 
     def __post_init__(self):
+        # Check for MONGODB_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all MongoDB storage instances
+        mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
+        if mongodb_workspace and mongodb_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = mongodb_workspace.strip()
+            logger.info(
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        # Build namespace with workspace prefix for data isolation
+        if effective_workspace:
+            self.namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+        # When workspace is empty, keep the original namespace unchanged
+
+        # Set index name based on workspace for backward compatibility
+        if effective_workspace:
+            # Use collection-specific index name for workspaced collections to avoid conflicts
+            self._index_name = f"vector_knn_index_{self.namespace}"
+        else:
+            # Keep original index name for backward compatibility with existing deployments
+            self._index_name = "vector_knn_index"
+
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
@@ -1261,13 +1393,11 @@ class MongoVectorDBStorage(BaseVectorStorage):
     async def create_vector_index_if_not_exists(self):
         """Creates an Atlas Vector Search index."""
         try:
-            index_name = "vector_knn_index"
-
             indexes_cursor = await self._data.list_search_indexes()
             indexes = await indexes_cursor.to_list(length=None)
             for index in indexes:
-                if index["name"] == index_name:
-                    logger.debug("vector index already exist")
+                if index["name"] == self._index_name:
+                    logger.info(f"vector index {self._index_name} already exist")
                     return
 
             search_index_model = SearchIndexModel(
@@ -1281,15 +1411,15 @@ class MongoVectorDBStorage(BaseVectorStorage):
                         }
                     ]
                 },
-                name=index_name,
+                name=self._index_name,
                 type="vectorSearch",
             )
 
             await self._data.create_search_index(search_index_model)
-            logger.info("Vector index created successfully.")
+            logger.info(f"Vector index {self._index_name} created successfully.")
 
-        except PyMongoError as _:
-            logger.debug("vector index already exist")
+        except PyMongoError as e:
+            logger.error(f"Error creating vector index {self._index_name}: {e}")
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.debug(f"Inserting {len(data)} to {self.namespace}")
@@ -1344,7 +1474,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         pipeline = [
             {
                 "$vectorSearch": {
-                    "index": "vector_knn_index",  # Ensure this matches the created index name
+                    "index": self._index_name,  # Use stored index name for consistency
                     "path": "vector",
                     "queryVector": query_vector,
                     "numCandidates": 100,  # Adjust for performance

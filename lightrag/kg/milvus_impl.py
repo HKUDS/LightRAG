@@ -7,10 +7,6 @@ from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
 import pipmaster as pm
 
-
-if not pm.is_installed("configparser"):
-    pm.install("configparser")
-
 if not pm.is_installed("pymilvus"):
     pm.install("pymilvus")
 
@@ -660,6 +656,29 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise
 
     def __post_init__(self):
+        # Check for MILVUS_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all Milvus storage instances
+        milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
+        if milvus_workspace and milvus_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = milvus_workspace.strip()
+            logger.info(
+                f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        # Build namespace with workspace prefix for data isolation
+        if effective_workspace:
+            self.namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+        # When workspace is empty, keep the original namespace unchanged
+
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:

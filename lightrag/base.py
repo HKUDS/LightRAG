@@ -103,6 +103,7 @@ class QueryParam:
 @dataclass
 class StorageNameSpace(ABC):
     namespace: str
+    workspace: str
     global_config: dict[str, Any]
 
     async def initialize(self):
