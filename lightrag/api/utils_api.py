@@ -284,8 +284,10 @@ def display_splash_screen(args: argparse.Namespace) -> None:
     ASCIIColors.yellow(f"{args.vector_storage}")
     ASCIIColors.white("    ├─ Graph Storage: ", end="")
     ASCIIColors.yellow(f"{args.graph_storage}")
-    ASCIIColors.white("    └─ Document Status Storage: ", end="")
+    ASCIIColors.white("    ├─ Document Status Storage: ", end="")
     ASCIIColors.yellow(f"{args.doc_status_storage}")
+    ASCIIColors.white("    └─ Workspace: ", end="")
+    ASCIIColors.yellow(f"{args.workspace if args.workspace else '-'}")
 
     # Server Status
     ASCIIColors.green("\n✨ Server starting up...\n")

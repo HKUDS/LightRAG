@@ -184,10 +184,10 @@ def parse_args() -> argparse.Namespace:
 
     # Namespace
     parser.add_argument(
-        "--namespace-prefix",
+        "--workspace",
         type=str,
-        default=get_env_value("NAMESPACE_PREFIX", ""),
-        help="Prefix of the namespace",
+        default=get_env_value("WORKSPACE", ""),
+        help="Default workspace for all storage",
     )
 
     parser.add_argument(

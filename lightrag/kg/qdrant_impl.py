@@ -50,6 +50,18 @@ def compute_mdhash_id_for_qdrant(
 @final
 @dataclass
 class QdrantVectorDBStorage(BaseVectorStorage):
+    def __init__(
+        self, namespace, global_config, embedding_func, workspace=None, meta_fields=None
+    ):
+        super().__init__(
+            namespace=namespace,
+            workspace=workspace or "",
+            global_config=global_config,
+            embedding_func=embedding_func,
+            meta_fields=meta_fields or set(),
+        )
+        self.__post_init__()
+
     @staticmethod
     def create_collection_if_not_exist(
         client: QdrantClient, collection_name: str, **kwargs
@@ -59,6 +71,29 @@ class QdrantVectorDBStorage(BaseVectorStorage):
         client.create_collection(collection_name, **kwargs)
 
     def __post_init__(self):
+        # Check for QDRANT_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all Qdrant storage instances
+        qdrant_workspace = os.environ.get("QDRANT_WORKSPACE")
+        if qdrant_workspace and qdrant_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = qdrant_workspace.strip()
+            logger.info(
+                f"Using QDRANT_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        # Build namespace with workspace prefix for data isolation
+        if effective_workspace:
+            self.namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+        # When workspace is empty, keep the original namespace unchanged
+
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:

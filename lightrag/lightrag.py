@@ -51,7 +51,7 @@ from .base import (
     StoragesStatus,
     DeletionResult,
 )
-from .namespace import NameSpace, make_namespace
+from .namespace import NameSpace
 from .operate import (
     chunking_by_token_size,
     extract_entities,
@@ -97,9 +97,7 @@ class LightRAG:
     # Directory
     # ---
 
-    working_dir: str = field(
-        default=f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
-    )
+    working_dir: str = field(default="./rag_storage")
     """Directory where cache and temporary files are stored."""
 
     # Storage
@@ -116,6 +114,12 @@ class LightRAG:
 
     doc_status_storage: str = field(default="JsonDocStatusStorage")
     """Storage type for tracking document processing statuses."""
+
+    # Workspace
+    # ---
+
+    workspace: str = field(default_factory=lambda: os.getenv("WORKSPACE", ""))
+    """Workspace for data isolation. Defaults to empty string if WORKSPACE environment variable is not set."""
 
     # Logging (Deprecated, use setup_logger in utils.py instead)
     # ---
@@ -241,10 +245,6 @@ class LightRAG:
 
     vector_db_storage_cls_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional parameters for vector database storage."""
-
-    # TODO：deprecated, remove in the future, use WORKSPACE instead
-    namespace_prefix: str = field(default="")
-    """Prefix for namespacing stored data across different environments."""
 
     enable_llm_cache: bool = field(default=True)
     """Enables caching for LLM responses to avoid redundant computations."""
@@ -382,61 +382,53 @@ class LightRAG:
         self.doc_status_storage_cls = self._get_storage_class(self.doc_status_storage)
 
         self.llm_response_cache: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
-            namespace=make_namespace(
-                self.namespace_prefix, NameSpace.KV_STORE_LLM_RESPONSE_CACHE
-            ),
-            global_config=asdict(
-                self
-            ),  # Add global_config to ensure cache works properly
+            namespace=NameSpace.KV_STORE_LLM_RESPONSE_CACHE,
+            workspace=self.workspace,
+            global_config=global_config,
             embedding_func=self.embedding_func,
         )
 
         self.full_docs: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
-            namespace=make_namespace(
-                self.namespace_prefix, NameSpace.KV_STORE_FULL_DOCS
-            ),
+            namespace=NameSpace.KV_STORE_FULL_DOCS,
+            workspace=self.workspace,
             embedding_func=self.embedding_func,
         )
 
         self.text_chunks: BaseKVStorage = self.key_string_value_json_storage_cls(  # type: ignore
-            namespace=make_namespace(
-                self.namespace_prefix, NameSpace.KV_STORE_TEXT_CHUNKS
-            ),
+            namespace=NameSpace.KV_STORE_TEXT_CHUNKS,
+            workspace=self.workspace,
             embedding_func=self.embedding_func,
         )
 
         self.chunk_entity_relation_graph: BaseGraphStorage = self.graph_storage_cls(  # type: ignore
-            namespace=make_namespace(
-                self.namespace_prefix, NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION
-            ),
+            namespace=NameSpace.GRAPH_STORE_CHUNK_ENTITY_RELATION,
+            workspace=self.workspace,
             embedding_func=self.embedding_func,
         )
 
         self.entities_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
-            namespace=make_namespace(
-                self.namespace_prefix, NameSpace.VECTOR_STORE_ENTITIES
-            ),
+            namespace=NameSpace.VECTOR_STORE_ENTITIES,
+            workspace=self.workspace,
             embedding_func=self.embedding_func,
             meta_fields={"entity_name", "source_id", "content", "file_path"},
         )
         self.relationships_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
-            namespace=make_namespace(
-                self.namespace_prefix, NameSpace.VECTOR_STORE_RELATIONSHIPS
-            ),
+            namespace=NameSpace.VECTOR_STORE_RELATIONSHIPS,
+            workspace=self.workspace,
             embedding_func=self.embedding_func,
             meta_fields={"src_id", "tgt_id", "source_id", "content", "file_path"},
         )
         self.chunks_vdb: BaseVectorStorage = self.vector_db_storage_cls(  # type: ignore
-            namespace=make_namespace(
-                self.namespace_prefix, NameSpace.VECTOR_STORE_CHUNKS
-            ),
+            namespace=NameSpace.VECTOR_STORE_CHUNKS,
+            workspace=self.workspace,
             embedding_func=self.embedding_func,
             meta_fields={"full_doc_id", "content", "file_path"},
         )
 
         # Initialize document status storage
         self.doc_status: DocStatusStorage = self.doc_status_storage_cls(
-            namespace=make_namespace(self.namespace_prefix, NameSpace.DOC_STATUS),
+            namespace=NameSpace.DOC_STATUS,
+            workspace=self.workspace,
             global_config=global_config,
             embedding_func=None,
         )

@@ -263,7 +263,9 @@
       "kvStorage": "KV 儲存",
       "docStatusStorage": "文件狀態儲存",
       "graphStorage": "圖形儲存",
-      "vectorStorage": "向量儲存"
+      "vectorStorage": "向量儲存",
+      "workspace": "工作空間",
+      "maxGraphNodes": "最大圖形節點數"
     },
     "propertiesView": {
       "editProperty": "編輯{{property}}",

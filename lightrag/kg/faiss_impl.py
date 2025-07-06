@@ -38,9 +38,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
 
         # Where to save index file if you want persistent storage
-        self._faiss_index_file = os.path.join(
-            self.global_config["working_dir"], f"faiss_index_{self.namespace}.index"
-        )
+        working_dir = self.global_config["working_dir"]
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            os.makedirs(workspace_dir, exist_ok=True)
+            self._faiss_index_file = os.path.join(
+                workspace_dir, f"faiss_index_{self.namespace}.index"
+            )
+        else:
+            # Default behavior when workspace is empty
+            self._faiss_index_file = os.path.join(
+                working_dir, f"faiss_index_{self.namespace}.index"
+            )
         self._meta_file = self._faiss_index_file + ".meta.json"
 
         self._max_batch_size = self.global_config["embedding_batch_num"]
