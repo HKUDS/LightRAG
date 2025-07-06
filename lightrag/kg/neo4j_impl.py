@@ -51,6 +51,11 @@ logging.getLogger("neo4j").setLevel(logging.ERROR)
 @dataclass
 class Neo4JStorage(BaseGraphStorage):
     def __init__(self, namespace, global_config, embedding_func, workspace=None):
+        # Check NEO4J_WORKSPACE environment variable and override workspace if set
+        neo4j_workspace = os.environ.get("NEO4J_WORKSPACE")
+        if neo4j_workspace and neo4j_workspace.strip():
+            workspace = neo4j_workspace
+
         super().__init__(
             namespace=namespace,
             workspace=workspace or "",
