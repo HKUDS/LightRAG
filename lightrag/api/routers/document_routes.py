@@ -475,6 +475,7 @@ class DocumentManager:
     def __init__(
         self,
         input_dir: str,
+        workspace: str = "",  # New parameter for workspace isolation
         supported_extensions: tuple = (
             ".txt",
             ".md",
@@ -515,9 +516,18 @@ class DocumentManager:
             ".less",  # LESS CSS
         ),
     ):
-        self.input_dir = Path(input_dir)
+        # Store the base input directory and workspace
+        self.base_input_dir = Path(input_dir)
+        self.workspace = workspace
         self.supported_extensions = supported_extensions
         self.indexed_files = set()
+
+        # Create workspace-specific input directory
+        # If workspace is provided, create a subdirectory for data isolation
+        if workspace:
+            self.input_dir = self.base_input_dir / workspace
+        else:
+            self.input_dir = self.base_input_dir
 
         # Create input directory if it doesn't exist
         self.input_dir.mkdir(parents=True, exist_ok=True)
@@ -716,7 +726,9 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
         if content:
             # Check if content contains only whitespace characters
             if not content.strip():
-                logger.warning(f"File contains only whitespace characters. file_paths={file_path.name}")
+                logger.warning(
+                    f"File contains only whitespace characters. file_paths={file_path.name}"
+                )
 
             await rag.apipeline_enqueue_documents(content, file_paths=file_path.name)
             logger.info(f"Successfully fetched and enqueued file: {file_path.name}")

@@ -71,6 +71,29 @@ class RedisConnectionManager:
 @dataclass
 class RedisKVStorage(BaseKVStorage):
     def __post_init__(self):
+        # Check for REDIS_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all Redis storage instances
+        redis_workspace = os.environ.get("REDIS_WORKSPACE")
+        if redis_workspace and redis_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = redis_workspace.strip()
+            logger.info(
+                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        # Build namespace with workspace prefix for data isolation
+        if effective_workspace:
+            self.namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+        # When workspace is empty, keep the original namespace unchanged
+
         redis_url = os.environ.get(
             "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
         )
@@ -461,6 +484,29 @@ class RedisDocStatusStorage(DocStatusStorage):
     """Redis implementation of document status storage"""
 
     def __post_init__(self):
+        # Check for REDIS_WORKSPACE environment variable first (higher priority)
+        # This allows administrators to force a specific workspace for all Redis storage instances
+        redis_workspace = os.environ.get("REDIS_WORKSPACE")
+        if redis_workspace and redis_workspace.strip():
+            # Use environment variable value, overriding the passed workspace parameter
+            effective_workspace = redis_workspace.strip()
+            logger.info(
+                f"Using REDIS_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+            )
+        else:
+            # Use the workspace parameter passed during initialization
+            effective_workspace = self.workspace
+            if effective_workspace:
+                logger.debug(
+                    f"Using passed workspace parameter: '{effective_workspace}'"
+                )
+
+        # Build namespace with workspace prefix for data isolation
+        if effective_workspace:
+            self.namespace = f"{effective_workspace}_{self.namespace}"
+            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
+        # When workspace is empty, keep the original namespace unchanged
+
         redis_url = os.environ.get(
             "REDIS_URI", config.get("redis", "uri", fallback="redis://localhost:6379")
         )
