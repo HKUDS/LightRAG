@@ -1421,7 +1421,9 @@ class MongoVectorDBStorage(BaseVectorStorage):
         except PyMongoError as e:
             error_msg = f"Error creating vector index {self._index_name}: {e}"
             logger.error(error_msg)
-            raise SystemExit(f"Failed to create MongoDB vector index. Program cannot continue. {error_msg}")
+            raise SystemExit(
+                f"Failed to create MongoDB vector index. Program cannot continue. {error_msg}"
+            )
 
     async def upsert(self, data: dict[str, dict[str, Any]]) -> None:
         logger.debug(f"Inserting {len(data)} to {self.namespace}")
