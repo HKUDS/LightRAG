@@ -1783,6 +1783,15 @@ async def _get_vector_context(
         if not valid_chunks:
             return [], [], []
 
+        # Apply reranking if enabled
+        global_config = chunks_vdb.global_config
+        valid_chunks = await apply_rerank_if_enabled(
+            query=query,
+            retrieved_docs=valid_chunks,
+            global_config=global_config,
+            top_k=query_param.top_k,
+        )
+
         maybe_trun_chunks = truncate_list_by_token_size(
             valid_chunks,
             key=lambda x: x["content"],
@@ -1965,6 +1974,15 @@ async def _get_node_data(
 
     if not len(results):
         return "", "", ""
+
+    # Apply reranking if enabled for entity results
+    global_config = entities_vdb.global_config
+    results = await apply_rerank_if_enabled(
+        query=query,
+        retrieved_docs=results,
+        global_config=global_config,
+        top_k=query_param.top_k,
+    )
 
     # Extract all entity IDs from your results list
     node_ids = [r["entity_name"] for r in results]
@@ -2268,6 +2286,15 @@ async def _get_edge_data(
 
     if not len(results):
         return "", "", ""
+
+    # Apply reranking if enabled for relationship results
+    global_config = relationships_vdb.global_config
+    results = await apply_rerank_if_enabled(
+        query=keywords,
+        retrieved_docs=results,
+        global_config=global_config,
+        top_k=query_param.top_k,
+    )
 
     # Prepare edge pairs in two forms:
     # For the batch edge properties function, use dicts.
@@ -2806,3 +2833,61 @@ async def query_with_keywords(
         )
     else:
         raise ValueError(f"Unknown mode {param.mode}")
+
+
+async def apply_rerank_if_enabled(
+    query: str,
+    retrieved_docs: list[dict],
+    global_config: dict,
+    top_k: int = None,
+) -> list[dict]:
+    """
+    Apply reranking to retrieved documents if rerank is enabled.
+
+    Args:
+        query: The search query
+        retrieved_docs: List of retrieved documents
+        global_config: Global configuration containing rerank settings
+        top_k: Number of top documents to return after reranking
+
+    Returns:
+        Reranked documents if rerank is enabled, otherwise original documents
+    """
+    if not global_config.get("enable_rerank", False) or not retrieved_docs:
+        return retrieved_docs
+
+    rerank_func = global_config.get("rerank_model_func")
+    if not rerank_func:
+        logger.debug(
+            "Rerank is enabled but no rerank function provided, skipping rerank"
+        )
+        return retrieved_docs
+
+    try:
+        # Determine top_k for reranking
+        rerank_top_k = top_k or global_config.get("rerank_top_k", 10)
+        rerank_top_k = min(rerank_top_k, len(retrieved_docs))
+
+        logger.debug(
+            f"Applying rerank to {len(retrieved_docs)} documents, returning top {rerank_top_k}"
+        )
+
+        # Apply reranking
+        reranked_docs = await rerank_func(
+            query=query,
+            documents=retrieved_docs,
+            top_k=rerank_top_k,
+        )
+
+        if reranked_docs and len(reranked_docs) > 0:
+            logger.info(
+                f"Successfully reranked {len(retrieved_docs)} documents to {len(reranked_docs)}"
+            )
+            return reranked_docs
+        else:
+            logger.warning("Rerank returned empty results, using original documents")
+            return retrieved_docs[:rerank_top_k] if rerank_top_k else retrieved_docs
+
+    except Exception as e:
+        logger.error(f"Error during reranking: {e}, using original documents")
+        return retrieved_docs
