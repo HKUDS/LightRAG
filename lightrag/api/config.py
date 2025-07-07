@@ -244,6 +244,9 @@ def parse_args() -> argparse.Namespace:
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value("MAX_PARALLEL_INSERT", 2, int)
 
+    # Get MAX_GRAPH_NODES from environment
+    args.max_graph_nodes = get_env_value("MAX_GRAPH_NODES", 1000, int)
+
     # Handle openai-ollama special case
     if args.llm_binding == "openai-ollama":
         args.llm_binding = "openai"

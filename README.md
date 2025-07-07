@@ -89,6 +89,8 @@ The LightRAG Server is designed to provide Web UI and API support. The Web UI fa
 
 ```bash
 pip install "lightrag-hku[api]"
+cp env.example .env
+lightrag-server
 ```
 
 * Installation from Source
@@ -99,6 +101,8 @@ cd LightRAG
 # create a Python virtual enviroment if neccesary
 # Install in editable mode with API support
 pip install -e ".[api]"
+cp env.example .env
+lightrag-server
 ```
 
 * Launching the LightRAG Server with Docker Compose

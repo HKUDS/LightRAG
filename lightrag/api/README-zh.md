@@ -43,7 +43,7 @@ LightRAG 需要同时集成 LLM（大型语言模型）和嵌入模型以有效�
 
 建议使用环境变量来配置 LightRAG 服务器。项目根目录中有一个名为 `env.example` 的示例环境变量文件。请将此文件复制到启动目录并重命名为 `.env`。之后，您可以在 `.env` 文件中修改与 LLM 和嵌入模型相关的参数。需要注意的是，LightRAG 服务器每次启动时都会将 `.env` 中的环境变量加载到系统环境变量中。**LightRAG 服务器会优先使用系统环境变量中的设置**。
 
->  由于安装了 Python 扩展的 VS Code 可能会在集成终端中自动加载 .env 文件，请在每次修改 .env 文件后打开新的终端会话。
+> 由于安装了 Python 扩展的 VS Code 可能会在集成终端中自动加载 .env 文件，请在每次修改 .env 文件后打开新的终端会话。
 
 以下是 LLM 和嵌入模型的一些常见设置示例：
 
@@ -94,49 +94,23 @@ lightrag-server
 ```
 lightrag-gunicorn --workers 4
 ```
-`.env` 文件必须放在启动目录中。启动时，LightRAG 服务器将创建一个文档目录（默认为 `./inputs`）和一个数据目录（默认为 `./rag_storage`）。这允许您从不同目录启动多个 LightRAG 服务器实例，每个实例配置为监听不同的网络端口。
+启动LightRAG的时候，当前工作目录必须含有`.env`配置文件。**要求将.env文件置于启动目录中是经过特意设计的**。 这样做的目的是支持用户同时启动多个LightRAG实例，并为不同实例配置不同的.env文件。**修改.env文件后，您需要重新打开终端以使新设置生效**。 这是因为每次启动时，LightRAG Server会将.env文件中的环境变量加载至系统环境变量，且系统环境变量的设置具有更高优先级。
 
-以下是一些常用的启动参数：
+启动时可以通过命令行参数覆盖`.env`文件中的配置。常用的命令行参数包括：
 
 - `--host`：服务器监听地址（默认：0.0.0.0）
 - `--port`：服务器监听端口（默认：9621）
 - `--timeout`：LLM 请求超时时间（默认：150 秒）
 - `--log-level`：日志级别（默认：INFO）
-- --input-dir：指定要扫描文档的目录（默认：./input）
-
-> - **要求将.env文件置于启动目录中是经过特意设计的**。 这样做的目的是支持用户同时启动多个LightRAG实例，并为不同实例配置不同的.env文件。
-> - **修改.env文件后，您需要重新打开终端以使新设置生效**。 这是因为每次启动时，LightRAG Server会将.env文件中的环境变量加载至系统环境变量，且系统环境变量的设置具有更高优先级。
+- `--working-dir`：数据库持久化目录（默认：./rag_storage）
+- `--input-dir`：上传文件存放目录（默认：./inputs）
+- `--workspace`: 工作空间名称，用于逻辑上隔离多个LightRAG实例之间的数据（默认：空）
 
 ### 使用 Docker 启动 LightRAG 服务器
 
-* 克隆代码仓库：
-```shell
-git clone https://github.com/HKUDS/LightRAG.git
-cd LightRAG
-```
-
 * 配置 .env 文件：
     通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
-
-* 通过以下命令启动 LightRAG 服务器：
-```shell
-docker compose up
-# 如拉取了新版本，请添加 --build 重新构建
-docker compose up --build
-```
-### 无需克隆代码而使用 Docker 部署 LightRAG 服务器
-
-* 为 LightRAG 服务器创建工作文件夹：
-
-```shell
-mkdir lightrag
-cd lightrag
-```
-
-* 准备 .env 文件：
-    通过复制 env.example 文件创建个性化的.env 文件。根据您的需求配置 LLM 和嵌入参数。
-
-* 创建一个名为 docker-compose.yml 的 docker compose 文件：
+* 创建一个名为 docker-compose.yml 的文件：
 
 ```yaml
 services:
@@ -157,25 +131,55 @@ services:
       - "host.docker.internal:host-gateway"
 ```
 
-* 准备 .env 文件：
-    通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件。根据您的需求配置 LLM 和嵌入参数。
+* 通过以下命令启动 LightRAG 服务器：
 
-* 使用以下命令启动 LightRAG 服务器：
 ```shell
 docker compose up
+# 如果希望启动后让程序退到后台运行，需要在命令的最后添加 -d 参数
 ```
-
-> 在此获取LightRAG docker镜像历史版本: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
 ### 启动时自动扫描
 
-当使用 `--auto-scan-at-startup` 参数启动任何服务器时，系统将自动：
+当使用 `--auto-scan-at-startup` 参数启动LightRAG Server时，系统将自动：
 
 1. 扫描输入目录中的新文件
 2. 为尚未在数据库中的新文档建立索引
 3. 使所有内容立即可用于 RAG 查询
 
+这种工作模式给启动一个临时的RAG任务提供给了方便。
+
 > `--input-dir` 参数指定要扫描的输入目录。您可以从 webui 触发输入目录扫描。
+
+### 启动多个LightRAG实例
+
+有两种方式可以启动多个LightRAG实例。第一种方式是为每个实例配置一个完全独立的工作环境。此时需要为每个实例创建一个独立的工作目录，然后在这个工作目录上放置一个当前实例专用的`.env`配置文件。不同实例的配置文件中的服务器监听端口不能重复，然后在工作目录上执行 lightrag-server 启动服务即可。
+
+第二种方式是所有实例共享一套相同的`.env`配置文件，然后通过命令行参数来为每个实例指定不同的服务器监听端口和工作空间。你可以在同一个工作目录中通过不同的命令行参数启动多个LightRAG实例。例如：
+
+```
+# 启动实例1
+lightrag-server --port 9621 --workspace space1
+
+# 启动实例2
+lightrag-server --port 9622 --workspace space2
+```
+
+工作空间的作用是实现不同实例之间的数据隔离。因此不同实例之间的`workspace`参数必须不同，否则会导致数据混乱，数据将会被破坏。
+
+### LightRAG实例间的数据隔离
+
+每个实例配置一个独立的工作目录和专用`.env`配置文件通常能够保证内存数据库中的本地持久化文件保存在各自的工作目录，实现数据的相互隔离。LightRAG默认存储全部都是内存数据库，通过这种方式进行数据隔离是没有问题的。但是如果使用的是外部数据库，如果不同实例访问的是同一个数据库实例，就需要通过配置工作空间来实现数据隔离，否则不同实例的数据将会出现冲突并被破坏。
+
+命令行的 workspace 参数和`.env`文件中的环境变量`WORKSPACE` 都可以用于指定当前实例的工作空间名字，命令行参数的优先级别更高。下面是不同类型的存储实现工作空间的方式：
+
+- **对于本地基于文件的数据库，数据隔离通过工作空间子目录实现：** JsonKVStorage, JsonDocStatusStorage, NetworkXStorage, NanoVectorDBStorage, FaissVectorDBStorage。
+- **对于将数据存储在集合（collection）中的数据库，通过在集合名称前添加工作空间前缀来实现：** RedisKVStorage, RedisDocStatusStorage, MilvusVectorDBStorage, QdrantVectorDBStorage, MongoKVStorage, MongoDocStatusStorage, MongoVectorDBStorage, MongoGraphStorage, PGGraphStorage。
+- **对于关系型数据库，数据隔离通过向表中添加 `workspace` 字段进行数据的逻辑隔离：** PGKVStorage, PGVectorStorage, PGDocStatusStorage。
+
+* **对于Neo4j图数据库，通过label来实现数据的逻辑隔离**：Neo4JStorage
+
+为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL的默认工作空间为`default`，Neo4j的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`。
 
 ### Gunicorn + Uvicorn 的多工作进程
 

@@ -90,6 +90,8 @@ LightRAG服务器旨在提供Web UI和API支持。Web UI便于文档索引、知
 
 ```bash
 pip install "lightrag-hku[api]"
+cp env.example .env
+lightrag-server
 ```
 
 * 从源代码安装
@@ -100,6 +102,8 @@ cd LightRAG
 # 如有必要，创建Python虚拟环境
 # 以可编辑模式安装并支持API
 pip install -e ".[api]"
+cp env.example .env
+lightrag-server
 ```
 
 * 使用 Docker Compose 启动 LightRAG 服务器

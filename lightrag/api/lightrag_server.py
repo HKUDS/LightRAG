@@ -326,6 +326,7 @@ def create_app(args):
             enable_llm_cache=args.enable_llm_cache,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
+            max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
         )
     else:  # azure_openai
@@ -353,6 +354,7 @@ def create_app(args):
             enable_llm_cache=args.enable_llm_cache,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
+            max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
         )
 
@@ -475,7 +477,7 @@ def create_app(args):
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
                     "workspace": args.workspace,
-                    "max_graph_nodes": os.getenv("MAX_GRAPH_NODES"),
+                    "max_graph_nodes": args.max_graph_nodes,
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),

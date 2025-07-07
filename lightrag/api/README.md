@@ -94,50 +94,25 @@ lightrag-server
 ```
 lightrag-gunicorn --workers 4
 ```
-The `.env` file **must be placed in the startup directory**.
 
-Upon launching, the LightRAG Server will create a documents directory (default is `./inputs`) and a data directory (default is `./rag_storage`). This allows you to initiate multiple instances of LightRAG Server from different directories, with each instance configured to listen on a distinct network port.
+When starting LightRAG, the current working directory must contain the `.env` configuration file. **It is intentionally designed that the `.env` file must be placed in the startup directory**. The purpose of this is to allow users to launch multiple LightRAG instances simultaneously and configure different `.env` files for different instances. **After modifying the `.env` file, you need to reopen the terminal for the new settings to take effect.** This is because each time LightRAG Server starts, it loads the environment variables from the `.env` file into the system environment variables, and system environment variables have higher precedence.
 
-Here are some commonly used startup parameters:
+During startup, configurations in the `.env` file can be overridden by command-line parameters. Common command-line parameters include:
 
 - `--host`: Server listening address (default: 0.0.0.0)
 - `--port`: Server listening port (default: 9621)
 - `--timeout`: LLM request timeout (default: 150 seconds)
-- `--log-level`: Logging level (default: INFO)
-- `--input-dir`: Specifying the directory to scan for documents (default: ./inputs)
-
-> - The requirement for the .env file to be in the startup directory is intentionally designed this way. The purpose is to support users in launching multiple LightRAG instances simultaneously, allowing different .env files for different instances.
-> - **After changing the .env file, you need to open a new terminal to make  the new settings take effect.** This because the LightRAG Server will load the environment variables from .env into the system environment variables each time it starts, and LightRAG Server will prioritize the settings in the system environment variables.
+- `--log-level`: Log level (default: INFO)
+- `--working-dir`: Database persistence directory (default: ./rag_storage)
+- `--input-dir`: Directory for uploaded files (default: ./inputs)
+- `--workspace`: Workspace name, used to logically isolate data between multiple LightRAG instances (default: empty)
 
 ### Launching LightRAG Server with Docker
 
-* Clone the repository:
-```shell
-git clone https://github.com/HKUDS/LightRAG.git
-cd LightRAG
-```
-
 * Prepare the .env file:
-    Create a personalized .env file from sample file `env.example`. Configure the LLM and embedding parameters according to your requirements.
+    Create a personalized .env file by copying the sample file [`env.example`](env.example). Configure the LLM and embedding parameters according to your requirements.
 
-* Start the LightRAG Server using the following commands:
-```shell
-docker compose up
-# Use --build if you have pulled a new version
-docker compose up --build
-```
-
-### Deploying LightRAG Server with docker without cloneing the repository
-
-* Create a working folder for LightRAG Server:
-
-```shell
-mkdir lightrag
-cd lightrag
-```
-
-* Create a docker compose file named docker-compose.yml:
-
+* Create a file named `docker-compose.yml`:
 
 ```yaml
 services:
@@ -157,25 +132,56 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 ```
-* Prepare the .env file:
-    Create a personalized .env file from sample file `env.example`. Configure the LLM and embedding parameters according to your requirements.
 
-* Start the LightRAG Server using the following commands:
+* Start the LightRAG Server with the following command:
+
 ```shell
 docker compose up
+# If you want the program to run in the background after startup, add the -d parameter at the end of the command.
 ```
 
-> Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+> You can get the official docker compose file from here: [docker-compose.yml](https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml). For historical versions of LightRAG docker images, visit this link: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
 ### Auto scan on startup
 
-When starting any of the servers with the `--auto-scan-at-startup` parameter, the system will automatically:
+When starting the LightRAG Server with the `--auto-scan-at-startup` parameter, the system will automatically:
 
 1. Scan for new files in the input directory
 2. Index new documents that aren't already in the database
 3. Make all content immediately available for RAG queries
 
+This offers an efficient method for deploying ad-hoc RAG processes.
+
 > The `--input-dir` parameter specifies the input directory to scan. You can trigger the input directory scan from the Web UI.
+
+### Starting Multiple LightRAG Instances
+
+There are two ways to start multiple LightRAG instances. The first way is to configure a completely independent working environment for each instance. This requires creating a separate working directory for each instance and placing a dedicated `.env` configuration file in that directory. The server listening ports in the configuration files of different instances cannot be the same. Then, you can start the service by running `lightrag-server` in the working directory.
+
+The second way is for all instances to share the same set of `.env` configuration files, and then use command-line arguments to specify different server listening ports and workspaces for each instance. You can start multiple LightRAG instances in the same working directory with different command-line arguments. For example:
+
+```
+# Start instance 1
+lightrag-server --port 9621 --workspace space1
+
+# Start instance 2
+lightrag-server --port 9622 --workspace space2
+```
+
+The purpose of a workspace is to achieve data isolation between different instances. Therefore, the `workspace` parameter must be different for different instances; otherwise, it will lead to data confusion and corruption.
+
+### Data Isolation Between LightRAG Instances
+
+Configuring an independent working directory and a dedicated `.env` configuration file for each instance can generally ensure that locally persisted files in the in-memory database are saved in their respective working directories, achieving data isolation. By default, LightRAG uses all in-memory databases, and this method of data isolation is sufficient. However, if you are using an external database, and different instances access the same database instance, you need to use workspaces to achieve data isolation; otherwise, the data of different instances will conflict and be destroyed.
+
+The command-line `workspace` argument and the `WORKSPACE` environment variable in the `.env` file can both be used to specify the workspace name for the current instance, with the command-line argument having higher priority. Here is how workspaces are implemented for different types of storage:
+
+- **For local file-based databases, data isolation is achieved through workspace subdirectories:** `JsonKVStorage`, `JsonDocStatusStorage`, `NetworkXStorage`, `NanoVectorDBStorage`, `FaissVectorDBStorage`.
+- **For databases that store data in collections, it's done by adding a workspace prefix to the collection name:** `RedisKVStorage`, `RedisDocStatusStorage`, `MilvusVectorDBStorage`, `QdrantVectorDBStorage`, `MongoKVStorage`, `MongoDocStatusStorage`, `MongoVectorDBStorage`, `MongoGraphStorage`, `PGGraphStorage`.
+- **For relational databases, data isolation is achieved by adding a `workspace` field to the tables for logical data separation:** `PGKVStorage`, `PGVectorStorage`, `PGDocStatusStorage`.
+- **For the Neo4j graph database, logical data isolation is achieved through labels:** `Neo4JStorage`
+
+To maintain compatibility with legacy data, the default workspace for PostgreSQL is `default` and for Neo4j is `base` when no workspace is configured. For all external storages, the system provides dedicated workspace environment variables to override the common `WORKSPACE` environment variable configuration. These storage-specific workspace environment variables are: `REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`.
 
 ### Multiple workers for Gunicorn + Uvicorn
 
