@@ -767,7 +767,7 @@ export default function DocumentManager() {
                             <Checkbox
                               checked={selectedDocIds.includes(doc.id)}
                               onCheckedChange={(checked) => handleDocumentSelect(doc.id, checked === true)}
-                              disabled={doc.status !== 'processed'}
+                              // disabled={doc.status !== 'processed'}
                               className="mx-auto"
                             />
                           </TableCell>
