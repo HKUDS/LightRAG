@@ -796,7 +796,7 @@ For production level scenarios you will most likely want to leverage an enterpri
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-  
+
   -- drop if necessary
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
@@ -1184,17 +1184,17 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
         from lightrag.llm.openai import openai_complete_if_cache, openai_embed
         from lightrag.utils import EmbeddingFunc
         import os
-    
+
         async def load_existing_lightrag():
             # First, create or load an existing LightRAG instance
             lightrag_working_dir = "./existing_lightrag_storage"
-    
+
             # Check if previous LightRAG instance exists
             if os.path.exists(lightrag_working_dir) and os.listdir(lightrag_working_dir):
                 print("✅ Found existing LightRAG instance, loading...")
             else:
                 print("❌ No existing LightRAG instance found, will create new one")
-    
+
             # Create/Load LightRAG instance with your configurations
             lightrag_instance = LightRAG(
                 working_dir=lightrag_working_dir,
@@ -1217,10 +1217,10 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                     ),
                 )
             )
-    
+
             # Initialize storage (this will load existing data if available)
             await lightrag_instance.initialize_storages()
-    
+
             # Now initialize RAGAnything with the existing LightRAG instance
             rag = RAGAnything(
                 lightrag=lightrag_instance,  # Pass the existing LightRAG instance
@@ -1249,20 +1249,20 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                 )
                 # Note: working_dir, llm_model_func, embedding_func, etc. are inherited from lightrag_instance
             )
-    
+
             # Query the existing knowledge base
             result = await rag.query_with_multimodal(
                 "What data has been processed in this LightRAG instance?",
                 mode="hybrid"
             )
             print("Query result:", result)
-    
+
             # Add new multimodal documents to the existing LightRAG instance
             await rag.process_document_complete(
                 file_path="path/to/new/multimodal_document.pdf",
                 output_dir="./output"
             )
-    
+
         if __name__ == "__main__":
             asyncio.run(load_existing_lightrag())
     ```
