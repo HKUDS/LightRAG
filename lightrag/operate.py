@@ -26,6 +26,7 @@ from .utils import (
     get_conversation_turns,
     use_llm_func_with_cache,
     update_chunk_cache_list,
+    remove_think_tags,
 )
 from .base import (
     BaseGraphStorage,
@@ -1703,7 +1704,8 @@ async def extract_keywords_only(
     result = await use_model_func(kw_prompt, keyword_extraction=True)
 
     # 6. Parse out JSON from the LLM response
-    match = re.search(r"\{.*\}", result, re.DOTALL)
+    result = remove_think_tags(result)
+    match = re.search(r"\{.*?\}", result, re.DOTALL)
     if not match:
         logger.error("No JSON-like structure found in the LLM respond.")
         return [], []
