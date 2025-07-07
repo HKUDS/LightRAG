@@ -258,6 +258,9 @@ class LightRAG:
     max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 2)))
     """Maximum number of parallel insert operations."""
 
+    max_graph_nodes: int = field(default=get_env_value("MAX_GRAPH_NODES", 1000, int))
+    """Maximum number of graph nodes to return in knowledge graph queries."""
+
     addon_params: dict[str, Any] = field(
         default_factory=lambda: {
             "language": get_env_value("SUMMARY_LANGUAGE", "English", str)
@@ -526,18 +529,24 @@ class LightRAG:
         self,
         node_label: str,
         max_depth: int = 3,
-        max_nodes: int = 1000,
+        max_nodes: int = None,
     ) -> KnowledgeGraph:
         """Get knowledge graph for a given label
 
         Args:
             node_label (str): Label to get knowledge graph for
             max_depth (int): Maximum depth of graph
-            max_nodes (int, optional): Maximum number of nodes to return. Defaults to 1000.
+            max_nodes (int, optional): Maximum number of nodes to return. Defaults to self.max_graph_nodes.
 
         Returns:
             KnowledgeGraph: Knowledge graph containing nodes and edges
         """
+        # Use self.max_graph_nodes as default if max_nodes is None
+        if max_nodes is None:
+            max_nodes = self.max_graph_nodes
+        else:
+            # Limit max_nodes to not exceed self.max_graph_nodes
+            max_nodes = min(max_nodes, self.max_graph_nodes)
 
         return await self.chunk_entity_relation_graph.get_knowledge_graph(
             node_label, max_depth, max_nodes

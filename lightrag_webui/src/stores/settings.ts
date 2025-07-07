@@ -36,7 +36,10 @@ interface SettingsState {
   setGraphQueryMaxDepth: (depth: number) => void
 
   graphMaxNodes: number
-  setGraphMaxNodes: (nodes: number) => void
+  setGraphMaxNodes: (nodes: number, triggerRefresh?: boolean) => void
+
+  backendMaxGraphNodes: number | null
+  setBackendMaxGraphNodes: (maxNodes: number | null) => void
 
   graphLayoutMaxIterations: number
   setGraphLayoutMaxIterations: (iterations: number) => void
@@ -90,6 +93,7 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       graphQueryMaxDepth: 3,
       graphMaxNodes: 1000,
+      backendMaxGraphNodes: null,
       graphLayoutMaxIterations: 15,
 
       queryLabel: defaultQueryLabel,
@@ -143,7 +147,27 @@ const useSettingsStoreBase = create<SettingsState>()(
 
       setGraphQueryMaxDepth: (depth: number) => set({ graphQueryMaxDepth: depth }),
 
-      setGraphMaxNodes: (nodes: number) => set({ graphMaxNodes: nodes }),
+      setGraphMaxNodes: (nodes: number, triggerRefresh: boolean = false) => {
+        const state = useSettingsStore.getState();
+        if (state.graphMaxNodes === nodes) {
+          return;
+        }
+
+        if (triggerRefresh) {
+          const currentLabel = state.queryLabel;
+          // Atomically update both the node count and the query label to trigger a refresh.
+          set({ graphMaxNodes: nodes, queryLabel: '' });
+
+          // Restore the label after a short delay.
+          setTimeout(() => {
+            set({ queryLabel: currentLabel });
+          }, 300);
+        } else {
+          set({ graphMaxNodes: nodes });
+        }
+      },
+
+      setBackendMaxGraphNodes: (maxNodes: number | null) => set({ backendMaxGraphNodes: maxNodes }),
 
       setMinEdgeSize: (size: number) => set({ minEdgeSize: size }),
 
@@ -168,7 +192,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 13,
+      version: 14,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -231,6 +255,10 @@ const useSettingsStoreBase = create<SettingsState>()(
           if (state.querySettings) {
             state.querySettings.user_prompt = ''
           }
+        }
+        if (version < 14) {
+          // Add backendMaxGraphNodes field for older versions
+          state.backendMaxGraphNodes = null
         }
         return state
       }

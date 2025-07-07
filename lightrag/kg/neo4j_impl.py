@@ -36,9 +36,6 @@ from dotenv import load_dotenv
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-# Get maximum number of graph nodes from environment variable, default is 1000
-MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
-
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
@@ -902,7 +899,7 @@ class Neo4JStorage(BaseGraphStorage):
         self,
         node_label: str,
         max_depth: int = 3,
-        max_nodes: int = MAX_GRAPH_NODES,
+        max_nodes: int = None,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -916,6 +913,13 @@ class Neo4JStorage(BaseGraphStorage):
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
             indicating whether the graph was truncated due to max_nodes limit
         """
+        # Get max_nodes from global_config if not provided
+        if max_nodes is None:
+            max_nodes = self.global_config.get("max_graph_nodes", 1000)
+        else:
+            # Limit max_nodes to not exceed global_config max_graph_nodes
+            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
+
         workspace_label = self._get_workspace_label()
         result = KnowledgeGraph()
         seen_nodes = set()
