@@ -20,6 +20,7 @@ from lightrag import LightRAG, QueryParam
 from lightrag.rerank import custom_rerank, RerankModel
 from lightrag.llm.openai import openai_complete_if_cache, openai_embed
 from lightrag.utils import EmbeddingFunc, setup_logger
+from lightrag.kg.shared_storage import initialize_pipeline_status
 
 # Set up your working directory
 WORKING_DIR = "./test_rerank"
@@ -87,6 +88,9 @@ async def create_rag_with_rerank():
         rerank_model_func=my_rerank_func,
     )
 
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
+
     return rag
 
 
@@ -119,6 +123,9 @@ async def create_rag_with_rerank_model():
         enable_rerank=True,
         rerank_model_func=rerank_model.rerank,
     )
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
     return rag
 
