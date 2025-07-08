@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { createSelectors } from '@/lib/utils'
 import { checkHealth, LightragStatus } from '@/api/lightrag'
+import { useSettingsStore } from './settings'
 
 interface BackendState {
   health: boolean
@@ -56,6 +57,25 @@ const useBackendStateStoreBase = create<BackendState>()((set) => ({
           'webui_title' in health ? (health.webui_title ?? null) : null,
           'webui_description' in health ? (health.webui_description ?? null) : null
         );
+      }
+
+      // Extract and store backend max graph nodes limit
+      if (health.configuration?.max_graph_nodes) {
+        const maxNodes = parseInt(health.configuration.max_graph_nodes, 10)
+        if (!isNaN(maxNodes) && maxNodes > 0) {
+          const currentBackendMaxNodes = useSettingsStore.getState().backendMaxGraphNodes
+
+          // Only update if the backend limit has actually changed
+          if (currentBackendMaxNodes !== maxNodes) {
+            useSettingsStore.getState().setBackendMaxGraphNodes(maxNodes)
+
+            // Auto-adjust current graphMaxNodes if it exceeds the new backend limit
+            const currentMaxNodes = useSettingsStore.getState().graphMaxNodes
+            if (currentMaxNodes > maxNodes) {
+              useSettingsStore.getState().setGraphMaxNodes(maxNodes, true)
+            }
+          }
+        }
       }
 
       set({

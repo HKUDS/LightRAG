@@ -34,8 +34,6 @@ from pymongo.errors import PyMongoError  # type: ignore
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
 
-# Get maximum number of graph nodes from environment variable, default is 1000
-MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
 GRAPH_BFS_MODE = os.getenv("MONGO_GRAPH_BFS_MODE", "bidirectional")
 
 
@@ -883,7 +881,7 @@ class MongoGraphStorage(BaseGraphStorage):
         )
 
     async def get_knowledge_graph_all_by_degree(
-        self, max_depth: int = 3, max_nodes: int = MAX_GRAPH_NODES
+        self, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
         """
         It's possible that the node with one or multiple relationships is retrieved,
@@ -961,9 +959,9 @@ class MongoGraphStorage(BaseGraphStorage):
         node_labels: list[str],
         seen_nodes: set[str],
         result: KnowledgeGraph,
-        depth: int = 0,
-        max_depth: int = 3,
-        max_nodes: int = MAX_GRAPH_NODES,
+        depth: int,
+        max_depth: int,
+        max_nodes: int,
     ) -> KnowledgeGraph:
         if depth > max_depth or len(result.nodes) > max_nodes:
             return result
@@ -1006,9 +1004,9 @@ class MongoGraphStorage(BaseGraphStorage):
     async def get_knowledge_subgraph_bidirectional_bfs(
         self,
         node_label: str,
-        depth=0,
-        max_depth: int = 3,
-        max_nodes: int = MAX_GRAPH_NODES,
+        depth: int,
+        max_depth: int,
+        max_nodes: int,
     ) -> KnowledgeGraph:
         seen_nodes = set()
         seen_edges = set()
@@ -1038,7 +1036,7 @@ class MongoGraphStorage(BaseGraphStorage):
         return result
 
     async def get_knowledge_subgraph_in_out_bound_bfs(
-        self, node_label: str, max_depth: int = 3, max_nodes: int = MAX_GRAPH_NODES
+        self, node_label: str, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
         seen_nodes = set()
         seen_edges = set()
@@ -1152,7 +1150,7 @@ class MongoGraphStorage(BaseGraphStorage):
         self,
         node_label: str,
         max_depth: int = 3,
-        max_nodes: int = MAX_GRAPH_NODES,
+        max_nodes: int = None,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -1160,7 +1158,7 @@ class MongoGraphStorage(BaseGraphStorage):
         Args:
             node_label: Label of the starting node, * means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
-            max_nodes: Maxiumu nodes to return, Defaults to 1000
+            max_nodes: Maximum nodes to return, Defaults to global_config max_graph_nodes
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
@@ -1184,6 +1182,13 @@ class MongoGraphStorage(BaseGraphStorage):
         C → B
         C → D
         """
+        # Use global_config max_graph_nodes as default if max_nodes is None
+        if max_nodes is None:
+            max_nodes = self.global_config.get("max_graph_nodes", 1000)
+        else:
+            # Limit max_nodes to not exceed global_config max_graph_nodes
+            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
+
         result = KnowledgeGraph()
         start = time.perf_counter()
 

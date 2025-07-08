@@ -45,9 +45,6 @@ from dotenv import load_dotenv
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
 
-# Get maximum number of graph nodes from environment variable, default is 1000
-MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
-
 
 class PostgreSQLDB:
     def __init__(self, config: dict[str, Any], **kwargs: Any):
@@ -2819,7 +2816,7 @@ class PGGraphStorage(BaseGraphStorage):
         self,
         node_label: str,
         max_depth: int = 3,
-        max_nodes: int = MAX_GRAPH_NODES,
+        max_nodes: int = None,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -2827,12 +2824,18 @@ class PGGraphStorage(BaseGraphStorage):
         Args:
             node_label: Label of the starting node, * means all nodes
             max_depth: Maximum depth of the subgraph, Defaults to 3
-            max_nodes: Maxiumu nodes to return, Defaults to 1000
+            max_nodes: Maximum nodes to return, Defaults to global_config max_graph_nodes
 
         Returns:
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
             indicating whether the graph was truncated due to max_nodes limit
         """
+        # Use global_config max_graph_nodes as default if max_nodes is None
+        if max_nodes is None:
+            max_nodes = self.global_config.get("max_graph_nodes", 1000)
+        else:
+            # Limit max_nodes to not exceed global_config max_graph_nodes
+            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
         kg = KnowledgeGraph()
 
         # Handle wildcard query - get all nodes
