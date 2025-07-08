@@ -1,17 +1,19 @@
 from __future__ import annotations
 
+import time
 import asyncio
 from typing import Any, cast
 
+from .base import DeletionResult
 from .kg.shared_storage import get_graph_db_lock
-from .prompt import GRAPH_FIELD_SEP
+from .constants import GRAPH_FIELD_SEP
 from .utils import compute_mdhash_id, logger
 from .base import StorageNameSpace
 
 
 async def adelete_by_entity(
     chunk_entity_relation_graph, entities_vdb, relationships_vdb, entity_name: str
-) -> None:
+) -> DeletionResult:
     """Asynchronously delete an entity and all its relationships.
 
     Args:
@@ -24,18 +26,43 @@ async def adelete_by_entity(
     # Use graph database lock to ensure atomic graph and vector db operations
     async with graph_db_lock:
         try:
+            # Check if the entity exists
+            if not await chunk_entity_relation_graph.has_node(entity_name):
+                logger.warning(f"Entity '{entity_name}' not found.")
+                return DeletionResult(
+                    status="not_found",
+                    doc_id=entity_name,
+                    message=f"Entity '{entity_name}' not found.",
+                    status_code=404,
+                )
+            # Retrieve related relationships before deleting the node
+            edges = await chunk_entity_relation_graph.get_node_edges(entity_name)
+            related_relations_count = len(edges) if edges else 0
+
             await entities_vdb.delete_entity(entity_name)
             await relationships_vdb.delete_entity_relation(entity_name)
             await chunk_entity_relation_graph.delete_node(entity_name)
 
-            logger.info(
-                f"Entity '{entity_name}' and its relationships have been deleted."
-            )
+            message = f"Entity '{entity_name}' and its {related_relations_count} relationships have been deleted."
+            logger.info(message)
             await _delete_by_entity_done(
                 entities_vdb, relationships_vdb, chunk_entity_relation_graph
             )
+            return DeletionResult(
+                status="success",
+                doc_id=entity_name,
+                message=message,
+                status_code=200,
+            )
         except Exception as e:
-            logger.error(f"Error while deleting entity '{entity_name}': {e}")
+            error_message = f"Error while deleting entity '{entity_name}': {e}"
+            logger.error(error_message)
+            return DeletionResult(
+                status="fail",
+                doc_id=entity_name,
+                message=error_message,
+                status_code=500,
+            )
 
 
 async def _delete_by_entity_done(
@@ -59,7 +86,7 @@ async def adelete_by_relation(
     relationships_vdb,
     source_entity: str,
     target_entity: str,
-) -> None:
+) -> DeletionResult:
     """Asynchronously delete a relation between two entities.
 
     Args:
@@ -68,6 +95,7 @@ async def adelete_by_relation(
         source_entity: Name of the source entity
         target_entity: Name of the target entity
     """
+    relation_str = f"{source_entity} -> {target_entity}"
     graph_db_lock = get_graph_db_lock(enable_logging=False)
     # Use graph database lock to ensure atomic graph and vector db operations
     async with graph_db_lock:
@@ -77,29 +105,45 @@ async def adelete_by_relation(
                 source_entity, target_entity
             )
             if not edge_exists:
-                logger.warning(
-                    f"Relation from '{source_entity}' to '{target_entity}' does not exist"
+                message = f"Relation from '{source_entity}' to '{target_entity}' does not exist"
+                logger.warning(message)
+                return DeletionResult(
+                    status="not_found",
+                    doc_id=relation_str,
+                    message=message,
+                    status_code=404,
                 )
-                return
 
             # Delete relation from vector database
-            relation_id = compute_mdhash_id(
-                source_entity + target_entity, prefix="rel-"
-            )
-            await relationships_vdb.delete([relation_id])
+            rel_ids_to_delete = [
+                compute_mdhash_id(source_entity + target_entity, prefix="rel-"),
+                compute_mdhash_id(target_entity + source_entity, prefix="rel-"),
+            ]
+
+            await relationships_vdb.delete(rel_ids_to_delete)
 
             # Delete relation from knowledge graph
             await chunk_entity_relation_graph.remove_edges(
                 [(source_entity, target_entity)]
             )
 
-            logger.info(
-                f"Successfully deleted relation from '{source_entity}' to '{target_entity}'"
-            )
+            message = f"Successfully deleted relation from '{source_entity}' to '{target_entity}'"
+            logger.info(message)
             await _delete_relation_done(relationships_vdb, chunk_entity_relation_graph)
+            return DeletionResult(
+                status="success",
+                doc_id=relation_str,
+                message=message,
+                status_code=200,
+            )
         except Exception as e:
-            logger.error(
-                f"Error while deleting relation from '{source_entity}' to '{target_entity}': {e}"
+            error_message = f"Error while deleting relation from '{source_entity}' to '{target_entity}': {e}"
+            logger.error(error_message)
+            return DeletionResult(
+                status="fail",
+                doc_id=relation_str,
+                message=error_message,
+                status_code=500,
             )
 
 
@@ -479,7 +523,9 @@ async def acreate_entity(
                 "entity_id": entity_name,
                 "entity_type": entity_data.get("entity_type", "UNKNOWN"),
                 "description": entity_data.get("description", ""),
-                "source_id": entity_data.get("source_id", "manual"),
+                "source_id": entity_data.get("source_id", "manual_creation"),
+                "file_path": entity_data.get("file_path", "manual_creation"),
+                "created_at": int(time.time()),
             }
 
             # Add entity to knowledge graph
@@ -575,8 +621,10 @@ async def acreate_relation(
             edge_data = {
                 "description": relation_data.get("description", ""),
                 "keywords": relation_data.get("keywords", ""),
-                "source_id": relation_data.get("source_id", "manual"),
+                "source_id": relation_data.get("source_id", "manual_creation"),
                 "weight": float(relation_data.get("weight", 1.0)),
+                "file_path": relation_data.get("file_path", "manual_creation"),
+                "created_at": int(time.time()),
             }
 
             # Add relation to knowledge graph

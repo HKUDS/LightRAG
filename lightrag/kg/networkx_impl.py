@@ -5,14 +5,12 @@ from typing import final
 from lightrag.types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from lightrag.utils import logger
 from lightrag.base import BaseGraphStorage
+from lightrag.constants import GRAPH_FIELD_SEP
 
 import pipmaster as pm
 
 if not pm.is_installed("networkx"):
     pm.install("networkx")
-
-if not pm.is_installed("graspologic"):
-    pm.install("graspologic")
 
 import networkx as nx
 from .shared_storage import (
@@ -27,8 +25,6 @@ from dotenv import load_dotenv
 # allows to use different .env file for each lightrag instance
 # the OS environment variables take precedence over the .env file
 load_dotenv(dotenv_path=".env", override=False)
-
-MAX_GRAPH_NODES = int(os.getenv("MAX_GRAPH_NODES", 1000))
 
 
 @final
@@ -48,9 +44,19 @@ class NetworkXStorage(BaseGraphStorage):
         nx.write_graphml(graph, file_name)
 
     def __post_init__(self):
-        self._graphml_xml_file = os.path.join(
-            self.global_config["working_dir"], f"graph_{self.namespace}.graphml"
-        )
+        working_dir = self.global_config["working_dir"]
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            os.makedirs(workspace_dir, exist_ok=True)
+            self._graphml_xml_file = os.path.join(
+                workspace_dir, f"graph_{self.namespace}.graphml"
+            )
+        else:
+            # Default behavior when workspace is empty
+            self._graphml_xml_file = os.path.join(
+                working_dir, f"graph_{self.namespace}.graphml"
+            )
         self._storage_lock = None
         self.storage_updated = None
         self._graph = None
@@ -108,7 +114,9 @@ class NetworkXStorage(BaseGraphStorage):
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
         graph = await self._get_graph()
-        return graph.degree(src_id) + graph.degree(tgt_id)
+        src_degree = graph.degree(src_id) if graph.has_node(src_id) else 0
+        tgt_degree = graph.degree(tgt_id) if graph.has_node(tgt_id) else 0
+        return src_degree + tgt_degree
 
     async def get_edge(
         self, source_node_id: str, target_node_id: str
@@ -208,7 +216,7 @@ class NetworkXStorage(BaseGraphStorage):
         self,
         node_label: str,
         max_depth: int = 3,
-        max_nodes: int = MAX_GRAPH_NODES,
+        max_nodes: int = None,
     ) -> KnowledgeGraph:
         """
         Retrieve a connected subgraph of nodes where the label includes the specified `node_label`.
@@ -222,6 +230,13 @@ class NetworkXStorage(BaseGraphStorage):
             KnowledgeGraph object containing nodes and edges, with an is_truncated flag
             indicating whether the graph was truncated due to max_nodes limit
         """
+        # Get max_nodes from global_config if not provided
+        if max_nodes is None:
+            max_nodes = self.global_config.get("max_graph_nodes", 1000)
+        else:
+            # Limit max_nodes to not exceed global_config max_graph_nodes
+            max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
+
         graph = await self._get_graph()
 
         result = KnowledgeGraph()
@@ -356,6 +371,33 @@ class NetworkXStorage(BaseGraphStorage):
             f"Subgraph query successful | Node count: {len(result.nodes)} | Edge count: {len(result.edges)}"
         )
         return result
+
+    async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        chunk_ids_set = set(chunk_ids)
+        graph = await self._get_graph()
+        matching_nodes = []
+        for node_id, node_data in graph.nodes(data=True):
+            if "source_id" in node_data:
+                node_source_ids = set(node_data["source_id"].split(GRAPH_FIELD_SEP))
+                if not node_source_ids.isdisjoint(chunk_ids_set):
+                    node_data_with_id = node_data.copy()
+                    node_data_with_id["id"] = node_id
+                    matching_nodes.append(node_data_with_id)
+        return matching_nodes
+
+    async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
+        chunk_ids_set = set(chunk_ids)
+        graph = await self._get_graph()
+        matching_edges = []
+        for u, v, edge_data in graph.edges(data=True):
+            if "source_id" in edge_data:
+                edge_source_ids = set(edge_data["source_id"].split(GRAPH_FIELD_SEP))
+                if not edge_source_ids.isdisjoint(chunk_ids_set):
+                    edge_data_with_nodes = edge_data.copy()
+                    edge_data_with_nodes["source"] = u
+                    edge_data_with_nodes["target"] = v
+                    matching_edges.append(edge_data_with_nodes)
+        return matching_edges
 
     async def index_done_callback(self) -> bool:
         """Save data to disk"""

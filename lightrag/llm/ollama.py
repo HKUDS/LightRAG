@@ -50,7 +50,7 @@ async def _ollama_model_if_cache(
     kwargs.pop("max_tokens", None)
     # kwargs.pop("response_format", None) # allow json
     host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None) or 300  # Default timeout 300s
+    timeout = kwargs.pop("timeout", None) or 600  # Default timeout 600s
     kwargs.pop("hashing_kv", None)
     api_key = kwargs.pop("api_key", None)
     headers = {
@@ -146,7 +146,7 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
         headers["Authorization"] = f"Bearer {api_key}"
 
     host = kwargs.pop("host", None)
-    timeout = kwargs.pop("timeout", None) or 90  # Default time out 90s
+    timeout = kwargs.pop("timeout", None) or 300  # Default time out 300s
 
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
 

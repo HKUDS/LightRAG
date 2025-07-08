@@ -1,0 +1,33 @@
+## description: service version.
+## default: 15.7.0
+version: 16.4.0
+
+## mode postgresql cluster topology mode replication
+mode: replication
+
+## description: The number of replicas, for standalone mode, the replicas is 1, for replication mode, the default replicas is 2.
+## default: 1
+## minimum: 1
+## maximum: 5
+replicas: 2
+
+## description: CPU cores.
+## default: 0.5
+## minimum: 0.5
+## maximum: 64
+cpu: 1
+
+## description: Memory, the unit is Gi.
+## default: 0.5
+## minimum: 0.5
+## maximum: 1000
+memory: 1
+
+## description: Storage size, the unit is Gi.
+## default: 20
+## minimum: 1
+## maximum: 10000
+storage: 5
+
+## terminationPolicy define Cluster termination policy. One of DoNotTerminate, Delete, WipeOut.
+terminationPolicy: Delete

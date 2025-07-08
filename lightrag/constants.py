@@ -7,10 +7,14 @@ consistency and makes maintenance easier.
 """
 
 # Default values for environment variables
+DEFAULT_MAX_GLEANING = 1
 DEFAULT_MAX_TOKEN_SUMMARY = 500
 DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 6
 DEFAULT_WOKERS = 2
 DEFAULT_TIMEOUT = 150
+
+# Separator for graph fields
+GRAPH_FIELD_SEP = "<SEP>"
 
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB

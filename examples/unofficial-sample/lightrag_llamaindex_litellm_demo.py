@@ -53,7 +53,6 @@ async def llm_model_func(prompt, system_prompt=None, history_messages=[], **kwar
             prompt,
             system_prompt=system_prompt,
             history_messages=history_messages,
-            **kwargs,
         )
         return response
     except Exception as e:

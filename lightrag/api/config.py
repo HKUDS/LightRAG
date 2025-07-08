@@ -184,10 +184,10 @@ def parse_args() -> argparse.Namespace:
 
     # Namespace
     parser.add_argument(
-        "--namespace-prefix",
+        "--workspace",
         type=str,
-        default=get_env_value("NAMESPACE_PREFIX", ""),
-        help="Prefix of the namespace",
+        default=get_env_value("WORKSPACE", ""),
+        help="Default workspace for all storage",
     )
 
     parser.add_argument(
@@ -243,6 +243,9 @@ def parse_args() -> argparse.Namespace:
 
     # Get MAX_PARALLEL_INSERT from environment
     args.max_parallel_insert = get_env_value("MAX_PARALLEL_INSERT", 2, int)
+
+    # Get MAX_GRAPH_NODES from environment
+    args.max_graph_nodes = get_env_value("MAX_GRAPH_NODES", 1000, int)
 
     # Handle openai-ollama special case
     if args.llm_binding == "openai-ollama":

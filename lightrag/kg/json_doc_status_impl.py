@@ -30,7 +30,18 @@ class JsonDocStatusStorage(DocStatusStorage):
 
     def __post_init__(self):
         working_dir = self.global_config["working_dir"]
-        self._file_name = os.path.join(working_dir, f"kv_store_{self.namespace}.json")
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            os.makedirs(workspace_dir, exist_ok=True)
+            self._file_name = os.path.join(
+                workspace_dir, f"kv_store_{self.namespace}.json"
+            )
+        else:
+            # Default behavior when workspace is empty
+            self._file_name = os.path.join(
+                working_dir, f"kv_store_{self.namespace}.json"
+            )
         self._data = None
         self._storage_lock = None
         self.storage_updated = None
@@ -118,6 +129,10 @@ class JsonDocStatusStorage(DocStatusStorage):
             return
         logger.debug(f"Inserting {len(data)} records to {self.namespace}")
         async with self._storage_lock:
+            # Ensure chunks_list field exists for new documents
+            for doc_id, doc_data in data.items():
+                if "chunks_list" not in doc_data:
+                    doc_data["chunks_list"] = []
             self._data.update(data)
             await set_all_update_flags(self.namespace)
 

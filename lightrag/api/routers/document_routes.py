@@ -12,11 +12,18 @@ import pipmaster as pm
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    HTTPException,
+    UploadFile,
+)
 from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
-from lightrag.base import DocProcessingStatus, DocStatus
+from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
 
@@ -55,6 +62,51 @@ router = APIRouter(
 temp_prefix = "__tmp__"
 
 
+def sanitize_filename(filename: str, input_dir: Path) -> str:
+    """
+    Sanitize uploaded filename to prevent Path Traversal attacks.
+
+    Args:
+        filename: The original filename from the upload
+        input_dir: The target input directory
+
+    Returns:
+        str: Sanitized filename that is safe to use
+
+    Raises:
+        HTTPException: If the filename is unsafe or invalid
+    """
+    # Basic validation
+    if not filename or not filename.strip():
+        raise HTTPException(status_code=400, detail="Filename cannot be empty")
+
+    # Remove path separators and traversal sequences
+    clean_name = filename.replace("/", "").replace("\\", "")
+    clean_name = clean_name.replace("..", "")
+
+    # Remove control characters and null bytes
+    clean_name = "".join(c for c in clean_name if ord(c) >= 32 and c != "\x7f")
+
+    # Remove leading/trailing whitespace and dots
+    clean_name = clean_name.strip().strip(".")
+
+    # Check if anything is left after sanitization
+    if not clean_name:
+        raise HTTPException(
+            status_code=400, detail="Invalid filename after sanitization"
+        )
+
+    # Verify the final path stays within the input directory
+    try:
+        final_path = (input_dir / clean_name).resolve()
+        if not final_path.is_relative_to(input_dir.resolve()):
+            raise HTTPException(status_code=400, detail="Unsafe filename detected")
+    except (OSError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    return clean_name
+
+
 class ScanResponse(BaseModel):
     """Response model for document scanning operation
 
@@ -84,22 +136,30 @@ class InsertTextRequest(BaseModel):
 
     Attributes:
         text: The text content to be inserted into the RAG system
+        file_source: Source of the text (optional)
     """
 
     text: str = Field(
         min_length=1,
         description="The text to insert",
     )
+    file_source: str = Field(default=None, min_length=0, description="File Source")
 
     @field_validator("text", mode="after")
     @classmethod
-    def strip_after(cls, text: str) -> str:
+    def strip_text_after(cls, text: str) -> str:
         return text.strip()
+
+    @field_validator("file_source", mode="after")
+    @classmethod
+    def strip_source_after(cls, file_source: str) -> str:
+        return file_source.strip()
 
     class Config:
         json_schema_extra = {
             "example": {
-                "text": "This is a sample text to be inserted into the RAG system."
+                "text": "This is a sample text to be inserted into the RAG system.",
+                "file_source": "Source of the text (optional)",
             }
         }
 
@@ -109,17 +169,26 @@ class InsertTextsRequest(BaseModel):
 
     Attributes:
         texts: List of text contents to be inserted into the RAG system
+        file_sources: Sources of the texts (optional)
     """
 
     texts: list[str] = Field(
         min_length=1,
         description="The texts to insert",
     )
+    file_sources: list[str] = Field(
+        default=None, min_length=0, description="Sources of the texts"
+    )
 
     @field_validator("texts", mode="after")
     @classmethod
-    def strip_after(cls, texts: list[str]) -> list[str]:
+    def strip_texts_after(cls, texts: list[str]) -> list[str]:
         return [text.strip() for text in texts]
+
+    @field_validator("file_sources", mode="after")
+    @classmethod
+    def strip_sources_after(cls, file_sources: list[str]) -> list[str]:
+        return [file_source.strip() for file_source in file_sources]
 
     class Config:
         json_schema_extra = {
@@ -127,7 +196,10 @@ class InsertTextsRequest(BaseModel):
                 "texts": [
                     "This is the first text to be inserted.",
                     "This is the second text to be inserted.",
-                ]
+                ],
+                "file_sources": [
+                    "First file source (optional)",
+                ],
             }
         }
 
@@ -230,6 +302,55 @@ Attributes:
     metadata: Additional metadata (optional)
     file_path: Path to the document file
 """
+
+
+class DeleteDocRequest(BaseModel):
+    doc_ids: List[str] = Field(..., description="The IDs of the documents to delete.")
+    delete_file: bool = Field(
+        default=False,
+        description="Whether to delete the corresponding file in the upload directory.",
+    )
+
+    @field_validator("doc_ids", mode="after")
+    @classmethod
+    def validate_doc_ids(cls, doc_ids: List[str]) -> List[str]:
+        if not doc_ids:
+            raise ValueError("Document IDs list cannot be empty")
+
+        validated_ids = []
+        for doc_id in doc_ids:
+            if not doc_id or not doc_id.strip():
+                raise ValueError("Document ID cannot be empty")
+            validated_ids.append(doc_id.strip())
+
+        # Check for duplicates
+        if len(validated_ids) != len(set(validated_ids)):
+            raise ValueError("Document IDs must be unique")
+
+        return validated_ids
+
+
+class DeleteEntityRequest(BaseModel):
+    entity_name: str = Field(..., description="The name of the entity to delete.")
+
+    @field_validator("entity_name", mode="after")
+    @classmethod
+    def validate_entity_name(cls, entity_name: str) -> str:
+        if not entity_name or not entity_name.strip():
+            raise ValueError("Entity name cannot be empty")
+        return entity_name.strip()
+
+
+class DeleteRelationRequest(BaseModel):
+    source_entity: str = Field(..., description="The name of the source entity.")
+    target_entity: str = Field(..., description="The name of the target entity.")
+
+    @field_validator("source_entity", "target_entity", mode="after")
+    @classmethod
+    def validate_entity_names(cls, entity_name: str) -> str:
+        if not entity_name or not entity_name.strip():
+            raise ValueError("Entity name cannot be empty")
+        return entity_name.strip()
 
 
 class DocStatusResponse(BaseModel):
@@ -354,6 +475,7 @@ class DocumentManager:
     def __init__(
         self,
         input_dir: str,
+        workspace: str = "",  # New parameter for workspace isolation
         supported_extensions: tuple = (
             ".txt",
             ".md",
@@ -394,9 +516,18 @@ class DocumentManager:
             ".less",  # LESS CSS
         ),
     ):
-        self.input_dir = Path(input_dir)
+        # Store the base input directory and workspace
+        self.base_input_dir = Path(input_dir)
+        self.workspace = workspace
         self.supported_extensions = supported_extensions
         self.indexed_files = set()
+
+        # Create workspace-specific input directory
+        # If workspace is provided, create a subdirectory for data isolation
+        if workspace:
+            self.input_dir = self.base_input_dir / workspace
+        else:
+            self.input_dir = self.base_input_dir
 
         # Create input directory if it doesn't exist
         self.input_dir.mkdir(parents=True, exist_ok=True)
@@ -593,6 +724,12 @@ async def pipeline_enqueue_file(rag: LightRAG, file_path: Path) -> bool:
 
         # Insert into the RAG queue
         if content:
+            # Check if content contains only whitespace characters
+            if not content.strip():
+                logger.warning(
+                    f"File contains only whitespace characters. file_paths={file_path.name}"
+                )
+
             await rag.apipeline_enqueue_documents(content, file_paths=file_path.name)
             logger.info(f"Successfully fetched and enqueued file: {file_path.name}")
             return True
@@ -656,16 +793,25 @@ async def pipeline_index_files(rag: LightRAG, file_paths: List[Path]):
         logger.error(traceback.format_exc())
 
 
-async def pipeline_index_texts(rag: LightRAG, texts: List[str]):
+async def pipeline_index_texts(
+    rag: LightRAG, texts: List[str], file_sources: List[str] = None
+):
     """Index a list of texts
 
     Args:
         rag: LightRAG instance
         texts: The texts to index
+        file_sources: Sources of the texts
     """
     if not texts:
         return
-    await rag.apipeline_enqueue_documents(texts)
+    if file_sources is not None:
+        if len(file_sources) != 0 and len(file_sources) != len(texts):
+            [
+                file_sources.append("unknown_source")
+                for _ in range(len(file_sources), len(texts))
+            ]
+    await rag.apipeline_enqueue_documents(input=texts, file_paths=file_sources)
     await rag.apipeline_process_enqueue_documents()
 
 
@@ -698,7 +844,7 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     try:
         new_files = doc_manager.scan_directory_for_new_files()
         total_files = len(new_files)
-        logger.info(f"Found {total_files} new files to index.")
+        logger.info(f"Found {total_files} files to index.")
 
         if not new_files:
             return
@@ -710,6 +856,161 @@ async def run_scanning_process(rag: LightRAG, doc_manager: DocumentManager):
     except Exception as e:
         logger.error(f"Error during scanning process: {str(e)}")
         logger.error(traceback.format_exc())
+
+
+async def background_delete_documents(
+    rag: LightRAG,
+    doc_manager: DocumentManager,
+    doc_ids: List[str],
+    delete_file: bool = False,
+):
+    """Background task to delete multiple documents"""
+    from lightrag.kg.shared_storage import (
+        get_namespace_data,
+        get_pipeline_status_lock,
+    )
+
+    pipeline_status = await get_namespace_data("pipeline_status")
+    pipeline_status_lock = get_pipeline_status_lock()
+
+    total_docs = len(doc_ids)
+    successful_deletions = []
+    failed_deletions = []
+
+    # Double-check pipeline status before proceeding
+    async with pipeline_status_lock:
+        if pipeline_status.get("busy", False):
+            logger.warning("Error: Unexpected pipeline busy state, aborting deletion.")
+            return  # Abort deletion operation
+
+        # Set pipeline status to busy for deletion
+        pipeline_status.update(
+            {
+                "busy": True,
+                "job_name": f"Deleting {total_docs} Documents",
+                "job_start": datetime.now().isoformat(),
+                "docs": total_docs,
+                "batchs": total_docs,
+                "cur_batch": 0,
+                "latest_message": "Starting document deletion process",
+            }
+        )
+        # Use slice assignment to clear the list in place
+        pipeline_status["history_messages"][:] = ["Starting document deletion process"]
+
+    try:
+        # Loop through each document ID and delete them one by one
+        for i, doc_id in enumerate(doc_ids, 1):
+            async with pipeline_status_lock:
+                start_msg = f"Deleting document {i}/{total_docs}: {doc_id}"
+                logger.info(start_msg)
+                pipeline_status["cur_batch"] = i
+                pipeline_status["latest_message"] = start_msg
+                pipeline_status["history_messages"].append(start_msg)
+
+            file_path = "#"
+            try:
+                result = await rag.adelete_by_doc_id(doc_id)
+                file_path = (
+                    getattr(result, "file_path", "-") if "result" in locals() else "-"
+                )
+                if result.status == "success":
+                    successful_deletions.append(doc_id)
+                    success_msg = (
+                        f"Deleted document {i}/{total_docs}: {doc_id}[{file_path}]"
+                    )
+                    logger.info(success_msg)
+                    async with pipeline_status_lock:
+                        pipeline_status["history_messages"].append(success_msg)
+
+                    # Handle file deletion if requested and file_path is available
+                    if (
+                        delete_file
+                        and result.file_path
+                        and result.file_path != "unknown_source"
+                    ):
+                        try:
+                            file_path = doc_manager.input_dir / result.file_path
+                            if file_path.exists():
+                                file_path.unlink()
+                                file_delete_msg = (
+                                    f"Successfully deleted file: {result.file_path}"
+                                )
+                                logger.info(file_delete_msg)
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = file_delete_msg
+                                    pipeline_status["history_messages"].append(
+                                        file_delete_msg
+                                    )
+                            else:
+                                file_not_found_msg = (
+                                    f"File not found for deletion: {result.file_path}"
+                                )
+                                logger.warning(file_not_found_msg)
+                                async with pipeline_status_lock:
+                                    pipeline_status["latest_message"] = (
+                                        file_not_found_msg
+                                    )
+                                    pipeline_status["history_messages"].append(
+                                        file_not_found_msg
+                                    )
+                        except Exception as file_error:
+                            file_error_msg = f"Failed to delete file {result.file_path}: {str(file_error)}"
+                            logger.error(file_error_msg)
+                            async with pipeline_status_lock:
+                                pipeline_status["latest_message"] = file_error_msg
+                                pipeline_status["history_messages"].append(
+                                    file_error_msg
+                                )
+                    elif delete_file:
+                        no_file_msg = f"No valid file path found for document {doc_id}"
+                        logger.warning(no_file_msg)
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = no_file_msg
+                            pipeline_status["history_messages"].append(no_file_msg)
+                else:
+                    failed_deletions.append(doc_id)
+                    error_msg = f"Failed to delete {i}/{total_docs}: {doc_id}[{file_path}] - {result.message}"
+                    logger.error(error_msg)
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = error_msg
+                        pipeline_status["history_messages"].append(error_msg)
+
+            except Exception as e:
+                failed_deletions.append(doc_id)
+                error_msg = f"Error deleting document {i}/{total_docs}: {doc_id}[{file_path}] - {str(e)}"
+                logger.error(error_msg)
+                logger.error(traceback.format_exc())
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = error_msg
+                    pipeline_status["history_messages"].append(error_msg)
+
+    except Exception as e:
+        error_msg = f"Critical error during batch deletion: {str(e)}"
+        logger.error(error_msg)
+        logger.error(traceback.format_exc())
+        async with pipeline_status_lock:
+            pipeline_status["history_messages"].append(error_msg)
+    finally:
+        # Final summary and check for pending requests
+        async with pipeline_status_lock:
+            pipeline_status["busy"] = False
+            completion_msg = f"Deletion completed: {len(successful_deletions)} successful, {len(failed_deletions)} failed"
+            pipeline_status["latest_message"] = completion_msg
+            pipeline_status["history_messages"].append(completion_msg)
+
+            # Check if there are pending document indexing requests
+            has_pending_request = pipeline_status.get("request_pending", False)
+
+        # If there are pending requests, start document processing pipeline
+        if has_pending_request:
+            try:
+                logger.info(
+                    "Processing pending document indexing requests after deletion"
+                )
+                await rag.apipeline_process_enqueue_documents()
+            except Exception as e:
+                logger.error(f"Error processing pending documents after deletion: {e}")
 
 
 def create_document_routes(
@@ -764,18 +1065,21 @@ def create_document_routes(
             HTTPException: If the file type is not supported (400) or other errors occur (500).
         """
         try:
-            if not doc_manager.is_supported_file(file.filename):
+            # Sanitize filename to prevent Path Traversal attacks
+            safe_filename = sanitize_filename(file.filename, doc_manager.input_dir)
+
+            if not doc_manager.is_supported_file(safe_filename):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
                 )
 
-            file_path = doc_manager.input_dir / file.filename
+            file_path = doc_manager.input_dir / safe_filename
             # Check if file already exists
             if file_path.exists():
                 return InsertResponse(
                     status="duplicated",
-                    message=f"File '{file.filename}' already exists in the input directory.",
+                    message=f"File '{safe_filename}' already exists in the input directory.",
                 )
 
             with open(file_path, "wb") as buffer:
@@ -786,7 +1090,7 @@ def create_document_routes(
 
             return InsertResponse(
                 status="success",
-                message=f"File '{file.filename}' uploaded successfully. Processing will continue in background.",
+                message=f"File '{safe_filename}' uploaded successfully. Processing will continue in background.",
             )
         except Exception as e:
             logger.error(f"Error /documents/upload: {file.filename}: {str(e)}")
@@ -816,7 +1120,12 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, [request.text])
+            background_tasks.add_task(
+                pipeline_index_texts,
+                rag,
+                [request.text],
+                file_sources=[request.file_source],
+            )
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
@@ -851,121 +1160,18 @@ def create_document_routes(
             HTTPException: If an error occurs during text processing (500).
         """
         try:
-            background_tasks.add_task(pipeline_index_texts, rag, request.texts)
+            background_tasks.add_task(
+                pipeline_index_texts,
+                rag,
+                request.texts,
+                file_sources=request.file_sources,
+            )
             return InsertResponse(
                 status="success",
                 message="Text successfully received. Processing will continue in background.",
             )
         except Exception as e:
             logger.error(f"Error /documents/text: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
-
-    # TODO: deprecated, use /upload instead
-    @router.post(
-        "/file", response_model=InsertResponse, dependencies=[Depends(combined_auth)]
-    )
-    async def insert_file(
-        background_tasks: BackgroundTasks, file: UploadFile = File(...)
-    ):
-        """
-        Insert a file directly into the RAG system.
-
-        This endpoint accepts a file upload and processes it for inclusion in the RAG system.
-        The file is saved temporarily and processed in the background.
-
-        Args:
-            background_tasks: FastAPI BackgroundTasks for async processing
-            file (UploadFile): The file to be processed
-
-        Returns:
-            InsertResponse: A response object containing the status of the operation.
-
-        Raises:
-            HTTPException: If the file type is not supported (400) or other errors occur (500).
-        """
-        try:
-            if not doc_manager.is_supported_file(file.filename):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported file type. Supported types: {doc_manager.supported_extensions}",
-                )
-
-            temp_path = await save_temp_file(doc_manager.input_dir, file)
-
-            # Add to background tasks
-            background_tasks.add_task(pipeline_index_file, rag, temp_path)
-
-            return InsertResponse(
-                status="success",
-                message=f"File '{file.filename}' saved successfully. Processing will continue in background.",
-            )
-        except Exception as e:
-            logger.error(f"Error /documents/file: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=str(e))
-
-    # TODO: deprecated, use /upload instead
-    @router.post(
-        "/file_batch",
-        response_model=InsertResponse,
-        dependencies=[Depends(combined_auth)],
-    )
-    async def insert_batch(
-        background_tasks: BackgroundTasks, files: List[UploadFile] = File(...)
-    ):
-        """
-        Process multiple files in batch mode.
-
-        This endpoint allows uploading and processing multiple files simultaneously.
-        It handles partial successes and provides detailed feedback about failed files.
-
-        Args:
-            background_tasks: FastAPI BackgroundTasks for async processing
-            files (List[UploadFile]): List of files to process
-
-        Returns:
-            InsertResponse: A response object containing:
-                - status: "success", "partial_success", or "failure"
-                - message: Detailed information about the operation results
-
-        Raises:
-            HTTPException: If an error occurs during processing (500).
-        """
-        try:
-            inserted_count = 0
-            failed_files = []
-            temp_files = []
-
-            for file in files:
-                if doc_manager.is_supported_file(file.filename):
-                    # Create a temporary file to save the uploaded content
-                    temp_files.append(await save_temp_file(doc_manager.input_dir, file))
-                    inserted_count += 1
-                else:
-                    failed_files.append(f"{file.filename} (unsupported type)")
-
-            if temp_files:
-                background_tasks.add_task(pipeline_index_files, rag, temp_files)
-
-            # Prepare status message
-            if inserted_count == len(files):
-                status = "success"
-                status_message = f"Successfully inserted all {inserted_count} documents"
-            elif inserted_count > 0:
-                status = "partial_success"
-                status_message = f"Successfully inserted {inserted_count} out of {len(files)} documents"
-                if failed_files:
-                    status_message += f". Failed files: {', '.join(failed_files)}"
-            else:
-                status = "failure"
-                status_message = "No documents were successfully inserted"
-                if failed_files:
-                    status_message += f". Failed files: {', '.join(failed_files)}"
-
-            return InsertResponse(status=status, message=status_message)
-        except Exception as e:
-            logger.error(f"Error /documents/batch: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
@@ -1279,6 +1485,94 @@ def create_document_routes(
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
 
+    class DeleteDocByIdResponse(BaseModel):
+        """Response model for single document deletion operation."""
+
+        status: Literal["deletion_started", "busy", "not_allowed"] = Field(
+            description="Status of the deletion operation"
+        )
+        message: str = Field(description="Message describing the operation result")
+        doc_id: str = Field(description="The ID of the document to delete")
+
+    @router.delete(
+        "/delete_document",
+        response_model=DeleteDocByIdResponse,
+        dependencies=[Depends(combined_auth)],
+        summary="Delete a document and all its associated data by its ID.",
+    )
+    async def delete_document(
+        delete_request: DeleteDocRequest,
+        background_tasks: BackgroundTasks,
+    ) -> DeleteDocByIdResponse:
+        """
+        Delete documents and all their associated data by their IDs using background processing.
+
+        Deletes specific documents and all their associated data, including their status,
+        text chunks, vector embeddings, and any related graph data.
+        The deletion process runs in the background to avoid blocking the client connection.
+        It is disabled when llm cache for entity extraction is disabled.
+
+        This operation is irreversible and will interact with the pipeline status.
+
+        Args:
+            delete_request (DeleteDocRequest): The request containing the document IDs and delete_file options.
+            background_tasks: FastAPI BackgroundTasks for async processing
+
+        Returns:
+            DeleteDocByIdResponse: The result of the deletion operation.
+                - status="deletion_started": The document deletion has been initiated in the background.
+                - status="busy": The pipeline is busy with another operation.
+                - status="not_allowed": Operation not allowed when LLM cache for entity extraction is disabled.
+
+        Raises:
+            HTTPException:
+              - 500: If an unexpected internal error occurs during initialization.
+        """
+        doc_ids = delete_request.doc_ids
+
+        # The rag object is initialized from the server startup args,
+        # so we can access its properties here.
+        if not rag.enable_llm_cache_for_entity_extract:
+            return DeleteDocByIdResponse(
+                status="not_allowed",
+                message="Operation not allowed when LLM cache for entity extraction is disabled.",
+                doc_id=", ".join(delete_request.doc_ids),
+            )
+
+        try:
+            from lightrag.kg.shared_storage import get_namespace_data
+
+            pipeline_status = await get_namespace_data("pipeline_status")
+
+            # Check if pipeline is busy
+            if pipeline_status.get("busy", False):
+                return DeleteDocByIdResponse(
+                    status="busy",
+                    message="Cannot delete documents while pipeline is busy",
+                    doc_id=", ".join(doc_ids),
+                )
+
+            # Add deletion task to background tasks
+            background_tasks.add_task(
+                background_delete_documents,
+                rag,
+                doc_manager,
+                doc_ids,
+                delete_request.delete_file,
+            )
+
+            return DeleteDocByIdResponse(
+                status="deletion_started",
+                message=f"Document deletion for {len(doc_ids)} documents has been initiated. Processing will continue in background.",
+                doc_id=", ".join(doc_ids),
+            )
+
+        except Exception as e:
+            error_msg = f"Error initiating document deletion for {delete_request.doc_ids}: {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=error_msg)
+
     @router.post(
         "/clear_cache",
         response_model=ClearCacheResponse,
@@ -1331,5 +1625,78 @@ def create_document_routes(
             logger.error(f"Error clearing cache: {str(e)}")
             logger.error(traceback.format_exc())
             raise HTTPException(status_code=500, detail=str(e))
+
+    @router.delete(
+        "/delete_entity",
+        response_model=DeletionResult,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def delete_entity(request: DeleteEntityRequest):
+        """
+        Delete an entity and all its relationships from the knowledge graph.
+
+        Args:
+            request (DeleteEntityRequest): The request body containing the entity name.
+
+        Returns:
+            DeletionResult: An object containing the outcome of the deletion process.
+
+        Raises:
+            HTTPException: If the entity is not found (404) or an error occurs (500).
+        """
+        try:
+            result = await rag.adelete_by_entity(entity_name=request.entity_name)
+            if result.status == "not_found":
+                raise HTTPException(status_code=404, detail=result.message)
+            if result.status == "fail":
+                raise HTTPException(status_code=500, detail=result.message)
+            # Set doc_id to empty string since this is an entity operation, not document
+            result.doc_id = ""
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = f"Error deleting entity '{request.entity_name}': {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=error_msg)
+
+    @router.delete(
+        "/delete_relation",
+        response_model=DeletionResult,
+        dependencies=[Depends(combined_auth)],
+    )
+    async def delete_relation(request: DeleteRelationRequest):
+        """
+        Delete a relationship between two entities from the knowledge graph.
+
+        Args:
+            request (DeleteRelationRequest): The request body containing the source and target entity names.
+
+        Returns:
+            DeletionResult: An object containing the outcome of the deletion process.
+
+        Raises:
+            HTTPException: If the relation is not found (404) or an error occurs (500).
+        """
+        try:
+            result = await rag.adelete_by_relation(
+                source_entity=request.source_entity,
+                target_entity=request.target_entity,
+            )
+            if result.status == "not_found":
+                raise HTTPException(status_code=404, detail=result.message)
+            if result.status == "fail":
+                raise HTTPException(status_code=500, detail=result.message)
+            # Set doc_id to empty string since this is a relation operation, not document
+            result.doc_id = ""
+            return result
+        except HTTPException:
+            raise
+        except Exception as e:
+            error_msg = f"Error deleting relation from '{request.source_entity}' to '{request.target_entity}': {str(e)}"
+            logger.error(error_msg)
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=error_msg)
 
     return router

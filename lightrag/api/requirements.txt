@@ -4,7 +4,6 @@ asyncpg
 distro
 dotenv
 fastapi
-graspologic>=3.4.1
 httpcore
 httpx
 jiter

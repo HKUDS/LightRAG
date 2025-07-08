@@ -56,6 +56,10 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
           <span>{status.configuration.graph_storage}</span>
           <span>{t('graphPanel.statusCard.vectorStorage')}:</span>
           <span>{status.configuration.vector_storage}</span>
+          <span>{t('graphPanel.statusCard.workspace')}:</span>
+          <span>{status.configuration.workspace || '-'}</span>
+          <span>{t('graphPanel.statusCard.maxGraphNodes')}:</span>
+          <span>{status.configuration.max_graph_nodes || '-'}</span>
         </div>
       </div>
     </div>

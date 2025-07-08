@@ -4,9 +4,7 @@ import asyncio
 from typing import Any, final
 import json
 import numpy as np
-
 from dataclasses import dataclass
-import pipmaster as pm
 
 from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
@@ -17,13 +15,8 @@ from .shared_storage import (
     set_all_update_flags,
 )
 
+# You must manually install faiss-cpu or faiss-gpu before using FAISS vector db
 import faiss  # type: ignore
-
-USE_GPU = os.getenv("FAISS_USE_GPU", "0") == "1"
-FAISS_PACKAGE = "faiss-gpu" if USE_GPU else "faiss-cpu"
-
-if not pm.is_installed(FAISS_PACKAGE):
-    pm.install(FAISS_PACKAGE)
 
 
 @final
@@ -45,9 +38,19 @@ class FaissVectorDBStorage(BaseVectorStorage):
         self.cosine_better_than_threshold = cosine_threshold
 
         # Where to save index file if you want persistent storage
-        self._faiss_index_file = os.path.join(
-            self.global_config["working_dir"], f"faiss_index_{self.namespace}.index"
-        )
+        working_dir = self.global_config["working_dir"]
+        if self.workspace:
+            # Include workspace in the file path for data isolation
+            workspace_dir = os.path.join(working_dir, self.workspace)
+            os.makedirs(workspace_dir, exist_ok=True)
+            self._faiss_index_file = os.path.join(
+                workspace_dir, f"faiss_index_{self.namespace}.index"
+            )
+        else:
+            # Default behavior when workspace is empty
+            self._faiss_index_file = os.path.join(
+                working_dir, f"faiss_index_{self.namespace}.index"
+            )
         self._meta_file = self._faiss_index_file + ".meta.json"
 
         self._max_batch_size = self.global_config["embedding_batch_num"]
@@ -166,7 +169,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
             meta["__vector__"] = embeddings[i].tolist()
             self._id_to_meta.update({fid: meta})
 
-        logger.info(f"Upserted {len(list_data)} vectors into Faiss index.")
+        logger.debug(f"Upserted {len(list_data)} vectors into Faiss index.")
         return [m["__id__"] for m in list_data]
 
     async def query(
@@ -229,7 +232,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         2. Only one process should updating the storage at a time before index_done_callback,
            KG-storage-log should be used to avoid data corruption
         """
-        logger.info(f"Deleting {len(ids)} vectors from {self.namespace}")
+        logger.debug(f"Deleting {len(ids)} vectors from {self.namespace}")
         to_remove = []
         for cid in ids:
             fid = self._find_faiss_id_by_custom_id(cid)
@@ -331,7 +334,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
         and rebuild in-memory structures so we can query.
         """
         if not os.path.exists(self._faiss_index_file):
-            logger.warning("No existing Faiss index file found. Starting fresh.")
+            logger.warning(f"No existing Faiss index file found for {self.namespace}")
             return
 
         try:

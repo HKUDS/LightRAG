@@ -1,4 +1,4 @@
-import { useState, useCallback} from 'react'
+import { useState, useCallback, useEffect} from 'react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/Popover'
 import Checkbox from '@/components/ui/Checkbox'
 import Button from '@/components/ui/Button'
@@ -61,6 +61,10 @@ const LabeledNumberInput = ({
   const [currentValue, setCurrentValue] = useState<number | null>(value)
   // Create unique ID using the label text converted to lowercase with spaces removed
   const id = `input-${label.toLowerCase().replace(/\s+/g, '-')}`;
+
+  useEffect(() => {
+    setCurrentValue(value)
+  }, [value])
 
   const onValueChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -154,6 +158,7 @@ export default function Settings() {
   const maxEdgeSize = useSettingsStore.use.maxEdgeSize()
   const graphQueryMaxDepth = useSettingsStore.use.graphQueryMaxDepth()
   const graphMaxNodes = useSettingsStore.use.graphMaxNodes()
+  const backendMaxGraphNodes = useSettingsStore.use.backendMaxGraphNodes()
   const graphLayoutMaxIterations = useSettingsStore.use.graphLayoutMaxIterations()
 
   const enableHealthCheck = useSettingsStore.use.enableHealthCheck()
@@ -213,14 +218,10 @@ export default function Settings() {
   }, [])
 
   const setGraphMaxNodes = useCallback((nodes: number) => {
-    if (nodes < 1 || nodes > 1000) return
-    useSettingsStore.setState({ graphMaxNodes: nodes })
-    const currentLabel = useSettingsStore.getState().queryLabel
-    useSettingsStore.getState().setQueryLabel('')
-    setTimeout(() => {
-      useSettingsStore.getState().setQueryLabel(currentLabel)
-    }, 300)
-  }, [])
+    const maxLimit = backendMaxGraphNodes || 1000
+    if (nodes < 1 || nodes > maxLimit) return
+    useSettingsStore.getState().setGraphMaxNodes(nodes, true)
+  }, [backendMaxGraphNodes])
 
   const setGraphLayoutMaxIterations = useCallback((iterations: number) => {
     if (iterations < 1) return
@@ -360,11 +361,11 @@ export default function Settings() {
               onEditFinished={setGraphQueryMaxDepth}
             />
             <LabeledNumberInput
-              label={t('graphPanel.sideBar.settings.maxNodes')}
+              label={`${t('graphPanel.sideBar.settings.maxNodes')} (≤ ${backendMaxGraphNodes || 1000})`}
               min={1}
-              max={1000}
+              max={backendMaxGraphNodes || 1000}
               value={graphMaxNodes}
-              defaultValue={1000}
+              defaultValue={backendMaxGraphNodes || 1000}
               onEditFinished={setGraphMaxNodes}
             />
             <LabeledNumberInput

@@ -41,7 +41,9 @@ LightRAG 需要同时集成 LLM（大型语言模型）和嵌入模型以有效�
 * openai 或 openai 兼容
 * azure_openai
 
-建议使用环境变量来配置 LightRAG 服务器。项目根目录中有一个名为 `env.example` 的示例环境变量文件。请将此文件复制到启动目录并重命名为 `.env`。之后，您可以在 `.env` 文件中修改与 LLM 和嵌入模型相关的参数。需要注意的是，LightRAG 服务器每次启动时都会将 `.env` 中的环境变量加载到系统环境变量中。由于 LightRAG 服务器会优先使用系统环境变量中的设置，如果您在通过命令行启动 LightRAG 服务器后修改了 `.env` 文件，则需要执行 `source .env` 使新设置生效。
+建议使用环境变量来配置 LightRAG 服务器。项目根目录中有一个名为 `env.example` 的示例环境变量文件。请将此文件复制到启动目录并重命名为 `.env`。之后，您可以在 `.env` 文件中修改与 LLM 和嵌入模型相关的参数。需要注意的是，LightRAG 服务器每次启动时都会将 `.env` 中的环境变量加载到系统环境变量中。**LightRAG 服务器会优先使用系统环境变量中的设置**。
+
+> 由于安装了 Python 扩展的 VS Code 可能会在集成终端中自动加载 .env 文件，请在每次修改 .env 文件后打开新的终端会话。
 
 以下是 LLM 和嵌入模型的一些常见设置示例：
 
@@ -92,48 +94,92 @@ lightrag-server
 ```
 lightrag-gunicorn --workers 4
 ```
-`.env` 文件必须放在启动目录中。启动时，LightRAG 服务器将创建一个文档目录（默认为 `./inputs`）和一个数据目录（默认为 `./rag_storage`）。这允许您从不同目录启动多个 LightRAG 服务器实例，每个实例配置为监听不同的网络端口。
+启动LightRAG的时候，当前工作目录必须含有`.env`配置文件。**要求将.env文件置于启动目录中是经过特意设计的**。 这样做的目的是支持用户同时启动多个LightRAG实例，并为不同实例配置不同的.env文件。**修改.env文件后，您需要重新打开终端以使新设置生效**。 这是因为每次启动时，LightRAG Server会将.env文件中的环境变量加载至系统环境变量，且系统环境变量的设置具有更高优先级。
 
-以下是一些常用的启动参数：
+启动时可以通过命令行参数覆盖`.env`文件中的配置。常用的命令行参数包括：
 
 - `--host`：服务器监听地址（默认：0.0.0.0）
 - `--port`：服务器监听端口（默认：9621）
 - `--timeout`：LLM 请求超时时间（默认：150 秒）
 - `--log-level`：日志级别（默认：INFO）
-- --input-dir：指定要扫描文档的目录（默认：./input）
+- `--working-dir`：数据库持久化目录（默认：./rag_storage）
+- `--input-dir`：上传文件存放目录（默认：./inputs）
+- `--workspace`: 工作空间名称，用于逻辑上隔离多个LightRAG实例之间的数据（默认：空）
 
-> - **要求将.env文件置于启动目录中是经过特意设计的**。 这样做的目的是支持用户同时启动多个LightRAG实例，并为不同实例配置不同的.env文件。
-> - **修改.env文件后，您需要重新打开终端以使新设置生效**。 这是因为每次启动时，LightRAG Server会将.env文件中的环境变量加载至系统环境变量，且系统环境变量的设置具有更高优先级。
-
-### 使用 Docker Compose 启动 LightRAG 服务器
-
-* 克隆代码仓库：
-```
-git clone https://github.com/HKUDS/LightRAG.git
-cd LightRAG
-```
+### 使用 Docker 启动 LightRAG 服务器
 
 * 配置 .env 文件：
-    通过复制 env.example 文件创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
+    通过复制示例文件 [`env.example`](env.example) 创建个性化的 .env 文件，并根据实际需求设置 LLM 及 Embedding 参数。
+* 创建一个名为 docker-compose.yml 的文件：
+
+```yaml
+services:
+  lightrag:
+    container_name: lightrag
+    image: ghcr.io/hkuds/lightrag:latest
+    ports:
+      - "${PORT:-9621}:9621"
+    volumes:
+      - ./data/rag_storage:/app/data/rag_storage
+      - ./data/inputs:/app/data/inputs
+      - ./config.ini:/app/config.ini
+      - ./.env:/app/.env
+    env_file:
+      - .env
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+```
 
 * 通过以下命令启动 LightRAG 服务器：
-```
-docker compose up
-# 如拉取了新版本，请添加 --build 重新构建
-docker compose up --build
-```
 
-> 在此获取LightRAG docker镜像历史版本: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+```shell
+docker compose up
+# 如果希望启动后让程序退到后台运行，需要在命令的最后添加 -d 参数
+```
+> 可以通过以下链接获取官方的docker compose文件：[docker-compose.yml]( https://raw.githubusercontent.com/HKUDS/LightRAG/refs/heads/main/docker-compose.yml) 。如需获取LightRAG的历史版本镜像，可以访问以下链接: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
 ### 启动时自动扫描
 
-当使用 `--auto-scan-at-startup` 参数启动任何服务器时，系统将自动：
+当使用 `--auto-scan-at-startup` 参数启动LightRAG Server时，系统将自动：
 
 1. 扫描输入目录中的新文件
 2. 为尚未在数据库中的新文档建立索引
 3. 使所有内容立即可用于 RAG 查询
 
+这种工作模式给启动一个临时的RAG任务提供给了方便。
+
 > `--input-dir` 参数指定要扫描的输入目录。您可以从 webui 触发输入目录扫描。
+
+### 启动多个LightRAG实例
+
+有两种方式可以启动多个LightRAG实例。第一种方式是为每个实例配置一个完全独立的工作环境。此时需要为每个实例创建一个独立的工作目录，然后在这个工作目录上放置一个当前实例专用的`.env`配置文件。不同实例的配置文件中的服务器监听端口不能重复，然后在工作目录上执行 lightrag-server 启动服务即可。
+
+第二种方式是所有实例共享一套相同的`.env`配置文件，然后通过命令行参数来为每个实例指定不同的服务器监听端口和工作空间。你可以在同一个工作目录中通过不同的命令行参数启动多个LightRAG实例。例如：
+
+```
+# 启动实例1
+lightrag-server --port 9621 --workspace space1
+
+# 启动实例2
+lightrag-server --port 9622 --workspace space2
+```
+
+工作空间的作用是实现不同实例之间的数据隔离。因此不同实例之间的`workspace`参数必须不同，否则会导致数据混乱，数据将会被破坏。
+
+### LightRAG实例间的数据隔离
+
+每个实例配置一个独立的工作目录和专用`.env`配置文件通常能够保证内存数据库中的本地持久化文件保存在各自的工作目录，实现数据的相互隔离。LightRAG默认存储全部都是内存数据库，通过这种方式进行数据隔离是没有问题的。但是如果使用的是外部数据库，如果不同实例访问的是同一个数据库实例，就需要通过配置工作空间来实现数据隔离，否则不同实例的数据将会出现冲突并被破坏。
+
+命令行的 workspace 参数和`.env`文件中的环境变量`WORKSPACE` 都可以用于指定当前实例的工作空间名字，命令行参数的优先级别更高。下面是不同类型的存储实现工作空间的方式：
+
+- **对于本地基于文件的数据库，数据隔离通过工作空间子目录实现：** JsonKVStorage, JsonDocStatusStorage, NetworkXStorage, NanoVectorDBStorage, FaissVectorDBStorage。
+- **对于将数据存储在集合（collection）中的数据库，通过在集合名称前添加工作空间前缀来实现：** RedisKVStorage, RedisDocStatusStorage, MilvusVectorDBStorage, QdrantVectorDBStorage, MongoKVStorage, MongoDocStatusStorage, MongoVectorDBStorage, MongoGraphStorage, PGGraphStorage。
+- **对于关系型数据库，数据隔离通过向表中添加 `workspace` 字段进行数据的逻辑隔离：** PGKVStorage, PGVectorStorage, PGDocStatusStorage。
+
+* **对于Neo4j图数据库，通过label来实现数据的逻辑隔离**：Neo4JStorage
+
+为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL的默认工作空间为`default`，Neo4j的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`。
 
 ### Gunicorn + Uvicorn 的多工作进程
 
@@ -445,8 +491,6 @@ EMBEDDING_BINDING_HOST=http://localhost:11434
 # WHITELIST_PATHS=/health,/api/*
 ```
 
-
-
 #### 使用 ollama 默认本地服务器作为 llm 和嵌入后端运行 Lightrag 服务器
 
 Ollama 是 llm 和嵌入的默认后端，因此默认情况下您可以不带参数运行 lightrag-server，将使用默认值。确保已安装 ollama 并且正在运行，且默认模型已安装在 ollama 上。
@@ -515,6 +559,23 @@ lightrag-server --help
 ```bash
 pip install lightrag-hku
 ```
+
+## 文档和块处理逻辑说明
+
+LightRAG 中的文档处理流程有些复杂，分为两个主要阶段：提取阶段（实体和关系提取）和合并阶段（实体和关系合并）。有两个关键参数控制流程并发性：并行处理的最大文件数（`MAX_PARALLEL_INSERT`）和最大并发 LLM 请求数（`MAX_ASYNC`）。工作流程描述如下：
+
+1. `MAX_PARALLEL_INSERT` 控制提取阶段并行处理的文件数量。
+2. `MAX_ASYNC` 限制系统中并发 LLM 请求的总数，包括查询、提取和合并的请求。LLM 请求具有不同的优先级：查询操作优先级最高，其次是合并，然后是提取。
+3. 在单个文件中，来自不同文本块的实体和关系提取是并发处理的，并发度由 `MAX_ASYNC` 设置。只有在处理完 `MAX_ASYNC` 个文本块后，系统才会继续处理同一文件中的下一批文本块。
+4. 合并阶段仅在文件中所有文本块完成实体和关系提取后开始。当一个文件进入合并阶段时，流程允许下一个文件开始提取。
+5. 由于提取阶段通常比合并阶段快，因此实际并发处理的文件数可能会超过 `MAX_PARALLEL_INSERT`，因为此参数仅控制提取阶段的并行度。
+6. 为防止竞争条件，合并阶段不支持多个文件的并发处理；一次只能合并一个文件，其他文件必须在队列中等待。
+7. 每个文件在流程中被视为一个原子处理单元。只有当其所有文本块都完成提取和合并后，文件才会被标记为成功处理。如果在处理过程中发生任何错误，整个文件将被标记为失败，并且必须重新处理。
+8. 当由于错误而重新处理文件时，由于 LLM 缓存，先前处理的文本块可以快速跳过。尽管 LLM 缓存在合并阶段也会被利用，但合并顺序的不一致可能会限制其在此阶段的有效性。
+9. 如果在提取过程中发生错误，系统不会保留任何中间结果。如果在合并过程中发生错误，已合并的实体和关系可能会被保留；当重新处理同一文件时，重新提取的实体和关系将与现有实体和关系合并，而不会影响查询结果。
+10. 在合并阶段结束时，所有实体和关系数据都会在向量数据库中更新。如果此时发生错误，某些更新可能会被保留。但是，下一次处理尝试将覆盖先前结果，确保成功重新处理的文件不会影响未来查询结果的完整性。
+
+大型文件应分割成较小的片段以启用增量处理。可以通过在 Web UI 上按“扫描”按钮来启动失败文件的重新处理。
 
 ## API 端点
 
