@@ -457,6 +457,10 @@ You cannot change storage implementation selection after adding documents to Lig
 | --embedding-binding   | ollama        | Embedding binding type (lollms, ollama, openai, azure_openai)                                                                   |
 | --auto-scan-at-startup| -             | Scan input directory for new files and start indexing                                                                           |
 
+### Additional Ollama Binding Options
+
+When using `--llm-binding ollama` or `--embedding-binding ollama`, additional Ollama-specific configuration options are available. To see all available Ollama binding options, add `--help` to the command line when starting the server. These additional options allow for fine-tuning of Ollama model parameters and connection settings.
+
 ### .env Examples
 
 ```bash
@@ -481,6 +485,7 @@ LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your-api-key
 
 ### Embedding Configuration (Use valid host. For local services installed with docker, you can use host.docker.internal)
+# see also env.ollama-binding-options.example for fine tuning ollama
 EMBEDDING_MODEL=bge-m3:latest
 EMBEDDING_DIM=1024
 EMBEDDING_BINDING=ollama
