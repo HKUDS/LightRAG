@@ -7,6 +7,7 @@ import argparse
 import logging
 from dotenv import load_dotenv
 from lightrag.utils import get_env_value
+from lightrag.llm.binding_options import BindingOptions
 
 from lightrag.constants import (
     DEFAULT_WOKERS,
@@ -207,6 +208,11 @@ def parse_args() -> argparse.Namespace:
         choices=["lollms", "ollama", "openai", "azure_openai"],
         help="Embedding binding type (default: from env or ollama)",
     )
+
+    # Automatically add binding options defined in binding_options module
+    # This will add command line arguments for all binding options (e.g., --option.ollama.num_ctx)
+    # and corresponding environment variables (e.g., OLLAMA_OPTION_NUM_CTX)
+    BindingOptions.add_args(parser)
 
     args = parser.parse_args()
 
