@@ -249,25 +249,7 @@ class LightRAG:
     """Enable reranking for improved retrieval quality. Defaults to False."""
 
     rerank_model_func: Callable[..., object] | None = field(default=None)
-    """Function for reranking retrieved documents. Optional."""
-
-    rerank_model_name: str = field(
-        default=os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-    )
-    """Name of the rerank model used for reranking documents."""
-
-    rerank_model_max_async: int = field(default=int(os.getenv("RERANK_MAX_ASYNC", 4)))
-    """Maximum number of concurrent rerank calls."""
-
-    rerank_model_kwargs: dict[str, Any] = field(default_factory=dict)
-    """Additional keyword arguments passed to the rerank model function."""
-
-    rerank_top_k: int = field(default=int(os.getenv("RERANK_TOP_K", 10)))
-    """Number of top documents to return after reranking.
-
-    Note: This value will be overridden by QueryParam.top_k in query calls.
-    Example: QueryParam(top_k=5) will override rerank_top_k=10 setting.
-    """
+    """Function for reranking retrieved documents. All rerank configurations (model name, API keys, top_k, etc.) should be included in this function. Optional."""
 
     # Storage
     # ---
@@ -475,14 +457,6 @@ class LightRAG:
 
         # Init Rerank
         if self.enable_rerank and self.rerank_model_func:
-            self.rerank_model_func = priority_limit_async_func_call(
-                self.rerank_model_max_async
-            )(
-                partial(
-                    self.rerank_model_func,  # type: ignore
-                    **self.rerank_model_kwargs,
-                )
-            )
             logger.info("Rerank model initialized for improved retrieval quality")
         elif self.enable_rerank and not self.rerank_model_func:
             logger.warning(

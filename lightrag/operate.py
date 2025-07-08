@@ -2864,19 +2864,15 @@ async def apply_rerank_if_enabled(
         return retrieved_docs
 
     try:
-        # Determine top_k for reranking
-        rerank_top_k = top_k or global_config.get("rerank_top_k", 10)
-        rerank_top_k = min(rerank_top_k, len(retrieved_docs))
-
         logger.debug(
-            f"Applying rerank to {len(retrieved_docs)} documents, returning top {rerank_top_k}"
+            f"Applying rerank to {len(retrieved_docs)} documents, returning top {top_k}"
         )
 
-        # Apply reranking
+        # Apply reranking - let rerank_model_func handle top_k internally
         reranked_docs = await rerank_func(
             query=query,
             documents=retrieved_docs,
-            top_k=rerank_top_k,
+            top_k=top_k,
         )
 
         if reranked_docs and len(reranked_docs) > 0:
@@ -2886,7 +2882,7 @@ async def apply_rerank_if_enabled(
             return reranked_docs
         else:
             logger.warning("Rerank returned empty results, using original documents")
-            return retrieved_docs[:rerank_top_k] if rerank_top_k else retrieved_docs
+            return retrieved_docs
 
     except Exception as e:
         logger.error(f"Error during reranking: {e}, using original documents")
