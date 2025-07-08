@@ -1781,8 +1781,8 @@ async def _get_vector_context(
                 }
                 valid_chunks.append(chunk_with_metadata)
 
-        logger.debug(
-            f"Vector search retrieved {len(valid_chunks)} chunks (top_k: {search_top_k})"
+        logger.info(
+            f"Naive query: {len(valid_chunks)} chunks (chunk_top_k: {search_top_k})"
         )
         return valid_chunks
 
