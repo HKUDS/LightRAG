@@ -168,8 +168,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk-top-k",
         type=int,
-        default=get_env_value("CHUNK_TOP_K", 5, int),
-        help="Number of text chunks to retrieve initially from vector search (default: from env or 5)",
+        default=get_env_value("CHUNK_TOP_K", 15, int),
+        help="Number of text chunks to retrieve initially from vector search (default: from env or 15)",
     )
     parser.add_argument(
         "--chunk-rerank-top-k",
