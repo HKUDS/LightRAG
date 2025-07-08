@@ -870,6 +870,41 @@ rag = LightRAG(
 
 </details>
 
+<details>
+<summary> <b>Using Memgraph for Storage</b> </summary>
+
+* Memgraph is a high-performance, in-memory graph database compatible with the Neo4j Bolt protocol.
+* You can run Memgraph locally using Docker for easy testing:
+* See: https://memgraph.com/download
+
+```python
+export MEMGRAPH_URI="bolt://localhost:7687"
+
+# Setup logger for LightRAG
+setup_logger("lightrag", level="INFO")
+
+# When you launch the project, override the default KG: NetworkX
+# by specifying kg="MemgraphStorage".
+
+# Note: Default settings use NetworkX
+# Initialize LightRAG with Memgraph implementation.
+async def initialize_rag():
+    rag = LightRAG(
+        working_dir=WORKING_DIR,
+        llm_model_func=gpt_4o_mini_complete,  # Use gpt_4o_mini_complete LLM model
+        graph_storage="MemgraphStorage", #<-----------override KG default
+    )
+
+    # Initialize database connections
+    await rag.initialize_storages()
+    # Initialize pipeline status for document processing
+    await initialize_pipeline_status()
+
+    return rag
+```
+
+</details>
+
 ## Edit Entities and Relations
 
 LightRAG now supports comprehensive knowledge graph management capabilities, allowing you to create, edit, and delete entities and relationships within your knowledge graph.
