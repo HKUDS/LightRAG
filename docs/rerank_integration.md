@@ -144,6 +144,7 @@ Reranking is automatically applied at these key retrieval stages:
 import asyncio
 from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embedding
+from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.rerank import jina_rerank
 
 async def my_rerank_func(query: str, documents: list, top_k: int = None, **kwargs):
@@ -166,6 +167,9 @@ async def main():
         enable_rerank=True,
         rerank_model_func=my_rerank_func,
     )
+
+    await rag.initialize_storages()
+    await initialize_pipeline_status()
 
     # Insert documents
     await rag.ainsert([
