@@ -151,7 +151,9 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     try:
         options = kwargs.pop("options", {})
-        data = await ollama_client.embed(model=embed_model, input=texts, options=options)
+        data = await ollama_client.embed(
+            model=embed_model, input=texts, options=options
+        )
         return np.array(data["embeddings"])
     except Exception as e:
         logger.error(f"Error in ollama_embed: {str(e)}")
