@@ -210,9 +210,16 @@ async def openai_complete_if_cache(
         async def inner():
             # Track if we've started iterating
             iteration_started = False
+            final_chunk_usage = None
+            
             try:
                 iteration_started = True
                 async for chunk in response:
+                    # Check if this chunk has usage information (final chunk)
+                    if hasattr(chunk, "usage") and chunk.usage:
+                        final_chunk_usage = chunk.usage
+                        logger.debug(f"Received usage info in streaming chunk: {chunk.usage}")
+                    
                     # Check if choices exists and is not empty
                     if not hasattr(chunk, "choices") or not chunk.choices:
                         logger.warning(f"Received chunk without choices: {chunk}")
@@ -222,16 +229,29 @@ async def openai_complete_if_cache(
                     if not hasattr(chunk.choices[0], "delta") or not hasattr(
                         chunk.choices[0].delta, "content"
                     ):
-                        logger.warning(
-                            f"Received chunk without delta content: {chunk.choices[0]}"
-                        )
+                        # This might be the final chunk, continue to check for usage
                         continue
+                        
                     content = chunk.choices[0].delta.content
                     if content is None:
                         continue
                     if r"\u" in content:
                         content = safe_unicode_decode(content.encode("utf-8"))
+                    
                     yield content
+                    
+                # After streaming is complete, track token usage
+                if token_tracker and final_chunk_usage:
+                    # Use actual usage from the API
+                    token_counts = {
+                        "prompt_tokens": getattr(final_chunk_usage, "prompt_tokens", 0),
+                        "completion_tokens": getattr(final_chunk_usage, "completion_tokens", 0),
+                        "total_tokens": getattr(final_chunk_usage, "total_tokens", 0),
+                    }
+                    token_tracker.add_usage(token_counts)
+                    logger.debug(f"Streaming token usage (from API): {token_counts}")
+                elif token_tracker:
+                    logger.debug("No usage information available in streaming response")
             except Exception as e:
                 logger.error(f"Error in stream response: {str(e)}")
                 # Try to clean up resources if possible
