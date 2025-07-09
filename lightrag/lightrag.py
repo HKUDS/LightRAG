@@ -240,6 +240,17 @@ class LightRAG:
     llm_model_kwargs: dict[str, Any] = field(default_factory=dict)
     """Additional keyword arguments passed to the LLM model function."""
 
+    # Rerank Configuration
+    # ---
+
+    enable_rerank: bool = field(
+        default=bool(os.getenv("ENABLE_RERANK", "False").lower() == "true")
+    )
+    """Enable reranking for improved retrieval quality. Defaults to False."""
+
+    rerank_model_func: Callable[..., object] | None = field(default=None)
+    """Function for reranking retrieved documents. All rerank configurations (model name, API keys, top_k, etc.) should be included in this function. Optional."""
+
     # Storage
     # ---
 
@@ -446,6 +457,14 @@ class LightRAG:
                 **self.llm_model_kwargs,
             )
         )
+
+        # Init Rerank
+        if self.enable_rerank and self.rerank_model_func:
+            logger.info("Rerank model initialized for improved retrieval quality")
+        elif self.enable_rerank and not self.rerank_model_func:
+            logger.warning(
+                "Rerank is enabled but no rerank_model_func provided. Reranking will be skipped."
+            )
 
         self._storages_status = StoragesStatus.CREATED
 

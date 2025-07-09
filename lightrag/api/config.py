@@ -166,6 +166,24 @@ def parse_args() -> argparse.Namespace:
         help="Number of most similar results to return (default: from env or 60)",
     )
     parser.add_argument(
+        "--chunk-top-k",
+        type=int,
+        default=get_env_value("CHUNK_TOP_K", 15, int),
+        help="Number of text chunks to retrieve initially from vector search (default: from env or 15)",
+    )
+    parser.add_argument(
+        "--chunk-rerank-top-k",
+        type=int,
+        default=get_env_value("CHUNK_RERANK_TOP_K", 5, int),
+        help="Number of text chunks to keep after reranking (default: from env or 5)",
+    )
+    parser.add_argument(
+        "--enable-rerank",
+        action="store_true",
+        default=get_env_value("ENABLE_RERANK", False, bool),
+        help="Enable rerank functionality (default: from env or False)",
+    )
+    parser.add_argument(
         "--cosine-threshold",
         type=float,
         default=get_env_value("COSINE_THRESHOLD", 0.2, float),
@@ -294,6 +312,11 @@ def parse_args() -> argparse.Namespace:
     args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
     args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, int)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
+
+    # Rerank model configuration
+    args.rerank_model = get_env_value("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+    args.rerank_binding_host = get_env_value("RERANK_BINDING_HOST", None)
+    args.rerank_binding_api_key = get_env_value("RERANK_BINDING_API_KEY", None)
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name
 

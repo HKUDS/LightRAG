@@ -291,6 +291,32 @@ def create_app(args):
         ),
     )
 
+    # Configure rerank function if enabled
+    rerank_model_func = None
+    if args.enable_rerank and args.rerank_binding_api_key and args.rerank_binding_host:
+        from lightrag.rerank import custom_rerank
+
+        async def server_rerank_func(
+            query: str, documents: list, top_k: int = None, **kwargs
+        ):
+            """Server rerank function with configuration from environment variables"""
+            return await custom_rerank(
+                query=query,
+                documents=documents,
+                model=args.rerank_model,
+                base_url=args.rerank_binding_host,
+                api_key=args.rerank_binding_api_key,
+                top_k=top_k,
+                **kwargs,
+            )
+
+        rerank_model_func = server_rerank_func
+        logger.info(f"Rerank enabled with model: {args.rerank_model}")
+    elif args.enable_rerank:
+        logger.warning(
+            "Rerank enabled but RERANK_BINDING_API_KEY or RERANK_BINDING_HOST not configured. Rerank will be disabled."
+        )
+
     # Initialize RAG
     if args.llm_binding in ["lollms", "ollama", "openai"]:
         rag = LightRAG(
@@ -324,6 +350,8 @@ def create_app(args):
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
+            enable_rerank=args.enable_rerank,
+            rerank_model_func=rerank_model_func,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
@@ -352,6 +380,8 @@ def create_app(args):
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
+            enable_rerank=args.enable_rerank,
+            rerank_model_func=rerank_model_func,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
@@ -478,6 +508,12 @@ def create_app(args):
                     "enable_llm_cache": args.enable_llm_cache,
                     "workspace": args.workspace,
                     "max_graph_nodes": args.max_graph_nodes,
+                    # Rerank configuration
+                    "enable_rerank": args.enable_rerank,
+                    "rerank_model": args.rerank_model if args.enable_rerank else None,
+                    "rerank_binding_host": args.rerank_binding_host
+                    if args.enable_rerank
+                    else None,
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
