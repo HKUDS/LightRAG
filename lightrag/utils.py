@@ -1465,6 +1465,11 @@ async def update_chunk_cache_list(
         )
 
 
+def remove_think_tags(text: str) -> str:
+    """Remove <think> tags from the text"""
+    return re.sub(r"^(<think>.*?</think>|<think>)", "", text, flags=re.DOTALL).strip()
+
+
 async def use_llm_func_with_cache(
     input_text: str,
     use_llm_func: callable,
@@ -1531,6 +1536,7 @@ async def use_llm_func_with_cache(
             kwargs["max_tokens"] = max_tokens
 
         res: str = await use_llm_func(input_text, **kwargs)
+        res = remove_think_tags(res)
 
         if llm_response_cache.global_config.get("enable_llm_cache_for_entity_extract"):
             await save_to_cache(
@@ -1557,8 +1563,9 @@ async def use_llm_func_with_cache(
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
 
-    logger.info(f"Call LLM function with query text lenght: {len(input_text)}")
-    return await use_llm_func(input_text, **kwargs)
+    logger.info(f"Call LLM function with query text length: {len(input_text)}")
+    res = await use_llm_func(input_text, **kwargs)
+    return remove_think_tags(res)
 
 
 def get_content_summary(content: str, max_length: int = 250) -> str:
