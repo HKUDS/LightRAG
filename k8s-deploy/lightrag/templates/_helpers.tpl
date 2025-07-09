@@ -40,3 +40,14 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{ $key }}={{ $val }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Pod-specific labels
+*/}}
+{{- define "lightrag.apoloPodLabels" -}}
+{{- if .Values.podLabels -}}
+{{- range $key, $value := .Values.podLabels }}
+{{ $key }}: {{ $value }}
+{{- end }}
+{{- end -}}
+{{- end -}}

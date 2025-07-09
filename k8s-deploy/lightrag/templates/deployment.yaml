@@ -15,7 +15,20 @@ spec:
         checksum/config: {{ include "lightrag.envContent" . | sha256sum }}
       labels:
         {{- include "lightrag.selectorLabels" . | nindent 8 }}
+        {{- include "lightrag.apoloPodLabels" . | nindent 8 }}
     spec:
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: {{ .Chart.Name }}
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"

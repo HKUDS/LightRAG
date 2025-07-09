@@ -72,3 +72,13 @@ env:
   # Replace with your Qdrant credentials
   QDRANT_URL: http://qdrant-cluster-qdrant-qdrant:6333
   # REDIS_URI: redis://default:${REDIS_PASSWORD}@redis-cluster-redis-redis:6379
+
+
+tolerations:
+  - key: platform.neuromation.io/job
+    operator: Exists
+    effect: NoSchedule
+
+affinity: {}
+
+nodeSelector: {}
