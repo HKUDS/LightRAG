@@ -824,7 +824,7 @@ rag = LightRAG(
   create INDEX CONCURRENTLY entity_idx_node_id ON dickens."Entity" (ag_catalog.agtype_access_operator(properties, '"node_id"'::agtype));
   CREATE INDEX CONCURRENTLY entity_node_id_gin_idx ON dickens."Entity" using gin(properties);
   ALTER TABLE dickens."DIRECTED" CLUSTER ON directed_sid_idx;
-
+  
   -- 如有必要可以删除
   drop INDEX entity_p_idx;
   drop INDEX vertex_p_idx;
@@ -848,6 +848,18 @@ rag = LightRAG(
   >
 
 </details>
+
+### LightRAG实例间的数据隔离
+
+通过 workspace 参数可以不同实现不同LightRAG实例之间的存储数据隔离。LightRAG在初始化后workspace就已经确定，之后修改workspace是无效的。下面是不同类型的存储实现工作空间的方式：
+
+- **对于本地基于文件的数据库，数据隔离通过工作空间子目录实现：** JsonKVStorage, JsonDocStatusStorage, NetworkXStorage, NanoVectorDBStorage, FaissVectorDBStorage。
+- **对于将数据存储在集合（collection）中的数据库，通过在集合名称前添加工作空间前缀来实现：** RedisKVStorage, RedisDocStatusStorage, MilvusVectorDBStorage, QdrantVectorDBStorage, MongoKVStorage, MongoDocStatusStorage, MongoVectorDBStorage, MongoGraphStorage, PGGraphStorage。
+- **对于关系型数据库，数据隔离通过向表中添加 `workspace` 字段进行数据的逻辑隔离：** PGKVStorage, PGVectorStorage, PGDocStatusStorage。
+
+* **对于Neo4j图数据库，通过label来实现数据的逻辑隔离**：Neo4JStorage
+
+为了保持对遗留数据的兼容，在未配置工作空间时PostgreSQL的默认工作空间为`default`，Neo4j的默认工作空间为`base`。对于所有的外部存储，系统都提供了专用的工作空间环境变量，用于覆盖公共的 `WORKSPACE`环境变量配置。这些适用于指定存储类型的工作空间环境变量为：`REDIS_WORKSPACE`, `MILVUS_WORKSPACE`, `QDRANT_WORKSPACE`, `MONGODB_WORKSPACE`, `POSTGRES_WORKSPACE`, `NEO4J_WORKSPACE`。
 
 ## 编辑实体和关系
 
@@ -1170,17 +1182,17 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
         from lightrag.llm.openai import openai_complete_if_cache, openai_embed
         from lightrag.utils import EmbeddingFunc
         import os
-
+    
         async def load_existing_lightrag():
             # 首先，创建或加载现有的 LightRAG 实例
             lightrag_working_dir = "./existing_lightrag_storage"
-
+    
             # 检查是否存在之前的 LightRAG 实例
             if os.path.exists(lightrag_working_dir) and os.listdir(lightrag_working_dir):
                 print("✅ Found existing LightRAG instance, loading...")
             else:
                 print("❌ No existing LightRAG instance found, will create new one")
-
+    
             # 使用您的配置创建/加载 LightRAG 实例
             lightrag_instance = LightRAG(
                 working_dir=lightrag_working_dir,
@@ -1203,10 +1215,10 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
                     ),
                 )
             )
-
+    
             # 初始化存储（如果有现有数据，这将加载现有数据）
             await lightrag_instance.initialize_storages()
-
+    
             # 现在使用现有的 LightRAG 实例初始化 RAGAnything
             rag = RAGAnything(
                 lightrag=lightrag_instance,  # 传递现有的 LightRAG 实例
@@ -1235,20 +1247,20 @@ LightRAG 现已与 [RAG-Anything](https://github.com/HKUDS/RAG-Anything) 实现�
                 )
                 # 注意：working_dir、llm_model_func、embedding_func 等都从 lightrag_instance 继承
             )
-
+    
             # 查询现有的知识库
             result = await rag.query_with_multimodal(
                 "What data has been processed in this LightRAG instance?",
                 mode="hybrid"
             )
             print("Query result:", result)
-
+    
             # 向现有的 LightRAG 实例添加新的多模态文档
             await rag.process_document_complete(
                 file_path="path/to/new/multimodal_document.pdf",
                 output_dir="./output"
             )
-
+    
         if __name__ == "__main__":
             asyncio.run(load_existing_lightrag())
     ```
