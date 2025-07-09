@@ -2879,15 +2879,7 @@ async def process_chunks_unified(
         f"Deduplication: {len(unique_chunks)} chunks (original: {len(chunks)})"
     )
 
-    # 2. Apply chunk_top_k limiting if specified
-    if query_param.chunk_top_k is not None and query_param.chunk_top_k > 0:
-        if len(unique_chunks) > query_param.chunk_top_k:
-            unique_chunks = unique_chunks[: query_param.chunk_top_k]
-            logger.debug(
-                f"Chunk top-k limiting: kept {len(unique_chunks)} chunks (chunk_top_k={query_param.chunk_top_k})"
-            )
-
-    # 3. Apply reranking if enabled and query is provided
+    # 2. Apply reranking if enabled and query is provided
     if global_config.get("enable_rerank", False) and query and unique_chunks:
         rerank_top_k = query_param.chunk_rerank_top_k or len(unique_chunks)
         unique_chunks = await apply_rerank_if_enabled(
@@ -2897,6 +2889,14 @@ async def process_chunks_unified(
             top_k=rerank_top_k,
         )
         logger.debug(f"Rerank: {len(unique_chunks)} chunks (source: {source_type})")
+
+    # 3. Apply chunk_top_k limiting if specified
+    if query_param.chunk_top_k is not None and query_param.chunk_top_k > 0:
+        if len(unique_chunks) > query_param.chunk_top_k:
+            unique_chunks = unique_chunks[: query_param.chunk_top_k]
+            logger.debug(
+                f"Chunk top-k limiting: kept {len(unique_chunks)} chunks (chunk_top_k={query_param.chunk_top_k})"
+            )
 
     # 4. Token-based final truncation
     tokenizer = global_config.get("tokenizer")
