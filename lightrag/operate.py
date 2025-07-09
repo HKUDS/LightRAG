@@ -2500,6 +2500,8 @@ async def naive_query(
         source_type="vector",
     )
 
+    logger.info(f"Final context: {len(processed_chunks)} chunks")
+
     # Build text_units_context from processed chunks
     text_units_context = []
     for i, chunk in enumerate(processed_chunks):
