@@ -36,6 +36,7 @@ from .base import (
 )
 from .prompt import PROMPTS
 from .constants import GRAPH_FIELD_SEP
+from .kg.shared_storage import get_graph_db_lock_keyed
 import time
 from dotenv import load_dotenv
 
@@ -1121,8 +1122,6 @@ async def merge_nodes_and_edges(
         pipeline_status_lock: Lock for pipeline status
         llm_response_cache: LLM response cache
     """
-    # Get lock manager from shared storage
-    from .kg.shared_storage import get_graph_db_lock_keyed
 
 
     # Collect all nodes and edges from all chunks
