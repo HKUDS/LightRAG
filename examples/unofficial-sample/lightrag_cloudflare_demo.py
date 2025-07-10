@@ -267,7 +267,9 @@ async def main():
         print(f"Test dict: {test_text}")
         print(f"Detected embedding dimension: {embedding_dim}\n\n")
 
-        with open("./book.txt", "r", encoding="utf-8") as f:
+        # Locate the location of what is needed to be added to the knowledge
+        # Can add several simultaneously by modifying code
+        with open("./book.txt", "r", encoding="utf-8") as f: 
             await rag.ainsert(f.read())
 
         # Perform naive search
