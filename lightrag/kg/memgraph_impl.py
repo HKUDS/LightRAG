@@ -448,7 +448,9 @@ class MemgraphStorage(BaseGraphStorage):
         properties = node_data
         entity_type = properties["entity_type"]
         if "entity_id" not in properties:
-            raise ValueError("Memgraph: node properties must contain an 'entity_id' field")
+            raise ValueError(
+                "Memgraph: node properties must contain an 'entity_id' field"
+            )
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:
