@@ -56,412 +56,696 @@ if _DEFAULT_LANGUAGE not in ["english", "chinese"]:
 # Global language setting that can be modified / 可以修改的全局语言设置
 LANGUAGE = _DEFAULT_LANGUAGE
 
+language_to_index = {
+    "chinese": 0,
+    "english": 1,
+}
+
+
+# def set_language(lang):
+#     global LANGUAGE
+#     if lang in language_to_index:
+#         LANGUAGE = lang
+#     else:
+#         raise ValueError("Unsupported language")
+
+
+# set_language(_DEFAULT_LANGUAGE)
 # Translation dictionaries / 翻译字典
 TRANSLATIONS = {
-    "english": {
-        # Messages / 消息
-        "warning_no_env": "Warning: No .env file found in the current directory, which may affect storage configuration loading.",
-        "continue_execution": "Continue execution? (yes/no): ",
-        "test_cancelled": "Test program cancelled",
-        "error": "Error",
-        "warning": "Warning",
-        "current_graph_storage": "Current configured graph storage type",
-        "supported_graph_storage": "Supported graph storage types",
-        "init_storage_failed": "Failed to initialize storage instance, test program exiting",
-        "select_test_type": "Please select test type:",
-        "basic_test": "1. Basic test (node and edge insertion, reading)",
-        "advanced_test": "2. Advanced test (degree, labels, knowledge graph, delete operations, etc.)",
-        "batch_test": "3. Batch operation test (batch get node, edge attributes and degrees, etc.)",
-        "undirected_test": "4. Undirected graph property test (verify undirected graph properties of storage)",
-        "special_char_test": "5. Special character test (verify single quotes, double quotes and backslashes, etc.)",
-        "all_tests": "6. All tests",
-        "select_option": "Please enter option (1/2/3/4/5/6): ",
-        "cleaning_data": "Cleaning data before executing tests...",
-        "data_cleaned": "Data cleaning completed",
-        "invalid_option": "Invalid option",
-        "connection_closed": "Storage connection closed",
-        "kuzu_temp_cleaned": "KuzuDB temporary directory cleaned",
-        # Additional test messages / 额外的测试消息
-        "test_completed": "Test completed",
-        "batch_test_complete": "Batch operations test completed",
-        "undirected_test_complete": "Undirected graph property test completed",
-        "all_tests_completed": "All tests completed successfully",
-        "no_description": "No description",
-        "no_type": "No type",
-        "no_keywords": "No keywords",
-        "no_relationship": "No relationship",
-        "no_weight": "No weight",
-        # Test progress messages / 测试进度消息
-        "test_node_degree": "Test node_degree",
-        "test_all_node_degrees": "Test all node degrees",
-        "test_edge_degree": "Test edge_degree",
-        "test_reverse_edge_degree": "Test reverse edge degree",
-        "test_get_node_edges": "Test get_node_edges",
-        "test_get_all_labels": "Test get_all_labels",
-        "test_get_knowledge_graph": "Test get_knowledge_graph",
-        "test_delete_node": "Test delete_node",
-        "test_remove_edges": "Test remove_edges",
-        "test_remove_nodes": "Test remove_nodes",
-        "verify_undirected_property": "Verify undirected graph property",
-        "verify_node_edges_undirected": "Verify node edges undirected property",
-        "node_degree": "Node degree",
-        "edge_degree": "Edge degree",
-        "reverse_edge_degree": "Reverse edge degree",
-        "all_edges": "All edges",
-        "all_labels": "All labels",
-        "knowledge_graph_nodes": "Knowledge graph nodes",
-        "knowledge_graph_edges": "Knowledge graph edges",
-        "query_after_deletion": "Query after deletion",
-        "re_insert_for_test": "Re-insert for subsequent testing",
-        "advanced_test_complete": "Advanced test completed",
-        # Additional missing translations / 额外的缺失翻译
-        "failed_read_node": "Failed to read node properties",
-        "failed_read_edge": "Failed to read edge properties",
-        "failed_read_reverse_edge": "Failed to read reverse edge properties",
-        "unable_read_node": "Unable to read node properties",
-        "unable_read_edge": "Unable to read edge properties",
-        "unable_read_reverse_edge": "Unable to read reverse edge properties",
-        "node_id_mismatch": "Node ID mismatch: expected",
-        "actual": "actual",
-        "node_desc_mismatch": "Node description mismatch",
-        "node_type_mismatch": "Node type mismatch",
-        "edge_relation_mismatch": "Edge relationship mismatch",
-        "edge_desc_mismatch": "Edge description mismatch",
-        "edge_weight_mismatch": "Edge weight mismatch",
-        "forward_reverse_inconsistent": "Forward and reverse edge properties inconsistent, undirected graph property verification failed",
-        "undirected_verification_failed": "undirected graph property verification failed",
-        # Test data / 测试数据
-        "artificial_intelligence": "Artificial Intelligence",
-        "machine_learning": "Machine Learning",
-        "deep_learning": "Deep Learning",
-        "natural_language_processing": "Natural Language Processing",
-        "computer_vision": "Computer Vision",
-        "computer_science": "Computer Science",
-        "data_structure": "Data Structure",
-        "algorithm": "Algorithm",
-        # Descriptions / 描述
-        "ai_desc": "Artificial Intelligence is a branch of computer science that attempts to understand the essence of intelligence and produce a new kind of intelligent machine that can respond in a way similar to human intelligence.",
-        "ml_desc": "Machine Learning is a branch of artificial intelligence that uses statistical methods to enable computer systems to learn without being explicitly programmed.",
-        "dl_desc": "Deep Learning is a branch of machine learning that uses multi-layer neural networks to simulate the human brain's learning process.",
-        "nlp_desc": "Natural Language Processing is a branch of artificial intelligence that focuses on enabling computers to understand and process human language.",
-        "cv_desc": "Computer Vision is a branch of artificial intelligence that focuses on enabling computers to obtain information from images or videos.",
-        "cs_desc": "Computer Science is the science that studies computers and their applications.",
-        "ds_desc": "Data Structure is a fundamental concept in computer science, used to organize and store data.",
-        "algo_desc": "Algorithm is the steps and methods for solving problems.",
-        # Keywords / 关键词
-        "ai_keywords": "AI,machine learning,deep learning",
-        "ml_keywords": "supervised learning,unsupervised learning,reinforcement learning",
-        "dl_keywords": "neural networks,CNN,RNN",
-        "nlp_keywords": "NLP,text analysis,language models",
-        "cv_keywords": "CV,image recognition,object detection",
-        "cs_keywords": "computer,science,technology",
-        "ds_keywords": "data,structure,organization",
-        "algo_keywords": "algorithm,steps,methods",
-        # Entity types / 实体类型
-        "tech_field": "Technology Field",
-        "concept": "Concept",
-        "subject": "Subject",
-        "test_node": "Test Node",
-        # Relationships / 关系
-        "contains": "contains",
-        "applied_to": "applied to",
-        "special_relation": "special 'relation'",
-        "complex_relation": 'complex "relation" \\type',
-        # Relationship descriptions / 关系描述
-        "ai_contains_ml": "The field of artificial intelligence contains machine learning as a subfield",
-        "ml_contains_dl": "The field of machine learning contains deep learning as a subfield",
-        "ai_contains_nlp": "The field of artificial intelligence contains natural language processing as a subfield",
-        "ai_contains_cv": "The field of artificial intelligence contains computer vision as a subfield",
-        "dl_applied_nlp": "Deep learning technology is applied to the field of natural language processing",
-        "dl_applied_cv": "Deep learning technology is applied to the field of computer vision",
-        "cs_contains_ds": "Computer science contains data structures as a concept",
-        "cs_contains_algo": "Computer science contains algorithms as a concept",
-        # Test messages / 测试消息
-        "insert_node": "Insert node",
-        "insert_edge": "Insert edge",
-        "read_node_props": "Read node properties",
-        "read_edge_props": "Read edge properties",
-        "read_reverse_edge": "Read reverse edge properties",
-        "success_read_node": "Successfully read node properties",
-        "success_read_edge": "Successfully read edge properties",
-        "success_read_reverse": "Successfully read reverse edge properties",
-        "node_desc": "Node description",
-        "node_type": "Node type",
-        "node_keywords": "Node keywords",
-        "edge_relation": "Edge relationship",
-        "edge_desc": "Edge description",
-        "edge_weight": "Edge weight",
-        "reverse_edge_relation": "Reverse edge relationship",
-        "reverse_edge_desc": "Reverse edge description",
-        "reverse_edge_weight": "Reverse edge weight",
-        "undirected_verification_success": "Undirected graph property verification successful: forward and reverse edge properties are consistent",
-        "basic_test_complete": "Basic test completed, data retained in database",
-        "test_error": "Error occurred during testing",
-        # Special characters test / 特殊字符测试
-        "node_with_quotes": "Node with 'single quotes'",
-        "node_with_double_quotes": 'Node with "double quotes"',
-        "node_with_backslash": "Node with \\backslash\\",
-        "desc_with_special": "This description contains 'single quotes', \"double quotes\" and \\backslash",
-        "desc_with_complex": "This description contains 'single quotes' and \"double quotes\" as well as \\backslash\\path",
-        "desc_with_windows_path": "This description contains Windows path C:\\Program Files\\ and escape characters \\n\\t",
-        "keywords_special": "special characters,quotes,escape",
-        "keywords_backslash": "backslash,path,escape",
-        "keywords_json": "special characters,quotes,JSON",
-        "edge_desc_special": "This edge description contains 'single quotes', \"double quotes\" and \\backslash",
-        "edge_desc_sql": "Contains SQL injection attempt: SELECT * FROM users WHERE name='admin'--",
-        "verify_node_special": "Verify node special characters",
-        "verify_edge_special": "Verify edge special characters",
-        "special_char_verification_success": "Special character verification successful",
-        "special_char_test_complete": "Special character test completed, data retained in database",
-        # Additional batch test translations
-        "batch_get_nodes": "Test get_nodes_batch",
-        "batch_get_nodes_result": "Batch get node properties result",
-        "batch_node_degrees": "Test node_degrees_batch",
-        "batch_node_degrees_result": "Batch get node degrees result",
-        "batch_edge_degrees": "Test edge_degrees_batch",
-        "batch_edge_degrees_result": "Batch get edge degrees result",
-        "batch_get_edges": "Test get_edges_batch",
-        "batch_get_edges_result": "Batch get edge properties result",
-        "test_reverse_edges_batch": "Test reverse edges batch get",
-        "insert_node_1": "Insert node 1",
-        "insert_node_2": "Insert node 2",
-        "insert_node_3": "Insert node 3",
-        "insert_node_4": "Insert node 4",
-        "insert_node_5": "Insert node 5",
-        "insert_edge_1": "Insert edge 1",
-        "insert_edge_2": "Insert edge 2",
-        "insert_edge_3": "Insert edge 3",
-        "insert_edge_4": "Insert edge 4",
-        "insert_edge_5": "Insert edge 5",
-        "insert_edge_6": "Insert edge 6",
-        # Additional description translations
-        "ai_contains_cv_desc": "The field of artificial intelligence contains computer vision as a subfield",
-        "dl_applied_nlp_relationship": "applied to",
-        "dl_applied_nlp_desc": "Deep learning technology is applied to the field of natural language processing",
-        "dl_applied_cv_relationship": "applied to",
-        "dl_applied_cv_desc": "Deep learning technology is applied to the field of computer vision",
-        # Additional batch operation translations
-        "batch_get_reverse_edges_result": "Batch get reverse edge properties result",
-        "undirected_batch_verification_success": "Undirected graph property verification successful: batch obtained forward and reverse edge properties are consistent",
-        "test_get_nodes_edges_batch": "Test get_nodes_edges_batch",
-        "batch_get_nodes_edges_result": "Batch get node edges result",
-        "verify_batch_nodes_edges_undirected": "Verify batch get node edges undirected graph property",
-        "node_outgoing_edges": "Node outgoing edges",
-        "node_incoming_edges": "Node incoming edges",
-        "undirected_nodes_edges_verification_success": "Undirected graph property verification successful: batch obtained node edges contain all related edges (regardless of direction)",
-        "test_get_nodes_by_chunk_ids": "Test get_nodes_by_chunk_ids",
-        "test_single_chunk_id_multiple_nodes": "Test single chunk_id, matching multiple nodes",
-        "test_multiple_chunk_ids_partial_match": "Test multiple chunk_ids, partial matching multiple nodes",
-        "test_get_edges_by_chunk_ids": "Test get_edges_by_chunk_ids",
-        "test_single_chunk_id_multiple_edges": "Test single chunk_id, matching multiple edges",
-        "test_multiple_chunk_ids_partial_edges": "Test multiple chunk_ids, partial matching multiple edges",
-        "batch_operations_test_complete": "Batch operations test completed",
-    },
-    "chinese": {
-        # Keep all existing Chinese text as fallback
-        "warning_no_env": "警告: 当前目录中没有找到.env文件，这可能会影响存储配置的加载。",
-        "continue_execution": "是否继续执行? (yes/no): ",
-        "test_cancelled": "测试程序已取消",
-        "error": "错误",
-        "warning": "警告",
-        "current_graph_storage": "当前配置的图存储类型",
-        "supported_graph_storage": "支持的图存储类型",
-        "init_storage_failed": "初始化存储实例失败，测试程序退出",
-        "select_test_type": "请选择测试类型:",
-        "basic_test": "1. 基本测试 (节点和边的插入、读取)",
-        "advanced_test": "2. 高级测试 (度数、标签、知识图谱、删除操作等)",
-        "batch_test": "3. 批量操作测试 (批量获取节点、边属性和度数等)",
-        "undirected_test": "4. 无向图特性测试 (验证存储的无向图特性)",
-        "special_char_test": "5. 特殊字符测试 (验证单引号、双引号和反斜杠等特殊字符)",
-        "all_tests": "6. 全部测试",
-        "select_option": "请输入选项 (1/2/3/4/5/6): ",
-        "cleaning_data": "执行测试前清理数据...",
-        "data_cleaned": "数据清理完成",
-        "invalid_option": "无效的选项",
-        "connection_closed": "存储连接已关闭",
-        "kuzu_temp_cleaned": "KuzuDB临时目录已清理",
-        # Additional test messages - Chinese / 额外的测试消息 - 中文
-        "test_completed": "测试完成",
-        "batch_test_complete": "批量操作测试完成",
-        "undirected_test_complete": "无向图特性测试完成",
-        "all_tests_completed": "所有测试成功完成",
-        "no_description": "无描述",
-        "no_type": "无类型",
-        "no_keywords": "无关键词",
-        "no_relationship": "无关系",
-        "no_weight": "无权重",
-        # Test progress messages - Chinese / 测试进度消息 - 中文
-        "test_node_degree": "测试 node_degree",
-        "test_all_node_degrees": "测试所有节点的度数",
-        "test_edge_degree": "测试 edge_degree",
-        "test_reverse_edge_degree": "测试反向边的度数",
-        "test_get_node_edges": "测试 get_node_edges",
-        "test_get_all_labels": "测试 get_all_labels",
-        "test_get_knowledge_graph": "测试 get_knowledge_graph",
-        "test_delete_node": "测试 delete_node",
-        "test_remove_edges": "测试 remove_edges",
-        "test_remove_nodes": "测试 remove_nodes",
-        "verify_undirected_property": "验证无向图特性",
-        "verify_node_edges_undirected": "验证节点边的无向图特性",
-        "node_degree": "节点度数",
-        "edge_degree": "边度数",
-        "reverse_edge_degree": "反向边度数",
-        "all_edges": "所有边",
-        "all_labels": "所有标签",
-        "knowledge_graph_nodes": "知识图谱节点数",
-        "knowledge_graph_edges": "知识图谱边数",
-        "query_after_deletion": "删除后查询",
-        "re_insert_for_test": "重新插入用于后续测试",
-        "advanced_test_complete": "高级测试完成",
-        # Additional missing translations - Chinese / 额外的缺失翻译 - 中文
-        "failed_read_node": "读取节点属性失败",
-        "failed_read_edge": "读取边属性失败",
-        "failed_read_reverse_edge": "读取反向边属性失败",
-        "unable_read_node": "未能读取节点属性",
-        "unable_read_edge": "未能读取边属性",
-        "unable_read_reverse_edge": "未能读取反向边属性",
-        "node_id_mismatch": "节点ID不匹配: 期望",
-        "actual": "实际",
-        "node_desc_mismatch": "节点描述不匹配",
-        "node_type_mismatch": "节点类型不匹配",
-        "edge_relation_mismatch": "边关系不匹配",
-        "edge_desc_mismatch": "边描述不匹配",
-        "edge_weight_mismatch": "边权重不匹配",
-        "forward_reverse_inconsistent": "正向和反向边属性不一致，无向图特性验证失败",
-        "undirected_verification_failed": "无向图特性验证失败",
-        # Test data - Chinese
-        "artificial_intelligence": "人工智能",
-        "machine_learning": "机器学习",
-        "deep_learning": "深度学习",
-        "natural_language_processing": "自然语言处理",
-        "computer_vision": "计算机视觉",
-        "computer_science": "计算机科学",
-        "data_structure": "数据结构",
-        "algorithm": "算法",
-        # Descriptions - Chinese
-        "ai_desc": "人工智能是计算机科学的一个分支，它企图了解智能的实质，并生产出一种新的能以人类智能相似的方式做出反应的智能机器。",
-        "ml_desc": "机器学习是人工智能的一个分支，它使用统计学方法让计算机系统在不被明确编程的情况下也能够学习。",
-        "dl_desc": "深度学习是机器学习的一个分支，它使用多层神经网络来模拟人脑的学习过程。",
-        "nlp_desc": "自然语言处理是人工智能的一个分支，专注于使计算机理解和处理人类语言。",
-        "cv_desc": "计算机视觉是人工智能的一个分支，专注于使计算机能够从图像或视频中获取信息。",
-        "cs_desc": "计算机科学是研究计算机及其应用的科学。",
-        "ds_desc": "数据结构是计算机科学中的一个基础概念，用于组织和存储数据。",
-        "algo_desc": "算法是解决问题的步骤和方法。",
-        # Keywords - Chinese
-        "ai_keywords": "AI,机器学习,深度学习",
-        "ml_keywords": "监督学习,无监督学习,强化学习",
-        "dl_keywords": "神经网络,CNN,RNN",
-        "nlp_keywords": "NLP,文本分析,语言模型",
-        "cv_keywords": "CV,图像识别,目标检测",
-        "cs_keywords": "计算机,科学,技术",
-        "ds_keywords": "数据,结构,组织",
-        "algo_keywords": "算法,步骤,方法",
-        # Entity types - Chinese
-        "tech_field": "技术领域",
-        "concept": "概念",
-        "subject": "学科",
-        "test_node": "测试节点",
-        # Relationships - Chinese
-        "contains": "包含",
-        "applied_to": "应用于",
-        "special_relation": "特殊'关系'",
-        "complex_relation": '复杂"关系"\\类型',
-        # Relationship descriptions - Chinese
-        "ai_contains_ml": "人工智能领域包含机器学习这个子领域",
-        "ml_contains_dl": "机器学习领域包含深度学习这个子领域",
-        "ai_contains_nlp": "人工智能领域包含自然语言处理这个子领域",
-        "ai_contains_cv": "人工智能领域包含计算机视觉这个子领域",
-        "dl_applied_nlp": "深度学习技术应用于自然语言处理领域",
-        "dl_applied_cv": "深度学习技术应用于计算机视觉领域",
-        "cs_contains_ds": "计算机科学包含数据结构这个概念",
-        "cs_contains_algo": "计算机科学包含算法这个概念",
-        # Test messages - Chinese
-        "insert_node": "插入节点",
-        "insert_edge": "插入边",
-        "read_node_props": "读取节点属性",
-        "read_edge_props": "读取边属性",
-        "read_reverse_edge": "读取反向边属性",
-        "success_read_node": "成功读取节点属性",
-        "success_read_edge": "成功读取边属性",
-        "success_read_reverse": "成功读取反向边属性",
-        "node_desc": "节点描述",
-        "node_type": "节点类型",
-        "node_keywords": "节点关键词",
-        "edge_relation": "边关系",
-        "edge_desc": "边描述",
-        "edge_weight": "边权重",
-        "reverse_edge_relation": "反向边关系",
-        "reverse_edge_desc": "反向边描述",
-        "reverse_edge_weight": "反向边权重",
-        "undirected_verification_success": "无向图特性验证成功：正向和反向边属性一致",
-        "basic_test_complete": "基本测试完成，数据已保留在数据库中",
-        "test_error": "测试过程中发生错误",
-        # Special characters test - Chinese
-        "node_with_quotes": "包含'单引号'的节点",
-        "node_with_double_quotes": '包含"双引号"的节点',
-        "node_with_backslash": "包含\\反斜杠\\的节点",
-        "desc_with_special": "这个描述包含'单引号'、\"双引号\"和\\反斜杠",
-        "desc_with_complex": "这个描述同时包含'单引号'和\"双引号\"以及\\反斜杠\\路径",
-        "desc_with_windows_path": "这个描述包含Windows路径C:\\Program Files\\和转义字符\\n\\t",
-        "keywords_special": "特殊字符,引号,转义",
-        "keywords_backslash": "反斜杠,路径,转义",
-        "keywords_json": "特殊字符,引号,JSON",
-        "edge_desc_special": "这个边描述包含'单引号'、\"双引号\"和\\反斜杠",
-        "edge_desc_sql": "包含SQL注入尝试: SELECT * FROM users WHERE name='admin'--",
-        "verify_node_special": "验证节点特殊字符",
-        "verify_edge_special": "验证边特殊字符",
-        "special_char_verification_success": "特殊字符验证成功",
-        "special_char_test_complete": "特殊字符测试完成，数据已保留在数据库中",
-        # Additional batch test translations
-        "batch_get_nodes": "== 测试 get_nodes_batch",
-        "batch_get_nodes_result": "批量获取节点属性结果",
-        "batch_node_degrees": "== 测试 node_degrees_batch",
-        "batch_node_degrees_result": "批量获取节点度数结果",
-        "batch_edge_degrees": "== 测试 edge_degrees_batch",
-        "batch_edge_degrees_result": "批量获取边度数结果",
-        "batch_get_edges": "== 测试 get_edges_batch",
-        "batch_get_edges_result": "批量获取边属性结果",
-        "test_reverse_edges_batch": "== 测试反向边的批量获取",
-        "insert_node_1": "插入节点1",
-        "insert_node_2": "插入节点2",
-        "insert_node_3": "插入节点3",
-        "insert_node_4": "插入节点4",
-        "insert_node_5": "插入节点5",
-        "insert_edge_1": "插入边1",
-        "insert_edge_2": "插入边2",
-        "insert_edge_3": "插入边3",
-        "insert_edge_4": "插入边4",
-        "insert_edge_5": "插入边5",
-        "insert_edge_6": "插入边6",
-        # Additional description translations
-        "ai_contains_cv_desc": "人工智能领域包含计算机视觉这个子领域",
-        "dl_applied_nlp_relationship": "应用于",
-        "dl_applied_nlp_desc": "深度学习技术应用于自然语言处理领域",
-        "dl_applied_cv_relationship": "应用于",
-        "dl_applied_cv_desc": "深度学习技术应用于计算机视觉领域",
-        # Additional batch operation translations
-        "batch_get_reverse_edges_result": "批量获取反向边属性结果",
-        "undirected_batch_verification_success": "无向图特性验证成功：批量获取的正向和反向边属性一致",
-        "test_get_nodes_edges_batch": "== 测试 get_nodes_edges_batch",
-        "batch_get_nodes_edges_result": "批量获取节点边结果",
-        "verify_batch_nodes_edges_undirected": "== 验证批量获取节点边的无向图特性",
-        "node_outgoing_edges": "的出边",
-        "node_incoming_edges": "的入边",
-        "undirected_nodes_edges_verification_success": "无向图特性验证成功：批量获取的节点边包含所有相关的边（无论方向）",
-        "test_get_nodes_by_chunk_ids": "== 测试 get_nodes_by_chunk_ids",
-        "test_single_chunk_id_multiple_nodes": "== 测试单个 chunk_id，匹配多个节点",
-        "test_multiple_chunk_ids_partial_match": "== 测试多个 chunk_id，部分匹配多个节点",
-        "test_get_edges_by_chunk_ids": "== 测试 get_edges_by_chunk_ids",
-        "test_single_chunk_id_multiple_edges": "== 测试单个 chunk_id，匹配多条边",
-        "test_multiple_chunk_ids_partial_edges": "== 测试多个 chunk_id，部分匹配多条边",
-        "batch_operations_test_complete": "\n批量操作测试完成",
-    },
+    "node": ["节点", "Node"],
+    "edge": ["边", "Edge"],
+    "degree": ["度数", "Degree"],
+    "warning_no_env": [
+        "警告: 当前目录中没有找到.env文件，这可能会影响存储配置的加载。",
+        "Warning: No .env file found in the current directory, which may affect storage configuration loading.",
+    ],
+    "continue_execution": [
+        "是否继续执行? (yes/no): ",
+        "Continue execution? (yes/no): ",
+    ],
+    "test_cancelled": [
+        "测试程序已取消",
+        "Test program cancelled",
+    ],
+    "error": ["错误", "Error"],
+    "warning": ["警告", "Warning"],
+    "current_graph_storage": [
+        "当前配置的图存储类型",
+        "Current configured graph storage type",
+    ],
+    "supported_graph_storage": [
+        "支持的图存储类型",
+        "Supported graph storage types",
+    ],
+    "init_storage_failed": [
+        "初始化存储实例失败，测试程序退出",
+        "Failed to initialize storage instance, test program exiting",
+    ],
+    "select_test_type": [
+        "请选择测试类型:",
+        "Please select test type:",
+    ],
+    "basic_test": [
+        "1. 基本测试 (节点和边的插入、读取)",
+        "1. Basic test (node and edge insertion, reading)",
+    ],
+    "advanced_test": [
+        "2. 高级测试 (度数、标签、知识图谱、删除操作等)",
+        "2. Advanced test (degree, labels, knowledge graph, delete operations, etc.)",
+    ],
+    "batch_test": [
+        "3. 批量操作测试 (批量获取节点、边属性和度数等)",
+        "3. Batch operation test (batch get node, edge attributes and degrees, etc.)",
+    ],
+    "undirected_test": [
+        "4. 无向图特性测试 (验证存储的无向图特性)",
+        "4. Undirected graph property test (verify undirected graph properties of storage)",
+    ],
+    "special_char_test": [
+        "5. 特殊字符测试 (验证单引号、双引号和反斜杠等特殊字符)",
+        "5. Special character test (verify single quotes, double quotes and backslashes, etc.)",
+    ],
+    "all_tests": ["6. 全部测试", "6. All tests"],
+    "select_option": [
+        "请输入选项 (1/2/3/4/5/6): ",
+        "Please enter option (1/2/3/4/5/6): ",
+    ],
+    "cleaning_data": [
+        "执行测试前清理数据...",
+        "Cleaning data before executing tests...",
+    ],
+    "data_cleaned": ["数据清理完成", "Data cleaning completed"],
+    "invalid_option": ["无效的选项", "Invalid option"],
+    "connection_closed": [
+        "存储连接已关闭",
+        "Storage connection closed",
+    ],
+    "kuzu_temp_cleaned": [
+        "KuzuDB临时目录已清理",
+        "KuzuDB temporary directory cleaned",
+    ],
+    # Additional test messages / 额外的测试消息
+    "test_completed": ["测试完成", "Test completed"],
+    "batch_test_complete": [
+        "批量操作测试完成",
+        "Batch operations test completed",
+    ],
+    "undirected_test_complete": [
+        "无向图特性测试完成",
+        "Undirected graph property test completed",
+    ],
+    "all_tests_completed": [
+        "所有测试成功完成",
+        "All tests completed successfully",
+    ],
+    "no_description": ["无描述", "No description"],
+    "no_type": ["无类型", "No type"],
+    "no_keywords": ["无关键词", "No keywords"],
+    "no_relationship": ["无关系", "No relationship"],
+    "no_weight": ["无权重", "No weight"],
+    # Test progress messages / 测试进度消息
+    "test_node_degree": ["测试 node_degree", "Test node_degree"],
+    "test_all_node_degrees": [
+        "测试所有节点的度数",
+        "Test all node degrees",
+    ],
+    "test_edge_degree": ["测试 edge_degree", "Test edge_degree"],
+    "test_reverse_edge_degree": [
+        "测试反向边的度数",
+        "Test reverse edge degree",
+    ],
+    "test_get_node_edges": [
+        "测试 get_node_edges",
+        "Test get_node_edges",
+    ],
+    "test_get_all_labels": [
+        "测试 get_all_labels",
+        "Test get_all_labels",
+    ],
+    "test_get_knowledge_graph": [
+        "测试 get_knowledge_graph",
+        "Test get_knowledge_graph",
+    ],
+    "test_delete_node": ["测试 delete_node", "Test delete_node"],
+    "test_remove_edges": [
+        "测试 remove_edges",
+        "Test remove_edges",
+    ],
+    "test_remove_nodes": [
+        "测试 remove_nodes",
+        "Test remove_nodes",
+    ],
+    "verify_undirected_property": [
+        "验证无向图特性",
+        "Verify undirected graph property",
+    ],
+    "verify_node_edges_undirected": [
+        "验证节点边的无向图特性",
+        "Verify node edges undirected property",
+    ],
+    "node_degree": ["节点度数", "Node degree"],
+    "edge_degree": ["边度数", "Edge degree"],
+    "reverse_edge_degree": ["反向边度数", "Reverse edge degree"],
+    "all_edges": ["所有边", "All edges"],
+    "all_labels": ["所有标签", "All labels"],
+    "knowledge_graph_nodes": [
+        "知识图谱节点数",
+        "Knowledge graph nodes",
+    ],
+    "knowledge_graph_edges": [
+        "知识图谱边数",
+        "Knowledge graph edges",
+    ],
+    "query_after_deletion": [
+        "删除后查询",
+        "Query after deletion",
+    ],
+    "re_insert_for_test": [
+        "重新插入用于后续测试",
+        "Re-insert for subsequent testing",
+    ],
+    "advanced_test_complete": [
+        "高级测试完成",
+        "Advanced test completed",
+    ],
+    # Additional missing translations / 额外的缺失翻译
+    "failed_read_node": [
+        "读取节点属性失败",
+        "Failed to read node properties",
+    ],
+    "failed_read_edge": [
+        "读取边属性失败",
+        "Failed to read edge properties",
+    ],
+    "failed_read_reverse_edge": [
+        "读取反向边属性失败",
+        "Failed to read reverse edge properties",
+    ],
+    "unable_read_node": [
+        "未能读取节点属性",
+        "Unable to read node properties",
+    ],
+    "unable_read_edge": [
+        "未能读取边属性",
+        "Unable to read edge properties",
+    ],
+    "unable_read_reverse_edge": [
+        "未能读取反向边属性",
+        "Unable to read reverse edge properties",
+    ],
+    "node_id_mismatch": [
+        "节点ID不匹配: 期望",
+        "Node ID mismatch: expected",
+    ],
+    "actual": ["实际", "actual"],
+    "node_desc_mismatch": [
+        "节点描述不匹配",
+        "Node description mismatch",
+    ],
+    "node_type_mismatch": [
+        "节点类型不匹配",
+        "Node type mismatch",
+    ],
+    "edge_relation_mismatch": [
+        "边关系不匹配",
+        "Edge relationship mismatch",
+    ],
+    "edge_desc_mismatch": [
+        "边描述不匹配",
+        "Edge description mismatch",
+    ],
+    "edge_weight_mismatch": [
+        "边权重不匹配",
+        "Edge weight mismatch",
+    ],
+    "forward_reverse_inconsistent": [
+        "正向和反向边属性不一致，无向图特性验证失败",
+        "Forward and reverse edge properties inconsistent, undirected graph property verification failed",
+    ],
+    "undirected_verification_failed": [
+        "无向图特性验证失败",
+        "undirected graph property verification failed",
+    ],
+    # Test data / 测试数据
+    "artificial_intelligence": [
+        "人工智能",
+        "Artificial Intelligence",
+    ],
+    "machine_learning": ["机器学习", "Machine Learning"],
+    "deep_learning": ["深度学习", "Deep Learning"],
+    "natural_language_processing": [
+        "自然语言处理",
+        "Natural Language Processing",
+    ],
+    "computer_vision": ["计算机视觉", "Computer Vision"],
+    "computer_science": ["计算机科学", "Computer Science"],
+    "data_structure": ["数据结构", "Data Structure"],
+    "algorithm": ["算法", "Algorithm"],
+    # Descriptions / 描述
+    "ai_desc": [
+        "人工智能是计算机科学的一个分支，它企图了解智能的实质，并生产出一种新的能以人类智能相似的方式做出反应的智能机器。",
+        "Artificial Intelligence is a branch of computer science that attempts to understand the essence of intelligence and produce a new kind of intelligent machine that can respond in a way similar to human intelligence.",
+    ],
+    "ml_desc": [
+        "机器学习是人工智能的一个分支，它使用统计学方法让计算机系统在不被明确编程的情况下也能够学习。",
+        "Machine Learning is a branch of artificial intelligence that uses statistical methods to enable computer systems to learn without being explicitly programmed.",
+    ],
+    "dl_desc": [
+        "深度学习是机器学习的一个分支，它使用多层神经网络来模拟人脑的学习过程。",
+        "Deep Learning is a branch of machine learning that uses multi-layer neural networks to simulate the human brain's learning process.",
+    ],
+    "nlp_desc": [
+        "自然语言处理是人工智能的一个分支，专注于使计算机理解和处理人类语言。",
+        "Natural Language Processing is a branch of artificial intelligence that focuses on enabling computers to understand and process human language.",
+    ],
+    "cv_desc": [
+        "计算机视觉是人工智能的一个分支，专注于使计算机能够从图像或视频中获取信息。",
+        "Computer Vision is a branch of artificial intelligence that focuses on enabling computers to obtain information from images or videos.",
+    ],
+    "cs_desc": [
+        "计算机科学是研究计算机及其应用的科学。",
+        "Computer Science is the science that studies computers and their applications.",
+    ],
+    "ds_desc": [
+        "数据结构是计算机科学中的一个基础概念，用于组织和存储数据。",
+        "Data Structure is a fundamental concept in computer science, used to organize and store data.",
+    ],
+    "algo_desc": [
+        "算法是解决问题的步骤和方法。",
+        "Algorithm is the steps and methods for solving problems.",
+    ],
+    # Keywords / 关键词
+    "ai_keywords": [
+        "AI,机器学习,深度学习",
+        "AI,machine learning,deep learning",
+    ],
+    "ml_keywords": [
+        "监督学习,无监督学习,强化学习",
+        "supervised learning,unsupervised learning,reinforcement learning",
+    ],
+    "dl_keywords": [
+        "神经网络,CNN,RNN",
+        "neural networks,CNN,RNN",
+    ],
+    "nlp_keywords": [
+        "NLP,文本分析,语言模型",
+        "NLP,text analysis,language models",
+    ],
+    "cv_keywords": [
+        "CV,图像识别,目标检测",
+        "CV,image recognition,object detection",
+    ],
+    "cs_keywords": [
+        "计算机,科学,技术",
+        "computer,science,technology",
+    ],
+    "ds_keywords": [
+        "数据,结构,组织",
+        "data,structure,organization",
+    ],
+    "algo_keywords": [
+        "算法,步骤,方法",
+        "algorithm,steps,methods",
+    ],
+    # Entity types / 实体类型
+    "tech_field": ["技术领域", "Technology Field"],
+    "concept": ["概念", "Concept"],
+    "subject": ["学科", "Subject"],
+    "test_node": ["测试节点", "Test Node"],
+    # Relationships / 关系
+    "contains": ["包含", "contains"],
+    "applied_to": ["应用于", "applied to"],
+    "special_relation": ["特殊'关系'", "special 'relation'"],
+    "complex_relation": [
+        '复杂"关系"\\类型',
+        'complex "relation" \\type',
+    ],
+    # Relationship descriptions / 关系描述
+    "ai_contains_ml": [
+        "人工智能领域包含机器学习这个子领域",
+        "The field of artificial intelligence contains machine learning as a subfield",
+    ],
+    "ml_contains_dl": [
+        "机器学习领域包含深度学习这个子领域",
+        "The field of machine learning contains deep learning as a subfield",
+    ],
+    "ai_contains_nlp": [
+        "人工智能领域包含自然语言处理这个子领域",
+        "The field of artificial intelligence contains natural language processing as a subfield",
+    ],
+    "ai_contains_cv": [
+        "人工智能领域包含计算机视觉这个子领域",
+        "The field of artificial intelligence contains computer vision as a subfield",
+    ],
+    "dl_applied_nlp": [
+        "深度学习技术应用于自然语言处理领域",
+        "Deep learning technology is applied to the field of natural language processing",
+    ],
+    "dl_applied_cv": [
+        "深度学习技术应用于计算机视觉领域",
+        "Deep learning technology is applied to the field of computer vision",
+    ],
+    "cs_contains_ds": [
+        "计算机科学包含数据结构这个概念",
+        "Computer science contains data structures as a concept",
+    ],
+    "cs_contains_algo": [
+        "计算机科学包含算法这个概念",
+        "Computer science contains algorithms as a concept",
+    ],
+    # Test messages / 测试消息
+    "insert_node": ["插入节点", "Insert node"],
+    "insert_edge": ["插入边", "Insert edge"],
+    "read_node_props": ["读取节点属性", "Read node properties"],
+    "read_edge_props": ["读取边属性", "Read edge properties"],
+    "read_reverse_edge": [
+        "读取反向边属性",
+        "Read reverse edge properties",
+    ],
+    "success_read_node": [
+        "成功读取节点属性",
+        "Successfully read node properties",
+    ],
+    "success_read_edge": [
+        "成功读取边属性",
+        "Successfully read edge properties",
+    ],
+    "success_read_reverse": [
+        "成功读取反向边属性",
+        "Successfully read reverse edge properties",
+    ],
+    "node_desc": ["节点描述", "Node description"],
+    "node_type": ["节点类型", "Node type"],
+    "node_keywords": ["节点关键词", "Node keywords"],
+    "edge_relation": ["边关系", "Edge relationship"],
+    "edge_desc": ["边描述", "Edge description"],
+    "edge_weight": ["边权重", "Edge weight"],
+    "reverse_edge_relation": [
+        "反向边关系",
+        "Reverse edge relationship",
+    ],
+    "reverse_edge_desc": [
+        "反向边描述",
+        "Reverse edge description",
+    ],
+    "reverse_edge_weight": ["反向边权重", "Reverse edge weight"],
+    "undirected_verification_success": [
+        "无向图特性验证成功：正向和反向边属性一致",
+        "Undirected graph property verification successful: forward and reverse edge properties are consistent",
+    ],
+    "basic_test_complete": [
+        "基本测试完成，数据已保留在数据库中",
+        "Basic test completed, data retained in database",
+    ],
+    "test_error": [
+        "测试过程中发生错误",
+        "Error occurred during testing",
+    ],
+    # Special characters test / 特殊字符测试
+    "node_with_quotes": [
+        "包含'单引号'的节点",
+        "Node with 'single quotes'",
+    ],
+    "node_with_double_quotes": [
+        '包含"双引号"的节点',
+        'Node with "double quotes"',
+    ],
+    "node_with_backslash": [
+        "包含\\反斜杠\\的节点",
+        "Node with \\backslash\\",
+    ],
+    "desc_with_special": [
+        "这个描述包含'单引号'、\"双引号\"和\\反斜杠",
+        "This description contains 'single quotes', \"double quotes\" and \\backslash",
+    ],
+    "desc_with_complex": [
+        "这个描述同时包含'单引号'和\"双引号\"以及\\反斜杠\\路径",
+        "This description contains 'single quotes' and \"double quotes\" as well as \\backslash\\path",
+    ],
+    "desc_with_windows_path": [
+        "这个描述包含Windows路径C:\\Program Files\\和转义字符\\n\\t",
+        "This description contains Windows path C:\\Program Files\\ and escape characters \\n\\t",
+    ],
+    "keywords_special": [
+        "特殊字符,引号,转义",
+        "special characters,quotes,escape",
+    ],
+    "keywords_backslash": [
+        "反斜杠,路径,转义",
+        "backslash,path,escape",
+    ],
+    "keywords_json": [
+        "特殊字符,引号,JSON",
+        "special characters,quotes,JSON",
+    ],
+    "special_relation": [
+        "包含'单引号'的关系",
+        "Relationship with 'single quotes'",
+    ],
+    "complex_relation": [
+        '包含"双引号"和\\反斜杠的关系',
+        'Relationship with "double quotes" and \\backslash',
+    ],
+    "edge_desc_special": [
+        "这个边描述包含'单引号'、\"双引号\"和\\反斜杠",
+        "This edge description contains 'single quotes', \"double quotes\" and \\backslash",
+    ],
+    "edge_desc_sql": [
+        "包含SQL注入尝试: SELECT * FROM users WHERE name='admin'--",
+        "Contains SQL injection attempt: SELECT * FROM users WHERE name='admin'--",
+    ],
+    "verify_node_special": [
+        "验证节点特殊字符",
+        "Verify node special characters",
+    ],
+    "verify_edge_special": [
+        "验证边特殊字符",
+        "Verify edge special characters",
+    ],
+    "special_char_verification_success": [
+        "特殊字符验证成功",
+        "Special character verification successful",
+    ],
+    "special_char_test_complete": [
+        "特殊字符测试完成，数据已保留在数据库中",
+        "Special character test completed, data retained in database",
+    ],
+    "insert_node_with_special_1": [
+        "插入包含特殊字符的节点1",
+        "Insert node 1 with special characters",
+    ],
+    "insert_node_with_special_2": [
+        "插入包含特殊字符的节点2",
+        "Insert node 2 with special characters",
+    ],
+    "insert_node_with_special_3": [
+        "插入包含特殊字符的节点3",
+        "Insert node 3 with special characters",
+    ],
+    "insert_edge_with_special": [
+        "插入包含特殊字符的边",
+        "Insert edge with special characters",
+    ],
+    "insert_edge_with_complex_special": [
+        "插入包含复杂特殊字符的边",
+        "Insert edge with complex special characters",
+    ],
+    "read_node_success": [
+        "成功读取节点",
+        "Successfully read node",
+    ],
+    "node_description": [
+        "节点描述",
+        "Node description",
+    ],
+    "no_description": [
+        "无描述",
+        "No description",
+    ],
+    "node_special_char_verification_success": [
+        "节点 {} 特殊字符验证成功",
+        "Node {} special character verification successful",
+    ],
+    "read_node_props_failed": [
+        "读取节点属性失败",
+        "Failed to read node properties",
+    ],
+    "read_edge_success": [
+        "成功读取边",
+        "Successfully read edge",
+    ],
+    "edge_relationship": [
+        "边关系",
+        "Edge relationship",
+    ],
+    "no_relationship": [
+        "无关系",
+        "No relationship",
+    ],
+    "edge_special_char_verification_success": [
+        "边 {} -> {} 特殊字符验证成功",
+        "Edge {} -> {} special character verification successful",
+    ],
+    "read_edge_props_failed": [
+        "读取边属性失败",
+        "Failed to read edge properties",
+    ],
+    "node_id_mismatch": [
+        "节点ID不匹配: 期望 {}, 实际 {}",
+        "Node ID mismatch: expected {}, actual {}",
+    ],
+    "node_description_mismatch": [
+        "节点描述不匹配: 期望 {}, 实际 {}",
+        "Node description mismatch: expected {}, actual {}",
+    ],
+    "edge_relationship_mismatch": [
+        "边关系不匹配: 期望 {}, 实际 {}",
+        "Edge relationship mismatch: expected {}, actual {}",
+    ],
+    "edge_description_mismatch": [
+        "边描述不匹配: 期望 {}, 实际 {}",
+        "Edge description mismatch: expected {}, actual {}",
+    ],
+    "unable_to_read_node_props": [
+        "未能读取节点属性: {}",
+        "Unable to read node properties: {}",
+    ],
+    "unable_to_read_edge_props": [
+        "未能读取边属性: {} -> {}",
+        "Unable to read edge properties: {} -> {}",
+    ],
+    # Additional batch test translations
+    "batch_get_nodes": [
+        "== 测试 get_nodes_batch",
+        "Test get_nodes_batch",
+    ],
+    "batch_get_nodes_result": [
+        "批量获取节点属性结果",
+        "Batch get node properties result",
+    ],
+    "batch_node_degrees": [
+        "== 测试 node_degrees_batch",
+        "Test node_degrees_batch",
+    ],
+    "batch_node_degrees_result": [
+        "批量获取节点度数结果",
+        "Batch get node degrees result",
+    ],
+    "batch_edge_degrees": [
+        "== 测试 edge_degrees_batch",
+        "Test edge_degrees_batch",
+    ],
+    "batch_edge_degrees_result": [
+        "批量获取边度数结果",
+        "Batch get edge degrees result",
+    ],
+    "batch_get_edges": [
+        "== 测试 get_edges_batch",
+        "Test get_edges_batch",
+    ],
+    "batch_get_edges_result": [
+        "批量获取边属性结果",
+        "Batch get edge properties result",
+    ],
+    "test_reverse_edges_batch": [
+        "== 测试反向边的批量获取",
+        "Test reverse edges batch get",
+    ],
+    "insert_node_1": ["插入节点1", "Insert node 1"],
+    "insert_node_2": ["插入节点2", "Insert node 2"],
+    "insert_node_3": ["插入节点3", "Insert node 3"],
+    "insert_node_4": ["插入节点4", "Insert node 4"],
+    "insert_node_5": ["插入节点5", "Insert node 5"],
+    "insert_edge_1": ["插入边1", "Insert edge 1"],
+    "insert_edge_2": ["插入边2", "Insert edge 2"],
+    "insert_edge_3": ["插入边3", "Insert edge 3"],
+    "insert_edge_4": ["插入边4", "Insert edge 4"],
+    "insert_edge_5": ["插入边5", "Insert edge 5"],
+    "insert_edge_6": ["插入边6", "Insert edge 6"],
+    # Additional description translations
+    "ai_contains_cv_desc": [
+        "人工智能领域包含计算机视觉这个子领域",
+        "The field of artificial intelligence contains computer vision as a subfield",
+    ],
+    "dl_applied_nlp_relationship": ["应用于", "applied to"],
+    "dl_applied_nlp_desc": [
+        "深度学习技术应用于自然语言处理领域",
+        "Deep learning technology is applied to the field of natural language processing",
+    ],
+    "dl_applied_cv_relationship": ["应用于", "applied to"],
+    "dl_applied_cv_desc": [
+        "深度学习技术应用于计算机视觉领域",
+        "Deep learning technology is applied to the field of computer vision",
+    ],
+    # Additional batch operation translations
+    "batch_get_reverse_edges_result": [
+        "批量获取反向边属性结果",
+        "Batch get reverse edge properties result",
+    ],
+    "undirected_batch_verification_success": [
+        "无向图特性验证成功：批量获取的正向和反向边属性一致",
+        "Undirected graph property verification successful: batch obtained forward and reverse edge properties are consistent",
+    ],
+    "test_get_nodes_edges_batch": [
+        "== 测试 get_nodes_edges_batch",
+        "Test get_nodes_edges_batch",
+    ],
+    "batch_get_nodes_edges_result": [
+        "批量获取节点边结果",
+        "Batch get node edges result",
+    ],
+    "verify_batch_nodes_edges_undirected": [
+        "== 验证批量获取节点边的无向图特性",
+        "Verify batch get node edges undirected graph property",
+    ],
+    "node_outgoing_edges": ["的出边", "Node outgoing edges"],
+    "node_incoming_edges": ["的入边", "Node incoming edges"],
+    "undirected_nodes_edges_verification_success": [
+        "无向图特性验证成功：批量获取的节点边包含所有相关的边（无论方向）",
+        "Undirected graph property verification successful: batch obtained node edges contain all related edges (regardless of direction)",
+    ],
+    "test_get_nodes_by_chunk_ids": [
+        "== 测试 get_nodes_by_chunk_ids",
+        "Test get_nodes_by_chunk_ids",
+    ],
+    "test_single_chunk_id_multiple_nodes": [
+        "== 测试单个 chunk_id，匹配多个节点",
+        "Test single chunk_id, matching multiple nodes",
+    ],
+    "test_multiple_chunk_ids_partial_match": [
+        "== 测试多个 chunk_id，部分匹配多个节点",
+        "Test multiple chunk_ids, partial matching multiple nodes",
+    ],
+    "test_get_edges_by_chunk_ids": [
+        "== 测试 get_edges_by_chunk_ids",
+        "Test get_edges_by_chunk_ids",
+    ],
+    "test_single_chunk_id_multiple_edges": [
+        "== 测试单个 chunk_id，匹配多条边",
+        "Test single chunk_id, matching multiple edges",
+    ],
+    "test_multiple_chunk_ids_partial_edges": [
+        "== 测试多个 chunk_id，部分匹配多条边",
+        "Test multiple chunk_ids, partial matching multiple edges",
+    ],
+    "batch_operations_test_complete": [
+        "\n批量操作测试完成",
+        "Batch operations test completed",
+    ],
 }
 
 
 def t(key):
     """Translation function / 翻译函数"""
-    return TRANSLATIONS[LANGUAGE].get(key, key) or key
+    value = TRANSLATIONS.get(key)
+    if isinstance(value, list):
+        idx = language_to_index.get(LANGUAGE, 0)
+        return value[idx]
+    elif isinstance(value, str):
+        return value
+    else:
+        return str(key)
 
 
 # Add to project root directory to Python path / 添加项目根目录到Python路径
@@ -559,7 +843,9 @@ async def initialize_graph_storage():
     temp_dir = None
     if graph_storage_type == "KuzuDBStorage":
         temp_dir, kuzu_db_path = setup_kuzu_environment()
-        ASCIIColors.cyan(f"KuzuDB测试环境已设置: {kuzu_db_path}")
+        ASCIIColors.cyan(
+            f"KuzuDB 测试环境已设置 | The test environment has been set up:\n{kuzu_db_path}"
+        )
 
     # 动态导入相应的模块
     module_path = STORAGES.get(graph_storage_type)
@@ -870,8 +1156,8 @@ async def test_graph_advanced(storage):
         reverse_edge_degree = await storage.edge_degree(node2_id, node1_id)
         print(
             f"{t('reverse_edge_degree')} {node2_id} -> {node1_id}: {reverse_edge_degree}"
-            if LANGUAGE == "english"
-            else f"反向边 {node2_id} -> {node1_id} 的度数: {reverse_edge_degree}"
+            # if LANGUAGE == "english"
+            # else f"反向边 {node2_id} -> {node1_id} 的度数: {reverse_edge_degree}"
         )
         assert edge_degree == reverse_edge_degree, (
             "Forward and reverse edge degrees inconsistent, undirected graph property verification failed"
@@ -883,11 +1169,8 @@ async def test_graph_advanced(storage):
         # 4. Test get_node_edges - get all edges of node / 测试 get_node_edges - 获取节点的所有边
         print(f"== {t('test_get_node_edges')}: {node2_id}")
         node2_edges = await storage.get_node_edges(node2_id)
-        print(
-            f"{t('node_degree')} {node2_id} {t('all_edges')}: {node2_edges}"
-            if LANGUAGE == "english"
-            else f"节点 {node2_id} 的所有边: {node2_edges}"
-        )
+        print(f"{t('node_degree')} {node2_id} {t('all_edges')}: {node2_edges}")
+
         assert len(node2_edges) == 2, (
             f"Node {node2_id} should have 2 edges, actual {len(node2_edges)}"
             if LANGUAGE == "english"
@@ -1339,8 +1622,12 @@ async def test_graph_batch_operations(storage):
         node1_incoming_edges = [
             (src, tgt) for src, tgt in nodes_edges[node1_id] if tgt == node1_id
         ]
-        print(f"节点 {node1_id} {t('node_outgoing_edges')}: {node1_outgoing_edges}")
-        print(f"节点 {node1_id} {t('node_incoming_edges')}: {node1_incoming_edges}")
+        print(
+            f"{t('node')} {node1_id} {t('node_outgoing_edges')}: {node1_outgoing_edges}"
+        )
+        print(
+            f"{t('node')} {node1_id} {t('node_incoming_edges')}: {node1_incoming_edges}"
+        )
 
         # 检查是否包含到机器学习、自然语言处理和计算机视觉的边
         has_edge_to_node2 = any(tgt == node2_id for _, tgt in node1_outgoing_edges)
@@ -1358,8 +1645,12 @@ async def test_graph_batch_operations(storage):
         node3_incoming_edges = [
             (src, tgt) for src, tgt in nodes_edges[node3_id] if tgt == node3_id
         ]
-        print(f"节点 {node3_id} {t('node_outgoing_edges')}: {node3_outgoing_edges}")
-        print(f"节点 {node3_id} {t('node_incoming_edges')}: {node3_incoming_edges}")
+        print(
+            f"{t('node')} {node3_id} {t('node_outgoing_edges')}: {node3_outgoing_edges}"
+        )
+        print(
+            f"{t('node')} {node3_id} {t('node_incoming_edges')}: {node3_incoming_edges}"
+        )
 
         # 检查是否包含与机器学习、自然语言处理和计算机视觉的连接（忽略方向）
         has_connection_with_node2 = any(
@@ -1484,11 +1775,7 @@ async def test_graph_special_characters(storage):
             "keywords": t("keywords_special"),
             "entity_type": t("test_node"),
         }
-        print(
-            f"{t('insert_node')} 1 with special characters: {node1_id}"
-            if LANGUAGE == "english"
-            else f"插入包含特殊字符的节点1: {node1_id}"
-        )
+        print(f"{t('insert_node_with_special_1')}: {node1_id}")
         await storage.upsert_node(node1_id, node1_data)
 
         # 2. Test double quotes in node names / 测试节点名称中的双引号
@@ -1499,11 +1786,7 @@ async def test_graph_special_characters(storage):
             "keywords": t("keywords_json"),
             "entity_type": t("test_node"),
         }
-        print(
-            f"{t('insert_node')} 2 with special characters: {node2_id}"
-            if LANGUAGE == "english"
-            else f"插入包含特殊字符的节点2: {node2_id}"
-        )
+        print(f"{t('insert_node_with_special_2')}: {node2_id}")
         await storage.upsert_node(node2_id, node2_data)
 
         # 3. Test backslashes in node names / 测试节点名称中的反斜杠
@@ -1514,11 +1797,7 @@ async def test_graph_special_characters(storage):
             "keywords": t("keywords_backslash"),
             "entity_type": t("test_node"),
         }
-        print(
-            f"{t('insert_node')} 3 with special characters: {node3_id}"
-            if LANGUAGE == "english"
-            else f"插入包含特殊字符的节点3: {node3_id}"
-        )
+        print(f"{t('insert_node_with_special_3')}: {node3_id}")
         await storage.upsert_node(node3_id, node3_data)
 
         # 4. Test special characters in edge descriptions / 测试边描述中的特殊字符
@@ -1527,11 +1806,7 @@ async def test_graph_special_characters(storage):
             "weight": 1.0,
             "description": t("edge_desc_special"),
         }
-        print(
-            f"{t('insert_edge')} with special characters: {node1_id} -> {node2_id}"
-            if LANGUAGE == "english"
-            else f"插入包含特殊字符的边: {node1_id} -> {node2_id}"
-        )
+        print(f"{t('insert_edge_with_special')}: {node1_id} -> {node2_id}")
         await storage.upsert_edge(node1_id, node2_id, edge1_data)
 
         # 5. Test more complex special character combinations in edges / 测试边描述中的更复杂特殊字符组合
@@ -1540,11 +1815,7 @@ async def test_graph_special_characters(storage):
             "weight": 0.8,
             "description": t("edge_desc_sql"),
         }
-        print(
-            f"{t('insert_edge')} with complex special characters: {node2_id} -> {node3_id}"
-            if LANGUAGE == "english"
-            else f"插入包含复杂特殊字符的边: {node2_id} -> {node3_id}"
-        )
+        print(f"{t('insert_edge_with_complex_special')}: {node2_id} -> {node3_id}")
         await storage.upsert_edge(node2_id, node3_id, edge2_data)
 
         # 6. Verify node special characters are correctly saved / 验证节点特殊字符是否正确保存
@@ -1556,147 +1827,81 @@ async def test_graph_special_characters(storage):
         ]:
             node_props = await storage.get_node(node_id)
             if node_props:
+                print(f"{t('read_node_success')}: {node_id}")
                 print(
-                    f"Successfully read node: {node_id}"
-                    if LANGUAGE == "english"
-                    else f"成功读取节点: {node_id}"
-                )
-                print(
-                    f"Node description: {node_props.get('description', 'No description')}"
-                    if LANGUAGE == "english"
-                    else f"节点描述: {node_props.get('description', '无描述')}"
+                    f"{t('node_description')}: {node_props.get('description', t('no_description'))}"
                 )
 
                 # Verify node ID is correctly saved / 验证节点ID是否正确保存
-                assert node_props.get("entity_id") == node_id, (
-                    f"Node ID mismatch: expected {node_id}, actual {node_props.get('entity_id')}"
-                    if LANGUAGE == "english"
-                    else f"节点ID不匹配: 期望 {node_id}, 实际 {node_props.get('entity_id')}"
-                )
+                assert node_props.get("entity_id") == node_id, t(
+                    "node_id_mismatch"
+                ).format(node_id, node_props.get("entity_id"))
 
                 # Verify description is correctly saved / 验证描述是否正确保存
-                assert node_props.get("description") == original_data["description"], (
-                    f"Node description mismatch: expected {original_data['description']}, actual {node_props.get('description')}"
-                    if LANGUAGE == "english"
-                    else f"节点描述不匹配: 期望 {original_data['description']}, 实际 {node_props.get('description')}"
-                )
+                assert node_props.get("description") == original_data["description"], t(
+                    "node_description_mismatch"
+                ).format(original_data["description"], node_props.get("description"))
 
-                print(
-                    f"Node {node_id} special character verification successful"
-                    if LANGUAGE == "english"
-                    else f"节点 {node_id} 特殊字符验证成功"
-                )
+                print(t("node_special_char_verification_success").format(node_id))
             else:
-                print(
-                    f"Failed to read node properties: {node_id}"
-                    if LANGUAGE == "english"
-                    else f"读取节点属性失败: {node_id}"
-                )
-                assert False, (
-                    f"Unable to read node properties: {node_id}"
-                    if LANGUAGE == "english"
-                    else f"未能读取节点属性: {node_id}"
-                )
+                print(f"{t('read_node_props_failed')}: {node_id}")
+                assert False, t("unable_to_read_node_props").format(node_id)
 
         # 7. Verify edge special characters are correctly saved / 验证边特殊字符是否正确保存
         print(f"\n== {t('verify_edge_special')}")
         edge1_props = await storage.get_edge(node1_id, node2_id)
         if edge1_props:
+            print(f"{t('read_edge_success')}: {node1_id} -> {node2_id}")
             print(
-                f"Successfully read edge: {node1_id} -> {node2_id}"
-                if LANGUAGE == "english"
-                else f"成功读取边: {node1_id} -> {node2_id}"
+                f"{t('edge_relationship')}: {edge1_props.get('relationship', t('no_relationship'))}"
             )
             print(
-                f"Edge relationship: {edge1_props.get('relationship', 'No relationship')}"
-                if LANGUAGE == "english"
-                else f"边关系: {edge1_props.get('relationship', '无关系')}"
-            )
-            print(
-                f"Edge description: {edge1_props.get('description', 'No description')}"
-                if LANGUAGE == "english"
-                else f"边描述: {edge1_props.get('description', '无描述')}"
+                f"{t('edge_desc')}: {edge1_props.get('description', t('no_description'))}"
             )
 
             # Verify edge relationship is correctly saved / 验证边关系是否正确保存
-            assert edge1_props.get("relationship") == edge1_data["relationship"], (
-                f"Edge relationship mismatch: expected {edge1_data['relationship']}, actual {edge1_props.get('relationship')}"
-                if LANGUAGE == "english"
-                else f"边关系不匹配: 期望 {edge1_data['relationship']}, 实际 {edge1_props.get('relationship')}"
-            )
+            assert edge1_props.get("relationship") == edge1_data["relationship"], t(
+                "edge_relationship_mismatch"
+            ).format(edge1_data["relationship"], edge1_props.get("relationship"))
 
             # Verify edge description is correctly saved / 验证边描述是否正确保存
-            assert edge1_props.get("description") == edge1_data["description"], (
-                f"Edge description mismatch: expected {edge1_data['description']}, actual {edge1_props.get('description')}"
-                if LANGUAGE == "english"
-                else f"边描述不匹配: 期望 {edge1_data['description']}, 实际 {edge1_props.get('description')}"
-            )
+            assert edge1_props.get("description") == edge1_data["description"], t(
+                "edge_description_mismatch"
+            ).format(edge1_data["description"], edge1_props.get("description"))
 
             print(
-                f"Edge {node1_id} -> {node2_id} special character verification successful"
-                if LANGUAGE == "english"
-                else f"边 {node1_id} -> {node2_id} 特殊字符验证成功"
+                t("edge_special_char_verification_success").format(node1_id, node2_id)
             )
         else:
-            print(
-                f"Failed to read edge properties: {node1_id} -> {node2_id}"
-                if LANGUAGE == "english"
-                else f"读取边属性失败: {node1_id} -> {node2_id}"
-            )
-            assert False, (
-                f"Unable to read edge properties: {node1_id} -> {node2_id}"
-                if LANGUAGE == "english"
-                else f"未能读取边属性: {node1_id} -> {node2_id}"
-            )
+            print(f"{t('read_edge_props_failed')}: {node1_id} -> {node2_id}")
+            assert False, t("unable_to_read_edge_props").format(node1_id, node2_id)
 
         edge2_props = await storage.get_edge(node2_id, node3_id)
         if edge2_props:
+            print(f"{t('read_edge_success')}: {node2_id} -> {node3_id}")
             print(
-                f"Successfully read edge: {node2_id} -> {node3_id}"
-                if LANGUAGE == "english"
-                else f"成功读取边: {node2_id} -> {node3_id}"
+                f"{t('edge_relationship')}: {edge2_props.get('relationship', t('no_relationship'))}"
             )
             print(
-                f"Edge relationship: {edge2_props.get('relationship', 'No relationship')}"
-                if LANGUAGE == "english"
-                else f"边关系: {edge2_props.get('relationship', '无关系')}"
-            )
-            print(
-                f"Edge description: {edge2_props.get('description', 'No description')}"
-                if LANGUAGE == "english"
-                else f"边描述: {edge2_props.get('description', '无描述')}"
+                f"{t('edge_desc')}: {edge2_props.get('description', t('no_description'))}"
             )
 
             # Verify edge relationship is correctly saved / 验证边关系是否正确保存
-            assert edge2_props.get("relationship") == edge2_data["relationship"], (
-                f"Edge relationship mismatch: expected {edge2_data['relationship']}, actual {edge2_props.get('relationship')}"
-                if LANGUAGE == "english"
-                else f"边关系不匹配: 期望 {edge2_data['relationship']}, 实际 {edge2_props.get('relationship')}"
-            )
+            assert edge2_props.get("relationship") == edge2_data["relationship"], t(
+                "edge_relationship_mismatch"
+            ).format(edge2_data["relationship"], edge2_props.get("relationship"))
 
             # Verify edge description is correctly saved / 验证边描述是否正确保存
-            assert edge2_props.get("description") == edge2_data["description"], (
-                f"Edge description mismatch: expected {edge2_data['description']}, actual {edge2_props.get('description')}"
-                if LANGUAGE == "english"
-                else f"边描述不匹配: 期望 {edge2_data['description']}, 实际 {edge2_props.get('description')}"
-            )
+            assert edge2_props.get("description") == edge2_data["description"], t(
+                "edge_description_mismatch"
+            ).format(edge2_data["description"], edge2_props.get("description"))
 
             print(
-                f"Edge {node2_id} -> {node3_id} special character verification successful"
-                if LANGUAGE == "english"
-                else f"边 {node2_id} -> {node3_id} 特殊字符验证成功"
+                t("edge_special_char_verification_success").format(node2_id, node3_id)
             )
         else:
-            print(
-                f"Failed to read edge properties: {node2_id} -> {node3_id}"
-                if LANGUAGE == "english"
-                else f"读取边属性失败: {node2_id} -> {node3_id}"
-            )
-            assert False, (
-                f"Unable to read edge properties: {node2_id} -> {node3_id}"
-                if LANGUAGE == "english"
-                else f"未能读取边属性: {node2_id} -> {node3_id}"
-            )
+            print(f"{t('read_edge_props_failed')}: {node2_id} -> {node3_id}")
+            assert False, t("unable_to_read_edge_props").format(node2_id, node3_id)
 
         print(f"\n{t('special_char_test_complete')}")
         return True
@@ -1882,7 +2087,7 @@ async def main():
         ASCIIColors.cyan(
             """
     ╔══════════════════════════════════════════════════════════════╗
-    ║                        通用图存储测试程序                       ║
+    ║                     通用图存储测试程序                       ║
     ╚══════════════════════════════════════════════════════════════╝
     """
         )

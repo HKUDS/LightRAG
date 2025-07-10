@@ -28,7 +28,7 @@ class KuzuDBStorage(BaseGraphStorage):
         self._db = None
         self._conn = None
 
-    def _get_workspace_label(self) -> str:
+    def _get_label(self) -> str:
         """Get workspace label, return 'base' for compatibility when workspace is empty"""
         workspace = getattr(self, "workspace", None)
         return workspace if workspace else "base"
@@ -68,13 +68,13 @@ class KuzuDBStorage(BaseGraphStorage):
         self._conn = kuzu.Connection(self._db)
 
         # Create node and relationship tables if they don't exist
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
 
         try:
             # Create node table with flexible schema
             self._conn.execute(
                 f"""
-                CREATE NODE TABLE IF NOT EXISTS {workspace_label}(
+                CREATE NODE TABLE IF NOT EXISTS {label}(
                     entity_id STRING,
                     entity_type STRING,
                     description STRING,
@@ -88,8 +88,8 @@ class KuzuDBStorage(BaseGraphStorage):
             # Create relationship table
             self._conn.execute(
                 f"""
-                CREATE REL TABLE IF NOT EXISTS DIRECTED(
-                    FROM {workspace_label} TO {workspace_label},
+                CREATE REL TABLE IF NOT EXISTS Related(
+                    FROM {label} TO {label},
                     relationship STRING,
                     weight DOUBLE,
                     description STRING,
@@ -122,11 +122,9 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def has_node(self, node_id: str) -> bool:
         """Check if a node with the given entity_id exists in the database"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         try:
-            query = (
-                f"MATCH (n:{workspace_label}) WHERE n.entity_id = $entity_id RETURN n"
-            )
+            query = f"MATCH (n:{label}) WHERE n.entity_id = $entity_id RETURN n"
             result = self.get_first(
                 self.connection.execute(query, {"entity_id": node_id})
             )
@@ -137,10 +135,10 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def has_edge(self, source_node_id: str, target_node_id: str) -> bool:
         """Check if an edge exists between two nodes"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         try:
             query = f"""
-                MATCH (a:{workspace_label})-[r:DIRECTED]-(b:{workspace_label})
+                MATCH (a:{label})-[r:Related]-(b:{label})
                 WHERE a.entity_id = $source_id AND b.entity_id = $target_id
                 RETURN r
             """
@@ -156,11 +154,9 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def get_node(self, node_id: str) -> dict[str, str] | None:
         """Get node by its entity_id identifier, return only node properties"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         try:
-            query = (
-                f"MATCH (n:{workspace_label}) WHERE n.entity_id = $entity_id RETURN n.*"
-            )
+            query = f"MATCH (n:{label}) WHERE n.entity_id = $entity_id RETURN n.*"
             result = self.get_first(
                 self.connection.execute(query, {"entity_id": node_id})
             )
@@ -182,7 +178,7 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         """Retrieve multiple nodes in one query"""
-        # workspace_label = self._get_workspace_label()
+        # label = self._get_label()
         nodes = {}
 
         for node_id in node_ids:
@@ -194,12 +190,12 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def node_degree(self, node_id: str) -> int:
         """Get the degree (number of relationships) of a node"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         try:
             query = f"""
-                MATCH (n:{workspace_label})
+                MATCH (n:{label})
                 WHERE n.entity_id = $entity_id
-                OPTIONAL MATCH (n)-[r:DIRECTED]-()
+                OPTIONAL MATCH (n)-[r:Related]-()
                 RETURN COUNT(r) AS degree
             """
             result = self.get_first(
@@ -249,10 +245,10 @@ class KuzuDBStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str
     ) -> dict[str, str | float | None] | None:
         """Get edge properties between two nodes"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         try:
             query = f"""
-                MATCH (a:{workspace_label})-[r:DIRECTED]-(b:{workspace_label})
+                MATCH (a:{label})-[r:Related]-(b:{label})
                 WHERE a.entity_id = $source_id AND b.entity_id = $target_id
                 RETURN r.*
             """
@@ -316,10 +312,10 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
         """Retrieves all edges for a particular node"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         try:
             query = f"""
-                MATCH (n:{workspace_label})-[r:DIRECTED]-(connected:{workspace_label})
+                MATCH (n:{label})-[r:Related]-(connected:{label})
                 WHERE n.entity_id = $entity_id
                 RETURN n.entity_id, connected.entity_id
             """
@@ -359,14 +355,14 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
         """Get all nodes that are associated with the given chunk_ids"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         nodes = []
         seen_nodes = set()  # Track seen entity_ids to avoid duplicates
 
         try:
             for chunk_id in chunk_ids:
                 query = f"""
-                    MATCH (n:{workspace_label})
+                    MATCH (n:{label})
                     WHERE n.source_id CONTAINS $chunk_id
                     RETURN n.*
                 """
@@ -404,14 +400,14 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
         """Get all edges that are associated with the given chunk_ids"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         edges = []
         seen_edges = set()  # Track seen edge pairs to avoid duplicates
 
         try:
             for chunk_id in chunk_ids:
                 query = f"""
-                            MATCH (a:{workspace_label})-[r:DIRECTED]-(b:{workspace_label})
+                            MATCH (a:{label})-[r:Related]-(b:{label})
                             WHERE r.source_id CONTAINS $chunk_id
                             RETURN a.entity_id, b.entity_id, r.*
                 """
@@ -455,7 +451,7 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Upsert a node in the KuzuDB database"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
 
         if "entity_id" not in node_data:
             raise ValueError(
@@ -480,12 +476,12 @@ class KuzuDBStorage(BaseGraphStorage):
 
             if set_clause:
                 query = f"""
-                    MERGE (n:{workspace_label} {{entity_id: $entity_id}})
+                    MERGE (n:{label} {{entity_id: $entity_id}})
                     SET {set_clause}
                 """
             else:
                 query = f"""
-                    MERGE (n:{workspace_label} {{entity_id: $entity_id}})
+                    MERGE (n:{label} {{entity_id: $entity_id}})
                 """
 
             self.connection.execute(query, params)
@@ -498,7 +494,7 @@ class KuzuDBStorage(BaseGraphStorage):
         self, source_node_id: str, target_node_id: str, edge_data: dict[str, str]
     ) -> None:
         """Upsert an edge and its properties between two nodes"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
 
         try:
             # Build the properties dict
@@ -512,20 +508,20 @@ class KuzuDBStorage(BaseGraphStorage):
 
             set_clause = f"SET {', '.join(set_props)}" if set_props else ""
 
-            # Create bidirectional edges to simulate undirected behavior
+            # Create bidirectional edges to simulate unRelated behavior
             # Edge 1: source -> target
             query1 = f"""
-                MATCH (source:{workspace_label} {{entity_id: $source_id}})
-                MATCH (target:{workspace_label} {{entity_id: $target_id}})
-                MERGE (source)-[r:DIRECTED]->(target)
+                MATCH (source:{label} {{entity_id: $source_id}})
+                MATCH (target:{label} {{entity_id: $target_id}})
+                MERGE (source)-[r:Related]->(target)
                 {set_clause}
             """
 
             # Edge 2: target -> source
             query2 = f"""
-                MATCH (source:{workspace_label} {{entity_id: $source_id}})
-                MATCH (target:{workspace_label} {{entity_id: $target_id}})
-                MERGE (target)-[r:DIRECTED]->(source)
+                MATCH (source:{label} {{entity_id: $source_id}})
+                MATCH (target:{label} {{entity_id: $target_id}})
+                MERGE (target)-[r:Related]->(source)
                 {set_clause}
             """
 
@@ -545,15 +541,15 @@ class KuzuDBStorage(BaseGraphStorage):
         else:
             max_nodes = min(max_nodes, self.global_config.get("max_graph_nodes", 1000))
 
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         result = KnowledgeGraph()
 
         if node_label == "*":
             # Get all nodes with highest degree
             try:
                 query = f"""
-                    MATCH (n:{workspace_label})
-                    OPTIONAL MATCH (n)-[r:DIRECTED]-()
+                    MATCH (n:{label})
+                    OPTIONAL MATCH (n)-[r:Related]-()
                     RETURN n.*, COUNT(r) AS degree
                     ORDER BY degree DESC
                     LIMIT {max_nodes}
@@ -595,7 +591,7 @@ class KuzuDBStorage(BaseGraphStorage):
                 if seen_nodes:
                     entity_ids = list(seen_nodes)
                     edges_query = f"""
-                        MATCH (a:{workspace_label})-[r:DIRECTED]-(b:{workspace_label})
+                        MATCH (a:{label})-[r:Related]-(b:{label})
                         WHERE a.entity_id IN $entity_ids AND b.entity_id IN $entity_ids
                         RETURN a.entity_id, b.entity_id, r.*
                     """
@@ -654,7 +650,7 @@ class KuzuDBStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
         """BFS implementation for subgraph traversal"""
-        # workspace_label = self._get_workspace_label()
+        # label = self._get_label()
         result = KnowledgeGraph()
         visited_nodes = set()
         visited_edges = set()
@@ -719,10 +715,10 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def get_all_labels(self) -> list[str]:
         """Get all existing node labels in the database"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         try:
             query = f"""
-                MATCH (n:{workspace_label})
+                MATCH (n:{label})
                 WHERE n.entity_id IS NOT NULL
                 RETURN DISTINCT n.entity_id
                 ORDER BY n.entity_id
@@ -744,10 +740,10 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def delete_node(self, node_id: str) -> None:
         """Delete a node with the specified entity_id"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         try:
             query = f"""
-                MATCH (n:{workspace_label} {{entity_id: $entity_id}})
+                MATCH (n:{label} {{entity_id: $entity_id}})
                 DETACH DELETE n
             """
             self.connection.execute(query, {"entity_id": node_id})
@@ -763,13 +759,13 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def remove_edges(self, edges: list[tuple[str, str]]):
         """Delete multiple edges"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         for source, target in edges:
             try:
                 # Since we create bidirectional edges, we need to delete both directions
                 # Delete source -> target
                 query1 = f"""
-                    MATCH (source:{workspace_label} {{entity_id: $source_id}})-[r:DIRECTED]->(target:{workspace_label} {{entity_id: $target_id}})
+                    MATCH (source:{label} {{entity_id: $source_id}})-[r:Related]->(target:{label} {{entity_id: $target_id}})
                     DELETE r
                 """
                 self.connection.execute(
@@ -778,7 +774,7 @@ class KuzuDBStorage(BaseGraphStorage):
 
                 # Delete target -> source
                 query2 = f"""
-                    MATCH (target:{workspace_label} {{entity_id: $target_id}})-[r:DIRECTED]->(source:{workspace_label} {{entity_id: $source_id}})
+                    MATCH (target:{label} {{entity_id: $target_id}})-[r:Related]->(source:{label} {{entity_id: $source_id}})
                     DELETE r
                 """
                 self.connection.execute(
@@ -794,16 +790,16 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def drop(self) -> dict[str, str]:
         """Drop all data from current workspace storage and clean up resources"""
-        workspace_label = self._get_workspace_label()
+        label = self._get_label()
         try:
-            query = f"MATCH (n:{workspace_label}) DETACH DELETE n"
+            query = f"MATCH (n:{label}) DETACH DELETE n"
             self.connection.execute(query)
 
-            logger.info(f"Dropped KuzuDB workspace '{workspace_label}'")
+            logger.info(f"Dropped KuzuDB workspace '{label}'")
             return {
                 "status": "success",
-                "message": f"workspace '{workspace_label}' data dropped",
+                "message": f"workspace '{label}' data dropped",
             }
         except Exception as e:
-            logger.error(f"Error dropping KuzuDB workspace '{workspace_label}': {e}")
+            logger.error(f"Error dropping KuzuDB workspace '{label}': {e}")
             return {"status": "error", "message": str(e)}
