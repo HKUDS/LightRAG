@@ -16,21 +16,24 @@ from dotenv import load_dotenv
 
 """This code is a modified version of lightrag_openai_demo.py"""
 
+# ideally, as always, env!
 load_dotenv(dotenv_path=".env", override=False)
 
-# ideally, as always, env!
 
-# your cloudflare api key and base url
-cloudflare_api_key = 'lMbDDfHi887AK243ZUenm4dHV2nwEx2NSmX6xuq5'
-api_base_url = "https://api.cloudflare.com/client/v4/accounts/07c4bcfbc1891c3e528e1c439fee68bd/ai/run/"
+"""    ----========= IMPORTANT CHANGE THIS! =========----    """
+cloudflare_api_key = 'YOUR_API_KEY'
+account_id = 'YOUR_ACCOUNT ID'     #This is unique to your Cloudflare account 
+
+# Authomatically changes
+api_base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/"
+
 
 # choose an embedding model
 EMBEDDING_MODEL = '@cf/baai/bge-m3'
 # choose a generative model
 LLM_MODEL = "@cf/meta/llama-3.2-3b-instruct"
 
-WORKING_DIR = "../dickens"
-
+WORKING_DIR = "../dickens"     #you can change output as desired
 
 
 class CloudflareWorker:
@@ -318,6 +321,29 @@ async def main():
             await print_stream(resp)
         else:
             print(resp)
+
+        
+
+        """ FOR TESTING (if you want to test straight away, after building. Uncomment this part"""
+
+        """
+        print("\n" + "=" * 60)
+        print("AI ASSISTANT READY!")
+        print("Ask questions about (your uploaded) regulations")
+        print("Type 'quit' to exit")
+        print("=" * 60)
+
+        while True:
+            question = input("\n🔥 Your question: ")
+
+            if question.lower() in ['quit', 'exit', 'bye']:
+                break
+
+            print("\nThinking...")
+            response = await rag.aquery(question, param=QueryParam(mode="hybrid"))
+            print(f"\nAnswer: {response}")
+
+        """
 
     except Exception as e:
         print(f"An error occurred: {e}")
