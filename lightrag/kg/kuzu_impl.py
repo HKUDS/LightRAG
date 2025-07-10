@@ -319,7 +319,7 @@ class KuzuDBStorage(BaseGraphStorage):
         workspace_label = self._get_workspace_label()
         try:
             query = f"""
-                    MATCH (n:{workspace_label})-[r:DIRECTED]-(connected:{workspace_label})
+                MATCH (n:{workspace_label})-[r:DIRECTED]-(connected:{workspace_label})
                 WHERE n.entity_id = $entity_id
                 RETURN n.entity_id, connected.entity_id
             """
@@ -611,7 +611,17 @@ class KuzuDBStorage(BaseGraphStorage):
                         while edge_query_result.has_next():
                             row = edge_query_result.get_next()
                             column_names = edge_query_result.get_column_names()
+                            # print("==> ROW:", row)
+                            # print("==> COLS:", column_names)
                             edge_data = dict(zip(column_names[2:], row[2:]))
+                            clean_edge_data = {}
+                            for key, value in edge_data.items():
+                                clean_key = (
+                                    key.replace("r.", "")
+                                    if key.startswith("r.")
+                                    else key
+                                )
+                                clean_edge_data[clean_key] = value
 
                             # Create normalized edge_id to avoid bidirectional duplicates
                             source, target = row[0], row[1]
@@ -625,7 +635,7 @@ class KuzuDBStorage(BaseGraphStorage):
                                         type="UNDIRECTED",
                                         source=edge_pair[0],
                                         target=edge_pair[1],
-                                        properties=edge_data,
+                                        properties=clean_edge_data,
                                     )
                                 )
                                 seen_edges.add(edge_id)
@@ -637,7 +647,7 @@ class KuzuDBStorage(BaseGraphStorage):
             # Ensure max_nodes is not None before passing to _bfs_subgraph
             assert max_nodes is not None
             return await self._bfs_subgraph(node_label, max_depth, max_nodes)
-
+        # print("🔥 result:", result)
         return result
 
     async def _bfs_subgraph(
@@ -704,7 +714,7 @@ class KuzuDBStorage(BaseGraphStorage):
 
         if len(visited_nodes) >= max_nodes:
             result.is_truncated = True
-
+        # print("🔥 BFS result:", result)
         return result
 
     async def get_all_labels(self) -> list[str]:
