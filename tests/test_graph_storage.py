@@ -734,7 +734,9 @@ async def test_graph_basic(storage):
             print(t("undirected_verification_success"))
         else:
             print(f"{t('failed_read_reverse_edge')}: {node2_id} -> {node1_id}")
-            assert False, f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
+            assert (
+                False
+            ), f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
 
         print(t("basic_test_complete"))
         return True
@@ -1819,12 +1821,11 @@ async def test_graph_undirected_property(storage):
         print(f"{t('batch_get_reverse_edges_result')}: {reverse_edges_dict.keys()}")
         for (src, tgt), props in edges_dict.items():
             assert (
-                (
-                    tgt,
-                    src,
-                )
-                in reverse_edges_dict
-            ), f"{t('reverse_edge_should_be_in_result')}: {tgt} -> {src}"
+                tgt,
+                src,
+            ) in reverse_edges_dict, (
+                f"{t('reverse_edge_should_be_in_result')}: {tgt} -> {src}"
+            )
             assert props == reverse_edges_dict[(tgt, src)], t(
                 "forward_reverse_inconsistent"
             )
