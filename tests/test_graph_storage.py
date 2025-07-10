@@ -381,10 +381,6 @@ TRANSLATIONS = {
     "contains": ["包含", "contains"],
     "applied_to": ["应用于", "applied to"],
     "special_relation": ["特殊'关系'", "special 'relation'"],
-    "complex_relation": [
-        '复杂"关系"\\类型',
-        'complex "relation" \\type',
-    ],
     # Relationship descriptions / 关系描述
     "ai_contains_ml": [
         "人工智能领域包含机器学习这个子领域",
@@ -503,14 +499,6 @@ TRANSLATIONS = {
         "特殊字符,引号,JSON",
         "special characters,quotes,JSON",
     ],
-    "special_relation": [
-        "包含'单引号'的关系",
-        "Relationship with 'single quotes'",
-    ],
-    "complex_relation": [
-        '包含"双引号"和\\反斜杠的关系',
-        'Relationship with "double quotes" and \\backslash',
-    ],
     "edge_desc_special": [
         "这个边描述包含'单引号'、\"双引号\"和\\反斜杠",
         "This edge description contains 'single quotes', \"double quotes\" and \\backslash",
@@ -563,10 +551,6 @@ TRANSLATIONS = {
         "节点描述",
         "Node description",
     ],
-    "no_description": [
-        "无描述",
-        "No description",
-    ],
     "node_special_char_verification_success": [
         "节点 {} 特殊字符验证成功",
         "Node {} special character verification successful",
@@ -583,10 +567,6 @@ TRANSLATIONS = {
         "边关系",
         "Edge relationship",
     ],
-    "no_relationship": [
-        "无关系",
-        "No relationship",
-    ],
     "edge_special_char_verification_success": [
         "边 {} -> {} 特殊字符验证成功",
         "Edge {} -> {} special character verification successful",
@@ -595,7 +575,7 @@ TRANSLATIONS = {
         "读取边属性失败",
         "Failed to read edge properties",
     ],
-    "node_id_mismatch": [
+    "node_id_mismatch_f": [
         "节点ID不匹配: 期望 {}, 实际 {}",
         "Node ID mismatch: expected {}, actual {}",
     ],
@@ -1277,9 +1257,7 @@ async def test_graph_basic(storage):
             print(t("undirected_verification_success"))
         else:
             print(f"{t('failed_read_reverse_edge')}: {node2_id} -> {node1_id}")
-            assert (
-                False
-            ), f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
+            assert False, f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
 
         ASCIIColors.green(t("basic_test_complete"))
         return True
@@ -1694,21 +1672,15 @@ async def test_graph_batch_operations(storage):
         assert (
             node1_id,
             node2_id,
-        ) in edge_degrees, t(
-            "edge_should_be_in_result"
-        ) % (node1_id, node2_id)
+        ) in edge_degrees, t("edge_should_be_in_result") % (node1_id, node2_id)
         assert (
             node2_id,
             node3_id,
-        ) in edge_degrees, t(
-            "edge_should_be_in_result"
-        ) % (node2_id, node3_id)
+        ) in edge_degrees, t("edge_should_be_in_result") % (node2_id, node3_id)
         assert (
             node3_id,
             node4_id,
-        ) in edge_degrees, t(
-            "edge_should_be_in_result"
-        ) % (node3_id, node4_id)
+        ) in edge_degrees, t("edge_should_be_in_result") % (node3_id, node4_id)
         # 验证边的度数是否正确（源节点度数 + 目标节点度数）
         assert (
             edge_degrees[(node1_id, node2_id)] == 5
@@ -1733,21 +1705,15 @@ async def test_graph_batch_operations(storage):
         assert (
             node1_id,
             node2_id,
-        ) in edges_dict, t(
-            "edge_should_be_in_result"
-        ) % (node1_id, node2_id)
+        ) in edges_dict, t("edge_should_be_in_result") % (node1_id, node2_id)
         assert (
             node2_id,
             node3_id,
-        ) in edges_dict, t(
-            "edge_should_be_in_result"
-        ) % (node2_id, node3_id)
+        ) in edges_dict, t("edge_should_be_in_result") % (node2_id, node3_id)
         assert (
             node3_id,
             node4_id,
-        ) in edges_dict, t(
-            "edge_should_be_in_result"
-        ) % (node3_id, node4_id)
+        ) in edges_dict, t("edge_should_be_in_result") % (node3_id, node4_id)
         assert (
             edges_dict[(node1_id, node2_id)]["relationship"]
             == edge1_data["relationship"]
@@ -1776,9 +1742,7 @@ async def test_graph_batch_operations(storage):
             assert (
                 tgt,
                 src,
-            ) in reverse_edges_dict, t(
-                "reverse_edge_should_be_in_result"
-            ) % (tgt, src)
+            ) in reverse_edges_dict, t("reverse_edge_should_be_in_result") % (tgt, src)
             assert (
                 props == reverse_edges_dict[(tgt, src)]
             ), f"边 {src} -> {tgt} 和反向边 {tgt} -> {src} 的属性不一致"
@@ -2068,7 +2032,7 @@ async def test_graph_special_characters(storage):
 
                 # Verify node ID is correctly saved / 验证节点ID是否正确保存
                 assert node_props.get("entity_id") == node_id, t(
-                    "node_id_mismatch"
+                    "node_id_mismatch_f"
                 ).format(node_id, node_props.get("entity_id"))
 
                 # Verify description is correctly saved / 验证描述是否正确保存
@@ -2260,11 +2224,12 @@ async def test_graph_undirected_property(storage):
         print(f"{t('batch_get_reverse_edges_result')}: {reverse_edges_dict.keys()}")
         for (src, tgt), props in edges_dict.items():
             assert (
-                tgt,
-                src,
-            ) in reverse_edges_dict, (
-                f"{t('reverse_edge_should_be_in_result')}: {tgt} -> {src}"
-            )
+                (
+                    tgt,
+                    src,
+                )
+                in reverse_edges_dict
+            ), f"{t('reverse_edge_should_be_in_result')}: {tgt} -> {src}"
             assert props == reverse_edges_dict[(tgt, src)], t(
                 "forward_reverse_inconsistent"
             )
