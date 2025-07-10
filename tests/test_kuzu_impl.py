@@ -35,7 +35,7 @@ class TestKuzuDBStorage:
         """Test database initialization"""
         assert storage._db is not None
         assert storage._conn is not None
-        assert storage._get_workspace_label() == "test_workspace"
+        assert storage._get_label() == "test_workspace"
 
     async def test_node_operations(self, storage):
         """Test node creation, retrieval, and existence checking"""
