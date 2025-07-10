@@ -61,21 +61,25 @@ language_to_index = {
     "english": 1,
 }
 
-
-# def set_language(lang):
-#     global LANGUAGE
-#     if lang in language_to_index:
-#         LANGUAGE = lang
-#     else:
-#         raise ValueError("Unsupported language")
-
-
 # set_language(_DEFAULT_LANGUAGE)
 # Translation dictionaries / 翻译字典
 TRANSLATIONS = {
+    "program_title": [
+        """
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                     通用图存储测试程序                       ║
+    ╚══════════════════════════════════════════════════════════════╝
+    """,
+        """
+    ╔══════════════════════════════════════════════════════════════╗
+    ║                 Universal Graph Storage Test                 ║
+    ╚══════════════════════════════════════════════════════════════╝
+    """,
+    ],
     "node": ["节点", "Node"],
     "edge": ["边", "Edge"],
     "degree": ["度数", "Degree"],
+    "delete_edge": ["删除边", "Delete Edge"],
     "warning_no_env": [
         "警告: 当前目录中没有找到.env文件，这可能会影响存储配置的加载。",
         "Warning: No .env file found in the current directory, which may affect storage configuration loading.",
@@ -138,12 +142,12 @@ TRANSLATIONS = {
     "data_cleaned": ["数据清理完成", "Data cleaning completed"],
     "invalid_option": ["无效的选项", "Invalid option"],
     "connection_closed": [
-        "存储连接已关闭",
-        "Storage connection closed",
+        "\n存储连接已关闭",
+        "\nStorage connection closed",
     ],
     "kuzu_temp_cleaned": [
-        "KuzuDB临时目录已清理",
-        "KuzuDB temporary directory cleaned",
+        "\nKuzuDB临时目录已清理",
+        "\nKuzuDB temporary directory cleaned",
     ],
     # Additional test messages / 额外的测试消息
     "test_completed": ["测试完成", "Test completed"],
@@ -152,8 +156,8 @@ TRANSLATIONS = {
         "Batch operations test completed",
     ],
     "undirected_test_complete": [
-        "无向图特性测试完成",
-        "Undirected graph property test completed",
+        "\n无向图特性测试完成",
+        "\nUndirected graph property test completed",
     ],
     "all_tests_completed": [
         "所有测试成功完成",
@@ -180,12 +184,12 @@ TRANSLATIONS = {
         "Test get_node_edges",
     ],
     "test_get_all_labels": [
-        "测试 get_all_labels",
-        "Test get_all_labels",
+        "== 测试 get_all_labels ==",
+        "== Test get_all_labels ==",
     ],
     "test_get_knowledge_graph": [
-        "测试 get_knowledge_graph",
-        "Test get_knowledge_graph",
+        "== 测试 get_knowledge_graph ==",
+        "== Test get_knowledge_graph ==",
     ],
     "test_delete_node": ["测试 delete_node", "Test delete_node"],
     "test_remove_edges": [
@@ -226,8 +230,8 @@ TRANSLATIONS = {
         "Re-insert for subsequent testing",
     ],
     "advanced_test_complete": [
-        "高级测试完成",
-        "Advanced test completed",
+        "\n高级测试完成",
+        "\nAdvanced test completed",
     ],
     # Additional missing translations / 额外的缺失翻译
     "failed_read_node": [
@@ -455,8 +459,8 @@ TRANSLATIONS = {
         "Undirected graph property verification successful: forward and reverse edge properties are consistent",
     ],
     "basic_test_complete": [
-        "基本测试完成，数据已保留在数据库中",
-        "Basic test completed, data retained in database",
+        "\n基本测试完成，数据已保留在数据库中",
+        "\nBasic test completed, data retained in database",
     ],
     "test_error": [
         "测试过程中发生错误",
@@ -617,40 +621,40 @@ TRANSLATIONS = {
     ],
     # Additional batch test translations
     "batch_get_nodes": [
-        "== 测试 get_nodes_batch",
-        "Test get_nodes_batch",
+        "== 测试 get_nodes_batch ==",
+        "== Test get_nodes_batch ==",
     ],
     "batch_get_nodes_result": [
         "批量获取节点属性结果",
         "Batch get node properties result",
     ],
     "batch_node_degrees": [
-        "== 测试 node_degrees_batch",
-        "Test node_degrees_batch",
+        "== 测试 node_degrees_batch ==",
+        "== Test node_degrees_batch ==",
     ],
     "batch_node_degrees_result": [
         "批量获取节点度数结果",
         "Batch get node degrees result",
     ],
     "batch_edge_degrees": [
-        "== 测试 edge_degrees_batch",
-        "Test edge_degrees_batch",
+        "== 测试 edge_degrees_batch ==",
+        "== Test edge_degrees_batch ==",
     ],
     "batch_edge_degrees_result": [
         "批量获取边度数结果",
         "Batch get edge degrees result",
     ],
     "batch_get_edges": [
-        "== 测试 get_edges_batch",
-        "Test get_edges_batch",
+        "== 测试 get_edges_batch ==",
+        "== Test get_edges_batch ==",
     ],
     "batch_get_edges_result": [
         "批量获取边属性结果",
         "Batch get edge properties result",
     ],
     "test_reverse_edges_batch": [
-        "== 测试反向边的批量获取",
-        "Test reverse edges batch get",
+        "== 测试反向边的批量获取 ==",
+        "== Test reverse edges batch get ==",
     ],
     "insert_node_1": ["插入节点1", "Insert node 1"],
     "insert_node_2": ["插入节点2", "Insert node 2"],
@@ -688,16 +692,16 @@ TRANSLATIONS = {
         "Undirected graph property verification successful: batch obtained forward and reverse edge properties are consistent",
     ],
     "test_get_nodes_edges_batch": [
-        "== 测试 get_nodes_edges_batch",
-        "Test get_nodes_edges_batch",
+        "=== 测试 get_nodes_edges_batch ===",
+        "=== Test get_nodes_edges_batch ===",
     ],
     "batch_get_nodes_edges_result": [
         "批量获取节点边结果",
         "Batch get node edges result",
     ],
     "verify_batch_nodes_edges_undirected": [
-        "== 验证批量获取节点边的无向图特性",
-        "Verify batch get node edges undirected graph property",
+        "=== 验证批量获取节点边的无向图特性 ===",
+        "=== Verify batch get node edges undirected graph property ===",
     ],
     "node_outgoing_edges": ["的出边", "Node outgoing edges"],
     "node_incoming_edges": ["的入边", "Node incoming edges"],
@@ -706,32 +710,225 @@ TRANSLATIONS = {
         "Undirected graph property verification successful: batch obtained node edges contain all related edges (regardless of direction)",
     ],
     "test_get_nodes_by_chunk_ids": [
-        "== 测试 get_nodes_by_chunk_ids",
-        "Test get_nodes_by_chunk_ids",
+        "=== 测试 get_nodes_by_chunk_ids ===",
+        "=== Test get_nodes_by_chunk_ids ===",
     ],
     "test_single_chunk_id_multiple_nodes": [
-        "== 测试单个 chunk_id，匹配多个节点",
-        "Test single chunk_id, matching multiple nodes",
+        "=== 测试单个 chunk_id，匹配多个节点 ===",
+        "=== Test single chunk_id, matching multiple nodes ===",
     ],
     "test_multiple_chunk_ids_partial_match": [
-        "== 测试多个 chunk_id，部分匹配多个节点",
-        "Test multiple chunk_ids, partial matching multiple nodes",
+        "=== 测试多个 chunk_id，部分匹配多个节点 ===",
+        "=== Test multiple chunk_ids, partial matching multiple nodes ===",
     ],
     "test_get_edges_by_chunk_ids": [
-        "== 测试 get_edges_by_chunk_ids",
-        "Test get_edges_by_chunk_ids",
+        "=== 测试 get_edges_by_chunk_ids ===",
+        "=== Test get_edges_by_chunk_ids ===",
     ],
     "test_single_chunk_id_multiple_edges": [
-        "== 测试单个 chunk_id，匹配多条边",
-        "Test single chunk_id, matching multiple edges",
+        "=== 测试单个 chunk_id，匹配多条边 ===",
+        "=== Test single chunk_id, matching multiple edges ===",
     ],
     "test_multiple_chunk_ids_partial_edges": [
-        "== 测试多个 chunk_id，部分匹配多条边",
-        "Test multiple chunk_ids, partial matching multiple edges",
+        "=== 测试多个 chunk_id，部分匹配多条边 ===",
+        "=== Test multiple chunk_ids, partial matching multiple edges ===",
     ],
     "batch_operations_test_complete": [
         "\n批量操作测试完成",
-        "Batch operations test completed",
+        "\nBatch operations test completed",
+    ],
+    # Assertion message translations using %-style formatting
+    "node_degree_should_be": [
+        "节点 %s 的度数应为%d，实际为 %d",
+        "Node %s degree should be %d, actual %d",
+    ],
+    "edge_degree_should_be": [
+        "边 %s -> %s 的度数应为%d，实际为 %d",
+        "Edge %s -> %s degree should be %d, actual %d",
+    ],
+    "forward_reverse_edge_inconsistent": [
+        "正向边和反向边的度数不一致，无向图特性验证失败",
+        "Forward and reverse edge degrees inconsistent, undirected graph property verification failed",
+    ],
+    "node_should_have_edges": [
+        "节点 %s 应有%d条边，实际有 %d",
+        "Node %s should have %d edges, actual %d",
+    ],
+    "node_edge_should_contain_connection": [
+        "节点 %s 的边列表中应包含与 %s 的连接",
+        "Node %s edge list should contain connection with %s",
+    ],
+    "should_have_labels": [
+        "应有%d个标签，实际有 %d",
+        "Should have %d labels, actual %d",
+    ],
+    "should_be_in_label_list": [
+        "%s 应在标签列表中",
+        "%s should be in label list",
+    ],
+    "result_should_be_kg_type": [
+        "返回结果应为 KnowledgeGraph 类型",
+        "Result should be KnowledgeGraph type",
+    ],
+    "kg_should_have_nodes": [
+        "知识图谱应有%d个节点，实际有 %d",
+        "Knowledge graph should have %d nodes, actual %d",
+    ],
+    "kg_should_have_edges": [
+        "知识图谱应有%d条边，实际有 %d",
+        "Knowledge graph should have %d edges, actual %d",
+    ],
+    "node_degree_display": [
+        "节点 %s 的度数: %d",
+        "Node %s degree: %d",
+    ],
+    "edge_degree_display": [
+        "边 %s -> %s 的度数: %d",
+        "Edge %s -> %s degree: %d",
+    ],
+    "undirected_node_edges_success": [
+        "无向图特性验证成功：节点 %s 的边列表包含所有相关的边",
+        "Undirected graph property verification successful: node %s edge list contains all related edges",
+    ],
+    "query_after_deletion_display": [
+        "删除后查询节点属性 %s: %s",
+        "Query after deletion %s: %s",
+    ],
+    "query_edge_after_deletion_display": [
+        "删除后查询边属性 %s -> %s: %s",
+        "Query after deletion %s -> %s: %s",
+    ],
+    "query_forward_edge_after_delete": [
+        "删除后查询前向边",
+        "Query forward Edge after deletion",
+    ],
+    "forward_edge_props": [
+        "前缘道具",
+        "Forward edge properties",
+    ],
+    "forward_edge_degree": [
+        "前向边的度数",
+        "Forward edge degree",
+    ],
+    "reverse_edge_props": [
+        "反向边缘道具",
+        "Reverse edge properties",
+    ],
+    "query_reverse_edge_after_delete": [
+        "删除后查询反向边",
+        "Query reverse Edge after deletion",
+    ],
+    "query_reverse_edge_after_deletion_display": [
+        "删除后查询反向边属性 %s -> %s: %s",
+        "Query after deletion reverse edge %s -> %s: %s",
+    ],
+    "node_should_be_deleted": [
+        "节点 %s 应已被删除",
+        "Node %s should have been deleted",
+    ],
+    "edge_should_be_deleted": [
+        "边 %s -> %s 应已被删除",
+        "Edge %s -> %s should have been deleted",
+    ],
+    "reverse_edge_should_be_deleted": [
+        "反向边 %s -> %s 也应被删除，无向图特性验证失败",
+        "Reverse edge %s -> %s should also be deleted, undirected graph property verification failed",
+    ],
+    "undirected_deletion_success": [
+        "无向图特性验证成功：删除一个方向的边后，反向边也被删除",
+        "Undirected graph property verification successful: after deleting edge in one direction, reverse edge is also deleted",
+    ],
+    "starting_batch_operations_test": [
+        "\n=== 开始批量操作测试 ===",
+        "\n=== Starting Batch Operations Test ===",
+    ],
+    "starting_undirected_graph_test": [
+        "\n=== 开始无向图特性测试 ===",
+        "\n=== Starting Undirected Graph Property Test ===",
+    ],
+    "starting_special_character_test": [
+        "\n=== 开始特殊字符测试 ===",
+        "\n=== Starting Special Character Test ===",
+    ],
+    "starting_basic_test": [
+        "\n=== 开始基本测试 ===",
+        "\n=== Starting Basic Test ===",
+    ],
+    "starting_advanced_test": [
+        "\n=== 开始高级测试 ===",
+        "\n=== Starting Advanced Test ===",
+    ],
+    "should_return_nodes": [
+        "应返回%d个节点，实际返回 %d 个",
+        "Should return %d nodes, actual %d",
+    ],
+    "should_return_node_degrees": [
+        "应返回%d个节点的度数，实际返回 %d 个",
+        "Should return %d node degrees, actual %d",
+    ],
+    "should_return_edge_degrees": [
+        "应返回%d条边的度数，实际返回 %d 条",
+        "Should return %d edge degrees, actual %d",
+    ],
+    "should_return_edge_properties": [
+        "应返回%d条边的属性，实际返回 %d 条",
+        "Should return %d edge properties, actual %d",
+    ],
+    "should_return_reverse_edge_properties": [
+        "应返回%d条反向边的属性，实际返回 %d 条",
+        "Should return %d reverse edge properties, actual %d",
+    ],
+    "should_return_node_edges": [
+        "应返回%d个节点的边，实际返回 %d 个",
+        "Should return %d node edges, actual %d",
+    ],
+    "should_be_in_result": [
+        "%s 应在返回结果中",
+        "%s should be in result",
+    ],
+    "edge_should_be_in_result": [
+        "边 %s -> %s 应在返回结果中",
+        "Edge %s -> %s should be in result",
+    ],
+    "reverse_edge_should_be_in_result": [
+        "反向边 %s -> %s 应在返回结果中",
+        "Reverse edge %s -> %s should be in result",
+    ],
+    "node_should_be_in_result": [
+        "节点 %s 应在返回结果中",
+        "Node %s should be in result",
+    ],
+    "test_insert_edge_undirected_property": [
+        "\n== 测试插入边的无向图特性 ==",
+        "\n== Test insert edge undirected property ==",
+    ],
+    "test_edge_degree_undirected_property": [
+        "\n== 测试边的无向图特性 ==",
+        "\n== Test edge degree undirected property ==",
+    ],
+    "test_delete_edge_undirected_property": [
+        "\n== 测试删除边的无向图特性 ==",
+        "\n== Test delete edge undirected property ==",
+    ],
+    "test_batch_undirected_property": [
+        "\n== 测试批量无向图特性 ==",
+        "\n== Test batch undirected property ==",
+    ],
+    "test_batch_get_node_edges_undirected_property": [
+        "\n== 测试批量获取节点边的无向图特性 ==",
+        "\n== Test batch get node edges undirected property ==",
+    ],
+    "undirected_edge_degree_verification_success": [
+        "无向图属性验证成功",
+        "Undirected graph property verification successful",
+    ],
+    "undirected_delete_verification_success": [
+        "无向图删除验证成功",
+        "Undirected graph deletion verification successful",
+    ],
+    "running_tests": [
+        "\n使用中文运行测试。使用 --language english 或设置 TEST_LANGUAGE=english 来使用英文",
+        "\nRunning tests in English. Use --language chinese or set TEST_LANGUAGE=chinese for Chinese.",
     ],
 }
 
@@ -1024,7 +1221,7 @@ async def test_graph_basic(storage):
                 False
             ), f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
 
-        print(t("basic_test_complete"))
+        ASCIIColors.green(t("basic_test_complete"))
         return True
 
     except Exception as e:
@@ -1099,82 +1296,61 @@ async def test_graph_advanced(storage):
         await storage.upsert_edge(node2_id, node3_id, edge2_data)
 
         # 2. Test node_degree - get node degree / 测试 node_degree - 获取节点的度数
-        print(f"== {t('test_node_degree')}: {node1_id}")
+        print(f"== {t('test_node_degree')}: {node1_id} ==")
         node1_degree = await storage.node_degree(node1_id)
-        print(
-            f"{t('node_degree')} {node1_id}: {node1_degree}"
-            if LANGUAGE == "english"
-            else f"节点 {node1_id} 的度数: {node1_degree}"
-        )
-        assert node1_degree == 1, (
-            f"Node {node1_id} degree should be 1, actual {node1_degree}"
-            if LANGUAGE == "english"
-            else f"节点 {node1_id} 的度数应为1，实际为 {node1_degree}"
+        print(t("node_degree_display") % (node1_id, node1_degree))
+        assert node1_degree == 1, t("node_degree_should_be") % (
+            node1_id,
+            1,
+            node1_degree,
         )
 
         # 2.1 Test all node degrees / 测试所有节点的度数
         print(f"== {t('test_all_node_degrees')}")
         node2_degree = await storage.node_degree(node2_id)
         node3_degree = await storage.node_degree(node3_id)
-        print(
-            f"{t('node_degree')} {node2_id}: {node2_degree}"
-            if LANGUAGE == "english"
-            else f"节点 {node2_id} 的度数: {node2_degree}"
+        print(t("node_degree_display") % (node2_id, node2_degree))
+        print(t("node_degree_display") % (node3_id, node3_degree))
+        assert node2_degree == 2, t("node_degree_should_be") % (
+            node2_id,
+            2,
+            node2_degree,
         )
-        print(
-            f"{t('node_degree')} {node3_id}: {node3_degree}"
-            if LANGUAGE == "english"
-            else f"节点 {node3_id} 的度数: {node3_degree}"
-        )
-        assert node2_degree == 2, (
-            f"Node {node2_id} degree should be 2, actual {node2_degree}"
-            if LANGUAGE == "english"
-            else f"节点 {node2_id} 的度数应为2，实际为 {node2_degree}"
-        )
-        assert node3_degree == 1, (
-            f"Node {node3_id} degree should be 1, actual {node3_degree}"
-            if LANGUAGE == "english"
-            else f"节点 {node3_id} 的度数应为1，实际为 {node3_degree}"
+        assert node3_degree == 1, t("node_degree_should_be") % (
+            node3_id,
+            1,
+            node3_degree,
         )
 
         # 3. Test edge_degree - get edge degree / 测试 edge_degree - 获取边的度数
-        print(f"== {t('test_edge_degree')}: {node1_id} -> {node2_id}")
+        print(f"== {t('test_edge_degree')}: {node1_id} -> {node2_id} ==")
         edge_degree = await storage.edge_degree(node1_id, node2_id)
-        print(
-            f"{t('edge_degree')} {node1_id} -> {node2_id}: {edge_degree}"
-            if LANGUAGE == "english"
-            else f"边 {node1_id} -> {node2_id} 的度数: {edge_degree}"
-        )
-        assert edge_degree == 3, (
-            f"Edge {node1_id} -> {node2_id} degree should be 3, actual {edge_degree}"
-            if LANGUAGE == "english"
-            else f"边 {node1_id} -> {node2_id} 的度数应为3，实际为 {edge_degree}"
+        print(t("edge_degree_display") % (node1_id, node2_id, edge_degree))
+        assert edge_degree == 3, t("edge_degree_should_be") % (
+            node1_id,
+            node2_id,
+            3,
+            edge_degree,
         )
 
         # 3.1 Test reverse edge degree - verify undirected graph property / 测试反向边的度数 - 验证无向图特性
         print(f"== {t('test_reverse_edge_degree')}: {node2_id} -> {node1_id}")
         reverse_edge_degree = await storage.edge_degree(node2_id, node1_id)
-        print(
-            f"{t('reverse_edge_degree')} {node2_id} -> {node1_id}: {reverse_edge_degree}"
-            # if LANGUAGE == "english"
-            # else f"反向边 {node2_id} -> {node1_id} 的度数: {reverse_edge_degree}"
-        )
-        assert edge_degree == reverse_edge_degree, (
-            "Forward and reverse edge degrees inconsistent, undirected graph property verification failed"
-            if LANGUAGE == "english"
-            else "正向边和反向边的度数不一致，无向图特性验证失败"
+        print(t("edge_degree_display") % (node2_id, node1_id, reverse_edge_degree))
+        assert edge_degree == reverse_edge_degree, t(
+            "forward_reverse_edge_inconsistent"
         )
         print(t("undirected_verification_success"))
 
         # 4. Test get_node_edges - get all edges of node / 测试 get_node_edges - 获取节点的所有边
-        print(f"== {t('test_get_node_edges')}: {node2_id}")
+        print(f"== {t('test_get_node_edges')}: {node2_id} ==")
         node2_edges = await storage.get_node_edges(node2_id)
         print(f"{t('node_degree')} {node2_id} {t('all_edges')}: {node2_edges}")
 
-        assert len(node2_edges) == 2, (
-            f"Node {node2_id} should have 2 edges, actual {len(node2_edges)}"
-            if LANGUAGE == "english"
-            else f"节点 {node2_id} 应有2条边，实际有 {len(node2_edges)}"
+        assert len(node2_edges) == 2, t("node_should_have_edges") % (
+            node2_id,
+            2,
+            len(node2_edges),
         )
 
         # 4.1 Verify undirected graph property of node edges / 验证节点边的无向图特性
@@ -1194,152 +1370,80 @@ async def test_graph_advanced(storage):
             ):
                 has_connection_with_node3 = True
 
-        assert has_connection_with_node1, (
-            f"Node {node2_id} edge list should contain connection with {node1_id}"
-            if LANGUAGE == "english"
-            else f"节点 {node2_id} 的边列表中应包含与 {node1_id} 的连接"
+        assert has_connection_with_node1, t("node_edge_should_contain_connection") % (
+            node2_id,
+            node1_id,
         )
-        assert has_connection_with_node3, (
-            f"Node {node2_id} edge list should contain connection with {node3_id}"
-            if LANGUAGE == "english"
-            else f"节点 {node2_id} 的边列表中应包含与 {node3_id} 的连接"
+        assert has_connection_with_node3, t("node_edge_should_contain_connection") % (
+            node2_id,
+            node3_id,
         )
-        print(
-            f"Undirected graph property verification successful: node {node2_id} edge list contains all related edges"
-            if LANGUAGE == "english"
-            else f"无向图特性验证成功：节点 {node2_id} 的边列表包含所有相关的边"
-        )
+        print(t("undirected_node_edges_success") % node2_id)
 
         # 5. Test get_all_labels - get all labels / 测试 get_all_labels - 获取所有标签
-        print(f"== {t('test_get_all_labels')}")
+        print(t("test_get_all_labels"))
         all_labels = await storage.get_all_labels()
         print(f"{t('all_labels')}: {all_labels}")
-        assert len(all_labels) == 3, (
-            f"Should have 3 labels, actual {len(all_labels)}"
-            if LANGUAGE == "english"
-            else f"应有3个标签，实际有 {len(all_labels)}"
-        )
-        assert node1_id in all_labels, (
-            f"{node1_id} should be in label list"
-            if LANGUAGE == "english"
-            else f"{node1_id} 应在标签列表中"
-        )
-        assert node2_id in all_labels, (
-            f"{node2_id} should be in label list"
-            if LANGUAGE == "english"
-            else f"{node2_id} 应在标签列表中"
-        )
-        assert node3_id in all_labels, (
-            f"{node3_id} should be in label list"
-            if LANGUAGE == "english"
-            else f"{node3_id} 应在标签列表中"
-        )
+        assert len(all_labels) == 3, t("should_have_labels") % (3, len(all_labels))
+        assert node1_id in all_labels, t("should_be_in_label_list") % node1_id
+        assert node2_id in all_labels, t("should_be_in_label_list") % node2_id
+        assert node3_id in all_labels, t("should_be_in_label_list") % node3_id
 
         # 6. Test get_knowledge_graph - get knowledge graph / 测试 get_knowledge_graph - 获取知识图谱
-        print(f"== {t('test_get_knowledge_graph')}")
+        print(t("test_get_knowledge_graph"))
         kg = await storage.get_knowledge_graph("*", max_depth=2, max_nodes=10)
         print(f"{t('knowledge_graph_nodes')}: {len(kg.nodes)}")
         print(f"{t('knowledge_graph_edges')}: {len(kg.edges)}")
-        assert isinstance(kg, KnowledgeGraph), (
-            "Result should be KnowledgeGraph type"
-            if LANGUAGE == "english"
-            else "返回结果应为 KnowledgeGraph 类型"
-        )
-        assert len(kg.nodes) == 3, (
-            f"Knowledge graph should have 3 nodes, actual {len(kg.nodes)}"
-            if LANGUAGE == "english"
-            else f"知识图谱应有3个节点，实际有 {len(kg.nodes)}"
-        )
-        assert len(kg.edges) == 2, (
-            f"Knowledge graph should have 2 edges, actual {len(kg.edges)}"
-            if LANGUAGE == "english"
-            else f"知识图谱应有2条边，实际有 {len(kg.edges)}"
-        )
+        assert isinstance(kg, KnowledgeGraph), t("result_should_be_kg_type")
+        assert len(kg.nodes) == 3, t("kg_should_have_nodes") % (3, len(kg.nodes))
+        assert len(kg.edges) == 2, t("kg_should_have_edges") % (2, len(kg.edges))
 
         # 7. Test delete_node - delete node / 测试 delete_node - 删除节点
-        print(f"== {t('test_delete_node')}: {node3_id}")
+        print(f"== {t('test_delete_node')}: {node3_id} == ")
         await storage.delete_node(node3_id)
         node3_props = await storage.get_node(node3_id)
-        print(
-            f"{t('query_after_deletion')} {node3_id}: {node3_props}"
-            if LANGUAGE == "english"
-            else f"删除后查询节点属性 {node3_id}: {node3_props}"
-        )
-        assert node3_props is None, (
-            f"Node {node3_id} should have been deleted"
-            if LANGUAGE == "english"
-            else f"节点 {node3_id} 应已被删除"
-        )
+        print(t("query_after_deletion_display") % (node3_id, node3_props))
+        assert node3_props is None, t("node_should_be_deleted") % node3_id
 
         # Re-insert node3 for subsequent testing / 重新插入节点3用于后续测试
         await storage.upsert_node(node3_id, node3_data)
         await storage.upsert_edge(node2_id, node3_id, edge2_data)
 
         # 8. Test remove_edges - delete edges / 测试 remove_edges - 删除边
-        print(f"== {t('test_remove_edges')}: {node2_id} -> {node3_id}")
+        print(f"== {t('test_remove_edges')}: {node2_id} -> {node3_id} == ")
         await storage.remove_edges([(node2_id, node3_id)])
         edge_props = await storage.get_edge(node2_id, node3_id)
-        print(
-            f"{t('query_after_deletion')} {node2_id} -> {node3_id}: {edge_props}"
-            if LANGUAGE == "english"
-            else f"删除后查询边属性 {node2_id} -> {node3_id}: {edge_props}"
-        )
-        assert edge_props is None, (
-            f"Edge {node2_id} -> {node3_id} should have been deleted"
-            if LANGUAGE == "english"
-            else f"边 {node2_id} -> {node3_id} 应已被删除"
-        )
+        print(t("query_edge_after_deletion_display") % (node2_id, node3_id, edge_props))
+        assert edge_props is None, t("edge_should_be_deleted") % (node2_id, node3_id)
 
         # 8.1 Verify undirected graph property for edge deletion / 验证删除边的无向图特性
-        print(f"== {t('verify_undirected_property')}: {node3_id} -> {node2_id}")
+        print(f"== {t('verify_undirected_property')}: {node3_id} -> {node2_id} == ")
         reverse_edge_props = await storage.get_edge(node3_id, node2_id)
         print(
-            f"{t('query_after_deletion')} reverse edge {node3_id} -> {node2_id}: {reverse_edge_props}"
-            if LANGUAGE == "english"
-            else f"删除后查询反向边属性 {node3_id} -> {node2_id}: {reverse_edge_props}"
+            t("query_reverse_edge_after_deletion_display")
+            % (node3_id, node2_id, reverse_edge_props)
         )
-        assert reverse_edge_props is None, (
-            f"Reverse edge {node3_id} -> {node2_id} should also be deleted, undirected graph property verification failed"
-            if LANGUAGE == "english"
-            else f"反向边 {node3_id} -> {node2_id} 也应被删除，无向图特性验证失败"
+        assert reverse_edge_props is None, t("reverse_edge_should_be_deleted") % (
+            node3_id,
+            node2_id,
         )
-        print(
-            "Undirected graph property verification successful: after deleting edge in one direction, reverse edge is also deleted"
-            if LANGUAGE == "english"
-            else "无向图特性验证成功：删除一个方向的边后，反向边也被删除"
-        )
+        print(t("undirected_deletion_success"))
 
         # 9. Test remove_nodes - batch delete nodes / 测试 remove_nodes - 批量删除节点
-        print(f"== {t('test_remove_nodes')}: [{node2_id}, {node3_id}]")
+        print(f"== {t('test_remove_nodes')}: [{node2_id}, {node3_id}] == ")
         await storage.remove_nodes([node2_id, node3_id])
         node2_props = await storage.get_node(node2_id)
         node3_props = await storage.get_node(node3_id)
-        print(
-            f"{t('query_after_deletion')} {node2_id}: {node2_props}"
-            if LANGUAGE == "english"
-            else f"删除后查询节点属性 {node2_id}: {node2_props}"
-        )
-        print(
-            f"{t('query_after_deletion')} {node3_id}: {node3_props}"
-            if LANGUAGE == "english"
-            else f"删除后查询节点属性 {node3_id}: {node3_props}"
-        )
-        assert node2_props is None, (
-            f"Node {node2_id} should have been deleted"
-            if LANGUAGE == "english"
-            else f"节点 {node2_id} 应已被删除"
-        )
-        assert node3_props is None, (
-            f"Node {node3_id} should have been deleted"
-            if LANGUAGE == "english"
-            else f"节点 {node3_id} 应已被删除"
-        )
+        print(t("query_after_deletion_display") % (node2_id, node2_props))
+        print(t("query_after_deletion_display") % (node3_id, node3_props))
+        assert node2_props is None, t("node_should_be_deleted") % node2_id
+        assert node3_props is None, t("node_should_be_deleted") % node3_id
 
-        print(f"\n{t('advanced_test_complete')}")
+        ASCIIColors.green(t("advanced_test_complete"))
         return True
 
     except Exception as e:
-        ASCIIColors.red(f"测试过程中发生错误: {str(e)}")
+        ASCIIColors.red(f"{t('test_error')}: {str(e)}")
         return False
 
 
@@ -1477,10 +1581,10 @@ async def test_graph_batch_operations(storage):
         node_ids = [node1_id, node2_id, node3_id]
         nodes_dict = await storage.get_nodes_batch(node_ids)
         print(f"{t('batch_get_nodes_result')}: {nodes_dict.keys()}")
-        assert len(nodes_dict) == 3, f"应返回3个节点，实际返回 {len(nodes_dict)} 个"
-        assert node1_id in nodes_dict, f"{node1_id} 应在返回结果中"
-        assert node2_id in nodes_dict, f"{node2_id} 应在返回结果中"
-        assert node3_id in nodes_dict, f"{node3_id} 应在返回结果中"
+        assert len(nodes_dict) == 3, t("should_return_nodes") % (3, len(nodes_dict))
+        assert node1_id in nodes_dict, t("should_be_in_result") % node1_id
+        assert node2_id in nodes_dict, t("should_be_in_result") % node2_id
+        assert node3_id in nodes_dict, t("should_be_in_result") % node3_id
         assert (
             nodes_dict[node1_id]["description"] == node1_data["description"]
         ), f"{node1_id} 描述不匹配"
@@ -1495,12 +1599,13 @@ async def test_graph_batch_operations(storage):
         print(t("batch_node_degrees"))
         node_degrees = await storage.node_degrees_batch(node_ids)
         print(f"{t('batch_node_degrees_result')}: {node_degrees}")
-        assert (
-            len(node_degrees) == 3
-        ), f"应返回3个节点的度数，实际返回 {len(node_degrees)} 个"
-        assert node1_id in node_degrees, f"{node1_id} 应在返回结果中"
-        assert node2_id in node_degrees, f"{node2_id} 应在返回结果中"
-        assert node3_id in node_degrees, f"{node3_id} 应在返回结果中"
+        assert len(node_degrees) == 3, t("should_return_node_degrees") % (
+            3,
+            len(node_degrees),
+        )
+        assert node1_id in node_degrees, t("should_be_in_result") % node1_id
+        assert node2_id in node_degrees, t("should_be_in_result") % node2_id
+        assert node3_id in node_degrees, t("should_be_in_result") % node3_id
         assert (
             node_degrees[node1_id] == 3
         ), f"{node1_id} 度数应为3，实际为 {node_degrees[node1_id]}"
@@ -1516,21 +1621,28 @@ async def test_graph_batch_operations(storage):
         edges = [(node1_id, node2_id), (node2_id, node3_id), (node3_id, node4_id)]
         edge_degrees = await storage.edge_degrees_batch(edges)
         print(f"{t('batch_edge_degrees_result')}: {edge_degrees}")
-        assert (
-            len(edge_degrees) == 3
-        ), f"应返回3条边的度数，实际返回 {len(edge_degrees)} 条"
+        assert len(edge_degrees) == 3, t("should_return_edge_degrees") % (
+            3,
+            len(edge_degrees),
+        )
         assert (
             node1_id,
             node2_id,
-        ) in edge_degrees, f"边 {node1_id} -> {node2_id} 应在返回结果中"
+        ) in edge_degrees, t(
+            "edge_should_be_in_result"
+        ) % (node1_id, node2_id)
         assert (
             node2_id,
             node3_id,
-        ) in edge_degrees, f"边 {node2_id} -> {node3_id} 应在返回结果中"
+        ) in edge_degrees, t(
+            "edge_should_be_in_result"
+        ) % (node2_id, node3_id)
         assert (
             node3_id,
             node4_id,
-        ) in edge_degrees, f"边 {node3_id} -> {node4_id} 应在返回结果中"
+        ) in edge_degrees, t(
+            "edge_should_be_in_result"
+        ) % (node3_id, node4_id)
         # 验证边的度数是否正确（源节点度数 + 目标节点度数）
         assert (
             edge_degrees[(node1_id, node2_id)] == 5
@@ -1548,19 +1660,28 @@ async def test_graph_batch_operations(storage):
         edge_dicts = [{"src": src, "tgt": tgt} for src, tgt in edges]
         edges_dict = await storage.get_edges_batch(edge_dicts)
         print(f"{t('batch_get_edges_result')}: {edges_dict.keys()}")
-        assert len(edges_dict) == 3, f"应返回3条边的属性，实际返回 {len(edges_dict)} 条"
+        assert len(edges_dict) == 3, t("should_return_edge_properties") % (
+            3,
+            len(edges_dict),
+        )
         assert (
             node1_id,
             node2_id,
-        ) in edges_dict, f"边 {node1_id} -> {node2_id} 应在返回结果中"
+        ) in edges_dict, t(
+            "edge_should_be_in_result"
+        ) % (node1_id, node2_id)
         assert (
             node2_id,
             node3_id,
-        ) in edges_dict, f"边 {node2_id} -> {node3_id} 应在返回结果中"
+        ) in edges_dict, t(
+            "edge_should_be_in_result"
+        ) % (node2_id, node3_id)
         assert (
             node3_id,
             node4_id,
-        ) in edges_dict, f"边 {node3_id} -> {node4_id} 应在返回结果中"
+        ) in edges_dict, t(
+            "edge_should_be_in_result"
+        ) % (node3_id, node4_id)
         assert (
             edges_dict[(node1_id, node2_id)]["relationship"]
             == edge1_data["relationship"]
@@ -1580,16 +1701,18 @@ async def test_graph_batch_operations(storage):
         reverse_edge_dicts = [{"src": tgt, "tgt": src} for src, tgt in edges]
         reverse_edges_dict = await storage.get_edges_batch(reverse_edge_dicts)
         print(f"{t('batch_get_reverse_edges_result')}: {reverse_edges_dict.keys()}")
-        assert (
-            len(reverse_edges_dict) == 3
-        ), f"应返回3条反向边的属性，实际返回 {len(reverse_edges_dict)} 条"
+        assert len(reverse_edges_dict) == 3, t(
+            "should_return_reverse_edge_properties"
+        ) % (3, len(reverse_edges_dict))
 
         # 验证正向和反向边的属性是否一致
         for (src, tgt), props in edges_dict.items():
             assert (
                 tgt,
                 src,
-            ) in reverse_edges_dict, f"反向边 {tgt} -> {src} 应在返回结果中"
+            ) in reverse_edges_dict, t(
+                "reverse_edge_should_be_in_result"
+            ) % (tgt, src)
             assert (
                 props == reverse_edges_dict[(tgt, src)]
             ), f"边 {src} -> {tgt} 和反向边 {tgt} -> {src} 的属性不一致"
@@ -1600,11 +1723,12 @@ async def test_graph_batch_operations(storage):
         print(t("test_get_nodes_edges_batch"))
         nodes_edges = await storage.get_nodes_edges_batch([node1_id, node3_id])
         print(f"{t('batch_get_nodes_edges_result')}: {nodes_edges.keys()}")
-        assert (
-            len(nodes_edges) == 2
-        ), f"应返回2个节点的边，实际返回 {len(nodes_edges)} 个"
-        assert node1_id in nodes_edges, f"{node1_id} 应在返回结果中"
-        assert node3_id in nodes_edges, f"{node3_id} 应在返回结果中"
+        assert len(nodes_edges) == 2, t("should_return_node_edges") % (
+            2,
+            len(nodes_edges),
+        )
+        assert node1_id in nodes_edges, t("should_be_in_result") % node1_id
+        assert node3_id in nodes_edges, t("should_be_in_result") % node3_id
         assert (
             len(nodes_edges[node1_id]) == 3
         ), f"{node1_id} 应有3条边，实际有 {len(nodes_edges[node1_id])} 条"
@@ -1751,11 +1875,11 @@ async def test_graph_batch_operations(storage):
             has_edge_node1_node4
         ), f"{chunk2_id}, {chunk3_id} 应包含 {node1_id} 到 {node4_id} 的边"
 
-        print(t("batch_operations_test_complete"))
+        ASCIIColors.green(t("batch_operations_test_complete"))
         return True
 
     except Exception as e:
-        ASCIIColors.red(f"测试过程中发生错误: {str(e)}")
+        ASCIIColors.red(f"{t('test_error')}: {str(e)}")
         return False
 
 
@@ -1819,7 +1943,7 @@ async def test_graph_special_characters(storage):
         await storage.upsert_edge(node2_id, node3_id, edge2_data)
 
         # 6. Verify node special characters are correctly saved / 验证节点特殊字符是否正确保存
-        print(f"\n== {t('verify_node_special')}")
+        print(f"\n== {t('verify_node_special')} ==")
         for node_id, original_data in [
             (node1_id, node1_data),
             (node2_id, node2_data),
@@ -1848,7 +1972,7 @@ async def test_graph_special_characters(storage):
                 assert False, t("unable_to_read_node_props").format(node_id)
 
         # 7. Verify edge special characters are correctly saved / 验证边特殊字符是否正确保存
-        print(f"\n== {t('verify_edge_special')}")
+        print(f"\n== {t('verify_edge_special')} ==")
         edge1_props = await storage.get_edge(node1_id, node2_id)
         if edge1_props:
             print(f"{t('read_edge_success')}: {node1_id} -> {node2_id}")
@@ -1948,7 +2072,7 @@ async def test_graph_undirected_property(storage):
         await storage.upsert_node(node3_id, node3_data)
 
         # 2. Test undirected property after inserting edge
-        print(f"\n== {t('test_insert_edge_undirected_property')}")
+        print(t("test_insert_edge_undirected_property"))
         edge1_data = {
             "relationship": t("contains"),
             "weight": 1.0,
@@ -1973,7 +2097,7 @@ async def test_graph_undirected_property(storage):
         print(t("undirected_verification_success"))
 
         # 3. Test edge degree undirected property
-        print(f"\n== {t('test_edge_degree_undirected_property')}")
+        print(t("test_edge_degree_undirected_property"))
         edge2_data = {
             "relationship": t("contains"),
             "weight": 1.0,
@@ -1990,7 +2114,7 @@ async def test_graph_undirected_property(storage):
         print(t("undirected_edge_degree_verification_success"))
 
         # 4. Test undirected property after deleting edge
-        print(f"\n== {t('test_delete_edge_undirected_property')}")
+        print(t("test_delete_edge_undirected_property"))
         print(f"{t('delete_edge')}: {node1_id} -> {node2_id}")
         await storage.remove_edges([(node1_id, node2_id)])
 
@@ -2010,7 +2134,7 @@ async def test_graph_undirected_property(storage):
         print(t("undirected_delete_verification_success"))
 
         # 5. Test batch undirected property
-        print(f"\n== {t('test_batch_undirected_property')}")
+        print(t("test_batch_undirected_property"))
         await storage.upsert_edge(node1_id, node2_id, edge1_data)
         edge_dicts = [
             {"src": node1_id, "tgt": node2_id},
@@ -2037,7 +2161,7 @@ async def test_graph_undirected_property(storage):
         print(t("undirected_batch_verification_success"))
 
         # 6. Test batch get node edges undirected property
-        print(f"\n== {t('test_batch_get_node_edges_undirected_property')}")
+        print(t("test_batch_get_node_edges_undirected_property"))
         nodes_edges = await storage.get_nodes_edges_batch([node1_id, node2_id])
         print(f"{t('batch_get_nodes_edges_result')}: {nodes_edges.keys()}")
         node1_edges = nodes_edges[node1_id]
@@ -2064,7 +2188,7 @@ async def test_graph_undirected_property(storage):
         ), f"{t('node_edge_should_contain_connection')}: {node2_id} <-> {node1_id}"
         print(t("undirected_nodes_edges_verification_success"))
 
-        print(f"\n{t('undirected_test_complete')}")
+        ASCIIColors.green(t("undirected_test_complete"))
         return True
 
     except Exception as e:
@@ -2075,22 +2199,7 @@ async def test_graph_undirected_property(storage):
 async def main():
     """Main function / 主函数"""
     # Display program title / 显示程序标题
-    if LANGUAGE == "english":
-        ASCIIColors.cyan(
-            """
-    ╔══════════════════════════════════════════════════════════════╗
-    ║                 Universal Graph Storage Test                 ║
-    ╚══════════════════════════════════════════════════════════════╝
-    """
-        )
-    else:
-        ASCIIColors.cyan(
-            """
-    ╔══════════════════════════════════════════════════════════════╗
-    ║                     通用图存储测试程序                       ║
-    ╚══════════════════════════════════════════════════════════════╝
-    """
-        )
+    ASCIIColors.cyan(t("program_title"))
 
     # Check .env file / 检查.env文件
     if not check_env_file():
@@ -2141,44 +2250,25 @@ async def main():
         elif choice == "5":
             await test_graph_special_characters(storage)
         elif choice == "6":
-            if LANGUAGE == "english":
-                ASCIIColors.cyan("\n=== Starting Basic Test ===")
-            else:
-                ASCIIColors.cyan("\n=== 开始基本测试 ===")
+            ASCIIColors.cyan(t("starting_basic_test"))
             basic_result = await test_graph_basic(storage)
 
             if basic_result:
-                if LANGUAGE == "english":
-                    ASCIIColors.cyan("\n=== Starting Advanced Test ===")
-                else:
-                    ASCIIColors.cyan("\n=== 开始高级测试 ===")
+                ASCIIColors.cyan(t("starting_advanced_test"))
                 advanced_result = await test_graph_advanced(storage)
 
                 if advanced_result:
-                    if LANGUAGE == "english":
-                        ASCIIColors.cyan("\n=== Starting Batch Operations Test ===")
-                    else:
-                        ASCIIColors.cyan("\n=== 开始批量操作测试 ===")
+                    ASCIIColors.cyan(t("starting_batch_operations_test"))
                     batch_result = await test_graph_batch_operations(storage)
 
                     if batch_result:
-                        if LANGUAGE == "english":
-                            ASCIIColors.cyan(
-                                "\n=== Starting Undirected Graph Property Test ==="
-                            )
-                        else:
-                            ASCIIColors.cyan("\n=== 开始无向图特性测试 ===")
+                        ASCIIColors.cyan(t("starting_undirected_graph_test"))
                         undirected_result = await test_graph_undirected_property(
                             storage
                         )
 
                         if undirected_result:
-                            if LANGUAGE == "english":
-                                ASCIIColors.cyan(
-                                    "\n=== Starting Special Character Test ==="
-                                )
-                            else:
-                                ASCIIColors.cyan("\n=== 开始特殊字符测试 ===")
+                            ASCIIColors.cyan(t("starting_special_character_test"))
                             await test_graph_special_characters(storage)
         else:
             ASCIIColors.red(t("invalid_option"))
@@ -2190,8 +2280,8 @@ async def main():
             # Clean KuzuDB temporary directory / 清理KuzuDB临时目录
             if hasattr(storage, "_temp_dir") and storage._temp_dir:
                 cleanup_kuzu_environment(storage._temp_dir)
-                ASCIIColors.green(f"\n{t('kuzu_temp_cleaned')}")
-            ASCIIColors.green(f"\n{t('connection_closed')}")
+                ASCIIColors.green(t("kuzu_temp_cleaned"))
+            ASCIIColors.green(t("connection_closed"))
 
 
 if __name__ == "__main__":
@@ -2214,13 +2304,6 @@ if __name__ == "__main__":
         globals()["LANGUAGE"] = args.language
 
     # Print language info / 打印语言信息
-    if LANGUAGE == "english":
-        print(
-            "Running tests in English. Use --language chinese or set TEST_LANGUAGE=chinese for Chinese."
-        )
-    else:
-        print(
-            "使用中文运行测试。使用 --language english 或设置 TEST_LANGUAGE=english 来使用英文。"
-        )
+    print(t("running_tests"))
 
     asyncio.run(main())
