@@ -898,6 +898,66 @@ TRANSLATIONS = {
         "节点 %s 应在返回结果中",
         "Node %s should be in result",
     ],
+    "node_edge_list_should_contain_edge_to": [
+        "节点 %s 的边列表中应包含到 %s 的边",
+        "Node %s edge list should contain edge to %s",
+    ],
+    "node_should_have_edges_count": [
+        "%s 应有%d条边，实际有 %d 条",
+        "%s should have %d edges, actual %d",
+    ],
+    "chunk_should_have_nodes": [
+        "%s 应有%d个节点，实际有 %d 个",
+        "%s should have %d nodes, actual %d",
+    ],
+    "chunk_should_have_edges": [
+        "%s 应有%d条边，实际有 %d 条",
+        "%s should have %d edges, actual %d",
+    ],
+    "chunks_should_have_nodes": [
+        "%s, %s 应有%d个节点，实际有 %d 个",
+        "%s, %s should have %d nodes, actual %d",
+    ],
+    "chunks_should_have_edges": [
+        "%s, %s 应有%d条边，实际有 %d 条",
+        "%s, %s should have %d edges, actual %d",
+    ],
+    "chunk_should_contain_edge": [
+        "%s 应包含 %s 到 %s 的边",
+        "%s should contain edge from %s to %s",
+    ],
+    "chunks_should_contain_edge": [
+        "%s, %s 应包含 %s 到 %s 的边",
+        "%s, %s should contain edge from %s to %s",
+    ],
+    "node_edge_list_should_contain_connection": [
+        "节点 %s 的边列表中应包含与 %s 的连接",
+        "Node %s edge list should contain connection with %s",
+    ],
+    "warning_cleanup_temp_dir_failed": [
+        "警告: 清理临时目录失败: %s",
+        "Warning: Failed to cleanup temporary directory: %s",
+    ],
+    "error_general": [
+        "错误: %s",
+        "Error: %s",
+    ],
+    "error_module_path_not_found": [
+        "错误: 未找到 %s 的模块路径",
+        "Error: Module path not found for %s",
+    ],
+    "error_import_failed": [
+        "错误: 导入 %s 失败: %s",
+        "Error: Failed to import %s: %s",
+    ],
+    "error_initialization_failed": [
+        "错误: 初始化 %s 失败: %s",
+        "Error: Failed to initialize %s: %s",
+    ],
+    "description_mismatch": [
+        "%s 描述不匹配",
+        "%s description mismatch",
+    ],
     "test_insert_edge_undirected_property": [
         "\n== 测试插入边的无向图特性 ==",
         "\n== Test insert edge undirected property ==",
@@ -1005,7 +1065,7 @@ def cleanup_kuzu_environment(test_dir):
         if os.path.exists(test_dir):
             shutil.rmtree(test_dir)
     except Exception as e:
-        ASCIIColors.yellow(f"警告: 清理临时目录失败: {str(e)}")
+        ASCIIColors.yellow(t("warning_cleanup_temp_dir_failed") % str(e))
 
 
 async def initialize_graph_storage():
@@ -1020,7 +1080,7 @@ async def initialize_graph_storage():
     try:
         verify_storage_implementation("GRAPH_STORAGE", graph_storage_type)
     except ValueError as e:
-        ASCIIColors.red(f"错误: {str(e)}")
+        ASCIIColors.red(t("error_general") % str(e))
         ASCIIColors.yellow(
             f"支持的图存储类型: {', '.join(STORAGE_IMPLEMENTATIONS['GRAPH_STORAGE']['implementations'])}"
         )
@@ -1047,7 +1107,7 @@ async def initialize_graph_storage():
     # 动态导入相应的模块
     module_path = STORAGES.get(graph_storage_type)
     if not module_path:
-        ASCIIColors.red(f"错误: 未找到 {graph_storage_type} 的模块路径")
+        ASCIIColors.red(t("error_module_path_not_found") % graph_storage_type)
         if temp_dir:
             cleanup_kuzu_environment(temp_dir)
         return None
@@ -1056,7 +1116,7 @@ async def initialize_graph_storage():
         module = importlib.import_module(module_path, package="lightrag")
         storage_class = getattr(module, graph_storage_type)
     except (ImportError, AttributeError) as e:
-        ASCIIColors.red(f"错误: 导入 {graph_storage_type} 失败: {str(e)}")
+        ASCIIColors.red(t("error_import_failed") % (graph_storage_type, str(e)))
         if temp_dir:
             cleanup_kuzu_environment(temp_dir)
         return None
@@ -1100,7 +1160,7 @@ async def initialize_graph_storage():
 
         return storage
     except Exception as e:
-        ASCIIColors.red(f"错误: 初始化 {graph_storage_type} 失败: {str(e)}")
+        ASCIIColors.red(t("error_initialization_failed") % (graph_storage_type, str(e)))
         if temp_dir:
             cleanup_kuzu_environment(temp_dir)
         return None
@@ -1585,15 +1645,15 @@ async def test_graph_batch_operations(storage):
         assert node1_id in nodes_dict, t("should_be_in_result") % node1_id
         assert node2_id in nodes_dict, t("should_be_in_result") % node2_id
         assert node3_id in nodes_dict, t("should_be_in_result") % node3_id
-        assert (
-            nodes_dict[node1_id]["description"] == node1_data["description"]
-        ), f"{node1_id} 描述不匹配"
-        assert (
-            nodes_dict[node2_id]["description"] == node2_data["description"]
-        ), f"{node2_id} 描述不匹配"
-        assert (
-            nodes_dict[node3_id]["description"] == node3_data["description"]
-        ), f"{node3_id} 描述不匹配"
+        assert nodes_dict[node1_id]["description"] == node1_data["description"], (
+            t("description_mismatch") % node1_id
+        )
+        assert nodes_dict[node2_id]["description"] == node2_data["description"], (
+            t("description_mismatch") % node2_id
+        )
+        assert nodes_dict[node3_id]["description"] == node3_data["description"], (
+            t("description_mismatch") % node3_id
+        )
 
         # 3. 测试 node_degrees_batch - 批量获取多个节点的度数
         print(t("batch_node_degrees"))
@@ -1606,15 +1666,21 @@ async def test_graph_batch_operations(storage):
         assert node1_id in node_degrees, t("should_be_in_result") % node1_id
         assert node2_id in node_degrees, t("should_be_in_result") % node2_id
         assert node3_id in node_degrees, t("should_be_in_result") % node3_id
-        assert (
-            node_degrees[node1_id] == 3
-        ), f"{node1_id} 度数应为3，实际为 {node_degrees[node1_id]}"
-        assert (
-            node_degrees[node2_id] == 2
-        ), f"{node2_id} 度数应为2，实际为 {node_degrees[node2_id]}"
-        assert (
-            node_degrees[node3_id] == 3
-        ), f"{node3_id} 度数应为3，实际为 {node_degrees[node3_id]}"
+        assert node_degrees[node1_id] == 3, t("node_degree_should_be") % (
+            node1_id,
+            3,
+            node_degrees[node1_id],
+        )
+        assert node_degrees[node2_id] == 2, t("node_degree_should_be") % (
+            node2_id,
+            2,
+            node_degrees[node2_id],
+        )
+        assert node_degrees[node3_id] == 3, t("node_degree_should_be") % (
+            node3_id,
+            3,
+            node_degrees[node3_id],
+        )
 
         # 4. 测试 edge_degrees_batch - 批量获取多个边的度数
         print(t("batch_edge_degrees"))
@@ -1729,12 +1795,16 @@ async def test_graph_batch_operations(storage):
         )
         assert node1_id in nodes_edges, t("should_be_in_result") % node1_id
         assert node3_id in nodes_edges, t("should_be_in_result") % node3_id
-        assert (
-            len(nodes_edges[node1_id]) == 3
-        ), f"{node1_id} 应有3条边，实际有 {len(nodes_edges[node1_id])} 条"
-        assert (
-            len(nodes_edges[node3_id]) == 3
-        ), f"{node3_id} 应有3条边，实际有 {len(nodes_edges[node3_id])} 条"
+        assert len(nodes_edges[node1_id]) == 3, t("node_should_have_edges_count") % (
+            node1_id,
+            3,
+            len(nodes_edges[node1_id]),
+        )
+        assert len(nodes_edges[node3_id]) == 3, t("node_should_have_edges_count") % (
+            node3_id,
+            3,
+            len(nodes_edges[node3_id]),
+        )
 
         # 6.1 验证批量获取节点边的无向图特性
         print(t("verify_batch_nodes_edges_undirected"))
@@ -1758,9 +1828,18 @@ async def test_graph_batch_operations(storage):
         has_edge_to_node4 = any(tgt == node4_id for _, tgt in node1_outgoing_edges)
         has_edge_to_node5 = any(tgt == node5_id for _, tgt in node1_outgoing_edges)
 
-        assert has_edge_to_node2, f"节点 {node1_id} 的边列表中应包含到 {node2_id} 的边"
-        assert has_edge_to_node4, f"节点 {node1_id} 的边列表中应包含到 {node4_id} 的边"
-        assert has_edge_to_node5, f"节点 {node1_id} 的边列表中应包含到 {node5_id} 的边"
+        assert has_edge_to_node2, t("node_edge_list_should_contain_edge_to") % (
+            node1_id,
+            node2_id,
+        )
+        assert has_edge_to_node4, t("node_edge_list_should_contain_edge_to") % (
+            node1_id,
+            node4_id,
+        )
+        assert has_edge_to_node5, t("node_edge_list_should_contain_edge_to") % (
+            node1_id,
+            node5_id,
+        )
 
         # 检查节点3的边是否包含所有相关的边（无论方向）
         node3_outgoing_edges = [
@@ -1793,15 +1872,15 @@ async def test_graph_batch_operations(storage):
             for src, tgt in nodes_edges[node3_id]
         )
 
-        assert (
-            has_connection_with_node2
-        ), f"节点 {node3_id} 的边列表中应包含与 {node2_id} 的连接"
-        assert (
-            has_connection_with_node4
-        ), f"节点 {node3_id} 的边列表中应包含与 {node4_id} 的连接"
-        assert (
-            has_connection_with_node5
-        ), f"节点 {node3_id} 的边列表中应包含与 {node5_id} 的连接"
+        assert has_connection_with_node2, t(
+            "node_edge_list_should_contain_connection"
+        ) % (node3_id, node2_id)
+        assert has_connection_with_node4, t(
+            "node_edge_list_should_contain_connection"
+        ) % (node3_id, node4_id)
+        assert has_connection_with_node5, t(
+            "node_edge_list_should_contain_connection"
+        ) % (node3_id, node5_id)
 
         print(t("undirected_nodes_edges_verification_success"))
 
@@ -1810,34 +1889,45 @@ async def test_graph_batch_operations(storage):
 
         print(t("test_single_chunk_id_multiple_nodes"))
         nodes = await storage.get_nodes_by_chunk_ids([chunk2_id])
-        assert len(nodes) == 2, f"{chunk1_id} 应有2个节点，实际有 {len(nodes)} 个"
+        assert len(nodes) == 2, t("chunk_should_have_nodes") % (
+            chunk2_id,
+            2,
+            len(nodes),
+        )
 
         has_node1 = any(node["entity_id"] == node1_id for node in nodes)
         has_node2 = any(node["entity_id"] == node2_id for node in nodes)
 
-        assert has_node1, f"节点 {node1_id} 应在返回结果中"
-        assert has_node2, f"节点 {node2_id} 应在返回结果中"
+        assert has_node1, t("node_should_be_in_result") % node1_id
+        assert has_node2, t("node_should_be_in_result") % node2_id
 
         print(t("test_multiple_chunk_ids_partial_match"))
         nodes = await storage.get_nodes_by_chunk_ids([chunk2_id, chunk3_id])
-        assert (
-            len(nodes) == 3
-        ), f"{chunk2_id}, {chunk3_id} 应有3个节点，实际有 {len(nodes)} 个"
+        assert len(nodes) == 3, t("chunks_should_have_nodes") % (
+            chunk2_id,
+            chunk3_id,
+            3,
+            len(nodes),
+        )
 
         has_node1 = any(node["entity_id"] == node1_id for node in nodes)
         has_node2 = any(node["entity_id"] == node2_id for node in nodes)
         has_node3 = any(node["entity_id"] == node3_id for node in nodes)
 
-        assert has_node1, f"节点 {node1_id} 应在返回结果中"
-        assert has_node2, f"节点 {node2_id} 应在返回结果中"
-        assert has_node3, f"节点 {node3_id} 应在返回结果中"
+        assert has_node1, t("node_should_be_in_result") % node1_id
+        assert has_node2, t("node_should_be_in_result") % node2_id
+        assert has_node3, t("node_should_be_in_result") % node3_id
 
         # 8. 测试 get_edges_by_chunk_ids - 批量根据 chunk_ids 获取多条边
         print(t("test_get_edges_by_chunk_ids"))
 
         print(t("test_single_chunk_id_multiple_edges"))
         edges = await storage.get_edges_by_chunk_ids([chunk2_id])
-        assert len(edges) == 2, f"{chunk2_id} 应有2条边，实际有 {len(edges)} 条"
+        assert len(edges) == 2, t("chunk_should_have_edges") % (
+            chunk2_id,
+            2,
+            len(edges),
+        )
 
         has_edge_node1_node2 = any(
             edge["source"] == node1_id and edge["target"] == node2_id for edge in edges
@@ -1846,14 +1936,25 @@ async def test_graph_batch_operations(storage):
             edge["source"] == node2_id and edge["target"] == node3_id for edge in edges
         )
 
-        assert has_edge_node1_node2, f"{chunk2_id} 应包含 {node1_id} 到 {node2_id} 的边"
-        assert has_edge_node2_node3, f"{chunk2_id} 应包含 {node2_id} 到 {node3_id} 的边"
+        assert has_edge_node1_node2, t("chunk_should_contain_edge") % (
+            chunk2_id,
+            node1_id,
+            node2_id,
+        )
+        assert has_edge_node2_node3, t("chunk_should_contain_edge") % (
+            chunk2_id,
+            node2_id,
+            node3_id,
+        )
 
         print(t("test_multiple_chunk_ids_partial_edges"))
         edges = await storage.get_edges_by_chunk_ids([chunk2_id, chunk3_id])
-        assert (
-            len(edges) == 3
-        ), f"{chunk2_id}, {chunk3_id} 应有3条边，实际有 {len(edges)} 条"
+        assert len(edges) == 3, t("chunks_should_have_edges") % (
+            chunk2_id,
+            chunk3_id,
+            3,
+            len(edges),
+        )
 
         has_edge_node1_node2 = any(
             edge["source"] == node1_id and edge["target"] == node2_id for edge in edges
@@ -1865,15 +1966,24 @@ async def test_graph_batch_operations(storage):
             edge["source"] == node1_id and edge["target"] == node4_id for edge in edges
         )
 
-        assert (
-            has_edge_node1_node2
-        ), f"{chunk2_id}, {chunk3_id} 应包含 {node1_id} 到 {node2_id} 的边"
-        assert (
-            has_edge_node2_node3
-        ), f"{chunk2_id}, {chunk3_id} 应包含 {node2_id} 到 {node3_id} 的边"
-        assert (
-            has_edge_node1_node4
-        ), f"{chunk2_id}, {chunk3_id} 应包含 {node1_id} 到 {node4_id} 的边"
+        assert has_edge_node1_node2, t("chunks_should_contain_edge") % (
+            chunk2_id,
+            chunk3_id,
+            node1_id,
+            node2_id,
+        )
+        assert has_edge_node2_node3, t("chunks_should_contain_edge") % (
+            chunk2_id,
+            chunk3_id,
+            node2_id,
+            node3_id,
+        )
+        assert has_edge_node1_node4, t("chunks_should_contain_edge") % (
+            chunk2_id,
+            chunk3_id,
+            node1_id,
+            node4_id,
+        )
 
         ASCIIColors.green(t("batch_operations_test_complete"))
         return True
