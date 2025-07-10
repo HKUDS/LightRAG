@@ -35,7 +35,7 @@ LLM_MODEL = "@cf/meta/llama-3.2-3b-instruct"
 
 WORKING_DIR = "../dickens"     #you can change output as desired
 
-
+# Cloudflare init
 class CloudflareWorker:
     def __init__(self,
                  cloudflare_api_key: str,
