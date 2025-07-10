@@ -111,7 +111,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         mode: 'global',
         response_type: 'Multiple Paragraphs',
         top_k: 10,
-        max_token_for_text_unit: 4000,
+        max_token_for_text_unit: 6000,
         max_token_for_global_context: 4000,
         max_token_for_local_context: 4000,
         only_need_context: false,
