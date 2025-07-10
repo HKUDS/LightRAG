@@ -435,7 +435,7 @@ class MemgraphStorage(BaseGraphStorage):
 
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """
-        Upsert a node in the Neo4j database.
+        Upsert a node in the Memgraph database.
 
         Args:
             node_id: The unique identifier for the node (used as label)
@@ -448,7 +448,7 @@ class MemgraphStorage(BaseGraphStorage):
         properties = node_data
         entity_type = properties["entity_type"]
         if "entity_id" not in properties:
-            raise ValueError("Neo4j: node properties must contain an 'entity_id' field")
+            raise ValueError("Memgraph: node properties must contain an 'entity_id' field")
 
         try:
             async with self._driver.session(database=self._DATABASE) as session:
@@ -817,28 +817,34 @@ class MemgraphStorage(BaseGraphStorage):
                     WITH start
                     CALL {{
                         WITH start
-                        MATCH path = (start)-[*0..{max_depth}]-(node)
+                        MATCH path = (start)-[*BFS 0..{max_depth}]-(node)
                         WITH nodes(path) AS path_nodes, relationships(path) AS path_rels
                         UNWIND path_nodes AS n
                         WITH collect(DISTINCT n) AS all_nodes, collect(DISTINCT path_rels) AS all_rel_lists
                         WITH all_nodes, reduce(r = [], x IN all_rel_lists | r + x) AS all_rels
                         RETURN all_nodes, all_rels
                     }}
-                    WITH all_nodes AS nodes, all_rels AS relationships, size(all_nodes) AS total_nodes
+                    WITH all_nodes AS nodes, all_rels AS relationships, size(all_nodes) AS total_nodes_found
                     WITH
-                    CASE
-                        WHEN total_nodes <= {max_nodes} THEN nodes
-                        ELSE nodes[0..{max_nodes}]
-                    END AS limited_nodes,
-                    relationships,
-                    total_nodes,
-                    total_nodes > {max_nodes} AS is_truncated
+                        CASE
+                            WHEN total_nodes_found <= {max_nodes} THEN nodes
+                            ELSE nodes[0..{max_nodes}]
+                        END AS limited_nodes,
+                        relationships,
+                        total_nodes_found,
+                        total_nodes_found > {max_nodes} AS is_truncated
+
+                    UNWIND relationships AS rel
+                    WITH limited_nodes, rel, total_nodes_found, is_truncated
+                    WHERE startNode(rel) IN limited_nodes AND endNode(rel) IN limited_nodes
+                    WITH limited_nodes, collect(DISTINCT rel) AS limited_relationships, total_nodes_found, is_truncated
                     RETURN
-                    [node IN limited_nodes | {{node: node}}] AS node_info,
-                    relationships,
-                    total_nodes,
-                    is_truncated
+                        [node IN limited_nodes | {{node: node}}] AS node_info,
+                        limited_relationships AS relationships,
+                        total_nodes_found,
+                        is_truncated
                     """
+
                     result_set = None
                     try:
                         result_set = await session.run(
