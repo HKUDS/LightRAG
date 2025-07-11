@@ -1257,9 +1257,7 @@ async def test_graph_basic(storage):
             print(t("undirected_verification_success"))
         else:
             print(f"{t('failed_read_reverse_edge')}: {node2_id} -> {node1_id}")
-            assert (
-                False
-            ), f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
+            assert False, f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
 
         ASCIIColors.green(t("basic_test_complete"))
         return True
@@ -1674,21 +1672,15 @@ async def test_graph_batch_operations(storage):
         assert (
             node1_id,
             node2_id,
-        ) in edge_degrees, t(
-            "edge_should_be_in_result"
-        ) % (node1_id, node2_id)
+        ) in edge_degrees, t("edge_should_be_in_result") % (node1_id, node2_id)
         assert (
             node2_id,
             node3_id,
-        ) in edge_degrees, t(
-            "edge_should_be_in_result"
-        ) % (node2_id, node3_id)
+        ) in edge_degrees, t("edge_should_be_in_result") % (node2_id, node3_id)
         assert (
             node3_id,
             node4_id,
-        ) in edge_degrees, t(
-            "edge_should_be_in_result"
-        ) % (node3_id, node4_id)
+        ) in edge_degrees, t("edge_should_be_in_result") % (node3_id, node4_id)
 
         # 验证边的度数是否正确（源节点度数 + 目标节点度数）
         assert (
@@ -1714,21 +1706,15 @@ async def test_graph_batch_operations(storage):
         assert (
             node1_id,
             node2_id,
-        ) in edges_dict, t(
-            "edge_should_be_in_result"
-        ) % (node1_id, node2_id)
+        ) in edges_dict, t("edge_should_be_in_result") % (node1_id, node2_id)
         assert (
             node2_id,
             node3_id,
-        ) in edges_dict, t(
-            "edge_should_be_in_result"
-        ) % (node2_id, node3_id)
+        ) in edges_dict, t("edge_should_be_in_result") % (node2_id, node3_id)
         assert (
             node3_id,
             node4_id,
-        ) in edges_dict, t(
-            "edge_should_be_in_result"
-        ) % (node3_id, node4_id)
+        ) in edges_dict, t("edge_should_be_in_result") % (node3_id, node4_id)
         assert (
             edges_dict[(node1_id, node2_id)]["relationship"]
             == edge1_data["relationship"]
@@ -1757,9 +1743,7 @@ async def test_graph_batch_operations(storage):
             assert (
                 tgt,
                 src,
-            ) in reverse_edges_dict, t(
-                "reverse_edge_should_be_in_result"
-            ) % (tgt, src)
+            ) in reverse_edges_dict, t("reverse_edge_should_be_in_result") % (tgt, src)
             assert (
                 props == reverse_edges_dict[(tgt, src)]
             ), f"边 {src} -> {tgt} 和反向边 {tgt} -> {src} 的属性不一致"
@@ -2241,11 +2225,12 @@ async def test_graph_undirected_property(storage):
         print(f"{t('batch_get_reverse_edges_result')}: {reverse_edges_dict.keys()}")
         for (src, tgt), props in edges_dict.items():
             assert (
-                tgt,
-                src,
-            ) in reverse_edges_dict, (
-                f"{t('reverse_edge_should_be_in_result')}: {tgt} -> {src}"
-            )
+                (
+                    tgt,
+                    src,
+                )
+                in reverse_edges_dict
+            ), f"{t('reverse_edge_should_be_in_result')}: {tgt} -> {src}"
             assert props == reverse_edges_dict[(tgt, src)], t(
                 "forward_reverse_inconsistent"
             )
