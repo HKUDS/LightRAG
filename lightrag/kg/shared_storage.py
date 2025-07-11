@@ -341,11 +341,12 @@ def _release_shared_raw_mp_lock(factory_name: str, key: str):
                     _lock_registry_count.pop(cleanup_key, None)
                     _lock_cleanup_data.pop(cleanup_key, None)
                     cleaned_count += 1
-            direct_log(
-                f"== mp Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired locks",
-                enable_output=False,
-                level="DEBUG",
-            )
+            if cleaned_count > 0:
+                direct_log(
+                    f"== mp Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired locks",
+                    enable_output=False,
+                    level="INFO",
+                )
 
 
 class KeyedUnifiedLock:
@@ -423,11 +424,12 @@ class KeyedUnifiedLock:
                     self._async_lock_count.pop(cleanup_key)
                     self._async_lock_cleanup_data.pop(cleanup_key)
                     cleaned_count += 1
-            direct_log(
-                f"== async Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired async locks",
-                enable_output=False,
-                level="DEBUG",
-            )
+            if cleaned_count > 0:
+                direct_log(
+                    f"== async Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired async locks",
+                    enable_output=False,
+                    level="INFO",
+                )
 
     def _get_lock_for_key(self, key: str, enable_logging: bool = False) -> UnifiedLock:
         # 1. get (or create) the per‑process async gate for this key
