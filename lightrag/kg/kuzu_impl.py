@@ -21,7 +21,7 @@ class KuzuDBStorage(BaseGraphStorage):
 
         super().__init__(
             namespace=namespace,
-            workspace=workspace or "",
+            workspace=workspace or "base",
             global_config=global_config,
             embedding_func=embedding_func,
         )

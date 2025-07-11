@@ -51,7 +51,7 @@ Run the universal tests with KuzuDB:
 
 ```bash
 # Set environment variable and run interactive tests
-LIGHTRAG_GRAPH_STORAGE=KuzuDBStorage uv run python tests/test_graph_storage.py
+LIGHTRAG_GRAPH_STORAGE=KuzuDBStorage uv run python tests/test_graph_storage.py --language english
 
 # For non-interactive testing, create a .env file with:
 # LIGHTRAG_GRAPH_STORAGE=KuzuDBStorage
@@ -68,11 +68,13 @@ uv run python tests/test_kuzu_integration.py
 ## Features Tested
 
 ### Basic Operations
+
 - ✅ Node insertion and retrieval
 - ✅ Edge insertion and retrieval
 - ✅ Database initialization and cleanup
 
 ### Advanced Operations
+
 - ✅ Node degree calculation
 - ✅ Edge degree calculation
 - ✅ Batch operations
@@ -80,6 +82,7 @@ uv run python tests/test_kuzu_integration.py
 - ✅ Chunk-based queries
 
 ### Data Integrity
+
 - ✅ Special character handling
 - ✅ Undirected graph properties
 - ✅ Proper cleanup and finalization
