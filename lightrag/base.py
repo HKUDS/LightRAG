@@ -60,7 +60,17 @@ class QueryParam:
     top_k: int = int(os.getenv("TOP_K", "60"))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    max_token_for_text_unit: int = int(os.getenv("MAX_TOKEN_TEXT_CHUNK", "4000"))
+    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "5"))
+    """Number of text chunks to retrieve initially from vector search.
+    If None, defaults to top_k value.
+    """
+
+    chunk_rerank_top_k: int = int(os.getenv("CHUNK_RERANK_TOP_K", "5"))
+    """Number of text chunks to keep after reranking.
+    If None, keeps all chunks returned from initial retrieval.
+    """
+
+    max_token_for_text_unit: int = int(os.getenv("MAX_TOKEN_TEXT_CHUNK", "6000"))
     """Maximum number of tokens allowed for each retrieved text chunk."""
 
     max_token_for_global_context: int = int(
@@ -279,21 +289,6 @@ class BaseKVStorage(StorageNameSpace, ABC):
              True: if the cache drop successfully
              False: if the cache drop failed, or the cache mode is not supported
         """
-
-    # async def drop_cache_by_chunk_ids(self, chunk_ids: list[str] | None = None) -> bool:
-    #     """Delete specific cache records from storage by chunk IDs
-
-    #     Importance notes for in-memory storage:
-    #     1. Changes will be persisted to disk during the next index_done_callback
-    #     2. update flags to notify other processes that data persistence is needed
-
-    #     Args:
-    #         chunk_ids (list[str]): List of chunk IDs to be dropped from storage
-
-    #     Returns:
-    #          True: if the cache drop successfully
-    #          False: if the cache drop failed, or the operation is not supported
-    #     """
 
 
 @dataclass
