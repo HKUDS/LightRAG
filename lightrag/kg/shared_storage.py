@@ -57,9 +57,9 @@ _lock_registry_count: Optional[Dict[str, int]] = None
 _lock_cleanup_data: Optional[Dict[str, time.time]] = None
 _registry_guard = None
 # Timeout for keyed locks in seconds
-CLEANUP_KEYED_LOCKS_AFTER_SECONDS = 150
+CLEANUP_KEYED_LOCKS_AFTER_SECONDS = 300
 # Threshold for triggering cleanup - only clean when pending list exceeds this size
-CLEANUP_THRESHOLD = 200
+CLEANUP_THRESHOLD = 500
 
 _initialized = None
 
