@@ -29,6 +29,7 @@ dependencies = [
     "nano-vectordb",
     "networkx",
     "kuzu>=0.10.1",
+    "networkx>=3.4.2",
     "numpy",
     "pandas>=2.0.0",
     "pipmaster",
