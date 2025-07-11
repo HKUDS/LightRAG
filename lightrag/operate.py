@@ -1143,19 +1143,18 @@ async def merge_nodes_and_edges(
     total_relations_count = len(all_edges)
 
     # Merge nodes and edges
+    log_message = f"Merging stage {current_file_number}/{total_files}: {file_path}"
+    logger.info(log_message)
     async with pipeline_status_lock:
-        log_message = f"Merging stage {current_file_number}/{total_files}: {file_path}"
-        logger.info(log_message)
         pipeline_status["latest_message"] = log_message
         pipeline_status["history_messages"].append(log_message)
 
     # Process and update all entities and relationships in parallel
-    log_message = f"Updating {total_entities_count} entities and {total_relations_count} relations {current_file_number}/{total_files}: {file_path}"
+    log_message = f"Processing: {total_entities_count} entities and {total_relations_count} relations"
     logger.info(log_message)
-    if pipeline_status is not None:
-        async with pipeline_status_lock:
-            pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+    async with pipeline_status_lock:
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
 
     # Get max async tasks limit from global_config for semaphore control
     llm_model_max_async = global_config.get("llm_model_max_async", 4)
