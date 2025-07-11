@@ -1078,7 +1078,6 @@ class LightRAG:
                         # Semphore is released here
                         # Concurrency is controlled by graph db lock for individual entities and relationships
 
-
                     if file_extraction_stage_ok:
                         try:
                             # Get chunk_results from entity_relation_task
