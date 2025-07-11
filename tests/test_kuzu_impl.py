@@ -3,9 +3,11 @@ import tempfile
 import os
 import pytest
 from unittest.mock import MagicMock
-
+from dotenv import load_dotenv
 from lightrag.kg.kuzu_impl import KuzuDBStorage
 from lightrag.types import KnowledgeGraph
+
+load_dotenv(dotenv_path=".env", override=False)
 
 
 class TestKuzuDBStorage:
@@ -24,7 +26,7 @@ class TestKuzuDBStorage:
                 namespace="test",
                 global_config={"max_graph_nodes": 1000},
                 embedding_func=embedding_func,
-                workspace="test_workspace",
+                workspace=os.environ.get("KUZU_WORKSPACE", "kuzudb"),
             )
 
             await storage.initialize()
@@ -35,7 +37,7 @@ class TestKuzuDBStorage:
         """Test database initialization"""
         assert storage._db is not None
         assert storage._conn is not None
-        assert storage._get_label() == "test_workspace"
+        assert storage._get_label() == os.environ.get("KUZU_WORKSPACE", "kuzudb")
 
     async def test_node_operations(self, storage):
         """Test node creation, retrieval, and existence checking"""

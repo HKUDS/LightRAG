@@ -690,28 +690,28 @@ TRANSLATIONS = {
         "Undirected graph property verification successful: batch obtained node edges contain all related edges (regardless of direction)",
     ],
     "test_get_nodes_by_chunk_ids": [
-        "=== 测试 get_nodes_by_chunk_ids ===",
-        "=== Test get_nodes_by_chunk_ids ===",
+        "== 测试 get_nodes_by_chunk_ids ==",
+        "== Test get_nodes_by_chunk_ids ==",
     ],
     "test_single_chunk_id_multiple_nodes": [
-        "=== 测试单个 chunk_id，匹配多个节点 ===",
-        "=== Test single chunk_id, matching multiple nodes ===",
+        "== 测试单个 chunk_id，匹配多个节点 ==",
+        "== Test single chunk_id, matching multiple nodes ==",
     ],
     "test_multiple_chunk_ids_partial_match": [
-        "=== 测试多个 chunk_id，部分匹配多个节点 ===",
-        "=== Test multiple chunk_ids, partial matching multiple nodes ===",
+        "== 测试多个 chunk_id，部分匹配多个节点 ==",
+        "== Test multiple chunk_ids, partial matching multiple nodes ==",
     ],
     "test_get_edges_by_chunk_ids": [
-        "=== 测试 get_edges_by_chunk_ids ===",
-        "=== Test get_edges_by_chunk_ids ===",
+        "== 测试 get_edges_by_chunk_ids ==",
+        "== Test get_edges_by_chunk_ids ==",
     ],
     "test_single_chunk_id_multiple_edges": [
-        "=== 测试单个 chunk_id，匹配多条边 ===",
-        "=== Test single chunk_id, matching multiple edges ===",
+        "== 测试单个 chunk_id，匹配多条边 ==",
+        "== Test single chunk_id, matching multiple edges ==",
     ],
     "test_multiple_chunk_ids_partial_edges": [
-        "=== 测试多个 chunk_id，部分匹配多条边 ===",
-        "=== Test multiple chunk_ids, partial matching multiple edges ===",
+        "== 测试多个 chunk_id，部分匹配多条边 ==",
+        "== Test multiple chunk_ids, partial matching multiple edges ==",
     ],
     "batch_operations_test_complete": [
         "\n批量操作测试完成",
@@ -1257,7 +1257,9 @@ async def test_graph_basic(storage):
             print(t("undirected_verification_success"))
         else:
             print(f"{t('failed_read_reverse_edge')}: {node2_id} -> {node1_id}")
-            assert False, f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
+            assert (
+                False
+            ), f"{t('unable_read_reverse_edge')}: {node2_id} -> {node1_id}, {t('undirected_verification_failed')}"
 
         ASCIIColors.green(t("basic_test_complete"))
         return True
@@ -1672,15 +1674,22 @@ async def test_graph_batch_operations(storage):
         assert (
             node1_id,
             node2_id,
-        ) in edge_degrees, t("edge_should_be_in_result") % (node1_id, node2_id)
+        ) in edge_degrees, t(
+            "edge_should_be_in_result"
+        ) % (node1_id, node2_id)
         assert (
             node2_id,
             node3_id,
-        ) in edge_degrees, t("edge_should_be_in_result") % (node2_id, node3_id)
+        ) in edge_degrees, t(
+            "edge_should_be_in_result"
+        ) % (node2_id, node3_id)
         assert (
             node3_id,
             node4_id,
-        ) in edge_degrees, t("edge_should_be_in_result") % (node3_id, node4_id)
+        ) in edge_degrees, t(
+            "edge_should_be_in_result"
+        ) % (node3_id, node4_id)
+
         # 验证边的度数是否正确（源节点度数 + 目标节点度数）
         assert (
             edge_degrees[(node1_id, node2_id)] == 5
@@ -1705,15 +1714,21 @@ async def test_graph_batch_operations(storage):
         assert (
             node1_id,
             node2_id,
-        ) in edges_dict, t("edge_should_be_in_result") % (node1_id, node2_id)
+        ) in edges_dict, t(
+            "edge_should_be_in_result"
+        ) % (node1_id, node2_id)
         assert (
             node2_id,
             node3_id,
-        ) in edges_dict, t("edge_should_be_in_result") % (node2_id, node3_id)
+        ) in edges_dict, t(
+            "edge_should_be_in_result"
+        ) % (node2_id, node3_id)
         assert (
             node3_id,
             node4_id,
-        ) in edges_dict, t("edge_should_be_in_result") % (node3_id, node4_id)
+        ) in edges_dict, t(
+            "edge_should_be_in_result"
+        ) % (node3_id, node4_id)
         assert (
             edges_dict[(node1_id, node2_id)]["relationship"]
             == edge1_data["relationship"]
@@ -1742,7 +1757,9 @@ async def test_graph_batch_operations(storage):
             assert (
                 tgt,
                 src,
-            ) in reverse_edges_dict, t("reverse_edge_should_be_in_result") % (tgt, src)
+            ) in reverse_edges_dict, t(
+                "reverse_edge_should_be_in_result"
+            ) % (tgt, src)
             assert (
                 props == reverse_edges_dict[(tgt, src)]
             ), f"边 {src} -> {tgt} 和反向边 {tgt} -> {src} 的属性不一致"
@@ -1849,9 +1866,8 @@ async def test_graph_batch_operations(storage):
         print(t("undirected_nodes_edges_verification_success"))
 
         # 7. 测试 get_nodes_by_chunk_ids - 批量根据 chunk_ids 获取多个节点
-        print(t("test_get_nodes_by_chunk_ids"))
 
-        print(t("test_single_chunk_id_multiple_nodes"))
+        print(t("test_get_nodes_by_chunk_ids"))
         nodes = await storage.get_nodes_by_chunk_ids([chunk2_id])
         assert len(nodes) == 2, t("chunk_should_have_nodes") % (
             chunk2_id,
@@ -1862,6 +1878,7 @@ async def test_graph_batch_operations(storage):
         has_node1 = any(node["entity_id"] == node1_id for node in nodes)
         has_node2 = any(node["entity_id"] == node2_id for node in nodes)
 
+        print(t("test_single_chunk_id_multiple_nodes"))
         assert has_node1, t("node_should_be_in_result") % node1_id
         assert has_node2, t("node_should_be_in_result") % node2_id
 
@@ -1885,13 +1902,13 @@ async def test_graph_batch_operations(storage):
         # 8. 测试 get_edges_by_chunk_ids - 批量根据 chunk_ids 获取多条边
         print(t("test_get_edges_by_chunk_ids"))
 
-        print(t("test_single_chunk_id_multiple_edges"))
         edges = await storage.get_edges_by_chunk_ids([chunk2_id])
         assert len(edges) == 2, t("chunk_should_have_edges") % (
             chunk2_id,
             2,
             len(edges),
         )
+        print(t("test_single_chunk_id_multiple_edges"))
 
         has_edge_node1_node2 = any(
             edge["source"] == node1_id and edge["target"] == node2_id for edge in edges
@@ -2101,7 +2118,7 @@ async def test_graph_special_characters(storage):
             print(f"{t('read_edge_props_failed')}: {node2_id} -> {node3_id}")
             assert False, t("unable_to_read_edge_props").format(node2_id, node3_id)
 
-        print(f"\n{t('special_char_test_complete')}")
+        ASCIIColors.green(t("special_char_test_complete"))
         return True
 
     except Exception as e:
@@ -2224,12 +2241,11 @@ async def test_graph_undirected_property(storage):
         print(f"{t('batch_get_reverse_edges_result')}: {reverse_edges_dict.keys()}")
         for (src, tgt), props in edges_dict.items():
             assert (
-                (
-                    tgt,
-                    src,
-                )
-                in reverse_edges_dict
-            ), f"{t('reverse_edge_should_be_in_result')}: {tgt} -> {src}"
+                tgt,
+                src,
+            ) in reverse_edges_dict, (
+                f"{t('reverse_edge_should_be_in_result')}: {tgt} -> {src}"
+            )
             assert props == reverse_edges_dict[(tgt, src)], t(
                 "forward_reverse_inconsistent"
             )
