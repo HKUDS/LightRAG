@@ -11,7 +11,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
     <div className="min-w-[300px] space-y-2 text-xs">
       <div className="space-y-1">
         <h4 className="font-medium">{t('graphPanel.statusCard.storageInfo')}</h4>
-        <div className="text-foreground grid grid-cols-[120px_1fr] gap-1">
+        <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
           <span>{t('graphPanel.statusCard.workingDirectory')}:</span>
           <span className="truncate">{status.working_directory}</span>
           <span>{t('graphPanel.statusCard.inputDirectory')}:</span>
@@ -21,7 +21,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
 
       <div className="space-y-1">
         <h4 className="font-medium">{t('graphPanel.statusCard.llmConfig')}</h4>
-        <div className="text-foreground grid grid-cols-[120px_1fr] gap-1">
+        <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
           <span>{t('graphPanel.statusCard.llmBinding')}:</span>
           <span>{status.configuration.llm_binding}</span>
           <span>{t('graphPanel.statusCard.llmBindingHost')}:</span>
@@ -35,7 +35,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
 
       <div className="space-y-1">
         <h4 className="font-medium">{t('graphPanel.statusCard.embeddingConfig')}</h4>
-        <div className="text-foreground grid grid-cols-[120px_1fr] gap-1">
+        <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
           <span>{t('graphPanel.statusCard.embeddingBinding')}:</span>
           <span>{status.configuration.embedding_binding}</span>
           <span>{t('graphPanel.statusCard.embeddingBindingHost')}:</span>
@@ -48,7 +48,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
       {status.configuration.enable_rerank && (
         <div className="space-y-1">
           <h4 className="font-medium">{t('graphPanel.statusCard.rerankerConfig')}</h4>
-          <div className="text-foreground grid grid-cols-[120px_1fr] gap-1">
+          <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
             <span>{t('graphPanel.statusCard.rerankerBindingHost')}:</span>
             <span>{status.configuration.rerank_binding_host || '-'}</span>
             <span>{t('graphPanel.statusCard.rerankerModel')}:</span>
@@ -59,7 +59,7 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
 
       <div className="space-y-1">
         <h4 className="font-medium">{t('graphPanel.statusCard.storageConfig')}</h4>
-        <div className="text-foreground grid grid-cols-[120px_1fr] gap-1">
+        <div className="text-foreground grid grid-cols-[160px_1fr] gap-1">
           <span>{t('graphPanel.statusCard.kvStorage')}:</span>
           <span>{status.configuration.kv_storage}</span>
           <span>{t('graphPanel.statusCard.docStatusStorage')}:</span>
