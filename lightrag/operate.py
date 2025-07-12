@@ -37,7 +37,7 @@ from .base import (
 )
 from .prompt import PROMPTS
 from .constants import GRAPH_FIELD_SEP
-from .kg.shared_storage import get_graph_db_lock_keyed
+from .kg.shared_storage import get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
 
@@ -1019,7 +1019,11 @@ async def _merge_edges_then_upsert(
         if await knowledge_graph_inst.has_node(need_insert_id):
             # This is so that the initial check for the existence of the node need not be locked
             continue
-        async with get_graph_db_lock_keyed([need_insert_id], enable_logging=False):
+        workspace = global_config.get("workspace", "")
+        namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+        async with get_storage_keyed_lock(
+            [need_insert_id], namespace=namespace, enable_logging=False
+        ):
             if not (await knowledge_graph_inst.has_node(need_insert_id)):
                 # # Discard this edge if the node does not exist
                 # if need_insert_id == src_id:
@@ -1162,7 +1166,11 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_entity_name(entity_name, entities):
         async with semaphore:
-            async with get_graph_db_lock_keyed([entity_name], enable_logging=False):
+            workspace = global_config.get("workspace", "")
+            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+            async with get_storage_keyed_lock(
+                [entity_name], namespace=namespace, enable_logging=False
+            ):
                 entity_data = await _merge_nodes_then_upsert(
                     entity_name,
                     entities,
@@ -1187,8 +1195,12 @@ async def merge_nodes_and_edges(
 
     async def _locked_process_edges(edge_key, edges):
         async with semaphore:
-            async with get_graph_db_lock_keyed(
-                f"{edge_key[0]}-{edge_key[1]}", enable_logging=False
+            workspace = global_config.get("workspace", "")
+            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+            async with get_storage_keyed_lock(
+                f"{edge_key[0]}-{edge_key[1]}",
+                namespace=namespace,
+                enable_logging=False,
             ):
                 edge_data = await _merge_edges_then_upsert(
                     edge_key[0],
