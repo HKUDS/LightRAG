@@ -56,11 +56,11 @@ _lock_registry: Optional[Dict[str, mp.synchronize.Lock]] = None
 _lock_registry_count: Optional[Dict[str, int]] = None
 _lock_cleanup_data: Optional[Dict[str, time.time]] = None
 _registry_guard = None
-# Timeout for keyed locks in seconds
+# Timeout for keyed locks in seconds (Default 300)
 CLEANUP_KEYED_LOCKS_AFTER_SECONDS = 300
-# Threshold for triggering cleanup - only clean when pending list exceeds this size
+# Cleanup pending list threshold for triggering cleanup (Default 500)
 CLEANUP_THRESHOLD = 500
-# Minimum interval between cleanup operations in seconds
+# Minimum interval between cleanup operations in seconds (Default 30)
 MIN_CLEANUP_INTERVAL_SECONDS = 30
 # Track the earliest cleanup time for efficient cleanup triggering (multiprocess locks only)
 _earliest_mp_cleanup_time: Optional[float] = None
