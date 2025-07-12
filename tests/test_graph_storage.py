@@ -4,15 +4,15 @@ Pytest integration for the modular graph storage test suite
 
 import pytest
 import os
-from tests.test_graph_storage.core.storage_setup import (
+from tests.graph.core.storage_setup import (
     initialize_graph_test_storage,
     cleanup_kuzu_test_environment,
 )
-from tests.test_graph_storage.tests.basic import test_graph_basic
-from tests.test_graph_storage.tests.advanced import test_graph_advanced
-from tests.test_graph_storage.tests.batch import test_graph_batch_operations
-from tests.test_graph_storage.tests.special_chars import test_graph_special_characters
-from tests.test_graph_storage.tests.undirected import test_graph_undirected_property
+from tests.graph.tests.basic import test_graph_basic
+from tests.graph.tests.advanced import test_graph_advanced
+from tests.graph.tests.batch import test_graph_batch_operations
+from tests.graph.tests.special_chars import test_graph_special_characters
+from tests.graph.tests.undirected import test_graph_undirected_property
 
 
 @pytest.fixture

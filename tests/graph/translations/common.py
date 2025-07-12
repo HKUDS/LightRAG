@@ -185,4 +185,20 @@ COMMON_TRANSLATIONS = {
     # Common descriptions
     "no_description": ["无描述", "No description"],
     "no_relationship": ["无关系", "No relationship"],
+    "batch_get_edges_result": [
+        "批量获取边属性结果",
+        "Batch get edge properties result",
+    ],
+    "batch_get_reverse_edges_result": [
+        "批量获取反向边属性结果",
+        "Batch get reverse edge properties result",
+    ],
+    "batch_get_nodes_edges_result": [
+        "批量获取节点边结果",
+        "Batch get node edges result",
+    ],
+    "undirected_nodes_edges_verification_success": [
+        "无向图特性验证成功：批量获取的节点边包含所有相关的边（无论方向）",
+        "Undirected graph property verification successful: batch obtained node edges contain all related edges (regardless of direction)",
+    ],
 }
