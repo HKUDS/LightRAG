@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
 
 
 # Define a direct print function for critical logs that must be visible in all processes
-def direct_log(message, enable_output: bool = True, level: str = "DEBUG"):
+def direct_log(message, enable_output: bool = False, level: str = "DEBUG"):
     """
     Log a message directly to stderr to ensure visibility in all processes,
     including the Gunicorn master process.
@@ -27,15 +27,15 @@ def direct_log(message, enable_output: bool = True, level: str = "DEBUG"):
         current_level = logger.getEffectiveLevel()
     except ImportError:
         # Fallback if lightrag.utils is not available
-        current_level = logging.INFO
+        current_level = 20  # INFO
 
     # Convert string level to numeric level for comparison
     level_mapping = {
-        "DEBUG": logging.DEBUG,  # 10
-        "INFO": logging.INFO,  # 20
-        "WARNING": logging.WARNING,  # 30
-        "ERROR": logging.ERROR,  # 40
-        "CRITICAL": logging.CRITICAL,  # 50
+        "DEBUG": 10,  # DEBUG
+        "INFO": 20,  # INFO
+        "WARNING": 30,  # WARNING
+        "ERROR": 40,  # ERROR
+        "CRITICAL": 50,  # CRITICAL
     }
     message_level = level_mapping.get(level.upper(), logging.DEBUG)
 
