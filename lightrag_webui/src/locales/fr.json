@@ -265,7 +265,11 @@
       "graphStorage": "Stockage du graphe",
       "vectorStorage": "Stockage vectoriel",
       "workspace": "Espace de travail",
-      "maxGraphNodes": "Nombre maximum de nœuds du graphe"
+      "maxGraphNodes": "Nombre maximum de nœuds du graphe",
+      "rerankerConfig": "Configuration du reclassement",
+      "rerankerBindingHost": "Hôte de liaison du reclassement",
+      "rerankerModel": "Modèle de reclassement",
+      "lockStatus": "État des verrous"
     },
     "propertiesView": {
       "editProperty": "Modifier {{property}}",

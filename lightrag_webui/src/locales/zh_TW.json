@@ -265,7 +265,11 @@
       "graphStorage": "圖形儲存",
       "vectorStorage": "向量儲存",
       "workspace": "工作空間",
-      "maxGraphNodes": "最大圖形節點數"
+      "maxGraphNodes": "最大圖形節點數",
+      "rerankerConfig": "重排序設定",
+      "rerankerBindingHost": "重排序綁定主機",
+      "rerankerModel": "重排序模型",
+      "lockStatus": "鎖定狀態"
     },
     "propertiesView": {
       "editProperty": "編輯{{property}}",

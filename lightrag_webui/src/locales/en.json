@@ -265,7 +265,11 @@
       "graphStorage": "Graph Storage",
       "vectorStorage": "Vector Storage",
       "workspace": "Workspace",
-      "maxGraphNodes": "Max Graph Nodes"
+      "maxGraphNodes": "Max Graph Nodes",
+      "rerankerConfig": "Reranker Configuration",
+      "rerankerBindingHost": "Reranker Binding Host",
+      "rerankerModel": "Reranker Model",
+      "lockStatus": "Lock Status"
     },
     "propertiesView": {
       "editProperty": "Edit {{property}}",
