@@ -714,16 +714,6 @@ class KeyedUnifiedLock:
                 enable_output=False,
             )
 
-        # Log cleanup results if any locks were cleaned
-        total_cleaned = cleanup_stats["mp_cleaned"] + cleanup_stats["async_cleaned"]
-        if total_cleaned > 0:
-            direct_log(
-                f"Keyed lock cleanup completed: {total_cleaned} locks cleaned "
-                f"(MP: {cleanup_stats['mp_cleaned']}, Async: {cleanup_stats['async_cleaned']})",
-                level="INFO",
-                enable_output=False,
-            )
-
         # 3. Get current status after cleanup
         current_status = self.get_lock_status()
 
