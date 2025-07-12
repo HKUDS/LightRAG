@@ -63,18 +63,6 @@ BATCH_TEST_TRANSLATIONS = {
         "批量获取边度数结果",
         "Batch get edge degrees result",
     ],
-    "batch_get_edges_result": [
-        "批量获取边属性结果",
-        "Batch get edge properties result",
-    ],
-    "batch_get_reverse_edges_result": [
-        "批量获取反向边属性结果",
-        "Batch get reverse edge properties result",
-    ],
-    "batch_get_nodes_edges_result": [
-        "批量获取节点边结果",
-        "Batch get node edges result",
-    ],
     # Insert messages
     "insert_node_1": ["插入节点1", "Insert node 1"],
     "insert_node_2": ["插入节点2", "Insert node 2"],
@@ -176,10 +164,6 @@ BATCH_TEST_TRANSLATIONS = {
     "undirected_batch_verification_success": [
         "无向图特性验证成功：批量获取的正向和反向边属性一致",
         "Undirected graph property verification successful: batch obtained forward and reverse edge properties are consistent",
-    ],
-    "undirected_nodes_edges_verification_success": [
-        "无向图特性验证成功：批量获取的节点边包含所有相关的边（无论方向）",
-        "Undirected graph property verification successful: batch obtained node edges contain all related edges (regardless of direction)",
     ],
     # Test completion
     "batch_operations_test_complete": [

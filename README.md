@@ -50,25 +50,27 @@
 </div>
 
 ---
+
 ## 🎉 News
-- [X] [2025.06.16]🎯📢Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an All-in-One Multimodal RAG System for seamless text, image, table, and equation processing.
-- [X] [2025.06.05]🎯📢LightRAG now supports comprehensive multimodal data handling through [RAG-Anything](https://github.com/HKUDS/RAG-Anything) integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
-- [X] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
-- [X] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
-- [X] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
-- [X] [2025.01.06]🎯📢You can now [use PostgreSQL for Storage](#using-postgresql-for-storage).
-- [X] [2024.12.31]🎯📢LightRAG now supports [deletion by document ID](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete).
-- [X] [2024.11.25]🎯📢LightRAG now supports seamless integration of [custom knowledge graphs](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#insert-custom-kg), empowering users to enhance the system with their own domain expertise.
-- [X] [2024.11.19]🎯📢A comprehensive guide to LightRAG is now available on [LearnOpenCV](https://learnopencv.com/lightrag). Many thanks to the blog author.
-- [X] [2024.11.11]🎯📢LightRAG now supports [deleting entities by their names](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete).
-- [X] [2024.11.09]🎯📢Introducing the [LightRAG Gui](https://lightrag-gui.streamlit.app), which allows you to insert, query, visualize, and download LightRAG knowledge.
-- [X] [2024.11.04]🎯📢You can now [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage).
-- [X] [2024.10.29]🎯📢LightRAG now supports multiple file types, including PDF, DOC, PPT, and CSV via `textract`.
-- [X] [2024.10.20]🎯📢We've added a new feature to LightRAG: Graph Visualization.
-- [X] [2024.10.18]🎯📢We've added a link to a [LightRAG Introduction Video](https://youtu.be/oageL-1I0GE). Thanks to the author!
-- [X] [2024.10.17]🎯📢We have created a [Discord channel](https://discord.gg/yF2MmDJyGJ)! Welcome to join for sharing and discussions! 🎉🎉
-- [X] [2024.10.16]🎯📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
-- [X] [2024.10.15]🎯📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
+
+- [x] [2025.06.16]🎯📢Our team has released [RAG-Anything](https://github.com/HKUDS/RAG-Anything) an All-in-One Multimodal RAG System for seamless text, image, table, and equation processing.
+- [x] [2025.06.05]🎯📢LightRAG now supports comprehensive multimodal data handling through [RAG-Anything](https://github.com/HKUDS/RAG-Anything) integration, enabling seamless document parsing and RAG capabilities across diverse formats including PDFs, images, Office documents, tables, and formulas. Please refer to the new [multimodal section](https://github.com/HKUDS/LightRAG/?tab=readme-ov-file#multimodal-document-processing-rag-anything-integration) for details.
+- [x] [2025.03.18]🎯📢LightRAG now supports citation functionality, enabling proper source attribution.
+- [x] [2025.02.05]🎯📢Our team has released [VideoRAG](https://github.com/HKUDS/VideoRAG) understanding extremely long-context videos.
+- [x] [2025.01.13]🎯📢Our team has released [MiniRAG](https://github.com/HKUDS/MiniRAG) making RAG simpler with small models.
+- [x] [2025.01.06]🎯📢You can now [use PostgreSQL for Storage](#using-postgresql-for-storage).
+- [x] [2024.12.31]🎯📢LightRAG now supports [deletion by document ID](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete).
+- [x] [2024.11.25]🎯📢LightRAG now supports seamless integration of [custom knowledge graphs](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#insert-custom-kg), empowering users to enhance the system with their own domain expertise.
+- [x] [2024.11.19]🎯📢A comprehensive guide to LightRAG is now available on [LearnOpenCV](https://learnopencv.com/lightrag). Many thanks to the blog author.
+- [x] [2024.11.11]🎯📢LightRAG now supports [deleting entities by their names](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#delete).
+- [x] [2024.11.09]🎯📢Introducing the [LightRAG Gui](https://lightrag-gui.streamlit.app), which allows you to insert, query, visualize, and download LightRAG knowledge.
+- [x] [2024.11.04]🎯📢You can now [use Neo4J for Storage](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#using-neo4j-for-storage).
+- [x] [2024.10.29]🎯📢LightRAG now supports multiple file types, including PDF, DOC, PPT, and CSV via `textract`.
+- [x] [2024.10.20]🎯📢We've added a new feature to LightRAG: Graph Visualization.
+- [x] [2024.10.18]🎯📢We've added a link to a [LightRAG Introduction Video](https://youtu.be/oageL-1I0GE). Thanks to the author!
+- [x] [2024.10.17]🎯📢We have created a [Discord channel](https://discord.gg/yF2MmDJyGJ)! Welcome to join for sharing and discussions! 🎉🎉
+- [x] [2024.10.16]🎯📢LightRAG now supports [Ollama models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
+- [x] [2024.10.15]🎯📢LightRAG now supports [Hugging Face models](https://github.com/HKUDS/LightRAG?tab=readme-ov-file#quick-start)!
 
 <details>
   <summary style="font-size: 1.4em; font-weight: bold; cursor: pointer; display: list-item;">
@@ -76,9 +78,9 @@
   </summary>
 
 ![LightRAG Indexing Flowchart](https://learnopencv.com/wp-content/uploads/2024/11/LightRAG-VectorDB-Json-KV-Store-Indexing-Flowchart-scaled.jpg)
-*Figure 1: LightRAG Indexing Flowchart - Img Caption : [Source](https://learnopencv.com/lightrag/)*
+_Figure 1: LightRAG Indexing Flowchart - Img Caption : [Source](https://learnopencv.com/lightrag/)_
 ![LightRAG Retrieval and Querying Flowchart](https://learnopencv.com/wp-content/uploads/2024/11/LightRAG-Querying-Flowchart-Dual-Level-Retrieval-Generation-Knowledge-Graphs-scaled.jpg)
-*Figure 2: LightRAG Retrieval and Querying Flowchart - Img Caption : [Source](https://learnopencv.com/lightrag/)*
+_Figure 2: LightRAG Retrieval and Querying Flowchart - Img Caption : [Source](https://learnopencv.com/lightrag/)_
 
 </details>
 
@@ -88,7 +90,7 @@
 
 The LightRAG Server is designed to provide Web UI and API support. The Web UI facilitates document indexing, knowledge graph exploration, and a simple RAG query interface. LightRAG Server also provide an Ollama compatible interfaces, aiming to emulate LightRAG as an Ollama chat model. This allows AI chat bot, such as Open WebUI, to access LightRAG easily.
 
-* Install from PyPI
+- Install from PyPI
 
 ```bash
 pip install "lightrag-hku[api]"
@@ -96,7 +98,7 @@ cp env.example .env
 lightrag-server
 ```
 
-* Installation from Source
+- Installation from Source
 
 ```bash
 git clone https://github.com/HKUDS/LightRAG.git
@@ -108,7 +110,7 @@ cp env.example .env
 lightrag-server
 ```
 
-* Launching the LightRAG Server with Docker Compose
+- Launching the LightRAG Server with Docker Compose
 
 ```
 git clone https://github.com/HKUDS/LightRAG.git
@@ -118,18 +120,18 @@ cp env.example .env
 docker compose up
 ```
 
-> Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images]( https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
+> Historical versions of LightRAG docker images can be found here: [LightRAG Docker Images](https://github.com/HKUDS/LightRAG/pkgs/container/lightrag)
 
-### Install  LightRAG Core
+### Install LightRAG Core
 
-* Install from source (Recommend)
+- Install from source (Recommend)
 
 ```bash
 cd LightRAG
 pip install -e .
 ```
 
-* Install from PyPI
+- Install from PyPI
 
 ```bash
 pip install lightrag-hku
@@ -157,7 +159,7 @@ LightRAG's demands on the capabilities of Large Language Models (LLMs) are signi
 
 ### Quick Start for LightRAG Server
 
-* For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).
+- For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).
 
 ### Quick Start for LightRAG core
 
@@ -179,6 +181,50 @@ For a streaming response implementation example, please see `examples/lightrag_o
 **Note 1**: When running the demo program, please be aware that different test scripts may use different embedding models. If you switch to a different embedding model, you must clear the data directory (`./dickens`); otherwise, the program may encounter errors. If you wish to retain the LLM cache, you can preserve the `kv_store_llm_response_cache.json` file while clearing the data directory.
 
 **Note 2**: Only `lightrag_openai_demo.py` and `lightrag_openai_compatible_demo.py` are officially supported sample codes. Other sample files are community contributions that haven't undergone full testing and optimization.
+
+## 🧪 Testing
+
+LightRAG includes a comprehensive test suite with bilingual support (English/Chinese) for testing various graph storage backends.
+
+### Quick Testing
+
+Run the interactive test suite with bilingual support:
+
+```bash
+# Interactive CLI (starts with bilingual language selection)
+python run_tests.py
+
+# Quick mode - run all tests with English interface
+python run_tests.py --language english --storage NetworkXStorage --tests all
+
+# Test specific functionality
+python run_tests.py --language chinese --storage KuzuDBStorage --tests basic advanced
+```
+
+### Available Test Categories
+
+- **Basic Tests**: Node insertion, edge creation, basic graph operations
+- **Advanced Tests**: Complex graph structures, multi-hop relationships
+- **Batch Tests**: Bulk operations, transaction handling
+- **Special Character Tests**: Unicode support, special character encoding
+- **Undirected Graph Tests**: Bidirectional relationships, graph consistency
+
+### Storage Backend Testing
+
+Test with different storage backends:
+
+```bash
+# NetworkX (default, no setup required)
+python run_tests.py --storage NetworkXStorage --tests all
+
+# KuzuDB (high-performance graph database)
+python run_tests.py --storage KuzuDBStorage --tests all
+
+# Neo4j (requires Neo4j instance)
+python run_tests.py --storage Neo4JStorage --tests all
+```
+
+For detailed testing information, see [tests/README.md](tests/README.md).
 
 ## Programing with LightRAG Core
 
@@ -365,7 +411,7 @@ class QueryParam:
     """
 ```
 
-> default value of Top_k can be change by environment  variables  TOP_K.
+> default value of Top_k can be change by environment variables TOP_K.
 
 ### LLM and Embedding Injection
 
@@ -374,7 +420,7 @@ LightRAG requires the utilization of LLM and Embedding models to accomplish docu
 <details>
 <summary> <b>Using Open AI-like APIs</b> </summary>
 
-* LightRAG also supports Open AI-like chat/embeddings APIs:
+- LightRAG also supports Open AI-like chat/embeddings APIs:
 
 ```python
 async def llm_model_func(
@@ -419,7 +465,7 @@ async def initialize_rag():
 <details>
 <summary> <b>Using Hugging Face Models</b> </summary>
 
-* If you want to use Hugging Face models, you only need to set LightRAG as follows:
+- If you want to use Hugging Face models, you only need to set LightRAG as follows:
 
 See `lightrag_hf_demo.py`
 
@@ -468,11 +514,11 @@ rag = LightRAG(
 )
 ```
 
-* **Increasing context size**
+- **Increasing context size**
 
 In order for LightRAG to work context should be at least 32k tokens. By default Ollama models have context size of 8k. You can achieve this using one of two ways:
 
-* **Increasing the `num_ctx` parameter in Modelfile**
+- **Increasing the `num_ctx` parameter in Modelfile**
 
 1. Pull the model:
 
@@ -498,7 +544,7 @@ PARAMETER num_ctx 32768
 ollama create -f Modelfile qwen2m
 ```
 
-* **Setup `num_ctx` via Ollama API**
+- **Setup `num_ctx` via Ollama API**
 
 Tiy can use `llm_model_kwargs` param to configure ollama:
 
@@ -519,7 +565,7 @@ rag = LightRAG(
 )
 ```
 
-* **Low RAM GPUs**
+- **Low RAM GPUs**
 
 In order to run this experiment on low RAM GPU you should select small model and tune context window (increasing context increase memory consumption). For example, running this ollama example on repurposed mining GPU with 6Gb of RAM required to set context size to 26k while using `gemma2:2b`. It was able to find 197 entities and 19 relations on `book.txt`.
 
@@ -784,9 +830,9 @@ Example connection configurations for each storage type can be found in the `env
 <details>
 <summary> <b>Using Neo4J Storage</b> </summary>
 
-* For production level scenarios you will most likely want to leverage an enterprise solution
-* for KG storage. Running Neo4J in Docker is recommended for seamless local testing.
-* See: https://hub.docker.com/_/neo4j
+- For production level scenarios you will most likely want to leverage an enterprise solution
+- for KG storage. Running Neo4J in Docker is recommended for seamless local testing.
+- See: https://hub.docker.com/_/neo4j
 
 ```python
 export NEO4J_URI="neo4j://localhost:7687"
@@ -872,9 +918,9 @@ rag = LightRAG(
 <details>
 <summary> <b>Using Memgraph for Storage</b> </summary>
 
-* Memgraph is a high-performance, in-memory graph database compatible with the Neo4j Bolt protocol.
-* You can run Memgraph locally using Docker for easy testing:
-* See: https://memgraph.com/download
+- Memgraph is a high-performance, in-memory graph database compatible with the Neo4j Bolt protocol.
+- You can run Memgraph locally using Docker for easy testing:
+- See: https://memgraph.com/download
 
 ```python
 export MEMGRAPH_URI="bolt://localhost:7687"
@@ -1074,7 +1120,6 @@ rag.insert_custom_kg(custom_kg)
 - **create_entity**: Creates a new entity with specified attributes
 - **edit_entity**: Updates an existing entity's attributes or renames it
 
-
 - **create_relation**: Creates a new relation between existing entities
 - **edit_relation**: Updates an existing relation's attributes
 
@@ -1100,6 +1145,7 @@ await rag.adelete_by_entity("Google")
 ```
 
 When deleting an entity:
+
 - Removes the entity node from the knowledge graph
 - Deletes all associated relationships
 - Removes related embedding vectors from the vector database
@@ -1121,6 +1167,7 @@ await rag.adelete_by_relation("Google", "Gmail")
 ```
 
 When deleting a relationship:
+
 - Removes the specified relationship edge
 - Deletes the relationship's embedding vector from the vector database
 - Preserves both entity nodes and their other relationships
@@ -1138,12 +1185,14 @@ await rag.adelete_by_doc_id("doc-12345")
 ```
 
 Optimized processing when deleting by document ID:
+
 - **Smart Cleanup**: Automatically identifies and removes entities and relationships that belong only to this document
 - **Preserve Shared Knowledge**: If entities or relationships exist in other documents, they are preserved and their descriptions are rebuilt
 - **Cache Optimization**: Clears related LLM cache to reduce storage overhead
 - **Incremental Rebuilding**: Reconstructs affected entity and relationship descriptions from remaining documents
 
 The deletion process includes:
+
 1. Delete all text chunks related to the document
 2. Identify and delete entities and relationships that belong only to this document
 3. Rebuild entities and relationships that still exist in other documents
@@ -1162,6 +1211,7 @@ Note: Deletion by document ID is an asynchronous operation as it involves comple
 4. **Backup Recommendations**: Consider backing up data before performing important deletion operations
 
 **Batch Deletion Recommendations:**
+
 - For batch deletion operations, consider using asynchronous methods for better performance
 - For large-scale deletions, consider processing in batches to avoid excessive system load
 
@@ -1228,11 +1278,11 @@ rag.merge_entities(
 
 When merging entities:
 
-* All relationships from source entities are redirected to the target entity
-* Duplicate relationships are intelligently merged
-* Self-relationships (loops) are prevented
-* Source entities are removed after merging
-* Relationship weights and attributes are preserved
+- All relationships from source entities are redirected to the target entity
+- Duplicate relationships are intelligently merged
+- Self-relationships (loops) are prevented
+- Source entities are removed after merging
+- Relationship weights and attributes are preserved
 
 </details>
 
@@ -1241,6 +1291,7 @@ When merging entities:
 LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/RAG-Anything), a comprehensive **All-in-One Multimodal Document Processing RAG system** built specifically for LightRAG. RAG-Anything enables advanced parsing and retrieval-augmented generation (RAG) capabilities, allowing you to handle multimodal documents seamlessly and extract structured content—including text, images, tables, and formulas—from various document formats for integration into your RAG pipeline.
 
 **Key Features:**
+
 - **End-to-End Multimodal Pipeline**: Complete workflow from document ingestion and parsing to intelligent multimodal query answering
 - **Universal Document Support**: Seamless processing of PDFs, Office documents (DOC/DOCX/PPT/PPTX/XLS/XLSX), images, and diverse file formats
 - **Specialized Content Analysis**: Dedicated processors for images, tables, mathematical equations, and heterogeneous content types
@@ -1248,31 +1299,32 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
 - **Hybrid Intelligent Retrieval**: Advanced search capabilities spanning textual and multimodal content with contextual understanding
 
 **Quick Start:**
+
 1. Install RAG-Anything:
    ```bash
    pip install raganything
    ```
 2. Process multimodal documents:
-    <details>
-    <summary> <b> RAGAnything Usage Example </b></summary>
+   <details>
+   <summary> <b> RAGAnything Usage Example </b></summary>
 
-    ```python
-        import asyncio
-        from raganything import RAGAnything
-        from lightrag import LightRAG
-        from lightrag.llm.openai import openai_complete_if_cache, openai_embed
-        from lightrag.utils import EmbeddingFunc
-        import os
+   ```python
+       import asyncio
+       from raganything import RAGAnything
+       from lightrag import LightRAG
+       from lightrag.llm.openai import openai_complete_if_cache, openai_embed
+       from lightrag.utils import EmbeddingFunc
+       import os
 
-        async def load_existing_lightrag():
-            # First, create or load an existing LightRAG instance
-            lightrag_working_dir = "./existing_lightrag_storage"
+       async def load_existing_lightrag():
+           # First, create or load an existing LightRAG instance
+           lightrag_working_dir = "./existing_lightrag_storage"
 
-            # Check if previous LightRAG instance exists
-            if os.path.exists(lightrag_working_dir) and os.listdir(lightrag_working_dir):
-                print("✅ Found existing LightRAG instance, loading...")
-            else:
-                print("❌ No existing LightRAG instance found, will create new one")
+           # Check if previous LightRAG instance exists
+           if os.path.exists(lightrag_working_dir) and os.listdir(lightrag_working_dir):
+               print("✅ Found existing LightRAG instance, loading...")
+           else:
+               print("❌ No existing LightRAG instance found, will create new one")
 
             # Create/Load LightRAG instance with your configurations
             lightrag_instance = LightRAG(
@@ -1296,55 +1348,56 @@ LightRAG now seamlessly integrates with [RAG-Anything](https://github.com/HKUDS/
                 )
             )
 
-            # Initialize storage (this will load existing data if available)
-            await lightrag_instance.initialize_storages()
+           # Initialize storage (this will load existing data if available)
+           await lightrag_instance.initialize_storages()
 
-            # Now initialize RAGAnything with the existing LightRAG instance
-            rag = RAGAnything(
-                lightrag=lightrag_instance,  # Pass the existing LightRAG instance
-                # Only need vision model for multimodal processing
-                vision_model_func=lambda prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs: openai_complete_if_cache(
-                    "gpt-4o",
-                    "",
-                    system_prompt=None,
-                    history_messages=[],
-                    messages=[
-                        {"role": "system", "content": system_prompt} if system_prompt else None,
-                        {"role": "user", "content": [
-                            {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
-                        ]} if image_data else {"role": "user", "content": prompt}
-                    ],
-                    api_key="your-api-key",
-                    **kwargs,
-                ) if image_data else openai_complete_if_cache(
-                    "gpt-4o-mini",
-                    prompt,
-                    system_prompt=system_prompt,
-                    history_messages=history_messages,
-                    api_key="your-api-key",
-                    **kwargs,
-                )
-                # Note: working_dir, llm_model_func, embedding_func, etc. are inherited from lightrag_instance
-            )
+           # Now initialize RAGAnything with the existing LightRAG instance
+           rag = RAGAnything(
+               lightrag=lightrag_instance,  # Pass the existing LightRAG instance
+               # Only need vision model for multimodal processing
+               vision_model_func=lambda prompt, system_prompt=None, history_messages=[], image_data=None, **kwargs: openai_complete_if_cache(
+                   "gpt-4o",
+                   "",
+                   system_prompt=None,
+                   history_messages=[],
+                   messages=[
+                       {"role": "system", "content": system_prompt} if system_prompt else None,
+                       {"role": "user", "content": [
+                           {"type": "text", "text": prompt},
+                           {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
+                       ]} if image_data else {"role": "user", "content": prompt}
+                   ],
+                   api_key="your-api-key",
+                   **kwargs,
+               ) if image_data else openai_complete_if_cache(
+                   "gpt-4o-mini",
+                   prompt,
+                   system_prompt=system_prompt,
+                   history_messages=history_messages,
+                   api_key="your-api-key",
+                   **kwargs,
+               )
+               # Note: working_dir, llm_model_func, embedding_func, etc. are inherited from lightrag_instance
+           )
 
-            # Query the existing knowledge base
-            result = await rag.query_with_multimodal(
-                "What data has been processed in this LightRAG instance?",
-                mode="hybrid"
-            )
-            print("Query result:", result)
+           # Query the existing knowledge base
+           result = await rag.query_with_multimodal(
+               "What data has been processed in this LightRAG instance?",
+               mode="hybrid"
+           )
+           print("Query result:", result)
 
-            # Add new multimodal documents to the existing LightRAG instance
-            await rag.process_document_complete(
-                file_path="path/to/new/multimodal_document.pdf",
-                output_dir="./output"
-            )
+           # Add new multimodal documents to the existing LightRAG instance
+           await rag.process_document_complete(
+               file_path="path/to/new/multimodal_document.pdf",
+               output_dir="./output"
+           )
 
-        if __name__ == "__main__":
-            asyncio.run(load_existing_lightrag())
-    ```
-    </details>
+       if __name__ == "__main__":
+           asyncio.run(load_existing_lightrag())
+   ```
+
+   </details>
 
 For detailed documentation and advanced usage, please refer to the [RAG-Anything repository](https://github.com/HKUDS/RAG-Anything).
 
@@ -1383,13 +1436,16 @@ print("Token usage:", token_tracker.get_usage())
 ```
 
 ### Usage Tips
+
 - Use context managers for long sessions or batch operations to automatically track all token consumption
 - For scenarios requiring segmented statistics, use manual mode and call reset() when appropriate
 - Regular checking of token usage helps detect abnormal consumption early
 - Actively use this feature during development and testing to optimize production costs
 
 ### Practical Examples
+
 You can refer to these examples for implementing token tracking:
+
 - `examples/lightrag_gemini_track_token_demo.py`: Token tracking example using Google Gemini model
 - `examples/lightrag_siliconcloud_track_token_demo.py`: Token tracking example using SiliconCloud model
 
@@ -1434,6 +1490,7 @@ rag.export_data("graph_data.md", file_format="md")
 # Export data in Text
 rag.export_data("graph_data.txt", file_format="txt")
 ```
+
 </details>
 
 <details>
@@ -1444,15 +1501,16 @@ Include vector embeddings in the export (optional):
 ```python
 rag.export_data("complete_data.csv", include_vector_data=True)
 ```
+
 </details>
 
 ### Data Included in Export
 
 All exports include:
 
-* Entity information (names, IDs, metadata)
-* Relation data (connections between entities)
-* Relationship information from vector database
+- Entity information (names, IDs, metadata)
+- Relation data (connections between entities)
+- Relationship information from vector database
 
 ## Cache
 
@@ -1496,10 +1554,12 @@ Valid modes are:
 If you encounter these errors when using LightRAG:
 
 1. **`AttributeError: __aenter__`**
+
    - **Cause**: Storage backends not initialized
    - **Solution**: Call `await rag.initialize_storages()` after creating the LightRAG instance
 
 2. **`KeyError: 'history_messages'`**
+
    - **Cause**: Pipeline status not initialized
    - **Solution**: Call `await initialize_pipeline_status()` after initializing storages
 
@@ -1518,7 +1578,7 @@ When switching between different embedding models, you must clear the data direc
 
 ## LightRAG API
 
-The LightRAG Server is designed to provide Web UI and API support.  **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
+The LightRAG Server is designed to provide Web UI and API support. **For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).**
 
 ## Graph Visualization
 
@@ -1619,28 +1679,28 @@ Output your evaluation in the following JSON format:
 
 ### Overall Performance Table
 
-|                      |**Agriculture**|            |**CS**|            |**Legal**|            |**Mix**|            |
-|----------------------|---------------|------------|------|------------|---------|------------|-------|------------|
-|                      |NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|NaiveRAG|**LightRAG**|
-|**Comprehensiveness**|32.4%|**67.6%**|38.4%|**61.6%**|16.4%|**83.6%**|38.8%|**61.2%**|
-|**Diversity**|23.6%|**76.4%**|38.0%|**62.0%**|13.6%|**86.4%**|32.4%|**67.6%**|
-|**Empowerment**|32.4%|**67.6%**|38.8%|**61.2%**|16.4%|**83.6%**|42.8%|**57.2%**|
-|**Overall**|32.4%|**67.6%**|38.8%|**61.2%**|15.2%|**84.8%**|40.0%|**60.0%**|
-|                      |RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|RQ-RAG|**LightRAG**|
-|**Comprehensiveness**|31.6%|**68.4%**|38.8%|**61.2%**|15.2%|**84.8%**|39.2%|**60.8%**|
-|**Diversity**|29.2%|**70.8%**|39.2%|**60.8%**|11.6%|**88.4%**|30.8%|**69.2%**|
-|**Empowerment**|31.6%|**68.4%**|36.4%|**63.6%**|15.2%|**84.8%**|42.4%|**57.6%**|
-|**Overall**|32.4%|**67.6%**|38.0%|**62.0%**|14.4%|**85.6%**|40.0%|**60.0%**|
-|                      |HyDE|**LightRAG**|HyDE|**LightRAG**|HyDE|**LightRAG**|HyDE|**LightRAG**|
-|**Comprehensiveness**|26.0%|**74.0%**|41.6%|**58.4%**|26.8%|**73.2%**|40.4%|**59.6%**|
-|**Diversity**|24.0%|**76.0%**|38.8%|**61.2%**|20.0%|**80.0%**|32.4%|**67.6%**|
-|**Empowerment**|25.2%|**74.8%**|40.8%|**59.2%**|26.0%|**74.0%**|46.0%|**54.0%**|
-|**Overall**|24.8%|**75.2%**|41.6%|**58.4%**|26.4%|**73.6%**|42.4%|**57.6%**|
-|                      |GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|GraphRAG|**LightRAG**|
-|**Comprehensiveness**|45.6%|**54.4%**|48.4%|**51.6%**|48.4%|**51.6%**|**50.4%**|49.6%|
-|**Diversity**|22.8%|**77.2%**|40.8%|**59.2%**|26.4%|**73.6%**|36.0%|**64.0%**|
-|**Empowerment**|41.2%|**58.8%**|45.2%|**54.8%**|43.6%|**56.4%**|**50.8%**|49.2%|
-|**Overall**|45.2%|**54.8%**|48.0%|**52.0%**|47.2%|**52.8%**|**50.4%**|49.6%|
+|                       | **Agriculture** |              | **CS**   |              | **Legal** |              | **Mix**   |              |
+| --------------------- | --------------- | ------------ | -------- | ------------ | --------- | ------------ | --------- | ------------ |
+|                       | NaiveRAG        | **LightRAG** | NaiveRAG | **LightRAG** | NaiveRAG  | **LightRAG** | NaiveRAG  | **LightRAG** |
+| **Comprehensiveness** | 32.4%           | **67.6%**    | 38.4%    | **61.6%**    | 16.4%     | **83.6%**    | 38.8%     | **61.2%**    |
+| **Diversity**         | 23.6%           | **76.4%**    | 38.0%    | **62.0%**    | 13.6%     | **86.4%**    | 32.4%     | **67.6%**    |
+| **Empowerment**       | 32.4%           | **67.6%**    | 38.8%    | **61.2%**    | 16.4%     | **83.6%**    | 42.8%     | **57.2%**    |
+| **Overall**           | 32.4%           | **67.6%**    | 38.8%    | **61.2%**    | 15.2%     | **84.8%**    | 40.0%     | **60.0%**    |
+|                       | RQ-RAG          | **LightRAG** | RQ-RAG   | **LightRAG** | RQ-RAG    | **LightRAG** | RQ-RAG    | **LightRAG** |
+| **Comprehensiveness** | 31.6%           | **68.4%**    | 38.8%    | **61.2%**    | 15.2%     | **84.8%**    | 39.2%     | **60.8%**    |
+| **Diversity**         | 29.2%           | **70.8%**    | 39.2%    | **60.8%**    | 11.6%     | **88.4%**    | 30.8%     | **69.2%**    |
+| **Empowerment**       | 31.6%           | **68.4%**    | 36.4%    | **63.6%**    | 15.2%     | **84.8%**    | 42.4%     | **57.6%**    |
+| **Overall**           | 32.4%           | **67.6%**    | 38.0%    | **62.0%**    | 14.4%     | **85.6%**    | 40.0%     | **60.0%**    |
+|                       | HyDE            | **LightRAG** | HyDE     | **LightRAG** | HyDE      | **LightRAG** | HyDE      | **LightRAG** |
+| **Comprehensiveness** | 26.0%           | **74.0%**    | 41.6%    | **58.4%**    | 26.8%     | **73.2%**    | 40.4%     | **59.6%**    |
+| **Diversity**         | 24.0%           | **76.0%**    | 38.8%    | **61.2%**    | 20.0%     | **80.0%**    | 32.4%     | **67.6%**    |
+| **Empowerment**       | 25.2%           | **74.8%**    | 40.8%    | **59.2%**    | 26.0%     | **74.0%**    | 46.0%     | **54.0%**    |
+| **Overall**           | 24.8%           | **75.2%**    | 41.6%    | **58.4%**    | 26.4%     | **73.6%**    | 42.4%     | **57.6%**    |
+|                       | GraphRAG        | **LightRAG** | GraphRAG | **LightRAG** | GraphRAG  | **LightRAG** | GraphRAG  | **LightRAG** |
+| **Comprehensiveness** | 45.6%           | **54.4%**    | 48.4%    | **51.6%**    | 48.4%     | **51.6%**    | **50.4%** | 49.6%        |
+| **Diversity**         | 22.8%           | **77.2%**    | 40.8%    | **59.2%**    | 26.4%     | **73.6%**    | 36.0%     | **64.0%**    |
+| **Empowerment**       | 41.2%           | **58.8%**    | 45.2%    | **54.8%**    | 43.6%     | **56.4%**    | **50.8%** | 49.2%        |
+| **Overall**           | 45.2%           | **54.8%**    | 48.0%    | **52.0%**    | 47.2%     | **52.8%**    | **50.4%** | 49.6%        |
 
 ## Reproduce
 
@@ -1783,7 +1843,7 @@ def extract_queries(file_path):
 
 ## 🔗 Related Projects
 
-*Ecosystem & Extensions*
+_Ecosystem & Extensions_
 
 <div align="center">
   <table>
@@ -1844,7 +1904,6 @@ def extract_queries(file_path):
 </div>
 
 ---
-
 
 ## 📖 Citation
 
