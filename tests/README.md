@@ -10,7 +10,7 @@ tests/
 ├── __init__.py                        # Package initialization
 ├── conftest.py                        # Pytest configuration
 ├── test_cli.py                        # Interactive CLI test runner
-├── test_graph.py                      # Graph storage test suite
+├── test_graph_storage.py              # Graph storage test suite
 ├── test_kuzu_impl.py                  # KuzuDB implementation tests
 ├── test_kuzu_integration.py           # KuzuDB integration tests
 ├── test_lightrag_ollama_chat.py       # Ollama chat integration tests
@@ -63,18 +63,15 @@ tests/
 
 ## Quick Access 🚀
 
-For the easiest testing experience, use the root-level launcher:
+Use the root-level launcher for the easiest testing experience:
 
 ```bash
-# From the project root directory
-python run_tests.py
+# Interactive mode with bilingual language selection
+<python/uv run> run_tests.py
 
 # Or make it executable and run directly
-chmod +x run_tests.py
-./run_tests.py
+chmod +x run_tests.py && ./run_tests.py
 ```
-
-This provides the same interactive CLI experience as `python tests/test_cli.py`.
 
 ## Running Tests
 
@@ -82,38 +79,32 @@ This provides the same interactive CLI experience as `python tests/test_cli.py`.
 
 ```bash
 # Run all tests with pytest
-pytest tests/ -v
-
-# Using uv (recommended)
-uv run pytest tests/ -v
+<pytest/uv run pytest> tests/ -v
 ```
 
-### 2. Interactive CLI Test Runner 🎯
+### 2. Interactive CLI Test Runner 🎯 [RECOMMENDED]
 
-**The easiest way to run tests** - Use the interactive CLI with bilingual support:
+**The easiest way to run tests** - Interactive CLI with bilingual support:
 
 ```bash
-# Interactive mode (prompts for language, storage, and test selection)
-python tests/test_cli.py
+# Interactive mode (starts with bilingual language selection)
+<python/uv run> tests/test_cli.py
 
-# Or with uv
-uv run python tests/test_cli.py
+# Or use the root-level launcher
+<python/uv run> run_tests.py
 ```
 
 **Quick CLI Mode** - Skip interaction by providing all parameters:
 
 ```bash
 # Run specific test with English interface
-python tests/test_cli.py --language english --storage NetworkXStorage --tests basic
+<python/uv run> tests/test_cli.py --language english --storage NetworkXStorage --tests basic
 
 # Run multiple tests
-python tests/test_cli.py --language english --storage NetworkXStorage --tests basic advanced
+<python/uv run> tests/test_cli.py --language english --storage NetworkXStorage --tests basic advanced
 
 # Run all tests with Chinese interface
-python tests/test_cli.py --language chinese --storage KuzuDBStorage --tests all
-
-# Using uv (recommended)
-uv run python tests/test_cli.py --language english --storage NetworkXStorage --tests all
+<python/uv run> tests/test_cli.py --language chinese --storage KuzuDBStorage --tests all
 ```
 
 **CLI Features:**
@@ -125,139 +116,73 @@ uv run python tests/test_cli.py --language english --storage NetworkXStorage --t
 - ⚡ **Quick Mode**: Non-interactive execution with command-line parameters
 - 🔄 **Repeatable**: Option to run additional tests after completion
 
-### 3. Graph Storage Test Suite
+### 3. Pytest Integration
 
-The graph storage test suite provides clean, organized tests with bilingual support:
+For traditional pytest workflows:
 
 ```bash
 # Run all graph storage tests
-uv run pytest tests/test_graph_storage.py -v
+<uv run pytest/pytest> tests/test_graph_storage.py -v
 
 # Run specific test categories
-uv run pytest tests/test_graph_storage.py::test_basic_graph_operations -v
-uv run pytest tests/test_graph_storage.py::test_advanced_graph_operations -v
-uv run pytest tests/test_graph_storage.py::test_batch_graph_operations -v
-uv run pytest tests/test_graph_storage.py::test_special_characters_handling -v
-uv run pytest tests/test_graph_storage.py::test_undirected_graph_properties -v
+<uv run pytest/pytest> tests/test_graph_storage.py::test_basic_graph_operations -v
+<uv run pytest/pytest> tests/test_graph_storage.py::test_advanced_graph_operations -v
+<uv run pytest/pytest> tests/test_graph_storage.py::test_batch_graph_operations -v
+<uv run pytest/pytest> tests/test_graph_storage.py::test_special_characters_handling -v
+<uv run pytest/pytest> tests/test_graph_storage.py::test_undirected_graph_properties -v
 
 # Run Chinese language variants
-uv run pytest tests/test_graph_storage.py::test_basic_graph_operations_chinese -v
-uv run pytest tests/test_graph_storage.py::test_special_characters_handling_chinese -v
+<uv run pytest/pytest> tests/test_graph_storage.py::test_basic_graph_operations_chinese -v
+<uv run pytest/pytest> tests/test_graph_storage.py::test_special_characters_handling_chinese -v
 ```
 
-### 4. Interactive Mode
-
-The test suite includes an interactive mode with options for specific test types and languages:
+### 4. Storage Backend Testing
 
 ```bash
-# Run interactive mode with default settings (basic test, Chinese language)
-python -m tests.graph.main
+# NetworkX Storage (default, no additional setup required)
+<uv run pytest/pytest> tests/test_graph_storage.py -v
 
-# Run specific test types
-python -m tests.graph.main --test basic
-python -m tests.graph.main --test advanced
-python -m tests.graph.main --test batch
-python -m tests.graph.main --test special
-python -m tests.graph.main --test undirected
-python -m tests.graph.main --test all
-
-# Run with specific language
-python -m tests.graph.main --language english
-python -m tests.graph.main --language chinese
-
-# Combine options
-python -m tests.graph.main --test all --language english
-
-# Using uv (recommended)
-uv run python -m tests.graph.main --test all --language english
-```
-
-**Interactive Mode Options:**
-
-- `--test`: Choose specific test category or run all tests
-
-  - `basic`: Node insertion, edge creation, basic graph operations
-  - `advanced`: Complex graph structures, multi-hop relationships
-  - `batch`: Bulk operations, transaction handling
-  - `special`: Unicode support, special character encoding
-  - `undirected`: Bidirectional relationships, graph symmetry
-  - `all`: Run all test categories sequentially
-
-- `--language`: Select output language
-  - `english`: English test output and messages
-  - `chinese`: Chinese test output and messages
-
-### 5. Direct Module Execution
-
-You can also run the main test suite directly:
-
-```bash
-# Run all tests via main entry point (from project root)
-python -m tests.graph.main
-
-# Note: Individual test modules are designed to be run via pytest
-# Use the specific pytest commands shown in section 2 above
-```
-
-### 6. Storage Backend Testing
-
-#### NetworkX Storage (Default)
-
-```bash
-# No additional setup required
-uv run pytest tests/test_graph_storage.py -v
-```
-
-#### KuzuDB Storage
-
-```bash
-# Test with KuzuDB backend
-LIGHTRAG_GRAPH_STORAGE=KuzuDBStorage uv run pytest tests/test_graph_storage.py -v
+# KuzuDB Storage
+LIGHTRAG_GRAPH_STORAGE=KuzuDBStorage <uv run pytest/pytest> tests/test_graph_storage.py -v
 
 # KuzuDB specific tests
-uv run pytest tests/test_kuzu_impl.py -v
-uv run pytest tests/test_kuzu_integration.py -v
+<uv run pytest/pytest> tests/test_kuzu_impl.py -v
+<uv run pytest/pytest> tests/test_kuzu_integration.py -v
+
+# Neo4j Storage (requires Neo4j instance)
+LIGHTRAG_GRAPH_STORAGE=Neo4JStorage <uv run pytest/pytest> tests/test_graph_storage.py -v
+
+# MongoDB Storage (requires MongoDB instance)
+LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage <uv run pytest/pytest> tests/test_graph_storage.py -v
 ```
 
-#### Other Storage Backends
-
-```bash
-# Neo4j (requires Neo4j instance)
-LIGHTRAG_GRAPH_STORAGE=Neo4JStorage uv run pytest tests/test_graph_storage.py -v
-
-# MongoDB (requires MongoDB instance)
-LIGHTRAG_GRAPH_STORAGE=MongoGraphStorage uv run pytest tests/test_graph_storage.py -v
-```
-
-### 7. Language Testing
-
-The test suite supports bilingual execution:
+### 5. Language Testing
 
 ```bash
 # Test with English translations
-TEST_LANGUAGE=english uv run pytest tests/test_graph_storage.py -v
+TEST_LANGUAGE=english <uv run pytest/pytest> tests/test_graph_storage.py -v
 
 # Test with Chinese translations
-TEST_LANGUAGE=chinese uv run pytest tests/test_graph_storage.py -v
+TEST_LANGUAGE=chinese <uv run pytest/pytest> tests/test_graph_storage.py -v
 ```
 
-### 8. Advanced Testing Options
+### 6. Advanced Testing Options
 
 ```bash
 # Run with detailed output
-uv run pytest tests/test_graph_storage.py -v -s
+<uv run pytest/pytest> tests/test_graph_storage.py -v -s
 
 # Run specific test pattern
-uv run pytest tests/test_graph_storage.py -k "basic" -v
+<uv run pytest/pytest> tests/test_graph_storage.py -k "basic" -v
 
 # Run with coverage
-uv run pytest tests/test_graph_storage.py --cov=lightrag --cov-report=html
+<uv run pytest/pytest> tests/test_graph_storage.py --cov=lightrag --cov-report=html
 
 # Run with parallel execution
-uv run pytest tests/test_graph_storage.py -n auto
+<uv run pytest/pytest> tests/test_graph_storage.py -n auto
 
 # Run with specific markers
-uv run pytest tests/test_graph_storage.py -m "asyncio" -v
+<uv run pytest/pytest> tests/test_graph_storage.py -m "asyncio" -v
 ```
 
 ## Test Categories
@@ -303,10 +228,8 @@ uv run pytest tests/test_graph_storage.py -m "asyncio" -v
 
 1. **Storage Initialization Failed**
 
-   ```bash
-   # Check if storage backend is properly configured
-   # For KuzuDB, ensure write permissions in test directory
-   ```
+   - Check if storage backend is properly configured
+   - For KuzuDB, ensure write permissions in test directory
 
 2. **Translation Errors**
 
@@ -319,8 +242,7 @@ uv run pytest tests/test_graph_storage.py -m "asyncio" -v
 
    ```bash
    # Install missing packages
-   uv sync
-   pip install -r requirements.txt
+   <uv sync/pip install> -r requirements.txt
    ```
 
 4. **Permission Errors (KuzuDB)**
@@ -334,16 +256,13 @@ uv run pytest tests/test_graph_storage.py -m "asyncio" -v
 
    ```bash
    # Use interactive CLI for detailed debugging
-   python tests/test_cli.py --language english --storage NetworkXStorage --tests basic
+   <python/uv run> tests/test_cli.py --language english --storage NetworkXStorage --tests basic
    # This provides more detailed output for debugging specific issues
    ```
 
 6. **CLI Mode Advantages**
-   ```bash
-   # The CLI provides better error reporting and progress tracking
-   python tests/test_cli.py
-   # Especially useful for beginners or when debugging storage issues
-   ```
+   - The CLI provides better error reporting and progress tracking
+   - Especially useful for beginners or when debugging storage issues
 
 ### Environment Variables
 
@@ -378,7 +297,7 @@ Typical execution times:
 
 When adding new tests:
 
-1. **Follow the modular structure** - Add new test files to `tests/test_graph_storage_storage/tests/`
+1. **Follow the modular structure** - Add new test files to `tests/graph/tests/`
 2. **Add translations** - Create corresponding translation files in `translations/`
 3. **Update pytest integration** - Add new tests to `test_graph_storage.py`
 4. **Document changes** - Update this README with new test categories
