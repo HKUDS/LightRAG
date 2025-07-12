@@ -1016,25 +1016,12 @@ async def _merge_edges_then_upsert(
     )
 
     for need_insert_id in [src_id, tgt_id]:
-        if await knowledge_graph_inst.has_node(need_insert_id):
-            # This is so that the initial check for the existence of the node need not be locked
-            continue
         workspace = global_config.get("workspace", "")
         namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
         async with get_storage_keyed_lock(
             [need_insert_id], namespace=namespace, enable_logging=False
         ):
             if not (await knowledge_graph_inst.has_node(need_insert_id)):
-                # # Discard this edge if the node does not exist
-                # if need_insert_id == src_id:
-                #     logger.warning(
-                #         f"Discard edge: {src_id} - {tgt_id} | Source node missing"
-                #     )
-                # else:
-                #     logger.warning(
-                #         f"Discard edge: {src_id} - {tgt_id} | Target node missing"
-                #     )
-                # return None
                 await knowledge_graph_inst.upsert_node(
                     need_insert_id,
                     node_data={
