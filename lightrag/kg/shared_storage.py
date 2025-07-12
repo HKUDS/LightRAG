@@ -340,6 +340,9 @@ def _perform_lock_cleanup(
         cleaned_count = 0
         new_earliest_time = None
 
+        # Calculate total count before cleanup
+        total_cleanup_len = len(cleanup_data)
+
         # Perform cleanup operation
         for cleanup_key, cleanup_time in list(cleanup_data.items()):
             if current_time - cleanup_time > CLEANUP_KEYED_LOCKS_AFTER_SECONDS:
@@ -369,7 +372,6 @@ def _perform_lock_cleanup(
                 else float("inf"),
                 MIN_CLEANUP_INTERVAL_SECONDS,
             )
-            total_cleanup_len = len(cleanup_data)
 
             if lock_type == "async":
                 direct_log(
