@@ -422,7 +422,7 @@ def _get_or_create_shared_raw_mp_lock(
                     f"Shared-Data lock registry for {factory_name} is corrupted for key {key}"
                 )
             if (
-                count == 1 and combined_key in _lock_cleanup_data
+                count == 0 and combined_key in _lock_cleanup_data
             ):  # Reusing an key waiting for cleanup, remove it from cleanup list
                 _lock_cleanup_data.pop(combined_key)
         count += 1
