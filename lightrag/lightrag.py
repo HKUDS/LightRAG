@@ -231,7 +231,7 @@ class LightRAG:
     llm_model_name: str = field(default="gpt-4o-mini")
     """Name of the LLM model used for generating responses."""
 
-    llm_model_max_token_size: int = field(default=int(os.getenv("MAX_TOKENS", 32768)))
+    llm_model_max_token_size: int = field(default=int(os.getenv("MAX_TOKENS", 32000)))
     """Maximum number of tokens allowed per LLM response."""
 
     llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 4)))

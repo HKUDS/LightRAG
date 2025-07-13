@@ -71,8 +71,10 @@ LLM_BINDING=ollama
 LLM_MODEL=mistral-nemo:latest
 LLM_BINDING_HOST=http://localhost:11434
 # LLM_BINDING_API_KEY=your_api_key
-### Max tokens sent to LLM (based on your Ollama Server capacity)
-MAX_TOKENS=8192
+### Max tokens sent to LLM for entity relation description summarization (Less than LLM context length)
+MAX_TOKENS=7500
+###  Ollama Server context length
+OLLAMA_NUM_CTX=8192
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434

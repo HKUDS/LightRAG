@@ -118,7 +118,7 @@ async def _handle_entity_relation_summary(
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     llm_max_tokens = global_config["llm_model_max_token_size"]
-    summary_max_tokens = global_config["summary_to_max_tokens"]
+    # summary_max_tokens = global_config["summary_to_max_tokens"]
 
     language = global_config["addon_params"].get(
         "language", PROMPTS["DEFAULT_LANGUAGE"]
@@ -145,7 +145,7 @@ async def _handle_entity_relation_summary(
         use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
-        max_tokens=summary_max_tokens,
+        # max_tokens=summary_max_tokens,
         cache_type="extract",
     )
     return summary
@@ -687,7 +687,10 @@ async def _rebuild_single_entity(
 
     # Helper function to generate final description with optional LLM summary
     async def _generate_final_description(combined_description: str) -> str:
-        if len(combined_description) > global_config["summary_to_max_tokens"]:
+        force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
+        num_fragment = combined_description.count(GRAPH_FIELD_SEP) + 1
+
+        if num_fragment >= force_llm_summary_on_merge:
             return await _handle_entity_relation_summary(
                 entity_name,
                 combined_description,
@@ -842,8 +845,11 @@ async def _rebuild_single_relationship(
     # )
     weight = sum(weights) if weights else current_relationship.get("weight", 1.0)
 
-    # Use summary if description is too long
-    if len(combined_description) > global_config["summary_to_max_tokens"]:
+    # Use summary if description has too many fragments
+    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
+    num_fragment = combined_description.count(GRAPH_FIELD_SEP) + 1
+
+    if num_fragment >= force_llm_summary_on_merge:
         final_description = await _handle_entity_relation_summary(
             f"{src}-{tgt}",
             combined_description,
