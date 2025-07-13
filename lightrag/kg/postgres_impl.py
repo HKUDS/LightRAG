@@ -470,6 +470,115 @@ class PostgreSQLDB:
                 f"Failed to add llm_cache_list column to LIGHTRAG_DOC_CHUNKS: {e}"
             )
 
+    async def _migrate_field_lengths(self):
+        """Migrate database field lengths: entity_name, source_id, target_id, and file_path"""
+        # Define the field changes needed
+        field_migrations = [
+            {
+                "table": "LIGHTRAG_VDB_ENTITY",
+                "column": "entity_name",
+                "old_type": "character varying(255)",
+                "new_type": "VARCHAR(512)",
+                "description": "entity_name from 255 to 512",
+            },
+            {
+                "table": "LIGHTRAG_VDB_RELATION",
+                "column": "source_id",
+                "old_type": "character varying(256)",
+                "new_type": "VARCHAR(512)",
+                "description": "source_id from 256 to 512",
+            },
+            {
+                "table": "LIGHTRAG_VDB_RELATION",
+                "column": "target_id",
+                "old_type": "character varying(256)",
+                "new_type": "VARCHAR(512)",
+                "description": "target_id from 256 to 512",
+            },
+            {
+                "table": "LIGHTRAG_DOC_CHUNKS",
+                "column": "file_path",
+                "old_type": "character varying(256)",
+                "new_type": "TEXT",
+                "description": "file_path to TEXT NULL",
+            },
+            {
+                "table": "LIGHTRAG_VDB_CHUNKS",
+                "column": "file_path",
+                "old_type": "character varying(256)",
+                "new_type": "TEXT",
+                "description": "file_path to TEXT NULL",
+            },
+        ]
+
+        for migration in field_migrations:
+            try:
+                # Check current column definition
+                check_column_sql = """
+                SELECT column_name, data_type, character_maximum_length, is_nullable
+                FROM information_schema.columns
+                WHERE table_name = $1 AND column_name = $2
+                """
+
+                column_info = await self.query(
+                    check_column_sql,
+                    {
+                        "table_name": migration["table"].lower(),
+                        "column_name": migration["column"],
+                    },
+                )
+
+                if not column_info:
+                    logger.warning(
+                        f"Column {migration['table']}.{migration['column']} does not exist, skipping migration"
+                    )
+                    continue
+
+                current_type = column_info.get("data_type", "").lower()
+                current_length = column_info.get("character_maximum_length")
+
+                # Check if migration is needed
+                needs_migration = False
+
+                if migration["column"] == "entity_name" and current_length == 255:
+                    needs_migration = True
+                elif (
+                    migration["column"] in ["source_id", "target_id"]
+                    and current_length == 256
+                ):
+                    needs_migration = True
+                elif (
+                    migration["column"] == "file_path"
+                    and current_type == "character varying"
+                ):
+                    needs_migration = True
+
+                if needs_migration:
+                    logger.info(
+                        f"Migrating {migration['table']}.{migration['column']}: {migration['description']}"
+                    )
+
+                    # Execute the migration
+                    alter_sql = f"""
+                    ALTER TABLE {migration['table']}
+                    ALTER COLUMN {migration['column']} TYPE {migration['new_type']}
+                    """
+
+                    await self.execute(alter_sql)
+                    logger.info(
+                        f"Successfully migrated {migration['table']}.{migration['column']}"
+                    )
+                else:
+                    logger.info(
+                        f"Column {migration['table']}.{migration['column']} already has correct type, no migration needed"
+                    )
+
+            except Exception as e:
+                # Log error but don't interrupt the process
+                logger.warning(
+                    f"Failed to migrate {migration['table']}.{migration['column']}: {e}"
+                )
+
     async def check_tables(self):
         # First create all tables
         for k, v in TABLES.items():
@@ -581,6 +690,12 @@ class PostgreSQLDB:
             logger.error(
                 f"PostgreSQL, Failed to migrate text chunks llm_cache_list field: {e}"
             )
+
+        # Migrate field lengths for entity_name, source_id, target_id, and file_path
+        try:
+            await self._migrate_field_lengths()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to migrate field lengths: {e}")
 
     async def query(
         self,
@@ -2993,7 +3108,7 @@ TABLES = {
                     chunk_order_index INTEGER,
                     tokens INTEGER,
                     content TEXT,
-                    file_path VARCHAR(256),
+                    file_path TEXT NULL,
                     llm_cache_list JSONB NULL DEFAULT '[]'::jsonb,
                     create_time TIMESTAMP(0) WITH TIME ZONE,
                     update_time TIMESTAMP(0) WITH TIME ZONE,
@@ -3009,7 +3124,7 @@ TABLES = {
                     tokens INTEGER,
                     content TEXT,
                     content_vector VECTOR,
-                    file_path VARCHAR(256),
+                    file_path TEXT NULL,
                     create_time TIMESTAMP(0) WITH TIME ZONE,
                     update_time TIMESTAMP(0) WITH TIME ZONE,
 	                CONSTRAINT LIGHTRAG_VDB_CHUNKS_PK PRIMARY KEY (workspace, id)
@@ -3019,7 +3134,7 @@ TABLES = {
         "ddl": """CREATE TABLE LIGHTRAG_VDB_ENTITY (
                     id VARCHAR(255),
                     workspace VARCHAR(255),
-                    entity_name VARCHAR(255),
+                    entity_name VARCHAR(512),
                     content TEXT,
                     content_vector VECTOR,
                     create_time TIMESTAMP(0) WITH TIME ZONE,
@@ -3033,8 +3148,8 @@ TABLES = {
         "ddl": """CREATE TABLE LIGHTRAG_VDB_RELATION (
                     id VARCHAR(255),
                     workspace VARCHAR(255),
-                    source_id VARCHAR(256),
-                    target_id VARCHAR(256),
+                    source_id VARCHAR(512),
+                    target_id VARCHAR(512),
                     content TEXT,
                     content_vector VECTOR,
                     create_time TIMESTAMP(0) WITH TIME ZONE,
