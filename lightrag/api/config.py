@@ -108,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=get_env_value("MAX_TOKENS", 32768, int),
+        default=get_env_value("MAX_TOKENS", 32000, int),
         help="Maximum token size (default: from env or 32768)",
     )
 
@@ -269,6 +269,9 @@ def parse_args() -> argparse.Namespace:
     if args.llm_binding == "openai-ollama":
         args.llm_binding = "openai"
         args.embedding_binding = "ollama"
+
+    # Ollama ctx_num
+    args.ollama_num_ctx = get_env_value("OLLAMA_NUM_CTX", 32768, int)
 
     args.llm_binding_host = get_env_value(
         "LLM_BINDING_HOST", get_default_host(args.llm_binding)
