@@ -4,13 +4,10 @@ import inspect
 import logging
 import logging.config
 from lightrag import LightRAG, QueryParam
-from lightrag.llm.ollama import ollama_model_complete, ollama_embed
 from lightrag.utils import EmbeddingFunc, logger, set_verbose_debug
 from lightrag.kg.shared_storage import initialize_pipeline_status
 
 import requests
-import json
-from functools import partial
 import numpy as np
 from dotenv import load_dotenv
 
@@ -21,29 +18,32 @@ load_dotenv(dotenv_path=".env", override=False)
 
 
 """    ----========= IMPORTANT CHANGE THIS! =========----    """
-cloudflare_api_key = 'YOUR_API_KEY'
-account_id = 'YOUR_ACCOUNT ID'     #This is unique to your Cloudflare account 
+cloudflare_api_key = "YOUR_API_KEY"
+account_id = "YOUR_ACCOUNT ID"  # This is unique to your Cloudflare account
 
 # Authomatically changes
 api_base_url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/"
 
 
 # choose an embedding model
-EMBEDDING_MODEL = '@cf/baai/bge-m3'
+EMBEDDING_MODEL = "@cf/baai/bge-m3"
 # choose a generative model
 LLM_MODEL = "@cf/meta/llama-3.2-3b-instruct"
 
-WORKING_DIR = "../dickens"     #you can change output as desired
+WORKING_DIR = "../dickens"  # you can change output as desired
+
 
 # Cloudflare init
 class CloudflareWorker:
-    def __init__(self,
-                 cloudflare_api_key: str,
-                 api_base_url: str,
-                 llm_model_name: str,
-                 embedding_model_name: str,
-                 max_tokens: int = 4080,
-                 max_response_tokens: int = 4080):
+    def __init__(
+        self,
+        cloudflare_api_key: str,
+        api_base_url: str,
+        llm_model_name: str,
+        embedding_model_name: str,
+        max_tokens: int = 4080,
+        max_response_tokens: int = 4080,
+    ):
         self.cloudflare_api_key = cloudflare_api_key
         self.api_base_url = api_base_url
         self.llm_model_name = llm_model_name
@@ -54,23 +54,21 @@ class CloudflareWorker:
     async def _send_request(self, model_name: str, input_: dict, debug_log: str):
         headers = {"Authorization": f"Bearer {self.cloudflare_api_key}"}
 
-        print(f'''
+        print(f"""
         data sent to Cloudflare
         ~~~~~~~~~~~
         {debug_log}
-        ''')
+        """)
 
         try:
             response_raw = requests.post(
-                f"{self.api_base_url}{model_name}",
-                headers=headers,
-                json=input_
+                f"{self.api_base_url}{model_name}", headers=headers, json=input_
             ).json()
-            print(f'''
+            print(f"""
         Cloudflare worker responded with:
         ~~~~~~~~~~~
         {str(response_raw)}
-            ''')
+            """)
             result = response_raw.get("result", {})
 
             if "data" in result:  # Embedding case
@@ -82,22 +80,21 @@ class CloudflareWorker:
             raise ValueError("Unexpected Cloudflare response format")
 
         except Exception as e:
-            print(f'''
+            print(f"""
             Cloudflare API returned:
             ~~~~~~~~~
             Error: {e}
-            ''')
+            """)
             input("Press Enter to continue...")
             return None
 
-    async def query(self, prompt, system_prompt: str = '', **kwargs) -> str:
-
+    async def query(self, prompt, system_prompt: str = "", **kwargs) -> str:
         # since no caching is used and we don't want to mess with everything lightrag, pop the kwarg it is
         kwargs.pop("hashing_kv", None)
 
         message = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ]
 
         input_ = {
@@ -109,15 +106,15 @@ class CloudflareWorker:
         return await self._send_request(
             self.llm_model_name,
             input_,
-            debug_log=f"\n- model used {self.llm_model_name}\n- system prompt: {system_prompt}\n- query: {prompt}"
+            debug_log=f"\n- model used {self.llm_model_name}\n- system prompt: {system_prompt}\n- query: {prompt}",
         )
 
     async def embedding_chunk(self, texts: list[str]) -> np.ndarray:
-        print(f'''
+        print(f"""
         TEXT inputted
         ~~~~~
         {texts}
-        ''')
+        """)
 
         input_ = {
             "text": texts,
@@ -128,10 +125,8 @@ class CloudflareWorker:
         return await self._send_request(
             self.embedding_model_name,
             input_,
-            debug_log=f"\n-llm model name {self.embedding_model_name}\n- texts: {texts}"
+            debug_log=f"\n-llm model name {self.embedding_model_name}\n- texts: {texts}",
         )
-
-
 
 
 def configure_logging():
@@ -145,7 +140,9 @@ def configure_logging():
 
     # Get log directory path from environment variable or use current directory
     log_dir = os.getenv("LOG_DIR", os.getcwd())
-    log_file_path = os.path.abspath(os.path.join(log_dir, "lightrag_cloudflare_worker_demo.log"))
+    log_file_path = os.path.abspath(
+        os.path.join(log_dir, "lightrag_cloudflare_worker_demo.log")
+    )
 
     print(f"\nLightRAG compatible demo log file: {log_file_path}\n")
     os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
@@ -203,10 +200,10 @@ if not os.path.exists(WORKING_DIR):
 
 async def initialize_rag():
     cloudflare_worker = CloudflareWorker(
-        cloudflare_api_key = cloudflare_api_key,
-        api_base_url = api_base_url,
-        embedding_model_name = EMBEDDING_MODEL,
-        llm_model_name = LLM_MODEL,
+        cloudflare_api_key=cloudflare_api_key,
+        api_base_url=api_base_url,
+        embedding_model_name=EMBEDDING_MODEL,
+        llm_model_name=LLM_MODEL,
     )
 
     rag = LightRAG(
@@ -269,7 +266,7 @@ async def main():
 
         # Locate the location of what is needed to be added to the knowledge
         # Can add several simultaneously by modifying code
-        with open("./book.txt", "r", encoding="utf-8") as f: 
+        with open("./book.txt", "r", encoding="utf-8") as f:
             await rag.ainsert(f.read())
 
         # Perform naive search
@@ -323,8 +320,6 @@ async def main():
             await print_stream(resp)
         else:
             print(resp)
-
-        
 
         """ FOR TESTING (if you want to test straight away, after building. Uncomment this part"""
 
