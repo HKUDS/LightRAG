@@ -41,19 +41,19 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="entity_name",
                     dtype=DataType.VARCHAR,
-                    max_length=256,
+                    max_length=512,
                     nullable=True,
                 ),
                 FieldSchema(
                     name="entity_type",
                     dtype=DataType.VARCHAR,
-                    max_length=64,
+                    max_length=128,
                     nullable=True,
                 ),
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=512,
+                    max_length=1024,
                     nullable=True,
                 ),
             ]
@@ -62,16 +62,16 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         elif "relationships" in self.namespace.lower():
             specific_fields = [
                 FieldSchema(
-                    name="src_id", dtype=DataType.VARCHAR, max_length=256, nullable=True
+                    name="src_id", dtype=DataType.VARCHAR, max_length=512, nullable=True
                 ),
                 FieldSchema(
-                    name="tgt_id", dtype=DataType.VARCHAR, max_length=256, nullable=True
+                    name="tgt_id", dtype=DataType.VARCHAR, max_length=512, nullable=True
                 ),
                 FieldSchema(name="weight", dtype=DataType.DOUBLE, nullable=True),
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=512,
+                    max_length=1024,
                     nullable=True,
                 ),
             ]
@@ -88,7 +88,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=512,
+                    max_length=1024,
                     nullable=True,
                 ),
             ]
@@ -100,7 +100,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=512,
+                    max_length=1024,
                     nullable=True,
                 ),
             ]

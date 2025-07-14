@@ -2,7 +2,6 @@ import { useCallback } from 'react'
 import { QueryMode, QueryRequest } from '@/api/lightrag'
 // Removed unused import for Text component
 import Checkbox from '@/components/ui/Checkbox'
-import NumberInput from '@/components/ui/NumberInput'
 import Input from '@/components/ui/Input'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/Card'
 import {
@@ -121,11 +120,20 @@ export default function QuerySettings() {
               </TooltipProvider>
               <div>
                 {/* Removed sr-only label */}
-                <NumberInput
+                <Input
                   id="top_k"
-                  stepper={1}
-                  value={querySettings.top_k}
-                  onValueChange={(v) => handleChange('top_k', v)}
+                  type="number"
+                  value={querySettings.top_k ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    handleChange('top_k', value === '' ? '' : parseInt(value) || 0)
+                  }}
+                  onBlur={(e) => {
+                    const value = e.target.value
+                    if (value === '' || isNaN(parseInt(value))) {
+                      handleChange('top_k', 1)
+                    }
+                  }}
                   min={1}
                   placeholder={t('retrievePanel.querySettings.topKPlaceholder')}
                 />
@@ -278,15 +286,23 @@ export default function QuerySettings() {
               </TooltipProvider>
               <div>
                 {/* Removed sr-only label */}
-                <NumberInput
-                  className="!border-input"
+                <Input
                   id="history_turns"
-                  stepper={1}
-                  type="text"
-                  value={querySettings.history_turns}
-                  onValueChange={(v) => handleChange('history_turns', v)}
+                  type="number"
+                  value={querySettings.history_turns ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    handleChange('history_turns', value === '' ? '' : parseInt(value) || 0)
+                  }}
+                  onBlur={(e) => {
+                    const value = e.target.value
+                    if (value === '' || isNaN(parseInt(value))) {
+                      handleChange('history_turns', 0)
+                    }
+                  }}
                   min={0}
                   placeholder={t('retrievePanel.querySettings.historyTurnsPlaceholder')}
+                  className="h-9"
                 />
               </div>
             </>

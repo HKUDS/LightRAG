@@ -1,281 +1,114 @@
-# LightRAG Multi-Document Processing: Concurrent Control Strategy Analysis
+## LightRAG Multi-Document Processing: Concurrent Control Strategy
 
 LightRAG employs a multi-layered concurrent control strategy when processing multiple documents. This article provides an in-depth analysis of the concurrent control mechanisms at document level, chunk level, and LLM request level, helping you understand why specific concurrent behaviors occur.
 
-## Overview
-
-LightRAG's concurrent control is divided into three layers:
-
-1. **Document-level concurrency**: Controls the number of documents processed simultaneously
-2. **Chunk-level concurrency**: Controls the number of chunks processed simultaneously within a single document
-3. **LLM request-level concurrency**: Controls the global concurrent number of LLM requests
-
-## 1. Document-Level Concurrent Control
+### 1. Document-Level Concurrent Control
 
 **Control Parameter**: `max_parallel_insert`
 
-Document-level concurrency is controlled by the `max_parallel_insert` parameter, with a default value of 2.
+This parameter controls the number of documents processed simultaneously. The purpose is to prevent excessive parallelism from overwhelming system resources, which could lead to extended processing times for individual files. Document-level concurrency is governed by the `max_parallel_insert` attribute within LightRAG, which defaults to 2 and is configurable via the `MAX_PARALLEL_INSERT` environment variable.
 
-```python
-# lightrag/lightrag.py
-max_parallel_insert: int = field(default=int(os.getenv("MAX_PARALLEL_INSERT", 2)))
-```
-
-### Implementation Mechanism
-
-In the `apipeline_process_enqueue_documents` method, a semaphore is used to control document concurrency:
-
-```python
-# lightrag/lightrag.py - apipeline_process_enqueue_documents method
-async def process_document(
-    doc_id: str,
-    status_doc: DocProcessingStatus,
-    split_by_character: str | None,
-    split_by_character_only: bool,
-    pipeline_status: dict,
-    pipeline_status_lock: asyncio.Lock,
-    semaphore: asyncio.Semaphore,  # Document-level semaphore
-) -> None:
-    """Process single document"""
-    async with semaphore:  # 🔥 Document-level concurrent control
-        # ... Process all chunks of a single document
-
-# Create document-level semaphore
-semaphore = asyncio.Semaphore(self.max_parallel_insert)  # Default 2
-
-# Create processing tasks for each document
-doc_tasks = []
-for doc_id, status_doc in to_process_docs.items():
-    doc_tasks.append(
-        process_document(
-            doc_id, status_doc, split_by_character, split_by_character_only,
-            pipeline_status, pipeline_status_lock, semaphore
-        )
-    )
-
-# Wait for all documents to complete processing
-await asyncio.gather(*doc_tasks)
-```
-
-## 2. Chunk-Level Concurrent Control
+### 2. Chunk-Level Concurrent Control
 
 **Control Parameter**: `llm_model_max_async`
 
-**Key Point**: Each document independently creates its own chunk semaphore!
+This parameter controls the number of chunks processed simultaneously in the extraction stage within a document. The purpose is to prevent a high volume of concurrent requests from monopolizing LLM processing resources, which would impede the efficient parallel processing of multiple files. Chunk-Level Concurrent Control is governed by the `llm_model_max_async` attribute within LightRAG, which defaults to 4 and is configurable via the `MAX_ASYNC` environment variable. The purpose of this parameter is to fully leverage the LLM's concurrency capabilities when processing individual documents.
 
-```python
-# lightrag/lightrag.py
-llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 4)))
-```
-
-### Implementation Mechanism
-
-In the `extract_entities` function, **each document independently creates** its own chunk semaphore:
-
-```python
-# lightrag/operate.py - extract_entities function
-async def extract_entities(chunks: dict[str, TextChunkSchema], global_config: dict[str, str], ...):
-    # 🔥 Key: Each document independently creates this semaphore!
-    llm_model_max_async = global_config.get("llm_model_max_async", 4)
-    semaphore = asyncio.Semaphore(llm_model_max_async)  # Chunk semaphore for each document
-
-    async def _process_with_semaphore(chunk):
-        async with semaphore:  # 🔥 Chunk concurrent control within document
-            return await _process_single_content(chunk)
-
-    # Create tasks for each chunk
-    tasks = []
-    for c in ordered_chunks:
-        task = asyncio.create_task(_process_with_semaphore(c))
-        tasks.append(task)
-
-    # Wait for all chunks to complete processing
-    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
-    chunk_results = [task.result() for task in tasks]
-    return chunk_results
-```
-
-### Important Inference: System Overall Chunk Concurrency
-
-Since each document independently creates chunk semaphores, the theoretical chunk concurrency of the system is:
-
-**Theoretical Chunk Concurrency = max_parallel_insert × llm_model_max_async**
-
+In the `extract_entities` function, **each document independently creates** its own chunk semaphore. Since each document independently creates chunk semaphores, the theoretical chunk concurrency of the system is:
+$$
+ChunkConcurrency = Max Parallel Insert × LLM Model Max Async
+$$
 For example:
 - `max_parallel_insert = 2` (process 2 documents simultaneously)
 - `llm_model_max_async = 4` (maximum 4 chunk concurrency per document)
-- **Theoretical result**: Maximum 2 × 4 = 8 chunks simultaneously in "processing" state
+- Theoretical chunk-level concurrent: 2 × 4 = 8
 
-## 3. LLM Request-Level Concurrent Control (The Real Bottleneck)
+### 3. Graph-Level Concurrent Control
 
-**Control Parameter**: `llm_model_max_async` (globally shared)
+**Control Parameter**: `llm_model_max_async * 2`
 
-**Key**: Although there might be 8 chunks "in processing", all LLM requests share the same global priority queue!
+This parameter controls the number of entities and relations processed simultaneously in the merging stage within a document. The purpose is to prevent a high volume of concurrent requests from monopolizing LLM processing resources, which would impede the efficient parallel processing of multiple files. Graph-level concurrency is governed by the `llm_model_max_async` attribute within LightRAG, which defaults to 4 and is configurable via the `MAX_ASYNC` environment variable. Graph-level parallelism control parameters are equally applicable to managing parallelism during the entity relationship reconstruction phase after document deletion.
 
-```python
-# lightrag/lightrag.py - __post_init__ method
-self.llm_model_func = priority_limit_async_func_call(self.llm_model_max_async)(
-    partial(
-        self.llm_model_func,
-        hashing_kv=hashing_kv,
-        **self.llm_model_kwargs,
-    )
-)
-# 🔥 Global LLM queue size = llm_model_max_async = 4
+Given that the entity relationship merging phase doesn't necessitate LLM interaction for every operation, its parallelism is set at double the LLM's parallelism. This optimizes machine utilization while concurrently preventing excessive queuing resource contention for the LLM.
+
+### 4. LLM-Level Concurrent Control
+
+**Control Parameter**: `llm_model_max_async`
+
+This parameter governs the **concurrent volume** of LLM requests dispatched by the entire LightRAG system, encompassing the document extraction stage, merging stage, and user query handling.
+
+LLM request prioritization is managed via a global priority queue, which **systematically prioritizes user queries** over merging-related requests, and merging-related requests over extraction-related requests. This strategic prioritization **minimizes user query latency**.
+
+LLM-level concurrency is governed by the `llm_model_max_async` attribute within LightRAG, which defaults to 4 and is configurable via the `MAX_ASYNC` environment variable.
+
+### 5. Complete Concurrent Hierarchy Diagram
+
+```mermaid
+graph TD
+classDef doc fill:#e6f3ff,stroke:#5b9bd5,stroke-width:2px;
+classDef chunk fill:#fbe5d6,stroke:#ed7d31,stroke-width:1px;
+classDef merge fill:#e2f0d9,stroke:#70ad47,stroke-width:2px;
+
+A["Multiple Documents<br>max_parallel_insert = 2"] --> A1
+A --> B1
+
+A1[DocA: split to n chunks] --> A_chunk;
+B1[DocB: split to m chunks] --> B_chunk;
+
+subgraph A_chunk[Extraction Stage]
+    A_chunk_title[Entity Relation Extraction<br>llm_model_max_async = 4];
+    A_chunk_title --> A_chunk1[Chunk A1]:::chunk;
+    A_chunk_title --> A_chunk2[Chunk A2]:::chunk;
+    A_chunk_title --> A_chunk3[Chunk A3]:::chunk;
+    A_chunk_title --> A_chunk4[Chunk A4]:::chunk;
+    A_chunk1 & A_chunk2 & A_chunk3 & A_chunk4  --> A_chunk_done([Extraction Complete]);
+end
+
+subgraph B_chunk[Extraction Stage]
+    B_chunk_title[Entity Relation Extraction<br>llm_model_max_async = 4];
+    B_chunk_title --> B_chunk1[Chunk B1]:::chunk;
+    B_chunk_title --> B_chunk2[Chunk B2]:::chunk;
+    B_chunk_title --> B_chunk3[Chunk B3]:::chunk;
+    B_chunk_title --> B_chunk4[Chunk B4]:::chunk;
+    B_chunk1 & B_chunk2 & B_chunk3 & B_chunk4  --> B_chunk_done([Extraction Complete]);
+end
+A_chunk -.->|LLM Request| LLM_Queue;
+
+A_chunk --> A_merge;
+B_chunk --> B_merge;
+
+subgraph A_merge[Merge Stage]
+    A_merge_title[Entity Relation Merging<br>llm_model_max_async * 2 = 8];
+    A_merge_title --> A1_entity[Ent a1]:::merge;
+    A_merge_title --> A2_entity[Ent a2]:::merge;
+    A_merge_title --> A3_entity[Rel a3]:::merge;
+    A_merge_title --> A4_entity[Rel a4]:::merge;
+    A1_entity & A2_entity & A3_entity & A4_entity --> A_done([Merge Complete])
+end
+
+subgraph B_merge[Merge Stage]
+    B_merge_title[Entity Relation Merging<br>llm_model_max_async * 2 = 8];
+    B_merge_title --> B1_entity[Ent b1]:::merge;
+    B_merge_title --> B2_entity[Ent b2]:::merge;
+    B_merge_title --> B3_entity[Rel b3]:::merge;
+    B_merge_title --> B4_entity[Rel b4]:::merge;
+    B1_entity & B2_entity & B3_entity & B4_entity --> B_done([Merge Complete])
+end
+
+A_merge -.->|LLM Request| LLM_Queue["LLM Request Prioritized Queue<br>llm_model_max_async = 4"];
+B_merge -.->|LLM Request| LLM_Queue;
+B_chunk -.->|LLM Request| LLM_Queue;
+
 ```
 
-### Priority Queue Implementation
+> The extraction and merge stages share a global prioritized LLM queue, regulated by `llm_model_max_async`. While numerous entity and relation extraction and merging operations may be "actively processing", **only a limited number will concurrently execute LLM requests** the remainder will be queued and awaiting their turn.
 
-```python
-# lightrag/utils.py - priority_limit_async_func_call function
-def priority_limit_async_func_call(max_size: int, max_queue_size: int = 1000):
-    def final_decro(func):
-        queue = asyncio.PriorityQueue(maxsize=max_queue_size)
-        tasks = set()
+### 6. Performance Optimization Recommendations
 
-        async def worker():
-            """Worker that processes tasks in the priority queue"""
-            while not shutdown_event.is_set():
-                try:
-                    priority, count, future, args, kwargs = await asyncio.wait_for(queue.get(), timeout=1.0)
-                    result = await func(*args, **kwargs)  # 🔥 Actual LLM call
-                    if not future.done():
-                        future.set_result(result)
-                except Exception as e:
-                    # Error handling...
-                finally:
-                    queue.task_done()
+* **Increase LLM Concurrent Setting based on the capabilities of your LLM server or API provider**
 
-        # 🔥 Create fixed number of workers (max_size), this is the real concurrency limit
-        for _ in range(max_size):
-            task = asyncio.create_task(worker())
-            tasks.add(task)
-```
+During the file processing phase, the performance and concurrency capabilities of the LLM are critical bottlenecks. When deploying LLMs locally, the service's concurrency capacity must adequately account for the context length requirements of LightRAG. LightRAG recommends that LLMs support a minimum context length of 32KB; therefore, server concurrency should be calculated based on this benchmark. For API providers, LightRAG will retry requests up to three times if the client's request is rejected due to concurrent request limits. Backend logs can be used to determine if LLM retries are occurring, thereby indicating whether `MAX_ASYNC` has exceeded the API provider's limits.
 
-## 4. Chunk Internal Processing Mechanism (Serial)
+* **Align Parallel Document Insertion Settings with LLM Concurrency Configurations**
 
-### Why Serial?
-
-Internal processing of each chunk strictly follows this serial execution order:
-
-```python
-# lightrag/operate.py - _process_single_content function
-async def _process_single_content(chunk_key_dp: tuple[str, TextChunkSchema]):
-    # Step 1: Initial entity extraction
-    hint_prompt = entity_extract_prompt.format(**{**context_base, "input_text": content})
-    final_result = await use_llm_func_with_cache(hint_prompt, use_llm_func, ...)
-
-    # Process initial extraction results
-    maybe_nodes, maybe_edges = await _process_extraction_result(final_result, chunk_key, file_path)
-
-    # Step 2: Gleaning phase
-    for now_glean_index in range(entity_extract_max_gleaning):
-        # 🔥 Serial wait for gleaning results
-        glean_result = await use_llm_func_with_cache(
-            continue_prompt, use_llm_func,
-            llm_response_cache=llm_response_cache,
-            history_messages=history, cache_type="extract"
-        )
-
-        # Process gleaning results
-        glean_nodes, glean_edges = await _process_extraction_result(glean_result, chunk_key, file_path)
-
-        # Merge results...
-
-        # Step 3: Determine whether to continue loop
-        if now_glean_index == entity_extract_max_gleaning - 1:
-            break
-
-        # 🔥 Serial wait for loop decision results
-        if_loop_result = await use_llm_func_with_cache(
-            if_loop_prompt, use_llm_func,
-            llm_response_cache=llm_response_cache,
-            history_messages=history, cache_type="extract"
-        )
-
-        if if_loop_result.strip().strip('"').strip("'").lower() != "yes":
-            break
-
-    return maybe_nodes, maybe_edges
-```
-
-## 5. Complete Concurrent Hierarchy Diagram
-![lightrag_indexing.png](assets%2Flightrag_indexing.png)
-
-### Chunk Internal Processing (Serial)
-```
-Initial Extraction → Gleaning → Loop Decision → Complete
-```
-
-## 6. Real-World Scenario Analysis
-
-### Scenario 1: Single Document with Multiple Chunks
-Assume 1 document with 6 chunks:
-
-- **Document level**: Only 1 document, not limited by `max_parallel_insert`
-- **Chunk level**: Maximum 4 chunks processed simultaneously (limited by `llm_model_max_async=4`)
-- **LLM level**: Global maximum 4 LLM requests concurrent
-
-**Expected behavior**: 4 chunks process concurrently, remaining 2 chunks wait.
-
-### Scenario 2: Multiple Documents with Multiple Chunks
-Assume 3 documents, each with 10 chunks:
-
-- **Document level**: Maximum 2 documents processed simultaneously
-- **Chunk level**: Maximum 4 chunks per document processed simultaneously
-- **Theoretical Chunk concurrency**: 2 × 4 = 8 chunks processed simultaneously
-- **Actual LLM concurrency**: Only 4 LLM requests actually execute
-
-**Actual state distribution**:
-```
-# Possible system state:
-Document 1: 4 chunks "processing" (2 executing LLM, 2 waiting for LLM response)
-Document 2: 4 chunks "processing" (2 executing LLM, 2 waiting for LLM response)
-Document 3: Waiting for document-level semaphore
-
-Total:
-- 8 chunks in "processing" state
-- 4 LLM requests actually executing
-- 4 chunks waiting for LLM response
-```
-
-## 7. Performance Optimization Recommendations
-
-### Understanding the Bottleneck
-
-The real bottleneck is the global LLM queue, not the chunk semaphores!
-
-### Adjustment Strategies
-
-**Strategy 1: Increase LLM Concurrent Capacity**
-
-```bash
-# Environment variable configuration
-export MAX_PARALLEL_INSERT=2    # Keep document concurrency
-export MAX_ASYNC=8              # 🔥 Increase LLM request concurrency
-```
-
-**Strategy 2: Balance Document and LLM Concurrency**
-
-```python
-rag = LightRAG(
-    max_parallel_insert=3,      # Moderately increase document concurrency
-    llm_model_max_async=12,     # Significantly increase LLM concurrency
-    entity_extract_max_gleaning=0,  # Reduce serial steps within chunks
-)
-```
-
-## 8. Summary
-
-Key characteristics of LightRAG's multi-document concurrent processing mechanism:
-
-### Concurrent Layers
-1. **Inter-document competition**: Controlled by `max_parallel_insert`, default 2 documents concurrent
-2. **Theoretical Chunk concurrency**: Each document independently creates semaphores, total = max_parallel_insert × llm_model_max_async
-3. **Actual LLM concurrency**: All chunks share global LLM queue, controlled by `llm_model_max_async`
-4. **Intra-chunk serial**: Multiple LLM requests within each chunk execute strictly serially
-
-### Key Insights
-- **Theoretical vs Actual**: System may have many chunks "in processing", but only few are actually executing LLM requests
-- **Real Bottleneck**: Global LLM request queue is the performance bottleneck, not chunk semaphores
-- **Optimization Focus**: Increasing `llm_model_max_async` is more effective than increasing `max_parallel_insert`
+The recommended number of parallel document processing tasks is 1/4 of the LLM's concurrency, with a minimum of 2 and a maximum of 10. Setting a higher number of parallel document processing tasks typically does not accelerate overall document processing speed, as even a small number of concurrently processed documents can fully utilize the LLM's parallel processing capabilities. Excessive parallel document processing can significantly increase the processing time for each individual document. Since LightRAG commits processing results on a file-by-file basis, a large number of concurrent files would necessitate caching a substantial amount of data. In the event of a system error, all documents in the middle stage would require reprocessing, thereby increasing error handling costs. For instance, setting `MAX_PARALLEL_INSERT` to 3 is appropriate when `MAX_ASYNC` is configured to 12.

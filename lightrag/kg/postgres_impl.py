@@ -209,20 +209,20 @@ class PostgreSQLDB:
 
                     # Check column type
                     data_type = column_info.get("data_type")
-                    if data_type == "timestamp with time zone":
-                        logger.info(
+                    if data_type == "timestamp without time zone":
+                        logger.debug(
                             f"Column {table_name}.{column_name} is already timezone-aware, no migration needed"
                         )
                         continue
 
                     # Execute migration, explicitly specifying UTC timezone for interpreting original data
                     logger.info(
-                        f"Migrating {table_name}.{column_name} to timezone-aware type"
+                        f"Migrating {table_name}.{column_name} from {data_type} to TIMESTAMP(0) type"
                     )
                     migration_sql = f"""
                     ALTER TABLE {table_name}
-                    ALTER COLUMN {column_name} TYPE TIMESTAMP(0) WITH TIME ZONE
-                    USING {column_name} AT TIME ZONE 'UTC'
+                    ALTER COLUMN {column_name} TYPE TIMESTAMP(0),
+                    ALTER COLUMN {column_name} SET DEFAULT CURRENT_TIMESTAMP
                     """
 
                     await self.execute(migration_sql)
@@ -470,6 +470,115 @@ class PostgreSQLDB:
                 f"Failed to add llm_cache_list column to LIGHTRAG_DOC_CHUNKS: {e}"
             )
 
+    async def _migrate_field_lengths(self):
+        """Migrate database field lengths: entity_name, source_id, target_id, and file_path"""
+        # Define the field changes needed
+        field_migrations = [
+            {
+                "table": "LIGHTRAG_VDB_ENTITY",
+                "column": "entity_name",
+                "old_type": "character varying(255)",
+                "new_type": "VARCHAR(512)",
+                "description": "entity_name from 255 to 512",
+            },
+            {
+                "table": "LIGHTRAG_VDB_RELATION",
+                "column": "source_id",
+                "old_type": "character varying(256)",
+                "new_type": "VARCHAR(512)",
+                "description": "source_id from 256 to 512",
+            },
+            {
+                "table": "LIGHTRAG_VDB_RELATION",
+                "column": "target_id",
+                "old_type": "character varying(256)",
+                "new_type": "VARCHAR(512)",
+                "description": "target_id from 256 to 512",
+            },
+            {
+                "table": "LIGHTRAG_DOC_CHUNKS",
+                "column": "file_path",
+                "old_type": "character varying(256)",
+                "new_type": "TEXT",
+                "description": "file_path to TEXT NULL",
+            },
+            {
+                "table": "LIGHTRAG_VDB_CHUNKS",
+                "column": "file_path",
+                "old_type": "character varying(256)",
+                "new_type": "TEXT",
+                "description": "file_path to TEXT NULL",
+            },
+        ]
+
+        for migration in field_migrations:
+            try:
+                # Check current column definition
+                check_column_sql = """
+                SELECT column_name, data_type, character_maximum_length, is_nullable
+                FROM information_schema.columns
+                WHERE table_name = $1 AND column_name = $2
+                """
+
+                column_info = await self.query(
+                    check_column_sql,
+                    {
+                        "table_name": migration["table"].lower(),
+                        "column_name": migration["column"],
+                    },
+                )
+
+                if not column_info:
+                    logger.warning(
+                        f"Column {migration['table']}.{migration['column']} does not exist, skipping migration"
+                    )
+                    continue
+
+                current_type = column_info.get("data_type", "").lower()
+                current_length = column_info.get("character_maximum_length")
+
+                # Check if migration is needed
+                needs_migration = False
+
+                if migration["column"] == "entity_name" and current_length == 255:
+                    needs_migration = True
+                elif (
+                    migration["column"] in ["source_id", "target_id"]
+                    and current_length == 256
+                ):
+                    needs_migration = True
+                elif (
+                    migration["column"] == "file_path"
+                    and current_type == "character varying"
+                ):
+                    needs_migration = True
+
+                if needs_migration:
+                    logger.info(
+                        f"Migrating {migration['table']}.{migration['column']}: {migration['description']}"
+                    )
+
+                    # Execute the migration
+                    alter_sql = f"""
+                    ALTER TABLE {migration['table']}
+                    ALTER COLUMN {migration['column']} TYPE {migration['new_type']}
+                    """
+
+                    await self.execute(alter_sql)
+                    logger.info(
+                        f"Successfully migrated {migration['table']}.{migration['column']}"
+                    )
+                else:
+                    logger.debug(
+                        f"Column {migration['table']}.{migration['column']} already has correct type, no migration needed"
+                    )
+
+            except Exception as e:
+                # Log error but don't interrupt the process
+                logger.warning(
+                    f"Failed to migrate {migration['table']}.{migration['column']}: {e}"
+                )
+
     async def check_tables(self):
         # First create all tables
         for k, v in TABLES.items():
@@ -581,6 +690,12 @@ class PostgreSQLDB:
             logger.error(
                 f"PostgreSQL, Failed to migrate text chunks llm_cache_list field: {e}"
             )
+
+        # Migrate field lengths for entity_name, source_id, target_id, and file_path
+        try:
+            await self._migrate_field_lengths()
+        except Exception as e:
+            logger.error(f"PostgreSQL, Failed to migrate field lengths: {e}")
 
     async def query(
         self,
@@ -939,7 +1054,8 @@ class PGKVStorage(BaseKVStorage):
             return
 
         if is_namespace(self.namespace, NameSpace.KV_STORE_TEXT_CHUNKS):
-            current_time = datetime.datetime.now(timezone.utc)
+            # Get current UTC time and convert to naive datetime for database storage
+            current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
             for k, v in data.items():
                 upsert_sql = SQL_TEMPLATES["upsert_text_chunk"]
                 _data = {
@@ -1177,8 +1293,8 @@ class PGVectorStorage(BaseVectorStorage):
         if not data:
             return
 
-        # Get current time with UTC timezone
-        current_time = datetime.datetime.now(timezone.utc)
+        # Get current UTC time and convert to naive datetime for database storage
+        current_time = datetime.datetime.now(timezone.utc).replace(tzinfo=None)
         list_data = [
             {
                 "__id__": k,
@@ -1374,6 +1490,15 @@ class PGVectorStorage(BaseVectorStorage):
 class PGDocStatusStorage(DocStatusStorage):
     db: PostgreSQLDB = field(default=None)
 
+    def _format_datetime_with_timezone(self, dt):
+        """Convert datetime to ISO format string with timezone info"""
+        if dt is None:
+            return None
+        # If no timezone info, assume it's UTC time
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+
     async def initialize(self):
         if self.db is None:
             self.db = await ClientManager.get_client()
@@ -1433,14 +1558,18 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     chunks_list = []
 
+            # Convert datetime objects to ISO format strings with timezone info
+            created_at = self._format_datetime_with_timezone(result[0]["created_at"])
+            updated_at = self._format_datetime_with_timezone(result[0]["updated_at"])
+
             return dict(
                 content=result[0]["content"],
                 content_length=result[0]["content_length"],
                 content_summary=result[0]["content_summary"],
                 status=result[0]["status"],
                 chunks_count=result[0]["chunks_count"],
-                created_at=result[0]["created_at"],
-                updated_at=result[0]["updated_at"],
+                created_at=created_at,
+                updated_at=updated_at,
                 file_path=result[0]["file_path"],
                 chunks_list=chunks_list,
             )
@@ -1468,6 +1597,10 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     chunks_list = []
 
+            # Convert datetime objects to ISO format strings with timezone info
+            created_at = self._format_datetime_with_timezone(row["created_at"])
+            updated_at = self._format_datetime_with_timezone(row["updated_at"])
+
             processed_results.append(
                 {
                     "content": row["content"],
@@ -1475,8 +1608,8 @@ class PGDocStatusStorage(DocStatusStorage):
                     "content_summary": row["content_summary"],
                     "status": row["status"],
                     "chunks_count": row["chunks_count"],
-                    "created_at": row["created_at"],
-                    "updated_at": row["updated_at"],
+                    "created_at": created_at,
+                    "updated_at": updated_at,
                     "file_path": row["file_path"],
                     "chunks_list": chunks_list,
                 }
@@ -1514,13 +1647,17 @@ class PGDocStatusStorage(DocStatusStorage):
                 except json.JSONDecodeError:
                     chunks_list = []
 
+            # Convert datetime objects to ISO format strings with timezone info
+            created_at = self._format_datetime_with_timezone(element["created_at"])
+            updated_at = self._format_datetime_with_timezone(element["updated_at"])
+
             docs_by_status[element["id"]] = DocProcessingStatus(
                 content=element["content"],
                 content_summary=element["content_summary"],
                 content_length=element["content_length"],
                 status=element["status"],
-                created_at=element["created_at"],
-                updated_at=element["updated_at"],
+                created_at=created_at,
+                updated_at=updated_at,
                 chunks_count=element["chunks_count"],
                 file_path=element["file_path"],
                 chunks_list=chunks_list,
@@ -1572,19 +1709,26 @@ class PGDocStatusStorage(DocStatusStorage):
             return
 
         def parse_datetime(dt_str):
+            """Parse datetime and ensure it's stored as UTC time in database"""
             if dt_str is None:
                 return None
             if isinstance(dt_str, (datetime.date, datetime.datetime)):
-                # If it's a datetime object without timezone info, remove timezone info
+                # If it's a datetime object
                 if isinstance(dt_str, datetime.datetime):
-                    # Remove timezone info, return naive datetime object
-                    return dt_str.replace(tzinfo=None)
+                    # If no timezone info, assume it's UTC
+                    if dt_str.tzinfo is None:
+                        dt_str = dt_str.replace(tzinfo=timezone.utc)
+                    # Convert to UTC and remove timezone info for storage
+                    return dt_str.astimezone(timezone.utc).replace(tzinfo=None)
                 return dt_str
             try:
                 # Process ISO format string with timezone
                 dt = datetime.datetime.fromisoformat(dt_str)
-                # Remove timezone info, return naive datetime object
-                return dt.replace(tzinfo=None)
+                # If no timezone info, assume it's UTC
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                # Convert to UTC and remove timezone info for storage
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
             except (ValueError, TypeError):
                 logger.warning(f"Unable to parse datetime string: {dt_str}")
                 return None
@@ -2980,8 +3124,8 @@ TABLES = {
                     doc_name VARCHAR(1024),
                     content TEXT,
                     meta JSONB,
-                    create_time TIMESTAMP(0),
-                    update_time TIMESTAMP(0),
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_FULL_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -2993,10 +3137,10 @@ TABLES = {
                     chunk_order_index INTEGER,
                     tokens INTEGER,
                     content TEXT,
-                    file_path VARCHAR(256),
+                    file_path TEXT NULL,
                     llm_cache_list JSONB NULL DEFAULT '[]'::jsonb,
-                    create_time TIMESTAMP(0) WITH TIME ZONE,
-                    update_time TIMESTAMP(0) WITH TIME ZONE,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_DOC_CHUNKS_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -3009,9 +3153,9 @@ TABLES = {
                     tokens INTEGER,
                     content TEXT,
                     content_vector VECTOR,
-                    file_path VARCHAR(256),
-                    create_time TIMESTAMP(0) WITH TIME ZONE,
-                    update_time TIMESTAMP(0) WITH TIME ZONE,
+                    file_path TEXT NULL,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_VDB_CHUNKS_PK PRIMARY KEY (workspace, id)
                     )"""
     },
@@ -3019,11 +3163,11 @@ TABLES = {
         "ddl": """CREATE TABLE LIGHTRAG_VDB_ENTITY (
                     id VARCHAR(255),
                     workspace VARCHAR(255),
-                    entity_name VARCHAR(255),
+                    entity_name VARCHAR(512),
                     content TEXT,
                     content_vector VECTOR,
-                    create_time TIMESTAMP(0) WITH TIME ZONE,
-                    update_time TIMESTAMP(0) WITH TIME ZONE,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_ENTITY_PK PRIMARY KEY (workspace, id)
@@ -3033,12 +3177,12 @@ TABLES = {
         "ddl": """CREATE TABLE LIGHTRAG_VDB_RELATION (
                     id VARCHAR(255),
                     workspace VARCHAR(255),
-                    source_id VARCHAR(256),
-                    target_id VARCHAR(256),
+                    source_id VARCHAR(512),
+                    target_id VARCHAR(512),
                     content TEXT,
                     content_vector VECTOR,
-                    create_time TIMESTAMP(0) WITH TIME ZONE,
-                    update_time TIMESTAMP(0) WITH TIME ZONE,
+                    create_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
+                    update_time TIMESTAMP(0) DEFAULT CURRENT_TIMESTAMP,
                     chunk_ids VARCHAR(255)[] NULL,
                     file_path TEXT NULL,
 	                CONSTRAINT LIGHTRAG_VDB_RELATION_PK PRIMARY KEY (workspace, id)
@@ -3053,7 +3197,7 @@ TABLES = {
                     return_value TEXT,
                     chunk_id VARCHAR(255) NULL,
                     create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    update_time TIMESTAMP,
+                    update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	                CONSTRAINT LIGHTRAG_LLM_CACHE_PK PRIMARY KEY (workspace, mode, id)
                     )"""
     },
@@ -3068,8 +3212,8 @@ TABLES = {
 	               status varchar(64) NULL,
 	               file_path TEXT NULL,
 	               chunks_list JSONB NULL DEFAULT '[]'::jsonb,
-	               created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NULL,
-	               updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NULL,
+	               created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+	               updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 	               CONSTRAINT LIGHTRAG_DOC_STATUS_PK PRIMARY KEY (workspace, id)
 	              )"""
     },
@@ -3084,11 +3228,13 @@ SQL_TEMPLATES = {
     "get_by_id_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
                                 chunk_order_index, full_doc_id, file_path,
                                 COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
-                                create_time, update_time
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                 FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id=$2
                             """,
     "get_by_id_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type,
-                                create_time, update_time
+                                EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                 FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id=$2
                                """,
     "get_by_mode_id_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id
@@ -3100,11 +3246,13 @@ SQL_TEMPLATES = {
     "get_by_ids_text_chunks": """SELECT id, tokens, COALESCE(content, '') as content,
                                   chunk_order_index, full_doc_id, file_path,
                                   COALESCE(llm_cache_list, '[]'::jsonb) as llm_cache_list,
-                                  create_time, update_time
+                                  EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                  EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                    FROM LIGHTRAG_DOC_CHUNKS WHERE workspace=$1 AND id IN ({ids})
                                 """,
     "get_by_ids_llm_response_cache": """SELECT id, original_prompt, return_value, mode, chunk_id, cache_type,
-                                 create_time, update_time
+                                 EXTRACT(EPOCH FROM create_time)::BIGINT as create_time,
+                                 EXTRACT(EPOCH FROM update_time)::BIGINT as update_time
                                  FROM LIGHTRAG_LLM_CACHE WHERE workspace=$1 AND id IN ({ids})
                                 """,
     "filter_keys": "SELECT id FROM {table_name} WHERE workspace=$1 AND id IN ({ids})",

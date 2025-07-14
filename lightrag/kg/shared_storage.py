@@ -1,23 +1,46 @@
 import os
 import sys
 import asyncio
+import multiprocessing as mp
 from multiprocessing.synchronize import Lock as ProcessLock
 from multiprocessing import Manager
-from typing import Any, Dict, Optional, Union, TypeVar, Generic
+import time
+import logging
+from typing import Any, Dict, List, Optional, Union, TypeVar, Generic
 
 
 # Define a direct print function for critical logs that must be visible in all processes
-def direct_log(message, level="INFO", enable_output: bool = True):
+def direct_log(message, enable_output: bool = False, level: str = "DEBUG"):
     """
     Log a message directly to stderr to ensure visibility in all processes,
     including the Gunicorn master process.
 
     Args:
         message: The message to log
-        level: Log level (default: "INFO")
+        level: Log level (default: "DEBUG")
         enable_output: Whether to actually output the log (default: True)
     """
-    if enable_output:
+    # Get the current logger level from the lightrag logger
+    try:
+        from lightrag.utils import logger
+
+        current_level = logger.getEffectiveLevel()
+    except ImportError:
+        # Fallback if lightrag.utils is not available
+        current_level = 20  # INFO
+
+    # Convert string level to numeric level for comparison
+    level_mapping = {
+        "DEBUG": 10,  # DEBUG
+        "INFO": 20,  # INFO
+        "WARNING": 30,  # WARNING
+        "ERROR": 40,  # ERROR
+        "CRITICAL": 50,  # CRITICAL
+    }
+    message_level = level_mapping.get(level.upper(), logging.DEBUG)
+
+    # print(f"Diret_log: {level.upper()} {message_level} ? {current_level}", file=sys.stderr, flush=True)
+    if enable_output or (message_level >= current_level):
         print(f"{level}: {message}", file=sys.stderr, flush=True)
 
 
@@ -27,6 +50,23 @@ LockType = Union[ProcessLock, asyncio.Lock]
 _is_multiprocess = None
 _workers = None
 _manager = None
+
+# Global singleton data for multi-process keyed locks
+_lock_registry: Optional[Dict[str, mp.synchronize.Lock]] = None
+_lock_registry_count: Optional[Dict[str, int]] = None
+_lock_cleanup_data: Optional[Dict[str, time.time]] = None
+_registry_guard = None
+# Timeout for keyed locks in seconds (Default 300)
+CLEANUP_KEYED_LOCKS_AFTER_SECONDS = 300
+# Cleanup pending list threshold for triggering cleanup (Default 500)
+CLEANUP_THRESHOLD = 500
+# Minimum interval between cleanup operations in seconds (Default 30)
+MIN_CLEANUP_INTERVAL_SECONDS = 30
+# Track the earliest cleanup time for efficient cleanup triggering (multiprocess locks only)
+_earliest_mp_cleanup_time: Optional[float] = None
+# Track the last cleanup time to enforce minimum interval (multiprocess locks only)
+_last_mp_cleanup_time: Optional[float] = None
+
 _initialized = None
 
 # shared data for storage across processes
@@ -40,9 +80,36 @@ _internal_lock: Optional[LockType] = None
 _pipeline_status_lock: Optional[LockType] = None
 _graph_db_lock: Optional[LockType] = None
 _data_init_lock: Optional[LockType] = None
+# Manager for all keyed locks
+_storage_keyed_lock: Optional["KeyedUnifiedLock"] = None
 
 # async locks for coroutine synchronization in multiprocess mode
 _async_locks: Optional[Dict[str, asyncio.Lock]] = None
+
+DEBUG_LOCKS = False
+_debug_n_locks_acquired: int = 0
+
+
+def inc_debug_n_locks_acquired():
+    global _debug_n_locks_acquired
+    if DEBUG_LOCKS:
+        _debug_n_locks_acquired += 1
+        print(f"DEBUG: Keyed Lock acquired, total: {_debug_n_locks_acquired:>5}")
+
+
+def dec_debug_n_locks_acquired():
+    global _debug_n_locks_acquired
+    if DEBUG_LOCKS:
+        if _debug_n_locks_acquired > 0:
+            _debug_n_locks_acquired -= 1
+            print(f"DEBUG: Keyed Lock released, total: {_debug_n_locks_acquired:>5}")
+        else:
+            raise RuntimeError("Attempting to release lock when no locks are acquired")
+
+
+def get_debug_n_locks_acquired():
+    global _debug_n_locks_acquired
+    return _debug_n_locks_acquired
 
 
 class UnifiedLock(Generic[T]):
@@ -65,17 +132,8 @@ class UnifiedLock(Generic[T]):
 
     async def __aenter__(self) -> "UnifiedLock[T]":
         try:
-            # direct_log(
-            #     f"== Lock == Process {self._pid}: Acquiring lock '{self._name}' (async={self._is_async})",
-            #     enable_output=self._enable_logging,
-            # )
-
             # If in multiprocess mode and async lock exists, acquire it first
             if not self._is_async and self._async_lock is not None:
-                # direct_log(
-                #     f"== Lock == Process {self._pid}: Acquiring async lock for '{self._name}'",
-                #     enable_output=self._enable_logging,
-                # )
                 await self._async_lock.acquire()
                 direct_log(
                     f"== Lock == Process {self._pid}: Async lock for '{self._name}' acquired",
@@ -210,6 +268,557 @@ class UnifiedLock(Generic[T]):
             )
             raise
 
+    def locked(self) -> bool:
+        if self._is_async:
+            return self._lock.locked()
+        else:
+            return self._lock.locked()
+
+
+def _get_combined_key(factory_name: str, key: str) -> str:
+    """Return the combined key for the factory and key."""
+    return f"{factory_name}:{key}"
+
+
+def _perform_lock_cleanup(
+    lock_type: str,
+    cleanup_data: Dict[str, float],
+    lock_registry: Optional[Dict[str, Any]],
+    lock_count: Optional[Dict[str, int]],
+    earliest_cleanup_time: Optional[float],
+    last_cleanup_time: Optional[float],
+    current_time: float,
+    threshold_check: bool = True,
+) -> tuple[int, Optional[float], Optional[float]]:
+    """
+    Generic lock cleanup function to unify cleanup logic for both multiprocess and async locks.
+
+    Args:
+        lock_type: Lock type identifier ("mp" or "async")
+        cleanup_data: Cleanup data dictionary
+        lock_registry: Lock registry dictionary (can be None for async locks)
+        lock_count: Lock count dictionary (can be None for async locks)
+        earliest_cleanup_time: Earliest cleanup time
+        last_cleanup_time: Last cleanup time
+        current_time: Current time
+        threshold_check: Whether to check threshold condition (default True, set to False in cleanup_expired_locks)
+
+    Returns:
+        tuple: (cleaned_count, new_earliest_time, new_last_cleanup_time)
+    """
+    if len(cleanup_data) == 0:
+        return 0, earliest_cleanup_time, last_cleanup_time
+
+    # If threshold check is needed and threshold not reached, return directly
+    if threshold_check and len(cleanup_data) < CLEANUP_THRESHOLD:
+        return 0, earliest_cleanup_time, last_cleanup_time
+
+    # Time rollback detection
+    if last_cleanup_time is not None and current_time < last_cleanup_time:
+        direct_log(
+            f"== {lock_type} Lock == Time rollback detected, resetting cleanup time",
+            level="WARNING",
+            enable_output=False,
+        )
+        last_cleanup_time = None
+
+    # Check cleanup conditions
+    has_expired_locks = (
+        earliest_cleanup_time is not None
+        and current_time - earliest_cleanup_time > CLEANUP_KEYED_LOCKS_AFTER_SECONDS
+    )
+
+    interval_satisfied = (
+        last_cleanup_time is None
+        or current_time - last_cleanup_time > MIN_CLEANUP_INTERVAL_SECONDS
+    )
+
+    if not (has_expired_locks and interval_satisfied):
+        return 0, earliest_cleanup_time, last_cleanup_time
+
+    try:
+        cleaned_count = 0
+        new_earliest_time = None
+
+        # Calculate total count before cleanup
+        total_cleanup_len = len(cleanup_data)
+
+        # Perform cleanup operation
+        for cleanup_key, cleanup_time in list(cleanup_data.items()):
+            if current_time - cleanup_time > CLEANUP_KEYED_LOCKS_AFTER_SECONDS:
+                # Remove from cleanup data
+                cleanup_data.pop(cleanup_key, None)
+
+                # Remove from lock registry if exists
+                if lock_registry is not None:
+                    lock_registry.pop(cleanup_key, None)
+                if lock_count is not None:
+                    lock_count.pop(cleanup_key, None)
+
+                cleaned_count += 1
+            else:
+                # Track the earliest time among remaining locks
+                if new_earliest_time is None or cleanup_time < new_earliest_time:
+                    new_earliest_time = cleanup_time
+
+        # Update state only after successful cleanup
+        if cleaned_count > 0:
+            new_last_cleanup_time = current_time
+
+            # Log cleanup results
+            next_cleanup_in = max(
+                (new_earliest_time + CLEANUP_KEYED_LOCKS_AFTER_SECONDS - current_time)
+                if new_earliest_time
+                else float("inf"),
+                MIN_CLEANUP_INTERVAL_SECONDS,
+            )
+
+            if lock_type == "async":
+                direct_log(
+                    f"== {lock_type} Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired {lock_type} locks, "
+                    f"next cleanup in {next_cleanup_in:.1f}s",
+                    enable_output=False,
+                    level="INFO",
+                )
+            else:
+                direct_log(
+                    f"== {lock_type} Lock == Cleaned up {cleaned_count}/{total_cleanup_len} expired locks, "
+                    f"next cleanup in {next_cleanup_in:.1f}s",
+                    enable_output=False,
+                    level="INFO",
+                )
+
+            return cleaned_count, new_earliest_time, new_last_cleanup_time
+        else:
+            return 0, earliest_cleanup_time, last_cleanup_time
+
+    except Exception as e:
+        direct_log(
+            f"== {lock_type} Lock == Cleanup failed: {e}",
+            level="ERROR",
+            enable_output=False,
+        )
+        return 0, earliest_cleanup_time, last_cleanup_time
+
+
+def _get_or_create_shared_raw_mp_lock(
+    factory_name: str, key: str
+) -> Optional[mp.synchronize.Lock]:
+    """Return the *singleton* manager.Lock() proxy for keyed lock, creating if needed."""
+    if not _is_multiprocess:
+        return None
+
+    with _registry_guard:
+        combined_key = _get_combined_key(factory_name, key)
+        raw = _lock_registry.get(combined_key)
+        count = _lock_registry_count.get(combined_key)
+        if raw is None:
+            raw = _manager.Lock()
+            _lock_registry[combined_key] = raw
+            count = 0
+        else:
+            if count is None:
+                raise RuntimeError(
+                    f"Shared-Data lock registry for {factory_name} is corrupted for key {key}"
+                )
+            if (
+                count == 0 and combined_key in _lock_cleanup_data
+            ):  # Reusing an key waiting for cleanup, remove it from cleanup list
+                _lock_cleanup_data.pop(combined_key)
+        count += 1
+        _lock_registry_count[combined_key] = count
+        return raw
+
+
+def _release_shared_raw_mp_lock(factory_name: str, key: str):
+    """Release the *singleton* manager.Lock() proxy for *key*."""
+    if not _is_multiprocess:
+        return
+
+    global _earliest_mp_cleanup_time, _last_mp_cleanup_time
+
+    with _registry_guard:
+        combined_key = _get_combined_key(factory_name, key)
+        raw = _lock_registry.get(combined_key)
+        count = _lock_registry_count.get(combined_key)
+        if raw is None and count is None:
+            return
+        elif raw is None or count is None:
+            raise RuntimeError(
+                f"Shared-Data lock registry for {factory_name} is corrupted for key {key}"
+            )
+
+        count -= 1
+        if count < 0:
+            raise RuntimeError(
+                f"Attempting to release lock for {key} more times than it was acquired"
+            )
+
+        _lock_registry_count[combined_key] = count
+
+        current_time = time.time()
+        if count == 0:
+            _lock_cleanup_data[combined_key] = current_time
+
+            # Update earliest multiprocess cleanup time (only when earlier)
+            if (
+                _earliest_mp_cleanup_time is None
+                or current_time < _earliest_mp_cleanup_time
+            ):
+                _earliest_mp_cleanup_time = current_time
+
+        # Use generic cleanup function
+        cleaned_count, new_earliest_time, new_last_cleanup_time = _perform_lock_cleanup(
+            lock_type="mp",
+            cleanup_data=_lock_cleanup_data,
+            lock_registry=_lock_registry,
+            lock_count=_lock_registry_count,
+            earliest_cleanup_time=_earliest_mp_cleanup_time,
+            last_cleanup_time=_last_mp_cleanup_time,
+            current_time=current_time,
+            threshold_check=True,
+        )
+
+        # Update global state if cleanup was performed
+        if cleaned_count > 0:
+            _earliest_mp_cleanup_time = new_earliest_time
+            _last_mp_cleanup_time = new_last_cleanup_time
+
+
+class KeyedUnifiedLock:
+    """
+    Manager for unified keyed locks, supporting both single and multi-process
+
+    • Keeps only a table of async keyed locks locally
+    • Fetches the multi-process keyed lock on every acquire
+    • Builds a fresh `UnifiedLock` each time, so `enable_logging`
+      (or future options) can vary per call.
+    • Supports dynamic namespaces specified at lock usage time
+    """
+
+    def __init__(self, *, default_enable_logging: bool = True) -> None:
+        self._default_enable_logging = default_enable_logging
+        self._async_lock: Dict[str, asyncio.Lock] = {}  # local keyed locks
+        self._async_lock_count: Dict[
+            str, int
+        ] = {}  # local keyed locks referenced count
+        self._async_lock_cleanup_data: Dict[
+            str, time.time
+        ] = {}  # local keyed locks timeout
+        self._mp_locks: Dict[
+            str, mp.synchronize.Lock
+        ] = {}  # multi-process lock proxies
+        self._earliest_async_cleanup_time: Optional[float] = (
+            None  # track earliest async cleanup time
+        )
+        self._last_async_cleanup_time: Optional[float] = (
+            None  # track last async cleanup time for minimum interval
+        )
+
+    def __call__(
+        self, namespace: str, keys: list[str], *, enable_logging: Optional[bool] = None
+    ):
+        """
+        Ergonomic helper so you can write:
+
+            async with storage_keyed_lock("namespace", ["key1", "key2"]):
+                ...
+        """
+        if enable_logging is None:
+            enable_logging = self._default_enable_logging
+        return _KeyedLockContext(
+            self,
+            namespace=namespace,
+            keys=keys,
+            enable_logging=enable_logging,
+        )
+
+    def _get_or_create_async_lock(self, combined_key: str) -> asyncio.Lock:
+        async_lock = self._async_lock.get(combined_key)
+        count = self._async_lock_count.get(combined_key, 0)
+        if async_lock is None:
+            async_lock = asyncio.Lock()
+            self._async_lock[combined_key] = async_lock
+        elif count == 0 and combined_key in self._async_lock_cleanup_data:
+            self._async_lock_cleanup_data.pop(combined_key)
+        count += 1
+        self._async_lock_count[combined_key] = count
+        return async_lock
+
+    def _release_async_lock(self, combined_key: str):
+        count = self._async_lock_count.get(combined_key, 0)
+        count -= 1
+
+        current_time = time.time()
+        if count == 0:
+            self._async_lock_cleanup_data[combined_key] = current_time
+
+            # Update earliest async cleanup time (only when earlier)
+            if (
+                self._earliest_async_cleanup_time is None
+                or current_time < self._earliest_async_cleanup_time
+            ):
+                self._earliest_async_cleanup_time = current_time
+        self._async_lock_count[combined_key] = count
+
+        # Use generic cleanup function
+        cleaned_count, new_earliest_time, new_last_cleanup_time = _perform_lock_cleanup(
+            lock_type="async",
+            cleanup_data=self._async_lock_cleanup_data,
+            lock_registry=self._async_lock,
+            lock_count=self._async_lock_count,
+            earliest_cleanup_time=self._earliest_async_cleanup_time,
+            last_cleanup_time=self._last_async_cleanup_time,
+            current_time=current_time,
+            threshold_check=True,
+        )
+
+        # Update instance state if cleanup was performed
+        if cleaned_count > 0:
+            self._earliest_async_cleanup_time = new_earliest_time
+            self._last_async_cleanup_time = new_last_cleanup_time
+
+    def _get_lock_for_key(
+        self, namespace: str, key: str, enable_logging: bool = False
+    ) -> UnifiedLock:
+        # 1. Create combined key for this namespace:key combination
+        combined_key = _get_combined_key(namespace, key)
+
+        # 2. get (or create) the per‑process async gate for this combined key
+        # Is synchronous, so no need to acquire a lock
+        async_lock = self._get_or_create_async_lock(combined_key)
+
+        # 3. fetch the shared raw lock
+        raw_lock = _get_or_create_shared_raw_mp_lock(namespace, key)
+        is_multiprocess = raw_lock is not None
+        if not is_multiprocess:
+            raw_lock = async_lock
+
+        # 4. build a *fresh* UnifiedLock with the chosen logging flag
+        if is_multiprocess:
+            return UnifiedLock(
+                lock=raw_lock,
+                is_async=False,  # manager.Lock is synchronous
+                name=combined_key,
+                enable_logging=enable_logging,
+                async_lock=async_lock,  # prevents event‑loop blocking
+            )
+        else:
+            return UnifiedLock(
+                lock=raw_lock,
+                is_async=True,
+                name=combined_key,
+                enable_logging=enable_logging,
+                async_lock=None,  # No need for async lock in single process mode
+            )
+
+    def _release_lock_for_key(self, namespace: str, key: str):
+        combined_key = _get_combined_key(namespace, key)
+        self._release_async_lock(combined_key)
+        _release_shared_raw_mp_lock(namespace, key)
+
+    def cleanup_expired_locks(self) -> Dict[str, Any]:
+        """
+        Cleanup expired locks for both async and multiprocess locks following the same
+        conditions as _release_shared_raw_mp_lock and _release_async_lock functions.
+
+        Only performs cleanup when both has_expired_locks and interval_satisfied conditions are met
+        to avoid too frequent cleanup operations.
+
+        Since async and multiprocess locks work together, this method cleans up
+        both types of expired locks and returns comprehensive statistics.
+
+        Returns:
+            Dict containing cleanup statistics and current status:
+            {
+                "process_id": 12345,
+                "cleanup_performed": {
+                    "mp_cleaned": 5,
+                    "async_cleaned": 3
+                },
+                "current_status": {
+                    "total_mp_locks": 10,
+                    "pending_mp_cleanup": 2,
+                    "total_async_locks": 8,
+                    "pending_async_cleanup": 1
+                }
+            }
+        """
+        global _lock_registry, _lock_registry_count, _lock_cleanup_data
+        global _registry_guard, _earliest_mp_cleanup_time, _last_mp_cleanup_time
+
+        cleanup_stats = {"mp_cleaned": 0, "async_cleaned": 0}
+
+        current_time = time.time()
+
+        # 1. Cleanup multiprocess locks using generic function
+        if (
+            _is_multiprocess
+            and _lock_registry is not None
+            and _registry_guard is not None
+        ):
+            try:
+                with _registry_guard:
+                    if _lock_cleanup_data is not None:
+                        # Use generic cleanup function without threshold check
+                        cleaned_count, new_earliest_time, new_last_cleanup_time = (
+                            _perform_lock_cleanup(
+                                lock_type="mp",
+                                cleanup_data=_lock_cleanup_data,
+                                lock_registry=_lock_registry,
+                                lock_count=_lock_registry_count,
+                                earliest_cleanup_time=_earliest_mp_cleanup_time,
+                                last_cleanup_time=_last_mp_cleanup_time,
+                                current_time=current_time,
+                                threshold_check=False,  # Force cleanup in cleanup_expired_locks
+                            )
+                        )
+
+                        # Update global state if cleanup was performed
+                        if cleaned_count > 0:
+                            _earliest_mp_cleanup_time = new_earliest_time
+                            _last_mp_cleanup_time = new_last_cleanup_time
+                            cleanup_stats["mp_cleaned"] = cleaned_count
+
+            except Exception as e:
+                direct_log(
+                    f"Error during multiprocess lock cleanup: {e}",
+                    level="ERROR",
+                    enable_output=False,
+                )
+
+        # 2. Cleanup async locks using generic function
+        try:
+            # Use generic cleanup function without threshold check
+            cleaned_count, new_earliest_time, new_last_cleanup_time = (
+                _perform_lock_cleanup(
+                    lock_type="async",
+                    cleanup_data=self._async_lock_cleanup_data,
+                    lock_registry=self._async_lock,
+                    lock_count=self._async_lock_count,
+                    earliest_cleanup_time=self._earliest_async_cleanup_time,
+                    last_cleanup_time=self._last_async_cleanup_time,
+                    current_time=current_time,
+                    threshold_check=False,  # Force cleanup in cleanup_expired_locks
+                )
+            )
+
+            # Update instance state if cleanup was performed
+            if cleaned_count > 0:
+                self._earliest_async_cleanup_time = new_earliest_time
+                self._last_async_cleanup_time = new_last_cleanup_time
+                cleanup_stats["async_cleaned"] = cleaned_count
+
+        except Exception as e:
+            direct_log(
+                f"Error during async lock cleanup: {e}",
+                level="ERROR",
+                enable_output=False,
+            )
+
+        # 3. Get current status after cleanup
+        current_status = self.get_lock_status()
+
+        return {
+            "process_id": os.getpid(),
+            "cleanup_performed": cleanup_stats,
+            "current_status": current_status,
+        }
+
+    def get_lock_status(self) -> Dict[str, int]:
+        """
+        Get current status of both async and multiprocess locks.
+
+        Returns comprehensive lock counts for both types of locks since
+        they work together in the keyed lock system.
+
+        Returns:
+            Dict containing lock counts:
+            {
+                "total_mp_locks": 10,
+                "pending_mp_cleanup": 2,
+                "total_async_locks": 8,
+                "pending_async_cleanup": 1
+            }
+        """
+        global _lock_registry_count, _lock_cleanup_data, _registry_guard
+
+        status = {
+            "total_mp_locks": 0,
+            "pending_mp_cleanup": 0,
+            "total_async_locks": 0,
+            "pending_async_cleanup": 0,
+        }
+
+        try:
+            # Count multiprocess locks
+            if _is_multiprocess and _lock_registry_count is not None:
+                if _registry_guard is not None:
+                    with _registry_guard:
+                        status["total_mp_locks"] = len(_lock_registry_count)
+                        if _lock_cleanup_data is not None:
+                            status["pending_mp_cleanup"] = len(_lock_cleanup_data)
+
+            # Count async locks
+            status["total_async_locks"] = len(self._async_lock_count)
+            status["pending_async_cleanup"] = len(self._async_lock_cleanup_data)
+
+        except Exception as e:
+            direct_log(
+                f"Error getting keyed lock status: {e}",
+                level="ERROR",
+                enable_output=False,
+            )
+
+        return status
+
+
+class _KeyedLockContext:
+    def __init__(
+        self,
+        parent: KeyedUnifiedLock,
+        namespace: str,
+        keys: list[str],
+        enable_logging: bool,
+    ) -> None:
+        self._parent = parent
+        self._namespace = namespace
+
+        # The sorting is critical to ensure proper lock and release order
+        # to avoid deadlocks
+        self._keys = sorted(keys)
+        self._enable_logging = (
+            enable_logging
+            if enable_logging is not None
+            else parent._default_enable_logging
+        )
+        self._ul: Optional[List["UnifiedLock"]] = None  # set in __aenter__
+
+    # ----- enter -----
+    async def __aenter__(self):
+        if self._ul is not None:
+            raise RuntimeError("KeyedUnifiedLock already acquired in current context")
+
+        # acquire locks for all keys in the namespace
+        self._ul = []
+        for key in self._keys:
+            lock = self._parent._get_lock_for_key(
+                self._namespace, key, enable_logging=self._enable_logging
+            )
+            await lock.__aenter__()
+            inc_debug_n_locks_acquired()
+            self._ul.append(lock)
+        return self
+
+    # ----- exit -----
+    async def __aexit__(self, exc_type, exc, tb):
+        # The UnifiedLock takes care of proper release order
+        for ul, key in zip(reversed(self._ul), reversed(self._keys)):
+            await ul.__aexit__(exc_type, exc, tb)
+            self._parent._release_lock_for_key(self._namespace, key)
+            dec_debug_n_locks_acquired()
+        self._ul = None
+
 
 def get_internal_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified storage lock for data consistency"""
@@ -259,6 +868,18 @@ def get_graph_db_lock(enable_logging: bool = False) -> UnifiedLock:
     )
 
 
+def get_storage_keyed_lock(
+    keys: str | list[str], namespace: str = "default", enable_logging: bool = False
+) -> _KeyedLockContext:
+    """Return unified storage keyed lock for ensuring atomic operations across different namespaces"""
+    global _storage_keyed_lock
+    if _storage_keyed_lock is None:
+        raise RuntimeError("Shared-Data is not initialized")
+    if isinstance(keys, str):
+        keys = [keys]
+    return _storage_keyed_lock(namespace, keys, enable_logging=enable_logging)
+
+
 def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
     """return unified data initialization lock for ensuring atomic data initialization"""
     async_lock = _async_locks.get("data_init_lock") if _is_multiprocess else None
@@ -269,6 +890,61 @@ def get_data_init_lock(enable_logging: bool = False) -> UnifiedLock:
         enable_logging=enable_logging,
         async_lock=async_lock,
     )
+
+
+def cleanup_keyed_lock() -> Dict[str, Any]:
+    """
+    Force cleanup of expired keyed locks and return comprehensive status information.
+
+    This function actively cleans up expired locks for both async and multiprocess locks,
+    then returns detailed statistics about the cleanup operation and current lock status.
+
+    Returns:
+        Same as cleanup_expired_locks in KeyedUnifiedLock
+    """
+    global _storage_keyed_lock
+
+    # Check if shared storage is initialized
+    if not _initialized or _storage_keyed_lock is None:
+        return {
+            "process_id": os.getpid(),
+            "cleanup_performed": {"mp_cleaned": 0, "async_cleaned": 0},
+            "current_status": {
+                "total_mp_locks": 0,
+                "pending_mp_cleanup": 0,
+                "total_async_locks": 0,
+                "pending_async_cleanup": 0,
+            },
+        }
+
+    return _storage_keyed_lock.cleanup_expired_locks()
+
+
+def get_keyed_lock_status() -> Dict[str, Any]:
+    """
+    Get current status of keyed locks without performing cleanup.
+
+    This function provides a read-only view of the current lock counts
+    for both multiprocess and async locks, including pending cleanup counts.
+
+    Returns:
+        Same as get_lock_status in KeyedUnifiedLock
+    """
+    global _storage_keyed_lock
+
+    # Check if shared storage is initialized
+    if not _initialized or _storage_keyed_lock is None:
+        return {
+            "process_id": os.getpid(),
+            "total_mp_locks": 0,
+            "pending_mp_cleanup": 0,
+            "total_async_locks": 0,
+            "pending_async_cleanup": 0,
+        }
+
+    status = _storage_keyed_lock.get_lock_status()
+    status["process_id"] = os.getpid()
+    return status
 
 
 def initialize_share_data(workers: int = 1):
@@ -294,6 +970,10 @@ def initialize_share_data(workers: int = 1):
         _workers, \
         _is_multiprocess, \
         _storage_lock, \
+        _lock_registry, \
+        _lock_registry_count, \
+        _lock_cleanup_data, \
+        _registry_guard, \
         _internal_lock, \
         _pipeline_status_lock, \
         _graph_db_lock, \
@@ -302,7 +982,10 @@ def initialize_share_data(workers: int = 1):
         _init_flags, \
         _initialized, \
         _update_flags, \
-        _async_locks
+        _async_locks, \
+        _storage_keyed_lock, \
+        _earliest_mp_cleanup_time, \
+        _last_mp_cleanup_time
 
     # Check if already initialized
     if _initialized:
@@ -316,6 +999,10 @@ def initialize_share_data(workers: int = 1):
     if workers > 1:
         _is_multiprocess = True
         _manager = Manager()
+        _lock_registry = _manager.dict()
+        _lock_registry_count = _manager.dict()
+        _lock_cleanup_data = _manager.dict()
+        _registry_guard = _manager.RLock()
         _internal_lock = _manager.Lock()
         _storage_lock = _manager.Lock()
         _pipeline_status_lock = _manager.Lock()
@@ -324,6 +1011,8 @@ def initialize_share_data(workers: int = 1):
         _shared_dicts = _manager.dict()
         _init_flags = _manager.dict()
         _update_flags = _manager.dict()
+
+        _storage_keyed_lock = KeyedUnifiedLock()
 
         # Initialize async locks for multiprocess mode
         _async_locks = {
@@ -348,7 +1037,13 @@ def initialize_share_data(workers: int = 1):
         _init_flags = {}
         _update_flags = {}
         _async_locks = None  # No need for async locks in single process mode
+
+        _storage_keyed_lock = KeyedUnifiedLock()
         direct_log(f"Process {os.getpid()} Shared-Data created for Single Process")
+
+    # Initialize multiprocess cleanup times
+    _earliest_mp_cleanup_time = None
+    _last_mp_cleanup_time = None
 
     # Mark as initialized
     _initialized = True

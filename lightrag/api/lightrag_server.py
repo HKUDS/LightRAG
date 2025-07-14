@@ -52,6 +52,7 @@ from lightrag.kg.shared_storage import (
     get_namespace_data,
     get_pipeline_status_lock,
     initialize_pipeline_status,
+    cleanup_keyed_lock,
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from lightrag.api.auth import auth_handler
@@ -335,7 +336,7 @@ def create_app(args):
             llm_model_kwargs={
                 "host": args.llm_binding_host,
                 "timeout": args.timeout,
-                "options": {"num_ctx": args.max_tokens},
+                "options": {"num_ctx": args.ollama_num_ctx},
                 "api_key": args.llm_binding_api_key,
             }
             if args.llm_binding == "lollms" or args.llm_binding == "ollama"
@@ -486,6 +487,9 @@ def create_app(args):
             else:
                 auth_mode = "enabled"
 
+            # Cleanup expired keyed locks and get status
+            keyed_lock_info = cleanup_keyed_lock()
+
             return {
                 "status": "healthy",
                 "working_directory": str(args.working_dir),
@@ -517,6 +521,7 @@ def create_app(args):
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
+                "keyed_locks": keyed_lock_info,
                 "core_version": core_version,
                 "api_version": __api_version__,
                 "webui_title": webui_title,
