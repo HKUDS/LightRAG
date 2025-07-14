@@ -20,6 +20,7 @@ from typing import (
     Optional,
     List,
     Dict,
+    TypedDict,
 )
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
@@ -107,6 +108,46 @@ load_dotenv(dotenv_path=".env", override=False)
 # TODO: TO REMOVE @Yannick
 config = configparser.ConfigParser()
 config.read("config.ini", "utf-8")
+
+
+class EntityData(TypedDict):
+    entity_id: str
+    entity_type: str
+    description: str
+    source_id: str
+    file_path: str
+    created_at: int
+    entity_name: str
+
+
+class RelationshipData(TypedDict):
+    src_id: str
+    tgt_id: str
+    source_id: str
+    file_path: str
+    created_at: int
+    content: str
+
+
+class ChunkData(TypedDict):
+    full_doc_id: str
+    content: str
+    tokens: int
+    chunk_order_index: int
+    file_path: str
+
+
+# Define the storage namespace for LightRAG
+# class NameSpace(StorageNameSpace):
+#     KV_STORE_LLM_RESPONSE_CACHE = "lightrag_llm_response_cache"
+#     KV_STORE_FULL_DOCS = "lightrag_full_docs"
+#     KV_STORE_TEXT_CHUNKS = "lightrag_text_chunks"
+#     GRAPH_STORE_CHUNK_ENTITY_RELATION = "lightrag_chunk_entity_relation_graph"
+#     VECTOR_STORE_ENTITIES = "lightrag_entities_vdb"
+#     VECTOR_STORE_RELATIONSHIPS = "lightrag_relationships_vdb"
+#     VECTOR_STORE_CHUNKS = "lightrag_chunks_vdb"
+#     DOC_STATUS = "lightrag_doc_status" # Storage for document processing statuses
+#     CHUNK_DATA = "lightrag_chunk_data" # Storage for chunk metadata
 
 
 @final
@@ -212,7 +253,7 @@ class LightRAG:
     )
     """Number of overlapping tokens between consecutive text chunks to preserve context."""
 
-    tokenizer: Optional[Tokenizer] = field(default=None)
+    tokenizer: Tokenizer = field(default=TiktokenTokenizer())
     """
     A function that returns a Tokenizer instance.
     If None, and a `tiktoken_model_name` is provided, a TiktokenTokenizer will be created.
@@ -255,7 +296,7 @@ class LightRAG:
     # Embedding
     # ---
 
-    embedding_func: EmbeddingFunc | None = field(default=None)
+    embedding_func: Any = field(default=None)
     """Function for computing text embeddings. Must be set before use."""
 
     embedding_batch_num: int = field(default=int(os.getenv("EMBEDDING_BATCH_NUM", 10)))
@@ -472,6 +513,13 @@ class LightRAG:
             queue_name="Embedding func",
         )(self.embedding_func)
 
+        #          d8                                   /
+        #  d88~\ _d88__  e88~-_  888-~\   /~~~8e  e88~88e  e88~~8e
+        # C888    888   d888   i 888          88b 888 888 d888  88b
+        #  Y88b   888   8888   | 888     e88~-888 "88_88" 8888__888
+        #   888D  888   Y888   ' 888    C888  888  /      Y888    ,
+        # \_88P   "88_/  "88_-~  888     "88_-888 Cb       "88___/
+        #                                          Y8""8D
         # Initialize all storages
         self.key_string_value_json_storage_cls: type[BaseKVStorage] = (
             self._get_storage_class(self.kv_storage)
@@ -813,7 +861,7 @@ class LightRAG:
         self,
         node_label: str,
         max_depth: int = 3,
-        max_nodes: int = None,
+        max_nodes: int = 0,
     ) -> KnowledgeGraph:
         """Get knowledge graph for a given label
 
@@ -936,7 +984,7 @@ class LightRAG:
         self,
         full_text: str,
         text_chunks: list[str],
-        doc_id: str | list[str] | None = None,
+        doc_id: str | None = None,
     ) -> None:
         loop = always_get_an_event_loop()
         loop.run_until_complete(
@@ -1006,7 +1054,7 @@ class LightRAG:
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
-        ids: list[str] | None = None,
+        ids: str | list[str] | None = None,
         file_paths: str | list[str] | None = None,
         track_id: str | None = None,
     ) -> str:
@@ -1471,7 +1519,7 @@ class LightRAG:
                     split_by_character: str | None,
                     split_by_character_only: bool,
                     pipeline_status: dict,
-                    pipeline_status_lock: asyncio.Lock,
+                    pipeline_status_lock,
                     semaphore: asyncio.Semaphore,
                 ) -> None:
                     """Process single document"""
@@ -1647,8 +1695,11 @@ class LightRAG:
                                 }
                             )
 
-                        # Concurrency is controlled by keyed lock for individual entities and relationships
-                        if file_extraction_stage_ok:
+                        # Concurrency is controlled by graph db lock for individual entities and relationships
+                        if (
+                            file_extraction_stage_ok
+                            and entity_relation_task is not None
+                        ):
                             try:
                                 # Get chunk_results from entity_relation_task
                                 chunk_results = await entity_relation_task
@@ -1808,7 +1859,7 @@ class LightRAG:
             chunk_results = await extract_entities(
                 chunk,
                 global_config=asdict(self),
-                pipeline_status=pipeline_status,
+                pipeline_status=pipeline_status or {},
                 pipeline_status_lock=pipeline_status_lock,
                 llm_response_cache=self.llm_response_cache,
                 text_chunks_storage=self.text_chunks,
@@ -1817,9 +1868,10 @@ class LightRAG:
         except Exception as e:
             error_msg = f"Failed to extract entities and relationships: {str(e)}"
             logger.error(error_msg)
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = error_msg
-                pipeline_status["history_messages"].append(error_msg)
+            if pipeline_status_lock and pipeline_status:
+                async with pipeline_status_lock:
+                    pipeline_status["latest_message"] = error_msg
+                    pipeline_status["history_messages"].append(error_msg)
             raise e
 
     async def _insert_done(
@@ -1846,13 +1898,13 @@ class LightRAG:
         log_message = "In memory DB persist to disk"
         logger.info(log_message)
 
-        if pipeline_status is not None and pipeline_status_lock is not None:
+        if pipeline_status and pipeline_status_lock:
             async with pipeline_status_lock:
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
 
     def insert_custom_kg(
-        self, custom_kg: dict[str, Any], full_doc_id: str = None
+        self, custom_kg: dict[str, Any], full_doc_id: str = ""
     ) -> None:
         loop = always_get_an_event_loop()
         loop.run_until_complete(self.ainsert_custom_kg(custom_kg, full_doc_id))
@@ -1860,7 +1912,7 @@ class LightRAG:
     async def ainsert_custom_kg(
         self,
         custom_kg: dict[str, Any],
-        full_doc_id: str = None,
+        full_doc_id: str = "",
     ) -> None:
         update_storage = False
         try:
@@ -1884,9 +1936,7 @@ class LightRAG:
                     "source_id": source_id,
                     "tokens": tokens,
                     "chunk_order_index": chunk_order_index,
-                    "full_doc_id": full_doc_id
-                    if full_doc_id is not None
-                    else source_id,
+                    "full_doc_id": (full_doc_id if full_doc_id else source_id),
                     "file_path": file_path,
                     "status": DocStatus.PROCESSED,
                 }
@@ -1901,7 +1951,8 @@ class LightRAG:
                 )
 
             # Insert entities into knowledge graph
-            all_entities_data: list[dict[str, str]] = []
+
+            all_entities_data: list[EntityData] = []
             for entity_data in custom_kg.get("entities", []):
                 entity_name = entity_data["entity_name"]
                 entity_type = entity_data.get("entity_type", "UNKNOWN")
@@ -1917,7 +1968,7 @@ class LightRAG:
                     )
 
                 # Prepare node data
-                node_data: dict[str, str] = {
+                node_data: dict[str, str | int | float] = {
                     "entity_id": entity_name,
                     "entity_type": entity_type,
                     "description": description,
@@ -1934,7 +1985,7 @@ class LightRAG:
                 update_storage = True
 
             # Insert relationships into knowledge graph
-            all_relationships_data: list[dict[str, str]] = []
+            all_relationships_data: list[dict[str, str | int | float]] = []
             for relationship_data in custom_kg.get("relationships", []):
                 src_id = relationship_data["src_id"]
                 tgt_id = relationship_data["tgt_id"]
@@ -1982,7 +2033,7 @@ class LightRAG:
                     },
                 )
 
-                edge_data: dict[str, str] = {
+                edge_data: dict[str, str | int | float] = {
                     "src_id": src_id,
                     "tgt_id": tgt_id,
                     "description": description,

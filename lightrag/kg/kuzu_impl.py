@@ -178,14 +178,35 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def get_nodes_batch(self, node_ids: list[str]) -> dict[str, dict]:
         """Retrieve multiple nodes in one query"""
-        # label = self._get_label()
+        label = self._get_label()
+        query = f"""
+            UNWIND $node_ids AS id
+            MATCH (n:{label} {{entity_id: id}})
+            RETURN n.entity_id AS entity_id, n
+            """
+
+        result = self.get_all(self.connection.execute(query, {"node_ids": node_ids}))
         nodes = {}
 
-        for node_id in node_ids:
-            node = await self.get_node(node_id)
-            if node is not None:
-                nodes[node_id] = node
+        # for node_id in node_ids:
+        #     node = await self.get_node(node_id)
+        #     if node is not None:
+        #         nodes[node_id] = node
 
+        for query_result in result:
+            if not query_result.has_next():
+                continue
+            while query_result.has_next():
+                row = query_result.get_next()
+                node_id = row[0]
+                node_data = {
+                    "entity_id": row[1].get("entity_id"),
+                    "entity_type": row[1].get("entity_type"),
+                    "description": row[1].get("description"),
+                    "keywords": row[1].get("keywords"),
+                    "source_id": row[1].get("source_id"),
+                }
+                nodes[node_id] = node_data
         return nodes
 
     async def node_degree(self, node_id: str) -> int:
@@ -214,9 +235,25 @@ class KuzuDBStorage(BaseGraphStorage):
 
     async def node_degrees_batch(self, node_ids: list[str]) -> dict[str, int]:
         """Retrieve the degree for multiple nodes"""
+        label = self._get_label()
+
+        query = f"""
+            UNWIND $node_ids AS id
+            MATCH (n:{label} {{entity_id: id}})
+            OPTIONAL MATCH (n)-[r:Related]-()
+            RETURN n.entity_id AS entity_id, COUNT(r) AS degree
+        """
+        result = self.get_all(self.connection.execute(query, {"node_ids": node_ids}))
+
         degrees = {}
-        for node_id in node_ids:
-            degrees[node_id] = await self.node_degree(node_id)
+        for query_result in result:
+            if not query_result.has_next():
+                continue
+            while query_result.has_next():
+                row = query_result.get_next()
+                node_id = row[0]
+                degree = row[1] if row[1] is not None else 0
+                degrees[node_id] = degree // 2  # Divide by 2 for bidirectional edges
         return degrees
 
     async def edge_degree(self, src_id: str, tgt_id: str) -> int:
@@ -293,21 +330,41 @@ class KuzuDBStorage(BaseGraphStorage):
         self, pairs: list[dict[str, str]]
     ) -> dict[tuple[str, str], dict]:
         """Retrieve edge properties for multiple (src, tgt) pairs"""
+        label = self._get_label()
+        query = f"""
+            UNWIND $pairs AS pair
+            MATCH (a:{label})-[r:Related]-(b:{label})
+            WHERE a.entity_id = pair.src AND b.entity_id = pair.tgt
+            RETURN pair.src AS src_id, pair.tgt AS tgt_id, collect(r)
+            """
+        result = self.get_all(self.connection.execute(query, {"pairs": pairs}))
         edges_dict = {}
-        for pair in pairs:
-            src_id = pair["src"]
-            tgt_id = pair["tgt"]
-            edge = await self.get_edge(src_id, tgt_id)
-            if edge is not None:
-                edges_dict[(src_id, tgt_id)] = edge
-            else:
-                edges_dict[(src_id, tgt_id)] = {
-                    "relationship": None,
-                    "weight": 0.0,
-                    "source_id": None,
-                    "description": None,
-                    "keywords": None,
-                }
+        for pair in result:
+            if not pair.has_next():
+                continue
+            while pair.has_next():
+                row = pair.get_next()
+                # print("🔥 ROW:", row)
+                src_id = row[0]  # "Deep Learning"
+                tgt_id = row[1]  # "Natural Language Processing"
+                edges = row[2]  # List of edges
+                if edges:
+                    for edge in edges:
+                        edges_dict[(src_id, tgt_id)] = {
+                            "relationship": edge.get("relationship"),
+                            "weight": edge.get("weight", 0.0),
+                            "source_id": edge.get("source_id"),
+                            "description": edge.get("description"),
+                            "keywords": edge.get("keywords"),
+                        }
+                else:
+                    edges_dict[(src_id, tgt_id)] = {
+                        "relationship": None,
+                        "weight": 0.0,
+                        "source_id": None,
+                        "description": None,
+                        "keywords": None,
+                    }
         return edges_dict
 
     async def get_node_edges(self, source_node_id: str) -> list[tuple[str, str]] | None:
@@ -347,11 +404,35 @@ class KuzuDBStorage(BaseGraphStorage):
         self, node_ids: list[str]
     ) -> dict[str, list[tuple[str, str]]]:
         """Batch retrieve edges for multiple nodes"""
+        label = self._get_label()
         result = {}
-        for node_id in node_ids:
-            edges = await self.get_node_edges(node_id)
-            result[node_id] = edges if edges is not None else []
-        return result
+        query = f"""
+            UNWIND $node_ids AS id
+            MATCH (n:`{label}` {{entity_id: id}})
+            OPTIONAL MATCH (n)-[r]-(connected:`{label}`)
+            RETURN id, connected.entity_id
+        """
+        result = self.get_all(self.connection.execute(query, {"node_ids": node_ids}))
+        edges_dict = {}
+        for r in result:
+            if not r.has_next():
+                continue
+            while r.has_next():
+                row = r.get_next()
+                # print("🔥 row: ", row)
+                queried_id = row[0]
+                if not queried_id:
+                    continue
+
+                if queried_id not in edges_dict:
+                    edges_dict[queried_id] = []
+                # deduplicate edges
+                edge_pair = (queried_id, row[1])
+                if edge_pair not in edges_dict[queried_id]:
+                    edges_dict[queried_id].append(edge_pair)
+
+        # Ensure all queried nodes have an entry in the dictionary
+        return edges_dict
 
     async def get_nodes_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
         """Get all nodes that are associated with the given chunk_ids"""
@@ -375,9 +456,11 @@ class KuzuDBStorage(BaseGraphStorage):
                         continue
                     while result.has_next():
                         row = result.get_next()
+                        # print("🔥 ROW:", row)
                         column_names = result.get_column_names()
+                        # print("🔥 Column names:", column_names)
                         node_dict = dict(zip(column_names, row))
-
+                        # print("🔥 Node dict:", node_dict)
                         # Clean up column names by removing prefixes
                         clean_node_dict = {}
                         for key, value in node_dict.items():
@@ -395,7 +478,7 @@ class KuzuDBStorage(BaseGraphStorage):
                             seen_nodes.add(entity_id)
         except Exception as e:
             logger.error(f"Error getting nodes by chunk ids: {str(e)}")
-
+        # print("🔥 Nodes found:", nodes)
         return nodes
 
     async def get_edges_by_chunk_ids(self, chunk_ids: list[str]) -> list[dict]:
@@ -407,9 +490,9 @@ class KuzuDBStorage(BaseGraphStorage):
         try:
             for chunk_id in chunk_ids:
                 query = f"""
-                            MATCH (a:{label})-[r:Related]-(b:{label})
-                            WHERE r.source_id CONTAINS $chunk_id
-                            RETURN a.entity_id, b.entity_id, r.*
+                    MATCH (a:{label})-[r:Related]-(b:{label})
+                    WHERE r.source_id CONTAINS $chunk_id
+                    RETURN a.entity_id, b.entity_id, r.*
                 """
                 result = self.get_all(
                     self.connection.execute(query, {"chunk_id": chunk_id})
