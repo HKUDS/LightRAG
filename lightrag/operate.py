@@ -1980,12 +1980,12 @@ async def _build_query_context(
         max_entity_tokens = getattr(
             query_param,
             "max_entity_tokens",
-            text_chunks_db.global_config.get("MAX_ENTITY_TOKENS", 8000),
+            text_chunks_db.global_config.get("MAX_ENTITY_TOKENS", 10000),
         )
         max_relation_tokens = getattr(
             query_param,
             "max_relation_tokens",
-            text_chunks_db.global_config.get("MAX_RELATION_TOKENS", 6000),
+            text_chunks_db.global_config.get("MAX_RELATION_TOKENS", 10000),
         )
         max_total_tokens = getattr(
             query_param,
