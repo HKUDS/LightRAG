@@ -252,12 +252,12 @@
       "inputDirectory": "Input Directory",
       "llmConfig": "LLM Configuration",
       "llmBinding": "LLM Binding",
-      "llmBindingHost": "LLM Endpoint",
+      "llmBindingHost": "LLM Binding Host",
       "llmModel": "LLM Model",
       "maxTokens": "Max Tokens",
       "embeddingConfig": "Embedding Configuration",
       "embeddingBinding": "Embedding Binding",
-      "embeddingBindingHost": "Embedding Endpoint",
+      "embeddingBindingHost": "Embedding Binding Host",
       "embeddingModel": "Embedding Model",
       "storageConfig": "Storage Configuration",
       "kvStorage": "KV Storage",
@@ -265,11 +265,7 @@
       "graphStorage": "Graph Storage",
       "vectorStorage": "Vector Storage",
       "workspace": "Workspace",
-      "maxGraphNodes": "Max Graph Nodes",
-      "rerankerConfig": "Reranker Configuration",
-      "rerankerBindingHost": "Reranker Endpoint",
-      "rerankerModel": "Reranker Model",
-      "lockStatus": "Lock Status"
+      "maxGraphNodes": "Max Graph Nodes"
     },
     "propertiesView": {
       "editProperty": "Edit {{property}}",

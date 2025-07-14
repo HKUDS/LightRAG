@@ -252,12 +252,12 @@
       "inputDirectory": "Répertoire d'entrée",
       "llmConfig": "Configuration du modèle de langage",
       "llmBinding": "Liaison du modèle de langage",
-      "llmBindingHost": "Point de terminaison LLM",
+      "llmBindingHost": "Hôte de liaison du modèle de langage",
       "llmModel": "Modèle de langage",
       "maxTokens": "Nombre maximum de jetons",
       "embeddingConfig": "Configuration d'incorporation",
       "embeddingBinding": "Liaison d'incorporation",
-      "embeddingBindingHost": "Point de terminaison d'incorporation",
+      "embeddingBindingHost": "Hôte de liaison d'incorporation",
       "embeddingModel": "Modèle d'incorporation",
       "storageConfig": "Configuration de stockage",
       "kvStorage": "Stockage clé-valeur",
@@ -265,11 +265,7 @@
       "graphStorage": "Stockage du graphe",
       "vectorStorage": "Stockage vectoriel",
       "workspace": "Espace de travail",
-      "maxGraphNodes": "Nombre maximum de nœuds du graphe",
-      "rerankerConfig": "Configuration du reclassement",
-      "rerankerBindingHost": "Point de terminaison de reclassement",
-      "rerankerModel": "Modèle de reclassement",
-      "lockStatus": "État des verrous"
+      "maxGraphNodes": "Nombre maximum de nœuds du graphe"
     },
     "propertiesView": {
       "editProperty": "Modifier {{property}}",

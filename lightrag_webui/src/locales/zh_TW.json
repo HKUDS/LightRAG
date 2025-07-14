@@ -252,12 +252,12 @@
       "inputDirectory": "輸入目錄",
       "llmConfig": "LLM 設定",
       "llmBinding": "LLM 綁定",
-      "llmBindingHost": "LLM 端點",
+      "llmBindingHost": "LLM 綁定主機",
       "llmModel": "LLM 模型",
       "maxTokens": "最大權杖數",
       "embeddingConfig": "嵌入設定",
       "embeddingBinding": "嵌入綁定",
-      "embeddingBindingHost": "嵌入端點",
+      "embeddingBindingHost": "嵌入綁定主機",
       "embeddingModel": "嵌入模型",
       "storageConfig": "儲存設定",
       "kvStorage": "KV 儲存",
@@ -265,11 +265,7 @@
       "graphStorage": "圖形儲存",
       "vectorStorage": "向量儲存",
       "workspace": "工作空間",
-      "maxGraphNodes": "最大圖形節點數",
-      "rerankerConfig": "重排序設定",
-      "rerankerBindingHost": "重排序端點",
-      "rerankerModel": "重排序模型",
-      "lockStatus": "鎖定狀態"
+      "maxGraphNodes": "最大圖形節點數"
     },
     "propertiesView": {
       "editProperty": "編輯{{property}}",

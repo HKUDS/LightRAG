@@ -42,28 +42,12 @@ export type LightragStatus = {
     vector_storage: string
     workspace?: string
     max_graph_nodes?: string
-    enable_rerank?: boolean
-    rerank_model?: string | null
-    rerank_binding_host?: string | null
   }
   update_status?: Record<string, any>
   core_version?: string
   api_version?: string
   auth_mode?: 'enabled' | 'disabled'
   pipeline_busy: boolean
-  keyed_locks?: {
-    process_id: number
-    cleanup_performed: {
-      mp_cleaned: number
-      async_cleaned: number
-    }
-    current_status: {
-      total_mp_locks: number
-      pending_mp_cleanup: number
-      total_async_locks: number
-      pending_async_cleanup: number
-    }
-  }
   webui_title?: string
   webui_description?: string
 }
