@@ -842,7 +842,6 @@ class MemgraphStorage(BaseGraphStorage):
                             subgraph_query,
                             {
                                 "entity_id": node_label,
-                                "max_depth": max_depth,
                                 "max_nodes": max_nodes,
                             },
                         )
