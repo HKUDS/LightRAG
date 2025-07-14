@@ -810,7 +810,7 @@ class MemgraphStorage(BaseGraphStorage):
                             await result_set.consume()
 
                 else:
-                    # For specific node queries, use path.subgraph_all with the refined query pattern
+                    # Run subgraph query for specific node_label
                     subgraph_query = f"""
                     MATCH (start:`{workspace_label}`)
                     WHERE start.entity_id = $entity_id
