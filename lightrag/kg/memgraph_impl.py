@@ -814,29 +814,26 @@ class MemgraphStorage(BaseGraphStorage):
                     subgraph_query = f"""
                     MATCH (start:`{workspace_label}`)
                     WHERE start.entity_id = $entity_id
-                    WITH start
-                    CALL path.subgraph_all(start, {{
-                        relationshipFilter: [],
-                        labelFilter: ['{workspace_label}'],
-                        minHops: 0,
-                        maxHops: $max_depth
-                    }})
-                    YIELD nodes, rels
+
+                    MATCH path = (start)-[*BFS 0..{max_depth}]-(end:`{workspace_label}`)
+                    WHERE ALL(n IN nodes(path) WHERE '{workspace_label}' IN labels(n))
+                    WITH collect(DISTINCT end) + start AS all_nodes_unlimited
                     WITH
-                      CASE
-                        WHEN size(nodes) <= $max_nodes THEN nodes
-                        ELSE nodes[0..$max_nodes]
-                      END AS limited_nodes,
-                      rels,
-                      size(nodes) > $max_nodes AS is_truncated
-                    UNWIND rels AS rel
-                    WITH limited_nodes, rel, is_truncated
-                    WHERE startNode(rel) IN limited_nodes AND endNode(rel) IN limited_nodes
-                    WITH limited_nodes, collect(DISTINCT rel) AS limited_relationships, is_truncated
+                    CASE
+                        WHEN size(all_nodes_unlimited) <= $max_nodes THEN all_nodes_unlimited
+                        ELSE all_nodes_unlimited[0..$max_nodes]
+                    END AS limited_nodes,
+                    size(all_nodes_unlimited) > $max_nodes AS is_truncated
+
+                    UNWIND limited_nodes AS n1
+                    UNWIND limited_nodes AS n2
+                    MATCH (n1)-[r]-(n2)
+                    WITH DISTINCT r, limited_nodes, is_truncated
+
                     RETURN
-                      [node IN limited_nodes | {{node: node}}] AS node_info,
-                      limited_relationships AS relationships,
-                      is_truncated
+                    [node IN limited_nodes | {{node: node}}] AS node_info,
+                    collect(DISTINCT r) AS relationships,
+                    is_truncated
                     """
 
                     result_set = None
