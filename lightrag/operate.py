@@ -1949,28 +1949,8 @@ async def _build_query_context(
             hl_relations_context, ll_relations_context
         )
 
-    # Process all chunks uniformly: deduplication, reranking, and token truncation
-    processed_chunks = await process_chunks_unified(
-        query=query,
-        chunks=all_chunks,
-        query_param=query_param,
-        global_config=text_chunks_db.global_config,
-        source_type="mixed",
-    )
-
-    # Build final text_units_context from processed chunks
-    text_units_context = []
-    for i, chunk in enumerate(processed_chunks):
-        text_units_context.append(
-            {
-                "id": i + 1,
-                "content": chunk["content"],
-                "file_path": chunk.get("file_path", "unknown_source"),
-            }
-        )
-
     logger.info(
-        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(text_units_context)} chunks"
+        f"Initial context: {len(entities_context)} entities, {len(relations_context)} relations, {len(all_chunks)} chunks"
     )
 
     # Unified token control system - Apply precise token limits to entities and relations
@@ -2098,11 +2078,11 @@ async def _build_query_context(
         )
 
         # Re-process chunks with dynamic token limit
-        if text_units_context:
+        if all_chunks:
             # Create a temporary query_param copy with adjusted chunk token limit
             temp_chunks = [
                 {"content": chunk["content"], "file_path": chunk["file_path"]}
-                for chunk in text_units_context
+                for chunk in all_chunks
             ]
 
             # Apply token truncation to chunks using the dynamic limit
@@ -2129,6 +2109,10 @@ async def _build_query_context(
             logger.debug(
                 f"Re-truncated chunks for dynamic token limit: {len(temp_chunks)} -> {len(text_units_context)} (chunk available tokens: {available_chunk_tokens})"
             )
+
+    logger.info(
+        f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(text_units_context)} chunks"
+    )
 
     # not necessary to use LLM to generate a response
     if not entities_context and not relations_context:
