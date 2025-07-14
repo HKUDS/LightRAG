@@ -15,6 +15,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
+import NumberInput from '../ui/NumberInput'
 
 export default function QuerySettings() {
   const { t } = useTranslation()
@@ -155,11 +156,20 @@ export default function QuerySettings() {
                 </Tooltip>
               </TooltipProvider>
               <div>
-                <NumberInput
+                <Input
                   id="chunk_top_k"
-                  stepper={1}
-                  value={querySettings.chunk_top_k}
-                  onValueChange={(v) => handleChange('chunk_top_k', v)}
+                  type="number"
+                  value={querySettings.chunk_top_k ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    handleChange('chunk_top_k', value === '' ? '' : parseInt(value) || 0)
+                  }}
+                  onBlur={(e) => {
+                    const value = e.target.value
+                    if (value === '' || isNaN(parseInt(value))) {
+                      handleChange('chunk_top_k', 1)
+                    }
+                  }}
                   min={1}
                   placeholder={t('retrievePanel.querySettings.chunkTopKPlaceholder')}
                 />
@@ -181,11 +191,20 @@ export default function QuerySettings() {
                 </Tooltip>
               </TooltipProvider>
               <div>
-                <NumberInput
+                <Input
                   id="chunk_rerank_top_k"
-                  stepper={1}
-                  value={querySettings.chunk_rerank_top_k}
-                  onValueChange={(v) => handleChange('chunk_rerank_top_k', v)}
+                  type="number"
+                  value={querySettings.chunk_rerank_top_k ?? ''}
+                  onChange={(e) => {
+                    const value = e.target.value
+                    handleChange('chunk_rerank_top_k', value === '' ? '' : parseInt(value) || 0)
+                  }}
+                  onBlur={(e) => {
+                    const value = e.target.value
+                    if (value === '' || isNaN(parseInt(value))) {
+                      handleChange('chunk_rerank_top_k', 1)
+                    }
+                  }}
                   min={1}
                   placeholder={t('retrievePanel.querySettings.chunkRerankTopKPlaceholder')}
                 />
@@ -208,11 +227,20 @@ export default function QuerySettings() {
                   </Tooltip>
                 </TooltipProvider>
                 <div>
-                  <NumberInput
+                  <Input
                     id="max_entity_tokens"
-                    stepper={500}
-                    value={querySettings.max_entity_tokens}
-                    onValueChange={(v) => handleChange('max_entity_tokens', v)}
+                    type="number"
+                    value={querySettings.max_entity_tokens ?? ''}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      handleChange('max_entity_tokens', value === '' ? '' : parseInt(value) || 0)
+                    }}
+                    onBlur={(e) => {
+                      const value = e.target.value
+                      if (value === '' || isNaN(parseInt(value))) {
+                        handleChange('max_entity_tokens', 1)
+                      }
+                    }}
                     min={1}
                     placeholder={t('retrievePanel.querySettings.maxEntityTokens')}
                   />
@@ -233,11 +261,20 @@ export default function QuerySettings() {
                   </Tooltip>
                 </TooltipProvider>
                 <div>
-                  <NumberInput
+                  <Input
                     id="max_relation_tokens"
-                    stepper={500}
-                    value={querySettings.max_relation_tokens}
-                    onValueChange={(v) => handleChange('max_relation_tokens', v)}
+                    type="number"
+                    value={querySettings.max_relation_tokens ?? ''}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      handleChange('max_relation_tokens', value === '' ? '' : parseInt(value) || 0)
+                    }}
+                    onBlur={(e) => {
+                      const value = e.target.value
+                      if (value === '' || isNaN(parseInt(value))) {
+                        handleChange('max_relation_tokens', 1)
+                      }
+                    }}
                     min={1}
                     placeholder={t('retrievePanel.querySettings.maxRelationTokens')}
                   />
@@ -258,11 +295,20 @@ export default function QuerySettings() {
                   </Tooltip>
                 </TooltipProvider>
                 <div>
-                  <NumberInput
+                  <Input
                     id="max_total_tokens"
-                    stepper={1000}
-                    value={querySettings.max_total_tokens}
-                    onValueChange={(v) => handleChange('max_total_tokens', v)}
+                    type="number"
+                    value={querySettings.max_total_tokens ?? ''}
+                    onChange={(e) => {
+                      const value = e.target.value
+                      handleChange('max_total_tokens', value === '' ? '' : parseInt(value) || 0)
+                    }}
+                    onBlur={(e) => {
+                      const value = e.target.value
+                      if (value === '' || isNaN(parseInt(value))) {
+                        handleChange('max_total_tokens', 1)
+                      }
+                    }}
                     min={1}
                     placeholder={t('retrievePanel.querySettings.maxTotalTokens')}
                   />
