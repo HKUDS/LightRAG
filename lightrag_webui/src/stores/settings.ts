@@ -111,9 +111,11 @@ const useSettingsStoreBase = create<SettingsState>()(
         mode: 'global',
         response_type: 'Multiple Paragraphs',
         top_k: 10,
-        max_token_for_text_unit: 6000,
-        max_token_for_global_context: 4000,
-        max_token_for_local_context: 4000,
+        chunk_top_k: 5,
+        chunk_rerank_top_k: 5,
+        max_entity_tokens: 10000,
+        max_relation_tokens: 10000,
+        max_total_tokens: 32000,
         only_need_context: false,
         only_need_prompt: false,
         stream: true,
@@ -192,7 +194,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 14,
+      version: 15,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -215,9 +217,9 @@ const useSettingsStoreBase = create<SettingsState>()(
             mode: 'global',
             response_type: 'Multiple Paragraphs',
             top_k: 10,
-            max_token_for_text_unit: 4000,
-            max_token_for_global_context: 4000,
-            max_token_for_local_context: 4000,
+            max_entity_tokens: 10000,
+            max_relation_tokens: 10000,
+            max_total_tokens: 32000,
             only_need_context: false,
             only_need_prompt: false,
             stream: true,
@@ -259,6 +261,26 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 14) {
           // Add backendMaxGraphNodes field for older versions
           state.backendMaxGraphNodes = null
+        }
+        if (version < 15) {
+          // 完整更新querySettings到统一token控制系统
+          state.querySettings = {
+            mode: 'global',
+            response_type: 'Multiple Paragraphs',
+            top_k: 10,
+            chunk_top_k: 5,
+            chunk_rerank_top_k: 5,
+            max_entity_tokens: 10000,
+            max_relation_tokens: 10000,
+            max_total_tokens: 32000,
+            only_need_context: false,
+            only_need_prompt: false,
+            stream: true,
+            history_turns: 3,
+            hl_keywords: [],
+            ll_keywords: [],
+            user_prompt: ''
+          }
         }
         return state
       }

@@ -61,22 +61,22 @@ class QueryRequest(BaseModel):
         description="Number of text chunks to keep after reranking.",
     )
 
-    max_token_for_text_unit: Optional[int] = Field(
-        gt=1,
+    max_entity_tokens: Optional[int] = Field(
         default=None,
-        description="Maximum number of tokens allowed for each retrieved text chunk.",
+        description="Maximum number of tokens allocated for entity context in unified token control system.",
+        ge=1,
     )
 
-    max_token_for_global_context: Optional[int] = Field(
-        gt=1,
+    max_relation_tokens: Optional[int] = Field(
         default=None,
-        description="Maximum number of tokens allocated for relationship descriptions in global retrieval.",
+        description="Maximum number of tokens allocated for relationship context in unified token control system.",
+        ge=1,
     )
 
-    max_token_for_local_context: Optional[int] = Field(
-        gt=1,
+    max_total_tokens: Optional[int] = Field(
         default=None,
-        description="Maximum number of tokens allocated for entity descriptions in local retrieval.",
+        description="Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt).",
+        ge=1,
     )
 
     conversation_history: Optional[List[Dict[str, Any]]] = Field(

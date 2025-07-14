@@ -1569,7 +1569,9 @@ async def kg_query(
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
-    logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
+    logger.debug(
+        f"[kg_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
+    )
 
     response = await use_model_func(
         query,
@@ -1692,7 +1694,9 @@ async def extract_keywords_only(
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     len_of_prompts = len(tokenizer.encode(kw_prompt))
-    logger.debug(f"[kg_query]Prompt Tokens: {len_of_prompts}")
+    logger.debug(
+        f"[extract_keywords] Sending to LLM: {len_of_prompts:,} tokens (Prompt: {len_of_prompts})"
+    )
 
     # 5. Call the LLM for keyword extraction
     if param.model_func:
@@ -1864,7 +1868,7 @@ async def _build_query_context(
 
         # Combine entities and relations contexts
         entities_context = process_combine_contexts(
-            hl_entities_context, ll_entities_context
+            ll_entities_context, hl_entities_context
         )
         relations_context = process_combine_contexts(
             hl_relations_context, ll_relations_context
@@ -1893,6 +1897,163 @@ async def _build_query_context(
     logger.info(
         f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(text_units_context)} chunks"
     )
+
+    # Unified token control system - Apply precise token limits to entities and relations
+    tokenizer = text_chunks_db.global_config.get("tokenizer")
+    if tokenizer:
+        # Get new token limits from query_param (with fallback to global_config)
+        max_entity_tokens = getattr(
+            query_param,
+            "max_entity_tokens",
+            text_chunks_db.global_config.get("MAX_ENTITY_TOKENS", 8000),
+        )
+        max_relation_tokens = getattr(
+            query_param,
+            "max_relation_tokens",
+            text_chunks_db.global_config.get("MAX_RELATION_TOKENS", 6000),
+        )
+        max_total_tokens = getattr(
+            query_param,
+            "max_total_tokens",
+            text_chunks_db.global_config.get("MAX_TOTAL_TOKENS", 32000),
+        )
+
+        # Truncate entities based on complete JSON serialization
+        if entities_context:
+            original_entity_count = len(entities_context)
+            entities_context = truncate_list_by_token_size(
+                entities_context,
+                key=lambda x: json.dumps(x, ensure_ascii=False),
+                max_token_size=max_entity_tokens,
+                tokenizer=tokenizer,
+            )
+            if len(entities_context) < original_entity_count:
+                logger.debug(
+                    f"Truncated entities: {original_entity_count} -> {len(entities_context)} (entity max tokens: {max_entity_tokens})"
+                )
+
+        # Truncate relations based on complete JSON serialization
+        if relations_context:
+            original_relation_count = len(relations_context)
+            relations_context = truncate_list_by_token_size(
+                relations_context,
+                key=lambda x: json.dumps(x, ensure_ascii=False),
+                max_token_size=max_relation_tokens,
+                tokenizer=tokenizer,
+            )
+            if len(relations_context) < original_relation_count:
+                logger.debug(
+                    f"Truncated relations: {original_relation_count} -> {len(relations_context)} (relation max tokens: {max_relation_tokens})"
+                )
+
+        # Calculate dynamic token limit for text chunks
+        entities_str = json.dumps(entities_context, ensure_ascii=False)
+        relations_str = json.dumps(relations_context, ensure_ascii=False)
+
+        # Calculate base context tokens (entities + relations + template)
+        kg_context_template = """-----Entities(KG)-----
+
+```json
+{entities_str}
+```
+
+-----Relationships(KG)-----
+
+```json
+{relations_str}
+```
+
+-----Document Chunks(DC)-----
+
+```json
+[]
+```
+
+"""
+        kg_context = kg_context_template.format(
+            entities_str=entities_str, relations_str=relations_str
+        )
+        kg_context_tokens = len(tokenizer.encode(kg_context))
+
+        # Calculate actual system prompt overhead dynamically
+        # 1. Calculate conversation history tokens
+        history_context = ""
+        if query_param.conversation_history:
+            history_context = get_conversation_turns(
+                query_param.conversation_history, query_param.history_turns
+            )
+        history_tokens = (
+            len(tokenizer.encode(history_context)) if history_context else 0
+        )
+
+        # 2. Calculate system prompt template tokens (excluding context_data)
+        user_prompt = query_param.user_prompt if query_param.user_prompt else ""
+        response_type = (
+            query_param.response_type
+            if query_param.response_type
+            else "Multiple Paragraphs"
+        )
+
+        # Get the system prompt template from PROMPTS
+        sys_prompt_template = text_chunks_db.global_config.get(
+            "system_prompt_template", PROMPTS["rag_response"]
+        )
+
+        # Create a sample system prompt with placeholders filled (excluding context_data)
+        sample_sys_prompt = sys_prompt_template.format(
+            history=history_context,
+            context_data="",  # Empty for overhead calculation
+            response_type=response_type,
+            user_prompt=user_prompt,
+        )
+        sys_prompt_template_tokens = len(tokenizer.encode(sample_sys_prompt))
+
+        # Total system prompt overhead = template + query tokens
+        query_tokens = len(tokenizer.encode(query))
+        sys_prompt_overhead = sys_prompt_template_tokens + query_tokens
+
+        buffer_tokens = 100  # Safety buffer as requested
+
+        # Calculate available tokens for text chunks
+        used_tokens = kg_context_tokens + sys_prompt_overhead + buffer_tokens
+        available_chunk_tokens = max_total_tokens - used_tokens
+
+        logger.debug(
+            f"Token allocation - Total: {max_total_tokens}, History: {history_tokens}, SysPrompt: {sys_prompt_overhead}, KG: {kg_context_tokens}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+        )
+
+        # Re-process chunks with dynamic token limit
+        if text_units_context:
+            # Create a temporary query_param copy with adjusted chunk token limit
+            temp_chunks = [
+                {"content": chunk["content"], "file_path": chunk["file_path"]}
+                for chunk in text_units_context
+            ]
+
+            # Apply token truncation to chunks using the dynamic limit
+            truncated_chunks = await process_chunks_unified(
+                query=query,
+                chunks=temp_chunks,
+                query_param=query_param,
+                global_config=text_chunks_db.global_config,
+                source_type="mixed",
+                chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
+            )
+
+            # Rebuild text_units_context with truncated chunks
+            text_units_context = []
+            for i, chunk in enumerate(truncated_chunks):
+                text_units_context.append(
+                    {
+                        "id": i + 1,
+                        "content": chunk["content"],
+                        "file_path": chunk.get("file_path", "unknown_source"),
+                    }
+                )
+
+            logger.debug(
+                f"Re-truncated chunks for dynamic token limit: {len(temp_chunks)} -> {len(text_units_context)} (chunk available tokens: {available_chunk_tokens})"
+            )
 
     # not necessary to use LLM to generate a response
     if not entities_context and not relations_context:
@@ -1980,18 +2141,6 @@ async def _get_node_data(
         node_datas,
         query_param,
         knowledge_graph_inst,
-    )
-
-    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
-    len_node_datas = len(node_datas)
-    node_datas = truncate_list_by_token_size(
-        node_datas,
-        key=lambda x: x["description"] if x["description"] is not None else "",
-        max_token_size=query_param.max_token_for_local_context,
-        tokenizer=tokenizer,
-    )
-    logger.debug(
-        f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
     )
 
     logger.info(
@@ -2199,19 +2348,8 @@ async def _find_most_related_edges_from_entities(
             }
             all_edges_data.append(combined)
 
-    tokenizer: Tokenizer = knowledge_graph_inst.global_config.get("tokenizer")
     all_edges_data = sorted(
         all_edges_data, key=lambda x: (x["rank"], x["weight"]), reverse=True
-    )
-    all_edges_data = truncate_list_by_token_size(
-        all_edges_data,
-        key=lambda x: x["description"] if x["description"] is not None else "",
-        max_token_size=query_param.max_token_for_global_context,
-        tokenizer=tokenizer,
-    )
-
-    logger.debug(
-        f"Truncate relations from {len(all_edges)} to {len(all_edges_data)} (max tokens:{query_param.max_token_for_global_context})"
     )
 
     return all_edges_data
@@ -2269,15 +2407,8 @@ async def _get_edge_data(
             }
             edge_datas.append(combined)
 
-    tokenizer: Tokenizer = text_chunks_db.global_config.get("tokenizer")
     edge_datas = sorted(
         edge_datas, key=lambda x: (x["rank"], x["weight"]), reverse=True
-    )
-    edge_datas = truncate_list_by_token_size(
-        edge_datas,
-        key=lambda x: x["description"] if x["description"] is not None else "",
-        max_token_size=query_param.max_token_for_global_context,
-        tokenizer=tokenizer,
     )
     use_entities, use_text_units = await asyncio.gather(
         _find_most_related_entities_from_relationships(
@@ -2388,18 +2519,6 @@ async def _find_most_related_entities_from_relationships(
         combined = {**node, "entity_name": entity_name, "rank": degree}
         node_datas.append(combined)
 
-    tokenizer: Tokenizer = knowledge_graph_inst.global_config.get("tokenizer")
-    len_node_datas = len(node_datas)
-    node_datas = truncate_list_by_token_size(
-        node_datas,
-        key=lambda x: x["description"] if x["description"] is not None else "",
-        max_token_size=query_param.max_token_for_local_context,
-        tokenizer=tokenizer,
-    )
-    logger.debug(
-        f"Truncate entities from {len_node_datas} to {len(node_datas)} (max tokens:{query_param.max_token_for_local_context})"
-    )
-
     return node_datas
 
 
@@ -2491,13 +2610,64 @@ async def naive_query(
     if chunks is None or len(chunks) == 0:
         return PROMPTS["fail_response"]
 
-    # Process chunks using unified processing
+    # Calculate dynamic token limit for chunks
+    # Get token limits from query_param (with fallback to global_config)
+    max_total_tokens = getattr(
+        query_param, "max_total_tokens", global_config.get("MAX_TOTAL_TOKENS", 32000)
+    )
+
+    # Calculate conversation history tokens
+    history_context = ""
+    if query_param.conversation_history:
+        history_context = get_conversation_turns(
+            query_param.conversation_history, query_param.history_turns
+        )
+    history_tokens = len(tokenizer.encode(history_context)) if history_context else 0
+
+    # Calculate system prompt template tokens (excluding content_data)
+    user_prompt = query_param.user_prompt if query_param.user_prompt else ""
+    response_type = (
+        query_param.response_type
+        if query_param.response_type
+        else "Multiple Paragraphs"
+    )
+
+    # Use the provided system prompt or default
+    sys_prompt_template = (
+        system_prompt if system_prompt else PROMPTS["naive_rag_response"]
+    )
+
+    # Create a sample system prompt with empty content_data to calculate overhead
+    sample_sys_prompt = sys_prompt_template.format(
+        content_data="",  # Empty for overhead calculation
+        response_type=response_type,
+        history=history_context,
+        user_prompt=user_prompt,
+    )
+    sys_prompt_template_tokens = len(tokenizer.encode(sample_sys_prompt))
+
+    # Total system prompt overhead = template + query tokens
+    query_tokens = len(tokenizer.encode(query))
+    sys_prompt_overhead = sys_prompt_template_tokens + query_tokens
+
+    buffer_tokens = 100  # Safety buffer
+
+    # Calculate available tokens for chunks
+    used_tokens = sys_prompt_overhead + buffer_tokens
+    available_chunk_tokens = max_total_tokens - used_tokens
+
+    logger.debug(
+        f"Naive query token allocation - Total: {max_total_tokens}, History: {history_tokens}, SysPrompt: {sys_prompt_overhead}, Buffer: {buffer_tokens}, Available for chunks: {available_chunk_tokens}"
+    )
+
+    # Process chunks using unified processing with dynamic token limit
     processed_chunks = await process_chunks_unified(
         query=query,
         chunks=chunks,
         query_param=query_param,
         global_config=global_config,
         source_type="vector",
+        chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
     )
 
     logger.info(f"Final context: {len(processed_chunks)} chunks")
@@ -2548,7 +2718,9 @@ async def naive_query(
         return sys_prompt
 
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
-    logger.debug(f"[naive_query]Prompt Tokens: {len_of_prompts}")
+    logger.debug(
+        f"[naive_query] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
+    )
 
     response = await use_model_func(
         query,
@@ -2672,7 +2844,9 @@ async def kg_query_with_keywords(
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     len_of_prompts = len(tokenizer.encode(query + sys_prompt))
-    logger.debug(f"[kg_query_with_keywords]Prompt Tokens: {len_of_prompts}")
+    logger.debug(
+        f"[kg_query_with_keywords] Sending to LLM: {len_of_prompts:,} tokens (Query: {len(tokenizer.encode(query))}, System: {len(tokenizer.encode(sys_prompt))})"
+    )
 
     # 6. Generate response
     response = await use_model_func(
@@ -2849,6 +3023,7 @@ async def process_chunks_unified(
     query_param: QueryParam,
     global_config: dict,
     source_type: str = "mixed",
+    chunk_token_limit: int = None,  # Add parameter for dynamic token limit
 ) -> list[dict]:
     """
     Unified processing for text chunks: deduplication, chunk_top_k limiting, reranking, and token truncation.
@@ -2859,6 +3034,7 @@ async def process_chunks_unified(
         query_param: Query parameters containing configuration
         global_config: Global configuration dictionary
         source_type: Source type for logging ("vector", "entity", "relationship", "mixed")
+        chunk_token_limit: Dynamic token limit for chunks (if None, uses default)
 
     Returns:
         Processed and filtered list of text chunks
@@ -2901,16 +3077,25 @@ async def process_chunks_unified(
     # 4. Token-based final truncation
     tokenizer = global_config.get("tokenizer")
     if tokenizer and unique_chunks:
+        # Set default chunk_token_limit if not provided
+        if chunk_token_limit is None:
+            # Get default from query_param or global_config
+            chunk_token_limit = getattr(
+                query_param,
+                "max_total_tokens",
+                global_config.get("MAX_TOTAL_TOKENS", 32000),
+            )
+
         original_count = len(unique_chunks)
         unique_chunks = truncate_list_by_token_size(
             unique_chunks,
             key=lambda x: x.get("content", ""),
-            max_token_size=query_param.max_token_for_text_unit,
+            max_token_size=chunk_token_limit,
             tokenizer=tokenizer,
         )
         logger.debug(
             f"Token truncation: {len(unique_chunks)} chunks from {original_count} "
-            f"(max tokens: {query_param.max_token_for_text_unit}, source: {source_type})"
+            f"(chunk available tokens: {chunk_token_limit}, source: {source_type})"
         )
 
     return unique_chunks

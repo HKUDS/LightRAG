@@ -132,30 +132,81 @@ export default function QuerySettings() {
               </div>
             </>
 
+            {/* Chunk Top K */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="chunk_top_k" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.chunkTopK')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.chunkTopKTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <div>
+                <NumberInput
+                  id="chunk_top_k"
+                  stepper={1}
+                  value={querySettings.chunk_top_k}
+                  onValueChange={(v) => handleChange('chunk_top_k', v)}
+                  min={1}
+                  placeholder={t('retrievePanel.querySettings.chunkTopKPlaceholder')}
+                />
+              </div>
+            </>
+
+            {/* Chunk Rerank Top K */}
+            <>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <label htmlFor="chunk_rerank_top_k" className="ml-1 cursor-help">
+                      {t('retrievePanel.querySettings.chunkRerankTopK')}
+                    </label>
+                  </TooltipTrigger>
+                  <TooltipContent side="left">
+                    <p>{t('retrievePanel.querySettings.chunkRerankTopKTooltip')}</p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+              <div>
+                <NumberInput
+                  id="chunk_rerank_top_k"
+                  stepper={1}
+                  value={querySettings.chunk_rerank_top_k}
+                  onValueChange={(v) => handleChange('chunk_rerank_top_k', v)}
+                  min={1}
+                  placeholder={t('retrievePanel.querySettings.chunkRerankTopKPlaceholder')}
+                />
+              </div>
+            </>
+
             {/* Max Tokens */}
             <>
               <>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <label htmlFor="max_token_for_text_unit" className="ml-1 cursor-help">
-                        {t('retrievePanel.querySettings.maxTokensTextUnit')}
+                      <label htmlFor="max_entity_tokens" className="ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.maxEntityTokens')}
                       </label>
                     </TooltipTrigger>
                     <TooltipContent side="left">
-                      <p>{t('retrievePanel.querySettings.maxTokensTextUnitTooltip')}</p>
+                      <p>{t('retrievePanel.querySettings.maxEntityTokensTooltip')}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
                 <div>
-                  {/* Removed sr-only label */}
                   <NumberInput
-                    id="max_token_for_text_unit"
+                    id="max_entity_tokens"
                     stepper={500}
-                    value={querySettings.max_token_for_text_unit}
-                    onValueChange={(v) => handleChange('max_token_for_text_unit', v)}
+                    value={querySettings.max_entity_tokens}
+                    onValueChange={(v) => handleChange('max_entity_tokens', v)}
                     min={1}
-                    placeholder={t('retrievePanel.querySettings.maxTokensTextUnit')}
+                    placeholder={t('retrievePanel.querySettings.maxEntityTokens')}
                   />
                 </div>
               </>
@@ -164,24 +215,23 @@ export default function QuerySettings() {
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <label htmlFor="max_token_for_global_context" className="ml-1 cursor-help">
-                        {t('retrievePanel.querySettings.maxTokensGlobalContext')}
+                      <label htmlFor="max_relation_tokens" className="ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.maxRelationTokens')}
                       </label>
                     </TooltipTrigger>
                     <TooltipContent side="left">
-                      <p>{t('retrievePanel.querySettings.maxTokensGlobalContextTooltip')}</p>
+                      <p>{t('retrievePanel.querySettings.maxRelationTokensTooltip')}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
                 <div>
-                  {/* Removed sr-only label */}
                   <NumberInput
-                    id="max_token_for_global_context"
+                    id="max_relation_tokens"
                     stepper={500}
-                    value={querySettings.max_token_for_global_context}
-                    onValueChange={(v) => handleChange('max_token_for_global_context', v)}
+                    value={querySettings.max_relation_tokens}
+                    onValueChange={(v) => handleChange('max_relation_tokens', v)}
                     min={1}
-                    placeholder={t('retrievePanel.querySettings.maxTokensGlobalContext')}
+                    placeholder={t('retrievePanel.querySettings.maxRelationTokens')}
                   />
                 </div>
               </>
@@ -190,24 +240,23 @@ export default function QuerySettings() {
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <label htmlFor="max_token_for_local_context" className="ml-1 cursor-help">
-                        {t('retrievePanel.querySettings.maxTokensLocalContext')}
+                      <label htmlFor="max_total_tokens" className="ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.maxTotalTokens')}
                       </label>
                     </TooltipTrigger>
                     <TooltipContent side="left">
-                      <p>{t('retrievePanel.querySettings.maxTokensLocalContextTooltip')}</p>
+                      <p>{t('retrievePanel.querySettings.maxTotalTokensTooltip')}</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
                 <div>
-                  {/* Removed sr-only label */}
                   <NumberInput
-                    id="max_token_for_local_context"
-                    stepper={500}
-                    value={querySettings.max_token_for_local_context}
-                    onValueChange={(v) => handleChange('max_token_for_local_context', v)}
+                    id="max_total_tokens"
+                    stepper={1000}
+                    value={querySettings.max_total_tokens}
+                    onValueChange={(v) => handleChange('max_total_tokens', v)}
                     min={1}
-                    placeholder={t('retrievePanel.querySettings.maxTokensLocalContext')}
+                    placeholder={t('retrievePanel.querySettings.maxTotalTokens')}
                   />
                 </div>
               </>

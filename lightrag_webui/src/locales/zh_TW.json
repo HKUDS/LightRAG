@@ -300,7 +300,7 @@
           "file_path": "來源",
           "keywords": "Keys",
           "weight": "權重"
-          }
+        }
       },
       "edge": {
         "title": "關係",
@@ -359,15 +359,15 @@
         "singleParagraph": "單段落",
         "bulletPoints": "重點"
       },
-      "topK": "Top K結果",
-      "topKTooltip": "檢索的前幾項結果數。在'local'模式下表示實體，在'global'模式下表示關係",
-      "topKPlaceholder": "結果數量",
-      "maxTokensTextUnit": "文字單元最大權杖數",
-      "maxTokensTextUnitTooltip": "每個檢索文字區塊允許的最大權杖數",
-      "maxTokensGlobalContext": "全域上下文最大權杖數",
-      "maxTokensGlobalContextTooltip": "全域檢索中關係描述的最大權杖數",
-      "maxTokensLocalContext": "本地上下文最大權杖數",
-      "maxTokensLocalContextTooltip": "本地檢索中實體描述的最大權杖數",
+      "topK": "Top K",
+      "topKTooltip": "檢索的頂部條目數量。在'local'模式下表示實體，在'global'模式下表示關係。",
+      "topKPlaceholder": "輸入top k值",
+      "chunkTopK": "文字區塊 Top K",
+      "chunkTopKTooltip": "檢索和處理的最大文字區塊數量。",
+      "chunkTopKPlaceholder": "輸入文字區塊top k值",
+      "chunkRerankTopK": "重新排序 Top K",
+      "chunkRerankTopKTooltip": "重新排序後保留的文字區塊數量。",
+      "chunkRerankTopKPlaceholder": "輸入重新排序top k值",
       "historyTurns": "歷史輪次",
       "historyTurnsTooltip": "回應上下文中考慮的完整對話輪次（使用者-助手對）數量",
       "historyTurnsPlaceholder": "歷史輪次數",
@@ -379,7 +379,13 @@
       "streamResponseTooltip": "如果為True，啟用即時串流輸出回應",
       "userPrompt": "用戶提示詞",
       "userPromptTooltip": "向LLM提供額外的響應要求（與查詢內容無關，僅用於處理輸出）。",
-      "userPromptPlaceholder": "輸入自定義提示詞（可選）"
+      "userPromptPlaceholder": "輸入自定義提示詞（可選）",
+      "maxEntityTokens": "實體令牌數上限",
+      "maxEntityTokensTooltip": "統一令牌控制系統中分配給實體上下文的最大令牌數",
+      "maxRelationTokens": "關係令牌數上限",
+      "maxRelationTokensTooltip": "統一令牌控制系統中分配給關係上下文的最大令牌數",
+      "maxTotalTokens": "總令牌數上限",
+      "maxTotalTokensTooltip": "整個查詢上下文的最大總令牌預算（實體+關係+文檔塊+系統提示）"
     }
   },
   "apiSite": {
