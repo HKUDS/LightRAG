@@ -37,6 +37,7 @@ from .base import (
 )
 from .prompt import PROMPTS
 from .constants import GRAPH_FIELD_SEP
+from .kg.shared_storage import get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
 
@@ -117,7 +118,7 @@ async def _handle_entity_relation_summary(
 
     tokenizer: Tokenizer = global_config["tokenizer"]
     llm_max_tokens = global_config["llm_model_max_token_size"]
-    summary_max_tokens = global_config["summary_to_max_tokens"]
+    # summary_max_tokens = global_config["summary_to_max_tokens"]
 
     language = global_config["addon_params"].get(
         "language", PROMPTS["DEFAULT_LANGUAGE"]
@@ -144,7 +145,7 @@ async def _handle_entity_relation_summary(
         use_prompt,
         use_llm_func,
         llm_response_cache=llm_response_cache,
-        max_tokens=summary_max_tokens,
+        # max_tokens=summary_max_tokens,
         cache_type="extract",
     )
     return summary
@@ -274,20 +275,26 @@ async def _rebuild_knowledge_from_chunks(
     pipeline_status: dict | None = None,
     pipeline_status_lock=None,
 ) -> None:
-    """Rebuild entity and relationship descriptions from cached extraction results
+    """Rebuild entity and relationship descriptions from cached extraction results with parallel processing
 
     This method uses cached LLM extraction results instead of calling LLM again,
-    following the same approach as the insert process.
+    following the same approach as the insert process. Now with parallel processing
+    controlled by llm_model_max_async and using get_storage_keyed_lock for data consistency.
 
     Args:
         entities_to_rebuild: Dict mapping entity_name -> set of remaining chunk_ids
         relationships_to_rebuild: Dict mapping (src, tgt) -> set of remaining chunk_ids
-        text_chunks_data: Pre-loaded chunk data dict {chunk_id: chunk_data}
+        knowledge_graph_inst: Knowledge graph storage
+        entities_vdb: Entity vector database
+        relationships_vdb: Relationship vector database
+        text_chunks_storage: Text chunks storage
+        llm_response_cache: LLM response cache
+        global_config: Global configuration containing llm_model_max_async
+        pipeline_status: Pipeline status dictionary
+        pipeline_status_lock: Lock for pipeline status
     """
     if not entities_to_rebuild and not relationships_to_rebuild:
         return
-    rebuilt_entities_count = 0
-    rebuilt_relationships_count = 0
 
     # Get all referenced chunk IDs
     all_referenced_chunk_ids = set()
@@ -296,7 +303,7 @@ async def _rebuild_knowledge_from_chunks(
     for chunk_ids in relationships_to_rebuild.values():
         all_referenced_chunk_ids.update(chunk_ids)
 
-    status_message = f"Rebuilding knowledge from {len(all_referenced_chunk_ids)} cached chunk extractions"
+    status_message = f"Rebuilding knowledge from {len(all_referenced_chunk_ids)} cached chunk extractions (parallel processing)"
     logger.info(status_message)
     if pipeline_status is not None and pipeline_status_lock is not None:
         async with pipeline_status_lock:
@@ -366,66 +373,116 @@ async def _rebuild_knowledge_from_chunks(
                     pipeline_status["history_messages"].append(status_message)
             continue
 
-    # Rebuild entities
+    # Get max async tasks limit from global_config for semaphore control
+    graph_max_async = global_config.get("llm_model_max_async", 4) * 2
+    semaphore = asyncio.Semaphore(graph_max_async)
+
+    # Counters for tracking progress
+    rebuilt_entities_count = 0
+    rebuilt_relationships_count = 0
+    failed_entities_count = 0
+    failed_relationships_count = 0
+
+    async def _locked_rebuild_entity(entity_name, chunk_ids):
+        nonlocal rebuilt_entities_count, failed_entities_count
+        async with semaphore:
+            workspace = global_config.get("workspace", "")
+            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+            async with get_storage_keyed_lock(
+                [entity_name], namespace=namespace, enable_logging=False
+            ):
+                try:
+                    await _rebuild_single_entity(
+                        knowledge_graph_inst=knowledge_graph_inst,
+                        entities_vdb=entities_vdb,
+                        entity_name=entity_name,
+                        chunk_ids=chunk_ids,
+                        chunk_entities=chunk_entities,
+                        llm_response_cache=llm_response_cache,
+                        global_config=global_config,
+                    )
+                    rebuilt_entities_count += 1
+                    status_message = (
+                        f"Rebuilt entity: {entity_name} from {len(chunk_ids)} chunks"
+                    )
+                    logger.info(status_message)
+                    if pipeline_status is not None and pipeline_status_lock is not None:
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = status_message
+                            pipeline_status["history_messages"].append(status_message)
+                except Exception as e:
+                    failed_entities_count += 1
+                    status_message = f"Failed to rebuild entity {entity_name}: {e}"
+                    logger.info(status_message)  # Per requirement, change to info
+                    if pipeline_status is not None and pipeline_status_lock is not None:
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = status_message
+                            pipeline_status["history_messages"].append(status_message)
+
+    async def _locked_rebuild_relationship(src, tgt, chunk_ids):
+        nonlocal rebuilt_relationships_count, failed_relationships_count
+        async with semaphore:
+            workspace = global_config.get("workspace", "")
+            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+            async with get_storage_keyed_lock(
+                f"{src}-{tgt}", namespace=namespace, enable_logging=False
+            ):
+                try:
+                    await _rebuild_single_relationship(
+                        knowledge_graph_inst=knowledge_graph_inst,
+                        relationships_vdb=relationships_vdb,
+                        src=src,
+                        tgt=tgt,
+                        chunk_ids=chunk_ids,
+                        chunk_relationships=chunk_relationships,
+                        llm_response_cache=llm_response_cache,
+                        global_config=global_config,
+                    )
+                    rebuilt_relationships_count += 1
+                    status_message = f"Rebuilt relationship: {src}->{tgt} from {len(chunk_ids)} chunks"
+                    logger.info(status_message)
+                    if pipeline_status is not None and pipeline_status_lock is not None:
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = status_message
+                            pipeline_status["history_messages"].append(status_message)
+                except Exception as e:
+                    failed_relationships_count += 1
+                    status_message = f"Failed to rebuild relationship {src}->{tgt}: {e}"
+                    logger.info(status_message)  # Per requirement, change to info
+                    if pipeline_status is not None and pipeline_status_lock is not None:
+                        async with pipeline_status_lock:
+                            pipeline_status["latest_message"] = status_message
+                            pipeline_status["history_messages"].append(status_message)
+
+    # Create tasks for parallel processing
+    tasks = []
+
+    # Add entity rebuilding tasks
     for entity_name, chunk_ids in entities_to_rebuild.items():
-        try:
-            await _rebuild_single_entity(
-                knowledge_graph_inst=knowledge_graph_inst,
-                entities_vdb=entities_vdb,
-                entity_name=entity_name,
-                chunk_ids=chunk_ids,
-                chunk_entities=chunk_entities,
-                llm_response_cache=llm_response_cache,
-                global_config=global_config,
-            )
-            rebuilt_entities_count += 1
-            status_message = (
-                f"Rebuilt entity: {entity_name} from {len(chunk_ids)} chunks"
-            )
-            logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
-        except Exception as e:
-            status_message = f"Failed to rebuild entity {entity_name}: {e}"
-            logger.info(status_message)  # Per requirement, change to info
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+        task = asyncio.create_task(_locked_rebuild_entity(entity_name, chunk_ids))
+        tasks.append(task)
 
-    # Rebuild relationships
+    # Add relationship rebuilding tasks
     for (src, tgt), chunk_ids in relationships_to_rebuild.items():
-        try:
-            await _rebuild_single_relationship(
-                knowledge_graph_inst=knowledge_graph_inst,
-                relationships_vdb=relationships_vdb,
-                src=src,
-                tgt=tgt,
-                chunk_ids=chunk_ids,
-                chunk_relationships=chunk_relationships,
-                llm_response_cache=llm_response_cache,
-                global_config=global_config,
-            )
-            rebuilt_relationships_count += 1
-            status_message = (
-                f"Rebuilt relationship: {src}->{tgt} from {len(chunk_ids)} chunks"
-            )
-            logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
-        except Exception as e:
-            status_message = f"Failed to rebuild relationship {src}->{tgt}: {e}"
-            logger.info(status_message)
-            if pipeline_status is not None and pipeline_status_lock is not None:
-                async with pipeline_status_lock:
-                    pipeline_status["latest_message"] = status_message
-                    pipeline_status["history_messages"].append(status_message)
+        task = asyncio.create_task(_locked_rebuild_relationship(src, tgt, chunk_ids))
+        tasks.append(task)
 
-    status_message = f"KG rebuild completed: {rebuilt_entities_count} entities and {rebuilt_relationships_count} relationships."
+    # Log parallel processing start
+    status_message = f"Starting parallel rebuild of {len(entities_to_rebuild)} entities and {len(relationships_to_rebuild)} relationships (async: {graph_max_async})"
+    logger.info(status_message)
+    if pipeline_status is not None and pipeline_status_lock is not None:
+        async with pipeline_status_lock:
+            pipeline_status["latest_message"] = status_message
+            pipeline_status["history_messages"].append(status_message)
+
+    # Execute all tasks in parallel with semaphore control
+    await asyncio.gather(*tasks)
+
+    # Final status report
+    status_message = f"KG rebuild completed: {rebuilt_entities_count} entities and {rebuilt_relationships_count} relationships rebuilt successfully."
+    if failed_entities_count > 0 or failed_relationships_count > 0:
+        status_message += f" Failed: {failed_entities_count} entities, {failed_relationships_count} relationships."
+
     logger.info(status_message)
     if pipeline_status is not None and pipeline_status_lock is not None:
         async with pipeline_status_lock:
@@ -630,7 +687,10 @@ async def _rebuild_single_entity(
 
     # Helper function to generate final description with optional LLM summary
     async def _generate_final_description(combined_description: str) -> str:
-        if len(combined_description) > global_config["summary_to_max_tokens"]:
+        force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
+        num_fragment = combined_description.count(GRAPH_FIELD_SEP) + 1
+
+        if num_fragment >= force_llm_summary_on_merge:
             return await _handle_entity_relation_summary(
                 entity_name,
                 combined_description,
@@ -725,7 +785,11 @@ async def _rebuild_single_relationship(
     llm_response_cache: BaseKVStorage,
     global_config: dict[str, str],
 ) -> None:
-    """Rebuild a single relationship from cached extraction results"""
+    """Rebuild a single relationship from cached extraction results
+
+    Note: This function assumes the caller has already acquired the appropriate
+    keyed lock for the relationship pair to ensure thread safety.
+    """
 
     # Get current relationship data
     current_relationship = await knowledge_graph_inst.get_edge(src, tgt)
@@ -781,8 +845,11 @@ async def _rebuild_single_relationship(
     # )
     weight = sum(weights) if weights else current_relationship.get("weight", 1.0)
 
-    # Use summary if description is too long
-    if len(combined_description) > global_config["summary_to_max_tokens"]:
+    # Use summary if description has too many fragments
+    force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
+    num_fragment = combined_description.count(GRAPH_FIELD_SEP) + 1
+
+    if num_fragment >= force_llm_summary_on_merge:
         final_description = await _handle_entity_relation_summary(
             f"{src}-{tgt}",
             combined_description,
@@ -1015,28 +1082,23 @@ async def _merge_edges_then_upsert(
     )
 
     for need_insert_id in [src_id, tgt_id]:
-        if not (await knowledge_graph_inst.has_node(need_insert_id)):
-            # # Discard this edge if the node does not exist
-            # if need_insert_id == src_id:
-            #     logger.warning(
-            #         f"Discard edge: {src_id} - {tgt_id} | Source node missing"
-            #     )
-            # else:
-            #     logger.warning(
-            #         f"Discard edge: {src_id} - {tgt_id} | Target node missing"
-            #     )
-            # return None
-            await knowledge_graph_inst.upsert_node(
-                need_insert_id,
-                node_data={
-                    "entity_id": need_insert_id,
-                    "source_id": source_id,
-                    "description": description,
-                    "entity_type": "UNKNOWN",
-                    "file_path": file_path,
-                    "created_at": int(time.time()),
-                },
-            )
+        workspace = global_config.get("workspace", "")
+        namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+        async with get_storage_keyed_lock(
+            [need_insert_id], namespace=namespace, enable_logging=False
+        ):
+            if not (await knowledge_graph_inst.has_node(need_insert_id)):
+                await knowledge_graph_inst.upsert_node(
+                    need_insert_id,
+                    node_data={
+                        "entity_id": need_insert_id,
+                        "source_id": source_id,
+                        "description": description,
+                        "entity_type": "UNKNOWN",
+                        "file_path": file_path,
+                        "created_at": int(time.time()),
+                    },
+                )
 
     force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
 
@@ -1118,8 +1180,6 @@ async def merge_nodes_and_edges(
         pipeline_status_lock: Lock for pipeline status
         llm_response_cache: LLM response cache
     """
-    # Get lock manager from shared storage
-    from .kg.shared_storage import get_graph_db_lock
 
     # Collect all nodes and edges from all chunks
     all_nodes = defaultdict(list)
@@ -1136,94 +1196,109 @@ async def merge_nodes_and_edges(
             all_edges[sorted_edge_key].extend(edges)
 
     # Centralized processing of all nodes and edges
-    entities_data = []
-    relationships_data = []
+    total_entities_count = len(all_nodes)
+    total_relations_count = len(all_edges)
 
     # Merge nodes and edges
-    # Use graph database lock to ensure atomic merges and updates
-    graph_db_lock = get_graph_db_lock(enable_logging=False)
-    async with graph_db_lock:
-        async with pipeline_status_lock:
-            log_message = (
-                f"Merging stage {current_file_number}/{total_files}: {file_path}"
-            )
-            logger.info(log_message)
-            pipeline_status["latest_message"] = log_message
-            pipeline_status["history_messages"].append(log_message)
+    log_message = f"Merging stage {current_file_number}/{total_files}: {file_path}"
+    logger.info(log_message)
+    async with pipeline_status_lock:
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
 
-        # Process and update all entities at once
-        for entity_name, entities in all_nodes.items():
-            entity_data = await _merge_nodes_then_upsert(
-                entity_name,
-                entities,
-                knowledge_graph_inst,
-                global_config,
-                pipeline_status,
-                pipeline_status_lock,
-                llm_response_cache,
-            )
-            entities_data.append(entity_data)
+    # Get max async tasks limit from global_config for semaphore control
+    graph_max_async = global_config.get("llm_model_max_async", 4) * 2
+    semaphore = asyncio.Semaphore(graph_max_async)
 
-        # Process and update all relationships at once
-        for edge_key, edges in all_edges.items():
-            edge_data = await _merge_edges_then_upsert(
-                edge_key[0],
-                edge_key[1],
-                edges,
-                knowledge_graph_inst,
-                global_config,
-                pipeline_status,
-                pipeline_status_lock,
-                llm_response_cache,
-            )
-            if edge_data is not None:
-                relationships_data.append(edge_data)
+    # Process and update all entities and relationships in parallel
+    log_message = f"Processing: {total_entities_count} entities and {total_relations_count} relations (async: {graph_max_async})"
+    logger.info(log_message)
+    async with pipeline_status_lock:
+        pipeline_status["latest_message"] = log_message
+        pipeline_status["history_messages"].append(log_message)
 
-        # Update total counts
-        total_entities_count = len(entities_data)
-        total_relations_count = len(relationships_data)
+    async def _locked_process_entity_name(entity_name, entities):
+        async with semaphore:
+            workspace = global_config.get("workspace", "")
+            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+            async with get_storage_keyed_lock(
+                [entity_name], namespace=namespace, enable_logging=False
+            ):
+                entity_data = await _merge_nodes_then_upsert(
+                    entity_name,
+                    entities,
+                    knowledge_graph_inst,
+                    global_config,
+                    pipeline_status,
+                    pipeline_status_lock,
+                    llm_response_cache,
+                )
+                if entity_vdb is not None:
+                    data_for_vdb = {
+                        compute_mdhash_id(entity_data["entity_name"], prefix="ent-"): {
+                            "entity_name": entity_data["entity_name"],
+                            "entity_type": entity_data["entity_type"],
+                            "content": f"{entity_data['entity_name']}\n{entity_data['description']}",
+                            "source_id": entity_data["source_id"],
+                            "file_path": entity_data.get("file_path", "unknown_source"),
+                        }
+                    }
+                    await entity_vdb.upsert(data_for_vdb)
+                return entity_data
 
-        log_message = f"Updating {total_entities_count} entities  {current_file_number}/{total_files}: {file_path}"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+    async def _locked_process_edges(edge_key, edges):
+        async with semaphore:
+            workspace = global_config.get("workspace", "")
+            namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+            async with get_storage_keyed_lock(
+                f"{edge_key[0]}-{edge_key[1]}",
+                namespace=namespace,
+                enable_logging=False,
+            ):
+                edge_data = await _merge_edges_then_upsert(
+                    edge_key[0],
+                    edge_key[1],
+                    edges,
+                    knowledge_graph_inst,
+                    global_config,
+                    pipeline_status,
+                    pipeline_status_lock,
+                    llm_response_cache,
+                )
+                if edge_data is None:
+                    return None
 
-        # Update vector databases with all collected data
-        if entity_vdb is not None and entities_data:
-            data_for_vdb = {
-                compute_mdhash_id(dp["entity_name"], prefix="ent-"): {
-                    "entity_name": dp["entity_name"],
-                    "entity_type": dp["entity_type"],
-                    "content": f"{dp['entity_name']}\n{dp['description']}",
-                    "source_id": dp["source_id"],
-                    "file_path": dp.get("file_path", "unknown_source"),
-                }
-                for dp in entities_data
-            }
-            await entity_vdb.upsert(data_for_vdb)
+                if relationships_vdb is not None:
+                    data_for_vdb = {
+                        compute_mdhash_id(
+                            edge_data["src_id"] + edge_data["tgt_id"], prefix="rel-"
+                        ): {
+                            "src_id": edge_data["src_id"],
+                            "tgt_id": edge_data["tgt_id"],
+                            "keywords": edge_data["keywords"],
+                            "content": f"{edge_data['src_id']}\t{edge_data['tgt_id']}\n{edge_data['keywords']}\n{edge_data['description']}",
+                            "source_id": edge_data["source_id"],
+                            "file_path": edge_data.get("file_path", "unknown_source"),
+                        }
+                    }
+                    await relationships_vdb.upsert(data_for_vdb)
+                return edge_data
 
-        log_message = f"Updating {total_relations_count} relations {current_file_number}/{total_files}: {file_path}"
-        logger.info(log_message)
-        if pipeline_status is not None:
-            async with pipeline_status_lock:
-                pipeline_status["latest_message"] = log_message
-                pipeline_status["history_messages"].append(log_message)
+    # Create a single task queue for both entities and edges
+    tasks = []
 
-        if relationships_vdb is not None and relationships_data:
-            data_for_vdb = {
-                compute_mdhash_id(dp["src_id"] + dp["tgt_id"], prefix="rel-"): {
-                    "src_id": dp["src_id"],
-                    "tgt_id": dp["tgt_id"],
-                    "keywords": dp["keywords"],
-                    "content": f"{dp['src_id']}\t{dp['tgt_id']}\n{dp['keywords']}\n{dp['description']}",
-                    "source_id": dp["source_id"],
-                    "file_path": dp.get("file_path", "unknown_source"),
-                }
-                for dp in relationships_data
-            }
-            await relationships_vdb.upsert(data_for_vdb)
+    # Add entity processing tasks
+    for entity_name, entities in all_nodes.items():
+        tasks.append(
+            asyncio.create_task(_locked_process_entity_name(entity_name, entities))
+        )
+
+    # Add edge processing tasks
+    for edge_key, edges in all_edges.items():
+        tasks.append(asyncio.create_task(_locked_process_edges(edge_key, edges)))
+
+    # Execute all tasks in parallel with semaphore control
+    await asyncio.gather(*tasks)
 
 
 async def extract_entities(
@@ -1433,8 +1508,8 @@ async def extract_entities(
         return maybe_nodes, maybe_edges
 
     # Get max async tasks limit from global_config
-    llm_model_max_async = global_config.get("llm_model_max_async", 4)
-    semaphore = asyncio.Semaphore(llm_model_max_async)
+    chunk_max_async = global_config.get("llm_model_max_async", 4)
+    semaphore = asyncio.Semaphore(chunk_max_async)
 
     async def _process_with_semaphore(chunk):
         async with semaphore:
