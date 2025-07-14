@@ -535,7 +535,7 @@ class KuzuDBStorage(BaseGraphStorage):
     async def upsert_node(self, node_id: str, node_data: dict[str, str]) -> None:
         """Upsert a node in the KuzuDB database"""
         label = self._get_label()
-
+        # print(f"🔥 Upserting node {node_id} with data: {node_data}")
         if "entity_id" not in node_data:
             raise ValueError(
                 "KuzuDB: node properties must contain an 'entity_id' field"
@@ -628,17 +628,20 @@ class KuzuDBStorage(BaseGraphStorage):
         result = KnowledgeGraph()
 
         if node_label == "*":
-            # Get all nodes with highest degree
+            # Get all nodes with highest degree (accounting for bidirectional edges)
             try:
                 query = f"""
                     MATCH (n:{label})
-                    OPTIONAL MATCH (n)-[r:Related]-()
-                    RETURN n.*, COUNT(r) AS degree
-                    ORDER BY degree DESC
-                    LIMIT {max_nodes}
+                    OPTIONAL MATCH (n)-[r:Related]-(connected:{label})
+                    WITH n, COUNT(DISTINCT connected) AS degree
+                    RETURN n.*, degree
+                    ORDER BY degree DESC, n.entity_id ASC
+                    LIMIT $max_nodes
                 """
 
-                node_result = self.get_all(self.connection.execute(query))
+                node_result = self.get_all(
+                    self.connection.execute(query, {"max_nodes": max_nodes})
+                )
                 seen_nodes = set()
 
                 for node_query_result in node_result:
@@ -733,7 +736,8 @@ class KuzuDBStorage(BaseGraphStorage):
         self, node_label: str, max_depth: int, max_nodes: int
     ) -> KnowledgeGraph:
         """BFS implementation for subgraph traversal"""
-        # label = self._get_label()
+        from collections import deque
+
         result = KnowledgeGraph()
         visited_nodes = set()
         visited_edges = set()
@@ -749,6 +753,7 @@ class KuzuDBStorage(BaseGraphStorage):
         while queue and len(visited_nodes) < max_nodes:
             current_node_id, current_depth = queue.popleft()
 
+            # Skip if already visited or depth exceeded
             if current_node_id in visited_nodes or current_depth > max_depth:
                 continue
 
@@ -769,7 +774,11 @@ class KuzuDBStorage(BaseGraphStorage):
                     edges = await self.get_node_edges(current_node_id)
                     if edges:
                         for source_id, target_id in edges:
-                            edge_id = f"{source_id}-{target_id}"
+                            # Create normalized edge ID to avoid duplicates
+                            edge_pair = tuple(sorted([source_id, target_id]))
+                            edge_id = f"{edge_pair[0]}-{edge_pair[1]}"
+
+                            # Add edge if not already processed
                             if edge_id not in visited_edges:
                                 edge_data = await self.get_edge(source_id, target_id)
                                 if edge_data:
@@ -777,8 +786,8 @@ class KuzuDBStorage(BaseGraphStorage):
                                         KnowledgeGraphEdge(
                                             id=edge_id,
                                             type="UNDIRECTED",
-                                            source=source_id,
-                                            target=target_id,
+                                            source=edge_pair[0],
+                                            target=edge_pair[1],
                                             properties=edge_data,
                                         )
                                     )
@@ -788,12 +797,16 @@ class KuzuDBStorage(BaseGraphStorage):
                             neighbor_id = (
                                 target_id if source_id == current_node_id else source_id
                             )
-                            if neighbor_id not in visited_nodes:
+                            if (
+                                neighbor_id not in visited_nodes
+                                and len(visited_nodes) < max_nodes
+                            ):
                                 queue.append((neighbor_id, current_depth + 1))
 
+        # Set truncation flag if we hit the node limit
         if len(visited_nodes) >= max_nodes:
             result.is_truncated = True
-        # print("🔥 BFS result:", result)
+
         return result
 
     async def get_all_labels(self) -> list[str]:
