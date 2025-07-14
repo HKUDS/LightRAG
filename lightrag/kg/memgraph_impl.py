@@ -825,14 +825,14 @@ class MemgraphStorage(BaseGraphStorage):
                     END AS limited_nodes,
                     size(all_nodes_unlimited) > $max_nodes AS is_truncated
 
-                    UNWIND limited_nodes AS n1
-                    UNWIND limited_nodes AS n2
-                    MATCH (n1)-[r]-(n2)
-                    WITH DISTINCT r, limited_nodes, is_truncated
+                    UNWIND limited_nodes AS n
+                    MATCH (n)-[r]-(m)
+                    WHERE m IN limited_nodes
+                    WITH collect(DISTINCT n) AS limited_nodes, collect(DISTINCT r) AS relationships, is_truncated
 
                     RETURN
                     [node IN limited_nodes | {{node: node}}] AS node_info,
-                    collect(DISTINCT r) AS relationships,
+                    relationships,
                     is_truncated
                     """
 
