@@ -11,6 +11,9 @@ from lightrag.utils import get_env_value
 from lightrag.constants import (
     DEFAULT_WOKERS,
     DEFAULT_TIMEOUT,
+    DEFAULT_TOP_K,
+    DEFAULT_CHUNK_TOP_K,
+    DEFAULT_HISTORY_TURNS,
 )
 
 # use the .env that is inside the current folder
@@ -154,7 +157,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--history-turns",
         type=int,
-        default=get_env_value("HISTORY_TURNS", 3, int),
+        default=get_env_value("HISTORY_TURNS", DEFAULT_HISTORY_TURNS, int),
         help="Number of conversation history turns to include (default: from env or 3)",
     )
 
@@ -162,13 +165,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--top-k",
         type=int,
-        default=get_env_value("TOP_K", 60, int),
+        default=get_env_value("TOP_K", DEFAULT_TOP_K, int),
         help="Number of most similar results to return (default: from env or 60)",
     )
     parser.add_argument(
         "--chunk-top-k",
         type=int,
-        default=get_env_value("CHUNK_TOP_K", 5, int),
+        default=get_env_value("CHUNK_TOP_K", DEFAULT_CHUNK_TOP_K, int),
         help="Number of text chunks to retrieve initially from vector search and keep after reranking (default: from env or 5)",
     )
     parser.add_argument(
