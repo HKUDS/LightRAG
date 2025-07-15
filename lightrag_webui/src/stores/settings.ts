@@ -110,8 +110,8 @@ const useSettingsStoreBase = create<SettingsState>()(
       querySettings: {
         mode: 'global',
         response_type: 'Multiple Paragraphs',
-        top_k: 10,
-        chunk_top_k: 5,
+        top_k: 40,
+        chunk_top_k: 10,
         max_entity_tokens: 10000,
         max_relation_tokens: 10000,
         max_total_tokens: 32000,
@@ -119,8 +119,6 @@ const useSettingsStoreBase = create<SettingsState>()(
         only_need_prompt: false,
         stream: true,
         history_turns: 3,
-        hl_keywords: [],
-        ll_keywords: [],
         user_prompt: '',
         enable_rerank: true
       },
@@ -263,22 +261,16 @@ const useSettingsStoreBase = create<SettingsState>()(
           state.backendMaxGraphNodes = null
         }
         if (version < 15) {
-          // 完整更新querySettings到统一token控制系统
+          // Add new querySettings
           state.querySettings = {
-            mode: 'global',
+            ...state.querySettings,
+            mode: 'mix',
             response_type: 'Multiple Paragraphs',
-            top_k: 10,
-            chunk_top_k: 5,
+            top_k: 40,
+            chunk_top_k: 10,
             max_entity_tokens: 10000,
             max_relation_tokens: 10000,
             max_total_tokens: 32000,
-            only_need_context: false,
-            only_need_prompt: false,
-            stream: true,
-            history_turns: 3,
-            hl_keywords: [],
-            ll_keywords: [],
-            user_prompt: '',
             enable_rerank: true
           }
         }
