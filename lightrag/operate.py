@@ -1929,10 +1929,7 @@ async def _build_query_context(
         (hl_entities_context, hl_relations_context, hl_chunks) = hl_data
 
         # Collect chunks from entity and relationship sources
-        all_chunks.extend(ll_chunks)
-        all_chunks.extend(hl_chunks)
-
-        # Get vector chunks if in mix mode
+        # Get vector chunks first if in mix mode
         if query_param.mode == "mix" and chunks_vdb:
             vector_chunks = await _get_vector_context(
                 query,
@@ -1940,6 +1937,9 @@ async def _build_query_context(
                 query_param,
             )
             all_chunks.extend(vector_chunks)
+
+        all_chunks.extend(ll_chunks)
+        all_chunks.extend(hl_chunks)
 
         # Combine entities and relations contexts
         entities_context = process_combine_contexts(
