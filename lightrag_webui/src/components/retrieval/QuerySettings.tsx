@@ -15,7 +15,6 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 import { useSettingsStore } from '@/stores/settings'
 import { useTranslation } from 'react-i18next'
-import NumberInput from '../ui/NumberInput'
 
 export default function QuerySettings() {
   const { t } = useTranslation()
@@ -347,6 +346,27 @@ export default function QuerySettings() {
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
+                      <label htmlFor="enable_rerank" className="flex-1 ml-1 cursor-help">
+                        {t('retrievePanel.querySettings.enableRerank')}
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>{t('retrievePanel.querySettings.enableRerankTooltip')}</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-1 cursor-pointer"
+                  id="enable_rerank"
+                  checked={querySettings.enable_rerank}
+                  onCheckedChange={(checked) => handleChange('enable_rerank', checked)}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
                       <label htmlFor="only_need_context" className="flex-1 ml-1 cursor-help">
                         {t('retrievePanel.querySettings.onlyNeedContext')}
                       </label>
@@ -403,27 +423,6 @@ export default function QuerySettings() {
                   id="stream"
                   checked={querySettings.stream}
                   onCheckedChange={(checked) => handleChange('stream', checked)}
-                />
-              </div>
-
-              <div className="flex items-center gap-2">
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <label htmlFor="enable_rerank" className="flex-1 ml-1 cursor-help">
-                        {t('retrievePanel.querySettings.enableRerank')}
-                      </label>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">
-                      <p>{t('retrievePanel.querySettings.enableRerankTooltip')}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-                <Checkbox
-                  className="mr-1 cursor-pointer"
-                  id="enable_rerank"
-                  checked={querySettings.enable_rerank}
-                  onCheckedChange={(checked) => handleChange('enable_rerank', checked)}
                 />
               </div>
             </>
