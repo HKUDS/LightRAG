@@ -188,6 +188,7 @@ const CodeHighlight = memo(({ className, children, node, renderAsDiagram = false
             startOnLoad: false,
             theme: theme === 'dark' ? 'dark' : 'default',
             securityLevel: 'loose',
+            suppressErrorRendering: true,
           });
 
           // Show loading indicator
