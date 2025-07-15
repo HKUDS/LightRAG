@@ -36,7 +36,7 @@ T = TypeVar("T")
 class QueryParam:
     """Configuration parameters for query execution in LightRAG."""
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "global"
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "mix"
     """Specifies the retrieval mode:
     - "local": Focuses on context-dependent information.
     - "global": Utilizes global knowledge.
@@ -85,7 +85,7 @@ class QueryParam:
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    history_turns: int = 3
+    history_turns: int = int(os.getenv("HISTORY_TURNS", "3"))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
     ids: list[str] | None = None
@@ -102,7 +102,7 @@ class QueryParam:
     If proivded, this will be use instead of the default vaulue from prompt template.
     """
 
-    enable_rerank: bool = True
+    enable_rerank: bool = os.getenv("ENABLE_RERANK", "true").lower() == "true"
     """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
     Default is True to enable reranking when rerank model is available.
     """
