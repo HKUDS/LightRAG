@@ -349,8 +349,8 @@ class RedisKVStorage(BaseKVStorage):
                     pipe.set(f"{self.namespace}:{k}", json.dumps(v))
                 await pipe.execute()
 
-            except json.JSONEncodeError as e:
-                logger.error(f"JSON encode error during upsert: {e}")
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error during upsert: {e}")
                 raise
 
     async def index_done_callback(self) -> None:
@@ -807,8 +807,8 @@ class RedisDocStatusStorage(DocStatusStorage):
                 for k, v in data.items():
                     pipe.set(f"{self.namespace}:{k}", json.dumps(v))
                 await pipe.execute()
-            except json.JSONEncodeError as e:
-                logger.error(f"JSON encode error during upsert: {e}")
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error during upsert: {e}")
                 raise
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
