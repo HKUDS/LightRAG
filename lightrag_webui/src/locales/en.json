@@ -389,7 +389,9 @@
       "streamResponseTooltip": "If True, enables streaming output for real-time responses",
       "userPrompt": "User Prompt",
       "userPromptTooltip": "Provide additional response requirements to the LLM (unrelated to query content, only for output processing).",
-      "userPromptPlaceholder": "Enter custom prompt (optional)"
+      "userPromptPlaceholder": "Enter custom prompt (optional)",
+      "enableRerank": "Enable Rerank",
+      "enableRerankTooltip": "Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True."
     }
   },
   "apiSite": {

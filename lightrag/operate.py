@@ -1976,6 +1976,14 @@ async def _build_query_context(
         # Truncate entities based on complete JSON serialization
         if entities_context:
             original_entity_count = len(entities_context)
+
+            # Process entities context to replace GRAPH_FIELD_SEP with : in file_path fields
+            for entity in entities_context:
+                if "file_path" in entity and entity["file_path"]:
+                    entity["file_path"] = entity["file_path"].replace(
+                        GRAPH_FIELD_SEP, ";"
+                    )
+
             entities_context = truncate_list_by_token_size(
                 entities_context,
                 key=lambda x: json.dumps(x, ensure_ascii=False),
@@ -1990,6 +1998,14 @@ async def _build_query_context(
         # Truncate relations based on complete JSON serialization
         if relations_context:
             original_relation_count = len(relations_context)
+
+            # Process relations context to replace GRAPH_FIELD_SEP with : in file_path fields
+            for relation in relations_context:
+                if "file_path" in relation and relation["file_path"]:
+                    relation["file_path"] = relation["file_path"].replace(
+                        GRAPH_FIELD_SEP, ";"
+                    )
+
             relations_context = truncate_list_by_token_size(
                 relations_context,
                 key=lambda x: json.dumps(x, ensure_ascii=False),
@@ -3025,6 +3041,7 @@ async def apply_rerank_if_enabled(
     query: str,
     retrieved_docs: list[dict],
     global_config: dict,
+    enable_rerank: bool = True,
     top_k: int = None,
 ) -> list[dict]:
     """
@@ -3034,18 +3051,19 @@ async def apply_rerank_if_enabled(
         query: The search query
         retrieved_docs: List of retrieved documents
         global_config: Global configuration containing rerank settings
+        enable_rerank: Whether to enable reranking from query parameter
         top_k: Number of top documents to return after reranking
 
     Returns:
         Reranked documents if rerank is enabled, otherwise original documents
     """
-    if not global_config.get("enable_rerank", False) or not retrieved_docs:
+    if not enable_rerank or not retrieved_docs:
         return retrieved_docs
 
     rerank_func = global_config.get("rerank_model_func")
     if not rerank_func:
-        logger.debug(
-            "Rerank is enabled but no rerank function provided, skipping rerank"
+        logger.warning(
+            "Rerank is enabled but no rerank model is configured. Please set up a rerank model or set enable_rerank=False in query parameters."
         )
         return retrieved_docs
 
@@ -3115,12 +3133,13 @@ async def process_chunks_unified(
     )
 
     # 2. Apply reranking if enabled and query is provided
-    if global_config.get("enable_rerank", False) and query and unique_chunks:
-        rerank_top_k = query_param.chunk_rerank_top_k or len(unique_chunks)
+    if query_param.enable_rerank and query and unique_chunks:
+        rerank_top_k = query_param.chunk_top_k or len(unique_chunks)
         unique_chunks = await apply_rerank_if_enabled(
             query=query,
             retrieved_docs=unique_chunks,
             global_config=global_config,
+            enable_rerank=query_param.enable_rerank,
             top_k=rerank_top_k,
         )
         logger.debug(f"Rerank: {len(unique_chunks)} chunks (source: {source_type})")

@@ -292,9 +292,9 @@ def create_app(args):
         ),
     )
 
-    # Configure rerank function if enabled
+    # Configure rerank function if model and API are configured
     rerank_model_func = None
-    if args.enable_rerank and args.rerank_binding_api_key and args.rerank_binding_host:
+    if args.rerank_binding_api_key and args.rerank_binding_host:
         from lightrag.rerank import custom_rerank
 
         async def server_rerank_func(
@@ -312,10 +312,12 @@ def create_app(args):
             )
 
         rerank_model_func = server_rerank_func
-        logger.info(f"Rerank enabled with model: {args.rerank_model}")
-    elif args.enable_rerank:
-        logger.warning(
-            "Rerank enabled but RERANK_BINDING_API_KEY or RERANK_BINDING_HOST not configured. Rerank will be disabled."
+        logger.info(
+            f"Rerank model configured: {args.rerank_model} (can be enabled per query)"
+        )
+    else:
+        logger.info(
+            "Rerank model not configured. Set RERANK_BINDING_API_KEY and RERANK_BINDING_HOST to enable reranking."
         )
 
     # Initialize RAG
@@ -351,7 +353,6 @@ def create_app(args):
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
-            enable_rerank=args.enable_rerank,
             rerank_model_func=rerank_model_func,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
@@ -381,7 +382,6 @@ def create_app(args):
             },
             enable_llm_cache_for_entity_extract=args.enable_llm_cache_for_extract,
             enable_llm_cache=args.enable_llm_cache,
-            enable_rerank=args.enable_rerank,
             rerank_model_func=rerank_model_func,
             auto_manage_storages_states=False,
             max_parallel_insert=args.max_parallel_insert,
@@ -512,11 +512,13 @@ def create_app(args):
                     "enable_llm_cache": args.enable_llm_cache,
                     "workspace": args.workspace,
                     "max_graph_nodes": args.max_graph_nodes,
-                    # Rerank configuration
-                    "enable_rerank": args.enable_rerank,
-                    "rerank_model": args.rerank_model if args.enable_rerank else None,
+                    # Rerank configuration (based on whether rerank model is configured)
+                    "enable_rerank": rerank_model_func is not None,
+                    "rerank_model": args.rerank_model
+                    if rerank_model_func is not None
+                    else None,
                     "rerank_binding_host": args.rerank_binding_host
-                    if args.enable_rerank
+                    if rerank_model_func is not None
                     else None,
                 },
                 "auth_mode": auth_mode,

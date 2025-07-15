@@ -168,20 +168,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk-top-k",
         type=int,
-        default=get_env_value("CHUNK_TOP_K", 15, int),
-        help="Number of text chunks to retrieve initially from vector search (default: from env or 15)",
-    )
-    parser.add_argument(
-        "--chunk-rerank-top-k",
-        type=int,
-        default=get_env_value("CHUNK_RERANK_TOP_K", 5, int),
-        help="Number of text chunks to keep after reranking (default: from env or 5)",
-    )
-    parser.add_argument(
-        "--enable-rerank",
-        action="store_true",
-        default=get_env_value("ENABLE_RERANK", False, bool),
-        help="Enable rerank functionality (default: from env or False)",
+        default=get_env_value("CHUNK_TOP_K", 5, int),
+        help="Number of text chunks to retrieve initially from vector search and keep after reranking (default: from env or 5)",
     )
     parser.add_argument(
         "--cosine-threshold",

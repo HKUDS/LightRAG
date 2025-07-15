@@ -243,11 +243,6 @@ class LightRAG:
     # Rerank Configuration
     # ---
 
-    enable_rerank: bool = field(
-        default=bool(os.getenv("ENABLE_RERANK", "False").lower() == "true")
-    )
-    """Enable reranking for improved retrieval quality. Defaults to False."""
-
     rerank_model_func: Callable[..., object] | None = field(default=None)
     """Function for reranking retrieved documents. All rerank configurations (model name, API keys, top_k, etc.) should be included in this function. Optional."""
 
@@ -459,9 +454,9 @@ class LightRAG:
         )
 
         # Init Rerank
-        if self.enable_rerank and self.rerank_model_func:
+        if self.rerank_model_func:
             logger.info("Rerank model initialized for improved retrieval quality")
-        elif self.enable_rerank and not self.rerank_model_func:
+        else:
             logger.warning(
                 "Rerank is enabled but no rerank_model_func provided. Reranking will be skipped."
             )

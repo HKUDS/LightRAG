@@ -389,7 +389,9 @@
       "streamResponseTooltip": "Si vrai, active la sortie en flux pour des réponses en temps réel",
       "userPrompt": "Invite personnalisée",
       "userPromptTooltip": "Fournir des exigences de réponse supplémentaires au LLM (sans rapport avec le contenu de la requête, uniquement pour le traitement de sortie).",
-      "userPromptPlaceholder": "Entrez une invite personnalisée (facultatif)"
+      "userPromptPlaceholder": "Entrez une invite personnalisée (facultatif)",
+      "enableRerank": "Activer le Reclassement",
+      "enableRerankTooltip": "Active le reclassement pour les fragments de texte récupérés. Si True mais qu'aucun modèle de reclassement n'est configuré, un avertissement sera émis. True par défaut."
     }
   },
   "apiSite": {

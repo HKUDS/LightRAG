@@ -52,13 +52,7 @@ class QueryRequest(BaseModel):
     chunk_top_k: Optional[int] = Field(
         ge=1,
         default=None,
-        description="Number of text chunks to retrieve initially from vector search.",
-    )
-
-    chunk_rerank_top_k: Optional[int] = Field(
-        ge=1,
-        default=None,
-        description="Number of text chunks to keep after reranking.",
+        description="Number of text chunks to retrieve initially from vector search and keep after reranking.",
     )
 
     max_entity_tokens: Optional[int] = Field(
@@ -97,6 +91,11 @@ class QueryRequest(BaseModel):
     user_prompt: Optional[str] = Field(
         default=None,
         description="User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template.",
+    )
+
+    enable_rerank: Optional[bool] = Field(
+        default=None,
+        description="Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True.",
     )
 
     @field_validator("query", mode="after")

@@ -384,6 +384,8 @@
       "userPrompt": "用戶提示詞",
       "userPromptTooltip": "向LLM提供額外的響應要求（與查詢內容無關，僅用於處理輸出）。",
       "userPromptPlaceholder": "輸入自定義提示詞（可選）",
+      "enableRerank": "啟用重排",
+      "enableRerankTooltip": "為檢索到的文本塊啟用重排。如果為True但未配置重排模型，將發出警告。默認為True。",
       "maxEntityTokens": "實體令牌數上限",
       "maxEntityTokensTooltip": "統一令牌控制系統中分配給實體上下文的最大令牌數",
       "maxRelationTokens": "關係令牌數上限",

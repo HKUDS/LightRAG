@@ -112,7 +112,6 @@ const useSettingsStoreBase = create<SettingsState>()(
         response_type: 'Multiple Paragraphs',
         top_k: 10,
         chunk_top_k: 5,
-        chunk_rerank_top_k: 5,
         max_entity_tokens: 10000,
         max_relation_tokens: 10000,
         max_total_tokens: 32000,
@@ -122,7 +121,8 @@ const useSettingsStoreBase = create<SettingsState>()(
         history_turns: 3,
         hl_keywords: [],
         ll_keywords: [],
-        user_prompt: ''
+        user_prompt: '',
+        enable_rerank: true
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -269,7 +269,6 @@ const useSettingsStoreBase = create<SettingsState>()(
             response_type: 'Multiple Paragraphs',
             top_k: 10,
             chunk_top_k: 5,
-            chunk_rerank_top_k: 5,
             max_entity_tokens: 10000,
             max_relation_tokens: 10000,
             max_total_tokens: 32000,
@@ -279,7 +278,8 @@ const useSettingsStoreBase = create<SettingsState>()(
             history_turns: 3,
             hl_keywords: [],
             ll_keywords: [],
-            user_prompt: ''
+            user_prompt: '',
+            enable_rerank: true
           }
         }
         return state

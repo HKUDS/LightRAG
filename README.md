@@ -302,13 +302,8 @@ class QueryParam:
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
     chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "5"))
-    """Number of text chunks to retrieve initially from vector search.
+    """Number of text chunks to retrieve initially from vector search and keep after reranking.
     If None, defaults to top_k value.
-    """
-
-    chunk_rerank_top_k: int = int(os.getenv("CHUNK_RERANK_TOP_K", "5"))
-    """Number of text chunks to keep after reranking.
-    If None, keeps all chunks returned from initial retrieval.
     """
 
     max_entity_tokens: int = int(os.getenv("MAX_ENTITY_TOKENS", "10000"))
@@ -340,6 +335,11 @@ class QueryParam:
     user_prompt: str | None = None
     """User-provided prompt for the query.
     If proivded, this will be use instead of the default vaulue from prompt template.
+    """
+
+    enable_rerank: bool = True
+    """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
+    Default is True to enable reranking when rerank model is available.
     """
 ```
 
