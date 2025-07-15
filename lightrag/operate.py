@@ -2323,7 +2323,6 @@ async def _get_node_data(
                 "entity": n["entity_name"],
                 "type": n.get("entity_type", "UNKNOWN"),
                 "description": n.get("description", "UNKNOWN"),
-                "rank": n["rank"],
                 "created_at": created_at,
                 "file_path": file_path,
             }
@@ -2345,9 +2344,6 @@ async def _get_node_data(
                 "entity1": e["src_tgt"][0],
                 "entity2": e["src_tgt"][1],
                 "description": e["description"],
-                "keywords": e["keywords"],
-                "weight": e["weight"],
-                "rank": e["rank"],
                 "created_at": created_at,
                 "file_path": file_path,
             }
@@ -2601,9 +2597,6 @@ async def _get_edge_data(
                 "entity1": e["src_id"],
                 "entity2": e["tgt_id"],
                 "description": e["description"],
-                "keywords": e["keywords"],
-                "weight": e["weight"],
-                "rank": e["rank"],
                 "created_at": created_at,
                 "file_path": file_path,
             }
@@ -2625,7 +2618,6 @@ async def _get_edge_data(
                 "entity": n["entity_name"],
                 "type": n.get("entity_type", "UNKNOWN"),
                 "description": n.get("description", "UNKNOWN"),
-                "rank": n["rank"],
                 "created_at": created_at,
                 "file_path": file_path,
             }
