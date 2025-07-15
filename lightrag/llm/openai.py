@@ -176,6 +176,8 @@ async def openai_complete_if_cache(
     verbose_debug(f"Query: {prompt}")
     logger.debug("===== Sending Query to LLM =====")
 
+    messages = kwargs.pop("messages", messages)
+
     try:
         # Don't use async with context manager, use client directly
         if "response_format" in kwargs:
