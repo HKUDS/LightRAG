@@ -28,3 +28,6 @@ GRAPH_FIELD_SEP = "<SEP>"
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB
 DEFAULT_LOG_BACKUP_COUNT = 5  # Default 5 backups
 DEFAULT_LOG_FILENAME = "lightrag.log"  # Default log filename
+
+# Related Chunk Number for Single Entity or Relation
+DEFAULT_RELATED_CHUNK_NUMBER = 5

@@ -41,6 +41,7 @@ from .constants import (
     DEFAULT_MAX_ENTITY_TOKENS,
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_RELATED_CHUNK_NUMBER,
 )
 from .kg.shared_storage import get_storage_keyed_lock
 import time
@@ -2052,34 +2053,28 @@ async def _build_query_context(
 
     # Create filtered data based on truncated context
     final_node_datas = []
-    final_edge_datas = []
-
     if entities_context and original_node_datas:
-        # Create a set of entity names from final truncated context
-        final_entity_names = {entity["entity"] for entity in entities_context}
-        # Filter original node data based on final entities
-        final_node_datas = [
-            node
-            for node in original_node_datas
-            if node.get("entity_name") in final_entity_names
-        ]
+        final_entity_names = {e["entity"] for e in entities_context}
+        seen_nodes = set()
+        for node in original_node_datas:
+            name = node.get("entity_name")
+            if name in final_entity_names and name not in seen_nodes:
+                final_node_datas.append(node)
+                seen_nodes.add(name)
 
+    final_edge_datas = []
     if relations_context and original_edge_datas:
-        # Create a set of relation pairs from final truncated context
-        final_relation_pairs = {
-            (rel["entity1"], rel["entity2"]) for rel in relations_context
-        }
-        # Filter original edge data based on final relations
-        final_edge_datas = [
-            edge
-            for edge in original_edge_datas
-            if (edge.get("src_id"), edge.get("tgt_id")) in final_relation_pairs
-            or (
-                edge.get("src_tgt", (None, None))[0],
-                edge.get("src_tgt", (None, None))[1],
-            )
-            in final_relation_pairs
-        ]
+        final_relation_pairs = {(r["entity1"], r["entity2"]) for r in relations_context}
+        seen_edges = set()
+        for edge in original_edge_datas:
+            src, tgt = edge.get("src_id"), edge.get("tgt_id")
+            if src is None or tgt is None:
+                src, tgt = edge.get("src_tgt", (None, None))
+
+            pair = (src, tgt)
+            if pair in final_relation_pairs and pair not in seen_edges:
+                final_edge_datas.append(edge)
+                seen_edges.add(pair)
 
     # Get text chunks based on final filtered data
     text_chunk_tasks = []
@@ -2370,7 +2365,9 @@ async def _find_most_related_text_unit_from_entities(
     logger.debug(f"Searching text chunks for {len(node_datas)} entities")
 
     text_units = [
-        split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
+        split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])[
+            :DEFAULT_RELATED_CHUNK_NUMBER
+        ]
         for dp in node_datas
         if dp["source_id"] is not None
     ]
@@ -2684,7 +2681,9 @@ async def _find_related_text_unit_from_relationships(
     logger.debug(f"Searching text chunks for {len(edge_datas)} relationships")
 
     text_units = [
-        split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
+        split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])[
+            :DEFAULT_RELATED_CHUNK_NUMBER
+        ]
         for dp in edge_datas
         if dp["source_id"] is not None
     ]
