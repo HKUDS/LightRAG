@@ -271,7 +271,8 @@ const useSettingsStoreBase = create<SettingsState>()(
             max_entity_tokens: 10000,
             max_relation_tokens: 10000,
             max_total_tokens: 32000,
-            enable_rerank: true
+            enable_rerank: true,
+            history_turns: 0,
           }
         }
         return state
