@@ -10,55 +10,58 @@ from .utils import logger
 
 class RerankModel(BaseModel):
     """
-    Pydantic model class for defining a custom rerank model.
-
-    This class provides a convenient wrapper for rerank functions, allowing you to
-    encapsulate all rerank configurations (API keys, model settings, etc.) in one place.
-
-    Attributes:
-        rerank_func (Callable[[Any], List[Dict]]): A callable function that reranks documents.
-            The function should take query and documents as input and return reranked results.
-        kwargs (Dict[str, Any]): A dictionary that contains the arguments to pass to the callable function.
-            This should include all necessary configurations such as model name, API key, base_url, etc.
+    Wrapper for rerank functions that can be used with LightRAG.
 
     Example usage:
-        Rerank model example with Jina:
-        ```python
-        rerank_model = RerankModel(
-            rerank_func=jina_rerank,
-            kwargs={
-                "model": "BAAI/bge-reranker-v2-m3",
-                "api_key": "your_api_key_here",
-                "base_url": "https://api.jina.ai/v1/rerank"
-            }
+    ```python
+    from lightrag.rerank import RerankModel, jina_rerank
+
+    # Create rerank model
+    rerank_model = RerankModel(
+        rerank_func=jina_rerank,
+        kwargs={
+            "model": "BAAI/bge-reranker-v2-m3",
+            "api_key": "your_api_key_here",
+            "base_url": "https://api.jina.ai/v1/rerank"
+        }
+    )
+
+    # Use in LightRAG
+    rag = LightRAG(
+        rerank_model_func=rerank_model.rerank,
+        # ... other configurations
+    )
+
+    # Query with rerank enabled (default)
+    result = await rag.aquery(
+        "your query",
+        param=QueryParam(enable_rerank=True)
+    )
+    ```
+
+    Or define a custom function directly:
+    ```python
+    async def my_rerank_func(query: str, documents: list, top_k: int = None, **kwargs):
+        return await jina_rerank(
+            query=query,
+            documents=documents,
+            model="BAAI/bge-reranker-v2-m3",
+            api_key="your_api_key_here",
+            top_k=top_k or 10,
+            **kwargs
         )
 
-        # Use in LightRAG
-        rag = LightRAG(
-            enable_rerank=True,
-            rerank_model_func=rerank_model.rerank,
-            # ... other configurations
-        )
-        ```
+    rag = LightRAG(
+        rerank_model_func=my_rerank_func,
+        # ... other configurations
+    )
 
-        Or define a custom function directly:
-        ```python
-        async def my_rerank_func(query: str, documents: list, top_k: int = None, **kwargs):
-            return await jina_rerank(
-                query=query,
-                documents=documents,
-                model="BAAI/bge-reranker-v2-m3",
-                api_key="your_api_key_here",
-                top_k=top_k or 10,
-                **kwargs
-            )
-
-        rag = LightRAG(
-            enable_rerank=True,
-            rerank_model_func=my_rerank_func,
-            # ... other configurations
-        )
-        ```
+    # Control rerank per query
+    result = await rag.aquery(
+        "your query",
+        param=QueryParam(enable_rerank=True)  # Enable rerank for this query
+    )
+    ```
     """
 
     rerank_func: Callable[[Any], List[Dict]]

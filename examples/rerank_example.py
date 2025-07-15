@@ -9,7 +9,11 @@ Configuration Required:
 2. Set your embedding API key and base URL in embedding_func()
 3. Set your rerank API key and base URL in the rerank configuration
 4. Or use environment variables (.env file):
-   - ENABLE_RERANK=True
+   - RERANK_MODEL=your_rerank_model
+   - RERANK_BINDING_HOST=your_rerank_endpoint
+   - RERANK_BINDING_API_KEY=your_rerank_api_key
+
+Note: Rerank is now controlled per query via the 'enable_rerank' parameter (default: True)
 """
 
 import asyncio
@@ -83,8 +87,7 @@ async def create_rag_with_rerank():
             max_token_size=8192,
             func=embedding_func,
         ),
-        # Simplified Rerank Configuration
-        enable_rerank=True,
+        # Rerank Configuration - provide the rerank function
         rerank_model_func=my_rerank_func,
     )
 
@@ -120,7 +123,6 @@ async def create_rag_with_rerank_model():
             max_token_size=8192,
             func=embedding_func,
         ),
-        enable_rerank=True,
         rerank_model_func=rerank_model.rerank,
     )
 
@@ -130,9 +132,9 @@ async def create_rag_with_rerank_model():
     return rag
 
 
-async def test_rerank_with_different_topk():
+async def test_rerank_with_different_settings():
     """
-    Test rerank functionality with different top_k settings
+    Test rerank functionality with different enable_rerank settings
     """
     print("🚀 Setting up LightRAG with Rerank functionality...")
 
@@ -154,16 +156,41 @@ async def test_rerank_with_different_topk():
     print(f"\n🔍 Testing query: '{query}'")
     print("=" * 80)
 
-    # Test different top_k values to show parameter priority
-    top_k_values = [2, 5, 10]
+    # Test with rerank enabled (default)
+    print("\n📊 Testing with enable_rerank=True (default):")
+    result_with_rerank = await rag.aquery(
+        query,
+        param=QueryParam(
+            mode="naive",
+            top_k=10,
+            chunk_top_k=5,
+            enable_rerank=True,  # Explicitly enable rerank
+        ),
+    )
+    print(f"   Result length: {len(result_with_rerank)} characters")
+    print(f"   Preview: {result_with_rerank[:100]}...")
 
-    for top_k in top_k_values:
-        print(f"\n📊 Testing with QueryParam(top_k={top_k}):")
+    # Test with rerank disabled
+    print("\n📊 Testing with enable_rerank=False:")
+    result_without_rerank = await rag.aquery(
+        query,
+        param=QueryParam(
+            mode="naive",
+            top_k=10,
+            chunk_top_k=5,
+            enable_rerank=False,  # Disable rerank
+        ),
+    )
+    print(f"   Result length: {len(result_without_rerank)} characters")
+    print(f"   Preview: {result_without_rerank[:100]}...")
 
-        # Test naive mode with specific top_k
-        result = await rag.aquery(query, param=QueryParam(mode="naive", top_k=top_k))
-        print(f"   Result length: {len(result)} characters")
-        print(f"   Preview: {result[:100]}...")
+    # Test with default settings (enable_rerank defaults to True)
+    print("\n📊 Testing with default settings (enable_rerank defaults to True):")
+    result_default = await rag.aquery(
+        query, param=QueryParam(mode="naive", top_k=10, chunk_top_k=5)
+    )
+    print(f"   Result length: {len(result_default)} characters")
+    print(f"   Preview: {result_default[:100]}...")
 
 
 async def test_direct_rerank():
@@ -209,17 +236,21 @@ async def main():
     print("=" * 60)
 
     try:
-        # Test rerank with different top_k values
-        await test_rerank_with_different_topk()
+        # Test rerank with different enable_rerank settings
+        await test_rerank_with_different_settings()
 
         # Test direct rerank
         await test_direct_rerank()
 
         print("\n✅ Example completed successfully!")
         print("\n💡 Key Points:")
-        print("   ✓ All rerank configurations are contained within rerank_model_func")
-        print("   ✓ Rerank improves document relevance ordering")
-        print("   ✓ Configure API keys within your rerank function")
+        print("   ✓ Rerank is now controlled per query via 'enable_rerank' parameter")
+        print("   ✓ Default value for enable_rerank is True")
+        print("   ✓ Rerank function is configured at LightRAG initialization")
+        print("   ✓ Per-query enable_rerank setting overrides default behavior")
+        print(
+            "   ✓ If enable_rerank=True but no rerank model is configured, a warning is issued"
+        )
         print("   ✓ Monitor API usage and costs when using rerank services")
 
     except Exception as e:
