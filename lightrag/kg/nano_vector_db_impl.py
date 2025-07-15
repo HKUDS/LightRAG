@@ -134,27 +134,33 @@ class NanoVectorDBStorage(BaseVectorStorage):
     async def query(
         self, query: str, top_k: int, ids: list[str] | None = None
     ) -> list[dict[str, Any]]:
+        results_combine = []
+        query_list = [word.strip() for word in query.split(",")]
         # Execute embedding outside of lock to avoid improve cocurrent
-        embedding = await self.embedding_func(
-            [query], _priority=5
-        )  # higher priority for query
-        embedding = embedding[0]
+        for query in query_list:
+            embedding = await self.embedding_func(
+                [query], _priority=5
+            )  # higher priority for query
+            embedding = embedding[0]
 
-        client = await self._get_client()
-        results = client.query(
-            query=embedding,
-            top_k=top_k,
-            better_than_threshold=self.cosine_better_than_threshold,
-        )
-        results = [
-            {
-                **dp,
-                "id": dp["__id__"],
-                "distance": dp["__metrics__"],
-                "created_at": dp.get("__created_at__"),
-            }
-            for dp in results
-        ]
+            client = await self._get_client()
+            results = client.query(
+                query=embedding,
+                top_k=top_k,
+                better_than_threshold=self.cosine_better_than_threshold,
+            )
+            results = [
+                {
+                    **dp,
+                    "id": dp["__id__"],
+                    "distance": dp["__metrics__"],
+                    "created_at": dp.get("__created_at__"),
+                }
+                for dp in results
+            ]
+            for result in results:
+                results_combine.append(result)
+        # print(f"results_combine({len(results_combine)}): {results_combine}\n")
         return results
 
     @property
