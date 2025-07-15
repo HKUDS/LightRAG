@@ -1964,17 +1964,23 @@ async def _build_query_context(
         max_entity_tokens = getattr(
             query_param,
             "max_entity_tokens",
-            text_chunks_db.global_config.get("MAX_ENTITY_TOKENS", DEFAULT_MAX_ENTITY_TOKENS),
+            text_chunks_db.global_config.get(
+                "MAX_ENTITY_TOKENS", DEFAULT_MAX_ENTITY_TOKENS
+            ),
         )
         max_relation_tokens = getattr(
             query_param,
             "max_relation_tokens",
-            text_chunks_db.global_config.get("MAX_RELATION_TOKENS", DEFAULT_MAX_RELATION_TOKENS),
+            text_chunks_db.global_config.get(
+                "MAX_RELATION_TOKENS", DEFAULT_MAX_RELATION_TOKENS
+            ),
         )
         max_total_tokens = getattr(
             query_param,
             "max_total_tokens",
-            text_chunks_db.global_config.get("MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS),
+            text_chunks_db.global_config.get(
+                "MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS
+            ),
         )
 
         # Truncate entities based on complete JSON serialization
@@ -2692,7 +2698,9 @@ async def naive_query(
     # Calculate dynamic token limit for chunks
     # Get token limits from query_param (with fallback to global_config)
     max_total_tokens = getattr(
-        query_param, "max_total_tokens", global_config.get("MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS)
+        query_param,
+        "max_total_tokens",
+        global_config.get("MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
     # Calculate conversation history tokens
