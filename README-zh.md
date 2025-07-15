@@ -293,26 +293,19 @@ class QueryParam:
     top_k: int = int(os.getenv("TOP_K", "60"))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "5"))
-    """Number of text chunks to retrieve initially from vector search.
+    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "10"))
+    """Number of text chunks to retrieve initially from vector search and keep after reranking.
     If None, defaults to top_k value.
     """
 
-    chunk_rerank_top_k: int = int(os.getenv("CHUNK_RERANK_TOP_K", "5"))
-    """Number of text chunks to keep after reranking.
-    If None, keeps all chunks returned from initial retrieval.
-    """
+    max_entity_tokens: int = int(os.getenv("MAX_ENTITY_TOKENS", "10000"))
+    """Maximum number of tokens allocated for entity context in unified token control system."""
 
-    max_token_for_text_unit: int = int(os.getenv("MAX_TOKEN_TEXT_CHUNK", "4000"))
-    """Maximum number of tokens allowed for each retrieved text chunk."""
+    max_relation_tokens: int = int(os.getenv("MAX_RELATION_TOKENS", "10000"))
+    """Maximum number of tokens allocated for relationship context in unified token control system."""
 
-    max_token_for_global_context: int = int(
-        os.getenv("MAX_TOKEN_RELATION_DESC", "4000")
-    )
-    """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
-
-    max_token_for_local_context: int = int(os.getenv("MAX_TOKEN_ENTITY_DESC", "4000"))
-    """Maximum number of tokens allocated for entity descriptions in local retrieval."""
+    max_total_tokens: int = int(os.getenv("MAX_TOTAL_TOKENS", "32000"))
+    """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
 
     hl_keywords: list[str] = field(default_factory=list)
     """List of high-level keywords to prioritize in retrieval."""
@@ -340,6 +333,11 @@ class QueryParam:
     user_prompt: str | None = None
     """User-provided prompt for the query.
     If proivded, this will be use instead of the default vaulue from prompt template.
+    """
+
+    enable_rerank: bool = True
+    """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
+    Default is True to enable reranking when rerank model is available.
     """
 ```
 

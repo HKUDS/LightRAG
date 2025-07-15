@@ -14,7 +14,16 @@ from typing import (
 )
 from .utils import EmbeddingFunc
 from .types import KnowledgeGraph
-from .constants import GRAPH_FIELD_SEP
+from .constants import (
+    GRAPH_FIELD_SEP,
+    DEFAULT_TOP_K,
+    DEFAULT_CHUNK_TOP_K,
+    DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_RELATION_TOKENS,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_HISTORY_TURNS,
+    DEFAULT_ENABLE_RERANK,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -36,7 +45,7 @@ T = TypeVar("T")
 class QueryParam:
     """Configuration parameters for query execution in LightRAG."""
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "global"
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = "mix"
     """Specifies the retrieval mode:
     - "local": Focuses on context-dependent information.
     - "global": Utilizes global knowledge.
@@ -57,29 +66,28 @@ class QueryParam:
     stream: bool = False
     """If True, enables streaming output for real-time responses."""
 
-    top_k: int = int(os.getenv("TOP_K", "60"))
+    top_k: int = int(os.getenv("TOP_K", str(DEFAULT_TOP_K)))
     """Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode."""
 
-    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", "5"))
-    """Number of text chunks to retrieve initially from vector search.
+    chunk_top_k: int = int(os.getenv("CHUNK_TOP_K", str(DEFAULT_CHUNK_TOP_K)))
+    """Number of text chunks to retrieve initially from vector search and keep after reranking.
     If None, defaults to top_k value.
     """
 
-    chunk_rerank_top_k: int = int(os.getenv("CHUNK_RERANK_TOP_K", "5"))
-    """Number of text chunks to keep after reranking.
-    If None, keeps all chunks returned from initial retrieval.
-    """
-
-    max_token_for_text_unit: int = int(os.getenv("MAX_TOKEN_TEXT_CHUNK", "6000"))
-    """Maximum number of tokens allowed for each retrieved text chunk."""
-
-    max_token_for_global_context: int = int(
-        os.getenv("MAX_TOKEN_RELATION_DESC", "4000")
+    max_entity_tokens: int = int(
+        os.getenv("MAX_ENTITY_TOKENS", str(DEFAULT_MAX_ENTITY_TOKENS))
     )
-    """Maximum number of tokens allocated for relationship descriptions in global retrieval."""
+    """Maximum number of tokens allocated for entity context in unified token control system."""
 
-    max_token_for_local_context: int = int(os.getenv("MAX_TOKEN_ENTITY_DESC", "4000"))
-    """Maximum number of tokens allocated for entity descriptions in local retrieval."""
+    max_relation_tokens: int = int(
+        os.getenv("MAX_RELATION_TOKENS", str(DEFAULT_MAX_RELATION_TOKENS))
+    )
+    """Maximum number of tokens allocated for relationship context in unified token control system."""
+
+    max_total_tokens: int = int(
+        os.getenv("MAX_TOTAL_TOKENS", str(DEFAULT_MAX_TOTAL_TOKENS))
+    )
+    """Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt)."""
 
     hl_keywords: list[str] = field(default_factory=list)
     """List of high-level keywords to prioritize in retrieval."""
@@ -92,7 +100,7 @@ class QueryParam:
     Format: [{"role": "user/assistant", "content": "message"}].
     """
 
-    history_turns: int = 3
+    history_turns: int = int(os.getenv("HISTORY_TURNS", str(DEFAULT_HISTORY_TURNS)))
     """Number of complete conversation turns (user-assistant pairs) to consider in the response context."""
 
     ids: list[str] | None = None
@@ -107,6 +115,13 @@ class QueryParam:
     user_prompt: str | None = None
     """User-provided prompt for the query.
     If proivded, this will be use instead of the default vaulue from prompt template.
+    """
+
+    enable_rerank: bool = (
+        os.getenv("ENABLE_RERANK", str(DEFAULT_ENABLE_RERANK).lower()).lower() == "true"
+    )
+    """Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued.
+    Default is True to enable reranking when rerank model is available.
     """
 
 

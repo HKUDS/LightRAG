@@ -20,6 +20,9 @@ def direct_log(message, enable_output: bool = False, level: str = "DEBUG"):
         level: Log level (default: "DEBUG")
         enable_output: Whether to actually output the log (default: True)
     """
+    if not enable_output:
+        return
+
     # Get the current logger level from the lightrag logger
     try:
         from lightrag.utils import logger
@@ -40,7 +43,7 @@ def direct_log(message, enable_output: bool = False, level: str = "DEBUG"):
     message_level = level_mapping.get(level.upper(), logging.DEBUG)
 
     # print(f"Diret_log: {level.upper()} {message_level} ? {current_level}", file=sys.stderr, flush=True)
-    if enable_output or (message_level >= current_level):
+    if message_level >= current_level:
         print(f"{level}: {message}", file=sys.stderr, flush=True)
 
 

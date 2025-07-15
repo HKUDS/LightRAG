@@ -110,17 +110,17 @@ const useSettingsStoreBase = create<SettingsState>()(
       querySettings: {
         mode: 'global',
         response_type: 'Multiple Paragraphs',
-        top_k: 10,
-        max_token_for_text_unit: 6000,
-        max_token_for_global_context: 4000,
-        max_token_for_local_context: 4000,
+        top_k: 40,
+        chunk_top_k: 10,
+        max_entity_tokens: 10000,
+        max_relation_tokens: 10000,
+        max_total_tokens: 32000,
         only_need_context: false,
         only_need_prompt: false,
         stream: true,
         history_turns: 3,
-        hl_keywords: [],
-        ll_keywords: [],
-        user_prompt: ''
+        user_prompt: '',
+        enable_rerank: true
       },
 
       setTheme: (theme: Theme) => set({ theme }),
@@ -192,7 +192,7 @@ const useSettingsStoreBase = create<SettingsState>()(
     {
       name: 'settings-storage',
       storage: createJSONStorage(() => localStorage),
-      version: 14,
+      version: 15,
       migrate: (state: any, version: number) => {
         if (version < 2) {
           state.showEdgeLabel = false
@@ -259,6 +259,20 @@ const useSettingsStoreBase = create<SettingsState>()(
         if (version < 14) {
           // Add backendMaxGraphNodes field for older versions
           state.backendMaxGraphNodes = null
+        }
+        if (version < 15) {
+          // Add new querySettings
+          state.querySettings = {
+            ...state.querySettings,
+            mode: 'mix',
+            response_type: 'Multiple Paragraphs',
+            top_k: 40,
+            chunk_top_k: 10,
+            max_entity_tokens: 10000,
+            max_relation_tokens: 10000,
+            max_total_tokens: 32000,
+            enable_rerank: true
+          }
         }
         return state
       }

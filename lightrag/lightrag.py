@@ -24,6 +24,13 @@ from typing import (
 from lightrag.constants import (
     DEFAULT_MAX_GLEANING,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
+    DEFAULT_TOP_K,
+    DEFAULT_CHUNK_TOP_K,
+    DEFAULT_MAX_ENTITY_TOKENS,
+    DEFAULT_MAX_RELATION_TOKENS,
+    DEFAULT_MAX_TOTAL_TOKENS,
+    DEFAULT_COSINE_THRESHOLD,
+    DEFAULT_RELATED_CHUNK_NUMBER,
 )
 from lightrag.utils import get_env_value
 
@@ -124,6 +131,42 @@ class LightRAG:
     # ---
     log_level: int | None = field(default=None)
     log_file_path: str | None = field(default=None)
+
+    # Query parameters
+    # ---
+
+    top_k: int = field(default=get_env_value("TOP_K", DEFAULT_TOP_K, int))
+    """Number of entities/relations to retrieve for each query."""
+
+    chunk_top_k: int = field(
+        default=get_env_value("CHUNK_TOP_K", DEFAULT_CHUNK_TOP_K, int)
+    )
+    """Maximum number of chunks in context."""
+
+    max_entity_tokens: int = field(
+        default=get_env_value("MAX_ENTITY_TOKENS", DEFAULT_MAX_ENTITY_TOKENS, int)
+    )
+    """Maximum number of tokens for entity in context."""
+
+    max_relation_tokens: int = field(
+        default=get_env_value("MAX_RELATION_TOKENS", DEFAULT_MAX_RELATION_TOKENS, int)
+    )
+    """Maximum number of tokens for relation in context."""
+
+    max_total_tokens: int = field(
+        default=get_env_value("MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS, int)
+    )
+    """Maximum total tokens in context (including system prompt, entities, relations and chunks)."""
+
+    cosine_threshold: int = field(
+        default=get_env_value("COSINE_THRESHOLD", DEFAULT_COSINE_THRESHOLD, int)
+    )
+    """Cosine threshold of vector DB retrieval for entities, relations and chunks."""
+
+    related_chunk_number: int = field(
+        default=get_env_value("RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int)
+    )
+    """Number of related chunks to grab from single entity or relation."""
 
     # Entity extraction
     # ---
@@ -237,11 +280,6 @@ class LightRAG:
 
     # Rerank Configuration
     # ---
-
-    enable_rerank: bool = field(
-        default=bool(os.getenv("ENABLE_RERANK", "False").lower() == "true")
-    )
-    """Enable reranking for improved retrieval quality. Defaults to False."""
 
     rerank_model_func: Callable[..., object] | None = field(default=None)
     """Function for reranking retrieved documents. All rerank configurations (model name, API keys, top_k, etc.) should be included in this function. Optional."""
@@ -454,9 +492,9 @@ class LightRAG:
         )
 
         # Init Rerank
-        if self.enable_rerank and self.rerank_model_func:
+        if self.rerank_model_func:
             logger.info("Rerank model initialized for improved retrieval quality")
-        elif self.enable_rerank and not self.rerank_model_func:
+        else:
             logger.warning(
                 "Rerank is enabled but no rerank_model_func provided. Reranking will be skipped."
             )

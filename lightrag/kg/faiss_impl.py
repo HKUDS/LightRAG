@@ -185,10 +185,6 @@ class FaissVectorDBStorage(BaseVectorStorage):
         embedding = np.array(embedding, dtype=np.float32)
         faiss.normalize_L2(embedding)  # we do in-place normalization
 
-        logger.info(
-            f"Query: {query}, top_k: {top_k}, threshold: {self.cosine_better_than_threshold}"
-        )
-
         # Perform the similarity search
         index = await self._get_index()
         distances, indices = index.search(embedding, top_k)

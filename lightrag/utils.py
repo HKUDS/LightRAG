@@ -795,7 +795,9 @@ def process_combine_contexts(*context_lists):
         if not context_list:  # Skip empty lists
             continue
         for item in context_list:
-            content_dict = {k: v for k, v in item.items() if k != "id"}
+            content_dict = {
+                k: v for k, v in item.items() if k != "id" and k != "created_at"
+            }
             content_key = tuple(sorted(content_dict.items()))
             if content_key not in seen_content:
                 seen_content[content_key] = item

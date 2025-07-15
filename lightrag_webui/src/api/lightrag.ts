@@ -106,12 +106,14 @@ export type QueryRequest = {
   stream?: boolean
   /** Number of top items to retrieve. Represents entities in 'local' mode and relationships in 'global' mode. */
   top_k?: number
-  /** Maximum number of tokens allowed for each retrieved text chunk. */
-  max_token_for_text_unit?: number
-  /** Maximum number of tokens allocated for relationship descriptions in global retrieval. */
-  max_token_for_global_context?: number
-  /** Maximum number of tokens allocated for entity descriptions in local retrieval. */
-  max_token_for_local_context?: number
+  /** Maximum number of text chunks to retrieve and keep after reranking. */
+  chunk_top_k?: number
+  /** Maximum number of tokens allocated for entity context in unified token control system. */
+  max_entity_tokens?: number
+  /** Maximum number of tokens allocated for relationship context in unified token control system. */
+  max_relation_tokens?: number
+  /** Maximum total tokens budget for the entire query context (entities + relations + chunks + system prompt). */
+  max_total_tokens?: number
   /**
    * Stores past conversation history to maintain context.
    * Format: [{"role": "user/assistant", "content": "message"}].
@@ -121,6 +123,8 @@ export type QueryRequest = {
   history_turns?: number
   /** User-provided prompt for the query. If provided, this will be used instead of the default value from prompt template. */
   user_prompt?: string
+  /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
+  enable_rerank?: boolean
 }
 
 export type QueryResponse = {
