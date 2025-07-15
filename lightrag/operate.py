@@ -1981,17 +1981,23 @@ async def _build_query_context(
         max_entity_tokens = getattr(
             query_param,
             "max_entity_tokens",
-            text_chunks_db.global_config.get("max_entity_tokens", DEFAULT_MAX_ENTITY_TOKENS),
+            text_chunks_db.global_config.get(
+                "max_entity_tokens", DEFAULT_MAX_ENTITY_TOKENS
+            ),
         )
         max_relation_tokens = getattr(
             query_param,
             "max_relation_tokens",
-            text_chunks_db.global_config.get("max_relation_tokens", DEFAULT_MAX_RELATION_TOKENS),
+            text_chunks_db.global_config.get(
+                "max_relation_tokens", DEFAULT_MAX_RELATION_TOKENS
+            ),
         )
         max_total_tokens = getattr(
             query_param,
             "max_total_tokens",
-            text_chunks_db.global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
+            text_chunks_db.global_config.get(
+                "max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS
+            ),
         )
 
         # Truncate entities based on complete JSON serialization
@@ -2350,7 +2356,9 @@ async def _find_most_related_text_unit_from_entities(
 
     text_units = [
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])[
-            : text_chunks_db.global_config.get("related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER)
+            : text_chunks_db.global_config.get(
+                "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
+            )
         ]
         for dp in node_datas
         if dp["source_id"] is not None
@@ -2660,7 +2668,9 @@ async def _find_related_text_unit_from_relationships(
 
     text_units = [
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])[
-            : text_chunks_db.global_config.get("related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER)
+            : text_chunks_db.global_config.get(
+                "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
+            )
         ]
         for dp in edge_datas
         if dp["source_id"] is not None
