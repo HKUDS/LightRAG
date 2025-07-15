@@ -2367,6 +2367,8 @@ async def _find_most_related_text_unit_from_entities(
     text_chunks_db: BaseKVStorage,
     knowledge_graph_inst: BaseGraphStorage,
 ):
+    logger.debug(f"Searching text chunks for {len(node_datas)} entities")
+
     text_units = [
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
         for dp in node_datas
@@ -2679,6 +2681,8 @@ async def _find_related_text_unit_from_relationships(
     text_chunks_db: BaseKVStorage,
     knowledge_graph_inst: BaseGraphStorage,
 ):
+    logger.debug(f"Searching text chunks for {len(edge_datas)} relationships")
+
     text_units = [
         split_string_by_multi_markers(dp["source_id"], [GRAPH_FIELD_SEP])
         for dp in edge_datas
