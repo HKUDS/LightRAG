@@ -17,6 +17,7 @@ export default defineConfig({
   build: {
     outDir: path.resolve(__dirname, '../lightrag/api/webui'),
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1000,
     rollupOptions: {
       output: {
         // Manual chunking strategy
