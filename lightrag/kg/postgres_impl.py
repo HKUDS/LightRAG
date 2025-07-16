@@ -115,34 +115,46 @@ class PostgreSQLDB:
             WHERE table_name = 'lightrag_llm_cache'
             AND column_name IN ('chunk_id', 'cache_type')
             """
-            
+
             existing_columns = await self.query(check_columns_sql, multirows=True)
-            existing_column_names = {col['column_name'] for col in existing_columns} if existing_columns else set()
-            
+            existing_column_names = (
+                {col["column_name"] for col in existing_columns}
+                if existing_columns
+                else set()
+            )
+
             # Add missing chunk_id column
-            if 'chunk_id' not in existing_column_names:
+            if "chunk_id" not in existing_column_names:
                 logger.info("Adding chunk_id column to LIGHTRAG_LLM_CACHE table")
                 add_chunk_id_sql = """
                 ALTER TABLE LIGHTRAG_LLM_CACHE
                 ADD COLUMN chunk_id VARCHAR(255) NULL
                 """
                 await self.execute(add_chunk_id_sql)
-                logger.info("Successfully added chunk_id column to LIGHTRAG_LLM_CACHE table")
+                logger.info(
+                    "Successfully added chunk_id column to LIGHTRAG_LLM_CACHE table"
+                )
             else:
-                logger.info("chunk_id column already exists in LIGHTRAG_LLM_CACHE table")
-            
+                logger.info(
+                    "chunk_id column already exists in LIGHTRAG_LLM_CACHE table"
+                )
+
             # Add missing cache_type column
-            if 'cache_type' not in existing_column_names:
+            if "cache_type" not in existing_column_names:
                 logger.info("Adding cache_type column to LIGHTRAG_LLM_CACHE table")
                 add_cache_type_sql = """
                 ALTER TABLE LIGHTRAG_LLM_CACHE
                 ADD COLUMN cache_type VARCHAR(32) NULL
                 """
                 await self.execute(add_cache_type_sql)
-                logger.info("Successfully added cache_type column to LIGHTRAG_LLM_CACHE table")
-                
+                logger.info(
+                    "Successfully added cache_type column to LIGHTRAG_LLM_CACHE table"
+                )
+
                 # Migrate existing data using optimized regex pattern
-                logger.info("Migrating existing LLM cache data to populate cache_type field (optimized)")
+                logger.info(
+                    "Migrating existing LLM cache data to populate cache_type field (optimized)"
+                )
                 optimized_update_sql = """
                 UPDATE LIGHTRAG_LLM_CACHE
                 SET cache_type = CASE
@@ -154,8 +166,10 @@ class PostgreSQLDB:
                 await self.execute(optimized_update_sql)
                 logger.info("Successfully migrated existing LLM cache data")
             else:
-                logger.info("cache_type column already exists in LIGHTRAG_LLM_CACHE table")
-                
+                logger.info(
+                    "cache_type column already exists in LIGHTRAG_LLM_CACHE table"
+                )
+
         except Exception as e:
             logger.warning(f"Failed to add columns to LIGHTRAG_LLM_CACHE: {e}")
 
@@ -288,80 +302,85 @@ class PostgreSQLDB:
             logger.warning(f"Failed to check LLM cache migration status: {e}")
             return False
 
-
     async def _migrate_llm_cache_to_flattened_keys(self):
         """Optimized version: directly execute single UPDATE migration to migrate old format cache keys to flattened format"""
         try:
             # Check if migration is needed
             check_sql = """
-            SELECT COUNT(*) as count FROM LIGHTRAG_LLM_CACHE 
+            SELECT COUNT(*) as count FROM LIGHTRAG_LLM_CACHE
             WHERE id NOT LIKE '%:%'
             """
             result = await self.query(check_sql)
-            
+
             if not result or result["count"] == 0:
                 logger.info("No old format LLM cache data found, skipping migration")
                 return
-                
+
             old_count = result["count"]
             logger.info(f"Found {old_count} old format cache records")
-            
+
             # Check potential primary key conflicts (optional but recommended)
             conflict_check_sql = """
             WITH new_ids AS (
-                SELECT 
+                SELECT
                     workspace,
                     mode,
                     id as old_id,
-                    mode || ':' || 
+                    mode || ':' ||
                     CASE WHEN mode = 'default' THEN 'extract' ELSE 'unknown' END || ':' ||
                     md5(mode || original_prompt) as new_id
-                FROM LIGHTRAG_LLM_CACHE 
+                FROM LIGHTRAG_LLM_CACHE
                 WHERE id NOT LIKE '%:%'
             )
-            SELECT COUNT(*) as conflicts 
+            SELECT COUNT(*) as conflicts
             FROM new_ids n1
-            JOIN LIGHTRAG_LLM_CACHE existing 
-            ON existing.workspace = n1.workspace 
-            AND existing.mode = n1.mode 
+            JOIN LIGHTRAG_LLM_CACHE existing
+            ON existing.workspace = n1.workspace
+            AND existing.mode = n1.mode
             AND existing.id = n1.new_id
             WHERE existing.id LIKE '%:%'  -- Only check conflicts with existing new format records
             """
-            
+
             conflict_result = await self.query(conflict_check_sql)
             if conflict_result and conflict_result["conflicts"] > 0:
-                logger.warning(f"Found {conflict_result['conflicts']} potential ID conflicts with existing records")
+                logger.warning(
+                    f"Found {conflict_result['conflicts']} potential ID conflicts with existing records"
+                )
                 # Can choose to continue or abort, here we choose to continue and log warning
-            
+
             # Execute single UPDATE migration
             logger.info("Starting optimized LLM cache migration...")
             migration_sql = """
-            UPDATE LIGHTRAG_LLM_CACHE 
-            SET 
-                id = mode || ':' || 
+            UPDATE LIGHTRAG_LLM_CACHE
+            SET
+                id = mode || ':' ||
                      CASE WHEN mode = 'default' THEN 'extract' ELSE 'unknown' END || ':' ||
                      md5(mode || original_prompt),
                 cache_type = CASE WHEN mode = 'default' THEN 'extract' ELSE 'unknown' END,
                 update_time = CURRENT_TIMESTAMP
             WHERE id NOT LIKE '%:%'
             """
-            
+
             # Execute migration
             await self.execute(migration_sql)
-            
+
             # Verify migration results
             verify_sql = """
-            SELECT COUNT(*) as remaining_old FROM LIGHTRAG_LLM_CACHE 
+            SELECT COUNT(*) as remaining_old FROM LIGHTRAG_LLM_CACHE
             WHERE id NOT LIKE '%:%'
             """
             verify_result = await self.query(verify_sql)
             remaining = verify_result["remaining_old"] if verify_result else -1
-            
+
             if remaining == 0:
-                logger.info(f"✅ Successfully migrated {old_count} LLM cache records to flattened format")
+                logger.info(
+                    f"✅ Successfully migrated {old_count} LLM cache records to flattened format"
+                )
             else:
-                logger.warning(f"⚠️ Migration completed but {remaining} old format records remain")
-            
+                logger.warning(
+                    f"⚠️ Migration completed but {remaining} old format records remain"
+                )
+
         except Exception as e:
             logger.error(f"Optimized LLM cache migration failed: {e}")
             raise
@@ -1767,8 +1786,8 @@ class PGGraphStorage(BaseGraphStorage):
         """
         Generate graph name based on workspace and namespace for data isolation.
         Rules:
-        - If workspace is empty: graph_name = namespace
-        - If workspace has value: graph_name = workspace_namespace
+        - If workspace is empty or "default": graph_name = namespace
+        - If workspace has other value: graph_name = workspace_namespace
 
         Args:
             None
@@ -1777,15 +1796,15 @@ class PGGraphStorage(BaseGraphStorage):
             str: The graph name for the current workspace
         """
         workspace = getattr(self, "workspace", None)
-        namespace = self.namespace or os.environ.get("AGE_GRAPH_NAME", "lightrag")
+        namespace = self.namespace
 
-        if workspace and workspace.strip():
+        if workspace and workspace.strip() and workspace.strip().lower() != "default":
             # Ensure names comply with PostgreSQL identifier specifications
             safe_workspace = re.sub(r"[^a-zA-Z0-9_]", "_", workspace.strip())
             safe_namespace = re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
             return f"{safe_workspace}_{safe_namespace}"
         else:
-            # When workspace is empty, use namespace directly
+            # When workspace is empty or "default", use namespace directly
             return re.sub(r"[^a-zA-Z0-9_]", "_", namespace)
 
     @staticmethod
