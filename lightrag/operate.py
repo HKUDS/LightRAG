@@ -1284,6 +1284,7 @@ async def merge_nodes_and_edges(
                             "content": f"{edge_data['src_id']}\t{edge_data['tgt_id']}\n{edge_data['keywords']}\n{edge_data['description']}",
                             "source_id": edge_data["source_id"],
                             "file_path": edge_data.get("file_path", "unknown_source"),
+                            "weight": 0
                         }
                     }
                     await relationships_vdb.upsert(data_for_vdb)
