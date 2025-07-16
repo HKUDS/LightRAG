@@ -134,6 +134,22 @@ pip install lightrag-hku
 
 ## Quick Start
 
+### LLM and Technology Stack Requirements for LightRAG
+
+LightRAG's demands on the capabilities of Large Language Models (LLMs) are significantly higher than those of traditional RAG, as it requires the LLM to perform entity-relationship extraction tasks from documents. Configuring appropriate Embedding and Reranker models is also crucial for improving query performance.
+
+- **LLM Selection**:
+  - It is recommended to use an LLM with at least 32 billion parameters.
+  - The context length should be at least 32KB, with 64KB being recommended.
+- **Embedding Model**:
+  - A high-performance Embedding model is essential for RAG.
+  - We recommend using mainstream multilingual Embedding models, such as: `BAAI/bge-m3` and `text-embedding-3-large`.
+  - **Important Note**: The Embedding model must be determined before document indexing, and the same model must be used during the document query phase.
+- **Reranker Model Configuration**:
+  - Configuring a Reranker model can significantly enhance LightRAG's retrieval performance.
+  - When a Reranker model is enabled, it is recommended to set the "mix mode" as the default query mode.
+  - We recommend using mainstream Reranker models, such as: `BAAI/bge-reranker-v2-m3` or models provided by services like Jina.
+
 ### Quick Start for LightRAG Server
 
 * For more information about LightRAG Server, please refer to [LightRAG Server](./lightrag/api/README.md).
