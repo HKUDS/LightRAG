@@ -180,6 +180,7 @@ class PostgreSQLDB:
             "LIGHTRAG_VDB_ENTITY": ["create_time", "update_time"],
             "LIGHTRAG_VDB_RELATION": ["create_time", "update_time"],
             "LIGHTRAG_DOC_CHUNKS": ["create_time", "update_time"],
+            "LIGHTRAG_DOC_STATUS": ["created_at", "updated_at"],
         }
 
         for table_name, columns in tables_to_migrate.items():
@@ -1462,9 +1463,10 @@ class PGDocStatusStorage(DocStatusStorage):
         """Convert datetime to ISO format string with timezone info"""
         if dt is None:
             return None
-        # If no timezone info, assume it's UTC time
+        # If no timezone info, assume it's UTC time (as stored in database)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
+        # If datetime already has timezone info, keep it as is
         return dt.isoformat()
 
     async def initialize(self):
