@@ -328,7 +328,7 @@ class PostgreSQLDB:
                     id as old_id,
                     mode || ':' ||
                     CASE WHEN mode = 'default' THEN 'extract' ELSE 'unknown' END || ':' ||
-                    md5(mode || original_prompt) as new_id
+                    md5(original_prompt) as new_id
                 FROM LIGHTRAG_LLM_CACHE
                 WHERE id NOT LIKE '%:%'
             )
@@ -355,7 +355,7 @@ class PostgreSQLDB:
             SET
                 id = mode || ':' ||
                      CASE WHEN mode = 'default' THEN 'extract' ELSE 'unknown' END || ':' ||
-                     md5(mode || original_prompt),
+                     md5(original_prompt),
                 cache_type = CASE WHEN mode = 'default' THEN 'extract' ELSE 'unknown' END,
                 update_time = CURRENT_TIMESTAMP
             WHERE id NOT LIKE '%:%'
