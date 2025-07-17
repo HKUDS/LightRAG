@@ -12,14 +12,15 @@ RUN apt-get update && apt-get install -y \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && . $HOME/.cargo/env
 
-# Copy only requirements files first to leverage Docker cache
-COPY requirements.txt .
-COPY lightrag/api/requirements.txt ./lightrag/api/
+# Copy pyproject.toml and source code for dependency installation
+COPY pyproject.toml .
+COPY setup.py .
+COPY lightrag/ ./lightrag/
 
 # Install dependencies
 ENV PATH="/root/.cargo/bin:${PATH}"
-RUN pip install --user --no-cache-dir -r requirements.txt
-RUN pip install --user --no-cache-dir -r lightrag/api/requirements.txt
+RUN pip install --user --no-cache-dir .
+RUN pip install --user --no-cache-dir .[api]
 
 # Install depndencies for default storage
 RUN pip install --user --no-cache-dir nano-vectordb networkx
