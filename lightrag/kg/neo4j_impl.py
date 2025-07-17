@@ -535,7 +535,7 @@ class Neo4JStorage(BaseGraphStorage):
                             # logger.debug(f"Result: {edge_result}")
                             # Ensure required keys exist with defaults
                             required_keys = {
-                                "weight": 0.0,
+                                "weight": 1.0,
                                 "source_id": None,
                                 "description": None,
                                 "keywords": None,
@@ -559,7 +559,7 @@ class Neo4JStorage(BaseGraphStorage):
                             )
                             # Return default edge properties on error
                             return {
-                                "weight": 0.0,
+                                "weight": 1.0,
                                 "source_id": None,
                                 "description": None,
                                 "keywords": None,
@@ -610,7 +610,7 @@ class Neo4JStorage(BaseGraphStorage):
                     edge_props = edges[0]  # choose the first if multiple exist
                     # Ensure required keys exist with defaults
                     for key, default in {
-                        "weight": 0.0,
+                        "weight": 1.0,
                         "source_id": None,
                         "description": None,
                         "keywords": None,
@@ -621,7 +621,7 @@ class Neo4JStorage(BaseGraphStorage):
                 else:
                     # No edge found – set default edge properties
                     edges_dict[(src, tgt)] = {
-                        "weight": 0.0,
+                        "weight": 1.0,
                         "source_id": None,
                         "description": None,
                         "keywords": None,
