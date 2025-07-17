@@ -199,7 +199,7 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
         "/mix ": (SearchMode.mix, False),
         "/bypass ": (SearchMode.bypass, False),
         "/context": (
-            SearchMode.hybrid,
+            SearchMode.mix,
             True,
         ),
         "/localcontext": (SearchMode.local, True),
@@ -215,7 +215,7 @@ def parse_query_mode(query: str) -> tuple[str, SearchMode, bool, Optional[str]]:
             cleaned_query = query[len(prefix) :].lstrip()
             return cleaned_query, mode, only_need_context, user_prompt
 
-    return query, SearchMode.hybrid, False, user_prompt
+    return query, SearchMode.mix, False, user_prompt
 
 
 class OllamaAPI:
