@@ -1016,8 +1016,8 @@ async def _merge_edges_then_upsert(
         already_edge = await knowledge_graph_inst.get_edge(src_id, tgt_id)
         # Handle the case where get_edge returns None or missing fields
         if already_edge:
-            # Get weight with default 0.0 if missing
-            already_weights.append(already_edge.get("weight", 0.0))
+            # Get weight with default 1.0 if missing
+            already_weights.append(already_edge.get("weight", 1.0))
 
             # Get source_id with empty string default if missing or None
             if already_edge.get("source_id") is not None:
@@ -1284,7 +1284,7 @@ async def merge_nodes_and_edges(
                             "content": f"{edge_data['src_id']}\t{edge_data['tgt_id']}\n{edge_data['keywords']}\n{edge_data['description']}",
                             "source_id": edge_data["source_id"],
                             "file_path": edge_data.get("file_path", "unknown_source"),
-                            "weight": 0,
+                            "weight": edge_data.get("weight", 1.0),
                         }
                     }
                     await relationships_vdb.upsert(data_for_vdb)
@@ -2494,9 +2494,9 @@ async def _find_most_related_edges_from_entities(
         if edge_props is not None:
             if "weight" not in edge_props:
                 logger.warning(
-                    f"Edge {pair} missing 'weight' attribute, using default value 0.0"
+                    f"Edge {pair} missing 'weight' attribute, using default value 1.0"
                 )
-                edge_props["weight"] = 0.0
+                edge_props["weight"] = 1.0
 
             combined = {
                 "src_tgt": pair,
@@ -2549,9 +2549,9 @@ async def _get_edge_data(
         if edge_props is not None:
             if "weight" not in edge_props:
                 logger.warning(
-                    f"Edge {pair} missing 'weight' attribute, using default value 0.0"
+                    f"Edge {pair} missing 'weight' attribute, using default value 1.0"
                 )
-                edge_props["weight"] = 0.0
+                edge_props["weight"] = 1.0
 
             # Use edge degree from the batch as rank.
             combined = {

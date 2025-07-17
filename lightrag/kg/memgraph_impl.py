@@ -414,7 +414,7 @@ class MemgraphStorage(BaseGraphStorage):
                 if records:
                     edge_result = dict(records[0]["edge_properties"])
                     for key, default_value in {
-                        "weight": 0.0,
+                        "weight": 1.0,
                         "source_id": None,
                         "description": None,
                         "keywords": None,

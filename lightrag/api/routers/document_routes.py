@@ -1301,11 +1301,11 @@ def create_document_routes(
                     "Starting to delete files in input directory"
                 )
 
-            # Delete all files in input_dir
+            # Delete only files in the current directory, preserve files in subdirectories
             deleted_files_count = 0
             file_errors_count = 0
 
-            for file_path in doc_manager.input_dir.glob("**/*"):
+            for file_path in doc_manager.input_dir.glob("*"):
                 if file_path.is_file():
                     try:
                         file_path.unlink()
