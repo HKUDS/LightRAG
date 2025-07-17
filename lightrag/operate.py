@@ -871,7 +871,7 @@ async def _rebuild_single_relationship(
         "keywords": combined_keywords,
         "weight": weight,
         "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
-        "file_path": GRAPH_FIELD_SEP.join(file_paths)
+        "file_path": GRAPH_FIELD_SEP.join([fp for fp in file_paths if fp])
         if file_paths
         else current_relationship.get("file_path", "unknown_source"),
     }
@@ -947,7 +947,14 @@ async def _merge_nodes_then_upsert(
         set([dp["source_id"] for dp in nodes_data] + already_source_ids)
     )
     file_path = GRAPH_FIELD_SEP.join(
-        set([dp["file_path"] for dp in nodes_data] + already_file_paths)
+        set(
+            [
+                dp.get("file_path", "unknown_source")
+                for dp in nodes_data
+                if dp.get("file_path")
+            ]
+            + [fp for fp in already_file_paths if fp]
+        )
     )
 
     force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
@@ -1082,7 +1089,7 @@ async def _merge_edges_then_upsert(
     file_path = GRAPH_FIELD_SEP.join(
         set(
             [dp["file_path"] for dp in edges_data if dp.get("file_path")]
-            + already_file_paths
+            + [fp for fp in already_file_paths if fp]
         )
     )
 
