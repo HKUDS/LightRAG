@@ -1262,8 +1262,11 @@ async def merge_nodes_and_edges(
         async with semaphore:
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+            # Sort the edge_key components to ensure consistent lock key generation
+            sorted_edge_key = sorted([edge_key[0], edge_key[1]])
+            logger.info(f"Processing edge: {sorted_edge_key[0]} - {sorted_edge_key[1]}")
             async with get_storage_keyed_lock(
-                f"{edge_key[0]}-{edge_key[1]}",
+                f"{sorted_edge_key[0]}-{sorted_edge_key[1]}",
                 namespace=namespace,
                 enable_logging=False,
             ):
