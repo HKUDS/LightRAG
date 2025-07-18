@@ -353,3 +353,127 @@ Similarity score criteria:
 0.5: Partially related and answer needs modification to be used
 Return only a number between 0-1, without any additional content.
 """
+
+PROMPTS["goal_clean"] = """
+######################
+    ---Objective---
+######################
+    You are a knowledge point filtering, merging, and deletion assistant. You will strictly output according to the specified format.
+    Merge duplicate knowledge points, e.g., 'Greedy Algorithm', 'Greedy Algorithm (GREEDY ALGORITHM)', 'Greedy Method' → merge into 'Greedy Algorithm'.
+    Merge similar knowledge points under the same broad category into one summarized knowledge point, making it suitable as a major node in a knowledge graph.
+    Delete non-knowledge-point items, such as 'Lemma XXX', 'Theorem XXX', 'stdio.h', "*", "/=", "y", etc.
+
+######################
+    ---Format Requirements---
+######################
+    "merge" section: 
+        - "summary": Name of the summarized knowledge point
+        - "keywords": Selected knowledge points to be merged (from input)
+    "delete" section: Items to be deleted
+
+######################
+    ---Important Notes---
+######################
+    1. For merging:
+        1.1. "keywords" must ONLY be selected from input. Do NOT create new nodes. Must contain ≥2 elements.
+        1.2. Keep "summary" concise.
+        1.3. Output null if no merging is required.
+    
+    2. For deletion:
+        2.1. Delete overly specific knowledge points.
+        2.2. Output null if no non-knowledge-point items need deletion.
+"""
+PROMPTS["format_clean"] = {
+    "model": "",
+    "messages": [
+        {"role":"system","content": ""},
+        {"role": "user","content": ""}
+    ],
+    "think": False,
+    "stream": False,
+    "format": {
+        "type": "object",
+        "properties": {
+            "merge": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"},
+                        "keywords": {
+                            "type": "array",
+                            "items": {"type": "string"}
+                        },
+                    },
+                    "required": ["summary", "keywords"]
+                }
+            },
+            "delete": {
+                "type": "array",
+                "items": {"type": "string"}
+            }
+        },
+        "required": ["merge", "delete"]
+    }
+}
+
+PROMPTS["goal_create"] = """
+######################
+    ---Objective---
+######################
+    Find relationships between input keywords from the provided content, provide an explanation of the relationship; store relevant results in "relations".
+
+######################
+    ---Format Requirements---
+######################
+    Extract relationships between keywords, including the source keyword and target keyword, relationship type, relationship strength, and a brief summary. Store relevant content in "relations":
+        - "source": The relationship's origin keyword. MUST be selected from "isolated nodes".
+        - "target": The relationship's target keyword. MUST be selected from "related nodes" and DIFFERENT from "source".
+        - "description": Explanation of the relationship between the two keywords.
+        - "keywords": High-level summary keywords characterizing the relationship.
+        - "weight": Strength of the relationship (1-10 scale). Higher values indicate stronger connections.
+
+######################
+    ---Important Notes---
+######################
+    "source" MUST be selected from "isolated nodes".
+    "target" MUST be selected from "related nodes" and MUST be different from "source".
+"""
+
+PROMPTS["format_create"] = {
+    "model": "",
+    "model": "",
+    "messages": [
+        {"role":"system","content": ""},
+        {"role": "user","content": ""}
+    ],
+    "think": False,
+    "stream": False,
+    "format": {
+        "type": "object",
+        "properties": {
+            "relations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "target": {"type": "string"},
+                        "description": {"type": "string"},
+                        "keywords": {
+                            "type": "array",
+                            "items": {"type": "string"}  # 补充缺失的items类型
+                        },
+                        "weight": {
+                            "type": "integer",  # 建议改为数值类型
+                            "minimum": 0,
+                            "maximum": 10
+                        }
+                    },
+                    "required": ["source", "target", "description", "keywords", "weight"]
+                }
+            }
+        },
+        "required": ["relations"]
+    }
+}
