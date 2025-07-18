@@ -47,7 +47,7 @@ async def azure_openai_complete_if_cache(
     api_version: str | None = None,
     **kwargs,
 ):
-    model = model or os.getenv("AZURE_OPENAI_DEPLOYMENT") or os.getenv("LLM_MODEL")
+    deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT") or model or os.getenv("LLM_MODEL")
     base_url = (
         base_url or os.getenv("AZURE_OPENAI_ENDPOINT") or os.getenv("LLM_BINDING_HOST")
     )
@@ -62,7 +62,7 @@ async def azure_openai_complete_if_cache(
 
     openai_async_client = AsyncAzureOpenAI(
         azure_endpoint=base_url,
-        azure_deployment=model,
+        azure_deployment=deployment,
         api_key=api_key,
         api_version=api_version,
     )
@@ -136,9 +136,9 @@ async def azure_openai_embed(
     api_key: str | None = None,
     api_version: str | None = None,
 ) -> np.ndarray:
-    model = (
-        model
-        or os.getenv("AZURE_EMBEDDING_DEPLOYMENT")
+    deployment = (
+        os.getenv("AZURE_EMBEDDING_DEPLOYMENT")
+        or model
         or os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
     )
     base_url = (
@@ -159,7 +159,7 @@ async def azure_openai_embed(
 
     openai_async_client = AsyncAzureOpenAI(
         azure_endpoint=base_url,
-        azure_deployment=model,
+        azure_deployment=deployment,
         api_key=api_key,
         api_version=api_version,
     )
