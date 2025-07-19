@@ -2721,22 +2721,32 @@ async def _find_related_text_unit_from_relationships(
     ]
     all_text_units_lookup = {}
 
-    async def fetch_chunk_data(c_id, index):
-        if c_id not in all_text_units_lookup:
-            chunk_data = await text_chunks_db.get_by_id(c_id)
-            # Only store valid data
-            if chunk_data is not None and "content" in chunk_data:
-                all_text_units_lookup[c_id] = {
-                    "data": chunk_data,
-                    "order": index,
-                }
-
-    tasks = []
+    # Deduplicate and preserve order | {c_id:order}
+    text_units_unique_flat = {}
     for index, unit_list in enumerate(text_units):
         for c_id in unit_list:
-            tasks.append(fetch_chunk_data(c_id, index))
+            if (
+                c_id not in text_units_unique_flat
+                or index < text_units_unique_flat[c_id]
+            ):
+                # Keep the smallest order
+                text_units_unique_flat[c_id] = index
 
-    await asyncio.gather(*tasks)
+    if not text_units_unique_flat:
+        logger.warning("No valid text chunks found")
+        return []
+
+    # Batch get all text chunk data
+    chunk_ids = list(text_units_unique_flat.keys())
+    chunk_data_list = await text_chunks_db.get_by_ids(chunk_ids)
+
+    # Build lookup table, handling possible missing data
+    for chunk_id, chunk_data in zip(chunk_ids, chunk_data_list):
+        if chunk_data is not None and "content" in chunk_data:
+            all_text_units_lookup[chunk_id] = {
+                "data": chunk_data,
+                "order": text_units_unique_flat[chunk_id],
+            }
 
     if not all_text_units_lookup:
         logger.warning("No valid text chunks found")
