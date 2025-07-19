@@ -77,7 +77,7 @@ class Neo4JStorage(BaseGraphStorage):
         MAX_CONNECTION_POOL_SIZE = int(
             os.environ.get(
                 "NEO4J_MAX_CONNECTION_POOL_SIZE",
-                config.get("neo4j", "connection_pool_size", fallback=50),
+                config.get("neo4j", "connection_pool_size", fallback=100),
             )
         )
         CONNECTION_TIMEOUT = float(
