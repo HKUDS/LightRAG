@@ -2721,6 +2721,18 @@ async def _find_related_text_unit_from_relationships(
     ]
     all_text_units_lookup = {}
 
+    # Deduplicate and preserve order | {c_id:order}
+    async def build_text_units_unique(text_units):
+        text_units_flat = {}
+        for index, unit_list in enumerate(text_units):
+            for c_id in unit_list:
+                if c_id not in text_units_flat or index < text_units_flat[c_id]:
+                    # Keep the smallest order
+                    text_units_flat[c_id] = index
+        return text_units_flat
+
+    text_units_unique_flat = build_text_units_unique(text_units)
+
     async def fetch_chunk_data(c_id, index):
         if c_id not in all_text_units_lookup:
             chunk_data = await text_chunks_db.get_by_id(c_id)
@@ -2731,11 +2743,9 @@ async def _find_related_text_unit_from_relationships(
                     "order": index,
                 }
 
-    tasks = []
-    for index, unit_list in enumerate(text_units):
-        for c_id in unit_list:
-            tasks.append(fetch_chunk_data(c_id, index))
-
+    tasks = [
+        fetch_chunk_data(c_id, order) for c_id, order in text_units_unique_flat.items()
+    ]
     await asyncio.gather(*tasks)
 
     if not all_text_units_lookup:
