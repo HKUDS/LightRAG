@@ -429,8 +429,12 @@ async def _rebuild_knowledge_from_chunks(
         async with semaphore:
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+            # Sort src and tgt to ensure order-independent lock key generation
+            sorted_key_parts = sorted([src, tgt])
             async with get_storage_keyed_lock(
-                f"{src}-{tgt}", namespace=namespace, enable_logging=False
+                f"{sorted_key_parts[0]}-{sorted_key_parts[1]}",
+                namespace=namespace,
+                enable_logging=False,
             ):
                 try:
                     await _rebuild_single_relationship(
@@ -1281,7 +1285,7 @@ async def merge_nodes_and_edges(
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
             # Sort the edge_key components to ensure consistent lock key generation
             sorted_edge_key = sorted([edge_key[0], edge_key[1]])
-            logger.info(f"Processing edge: {sorted_edge_key[0]} - {sorted_edge_key[1]}")
+            # logger.info(f"Processing edge: {sorted_edge_key[0]} - {sorted_edge_key[1]}")
             async with get_storage_keyed_lock(
                 f"{sorted_edge_key[0]}-{sorted_edge_key[1]}",
                 namespace=namespace,
