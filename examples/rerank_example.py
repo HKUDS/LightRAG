@@ -57,7 +57,7 @@ async def embedding_func(texts: list[str]) -> np.ndarray:
     )
 
 
-async def my_rerank_func(query: str, documents: list, top_k: int = None, **kwargs):
+async def my_rerank_func(query: str, documents: list, top_n: int = None, **kwargs):
     """Custom rerank function with all settings included"""
     return await custom_rerank(
         query=query,
@@ -65,7 +65,7 @@ async def my_rerank_func(query: str, documents: list, top_k: int = None, **kwarg
         model="BAAI/bge-reranker-v2-m3",
         base_url="https://api.your-rerank-provider.com/v1/rerank",
         api_key="your_rerank_api_key_here",
-        top_k=top_k or 10,  # Default top_k if not provided
+        top_n=top_n or 10,
         **kwargs,
     )
 
@@ -217,7 +217,7 @@ async def test_direct_rerank():
             model="BAAI/bge-reranker-v2-m3",
             base_url="https://api.your-rerank-provider.com/v1/rerank",
             api_key="your_rerank_api_key_here",
-            top_k=3,
+            top_n=3,
         )
 
         print("\n✅ Rerank Results:")

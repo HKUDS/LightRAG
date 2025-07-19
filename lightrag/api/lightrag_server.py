@@ -298,7 +298,7 @@ def create_app(args):
         from lightrag.rerank import custom_rerank
 
         async def server_rerank_func(
-            query: str, documents: list, top_k: int = None, **kwargs
+            query: str, documents: list, top_n: int = None, **kwargs
         ):
             """Server rerank function with configuration from environment variables"""
             return await custom_rerank(
@@ -307,7 +307,7 @@ def create_app(args):
                 model=args.rerank_model,
                 base_url=args.rerank_binding_host,
                 api_key=args.rerank_binding_api_key,
-                top_k=top_k,
+                top_n=top_n,
                 **kwargs,
             )
 
