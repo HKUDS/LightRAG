@@ -480,8 +480,25 @@ async def _rebuild_knowledge_from_chunks(
             pipeline_status["latest_message"] = status_message
             pipeline_status["history_messages"].append(status_message)
 
-    # Execute all tasks in parallel with semaphore control
-    await asyncio.gather(*tasks)
+    # Execute all tasks in parallel with semaphore control and early failure detection
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+    # Check if any task raised an exception
+    for task in done:
+        if task.exception():
+            # If a task failed, cancel all pending tasks
+            for pending_task in pending:
+                pending_task.cancel()
+
+            # Wait for cancellation to complete
+            if pending:
+                await asyncio.wait(pending)
+
+            # Re-raise the exception to notify the caller
+            raise task.exception()
+
+    # If all tasks completed successfully, collect results
+    # (No need to collect results since these tasks don't return values)
 
     # Final status report
     status_message = f"KG rebuild completed: {rebuilt_entities_count} entities and {rebuilt_relationships_count} relationships rebuilt successfully."
@@ -1262,8 +1279,11 @@ async def merge_nodes_and_edges(
         async with semaphore:
             workspace = global_config.get("workspace", "")
             namespace = f"{workspace}:GraphDB" if workspace else "GraphDB"
+            # Sort the edge_key components to ensure consistent lock key generation
+            sorted_edge_key = sorted([edge_key[0], edge_key[1]])
+            logger.info(f"Processing edge: {sorted_edge_key[0]} - {sorted_edge_key[1]}")
             async with get_storage_keyed_lock(
-                f"{edge_key[0]}-{edge_key[1]}",
+                f"{sorted_edge_key[0]}-{sorted_edge_key[1]}",
                 namespace=namespace,
                 enable_logging=False,
             ):
@@ -1310,8 +1330,25 @@ async def merge_nodes_and_edges(
     for edge_key, edges in all_edges.items():
         tasks.append(asyncio.create_task(_locked_process_edges(edge_key, edges)))
 
-    # Execute all tasks in parallel with semaphore control
-    await asyncio.gather(*tasks)
+    # Execute all tasks in parallel with semaphore control and early failure detection
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+
+    # Check if any task raised an exception
+    for task in done:
+        if task.exception():
+            # If a task failed, cancel all pending tasks
+            for pending_task in pending:
+                pending_task.cancel()
+
+            # Wait for cancellation to complete
+            if pending:
+                await asyncio.wait(pending)
+
+            # Re-raise the exception to notify the caller
+            raise task.exception()
+
+    # If all tasks completed successfully, collect results
+    # (No need to collect results since these tasks don't return values)
 
 
 async def extract_entities(
