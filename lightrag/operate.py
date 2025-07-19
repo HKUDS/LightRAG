@@ -3165,7 +3165,7 @@ async def apply_rerank_if_enabled(
     retrieved_docs: list[dict],
     global_config: dict,
     enable_rerank: bool = True,
-    top_k: int = None,
+    top_n: int = None,
 ) -> list[dict]:
     """
     Apply reranking to retrieved documents if rerank is enabled.
@@ -3175,7 +3175,7 @@ async def apply_rerank_if_enabled(
         retrieved_docs: List of retrieved documents
         global_config: Global configuration containing rerank settings
         enable_rerank: Whether to enable reranking from query parameter
-        top_k: Number of top documents to return after reranking
+        top_n: Number of top documents to return after reranking
 
     Returns:
         Reranked documents if rerank is enabled, otherwise original documents
@@ -3192,18 +3192,18 @@ async def apply_rerank_if_enabled(
 
     try:
         logger.debug(
-            f"Applying rerank to {len(retrieved_docs)} documents, returning top {top_k}"
+            f"Applying rerank to {len(retrieved_docs)} documents, returning top {top_n}"
         )
 
         # Apply reranking - let rerank_model_func handle top_k internally
         reranked_docs = await rerank_func(
             query=query,
             documents=retrieved_docs,
-            top_k=top_k,
+            top_n=top_n,
         )
         if reranked_docs and len(reranked_docs) > 0:
-            if len(reranked_docs) > top_k:
-                reranked_docs = reranked_docs[:top_k]
+            if len(reranked_docs) > top_n:
+                reranked_docs = reranked_docs[:top_n]
             logger.info(
                 f"Successfully reranked {len(retrieved_docs)} documents to {len(reranked_docs)}"
             )
@@ -3263,7 +3263,7 @@ async def process_chunks_unified(
             retrieved_docs=unique_chunks,
             global_config=global_config,
             enable_rerank=query_param.enable_rerank,
-            top_k=rerank_top_k,
+            top_n=rerank_top_k,
         )
         logger.debug(f"Rerank: {len(unique_chunks)} chunks (source: {source_type})")
 
