@@ -73,6 +73,10 @@ class PostgreSQLDB:
                 max_size=self.max,
             )
 
+            # Ensure VECTOR extension is available
+            async with self.pool.acquire() as connection:
+                await self.configure_vector_extension(connection)
+
             logger.info(
                 f"PostgreSQL, Connected to database at {self.host}:{self.port}/{self.database}"
             )
@@ -81,6 +85,26 @@ class PostgreSQLDB:
                 f"PostgreSQL, Failed to connect database at {self.host}:{self.port}/{self.database}, Got:{e}"
             )
             raise
+
+    @staticmethod
+    async def configure_vector_extension(connection: asyncpg.Connection) -> None:
+        """Create VECTOR extension if it doesn't exist for vector similarity operations."""
+        try:
+            await connection.execute("CREATE EXTENSION IF NOT EXISTS vector")  # type: ignore
+            logger.info("VECTOR extension ensured for PostgreSQL")
+        except Exception as e:
+            logger.warning(f"Could not create VECTOR extension: {e}")
+            # Don't raise - let the system continue without vector extension
+
+    @staticmethod
+    async def configure_age_extension(connection: asyncpg.Connection) -> None:
+        """Create AGE extension if it doesn't exist for graph operations."""
+        try:
+            await connection.execute("CREATE EXTENSION IF NOT EXISTS age")  # type: ignore
+            logger.info("AGE extension ensured for PostgreSQL")
+        except Exception as e:
+            logger.warning(f"Could not create AGE extension: {e}")
+            # Don't raise - let the system continue without AGE extension
 
     @staticmethod
     async def configure_age(connection: asyncpg.Connection, graph_name: str) -> None:
@@ -1850,6 +1874,11 @@ class PGGraphStorage(BaseGraphStorage):
         logger.info(
             f"PostgreSQL Graph initialized: workspace='{self.workspace}', graph_name='{self.graph_name}'"
         )
+
+        # Create AGE extension and configure graph environment once at initialization
+        async with self.db.pool.acquire() as connection:
+            # First ensure AGE extension is created
+            await PostgreSQLDB.configure_age_extension(connection)
 
         # Execute each statement separately and ignore errors
         queries = [
