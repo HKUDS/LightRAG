@@ -1,4 +1,5 @@
-import os, time
+import os
+import time
 import asyncio
 import numpy as np
 from dataclasses import dataclass, field
@@ -11,7 +12,6 @@ from ..base import (
     BaseVectorStorage,
 )
 
-from ..namespace import NameSpace, is_namespace
 from ..utils import logger, compute_mdhash_id
 import pipmaster as pm
 
@@ -28,6 +28,7 @@ class ESClientManager:
     Manages singleton instance of AsyncElasticsearch client with thread-safe operations.
     Handles client initialization, release, index name sanitization, and index creation.
     """
+
     _client: AsyncElasticsearch | None = None
     _lock = asyncio.Lock()
 
@@ -36,7 +37,7 @@ class ESClientManager:
         """
         Get a singleton instance of AsyncElasticsearch client.
         Creates a new client if it doesn't exist, using environment variables for authentication.
-        
+
         Returns:
             AsyncElasticsearch: An instance of the Elasticsearch async client.
         """
@@ -67,10 +68,10 @@ class ESClientManager:
         """
         Sanitize index name to comply with Elasticsearch naming restrictions.
         Replaces invalid characters with underscores and converts to lowercase.
-        
+
         Args:
             name: Original index name to sanitize.
-        
+
         Returns:
             Sanitized index name suitable for Elasticsearch.
         """
@@ -78,14 +79,14 @@ class ESClientManager:
         for char in ["/", "\\", "*", "?", '"', "<", ">", "|", " ", ","]:
             sanitized = sanitized.replace(char, "_")
         return sanitized
-    
+
     @classmethod
     async def create_index_if_not_exist(
         cls, index_name: str, mapping: Dict[str, Any]
     ) -> None:
         """
         Asynchronously create an Elasticsearch index if it doesn't exist.
-        
+
         Args:
             index_name: Name of the index to create.
             mapping: Dictionary defining the index mapping (schema).
@@ -99,7 +100,8 @@ class ESClientManager:
         if not exists:
             # Create the index asynchronously if it does not exist
             await client.indices.create(index=safe_index_name, body=mapping)
-            logger.info(f"Created index: {index_name}")         
+            logger.info(f"Created index: {index_name}")
+
 
 @final
 @dataclass
@@ -108,6 +110,7 @@ class ESKVStorage(BaseKVStorage):
     Elasticsearch-based implementation of the BaseKVStorage interface.
     Provides key-value storage functionality using Elasticsearch indices.
     """
+
     es_client: AsyncElasticsearch = field(default=None)
     index_name: str = field(default=None)
 
@@ -124,21 +127,19 @@ class ESKVStorage(BaseKVStorage):
 
         if effective_workspace:
             self.namespace = f"{effective_workspace}_{self.namespace}"
-            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")       
+            logger.debug(f"Final namespace with workspace prefix: '{self.namespace}'")
 
         self.index_name = self.namespace
-    
+
     async def initialize(self):
         """
-        Initialize the KV storage. Retrieves the Elasticsearch client and creates the index 
+        Initialize the KV storage. Retrieves the Elasticsearch client and creates the index
         with appropriate mapping if it doesn't exist.
         """
         if self.es_client is None:
             self.es_client = await ESClientManager.get_client()
             kv_mapping = self.get_index_mapping()
-            await ESClientManager.create_index_if_not_exist(
-                self.index_name, kv_mapping
-            )
+            await ESClientManager.create_index_if_not_exist(self.index_name, kv_mapping)
 
     async def finalize(self):
         """
@@ -152,28 +153,28 @@ class ESKVStorage(BaseKVStorage):
         """
         Flatten an Elasticsearch document response into a simplified dictionary.
         Extracts document ID and metadata fields from the source.
-        
+
         Args:
             doc: Elasticsearch document response (including '_id' and '_source').
-        
+
         Returns:
             Flattened dictionary containing 'id', timestamps, and metadata fields.
         """
         source = doc["_source"]
         return {
-            "id": doc["_id"], 
+            "id": doc["_id"],
             "create_time": source.get("create_time", 0),
             "update_time": source.get("update_time", 0),
-            **source.get("meta", {})
+            **source.get("meta", {}),
         }
 
     async def get_by_id(self, id: str) -> Union[Dict[str, Any], None]:
         """
         Retrieve a document by its ID from the KV storage.
-        
+
         Args:
             id: Document ID to retrieve.
-        
+
         Returns:
             Flattened document data if found; None if the document does not exist.
         """
@@ -186,16 +187,16 @@ class ESKVStorage(BaseKVStorage):
     async def get_by_ids(self, ids: List[str]) -> List[Dict[str, Any]]:
         """
         Retrieve multiple documents by their IDs from the KV storage.
-        
+
         Args:
             ids: List of document IDs to retrieve.
-        
+
         Returns:
             List of flattened document data for found IDs (excludes non-existent IDs).
         """
         if not ids:
             return []
-            
+
         body = {"ids": ids}
         response = await self.es_client.mget(index=self.index_name, body=body)
         docs = []
@@ -208,25 +209,25 @@ class ESKVStorage(BaseKVStorage):
     async def filter_keys(self, keys: Set[str]) -> Set[str]:
         """
         Filter a set of keys to identify those that do NOT exist in the storage.
-        
+
         Args:
             keys: Set of keys to check for existence.
-        
+
         Returns:
             Subset of keys that are not found in the storage.
         """
         if not keys:
             return set()
-                
+
         body = {"ids": list(keys)}
         res = await self.es_client.mget(index=self.index_name, body=body)
         found_ids = {doc["_id"] for doc in res["docs"] if doc.get("found")}
         return keys - found_ids
-    
+
     async def get_all(self) -> dict[str, Any]:
         """
         Retrieve all documents from the KV storage using scroll API for large result sets.
-        
+
         Returns:
             Dictionary mapping document IDs to their flattened data.
         """
@@ -236,30 +237,30 @@ class ESKVStorage(BaseKVStorage):
             index=self.index_name,
             body={"query": {"match_all": {}}},
             scroll=scroll,
-            size=1000
+            size=1000,
         )
-        
+
         scroll_id = response.get("_scroll_id")
         while scroll_id:
             for hit in response["hits"]["hits"]:
                 doc_id = hit["_id"]
                 doc = self._flatten_es_doc(hit)
                 result[doc_id] = doc
-            
+
             response = await self.es_client.scroll(scroll_id=scroll_id, scroll=scroll)
             scroll_id = response.get("_scroll_id")
-        
+
         # Clear the scroll context to free resources
         if scroll_id:
             await self.es_client.clear_scroll(scroll_id=scroll_id)
-            
-        return result    
+
+        return result
 
     async def upsert(self, data: Dict[str, Dict[str, Any]]) -> None:
         """
         Insert or update multiple documents in bulk. Handles both new documents (insert)
         and existing documents (update) with timestamp tracking.
-        
+
         Args:
             data: Dictionary where keys are document IDs and values are metadata to store.
         """
@@ -276,13 +277,17 @@ class ESKVStorage(BaseKVStorage):
                     v["llm_cache_list"] = []
 
             # Extract metadata (exclude reserved fields like 'id')
-            meta_data = {key: value for key, value in v.items() if key not in ["id", "create_time", "update_time"]}
+            meta_data = {
+                key: value
+                for key, value in v.items()
+                if key not in ["id", "create_time", "update_time"]
+            }
 
             # Prepare bulk action: update if exists, insert (upsert) if not
             action = {
                 "_op_type": "update",
                 "_index": self.index_name,
-                "_id": k, 
+                "_id": k,
                 "doc": {
                     "update_time": current_time,
                     "meta": meta_data,
@@ -292,14 +297,14 @@ class ESKVStorage(BaseKVStorage):
                     "create_time": current_time,
                     "update_time": current_time,
                     "meta": meta_data,
-                }                
+                },
             }
 
             actions.append(action)
 
         # Execute bulk operation
         try:
-            await async_bulk(self.es_client, actions)
+            await async_bulk(self.es_client, actions, refresh="wait_for")
         except Exception as e:
             logger.error(f"Unexpected error during bulk upsert: {e}")
 
@@ -312,20 +317,16 @@ class ESKVStorage(BaseKVStorage):
     async def delete(self, ids: List[str]) -> None:
         """
         Delete multiple documents by their IDs from the KV storage.
-        
+
         Args:
             ids: List of document IDs to delete.
         """
         if not ids:
             return
-        
+
         # Prepare bulk delete actions
         actions = [
-            {
-                "_op_type": "delete",
-                "_index": self.index_name,
-                "_id": doc_id
-            }
+            {"_op_type": "delete", "_index": self.index_name, "_id": doc_id}
             for doc_id in ids
         ]
 
@@ -339,22 +340,21 @@ class ESKVStorage(BaseKVStorage):
         """
         Delete documents associated with specific modes (for LLM response cache).
         Matches documents using regex pattern on document IDs.
-        
+
         Args:
             modes: List of modes to filter documents for deletion.
-        
+
         Returns:
             True if deletion is successful; False if modes are not provided.
         """
         if not modes:
             return False
-        
+
         try:
             # Regex pattern: match IDs starting with any mode in the list
             pattern = f"({'|'.join(modes)}):.*"
             response = await self.es_client.delete_by_query(
-                index=self.index_name,
-                body={"query": {"regexp": {"_id": pattern}}}
+                index=self.index_name, body={"query": {"regexp": {"_id": pattern}}}
             )
             logger.info(f"Deleted {response['deleted']} documents by modes: {modes}")
             return True
@@ -365,13 +365,15 @@ class ESKVStorage(BaseKVStorage):
     async def drop(self) -> Dict[str, str]:
         """
         Delete all documents in the KV storage index.
-        
+
         Returns:
             Dictionary with 'status' (success/error) and 'message' describing the result.
         """
         try:
             await self.es_client.delete_by_query(
-                index=self.index_name, body={"query": {"match_all": {}}}
+                index=self.index_name,
+                body={"query": {"match_all": {}}},
+                wait_for_completion=True,
             )
             return {"status": "success", "message": "All documents deleted"}
         except Exception as e:
@@ -381,7 +383,7 @@ class ESKVStorage(BaseKVStorage):
         """
         Define the Elasticsearch index mapping for the KV storage.
         Enforces strict dynamic mapping and defines core fields.
-        
+
         Returns:
             Dictionary specifying the index mapping.
         """
@@ -389,22 +391,14 @@ class ESKVStorage(BaseKVStorage):
             "mappings": {
                 "dynamic": "strict",
                 "properties": {
-                    "id": {
-                        "type": "keyword"
-                    },
-                    "create_time": {
-                        "type": "long"
-                    },
-                    "update_time": {
-                        "type": "long"
-                    },
-                    "meta": {
-                        "type": "object",
-                        "dynamic": True
-                    },      
-                }
+                    "id": {"type": "keyword"},
+                    "create_time": {"type": "long"},
+                    "update_time": {"type": "long"},
+                    "meta": {"type": "object", "dynamic": True},
+                },
             }
         }
+
 
 @final
 @dataclass
@@ -413,6 +407,7 @@ class ESDocStatusStorage(DocStatusStorage):
     Elasticsearch-based implementation of the DocStatusStorage interface.
     Tracks document processing status (e.g., indexing state, chunk counts) using Elasticsearch.
     """
+
     es_client: AsyncElasticsearch = field(default=None)
     index_name: str = field(default=None)
 
@@ -458,10 +453,10 @@ class ESDocStatusStorage(DocStatusStorage):
     async def get_by_id(self, id: str) -> Union[Dict[str, Any], None]:
         """
         Retrieve a document's status by its ID.
-        
+
         Args:
             id: Document ID to retrieve status for.
-        
+
         Returns:
             Status data if found; None if the document status does not exist.
         """
@@ -475,16 +470,16 @@ class ESDocStatusStorage(DocStatusStorage):
     async def get_by_ids(self, ids: List[str]) -> List[Dict[str, Any]]:
         """
         Retrieve status data for multiple documents by their IDs.
-        
+
         Args:
             ids: List of document IDs.
-        
+
         Returns:
             List of status data dictionaries for found documents.
         """
         if not ids:
             return []
-                
+
         body = {"ids": ids}
         res = await self.es_client.mget(index=self.index_name, body=body)
         return [hit["_source"] for hit in res["docs"] if hit["found"]]
@@ -492,24 +487,26 @@ class ESDocStatusStorage(DocStatusStorage):
     async def filter_keys(self, data: Set[str]) -> Set[str]:
         """
         Filter a set of keys to identify those that do NOT exist in the storage.
-        
+
         Args:
             data: Set of keys to check for existence.
-        
+
         Returns:
             Subset of keys that are not found in the storage.
         """
         if not data:
             return set()
-                
-        response = await self.es_client.mget(index=self.index_name, ids=list(data), _source=False)
+
+        response = await self.es_client.mget(
+            index=self.index_name, ids=list(data), _source=False
+        )
         existing_ids = {hit["_id"] for hit in response["docs"] if hit["found"]}
         return data - existing_ids
 
     async def upsert(self, data: Dict[str, Dict[str, Any]]) -> None:
         """
         Insert or update document status data in bulk. Ensures 'chunks_list' is a list of strings.
-        
+
         Args:
             data: Dictionary where keys are document IDs and values are status metadata.
         """
@@ -527,33 +524,37 @@ class ESDocStatusStorage(DocStatusStorage):
             logger.info(f"Upserting doc {doc_id}: {doc_data}")
 
             # Prepare bulk action: update if exists, insert if not
-            actions.append({
-                "_op_type": "update",
-                "_index": self.index_name,
-                "_id": doc_id,
-                "doc": doc_data,
-                "doc_as_upsert": True  # Insert as new document if not exists
-            })
+            actions.append(
+                {
+                    "_op_type": "update",
+                    "_index": self.index_name,
+                    "_id": doc_id,
+                    "doc": doc_data,
+                    "doc_as_upsert": True,  # Insert as new document if not exists
+                }
+            )
 
         # Execute bulk operation
         try:
-            await async_bulk(self.es_client, actions)
+            await async_bulk(self.es_client, actions, refresh="wait_for")
         except BulkIndexError as e:
-            logger.error(f"BulkIndexError: {len(e.errors)} document(s) failed to index.")
+            logger.error(
+                f"BulkIndexError: {len(e.errors)} document(s) failed to index."
+            )
             for err in e.errors:
                 logger.error(f"Indexing error detail: {err}")
             raise
         except (ConnectionError, TransportError, RequestError) as e:
             logger.error(f"Elasticsearch error: {e}")
             raise
-        except Exception as e:
+        except Exception:
             logger.exception("Unexpected exception during Elasticsearch bulk upsert.")
             raise
 
     async def get_status_counts(self) -> Dict[str, int]:
         """
         Get the count of documents grouped by their processing status.
-        
+
         Returns:
             Dictionary with status values as keys and their respective counts as values.
         """
@@ -565,13 +566,13 @@ class ESDocStatusStorage(DocStatusStorage):
                     "status_counts": {
                         "terms": {
                             "field": "status.keyword",  # Use keyword sub-field for exact matches
-                            "size": 100  # Support up to 100 distinct statuses
+                            "size": 100,  # Support up to 100 distinct statuses
                         }
                     }
-                }
-            }
+                },
+            },
         )
-        
+
         counts = {}
         for bucket in response["aggregations"]["status_counts"]["buckets"]:
             counts[bucket["key"]] = bucket["doc_count"]
@@ -582,10 +583,10 @@ class ESDocStatusStorage(DocStatusStorage):
     ) -> Dict[str, DocProcessingStatus]:
         """
         Retrieve documents with a specific processing status.
-        
+
         Args:
             status: Target document status to filter by (from DocStatus enum).
-        
+
         Returns:
             Dictionary mapping document IDs to DocProcessingStatus objects.
         """
@@ -593,15 +594,15 @@ class ESDocStatusStorage(DocStatusStorage):
             index=self.index_name,
             body={
                 "query": {"term": {"status": status.value}},  # Match status enum value
-                "size": 1000  # Adjust based on expected result size
-            }
+                "size": 1000,  # Adjust based on expected result size
+            },
         )
-        
+
         result = {}
         for hit in response["hits"]["hits"]:
             doc_id = hit["_id"]
             doc_data = hit["_source"]
-            
+
             result[doc_id] = DocProcessingStatus(
                 content=doc_data.get("content", ""),
                 content_summary=doc_data.get("content_summary"),
@@ -611,7 +612,7 @@ class ESDocStatusStorage(DocStatusStorage):
                 updated_at=doc_data.get("updated_at"),
                 chunks_count=doc_data.get("chunks_count", -1),
                 file_path=doc_data.get("file_path", doc_id),
-                chunks_list=doc_data.get("chunks_list", [])
+                chunks_list=doc_data.get("chunks_list", []),
             )
         return result
 
@@ -624,13 +625,15 @@ class ESDocStatusStorage(DocStatusStorage):
     async def drop(self) -> Dict[str, str]:
         """
         Delete all documents in the status storage index.
-        
+
         Returns:
             Dictionary with 'status' (success/error) and 'message' describing the result.
         """
         try:
             await self.es_client.delete_by_query(
-                index=self.index_name, body={"query": {"match_all": {}}}
+                index=self.index_name,
+                body={"query": {"match_all": {}}},
+                wait_for_completion=True,
             )
             return {"status": "success", "message": "All documents deleted"}
         except Exception as e:
@@ -639,25 +642,23 @@ class ESDocStatusStorage(DocStatusStorage):
     async def delete(self, ids: list[str]) -> None:
         """
         Delete status records for multiple documents by their IDs.
-        
+
         Args:
             ids: List of document IDs to delete status records for.
         """
         if not ids:
             return
-            
+
         # Prepare bulk delete actions
         actions = [
-            {
-                "_op_type": "delete",
-                "_index": self.index_name,
-                "_id": doc_id
-            }
+            {"_op_type": "delete", "_index": self.index_name, "_id": doc_id}
             for doc_id in ids
         ]
-        
+
         try:
-            await async_bulk(self.es_client, actions, raise_on_error=False)
+            await async_bulk(
+                self.es_client, actions, refresh="wait_for", raise_on_error=False
+            )
             logger.debug(f"Deleted {len(ids)} doc statuses from {self.index_name}")
         except Exception as e:
             logger.error(f"Error deleting doc statuses: {e}")
@@ -666,16 +667,14 @@ class ESDocStatusStorage(DocStatusStorage):
         """
         Define the Elasticsearch index mapping for document status storage.
         Specifies field types for status tracking (e.g., dates, counts, lists).
-        
+
         Returns:
             Dictionary specifying the index mapping.
         """
         return {
             "mappings": {
                 "properties": {
-                    "id": {
-                        "type": "keyword"
-                    },
+                    "id": {"type": "keyword"},
                     "status": {
                         "type": "keyword"  # Exact matches for status filtering
                     },
@@ -702,10 +701,11 @@ class ESDocStatusStorage(DocStatusStorage):
                     },
                     "file_path": {
                         "type": "keyword"  # Path to source file (exact matches)
-                    }
+                    },
                 }
             }
         }
+
 
 @final
 @dataclass
@@ -715,9 +715,10 @@ class ESVectorDBStorage(BaseVectorStorage):
     Stores and queries vector embeddings using Elasticsearch's dense vector support,
     enabling similarity search for embeddings (e.g., text embeddings).
     """
+
     es_client: AsyncElasticsearch = field(default=None)
     index_name: str = field(default="", init=False)
-    embedding_dim: int = field(default=0, init=False)    
+    embedding_dim: int = field(default=0, init=False)
 
     def __post_init__(self):
         """
@@ -738,7 +739,7 @@ class ESVectorDBStorage(BaseVectorStorage):
 
         # Set index name for vector storage
         self.index_name = f"vector_{self.namespace}"
-        
+
         # Get embedding dimension from the embedding function
         self.embedding_dim = self.embedding_func.embedding_dim
 
@@ -746,7 +747,9 @@ class ESVectorDBStorage(BaseVectorStorage):
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
         if cosine_threshold is None:
-            raise ValueError("cosine_better_than_threshold must be specified in global config")
+            raise ValueError(
+                "cosine_better_than_threshold must be specified in global config"
+            )
         self.cosine_better_than_threshold = cosine_threshold
 
         # Set batch size for embedding generation
@@ -776,7 +779,7 @@ class ESVectorDBStorage(BaseVectorStorage):
         """
         Insert or update vector documents in bulk. Generates embeddings for content using
         the configured embedding function and stores them with metadata.
-        
+
         Args:
             data: Dictionary where keys are document IDs and values contain 'content' and metadata.
         """
@@ -784,7 +787,7 @@ class ESVectorDBStorage(BaseVectorStorage):
         if not data:
             return
 
-        current_time = int(time.time())        
+        current_time = int(time.time())
 
         # Extract content for embedding generation
         contents = [v["content"] for v in data.values()]
@@ -810,12 +813,14 @@ class ESVectorDBStorage(BaseVectorStorage):
                 "created_at": current_time,
                 "meta": {k: v for k, v in doc_data.items() if k in self.meta_fields},
             }
-            actions.append({
-                "_op_type": "index",  # Overwrite if exists (idempotent)
-                "_index": self.index_name, 
-                "_id": doc_id, 
-                "_source": doc
-            })
+            actions.append(
+                {
+                    "_op_type": "index",  # Overwrite if exists (idempotent)
+                    "_index": self.index_name,
+                    "_id": doc_id,
+                    "_source": doc,
+                }
+            )
 
         # Execute bulk insertion with refresh to make data immediately searchable
         await async_bulk(self.es_client, actions, refresh="wait_for")
@@ -826,12 +831,12 @@ class ESVectorDBStorage(BaseVectorStorage):
         """
         Perform a vector similarity search using a query text. Generates a query embedding,
         then finds the top-k most similar vectors in the storage.
-        
+
         Args:
             query: Input text to generate a query vector from.
             top_k: Number of top matching results to return.
             ids: Optional list of document IDs to filter the search (only return matches from this list).
-        
+
         Returns:
             List of matching documents with metadata, IDs, distances, and timestamps,
             filtered by the cosine similarity threshold.
@@ -879,7 +884,7 @@ class ESVectorDBStorage(BaseVectorStorage):
     async def delete(self, ids: list[str]) -> None:
         """
         Delete multiple vector documents by their IDs from the storage.
-        
+
         Args:
             ids: List of document IDs to delete.
         """
@@ -890,35 +895,37 @@ class ESVectorDBStorage(BaseVectorStorage):
         ids = list(ids)
 
         batches = [
-            ids[i : i + max_batch_size]
-            for i in range(0, len(ids), max_batch_size)
-        ]            
-        
+            ids[i : i + max_batch_size] for i in range(0, len(ids), max_batch_size)
+        ]
+
         for batch_index, batch_ids in enumerate(batches, start=1):
             # Prepare bulk delete actions
             actions = [
-                {
-                    "_op_type": "delete", 
-                    "_index": self.index_name, 
-                    "_id": doc_id
-                } 
+                {"_op_type": "delete", "_index": self.index_name, "_id": doc_id}
                 for doc_id in batch_ids
             ]
 
             try:
-                success, failed = await async_bulk(self.es_client, actions, refresh="wait_for", raise_on_error=False)
-                
+                success, failed = await async_bulk(
+                    self.es_client, actions, refresh="wait_for", raise_on_error=False
+                )
+
                 if failed:
                     for item in failed:
                         # Ignore 404 errors (document not found)
-                        if 'result' in item.get('delete', {}) and item['delete']['result'] == 'not_found':
+                        if (
+                            "result" in item.get("delete", {})
+                            and item["delete"]["result"] == "not_found"
+                        ):
                             continue
                             # logger.info(f"Document {item['delete']['_id']} not found, skipping deletion.")
                         else:
                             logger.error(f"Failure details: {item}")
                 else:
-                    logger.info(f"Successfully deleted {success} documents in batch {batch_index}.")
-            
+                    logger.info(
+                        f"Successfully deleted {success} documents in batch {batch_index}."
+                    )
+
             except Exception as e:
                 logger.error(f"Batch delete failed for batch {batch_index}: {e}")
 
@@ -926,7 +933,7 @@ class ESVectorDBStorage(BaseVectorStorage):
         """
         Delete a vector document associated with a specific entity name.
         The entity ID is generated using a hash of the entity name.
-        
+
         Args:
             entity_name: Name of the entity to delete (e.g., a named entity from text).
         """
@@ -934,7 +941,9 @@ class ESVectorDBStorage(BaseVectorStorage):
             # Generate entity ID using consistent hashing
             entity_id = compute_mdhash_id(entity_name, prefix="ent-")
             # Delete the document, ignoring 404 (not found) errors
-            response = await self.es_client.delete(index=self.index_name, id=entity_id, ignore=[404])
+            response = await self.es_client.delete(
+                index=self.index_name, id=entity_id, ignore=[404]
+            )
             if response["result"] == "deleted":
                 logger.debug(f"Successfully deleted entity {entity_name}")
             else:
@@ -946,7 +955,7 @@ class ESVectorDBStorage(BaseVectorStorage):
         """
         Delete all vector documents representing relations (edges) involving a specific entity.
         Matches documents where the entity is either the source or target in the metadata.
-        
+
         Args:
             entity_name: Name of the entity whose relations to delete.
         """
@@ -956,15 +965,22 @@ class ESVectorDBStorage(BaseVectorStorage):
                 "query": {
                     "bool": {
                         "should": [  # Logical OR
-                            {"term": {"meta.src_id.keyword": entity_name}},  # Entity is source
-                            {"term": {"meta.tgt_id.keyword": entity_name}},  # Entity is target
+                            {
+                                "term": {"meta.src_id.keyword": entity_name}
+                            },  # Entity is source
+                            {
+                                "term": {"meta.tgt_id.keyword": entity_name}
+                            },  # Entity is target
                         ]
                     }
                 }
             }
             # Delete all matching documents
             await self.es_client.delete_by_query(
-                index=self.index_name, body=query, refresh=True
+                index=self.index_name,
+                body=query,
+                refresh=True,
+                wait_for_completion=True,
             )
             logger.debug(f"Deleted relations for entity {entity_name}")
         except Exception as e:
@@ -973,19 +989,21 @@ class ESVectorDBStorage(BaseVectorStorage):
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         """
         Retrieve a vector document by its ID (excluding the raw vector to save bandwidth).
-        
+
         Args:
             id: Document ID to retrieve.
-        
+
         Returns:
             Document data with metadata, ID, and timestamps if found; None otherwise.
         """
         try:
             # Exclude 'vector' field to reduce payload size
-            result = await self.es_client.get(index=self.index_name, id=id, _source_excludes=["vector"])
+            result = await self.es_client.get(
+                index=self.index_name, id=id, _source_excludes=["vector"]
+            )
             if not result.get("found"):
                 return None
-            
+
             return {
                 "id": result["_id"],
                 "created_at": result["_source"].get("created_at"),
@@ -998,19 +1016,21 @@ class ESVectorDBStorage(BaseVectorStorage):
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
         """
         Retrieve multiple vector documents by their IDs (excluding raw vectors).
-        
+
         Args:
             ids: List of document IDs to retrieve.
-        
+
         Returns:
             List of document data for found IDs (excludes non-existent IDs).
         """
         if not ids:
             return []
-        
+
         try:
             # Exclude 'vector' field to reduce payload size
-            res = await self.es_client.mget(index=self.index_name, body={"ids": ids}, _source_excludes=["vector"])
+            res = await self.es_client.mget(
+                index=self.index_name, body={"ids": ids}, _source_excludes=["vector"]
+            )
             docs = res["docs"]
             results = []
             for doc in docs:
@@ -1031,7 +1051,7 @@ class ESVectorDBStorage(BaseVectorStorage):
         """
         Delete the entire vector index and recreate it with the same mapping.
         Useful for resetting the vector storage.
-        
+
         Returns:
             Dictionary with 'status' (success/error) and 'message' describing the result.
         """
@@ -1052,12 +1072,12 @@ class ESVectorDBStorage(BaseVectorStorage):
         except Exception as e:
             logger.error(f"Error dropping index {self.index_name}: {e}")
             return {"status": "error", "message": str(e)}
-        
+
     def get_index_mapping(self) -> Dict[str, Any]:
         """
         Define the Elasticsearch index mapping for vector storage.
         Includes a dense vector field with cosine similarity and metadata fields.
-        
+
         Returns:
             Dictionary specifying the index mapping.
         """
@@ -1073,7 +1093,10 @@ class ESVectorDBStorage(BaseVectorStorage):
                         "similarity": "cosine",  # Use cosine similarity
                     },
                     "created_at": {"type": "date"},  # Timestamp of creation
-                    "meta": {"type": "object", "dynamic": True},  # Metadata (dynamic fields)
-                }
+                    "meta": {
+                        "type": "object",
+                        "dynamic": True,
+                    },  # Metadata (dynamic fields)
+                },
             }
         }
