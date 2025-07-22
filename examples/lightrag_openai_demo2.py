@@ -1,5 +1,5 @@
-# run >python examples/lightrag_openai_demo.py 
-# DB: local file-based storage in the ./dickens/ directory
+# run >python examples/lightrag_openai_demo2.py 
+# DB: MongoDB for document storage + LightRAG processing
 
 import os
 import asyncio
@@ -9,8 +9,16 @@ from lightrag import LightRAG, QueryParam
 from lightrag.llm.openai import gpt_4o_mini_complete, openai_embed
 from lightrag.kg.shared_storage import initialize_pipeline_status
 from lightrag.utils import logger, set_verbose_debug
+import pymongo
+from pymongo import MongoClient
+from datetime import datetime
 
-WORKING_DIR = "./dickens"
+WORKING_DIR = "./dickens2"
+# Use MongoDB configuration from .env file
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+DB_NAME = "Story"  # Your Atlas database name
+COLLECTION_NAME = "book1"  # Your Atlas collection name
+WORKSPACE = os.getenv("MONGODB_WORKSPACE", "demo")
 
 
 def configure_logging():
@@ -80,6 +88,99 @@ if not os.path.exists(WORKING_DIR):
     os.mkdir(WORKING_DIR)
 
 
+def upload_document_to_db(file_path, document_name=None):
+    """Upload a document to MongoDB"""
+    try:
+        # Connect to MongoDB
+        client = MongoClient(MONGO_URI)
+        db = client[DB_NAME]
+        collection = db[COLLECTION_NAME]
+        
+        # Read the document
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        
+        # Create document record
+        doc_name = document_name or os.path.basename(file_path)
+        document = {
+            "name": doc_name,
+            "content": content,
+            "file_path": file_path,
+            "uploaded_at": datetime.now(),
+            "size": len(content)
+        }
+        
+        # Insert or update document
+        result = collection.replace_one(
+            {"name": doc_name}, 
+            document, 
+            upsert=True
+        )
+        
+        if result.upserted_id:
+            print(f"✅ Document '{doc_name}' uploaded to MongoDB (ID: {result.upserted_id})")
+        else:
+            print(f"✅ Document '{doc_name}' updated in MongoDB")
+            
+        client.close()
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error uploading document to MongoDB: {e}")
+        return False
+
+
+def retrieve_document_from_db(document_name):
+    """Retrieve a document from MongoDB"""
+    try:
+        # Connect to MongoDB
+        client = MongoClient(MONGO_URI)
+        db = client[DB_NAME]
+        collection = db[COLLECTION_NAME]
+        
+        # Find the document
+        document = collection.find_one({"name": document_name})
+        
+        if document:
+            print(f"✅ Retrieved document '{document_name}' from MongoDB")
+            print(f"   Size: {document['size']} characters")
+            print(f"   Uploaded: {document['uploaded_at']}")
+            client.close()
+            return document['content']
+        else:
+            print(f"❌ Document '{document_name}' not found in MongoDB")
+            client.close()
+            return None
+            
+    except Exception as e:
+        print(f"❌ Error retrieving document from MongoDB: {e}")
+        return None
+
+
+def list_documents_in_db():
+    """List all documents in MongoDB"""
+    try:
+        client = MongoClient(MONGO_URI)
+        db = client[DB_NAME]
+        collection = db[COLLECTION_NAME]
+        
+        documents = list(collection.find({}, {"name": 1, "size": 1, "uploaded_at": 1}))
+        
+        if documents:
+            print(f"\n📚 Documents in MongoDB ({len(documents)} found):")
+            for doc in documents:
+                print(f"   - {doc['name']} ({doc['size']} chars, uploaded: {doc['uploaded_at']})")
+        else:
+            print("📚 No documents found in MongoDB")
+            
+        client.close()
+        return documents
+        
+    except Exception as e:
+        print(f"❌ Error listing documents: {e}")
+        return []
+
+
 async def initialize_rag():
     rag = LightRAG(
         working_dir=WORKING_DIR,
@@ -104,7 +205,42 @@ async def main():
         return  # Exit the async function
 
     try:
-        # Clear old data files
+        print("\n🚀 Starting LightRAG Demo with MongoDB Document Storage")
+        print("=" * 60)
+        print(f"📊 MongoDB URI: {MONGO_URI}")
+        print(f"🗄️  Database: {DB_NAME}")
+        print(f"📁 Collection: {COLLECTION_NAME}")
+        print(f"🏷️  Workspace: {WORKSPACE}")
+        
+        # Step 1: Upload document to MongoDB
+        print("\n📤 STEP 1: Uploading document to MongoDB...")
+        document_name = "tale_of_two_cities.txt"
+        
+        if os.path.exists("./book.txt"):
+            upload_success = upload_document_to_db("./book.txt", document_name)
+            if not upload_success:
+                print("❌ Failed to upload document. Exiting...")
+                return
+        else:
+            print("❌ book.txt file not found. Please ensure it exists.")
+            return
+        
+        # Step 2: List documents in MongoDB
+        print("\n📋 STEP 2: Listing documents in MongoDB...")
+        list_documents_in_db()
+        
+        # Step 3: Retrieve document from MongoDB
+        print(f"\n📥 STEP 3: Retrieving document '{document_name}' from MongoDB...")
+        document_content = retrieve_document_from_db(document_name)
+        
+        if not document_content:
+            print("❌ Failed to retrieve document from MongoDB. Exiting...")
+            return
+        
+        print(f"✅ Successfully retrieved document ({len(document_content)} characters)")
+        
+        # Step 4: Clear old LightRAG data files
+        print("\n🧹 STEP 4: Clearing old LightRAG data files...")
         files_to_delete = [
             "graph_chunk_entity_relation.graphml",
             "kv_store_doc_status.json",
@@ -119,9 +255,10 @@ async def main():
             file_path = os.path.join(WORKING_DIR, file)
             if os.path.exists(file_path):
                 os.remove(file_path)
-                print(f"Deleting old file:: {file_path}")
+                print(f"🗑️  Deleted: {file_path}")
 
-        # Initialize RAG instance
+        # Step 5: Initialize LightRAG
+        print("\n⚡ STEP 5: Initializing LightRAG...")
         rag = await initialize_rag()
 
         # Test embedding function
@@ -134,8 +271,10 @@ async def main():
         print(f"Test dict: {test_text}")
         print(f"Detected embedding dimension: {embedding_dim}\n\n")
 
-        with open("./book.txt", "r", encoding="utf-8") as f:
-            await rag.ainsert(f.read())
+        # Step 6: Process document with LightRAG (using content from MongoDB)
+        print("🔄 STEP 6: Processing document with LightRAG...")
+        await rag.ainsert(document_content)
+        print("✅ Document processed and indexed by LightRAG")
 
         # Perform naive search
         print("\n=====================")
