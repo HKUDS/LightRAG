@@ -218,12 +218,12 @@ async def main():
     try:
         # Initialize RAG instance
         rag = await initialize_rag()
-        rag.insert("Your text")
+        await rag.ainsert("Your text")
 
         # Perform hybrid search
         mode = "hybrid"
         print(
-          await rag.query(
+          await rag.aquery(
               "What are the top themes in this story?",
               param=QueryParam(mode=mode)
           )
