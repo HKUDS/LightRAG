@@ -777,39 +777,6 @@ def truncate_list_by_token_size(
     return list_data
 
 
-def process_combine_contexts(*context_lists):
-    """
-    Combine multiple context lists and remove duplicate content
-
-    Args:
-        *context_lists: Any number of context lists
-
-    Returns:
-        Combined context list with duplicates removed
-    """
-    seen_content = {}
-    combined_data = []
-
-    # Iterate through all input context lists
-    for context_list in context_lists:
-        if not context_list:  # Skip empty lists
-            continue
-        for item in context_list:
-            content_dict = {
-                k: v for k, v in item.items() if k != "id" and k != "created_at"
-            }
-            content_key = tuple(sorted(content_dict.items()))
-            if content_key not in seen_content:
-                seen_content[content_key] = item
-                combined_data.append(item)
-
-    # Reassign IDs
-    for i, item in enumerate(combined_data):
-        item["id"] = str(i + 1)
-
-    return combined_data
-
-
 def cosine_similarity(v1, v2):
     """Calculate cosine similarity between two vectors"""
     dot_product = np.dot(v1, v2)
@@ -1671,6 +1638,86 @@ def check_storage_env_vars(storage_name: str) -> None:
             f"Storage implementation '{storage_name}' requires the following "
             f"environment variables: {', '.join(missing_vars)}"
         )
+
+
+def linear_gradient_weighted_polling(
+    entities_or_relations: list[dict],
+    max_related_chunks: int,
+    min_related_chunks: int = 1,
+) -> list[str]:
+    """
+    Linear gradient weighted polling algorithm for text chunk selection.
+
+    This algorithm ensures that entities/relations with higher importance get more text chunks,
+    forming a linear decreasing allocation pattern.
+
+    Args:
+        entities_or_relations: List of entities or relations sorted by importance (high to low)
+        max_related_chunks: Expected number of text chunks for the highest importance entity/relation
+        min_related_chunks: Expected number of text chunks for the lowest importance entity/relation
+
+    Returns:
+        List of selected text chunk IDs
+    """
+    if not entities_or_relations:
+        return []
+
+    n = len(entities_or_relations)
+    if n == 1:
+        # Only one entity/relation, return its first max_related_chunks text chunks
+        entity_chunks = entities_or_relations[0].get("sorted_chunks", [])
+        return entity_chunks[:max_related_chunks]
+
+    # Calculate expected text chunk count for each position (linear decrease)
+    expected_counts = []
+    for i in range(n):
+        # Linear interpolation: from max_related_chunks to min_related_chunks
+        ratio = i / (n - 1) if n > 1 else 0
+        expected = max_related_chunks - ratio * (
+            max_related_chunks - min_related_chunks
+        )
+        expected_counts.append(int(round(expected)))
+
+    # First round allocation: allocate by expected values
+    selected_chunks = []
+    used_counts = []  # Track number of chunks used by each entity
+    total_remaining = 0  # Accumulate remaining quotas
+
+    for i, entity_rel in enumerate(entities_or_relations):
+        entity_chunks = entity_rel.get("sorted_chunks", [])
+        expected = expected_counts[i]
+
+        # Actual allocatable count
+        actual = min(expected, len(entity_chunks))
+        selected_chunks.extend(entity_chunks[:actual])
+        used_counts.append(actual)
+
+        # Accumulate remaining quota
+        remaining = expected - actual
+        if remaining > 0:
+            total_remaining += remaining
+
+    # Second round allocation: multi-round scanning to allocate remaining quotas
+    for _ in range(total_remaining):
+        allocated = False
+
+        # Scan entities one by one, allocate one chunk when finding unused chunks
+        for i, entity_rel in enumerate(entities_or_relations):
+            entity_chunks = entity_rel.get("sorted_chunks", [])
+
+            # Check if there are still unused chunks
+            if used_counts[i] < len(entity_chunks):
+                # Allocate one chunk
+                selected_chunks.append(entity_chunks[used_counts[i]])
+                used_counts[i] += 1
+                allocated = True
+                break
+
+        # If no chunks were allocated in this round, all entities are exhausted
+        if not allocated:
+            break
+
+    return selected_chunks
 
 
 class TokenTracker:
