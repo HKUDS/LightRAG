@@ -2020,73 +2020,72 @@ async def _build_query_context(
 
     # Unified token control system - Apply precise token limits to entities and relations
     tokenizer = text_chunks_db.global_config.get("tokenizer")
-    if tokenizer:
-        # Get new token limits from query_param (with fallback to global_config)
-        max_entity_tokens = getattr(
-            query_param,
-            "max_entity_tokens",
-            text_chunks_db.global_config.get(
-                "max_entity_tokens", DEFAULT_MAX_ENTITY_TOKENS
-            ),
-        )
-        max_relation_tokens = getattr(
-            query_param,
-            "max_relation_tokens",
-            text_chunks_db.global_config.get(
-                "max_relation_tokens", DEFAULT_MAX_RELATION_TOKENS
-            ),
-        )
-        max_total_tokens = getattr(
-            query_param,
-            "max_total_tokens",
-            text_chunks_db.global_config.get(
-                "max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS
-            ),
-        )
+    # Get new token limits from query_param (with fallback to global_config)
+    max_entity_tokens = getattr(
+        query_param,
+        "max_entity_tokens",
+        text_chunks_db.global_config.get(
+            "max_entity_tokens", DEFAULT_MAX_ENTITY_TOKENS
+        ),
+    )
+    max_relation_tokens = getattr(
+        query_param,
+        "max_relation_tokens",
+        text_chunks_db.global_config.get(
+            "max_relation_tokens", DEFAULT_MAX_RELATION_TOKENS
+        ),
+    )
+    max_total_tokens = getattr(
+        query_param,
+        "max_total_tokens",
+        text_chunks_db.global_config.get(
+            "max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS
+        ),
+    )
 
-        # Truncate entities based on complete JSON serialization
-        if entities_context:
-            original_entity_count = len(entities_context)
+    # Truncate entities based on complete JSON serialization
+    if entities_context:
+        original_entity_count = len(entities_context)
 
-            # Process entities context to replace GRAPH_FIELD_SEP with : in file_path fields
-            for entity in entities_context:
-                if "file_path" in entity and entity["file_path"]:
-                    entity["file_path"] = entity["file_path"].replace(
-                        GRAPH_FIELD_SEP, ";"
-                    )
-
-            entities_context = truncate_list_by_token_size(
-                entities_context,
-                key=lambda x: json.dumps(x, ensure_ascii=False),
-                max_token_size=max_entity_tokens,
-                tokenizer=tokenizer,
-            )
-            if len(entities_context) < original_entity_count:
-                logger.debug(
-                    f"Truncated entities: {original_entity_count} -> {len(entities_context)} (entity max tokens: {max_entity_tokens})"
+        # Process entities context to replace GRAPH_FIELD_SEP with : in file_path fields
+        for entity in entities_context:
+            if "file_path" in entity and entity["file_path"]:
+                entity["file_path"] = entity["file_path"].replace(
+                    GRAPH_FIELD_SEP, ";"
                 )
 
-        # Truncate relations based on complete JSON serialization
-        if relations_context:
-            original_relation_count = len(relations_context)
-
-            # Process relations context to replace GRAPH_FIELD_SEP with : in file_path fields
-            for relation in relations_context:
-                if "file_path" in relation and relation["file_path"]:
-                    relation["file_path"] = relation["file_path"].replace(
-                        GRAPH_FIELD_SEP, ";"
-                    )
-
-            relations_context = truncate_list_by_token_size(
-                relations_context,
-                key=lambda x: json.dumps(x, ensure_ascii=False),
-                max_token_size=max_relation_tokens,
-                tokenizer=tokenizer,
+        entities_context = truncate_list_by_token_size(
+            entities_context,
+            key=lambda x: json.dumps(x, ensure_ascii=False),
+            max_token_size=max_entity_tokens,
+            tokenizer=tokenizer,
+        )
+        if len(entities_context) < original_entity_count:
+            logger.debug(
+                f"Truncated entities: {original_entity_count} -> {len(entities_context)} (entity max tokens: {max_entity_tokens})"
             )
-            if len(relations_context) < original_relation_count:
-                logger.debug(
-                    f"Truncated relations: {original_relation_count} -> {len(relations_context)} (relation max tokens: {max_relation_tokens})"
+
+    # Truncate relations based on complete JSON serialization
+    if relations_context:
+        original_relation_count = len(relations_context)
+
+        # Process relations context to replace GRAPH_FIELD_SEP with : in file_path fields
+        for relation in relations_context:
+            if "file_path" in relation and relation["file_path"]:
+                relation["file_path"] = relation["file_path"].replace(
+                    GRAPH_FIELD_SEP, ";"
                 )
+
+        relations_context = truncate_list_by_token_size(
+            relations_context,
+            key=lambda x: json.dumps(x, ensure_ascii=False),
+            max_token_size=max_relation_tokens,
+            tokenizer=tokenizer,
+        )
+        if len(relations_context) < original_relation_count:
+            logger.debug(
+                f"Truncated relations: {original_relation_count} -> {len(relations_context)} (relation max tokens: {max_relation_tokens})"
+            )
 
     # After truncation, get text chunks based on final entities and relations
     logger.info("Getting text chunks based on truncated entities and relations...")
@@ -2145,9 +2144,9 @@ async def _build_query_context(
             if chunks:
                 all_chunks.extend(chunks)
 
-    # Apply token processing to chunks if tokenizer is available
+    # Apply token processing to chunks
     text_units_context = []
-    if tokenizer and all_chunks:
+    if all_chunks:
         # Calculate dynamic token limit for text chunks
         entities_str = json.dumps(entities_context, ensure_ascii=False)
         relations_str = json.dumps(relations_context, ensure_ascii=False)
