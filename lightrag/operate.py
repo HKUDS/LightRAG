@@ -2048,9 +2048,7 @@ async def _build_query_context(
     max_total_tokens = getattr(
         query_param,
         "max_total_tokens",
-        text_chunks_db.global_config.get(
-            "max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS
-        ),
+        text_chunks_db.global_config.get("max_total_tokens", DEFAULT_MAX_TOTAL_TOKENS),
     )
 
     # Truncate entities based on complete JSON serialization
@@ -2060,9 +2058,7 @@ async def _build_query_context(
         # Process entities context to replace GRAPH_FIELD_SEP with : in file_path fields
         for entity in entities_context:
             if "file_path" in entity and entity["file_path"]:
-                entity["file_path"] = entity["file_path"].replace(
-                    GRAPH_FIELD_SEP, ";"
-                )
+                entity["file_path"] = entity["file_path"].replace(GRAPH_FIELD_SEP, ";")
 
         entities_context = truncate_list_by_token_size(
             entities_context,
