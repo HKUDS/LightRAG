@@ -1329,6 +1329,16 @@ async def merge_nodes_and_edges(
     for edge_key, edges in all_edges.items():
         tasks.append(asyncio.create_task(_locked_process_edges(edge_key, edges)))
 
+    # Check if there are any tasks to process
+    if not tasks:
+        log_message = f"No entities or relationships to process for {file_path}"
+        logger.info(log_message)
+        if pipeline_status_lock is not None:
+            async with pipeline_status_lock:
+                pipeline_status["latest_message"] = log_message
+                pipeline_status["history_messages"].append(log_message)
+        return
+
     # Execute all tasks in parallel with semaphore control and early failure detection
     done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
 
