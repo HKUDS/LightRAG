@@ -85,8 +85,10 @@ def verbose_debug(msg: str, *args, **kwargs):
             formatted_msg = msg
         # Then truncate the formatted message
         truncated_msg = (
-            formatted_msg[:100] + "..." if len(formatted_msg) > 100 else formatted_msg
+            formatted_msg[:150] + "..." if len(formatted_msg) > 150 else formatted_msg
         )
+        # Remove consecutive newlines
+        truncated_msg = re.sub(r"\n+", "\n", truncated_msg)
         logger.debug(truncated_msg, **kwargs)
 
 

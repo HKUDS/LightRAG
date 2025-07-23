@@ -2795,7 +2795,7 @@ async def _find_related_text_unit_from_relationships(
         # Extract chunk IDs from entity_chunks
         entity_chunk_ids = set()
         for chunk in entity_chunks:
-            chunk_id = chunk.get("chunk_id") or chunk.get("id")
+            chunk_id = chunk.get("chunk_id")
             if chunk_id:
                 entity_chunk_ids.add(chunk_id)
 
@@ -2808,7 +2808,7 @@ async def _find_related_text_unit_from_relationships(
         ]
 
         logger.debug(
-            f"Deduplication with entity chunks: {original_count} -> {len(selected_chunk_ids)} chunks "
+            f"Deduplication relation-chunks with entity-chunks: {original_count} -> {len(selected_chunk_ids)} chunks "
         )
 
         # Early return if no chunks remain after deduplication
