@@ -1855,6 +1855,8 @@ async def process_chunks_unified(
     if not unique_chunks:
         return []
 
+    origin_count = len(unique_chunks)
+
     # 1. Apply reranking if enabled and query is provided
     if query_param.enable_rerank and query and unique_chunks:
         rerank_top_k = query_param.chunk_top_k or len(unique_chunks)
@@ -1870,7 +1872,9 @@ async def process_chunks_unified(
     if query_param.chunk_top_k is not None and query_param.chunk_top_k > 0:
         if len(unique_chunks) > query_param.chunk_top_k:
             unique_chunks = unique_chunks[: query_param.chunk_top_k]
-        logger.info(f"Kept chunk_top-k: {len(unique_chunks)} chunks")
+        logger.info(
+            f"Kept chunk_top-k: {len(unique_chunks)} chunks (original: {origin_count})"
+        )
 
     # 3. Token-based final truncation
     tokenizer = global_config.get("tokenizer")
