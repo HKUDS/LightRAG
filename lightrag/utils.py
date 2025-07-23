@@ -1872,8 +1872,8 @@ async def process_chunks_unified(
     if query_param.chunk_top_k is not None and query_param.chunk_top_k > 0:
         if len(unique_chunks) > query_param.chunk_top_k:
             unique_chunks = unique_chunks[: query_param.chunk_top_k]
-        logger.info(
-            f"Kept chunk_top-k: {len(unique_chunks)} chunks (original: {origin_count})"
+        logger.debug(
+            f"Kept chunk_top-k: {len(unique_chunks)} chunks (deduplicated original: {origin_count})"
         )
 
     # 3. Token-based final truncation

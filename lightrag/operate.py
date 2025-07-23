@@ -2104,7 +2104,7 @@ async def _build_query_context(
             }
         )
 
-    logger.info(
+    logger.debug(
         f"Initial KG query results: {len(entities_context)} entities, {len(relations_context)} relations"
     )
 
