@@ -2211,16 +2211,7 @@ async def _build_query_context(
     merged_chunks = []
     seen_chunk_ids = set()
     max_len = max(len(vector_chunks), len(entity_chunks), len(relation_chunks))
-
-    logger.debug(
-        f"vector_chunks chunk_ids: {[chunk.get('chunk_id') or chunk.get('id') for chunk in vector_chunks]}"
-    )
-    logger.debug(
-        f"entity_chunks chunk_ids: {[chunk.get('chunk_id') or chunk.get('id') for chunk in entity_chunks]}"
-    )
-    logger.debug(
-        f"relation_chunks chunk_ids: {[chunk.get('chunk_id') or chunk.get('id') for chunk in relation_chunks]}"
-    )
+    origin_len = len(vector_chunks) + len(entity_chunks) + len(relation_chunks)
 
     for i in range(max_len):
         # Add from vector chunks first (Naive mode)
@@ -2262,7 +2253,9 @@ async def _build_query_context(
                     }
                 )
 
-    logger.debug(f"Round-robin merged: {len(merged_chunks)} total chunks")
+    logger.debug(
+        f"Round-robin merged total chunks from {origin_len} to {len(merged_chunks)}"
+    )
 
     # Apply token processing to merged chunks
     text_units_context = []
@@ -2534,8 +2527,11 @@ async def _find_most_related_text_unit_from_entities(
         entities_with_chunks, max_related_chunks, min_related_chunks=1
     )
 
+    logger.debug(
+        f"Found {len(selected_chunk_ids)} entity-related chunks using linear gradient weighted polling"
+    )
+
     if not selected_chunk_ids:
-        logger.warning("No chunks selected by linear gradient weighted polling")
         return []
 
     # Step 5: Batch retrieve chunk data
@@ -2553,9 +2549,6 @@ async def _find_most_related_text_unit_from_entities(
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
             result_chunks.append(chunk_data_copy)
 
-    logger.debug(
-        f"Found {len(result_chunks)} entity-related chunks using linear gradient weighted polling"
-    )
     return result_chunks
 
 
@@ -2787,6 +2780,9 @@ async def _find_related_text_unit_from_relationships(
         relations_with_chunks, max_related_chunks, min_related_chunks=1
     )
 
+    logger.debug(
+        f"Found {len(selected_chunk_ids)} relationship-related chunks using linear gradient weighted polling"
+    )
     logger.info(
         f"KG related chunks: {len(entity_chunks)} from entitys, {len(selected_chunk_ids)} from relations"
     )
@@ -2834,9 +2830,6 @@ async def _find_related_text_unit_from_relationships(
             chunk_data_copy["chunk_id"] = chunk_id  # Add chunk_id for deduplication
             result_chunks.append(chunk_data_copy)
 
-    logger.debug(
-        f"Found {len(result_chunks)} relationship-related chunks using linear gradient weighted polling"
-    )
     return result_chunks
 
 
@@ -3255,10 +3248,6 @@ async def apply_rerank_if_enabled(
         return retrieved_docs
 
     try:
-        logger.debug(
-            f"Applying rerank to {len(retrieved_docs)} documents, returning top {top_n}"
-        )
-
         # Apply reranking - let rerank_model_func handle top_k internally
         reranked_docs = await rerank_func(
             query=query,
