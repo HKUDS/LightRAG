@@ -7,8 +7,20 @@ import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException
 from pydantic import BaseModel
 
+from bson import ObjectId
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
+
+def convert_objectid(obj):
+    """Recursively convert ObjectId to str in dicts/lists."""
+    if isinstance(obj, ObjectId):
+        return str(obj)
+    elif isinstance(obj, dict):
+        return {k: convert_objectid(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_objectid(i) for i in obj]
+    else:
+        return obj
 
 router = APIRouter(tags=["graph"])
 
@@ -154,7 +166,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             return {
                 "status": "success",
                 "message": "Relation updated successfully",
-                "data": result,
+                "data": convert_objectid(result),
             }
         except ValueError as ve:
             logger.error(
