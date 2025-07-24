@@ -536,7 +536,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Load the collection if it's not already loaded
             # In Milvus, collections need to be loaded before they can be searched
             self._client.load_collection(self.namespace)
-            logger.debug(f"Collection {self.namespace} loaded successfully")
+            # logger.debug(f"Collection {self.namespace} loaded successfully")
 
         except Exception as e:
             logger.error(f"Failed to load collection {self.namespace}: {e}")
