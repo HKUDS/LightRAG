@@ -89,7 +89,13 @@ def create_app(args):
     ]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai", "jina"]:
+    if args.embedding_binding not in [
+        "lollms",
+        "ollama",
+        "openai",
+        "azure_openai",
+        "jina",
+    ]:
         raise Exception("embedding binding not supported")
 
     # Set default hosts if not provided

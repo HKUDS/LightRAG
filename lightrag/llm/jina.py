@@ -28,7 +28,7 @@ async def fetch_data(url, headers, data):
                     request_info=response.request_info,
                     history=response.history,
                     status=response.status,
-                    message=f"Jina API error: {error_text}"
+                    message=f"Jina API error: {error_text}",
                 )
             response_json = await response.json()
             data_list = response_json.get("data", [])
@@ -69,10 +69,10 @@ async def jina_embed(
     """
     if api_key:
         os.environ["JINA_API_KEY"] = api_key
-    
+
     if "JINA_API_KEY" not in os.environ:
         raise ValueError("JINA_API_KEY environment variable is required")
-    
+
     url = base_url or "https://api.jina.ai/v1/embeddings"
     headers = {
         "Content-Type": "application/json",
@@ -84,29 +84,35 @@ async def jina_embed(
         "dimensions": dimensions,
         "input": texts,
     }
-    
+
     # Only add optional parameters if they have non-default values
     if late_chunking:
         data["late_chunking"] = late_chunking
-    
-    logger.debug(f"Jina embedding request: {len(texts)} texts, dimensions: {dimensions}")
-    
+
+    logger.debug(
+        f"Jina embedding request: {len(texts)} texts, dimensions: {dimensions}"
+    )
+
     try:
         data_list = await fetch_data(url, headers, data)
-        
+
         if not data_list:
             logger.error("Jina API returned empty data list")
             raise ValueError("Jina API returned empty data list")
-        
+
         if len(data_list) != len(texts):
-            logger.error(f"Jina API returned {len(data_list)} embeddings for {len(texts)} texts")
-            raise ValueError(f"Jina API returned {len(data_list)} embeddings for {len(texts)} texts")
-        
+            logger.error(
+                f"Jina API returned {len(data_list)} embeddings for {len(texts)} texts"
+            )
+            raise ValueError(
+                f"Jina API returned {len(data_list)} embeddings for {len(texts)} texts"
+            )
+
         embeddings = np.array([dp["embedding"] for dp in data_list])
         logger.debug(f"Jina embeddings generated: shape {embeddings.shape}")
-        
+
         return embeddings
-        
+
     except Exception as e:
         logger.error(f"Jina embedding error: {e}")
         raise
