@@ -89,7 +89,13 @@ def create_app(args):
     ]:
         raise Exception("llm binding not supported")
 
-    if args.embedding_binding not in ["lollms", "ollama", "openai", "azure_openai"]:
+    if args.embedding_binding not in [
+        "lollms",
+        "ollama",
+        "openai",
+        "azure_openai",
+        "jina",
+    ]:
         raise Exception("embedding binding not supported")
 
     # Set default hosts if not provided
@@ -213,6 +219,8 @@ def create_app(args):
     if args.llm_binding_host == "openai-ollama" or args.embedding_binding == "ollama":
         from lightrag.llm.openai import openai_complete_if_cache
         from lightrag.llm.ollama import ollama_embed
+    if args.embedding_binding == "jina":
+        from lightrag.llm.jina import jina_embed
 
     async def openai_alike_model_complete(
         prompt,
@@ -284,6 +292,13 @@ def create_app(args):
             api_key=args.embedding_binding_api_key,
         )
         if args.embedding_binding == "azure_openai"
+        else jina_embed(
+            texts,
+            dimensions=args.embedding_dim,
+            base_url=args.embedding_binding_host,
+            api_key=args.embedding_binding_api_key,
+        )
+        if args.embedding_binding == "jina"
         else openai_embed(
             texts,
             model=args.embedding_model,
