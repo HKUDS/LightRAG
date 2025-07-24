@@ -118,7 +118,7 @@ const useSettingsStoreBase = create<SettingsState>()(
         only_need_context: false,
         only_need_prompt: false,
         stream: true,
-        history_turns: 3,
+        history_turns: 0,
         user_prompt: '',
         enable_rerank: true
       },
@@ -221,7 +221,7 @@ const useSettingsStoreBase = create<SettingsState>()(
             only_need_context: false,
             only_need_prompt: false,
             stream: true,
-            history_turns: 3,
+            history_turns: 0,
             hl_keywords: [],
             ll_keywords: []
           }
