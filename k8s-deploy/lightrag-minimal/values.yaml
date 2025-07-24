@@ -83,42 +83,54 @@ env:
   # Server configuration
   HOST: "0.0.0.0"
   PORT: "9621"
-  
+
   # Web UI configuration
-  WEBUI_TITLE: "Apolo Copilot - LightRAG"
+  WEBUI_TITLE: "LightRAG - Graph Knowledge Base"
   WEBUI_DESCRIPTION: "Simple and Fast Graph Based RAG System for Apolo Documentation"
-  
+
   # LLM configuration (OpenRouter)
   LLM_BINDING: "openai"
-  LLM_MODEL: "openai/o3-mini"
+  LLM_MODEL: "openai/gpt-4o"
   LLM_BINDING_HOST: "https://openrouter.ai/api/v1"
   # LLM_BINDING_API_KEY: Set via secret
-  
+  # OPENAI_API_KEY: Set via secret
+
   # Embedding configuration (Gemini)
   EMBEDDING_BINDING: "openai"
   EMBEDDING_MODEL: "gemini-embedding-001"
   EMBEDDING_DIM: "3072"
   EMBEDDING_BINDING_HOST: "https://generativelanguage.googleapis.com/v1beta/openai/"
   # EMBEDDING_BINDING_API_KEY: Set via secret
-  
+
   # Storage configuration - Minimal setup
   LIGHTRAG_KV_STORAGE: "PGKVStorage"
   LIGHTRAG_VECTOR_STORAGE: "PGVectorStorage"
   LIGHTRAG_DOC_STATUS_STORAGE: "PGDocStatusStorage"
-  LIGHTRAG_GRAPH_STORAGE: "NetworkXStorage"  # Local storage, no external DB needed
-  
+  LIGHTRAG_GRAPH_STORAGE: "NetworkXStorage" # Local storage, no external DB needed
+
   # PostgreSQL connection (internal service)
-  POSTGRES_HOST: "{{ include \"lightrag-minimal.fullname\" . }}-postgresql"
+  POSTGRES_HOST: '{{ include "lightrag-minimal.fullname" . }}-postgresql'
   POSTGRES_PORT: "5432"
   POSTGRES_USER: "lightrag_user"
   POSTGRES_DATABASE: "lightrag"
   POSTGRES_WORKSPACE: "default"
 
+  # LightRAG Processing Configuration
+  ENABLE_LLM_CACHE: true
+  ENABLE_LLM_CACHE_FOR_EXTRACT: true
+  TIMEOUT: 240
+  TEMPERATURE: 0
+  MAX_ASYNC: 4
+  MAX_TOKENS: 32768
+  CHUNK_SIZE: 1200
+  CHUNK_OVERLAP_SIZE: 100
+  TOP_K: 60
+
 # Secret configuration for API keys
 secrets:
   # Create a secret with your OpenAI API key
-  openaiApiKey: ""  # Set this or create manually
-  
+  openaiApiKey: "" # Set this or create manually
+
 # Node selector and affinity
 nodeSelector: {}
 tolerations: []

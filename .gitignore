@@ -15,8 +15,9 @@ rag_storage_test/
 .venv/
 env/
 venv/
-*.env*
-.env_example
+.env*
+!.env.template
+
 
 # Build / Distribution
 dist/
