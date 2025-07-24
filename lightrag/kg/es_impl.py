@@ -304,7 +304,7 @@ class ESKVStorage(BaseKVStorage):
 
         # Execute bulk operation
         try:
-            await async_bulk(self.es_client, actions)
+            await async_bulk(self.es_client, actions, refresh="wait_for")
         except Exception as e:
             logger.error(f"Unexpected error during bulk upsert: {e}")
 
@@ -371,7 +371,9 @@ class ESKVStorage(BaseKVStorage):
         """
         try:
             await self.es_client.delete_by_query(
-                index=self.index_name, body={"query": {"match_all": {}}}
+                index=self.index_name, 
+                body={"query": {"match_all": {}}},
+                wait_for_completion=True
             )
             return {"status": "success", "message": "All documents deleted"}
         except Exception as e:
@@ -534,7 +536,7 @@ class ESDocStatusStorage(DocStatusStorage):
 
         # Execute bulk operation
         try:
-            await async_bulk(self.es_client, actions)
+            await async_bulk(self.es_client, actions, refresh="wait_for")
         except BulkIndexError as e:
             logger.error(
                 f"BulkIndexError: {len(e.errors)} document(s) failed to index."
@@ -629,7 +631,9 @@ class ESDocStatusStorage(DocStatusStorage):
         """
         try:
             await self.es_client.delete_by_query(
-                index=self.index_name, body={"query": {"match_all": {}}}
+                index=self.index_name, 
+                body={"query": {"match_all": {}}},
+                wait_for_completion=True
             )
             return {"status": "success", "message": "All documents deleted"}
         except Exception as e:
@@ -652,7 +656,7 @@ class ESDocStatusStorage(DocStatusStorage):
         ]
 
         try:
-            await async_bulk(self.es_client, actions, raise_on_error=False)
+            await async_bulk(self.es_client, actions, refresh="wait_for", raise_on_error=False)
             logger.debug(f"Deleted {len(ids)} doc statuses from {self.index_name}")
         except Exception as e:
             logger.error(f"Error deleting doc statuses: {e}")
@@ -971,7 +975,10 @@ class ESVectorDBStorage(BaseVectorStorage):
             }
             # Delete all matching documents
             await self.es_client.delete_by_query(
-                index=self.index_name, body=query, refresh=True
+                index=self.index_name, 
+                body=query, 
+                refresh=True,
+                wait_for_completion=True
             )
             logger.debug(f"Deleted relations for entity {entity_name}")
         except Exception as e:
