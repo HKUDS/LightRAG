@@ -80,7 +80,7 @@ class PostgreSQLDB:
         if ssl_mode in ["disable", "allow", "prefer", "require"]:
             if ssl_mode == "disable":
                 return None
-            elif ssl_mode in ["require", "prefer"]:
+            elif ssl_mode in ["require", "prefer", "allow"]:
                 # Return None for simple SSL requirement, handled in initdb
                 return None
 
