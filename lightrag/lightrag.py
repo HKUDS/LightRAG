@@ -548,7 +548,7 @@ class LightRAG:
             await asyncio.gather(*tasks)
 
             self._storages_status = StoragesStatus.INITIALIZED
-            logger.debug("Initialized Storages")
+            logger.debug("All storage types initialized")
 
     async def finalize_storages(self):
         """Asynchronously finalize the storages"""
