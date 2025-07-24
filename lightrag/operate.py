@@ -46,6 +46,7 @@ from .constants import (
 from .kg.shared_storage import get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
+from .duplicate import LLMBasedCleaning
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -1195,6 +1196,7 @@ async def merge_nodes_and_edges(
     current_file_number: int = 0,
     total_files: int = 0,
     file_path: str = "unknown_source",
+    rag = None,
 ) -> None:
     """Merge nodes and edges from extraction results
 
@@ -1318,12 +1320,14 @@ async def merge_nodes_and_edges(
 
     # Create a single task queue for both entities and edges
     tasks = []
+    entity_task_indices = []
 
     # Add entity processing tasks
     for entity_name, entities in all_nodes.items():
         tasks.append(
             asyncio.create_task(_locked_process_entity_name(entity_name, entities))
         )
+        entity_task_indices.append(len(tasks) - 1)
 
     # Add edge processing tasks
     for edge_key, edges in all_edges.items():
@@ -1355,7 +1359,25 @@ async def merge_nodes_and_edges(
 
             # Re-raise the exception to notify the caller
             raise task.exception()
-
+        
+    # Collect base_merged nodes results
+    entities_data = []
+    for i in entity_task_indices:
+        task = tasks[i]
+        if task.done() and not task.exception():
+            entity_data = task.result()
+            if entity_data is not None:
+                entities_data.append(entity_data)
+                
+    # Samplified deduplication strategy using LLM-based cleaning
+    deduplication_strategy = LLMBasedCleaning(rag, entities_data, global_config)
+    
+    # Classify nodes by similarity using the deduplication strategy
+    nodes_batches_clean = await deduplication_strategy.classify_nodes_by_similarity(entities_data)
+    
+    # Clean nodes using the deduplication strategy
+    await deduplication_strategy.clean_nodes(nodes_batches_clean)
+    
     # If all tasks completed successfully, collect results
     # (No need to collect results since these tasks don't return values)
 

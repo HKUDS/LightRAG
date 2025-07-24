@@ -31,6 +31,7 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_CLEAN_SPLIT_BATCH_SIZE,
 )
 from lightrag.utils import get_env_value
 
@@ -181,6 +182,17 @@ class LightRAG:
             "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
         )
     )
+
+    clean_split_batch_model: str = field(default="paraphrase-multilingual-MiniLM-L12-v2")
+    """Model name used for cleaning text. Support SentenceTransformer's model. Defaults to `paraphrase-multilingual-MiniLM-L12-v2`"""
+
+    clean_split_batch_size: int = field(
+        default=get_env_value("CLEAN_SPLIT_BATCH_SIZE", DEFAULT_CLEAN_SPLIT_BATCH_SIZE, int)
+    )
+    """The number of keywords to classify in each batch during deduplication."""
+
+    clean_system_prompt: str = field(default=None)
+    """System prompt for cleaning text."""
 
     # Text chunking
     # ---
@@ -1144,6 +1156,7 @@ class LightRAG:
                                     current_file_number=current_file_number,
                                     total_files=total_files,
                                     file_path=file_path,
+                                    rag=self,
                                 )
 
                                 await self.doc_status.upsert(

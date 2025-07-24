@@ -353,3 +353,47 @@ Similarity score criteria:
 0.5: Partially related and answer needs modification to be used
 Return only a number between 0-1, without any additional content.
 """
+
+PROMPTS["goal_clean"] = """
+---Goal---
+    You are a knowledge point filtering and merging assistant. You will strictly output according to the specified format.
+    Merge duplicate or similar knowledge points.
+    Merge similar knowledge points under the same broad category into one summarized knowledge point, making it suitable as a major node in a knowledge graph.
+
+---Format Requirements---
+    "merge" section: 
+        - "summary": Name of the summarized knowledge point
+        - "keywords": Selected knowledge points to be merged (from input)
+
+---Important Notes---
+    1. "keywords" must ONLY be selected from input. Do NOT create new nodes. Must contain ≥2 elements.
+    2. Keep "summary" concise.
+    3. Must output in JSON format, do not add any extra content.
+    4. Output null if no merging is needed.
+"""
+
+PROMPTS["goal_clean_examples"] = """
+--- Examples---
+    {
+    "merge": [
+        {
+        "summary": "Quicksort",
+        "keywords": [
+            "Quicksort",
+            "Pivot element",
+            "Pivot selection",
+            "Recursive algorithm",
+            "Quicksort runtime"
+        ]
+        },
+        {
+        "summary": "Heapsort",
+        "keywords": [
+            "Heapsort",
+            "Binary heap construction",
+            "Delete minimum element"
+        ]
+        }
+    ]
+    }
+"""
