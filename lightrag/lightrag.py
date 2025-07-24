@@ -605,9 +605,28 @@ class LightRAG:
         )
 
     def _get_storage_class(self, storage_name: str) -> Callable[..., Any]:
-        import_path = STORAGES[storage_name]
-        storage_class = lazy_external_import(import_path, storage_name)
-        return storage_class
+        # Direct imports for default storage implementations
+        if storage_name == "JsonKVStorage":
+            from lightrag.kg.json_kv_impl import JsonKVStorage
+
+            return JsonKVStorage
+        elif storage_name == "NanoVectorDBStorage":
+            from lightrag.kg.nano_vector_db_impl import NanoVectorDBStorage
+
+            return NanoVectorDBStorage
+        elif storage_name == "NetworkXStorage":
+            from lightrag.kg.networkx_impl import NetworkXStorage
+
+            return NetworkXStorage
+        elif storage_name == "JsonDocStatusStorage":
+            from lightrag.kg.json_doc_status_impl import JsonDocStatusStorage
+
+            return JsonDocStatusStorage
+        else:
+            # Fallback to dynamic import for other storage implementations
+            import_path = STORAGES[storage_name]
+            storage_class = lazy_external_import(import_path, storage_name)
+            return storage_class
 
     def insert(
         self,

@@ -25,6 +25,8 @@ dependencies = [
     "configparser",
     "dotenv",
     "future",
+    "nano-vectordb",
+    "networkx",
     "numpy",
     "pandas>=2.0.0",
     "pipmaster",
