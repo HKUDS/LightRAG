@@ -1,5 +1,19 @@
 """
 LightRAG meets Amazon Bedrock ⛰️
+=========================================================================
+Currently, the script does not save any new data to disk. 
+All vector database operations are performed in memory, and no new files are created or updated in the dickens/ directory. 
+Once the script finishes running, any inserted or processed data is lost. 
+To persist data to disk, you need to add an explicit save or index completion call after data insertion.
+
+if got error (dimension) may try to set: 
+> move rag_storage\\vdb_chunks.json rag_storage\\vdb_chunks.json.bak
+> move rag_storage\\vdb_entities.json rag_storage\\vdb_entities.json.bak
+> move dickens\\vdb_chunks.json dickens\\vdb_chunks.json.bak
+> move dickens\\vdb_entities.json dickens\\vdb_entities.json.bak
+> move dickens\\vdb_relationships.json dickens\\vdb_relationships.json.bak
+
+
 """
 
 import os
