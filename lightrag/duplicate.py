@@ -220,7 +220,12 @@ class LLMBasedCleaning(BaseDeduplicationStrategy):
             logger.info("Scattered knowledge points < max cluster size, added directly")
         else:
             batcher_labels_isolated = SemanticClusterBatcher(
-                TARGET_SIZE, MAX_SIZE, MIN_SIZE
+                TARGET_SIZE,
+                MAX_SIZE,
+                MIN_SIZE,
+                self.param.get(
+                    "clean_split_batch_model", "paraphrase-multilingual-MiniLM-L12-v2"
+                ),
             )
             splited_long_isolated = batcher_labels_isolated.cluster_and_batch(
                 combined_short_KP
