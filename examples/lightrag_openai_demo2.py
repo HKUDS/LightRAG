@@ -13,6 +13,9 @@ import pymongo
 from pymongo import MongoClient
 from datetime import datetime
 
+os.environ["OPENAI_API_KEY"] = os.environ.get("LLM_BINDING_API_KEY", "")
+
+
 WORKING_DIR = "./dickens2"
 # Use MongoDB configuration from .env file
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
