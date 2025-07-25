@@ -1196,7 +1196,7 @@ async def merge_nodes_and_edges(
     current_file_number: int = 0,
     total_files: int = 0,
     file_path: str = "unknown_source",
-    rag = None,
+    rag=None,
 ) -> None:
     """Merge nodes and edges from extraction results
 
@@ -1359,7 +1359,7 @@ async def merge_nodes_and_edges(
 
             # Re-raise the exception to notify the caller
             raise task.exception()
-        
+
     # Collect base_merged nodes results
     entities_data = []
     for i in entity_task_indices:
@@ -1368,16 +1368,18 @@ async def merge_nodes_and_edges(
             entity_data = task.result()
             if entity_data is not None:
                 entities_data.append(entity_data)
-                
+
     # Samplified deduplication strategy using LLM-based cleaning
     deduplication_strategy = LLMBasedCleaning(rag, entities_data, global_config)
-    
+
     # Classify nodes by similarity using the deduplication strategy
-    nodes_batches_clean = await deduplication_strategy.classify_nodes_by_similarity(entities_data)
-    
+    nodes_batches_clean = await deduplication_strategy.classify_nodes_by_similarity(
+        entities_data
+    )
+
     # Clean nodes using the deduplication strategy
     await deduplication_strategy.clean_nodes(nodes_batches_clean)
-    
+
     # If all tasks completed successfully, collect results
     # (No need to collect results since these tasks don't return values)
 

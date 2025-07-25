@@ -183,11 +183,15 @@ class LightRAG:
         )
     )
 
-    clean_split_batch_model: str = field(default="paraphrase-multilingual-MiniLM-L12-v2")
+    clean_split_batch_model: str = field(
+        default="paraphrase-multilingual-MiniLM-L12-v2"
+    )
     """Model name used for cleaning text. Support SentenceTransformer's model. Defaults to `paraphrase-multilingual-MiniLM-L12-v2`"""
 
     clean_split_batch_size: int = field(
-        default=get_env_value("CLEAN_SPLIT_BATCH_SIZE", DEFAULT_CLEAN_SPLIT_BATCH_SIZE, int)
+        default=get_env_value(
+            "CLEAN_SPLIT_BATCH_SIZE", DEFAULT_CLEAN_SPLIT_BATCH_SIZE, int
+        )
     )
     """The number of keywords to classify in each batch during deduplication."""
 

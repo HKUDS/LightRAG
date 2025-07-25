@@ -361,7 +361,7 @@ PROMPTS["goal_clean"] = """
     Merge similar knowledge points under the same broad category into one summarized knowledge point, making it suitable as a major node in a knowledge graph.
 
 ---Format Requirements---
-    "merge" section: 
+    "merge" section:
         - "summary": Name of the summarized knowledge point
         - "keywords": Selected knowledge points to be merged (from input)
 
