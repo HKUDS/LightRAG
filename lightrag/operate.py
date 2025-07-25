@@ -968,16 +968,7 @@ async def _merge_nodes_then_upsert(
     source_id = GRAPH_FIELD_SEP.join(
         set([dp["source_id"] for dp in nodes_data] + already_source_ids)
     )
-    file_path = GRAPH_FIELD_SEP.join(
-        set(
-            [
-                dp.get("file_path", "unknown_source")
-                for dp in nodes_data
-                if dp.get("file_path")
-            ]
-            + [fp for fp in already_file_paths if fp]
-        )
-    )
+    file_path = build_file_path(already_file_paths, nodes_data, entity_name)
 
     force_llm_summary_on_merge = global_config["force_llm_summary_on_merge"]
 
@@ -3139,6 +3130,46 @@ async def kg_query_with_keywords(
             )
 
     return response
+
+
+def build_file_path(already_file_paths, data_list, target):
+    # set: deduplication
+    file_paths_set = {fp for fp in already_file_paths if fp}
+
+    # string: deduplication sorted
+    file_paths = GRAPH_FIELD_SEP.join(
+        list(dict.fromkeys(fp for fp in already_file_paths if fp))
+    )
+    # ignored file_paths
+    file_paths_ignore = ""
+    # add file_paths
+    for dp in data_list:
+        cur_file_path = dp.get("file_path")
+        # empty
+        if not cur_file_path:
+            continue
+
+        # skip duplicate item
+        if cur_file_path in file_paths_set:
+            continue
+        # add
+        file_paths_set.add(cur_file_path)
+
+        # check the length
+        if len(file_paths) + len(GRAPH_FIELD_SEP + cur_file_path) < 4090:
+            # append
+            file_paths += (
+                GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
+            )
+        else:
+            # ignore
+            file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
+
+    if file_paths_ignore:
+        print(
+            f"length of varchar field file_path exceeds max length target={target} ignore={file_paths_ignore}"
+        )
+    return file_paths
 
 
 # TODO: Deprecated, use user_prompt in QueryParam instead
