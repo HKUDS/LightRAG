@@ -26,6 +26,9 @@ DEFAULT_RELATED_CHUNK_NUMBER = 5
 # Separator for graph fields
 GRAPH_FIELD_SEP = "<SEP>"
 
+# File path configuration for vector and graph database
+DEFAULT_MAX_FILE_PATH_LENGTH = 4090
+
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB
 DEFAULT_LOG_BACKUP_COUNT = 5  # Default 5 backups

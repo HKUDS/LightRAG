@@ -43,6 +43,7 @@ from .constants import (
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_MAX_FILE_PATH_LENGTH,
 )
 from .kg.shared_storage import get_storage_keyed_lock
 import time
@@ -3154,7 +3155,10 @@ def build_file_path(already_file_paths, data_list, target):
         file_paths_set.add(cur_file_path)
 
         # check the length
-        if len(file_paths) + len(GRAPH_FIELD_SEP + cur_file_path) < 4090:
+        if (
+            len(file_paths) + len(GRAPH_FIELD_SEP + cur_file_path)
+            < DEFAULT_MAX_FILE_PATH_LENGTH
+        ):
             # append
             file_paths += (
                 GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path

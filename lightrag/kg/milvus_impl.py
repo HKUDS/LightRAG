@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
+from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
@@ -47,7 +48,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=4090,
+                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
                     nullable=True,
                 ),
             ]
@@ -64,7 +65,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 FieldSchema(
                     name="file_path",
                     dtype=DataType.VARCHAR,
-                    max_length=4090,
+                    max_length=DEFAULT_MAX_FILE_PATH_LENGTH,
                     nullable=True,
                 ),
             ]
