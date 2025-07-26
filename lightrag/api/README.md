@@ -54,8 +54,6 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-4o
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-### Max tokens sent to LLM (less than model context size)
-MAX_TOKENS=32768
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
@@ -71,8 +69,6 @@ LLM_BINDING=ollama
 LLM_MODEL=mistral-nemo:latest
 LLM_BINDING_HOST=http://localhost:11434
 # LLM_BINDING_API_KEY=your_api_key
-### Max tokens sent to LLM for entity relation description summarization (Less than LLM context length)
-MAX_TOKENS=7500
 ###  Ollama Server context length
 OLLAMA_NUM_CTX=8192
 
@@ -478,7 +474,6 @@ MAX_PARALLEL_INSERT=2
 TIMEOUT=200
 TEMPERATURE=0.0
 MAX_ASYNC=4
-MAX_TOKENS=32768
 
 LLM_BINDING=openai
 LLM_MODEL=gpt-4o-mini

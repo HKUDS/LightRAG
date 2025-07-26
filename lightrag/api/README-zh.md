@@ -54,8 +54,6 @@ LLM_BINDING=openai
 LLM_MODEL=gpt-4o
 LLM_BINDING_HOST=https://api.openai.com/v1
 LLM_BINDING_API_KEY=your_api_key
-### 发送给 LLM 进行实体关系摘要的最大 token 数（小于模型上下文大小）
-MAX_TOKENS=32000
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
@@ -71,8 +69,6 @@ LLM_BINDING=ollama
 LLM_MODEL=mistral-nemo:latest
 LLM_BINDING_HOST=http://localhost:11434
 # LLM_BINDING_API_KEY=your_api_key
-### 发送给 LLM 进行实体关系摘要的最大 token 数（小于模型上下文大小）
-MAX_TOKENS=7500
 ###  Ollama 服务器上下文 token 数（基于您的 Ollama 服务器容量）
 OLLAMA_NUM_CTX=8192
 
@@ -474,7 +470,6 @@ MAX_PARALLEL_INSERT=2
 TIMEOUT=200
 TEMPERATURE=0.0
 MAX_ASYNC=4
-MAX_TOKENS=32768
 
 LLM_BINDING=openai
 LLM_MODEL=gpt-4o-mini
