@@ -4,21 +4,9 @@ import { webuiPrefix } from '@/lib/constants'
 import react from '@vitejs/plugin-react-swc'
 import tailwindcss from '@tailwindcss/vite'
 
-// A custom Vite plugin to add cache-control headers to index.html
-const noCachePlugin = () => ({
-  name: 'no-cache',
-  transformIndexHtml(html: string) {
-    const cacheControlMeta = `
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-    <meta http-equiv="Pragma" content="no-cache" />
-    <meta http-equiv="Expires" content="0" />`;
-    return html.replace('</head>', `${cacheControlMeta}\n</head>`);
-  },
-});
-
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react(), tailwindcss(), noCachePlugin()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src')
