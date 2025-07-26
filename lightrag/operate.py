@@ -28,6 +28,7 @@ from .utils import (
     remove_think_tags,
     linear_gradient_weighted_polling,
     process_chunks_unified,
+    build_file_path,
 )
 from .base import (
     BaseGraphStorage,
@@ -43,7 +44,6 @@ from .constants import (
     DEFAULT_MAX_RELATION_TOKENS,
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_MAX_FILE_PATH_LENGTH,
 )
 from .kg.shared_storage import get_storage_keyed_lock
 import time
@@ -3131,47 +3131,6 @@ async def kg_query_with_keywords(
             )
 
     return response
-
-
-def build_file_path(already_file_paths, data_list, target):
-    # set: deduplication
-    file_paths_set = {fp for fp in already_file_paths if fp}
-
-    # string: filter empty value and keep file order in already_file_paths
-    file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
-    # ignored file_paths
-    file_paths_ignore = ""
-    # add file_paths
-    for dp in data_list:
-        cur_file_path = dp.get("file_path")
-        # empty
-        if not cur_file_path:
-            continue
-
-        # skip duplicate item
-        if cur_file_path in file_paths_set:
-            continue
-        # add
-        file_paths_set.add(cur_file_path)
-
-        # check the length
-        if (
-            len(file_paths) + len(GRAPH_FIELD_SEP + cur_file_path)
-            < DEFAULT_MAX_FILE_PATH_LENGTH
-        ):
-            # append
-            file_paths += (
-                GRAPH_FIELD_SEP + cur_file_path if file_paths else cur_file_path
-            )
-        else:
-            # ignore
-            file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
-
-    if file_paths_ignore:
-        logger.warning(
-            f"Length of file_path exceeds {target}, ignoring new file: {file_paths_ignore}"
-        )
-    return file_paths
 
 
 # TODO: Deprecated, use user_prompt in QueryParam instead
