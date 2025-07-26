@@ -270,7 +270,7 @@ export default function QuerySettings() {
                   onBlur={(e) => {
                     const value = e.target.value
                     if (value === '' || isNaN(parseInt(value))) {
-                      handleChange('max_total_tokens', 1000)
+                      handleChange('max_total_tokens', 32000)
                     }
                   }}
                   min={1}

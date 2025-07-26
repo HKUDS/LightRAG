@@ -20,6 +20,7 @@ from lightrag.constants import (
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILENAME,
     GRAPH_FIELD_SEP,
+    DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_MAX_FILE_PATH_LENGTH,
 )
 
@@ -1887,7 +1888,7 @@ async def process_chunks_unified(
             chunk_token_limit = getattr(
                 query_param,
                 "max_total_tokens",
-                global_config.get("MAX_TOTAL_TOKENS", 32000),
+                global_config.get("MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS),
             )
 
         original_count = len(unique_chunks)
