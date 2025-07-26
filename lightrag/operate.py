@@ -3136,10 +3136,8 @@ def build_file_path(already_file_paths, data_list, target):
     # set: deduplication
     file_paths_set = {fp for fp in already_file_paths if fp}
 
-    # string: deduplication sorted
-    file_paths = GRAPH_FIELD_SEP.join(
-        list(dict.fromkeys(fp for fp in already_file_paths if fp))
-    )
+    # string: filter empty value and keep file order in already_file_paths
+    file_paths = GRAPH_FIELD_SEP.join(fp for fp in already_file_paths if fp)
     # ignored file_paths
     file_paths_ignore = ""
     # add file_paths
