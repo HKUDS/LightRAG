@@ -3166,7 +3166,7 @@ def build_file_path(already_file_paths, data_list, target):
             file_paths_ignore += GRAPH_FIELD_SEP + cur_file_path
 
     if file_paths_ignore:
-        print(
+        logger.debug(
             f"length of varchar field file_path exceeds max length target={target} ignore={file_paths_ignore}"
         )
     return file_paths
