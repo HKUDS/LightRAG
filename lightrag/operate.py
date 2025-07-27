@@ -681,13 +681,7 @@ async def _rebuild_single_entity(
             "description": final_description,
             "entity_type": entity_type,
             "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
-            "file_path": build_file_path(
-                current_entity.get("file_path", "").split(GRAPH_FIELD_SEP)
-                if current_entity.get("file_path")
-                else [],
-                [{"file_path": fp} for fp in file_paths],
-                entity_name,
-            )
+            "file_path": GRAPH_FIELD_SEP.join(file_paths)
             if file_paths
             else current_entity.get("file_path", "unknown_source"),
         }
@@ -900,13 +894,7 @@ async def _rebuild_single_relationship(
         "keywords": combined_keywords,
         "weight": weight,
         "source_id": GRAPH_FIELD_SEP.join(chunk_ids),
-        "file_path": build_file_path(
-            current_relationship.get("file_path", "").split(GRAPH_FIELD_SEP)
-            if current_relationship.get("file_path")
-            else [],
-            [{"file_path": fp} for fp in file_paths if fp],
-            f"{src}-{tgt}",
-        )
+        "file_path": GRAPH_FIELD_SEP.join([fp for fp in file_paths if fp])
         if file_paths
         else current_relationship.get("file_path", "unknown_source"),
     }
