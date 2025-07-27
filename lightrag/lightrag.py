@@ -32,6 +32,7 @@ from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_MIN_RERANK_SCORE,
+    DEFAULT_SUMMARY_MAX_TOKENS,
 )
 from lightrag.utils import get_env_value
 
@@ -39,6 +40,12 @@ from lightrag.kg import (
     STORAGES,
     verify_storage_implementation,
 )
+
+# Import for type annotation
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from lightrag.api.config import OllamaServerInfos
 
 from lightrag.kg.shared_storage import (
     get_namespace_data,
@@ -270,7 +277,9 @@ class LightRAG:
     llm_model_name: str = field(default="gpt-4o-mini")
     """Name of the LLM model used for generating responses."""
 
-    llm_model_max_token_size: int = field(default=int(os.getenv("MAX_TOKENS", 10000)))
+    summary_max_tokens: int = field(
+        default=int(os.getenv("MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS))
+    )
     """Maximum number of tokens allowed per LLM response."""
 
     llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 4)))
@@ -339,6 +348,9 @@ class LightRAG:
         default=float(os.getenv("COSINE_THRESHOLD", 0.2))
     )
 
+    ollama_server_infos: Optional["OllamaServerInfos"] = field(default=None)
+    """Configuration for Ollama server information."""
+
     _storages_status: StoragesStatus = field(default=StoragesStatus.NOT_CREATED)
 
     def __post_init__(self):
@@ -399,6 +411,12 @@ class LightRAG:
                 self.tokenizer = TiktokenTokenizer(self.tiktoken_model_name)
             else:
                 self.tokenizer = TiktokenTokenizer()
+
+        # Initialize ollama_server_infos if not provided
+        if self.ollama_server_infos is None:
+            from lightrag.api.config import OllamaServerInfos
+
+            self.ollama_server_infos = OllamaServerInfos()
 
         # Fix global_config now
         global_config = asdict(self)

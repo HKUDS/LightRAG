@@ -335,6 +335,13 @@ def create_app(args):
             "Rerank model not configured. Set RERANK_BINDING_API_KEY and RERANK_BINDING_HOST to enable reranking."
         )
 
+    # Create ollama_server_infos from command line arguments
+    from lightrag.api.config import OllamaServerInfos
+
+    ollama_server_infos = OllamaServerInfos(
+        name=args.simulated_model_name, tag=args.simulated_model_tag
+    )
+
     # Initialize RAG
     if args.llm_binding in ["lollms", "ollama", "openai"]:
         rag = LightRAG(
@@ -347,7 +354,7 @@ def create_app(args):
             else openai_alike_model_complete,
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
+            summary_max_tokens=args.max_tokens,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs={
@@ -373,6 +380,7 @@ def create_app(args):
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
+            ollama_server_infos=ollama_server_infos,
         )
     else:  # azure_openai
         rag = LightRAG(
@@ -386,7 +394,7 @@ def create_app(args):
             },
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
+            summary_max_tokens=args.max_tokens,
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,
@@ -402,6 +410,7 @@ def create_app(args):
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
+            ollama_server_infos=ollama_server_infos,
         )
 
     # Add routes
@@ -535,6 +544,16 @@ def create_app(args):
                     "rerank_binding_host": args.rerank_binding_host
                     if rerank_model_func is not None
                     else None,
+                    # Environment variable status (requested configuration)
+                    "summary_language": args.summary_language,
+                    "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
+                    "max_parallel_insert": args.max_parallel_insert,
+                    "cosine_threshold": args.cosine_threshold,
+                    "min_rerank_score": args.min_rerank_score,
+                    "related_chunk_number": args.related_chunk_number,
+                    "max_async": args.max_async,
+                    "embedding_func_max_async": args.embedding_func_max_async,
+                    "embedding_batch_num": args.embedding_batch_num,
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),

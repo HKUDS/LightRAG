@@ -45,6 +45,12 @@ export type LightragStatus = {
     enable_rerank?: boolean
     rerank_model?: string | null
     rerank_binding_host?: string | null
+    summary_language: string
+    force_llm_summary_on_merge: boolean
+    max_parallel_insert: number
+    max_async: number
+    embedding_func_max_async: number
+    embedding_batch_num: number
   }
   update_status?: Record<string, any>
   core_version?: string
