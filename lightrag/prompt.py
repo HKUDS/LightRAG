@@ -151,7 +151,7 @@ Output:
 """
 
 PROMPTS["entity_continue_extraction"] = """
-MANY entities and relationships were missed in the last extraction.
+MANY entities and relationships were missed in the last extraction. Please find only the missing entities and relationships from previous text.
 
 ---Remember Steps---
 
@@ -179,7 +179,7 @@ Format the content-level key words as ("content_keywords"{tuple_delimiter}<high_
 
 ---Output---
 
-Add them below using the same format:\n
+Add new entities and relations below using the same format, and do not include entities and relations that have been previously extracted. :\n
 """.strip()
 
 PROMPTS["entity_if_loop_extraction"] = """
