@@ -335,6 +335,13 @@ def create_app(args):
             "Rerank model not configured. Set RERANK_BINDING_API_KEY and RERANK_BINDING_HOST to enable reranking."
         )
 
+    # Create ollama_server_infos from command line arguments
+    from lightrag.api.config import OllamaServerInfos
+
+    ollama_server_infos = OllamaServerInfos(
+        name=args.simulated_model_name, tag=args.simulated_model_tag
+    )
+
     # Initialize RAG
     if args.llm_binding in ["lollms", "ollama", "openai"]:
         rag = LightRAG(
@@ -373,6 +380,7 @@ def create_app(args):
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
+            ollama_server_infos=ollama_server_infos,
         )
     else:  # azure_openai
         rag = LightRAG(
@@ -402,6 +410,7 @@ def create_app(args):
             max_parallel_insert=args.max_parallel_insert,
             max_graph_nodes=args.max_graph_nodes,
             addon_params={"language": args.summary_language},
+            ollama_server_infos=ollama_server_infos,
         )
 
     # Add routes
