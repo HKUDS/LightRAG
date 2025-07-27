@@ -31,6 +31,7 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_MIN_RERANK_SCORE,
 )
 from lightrag.utils import get_env_value
 
@@ -283,6 +284,11 @@ class LightRAG:
 
     rerank_model_func: Callable[..., object] | None = field(default=None)
     """Function for reranking retrieved documents. All rerank configurations (model name, API keys, top_k, etc.) should be included in this function. Optional."""
+
+    min_rerank_score: float = field(
+        default=get_env_value("MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float)
+    )
+    """Minimum rerank score threshold for filtering chunks after reranking."""
 
     # Storage
     # ---

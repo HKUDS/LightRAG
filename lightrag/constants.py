@@ -23,6 +23,9 @@ DEFAULT_ENABLE_RERANK = True
 DEFAULT_COSINE_THRESHOLD = 0.2
 DEFAULT_RELATED_CHUNK_NUMBER = 5
 
+# Rerank configuration defaults
+DEFAULT_MIN_RERANK_SCORE = 0.0
+
 # Separator for graph fields
 GRAPH_FIELD_SEP = "<SEP>"
 
