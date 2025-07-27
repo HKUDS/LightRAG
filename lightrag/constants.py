@@ -6,11 +6,18 @@ different parts of the LightRAG system. Centralizing these values ensures
 consistency and makes maintenance easier.
 """
 
-# Default values for environment variables
-DEFAULT_MAX_GLEANING = 1
-DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 4
+# Default values for server settings
 DEFAULT_WOKERS = 2
 DEFAULT_TIMEOUT = 150
+
+# Default values for extraction settings
+DEFAULT_SUMMARY_LANGUAGE = "English"  # Default language for summaries
+DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE = 4
+DEFAULT_MAX_GLEANING = 1
+DEFAULT_MAX_TOKENS = 10000  # Default maximum token size
+
+# Separator for graph fields
+GRAPH_FIELD_SEP = "<SEP>"
 
 # Query and retrieval configuration defaults
 DEFAULT_TOP_K = 40
@@ -26,11 +33,15 @@ DEFAULT_RELATED_CHUNK_NUMBER = 5
 DEFAULT_ENABLE_RERANK = True
 DEFAULT_MIN_RERANK_SCORE = 0.0
 
-# Separator for graph fields
-GRAPH_FIELD_SEP = "<SEP>"
-
 # File path configuration for vector and graph database
 DEFAULT_MAX_FILE_PATH_LENGTH = 4090
+
+# Async configuration defaults
+DEFAULT_MAX_ASYNC = 4  # Default maximum async operations
+
+# Embedding configuration defaults
+DEFAULT_EMBEDDING_FUNC_MAX_ASYNC = 8  # Default max async for embedding functions
+DEFAULT_EMBEDDING_BATCH_NUM = 10  # Default batch size for embedding computations
 
 # Logging configuration defaults
 DEFAULT_LOG_MAX_BYTES = 10485760  # Default 10MB

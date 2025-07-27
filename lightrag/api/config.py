@@ -20,6 +20,12 @@ from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_MIN_RERANK_SCORE,
+    DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
+    DEFAULT_MAX_ASYNC,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_SUMMARY_LANGUAGE,
+    DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
+    DEFAULT_EMBEDDING_BATCH_NUM,
 )
 
 # use the .env that is inside the current folder
@@ -111,14 +117,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-async",
         type=int,
-        default=get_env_value("MAX_ASYNC", 4, int),
+        default=get_env_value("MAX_ASYNC", DEFAULT_MAX_ASYNC, int),
         help="Maximum async operations (default: from env or 4)",
     )
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=get_env_value("MAX_TOKENS", 32000, int),
-        help="Maximum token size (default: from env or 32768)",
+        default=get_env_value("MAX_TOKENS", DEFAULT_MAX_TOKENS, int),
+        help="Maximum token size (default: from env or 32000)",
     )
 
     # Logging configuration
@@ -276,7 +282,7 @@ def parse_args() -> argparse.Namespace:
 
     # Add environment variables that were previously read directly
     args.cors_origins = get_env_value("CORS_ORIGINS", "*")
-    args.summary_language = get_env_value("SUMMARY_LANGUAGE", "English")
+    args.summary_language = get_env_value("SUMMARY_LANGUAGE", DEFAULT_SUMMARY_LANGUAGE)
     args.whitelist_paths = get_env_value("WHITELIST_PATHS", "/health,/api/*")
 
     # For JWT Auth
@@ -314,6 +320,17 @@ def parse_args() -> argparse.Namespace:
     )
     args.related_chunk_number = get_env_value(
         "RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int
+    )
+
+    # Add missing environment variables for health endpoint
+    args.force_llm_summary_on_merge = get_env_value(
+        "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int
+    )
+    args.embedding_func_max_async = get_env_value(
+        "EMBEDDING_FUNC_MAX_ASYNC", DEFAULT_EMBEDDING_FUNC_MAX_ASYNC, int
+    )
+    args.embedding_batch_num = get_env_value(
+        "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
     )
 
     ollama_server_infos.LIGHTRAG_MODEL = args.simulated_model_name

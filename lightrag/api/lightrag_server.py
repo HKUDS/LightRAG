@@ -535,6 +535,16 @@ def create_app(args):
                     "rerank_binding_host": args.rerank_binding_host
                     if rerank_model_func is not None
                     else None,
+                    # Environment variable status (requested configuration)
+                    "summary_language": args.summary_language,
+                    "force_llm_summary_on_merge": args.force_llm_summary_on_merge,
+                    "max_parallel_insert": args.max_parallel_insert,
+                    "cosine_threshold": args.cosine_threshold,
+                    "min_rerank_score": args.min_rerank_score,
+                    "related_chunk_number": args.related_chunk_number,
+                    "max_async": args.max_async,
+                    "embedding_func_max_async": args.embedding_func_max_async,
+                    "embedding_batch_num": args.embedding_batch_num,
                 },
                 "auth_mode": auth_mode,
                 "pipeline_busy": pipeline_status.get("busy", False),
