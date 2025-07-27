@@ -247,9 +247,11 @@
     },
     "statusCard": {
       "unavailable": "معلومات الحالة غير متوفرة",
-      "storageInfo": "معلومات التخزين",
+      "serverInfo": "معلومات الخادم",
       "workingDirectory": "دليل العمل",
       "inputDirectory": "دليل الإدخال",
+      "maxParallelInsert": "أقصى إدراج متوازي",
+      "summarySettings": "إعدادات الملخص",
       "llmConfig": "تكوين نموذج اللغة الكبير",
       "llmBinding": "ربط نموذج اللغة الكبير",
       "llmBindingHost": "نقطة نهاية نموذج اللغة الكبير",

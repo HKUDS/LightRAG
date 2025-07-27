@@ -247,9 +247,11 @@
     },
     "statusCard": {
       "unavailable": "状态信息不可用",
-      "storageInfo": "存储信息",
+      "serverInfo": "服务器信息",
       "workingDirectory": "工作目录",
       "inputDirectory": "输入目录",
+      "maxParallelInsert": "最大并行插入数",
+      "summarySettings": "摘要设置",
       "llmConfig": "LLM配置",
       "llmBinding": "LLM绑定",
       "llmBindingHost": "LLM端点",

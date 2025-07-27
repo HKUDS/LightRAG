@@ -247,9 +247,11 @@
     },
     "statusCard": {
       "unavailable": "Status information unavailable",
-      "storageInfo": "Storage Info",
+      "serverInfo": "Server Info",
       "workingDirectory": "Working Directory",
       "inputDirectory": "Input Directory",
+      "maxParallelInsert": "Max Parallel Insert",
+      "summarySettings": "Summary Settings",
       "llmConfig": "LLM Configuration",
       "llmBinding": "LLM Binding",
       "llmBindingHost": "LLM Endpoint",

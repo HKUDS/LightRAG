@@ -247,9 +247,11 @@
     },
     "statusCard": {
       "unavailable": "Informations sur l'état indisponibles",
-      "storageInfo": "Informations de stockage",
+      "serverInfo": "Informations du serveur",
       "workingDirectory": "Répertoire de travail",
       "inputDirectory": "Répertoire d'entrée",
+      "maxParallelInsert": "Insertion parallèle maximale",
+      "summarySettings": "Paramètres de résumé",
       "llmConfig": "Configuration du modèle de langage",
       "llmBinding": "Liaison du modèle de langage",
       "llmBindingHost": "Point de terminaison LLM",

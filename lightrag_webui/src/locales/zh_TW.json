@@ -247,9 +247,11 @@
     },
     "statusCard": {
       "unavailable": "狀態資訊不可用",
-      "storageInfo": "儲存資訊",
+      "serverInfo": "伺服器資訊",
       "workingDirectory": "工作目錄",
       "inputDirectory": "輸入目錄",
+      "maxParallelInsert": "最大並行插入數",
+      "summarySettings": "摘要設定",
       "llmConfig": "LLM 設定",
       "llmBinding": "LLM 綁定",
       "llmBindingHost": "LLM 端點",
