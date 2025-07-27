@@ -1852,6 +1852,7 @@ async def extract_keywords_only(
         keywords_data = json.loads(match.group(0))
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing error: {e}")
+        logger.error(f"LLM respond: {result}")
         return [], []
 
     hl_keywords = keywords_data.get("high_level_keywords", [])
