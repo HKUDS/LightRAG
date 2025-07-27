@@ -270,7 +270,8 @@
       "rerankerConfig": "Reranker Configuration",
       "rerankerBindingHost": "Reranker Endpoint",
       "rerankerModel": "Reranker Model",
-      "lockStatus": "Lock Status"
+      "lockStatus": "Lock Status",
+      "threshold": "Threshold"
     },
     "propertiesView": {
       "editProperty": "Edit {{property}}",

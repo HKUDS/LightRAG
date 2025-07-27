@@ -51,6 +51,9 @@ export type LightragStatus = {
     max_async: number
     embedding_func_max_async: number
     embedding_batch_num: number
+    cosine_threshold: number
+    min_rerank_score: number
+    related_chunk_number: number
   }
   update_status?: Record<string, any>
   core_version?: string

@@ -18,6 +18,8 @@ const StatusCard = ({ status }: { status: LightragStatus | null }) => {
           <span className="truncate">{status.input_directory}</span>
           <span>{t('graphPanel.statusCard.summarySettings')}:</span>
           <span>{status.configuration.summary_language} / LLM summary on {status.configuration.force_llm_summary_on_merge.toString()} fragments</span>
+          <span>{t('graphPanel.statusCard.threshold')}:</span>
+          <span>cosine {status.configuration.cosine_threshold} / rerank_score {status.configuration.min_rerank_score} / max_related {status.configuration.related_chunk_number}</span>
           <span>{t('graphPanel.statusCard.maxParallelInsert')}:</span>
           <span>{status.configuration.max_parallel_insert}</span>
         </div>

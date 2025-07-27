@@ -270,7 +270,8 @@
       "rerankerConfig": "重排序設定",
       "rerankerBindingHost": "重排序端點",
       "rerankerModel": "重排序模型",
-      "lockStatus": "鎖定狀態"
+      "lockStatus": "鎖定狀態",
+      "threshold": "閾值"
     },
     "propertiesView": {
       "editProperty": "編輯{{property}}",

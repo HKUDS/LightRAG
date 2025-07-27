@@ -270,7 +270,8 @@
       "rerankerConfig": "Configuration du reclassement",
       "rerankerBindingHost": "Point de terminaison de reclassement",
       "rerankerModel": "Modèle de reclassement",
-      "lockStatus": "État des verrous"
+      "lockStatus": "État des verrous",
+      "threshold": "Seuil"
     },
     "propertiesView": {
       "editProperty": "Modifier {{property}}",

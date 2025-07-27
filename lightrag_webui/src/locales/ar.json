@@ -270,7 +270,8 @@
       "rerankerConfig": "تكوين إعادة الترتيب",
       "rerankerBindingHost": "نقطة نهاية إعادة الترتيب",
       "rerankerModel": "نموذج إعادة الترتيب",
-      "lockStatus": "حالة القفل"
+      "lockStatus": "حالة القفل",
+      "threshold": "العتبة"
     },
     "propertiesView": {
       "editProperty": "تعديل {{property}}",
