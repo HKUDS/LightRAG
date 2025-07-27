@@ -19,6 +19,7 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
+    DEFAULT_MIN_RERANK_SCORE,
 )
 
 # use the .env that is inside the current folder
@@ -289,6 +290,11 @@ def parse_args() -> argparse.Namespace:
     args.rerank_model = get_env_value("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
     args.rerank_binding_host = get_env_value("RERANK_BINDING_HOST", None)
     args.rerank_binding_api_key = get_env_value("RERANK_BINDING_API_KEY", None)
+
+    # Min rerank score configuration
+    args.min_rerank_score = get_env_value(
+        "MIN_RERANK_SCORE", DEFAULT_MIN_RERANK_SCORE, float
+    )
 
     # Query configuration
     args.history_turns = get_env_value("HISTORY_TURNS", DEFAULT_HISTORY_TURNS, int)
