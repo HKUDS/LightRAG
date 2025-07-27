@@ -32,6 +32,7 @@ from lightrag.constants import (
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
     DEFAULT_MIN_RERANK_SCORE,
+    DEFAULT_SUMMARY_MAX_TOKENS,
 )
 from lightrag.utils import get_env_value
 
@@ -270,7 +271,9 @@ class LightRAG:
     llm_model_name: str = field(default="gpt-4o-mini")
     """Name of the LLM model used for generating responses."""
 
-    llm_model_max_token_size: int = field(default=int(os.getenv("MAX_TOKENS", 10000)))
+    summary_max_tokens: int = field(
+        default=int(os.getenv("MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS))
+    )
     """Maximum number of tokens allowed per LLM response."""
 
     llm_model_max_async: int = field(default=int(os.getenv("MAX_ASYNC", 4)))

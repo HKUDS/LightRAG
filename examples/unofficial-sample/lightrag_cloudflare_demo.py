@@ -211,7 +211,7 @@ async def initialize_rag():
         max_parallel_insert=2,
         llm_model_func=cloudflare_worker.query,
         llm_model_name=os.getenv("LLM_MODEL", LLM_MODEL),
-        llm_model_max_token_size=4080,
+        summary_max_tokens=4080,
         embedding_func=EmbeddingFunc(
             embedding_dim=int(os.getenv("EMBEDDING_DIM", "1024")),
             max_token_size=int(os.getenv("MAX_EMBED_TOKENS", "2048")),

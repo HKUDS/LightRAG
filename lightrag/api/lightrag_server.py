@@ -347,7 +347,7 @@ def create_app(args):
             else openai_alike_model_complete,
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
+            summary_max_tokens=args.max_tokens,
             chunk_token_size=int(args.chunk_size),
             chunk_overlap_token_size=int(args.chunk_overlap_size),
             llm_model_kwargs={
@@ -386,7 +386,7 @@ def create_app(args):
             },
             llm_model_name=args.llm_model,
             llm_model_max_async=args.max_async,
-            llm_model_max_token_size=args.max_tokens,
+            summary_max_tokens=args.max_tokens,
             embedding_func=embedding_func,
             kv_storage=args.kv_storage,
             graph_storage=args.graph_storage,

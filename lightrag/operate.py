@@ -125,7 +125,7 @@ async def _handle_entity_relation_summary(
     use_llm_func = partial(use_llm_func, _priority=8)
 
     tokenizer: Tokenizer = global_config["tokenizer"]
-    llm_max_tokens = global_config["llm_model_max_token_size"]
+    llm_max_tokens = global_config["summary_max_tokens"]
 
     language = global_config["addon_params"].get(
         "language", PROMPTS["DEFAULT_LANGUAGE"]

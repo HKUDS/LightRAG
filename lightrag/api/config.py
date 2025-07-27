@@ -22,7 +22,7 @@ from lightrag.constants import (
     DEFAULT_MIN_RERANK_SCORE,
     DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE,
     DEFAULT_MAX_ASYNC,
-    DEFAULT_MAX_TOKENS,
+    DEFAULT_SUMMARY_MAX_TOKENS,
     DEFAULT_SUMMARY_LANGUAGE,
     DEFAULT_EMBEDDING_FUNC_MAX_ASYNC,
     DEFAULT_EMBEDDING_BATCH_NUM,
@@ -118,13 +118,13 @@ def parse_args() -> argparse.Namespace:
         "--max-async",
         type=int,
         default=get_env_value("MAX_ASYNC", DEFAULT_MAX_ASYNC, int),
-        help="Maximum async operations (default: from env or 4)",
+        help=f"Maximum async operations (default: from env or {DEFAULT_MAX_ASYNC})",
     )
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=get_env_value("MAX_TOKENS", DEFAULT_MAX_TOKENS, int),
-        help="Maximum token size (default: from env or 32000)",
+        default=get_env_value("MAX_TOKENS", DEFAULT_SUMMARY_MAX_TOKENS, int),
+        help=f"Maximum token size (default: from env or {DEFAULT_SUMMARY_MAX_TOKENS})",
     )
 
     # Logging configuration
