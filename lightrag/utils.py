@@ -1891,7 +1891,7 @@ async def process_chunks_unified(
 
             if filtered_count > 0:
                 logger.info(
-                    f"Rerank filtering remained: {len(unique_chunks)} chunks (min rerank score: {min_rerank_score})"
+                    f"Rerank filtering: {len(unique_chunks)} chunks remained (min rerank score: {min_rerank_score})"
                 )
             if not unique_chunks:
                 return []
