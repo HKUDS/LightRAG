@@ -1880,7 +1880,9 @@ async def process_chunks_unified(
             # Filter chunks with score below threshold
             filtered_chunks = []
             for chunk in unique_chunks:
-                rerank_score = chunk.get("rerank_score", 1.0)  # Default to 1.0 if no score
+                rerank_score = chunk.get(
+                    "rerank_score", 1.0
+                )  # Default to 1.0 if no score
                 if rerank_score >= min_rerank_score:
                     filtered_chunks.append(chunk)
 
