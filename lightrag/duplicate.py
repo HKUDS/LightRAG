@@ -587,7 +587,7 @@ class LLMBasedCleaning(BaseDeduplicationStrategy):
                 if (
                     len(found_nodes) >= 2
                     and summarized_node
-                    and summarized_node not in found_nodes
+                    # and summarized_node not in found_nodes
                 ):
                     try:
                         # Execute merge operation
