@@ -128,8 +128,11 @@ env:
 
 # Secret configuration for API keys
 secrets:
-  # Create a secret with your OpenAI API key
-  openaiApiKey: "" # Set this or create manually
+  # Create a secret with your API keys
+  openaiApiKey: "" # Legacy field, kept for backward compatibility
+  llmApiKey: "" # API key for LLM service (e.g., OpenRouter)
+  embeddingApiKey: "" # API key for embedding service (e.g., Google Gemini)
+  
 
 # Node selector and affinity
 nodeSelector: {}

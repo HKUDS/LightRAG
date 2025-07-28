@@ -61,7 +61,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "lightrag-minimal.secretName" . }}
-                  key: openai-api-key
+                  key: llm-api-key
             
             # Embedding configuration
             - name: EMBEDDING_BINDING
@@ -70,11 +70,13 @@ spec:
               value: {{ .Values.env.EMBEDDING_MODEL | quote }}
             - name: EMBEDDING_DIM
               value: {{ .Values.env.EMBEDDING_DIM | quote }}
+            - name: EMBEDDING_BINDING_HOST
+              value: {{ .Values.env.EMBEDDING_BINDING_HOST | quote }}
             - name: EMBEDDING_BINDING_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: {{ include "lightrag-minimal.secretName" . }}
-                  key: openai-api-key
+                  key: embedding-api-key
             
             # Storage configuration
             - name: LIGHTRAG_KV_STORAGE

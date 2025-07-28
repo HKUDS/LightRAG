@@ -73,7 +73,7 @@ PostgreSQL connection string
 */}}
 {{- define "lightrag-minimal.postgresqlHost" -}}
 {{- if .Values.postgresql.enabled }}
-{{- printf "%s-postgresql" (include "lightrag-minimal.fullname" .) }}
+{{- printf "%s-postgresql" .Release.Name }}
 {{- else }}
 {{- .Values.env.POSTGRES_HOST }}
 {{- end }}
