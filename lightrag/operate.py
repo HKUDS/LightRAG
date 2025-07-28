@@ -46,7 +46,10 @@ from .constants import (
 from .kg.shared_storage import get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
-from .duplicate import DeduplicationService, DeduplicationStrategyFactory
+from .duplicate import (
+    DeduplicationService,
+    DeduplicationStrategyFactory,
+)
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -1386,9 +1389,6 @@ async def merge_nodes_and_edges(
                     "target_batch_size": strategy_config.get("batch_size", 30),
                     "similarity_threshold": strategy_config.get(
                         "similarity_threshold", 0.85
-                    ),
-                    "model_name": strategy_config.get(
-                        "embedding_model", "paraphrase-multilingual-MiniLM-L12-v2"
                     ),
                     "system_prompt": strategy_config.get("system_prompt"),
                 },

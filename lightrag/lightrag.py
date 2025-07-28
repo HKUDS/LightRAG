@@ -82,7 +82,7 @@ from .utils import (
     check_storage_env_vars,
     logger,
 )
-from .duplicate import DeduplicationService
+from .duplicate import LightRAGDeduplicationService
 from .types import KnowledgeGraph
 from dotenv import load_dotenv
 
@@ -195,11 +195,6 @@ class LightRAG:
                 "batch_size": get_env_value("DEDUP_BATCH_SIZE", 30, int),
                 "similarity_threshold": get_env_value(
                     "DEDUP_SIMILARITY_THRESHOLD", 0.85, float
-                ),
-                "embedding_model": get_env_value(
-                    "DEDUP_EMBEDDING_MODEL",
-                    "paraphrase-multilingual-MiniLM-L12-v2",
-                    str,
                 ),
                 "system_prompt": None,  # Use default if None
             },
@@ -1172,7 +1167,7 @@ class LightRAG:
                                 # Create deduplication service if deduplication is enabled
                                 dedup_service = None
                                 if self.enable_deduplication:
-                                    dedup_service = DeduplicationService(self)
+                                    dedup_service = LightRAGDeduplicationService(self)
 
                                 await merge_nodes_and_edges(
                                     chunk_results=chunk_results,  # result collected from entity_relation_task

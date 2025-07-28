@@ -4,15 +4,6 @@ from dataclasses import dataclass
 from abc import ABC, abstractmethod
 from functools import partial
 
-# Optional imports for deduplication functionality
-try:
-    from sentence_transformers import SentenceTransformer
-
-    SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    SentenceTransformer = None
-    SENTENCE_TRANSFORMERS_AVAILABLE = False
-
 try:
     from fuzzywuzzy import process
 
@@ -56,23 +47,61 @@ class EntityInfo:
 
 # ======================= Service Interfaces =======================
 class DeduplicationService(Protocol):
-    def __init__(self, rag_instance):
-        self.rag = rag_instance
+    """Protocol for deduplication service that provides access to RAG functionality"""
+
+    @property
+    def rag_instance(self):
+        """Get the RAG instance"""
+        ...
 
     async def process_with_llm(
         self, prompt: str, system_prompt: str = "", **kwargs
     ) -> Optional[str]:
         """Process text using RAG's LLM function"""
-        use_model_func = partial(self.rag.llm_model_func, _priority=5)
+        ...
+
+    async def merge_entities(
+        self, source_entities: List[str], target_entity: str
+    ) -> None:
+        """Merge entities using RAG's merge function"""
+        ...
+
+    async def get_embeddings(self, texts: List[str]) -> Any:
+        """Get embeddings using RAG's embedding function"""
+        ...
+
+
+class LightRAGDeduplicationService:
+    """Concrete implementation of DeduplicationService for LightRAG"""
+
+    def __init__(self, rag_instance):
+        self._rag = rag_instance
+
+    @property
+    def rag_instance(self):
+        """Get the RAG instance"""
+        return self._rag
+
+    async def process_with_llm(
+        self, prompt: str, system_prompt: str = "", **kwargs
+    ) -> Optional[str]:
+        """Process text using RAG's LLM function"""
+        use_model_func = partial(self._rag.llm_model_func, _priority=5)
         return await use_model_func(prompt, system_prompt=system_prompt, **kwargs)
 
     async def merge_entities(
         self, source_entities: List[str], target_entity: str
     ) -> None:
         """Merge entities using RAG's merge function"""
-        return await self.rag.amerge_entities(
+        return await self._rag.amerge_entities(
             source_entities=source_entities, target_entity=target_entity
         )
+
+    async def get_embeddings(self, texts: List[str]) -> Any:
+        """Get embeddings using RAG's embedding function"""
+        if not self._rag.embedding_func:
+            raise ValueError("RAG instance does not have embedding function configured")
+        return await self._rag.embedding_func(texts)
 
 
 # ======================= Configuration System =======================
@@ -97,7 +126,6 @@ class LLMBasedConfig(BaseDeduplicationConfig):
     max_batch_size: Optional[int] = None
     min_batch_size: Optional[int] = None
     similarity_threshold: float = 0.85
-    model_name: str = "paraphrase-multilingual-MiniLM-L12-v2"
     system_prompt: Optional[str] = None
 
     def __post_init__(self):
@@ -148,17 +176,6 @@ class EmbeddingModelManager:
             cls._instance = super(EmbeddingModelManager, cls).__new__(cls)
         return cls._instance
 
-    def get_sentence_transformer(self, model_name: str) -> SentenceTransformer:
-        """Get or create a SentenceTransformer model"""
-        if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            raise ImportError("sentence-transformers is required but not installed")
-
-        cache_key = f"st_{model_name}"
-        if cache_key not in self._models:
-            logger.info(f"Loading SentenceTransformer model: {model_name}")
-            self._models[cache_key] = SentenceTransformer(model_name)
-        return self._models[cache_key]
-
     def get_model(self, model_type: str, model_name: str) -> Any:
         """Get model by type and name"""
         if model_type == "sentence_transformer":
@@ -173,26 +190,29 @@ class EmbeddingModelManager:
 
 # ======================= Clustering Processor =======================
 class SemanticClusterBatcher:
-    """Semantic clustering batch processor supporting different embedding sources"""
+    """Semantic clustering batch processor using RAG's embedding function"""
 
-    def __init__(self, config: BaseDeduplicationConfig):
+    def __init__(
+        self,
+        config: BaseDeduplicationConfig,
+        deduplication_service: DeduplicationService,
+    ):
         self.config = config
-        self.model_manager = EmbeddingModelManager()
+        self.deduplication_service = deduplication_service
 
     def _validate_input(self, nodes: List[str]):
         """Validate input nodes"""
         if not nodes:
             raise ValueError("Input node list cannot be empty")
 
-    def _get_embeddings(self, nodes: List[str], embedding_config: Dict[str, str]):
-        """Get embeddings based on configuration"""
-        model_type = embedding_config.get("type", "sentence_transformer")
-        model_name = embedding_config.get(
-            "name", "paraphrase-multilingual-MiniLM-L12-v2"
-        )
-
-        model = self.model_manager.get_model(model_type, model_name)
-        return model.encode(nodes)
+    async def _get_embeddings(self, nodes: List[str]) -> Any:
+        """Get embeddings using RAG's embedding function"""
+        try:
+            embeddings = await self.deduplication_service.get_embeddings(nodes)
+            return embeddings
+        except Exception as e:
+            logger.error(f"Failed to get embeddings from RAG: {e}")
+            raise
 
     def _hierarchical_clustering(self, embeddings, target_size: int):
         """Hierarchical clustering algorithm"""
@@ -302,23 +322,12 @@ class SemanticClusterBatcher:
 
         return batches
 
-    def cluster_and_batch(
-        self, nodes: List[str], embedding_config: Dict[str, str] = None
-    ) -> List[List[str]]:
-        """Main processing pipeline for clustering and batching"""
+    async def cluster_and_batch(self, nodes: List[str]) -> List[List[str]]:
+        """Main processing pipeline for clustering and batching using RAG's embedding function"""
         self._validate_input(nodes)
 
-        # Default embedding configuration for LLM-based strategy
-        if embedding_config is None:
-            embedding_config = {
-                "type": "sentence_transformer",
-                "name": getattr(
-                    self.config, "model_name", "paraphrase-multilingual-MiniLM-L12-v2"
-                ),
-            }
-
-        logger.info("Generating semantic embeddings...")
-        embeddings = self._get_embeddings(nodes, embedding_config)
+        logger.info("Generating semantic embeddings using RAG's embedding function...")
+        embeddings = await self._get_embeddings(nodes)
 
         logger.info("Performing hierarchical clustering...")
         target_size = getattr(self.config, "target_batch_size", 30)
@@ -434,8 +443,6 @@ class LLMBasedCleaning(BaseDeduplicationStrategy):
     def _check_dependencies(self) -> None:
         """Check LLM-based strategy specific dependencies"""
         missing_deps = []
-        if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            missing_deps.append("sentence-transformers")
         if not FUZZYWUZZY_AVAILABLE:
             missing_deps.append("fuzzywuzzy")
         if not CLUSTERING_AVAILABLE:
@@ -469,8 +476,9 @@ class LLMBasedCleaning(BaseDeduplicationStrategy):
         nodes_batches = []
         short_batches = []
 
-        batcher = SemanticClusterBatcher(self.config)
-
+        # Use improved SemanticClusterBatcher, pass in deduplication_service
+        batcher = SemanticClusterBatcher(self.config, self.service)
+        # logger.info(f"classified_data: {classified_data}")
         for entity_type, items in classified_data.items():
             if len(items) <= self.config.max_batch_size:
                 if len(items) >= self.config.min_batch_size:
@@ -479,7 +487,7 @@ class LLMBasedCleaning(BaseDeduplicationStrategy):
                     short_batches.append(items)
             else:
                 # Use semantic clustering for large groups
-                split_batches = batcher.cluster_and_batch(items)
+                split_batches = await batcher.cluster_and_batch(items)
                 nodes_batches.extend(split_batches)
 
         # Handle small batches
@@ -490,13 +498,14 @@ class LLMBasedCleaning(BaseDeduplicationStrategy):
                     nodes_batches.append(combined_short)
                 else:
                     # Apply clustering to combined short batches
-                    split_batches = batcher.cluster_and_batch(combined_short)
+                    split_batches = await batcher.cluster_and_batch(combined_short)
                     nodes_batches.extend(split_batches)
                 logger.info(
                     f"Processed {len(short_batches)} small batches into {len(combined_short)} items"
                 )
 
         logger.info(f"Created {len(nodes_batches)} batches for processing")
+        # logger.info(f"nodes_batches: {nodes_batches}")
         return nodes_batches
 
     async def clean_nodes(self, nodes_batches: List[List[str]]) -> None:
@@ -585,8 +594,7 @@ class LLMBasedCleaning(BaseDeduplicationStrategy):
                         found_nodes.append(match[0])
 
                 if (
-                    len(found_nodes) >= 2
-                    and summarized_node
+                    len(found_nodes) >= 2 and summarized_node
                     # and summarized_node not in found_nodes
                 ):
                     try:
@@ -611,7 +619,9 @@ class LLMBasedCleaning(BaseDeduplicationStrategy):
                         # Note: We don't rollback here as the batch update hasn't happened yet
                         continue
                 else:
-                    logger.info(f"Insufficient nodes for merge: {found_nodes}")
+                    logger.info(
+                        f"Insufficient nodes for merge: found_nodes: {found_nodes}, summarized_node: {summarized_node}"
+                    )
 
             return True
 
