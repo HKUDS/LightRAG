@@ -72,6 +72,21 @@ api = [
     "uvicorn",
 ]
 
+deduplication = [
+    # Entity deduplication dependencies
+    "sentence-transformers>=2.2.0",
+    "fuzzywuzzy>=0.18.0",
+    "scipy>=1.9.0",
+    "scikit-learn>=1.1.0",
+    "json-repair>=0.7.0",
+    "python-levenshtein>=0.20.0",  # For better fuzzywuzzy performance
+]
+
+# Full installation with all optional dependencies
+all = [
+    "lightrag-hku[api,deduplication]"
+]
+
 [project.scripts]
 lightrag-server = "lightrag.api.lightrag_server:main"
 lightrag-gunicorn = "lightrag.api.run_with_gunicorn:main"

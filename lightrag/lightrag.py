@@ -31,7 +31,6 @@ from lightrag.constants import (
     DEFAULT_MAX_TOTAL_TOKENS,
     DEFAULT_COSINE_THRESHOLD,
     DEFAULT_RELATED_CHUNK_NUMBER,
-    DEFAULT_CLEAN_SPLIT_BATCH_SIZE,
 )
 from lightrag.utils import get_env_value
 
@@ -83,6 +82,7 @@ from .utils import (
     check_storage_env_vars,
     logger,
 )
+from .duplicate import DeduplicationService
 from .types import KnowledgeGraph
 from dotenv import load_dotenv
 
@@ -183,20 +183,40 @@ class LightRAG:
         )
     )
 
-    clean_split_batch_model: str = field(
-        default="paraphrase-multilingual-MiniLM-L12-v2"
-    )
-    """Model name used for cleaning text. Support SentenceTransformer's model. Defaults to `paraphrase-multilingual-MiniLM-L12-v2`"""
+    # Entity deduplication configuration
+    # ---
+    enable_deduplication: bool = field(default=False)
+    """Enable entity deduplication during extraction."""
 
-    clean_split_batch_size: int = field(
-        default=get_env_value(
-            "CLEAN_SPLIT_BATCH_SIZE", DEFAULT_CLEAN_SPLIT_BATCH_SIZE, int
-        )
+    deduplication_config: dict[str, Any] = field(
+        default_factory=lambda: {
+            "strategy": "llm_based",  # Strategy name: currently only "llm_based" is implemented
+            "llm_based": {
+                "batch_size": get_env_value("DEDUP_BATCH_SIZE", 30, int),
+                "similarity_threshold": get_env_value(
+                    "DEDUP_SIMILARITY_THRESHOLD", 0.85, float
+                ),
+                "embedding_model": get_env_value(
+                    "DEDUP_EMBEDDING_MODEL",
+                    "paraphrase-multilingual-MiniLM-L12-v2",
+                    str,
+                ),
+                "system_prompt": None,  # Use default if None
+            },
+            # Future strategies can be added here by extending the architecture
+            # Example: "new_strategy": { ... }
+        }
     )
-    """The number of keywords to classify in each batch during deduplication."""
+    """Configuration for entity deduplication strategies.
 
-    clean_system_prompt: str = field(default=None)
-    """System prompt for cleaning text."""
+    Structure:
+    {
+        "strategy": "strategy_name",  # Active strategy
+        "strategy_name": {
+            # Strategy-specific configuration
+        }
+    }
+    """
 
     # Text chunking
     # ---
@@ -1148,6 +1168,12 @@ class LightRAG:
                             try:
                                 # Get chunk_results from entity_relation_task
                                 chunk_results = await entity_relation_task
+
+                                # Create deduplication service if deduplication is enabled
+                                dedup_service = None
+                                if self.enable_deduplication:
+                                    dedup_service = DeduplicationService(self)
+
                                 await merge_nodes_and_edges(
                                     chunk_results=chunk_results,  # result collected from entity_relation_task
                                     knowledge_graph_inst=self.chunk_entity_relation_graph,
@@ -1160,7 +1186,7 @@ class LightRAG:
                                     current_file_number=current_file_number,
                                     total_files=total_files,
                                     file_path=file_path,
-                                    rag=self,
+                                    deduplication_service=dedup_service,
                                 )
 
                                 await self.doc_status.upsert(

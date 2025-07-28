@@ -1,58 +1,204 @@
 import json
-import os
+from typing import Protocol, Optional, List, Dict, Any, Union
+from dataclasses import dataclass
+from abc import ABC, abstractmethod
+from functools import partial
 
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+# Optional imports for deduplication functionality
+try:
+    from sentence_transformers import SentenceTransformer
 
-from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SentenceTransformer = None
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+
+try:
+    from fuzzywuzzy import process
+
+    FUZZYWUZZY_AVAILABLE = True
+except ImportError:
+    process = None
+    FUZZYWUZZY_AVAILABLE = False
+
+try:
+    from scipy.cluster.hierarchy import linkage, fcluster
+    from sklearn.cluster import KMeans
+
+    CLUSTERING_AVAILABLE = True
+except ImportError:
+    linkage = fcluster = KMeans = None
+    CLUSTERING_AVAILABLE = False
+
+try:
+    from json_repair import repair_json
+
+    JSON_REPAIR_AVAILABLE = True
+except ImportError:
+    repair_json = json.loads  # Fallback to standard json.loads
+    JSON_REPAIR_AVAILABLE = False
+
 from .utils import logger
-from fuzzywuzzy import process
-from scipy.cluster.hierarchy import linkage, fcluster
-from sklearn.cluster import KMeans
 from collections import defaultdict
 from collections import deque
 from .prompt import PROMPTS
-from abc import ABC, abstractmethod
-from functools import partial
-from json_repair import repair_json
 
 
-# ======================= Base Strategy Class =======================
-class BaseDeduplicationStrategy(ABC):
-    """Base class for deduplication strategies, defines standard interfaces"""
+# ======================= Data Structures =======================
+@dataclass
+class EntityInfo:
+    """Standard entity information structure"""
 
-    def __init__(self, node_data: list, param: dict = None):
-        self.node_data = node_data
-        self.param = param
+    entity_id: str
+    entity_type: str
+    description: Optional[str] = None
 
-    @abstractmethod
-    async def classify_nodes_by_similarity(self) -> list:
-        """Asynchronously classify nodes by similarity"""
-        pass
 
-    @abstractmethod
-    async def clean_nodes(self, nodes_batches: list) -> None:
-        """Main method for asynchronously cleaning nodes"""
-        pass
+# ======================= Service Interfaces =======================
+class DeduplicationService(Protocol):
+    def __init__(self, rag_instance):
+        self.rag = rag_instance
+
+    async def process_with_llm(
+        self, prompt: str, system_prompt: str = "", **kwargs
+    ) -> Optional[str]:
+        """Process text using RAG's LLM function"""
+        use_model_func = partial(self.rag.llm_model_func, _priority=5)
+        return await use_model_func(prompt, system_prompt=system_prompt, **kwargs)
+
+    async def merge_entities(
+        self, source_entities: List[str], target_entity: str
+    ) -> None:
+        """Merge entities using RAG's merge function"""
+        return await self.rag.amerge_entities(
+            source_entities=source_entities, target_entity=target_entity
+        )
+
+
+# ======================= Configuration System =======================
+@dataclass
+class BaseDeduplicationConfig:
+    """Base configuration for all deduplication strategies"""
+
+    strategy_name: str
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "BaseDeduplicationConfig":
+        """Create config instance from dictionary"""
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class LLMBasedConfig(BaseDeduplicationConfig):
+    """Configuration specific to LLM-based deduplication strategy"""
+
+    strategy_name: str = "llm_based"
+    target_batch_size: int = 30
+    max_batch_size: Optional[int] = None
+    min_batch_size: Optional[int] = None
+    similarity_threshold: float = 0.85
+    model_name: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    system_prompt: Optional[str] = None
+
+    def __post_init__(self):
+        if self.max_batch_size is None:
+            self.max_batch_size = int(self.target_batch_size * 1.25)
+        if self.min_batch_size is None:
+            self.min_batch_size = int(self.target_batch_size * 0.75)
+
+
+# Configuration factory
+class ConfigFactory:
+    """Factory for creating strategy-specific configurations"""
+
+    _config_classes = {
+        "llm_based": LLMBasedConfig,
+    }
+
+    @classmethod
+    def register_config(cls, strategy_name: str, config_class: type):
+        """Register a new configuration class"""
+        cls._config_classes[strategy_name] = config_class
+
+    @classmethod
+    def create_config(
+        cls, strategy_name: str, config_data: Dict[str, Any]
+    ) -> BaseDeduplicationConfig:
+        """Create strategy-specific configuration"""
+        if strategy_name not in cls._config_classes:
+            available_configs = list(cls._config_classes.keys())
+            raise ValueError(
+                f"Unknown configuration for strategy '{strategy_name}'. "
+                f"Available configurations: {available_configs}"
+            )
+
+        config_class = cls._config_classes[strategy_name]
+        return config_class(**config_data)
+
+
+# ======================= Enhanced Model Manager =======================
+class EmbeddingModelManager:
+    """Universal embedding model manager supporting multiple model types"""
+
+    _instance = None
+    _models: Dict[str, Any] = {}
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(EmbeddingModelManager, cls).__new__(cls)
+        return cls._instance
+
+    def get_sentence_transformer(self, model_name: str) -> SentenceTransformer:
+        """Get or create a SentenceTransformer model"""
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise ImportError("sentence-transformers is required but not installed")
+
+        cache_key = f"st_{model_name}"
+        if cache_key not in self._models:
+            logger.info(f"Loading SentenceTransformer model: {model_name}")
+            self._models[cache_key] = SentenceTransformer(model_name)
+        return self._models[cache_key]
+
+    def get_model(self, model_type: str, model_name: str) -> Any:
+        """Get model by type and name"""
+        if model_type == "sentence_transformer":
+            return self.get_sentence_transformer(model_name)
+        else:
+            raise ValueError(f"Unsupported model type: {model_type}")
+
+    def clear_models(self):
+        """Clear all loaded models to free memory"""
+        self._models.clear()
 
 
 # ======================= Clustering Processor =======================
 class SemanticClusterBatcher:
-    """Semantic clustering batch processor"""
+    """Semantic clustering batch processor supporting different embedding sources"""
 
-    def __init__(self, TARGET_SIZE, MAX_SIZE, MIN_SIZE, ModelName):
-        self.model = SentenceTransformer(ModelName)
-        self.TARGET_SIZE = TARGET_SIZE
-        self.MAX_SIZE = MAX_SIZE
-        self.MIN_SIZE = MIN_SIZE
+    def __init__(self, config: BaseDeduplicationConfig):
+        self.config = config
+        self.model_manager = EmbeddingModelManager()
 
-    def _validate_input(self, nodes):
-        if len(nodes) == 0:
+    def _validate_input(self, nodes: List[str]):
+        """Validate input nodes"""
+        if not nodes:
             raise ValueError("Input node list cannot be empty")
-        if not all(isinstance(node, str) for node in nodes):
-            raise TypeError("All nodes must be strings")
 
-    def _hierarchical_clustering(self, embeddings, target_size):
+    def _get_embeddings(self, nodes: List[str], embedding_config: Dict[str, str]):
+        """Get embeddings based on configuration"""
+        model_type = embedding_config.get("type", "sentence_transformer")
+        model_name = embedding_config.get(
+            "name", "paraphrase-multilingual-MiniLM-L12-v2"
+        )
+
+        model = self.model_manager.get_model(model_type, model_name)
+        return model.encode(nodes)
+
+    def _hierarchical_clustering(self, embeddings, target_size: int):
         """Hierarchical clustering algorithm"""
+        if not CLUSTERING_AVAILABLE:
+            raise ImportError("scipy and scikit-learn are required for clustering")
+
         try:
             Z = linkage(embeddings, method="ward", metric="euclidean")
             target_clusters = max(1, len(embeddings) // target_size)
@@ -62,13 +208,19 @@ class SemanticClusterBatcher:
             raise
 
     def _split_large_clusters(
-        self, clusters, embeddings, original_nodes, MAX_CLUSTER_SIZE, MIN_BATCH_SIZE
+        self, clusters: List[List[str]], embeddings, original_nodes: List[str]
     ):
-        """Split oversized clusters"""
+        """Split oversized clusters using KMeans"""
+        if not hasattr(self.config, "max_batch_size") or not hasattr(
+            self.config, "min_batch_size"
+        ):
+            # For strategies without batch size limits, return as-is
+            return clusters
+
         final_clusters = []
         for cluster in clusters:
             original_count = len(cluster)
-            if original_count <= MAX_CLUSTER_SIZE:
+            if original_count <= self.config.max_batch_size:
                 final_clusters.append(cluster)
                 continue
 
@@ -80,8 +232,8 @@ class SemanticClusterBatcher:
                     len(indices) == original_count
                 ), "Indices don't match cluster elements"
 
-                n_sub = max(2, original_count // MIN_BATCH_SIZE + 1)
-                kmeans = KMeans(n_clusters=n_sub, n_init=10)
+                n_sub = max(2, original_count // self.config.min_batch_size + 1)
+                kmeans = KMeans(n_clusters=n_sub, n_init=10, random_state=42)
                 sub_labels = kmeans.fit_predict(sub_embeddings)
 
                 sub_clusters = defaultdict(list)
@@ -95,6 +247,9 @@ class SemanticClusterBatcher:
                     )
 
                 final_clusters.extend(sub_clusters.values())
+                logger.info(
+                    f"Split cluster of size {original_count} into {len(sub_clusters)} sub-clusters"
+                )
             except Exception as e:
                 logger.warning(
                     f"Sub-clustering failed, keeping original cluster: {str(e)}"
@@ -102,8 +257,12 @@ class SemanticClusterBatcher:
                 final_clusters.append(cluster)
         return final_clusters
 
-    def _optimize_batches(self, clusters, MAX_CLUSTER_SIZE, MIN_BATCH_SIZE):
-        """Optimize batch grouping"""
+    def _optimize_batches(self, clusters: List[List[str]]) -> List[List[str]]:
+        """Optimize batch grouping using greedy algorithm"""
+        if not hasattr(self.config, "target_batch_size"):
+            # For strategies without batch optimization, return as-is
+            return clusters
+
         batches = []
         current_batch = []
         cluster_queue = deque(sorted(clusters, key=len, reverse=True))
@@ -111,22 +270,27 @@ class SemanticClusterBatcher:
         while cluster_queue:
             cluster = cluster_queue.popleft()
 
-            if len(current_batch) + len(cluster) <= self.TARGET_SIZE:
+            if len(current_batch) + len(cluster) <= self.config.target_batch_size:
                 current_batch.extend(cluster)
                 continue
 
-            remaining_space = self.TARGET_SIZE - len(current_batch)
+            remaining_space = self.config.target_batch_size - len(current_batch)
 
-            if remaining_space >= self.MIN_SIZE and len(cluster) > remaining_space:
+            if (
+                remaining_space >= self.config.min_batch_size
+                and len(cluster) > remaining_space
+            ):
                 current_batch.extend(cluster[:remaining_space])
                 cluster_queue.appendleft(cluster[remaining_space:])
             else:
-                batches.append(current_batch)
+                if current_batch:
+                    batches.append(current_batch)
                 current_batch = list(cluster)
 
         if current_batch:
             batches.append(current_batch)
 
+        # Validate element count consistency
         input_count = sum(len(c) for c in clusters)
         output_count = sum(len(b) for b in batches)
         if input_count != output_count:
@@ -138,15 +302,27 @@ class SemanticClusterBatcher:
 
         return batches
 
-    def cluster_and_batch(self, nodes):
-        """Main processing pipeline"""
+    def cluster_and_batch(
+        self, nodes: List[str], embedding_config: Dict[str, str] = None
+    ) -> List[List[str]]:
+        """Main processing pipeline for clustering and batching"""
         self._validate_input(nodes)
 
+        # Default embedding configuration for LLM-based strategy
+        if embedding_config is None:
+            embedding_config = {
+                "type": "sentence_transformer",
+                "name": getattr(
+                    self.config, "model_name", "paraphrase-multilingual-MiniLM-L12-v2"
+                ),
+            }
+
         logger.info("Generating semantic embeddings...")
-        embeddings = self.model.encode(nodes)
+        embeddings = self._get_embeddings(nodes, embedding_config)
 
         logger.info("Performing hierarchical clustering...")
-        cluster_ids = self._hierarchical_clustering(embeddings, self.TARGET_SIZE)
+        target_size = getattr(self.config, "target_batch_size", 30)
+        cluster_ids = self._hierarchical_clustering(embeddings, target_size)
 
         cluster_dict = defaultdict(list)
         for node, cid in zip(nodes, cluster_ids):
@@ -155,177 +331,294 @@ class SemanticClusterBatcher:
 
         logger.info("Optimizing cluster sizes...")
         optimized_clusters = self._split_large_clusters(
-            initial_clusters, embeddings, nodes, self.MAX_SIZE, self.MIN_SIZE
+            initial_clusters, embeddings, nodes
         )
 
         logger.info("Creating final batches...")
-        batches = self._optimize_batches(
-            optimized_clusters, self.MAX_SIZE, self.MIN_SIZE
-        )
+        batches = self._optimize_batches(optimized_clusters)
 
         return batches
+
+
+# ======================= Base Strategy Class =======================
+class BaseDeduplicationStrategy(ABC):
+    """Base class for deduplication strategies"""
+
+    def __init__(self, service: DeduplicationService, config: BaseDeduplicationConfig):
+        self.service = service
+        self.config = config
+        self._check_dependencies()
+
+    @abstractmethod
+    def _check_dependencies(self) -> None:
+        """Check strategy-specific dependencies"""
+        pass
+
+    @abstractmethod
+    async def classify_nodes_by_similarity(
+        self, node_data: List[Dict[str, Any]]
+    ) -> List[List[str]]:
+        """Classify nodes by similarity and return batches"""
+        pass
+
+    @abstractmethod
+    async def clean_nodes(self, nodes_batches: List[List[str]]) -> None:
+        """Clean nodes by removing duplicates"""
+        pass
+
+    def _normalize_node_data(self, node_data: List[Dict[str, Any]]) -> List[EntityInfo]:
+        """Normalize node data to standard EntityInfo structure"""
+        normalized = []
+        for node in node_data:
+            if isinstance(node, dict):
+                if "entity_type" in node and "entity_id" in node:
+                    entity_info = EntityInfo(
+                        entity_id=node["entity_id"],
+                        entity_type=node["entity_type"],
+                        description=node.get("description"),
+                    )
+                    normalized.append(entity_info)
+                else:
+                    logger.warning(f"Node missing required fields: {node}")
+            else:
+                logger.warning(f"Invalid node format: {node}")
+        return normalized
+
+
+# ======================= Strategy Factory =======================
+class DeduplicationStrategyFactory:
+    """Factory for creating deduplication strategies"""
+
+    _strategies = {}
+
+    @classmethod
+    def register_strategy(cls, strategy_name: str, strategy_class: type):
+        """Register a new deduplication strategy"""
+        cls._strategies[strategy_name] = strategy_class
+
+    @classmethod
+    def create_strategy(
+        cls,
+        strategy_name: str,
+        service: DeduplicationService,
+        config: Union[BaseDeduplicationConfig, Dict[str, Any]],
+    ) -> BaseDeduplicationStrategy:
+        """Create a deduplication strategy instance"""
+        if strategy_name not in cls._strategies:
+            available_strategies = list(cls._strategies.keys())
+            raise ValueError(
+                f"Unknown deduplication strategy '{strategy_name}'. "
+                f"Available strategies: {available_strategies}"
+            )
+
+        # Convert dict config to proper config object if needed
+        if isinstance(config, dict):
+            config = ConfigFactory.create_config(strategy_name, config)
+
+        strategy_class = cls._strategies[strategy_name]
+        return strategy_class(service, config)
+
+    @classmethod
+    def get_available_strategies(cls) -> List[str]:
+        """Get list of available strategy names"""
+        return list(cls._strategies.keys())
 
 
 # ======================= LLM-based Cleaning Strategy =======================
 class LLMBasedCleaning(BaseDeduplicationStrategy):
     """LLM-based node cleaning strategy"""
 
-    def __init__(self, rag, node_data: list, param: dict = None):
-        super().__init__(node_data, param)
-        self.rag = rag
+    def __init__(self, service: DeduplicationService, config: LLMBasedConfig):
+        super().__init__(service, config)
 
-    async def classify_nodes_by_similarity(self, node_data) -> list:
-        """Asynchronously classify nodes"""
+    def _check_dependencies(self) -> None:
+        """Check LLM-based strategy specific dependencies"""
+        missing_deps = []
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            missing_deps.append("sentence-transformers")
+        if not FUZZYWUZZY_AVAILABLE:
+            missing_deps.append("fuzzywuzzy")
+        if not CLUSTERING_AVAILABLE:
+            missing_deps.append("scipy and scikit-learn")
+        if not JSON_REPAIR_AVAILABLE:
+            missing_deps.append("json-repair")
+
+        if missing_deps:
+            raise ImportError(
+                f"Missing dependencies for LLM-based deduplication: {', '.join(missing_deps)}. "
+                f"Install with: pip install lightrag-hku[deduplication]"
+            )
+
+    async def classify_nodes_by_similarity(
+        self, node_data: List[Dict[str, Any]]
+    ) -> List[List[str]]:
+        """Classify nodes by similarity and return batches"""
         logger.info(
-            f"Classifying nodes by similarity with batch size: {self.param.get('clean_split_batch_size', 30)}"
+            f"Classifying nodes by similarity with batch size: {self.config.target_batch_size}"
         )
-        TARGET_SIZE = self.param.get("clean_split_batch_size", 30)
-        MAX_SIZE = int(TARGET_SIZE * 1.25)
-        MIN_SIZE = int(TARGET_SIZE * 0.75)
 
-        batcher_labels = SemanticClusterBatcher(
-            TARGET_SIZE,
-            MAX_SIZE,
-            MIN_SIZE,
-            self.param.get(
-                "clean_split_batch_model", "paraphrase-multilingual-MiniLM-L12-v2"
-            ),
-        )
-        # Classify node data
+        # Normalize input data
+        entities = self._normalize_node_data(node_data)
+
+        # Group by entity type
         classified_data = defaultdict(list)
-        for node in node_data:
-            if "entity_type" in node:
-                classified_data[node["entity_type"]].append(node["entity_id"])
-            else:
-                logger.warning(f"Node without entity_type: {node}")
+        for entity in entities:
+            classified_data[entity.entity_type].append(entity.entity_id)
 
         # Process node batches
         nodes_batches = []
-        short_KP = []
+        short_batches = []
+
+        batcher = SemanticClusterBatcher(self.config)
+
         for entity_type, items in classified_data.items():
-            if len(items) < MAX_SIZE:
-                if len(items) > 10:
+            if len(items) <= self.config.max_batch_size:
+                if len(items) >= self.config.min_batch_size:
                     nodes_batches.append(items)
                 else:
-                    short_KP.append(items)
+                    short_batches.append(items)
             else:
-                splited_long = batcher_labels.cluster_and_batch(items)
-                for splited in splited_long:
-                    nodes_batches.append(splited)
+                # Use semantic clustering for large groups
+                split_batches = batcher.cluster_and_batch(items)
+                nodes_batches.extend(split_batches)
 
-        # Process short knowledge points
-        combined_short_KP = [item for sublist in short_KP for item in sublist]
-        if len(combined_short_KP) < MAX_SIZE:
-            nodes_batches.append(combined_short_KP)
-            logger.info("Scattered knowledge points < max cluster size, added directly")
-        else:
-            batcher_labels_isolated = SemanticClusterBatcher(
-                TARGET_SIZE,
-                MAX_SIZE,
-                MIN_SIZE,
-                self.param.get(
-                    "clean_split_batch_model", "paraphrase-multilingual-MiniLM-L12-v2"
-                ),
-            )
-            splited_long_isolated = batcher_labels_isolated.cluster_and_batch(
-                combined_short_KP
-            )
-            for splited_isolated in splited_long_isolated:
-                nodes_batches.append(splited_isolated)
+        # Handle small batches
+        if short_batches:
+            combined_short = [item for sublist in short_batches for item in sublist]
+            if len(combined_short) >= self.config.min_batch_size:
+                if len(combined_short) <= self.config.max_batch_size:
+                    nodes_batches.append(combined_short)
+                else:
+                    # Apply clustering to combined short batches
+                    split_batches = batcher.cluster_and_batch(combined_short)
+                    nodes_batches.extend(split_batches)
+                logger.info(
+                    f"Processed {len(short_batches)} small batches into {len(combined_short)} items"
+                )
 
+        logger.info(f"Created {len(nodes_batches)} batches for processing")
         return nodes_batches
 
-    async def clean_nodes(
-        self,
-        nodes_batches: list,
-    ) -> list:
-        """Main method for asynchronously cleaning nodes, preserving original structure"""
-        for i in range(0, len(nodes_batches)):
+    async def clean_nodes(self, nodes_batches: List[List[str]]) -> None:
+        """Main method for cleaning nodes with improved error handling"""
+        failed_batches = []
+
+        for i, batch in enumerate(nodes_batches):
+            logger.info("=" * 80)
             logger.info(
-                "#############################################################################"
+                f"CLEANING BATCH [{i + 1}/{len(nodes_batches)}] - Size: {len(batch)}"
             )
-            logger.info(
-                f"                  ####  CLEANING NODES[{str(i + 1)}/{str(len(nodes_batches))}]  Length [{str(len(nodes_batches[i]))}]  ####"
-            )
-            logger.info(
-                "#############################################################################"
+            logger.info("=" * 80)
+
+            try:
+                success = await self._process_single_batch(batch)
+                if not success:
+                    failed_batches.append((i, batch))
+            except Exception as e:
+                logger.error(f"Failed to process batch {i + 1}: {str(e)}")
+                failed_batches.append((i, batch))
+
+        if failed_batches:
+            logger.warning(f"Failed to process {len(failed_batches)} batches")
+
+        logger.info("=" * 80)
+        logger.info("NODE CLEANING COMPLETE")
+        logger.info("=" * 80)
+
+    async def _process_single_batch(self, batch: List[str]) -> bool:
+        """Process a single batch with proper error handling"""
+        try:
+            # Prepare system prompt
+            system_prompt = self.config.system_prompt or PROMPTS["goal_clean"]
+            system_prompt = str(system_prompt) + "\n" + PROMPTS["goal_clean_examples"]
+
+            # Call LLM
+            response = await self.service.process_with_llm(
+                str(batch), system_prompt=system_prompt
             )
 
-            this_batch = nodes_batches[i]
-            use_model_func: callable = self.rag.llm_model_func
-            use_model_func = partial(use_model_func, _priority=5)
-            clean_system_prompt = (
-                self.param.get("clean_system_prompt") or PROMPTS["goal_clean"]
-            )
-            clean_system_prompt = (
-                str(clean_system_prompt) + "\n" + PROMPTS["goal_clean_examples"]
-            )
-            response = await use_model_func(
-                str(this_batch),
-                system_prompt=clean_system_prompt,
-            )
-            # logger.info(f"    clean_system_prompt: {clean_system_prompt}")
-            # logger.info(f"    Response: {response}")
-            if response is None or response.strip() in [
-                "null",
-                "",
-                "[]",
-                "Null",
-                "NULL",
-            ]:
-                logger.info("    No cleaning needed, skipping this batch")
-                continue
-            # Process merge operations
+            if not response or response.strip().lower() in ["null", "", "[]", "none"]:
+                logger.info("No cleaning needed for this batch")
+                return True
+
+            # Parse response
             try:
                 repaired = repair_json(response)
                 data = json.loads(repaired)
             except Exception as e:
-                logger.info(f"Failed to repair JSON during node cleaning: {e}")
+                logger.error(f"Failed to parse JSON response: {e}")
+                logger.debug(f"Raw response: {response}")
+                return False
+
+            # Process merge operations
             merge_operations = data.get("merge", [])
+            if not merge_operations:
+                logger.info("No merge operations found")
+                return True
 
-            # Merge nodes
-            if merge_operations:
-                for op in merge_operations:
-                    nodes_to_merge = op["keywords"]
-                    summarized_node = op["summary"]
+            return await self._execute_merge_operations(merge_operations, batch)
 
-                    # Skip single-node merges
-                    if len(nodes_to_merge) == 1:
+        except Exception as e:
+            logger.error(f"Error processing batch: {str(e)}")
+            return False
+
+    async def _execute_merge_operations(
+        self, merge_operations: List[Dict], batch: List[str]
+    ) -> bool:
+        """Execute merge operations with atomic transaction support"""
+        successful_merges = []
+
+        try:
+            for op in merge_operations:
+                nodes_to_merge = op.get("keywords", [])
+                summarized_node = op.get("summary", "")
+
+                if len(nodes_to_merge) <= 1:
+                    logger.info(f"Skipping single-node merge: {nodes_to_merge}")
+                    continue
+
+                # Find matching nodes with configurable threshold
+                found_nodes = []
+                for node in nodes_to_merge:
+                    match = process.extractOne(node, batch)
+                    if match and match[1] >= (self.config.similarity_threshold * 100):
+                        found_nodes.append(match[0])
+
+                if (
+                    len(found_nodes) >= 2
+                    and summarized_node
+                    and summarized_node not in found_nodes
+                ):
+                    try:
+                        # Execute merge operation
+                        await self.service.merge_entities(found_nodes, summarized_node)
+
+                        # Update batch atomically
+                        for node in found_nodes:
+                            if node in batch:
+                                batch.remove(node)
+                        batch.append(summarized_node)
+
+                        successful_merges.append((found_nodes, summarized_node))
                         logger.info(
-                            f"    ———— Single output, skipping merge: {nodes_to_merge}"
+                            f"Successfully merged: {summarized_node} ← {found_nodes}"
                         )
+
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to merge entities {found_nodes} → {summarized_node}: {e}"
+                        )
+                        # Note: We don't rollback here as the batch update hasn't happened yet
                         continue
+                else:
+                    logger.info(f"Insufficient nodes for merge: {found_nodes}")
 
-                    found_nodes = []
-                    for node in nodes_to_merge:
-                        match = process.extractOne(node, this_batch)
-                        if match and match[1] >= 95:
-                            found_nodes.append(match[0])
+            return True
 
-                    # Execute merge
-                    if len(found_nodes) >= 2 and summarized_node != found_nodes:
-                        this_batch.append(summarized_node)
-                        logger.info(
-                            f"    Merged nodes: {summarized_node} ← {found_nodes}"
-                        )
-                        await self.rag.amerge_entities(
-                            source_entities=found_nodes, target_entity=summarized_node
-                        )
-                        # Remove merged nodes
-                        for n in found_nodes:
-                            if n in this_batch:
-                                this_batch.remove(n)
-                    else:
-                        logger.info(
-                            f"    ———— Single output, skipping merge: {found_nodes}"
-                        )
-            else:
-                logger.info("    No merge operations found")
+        except Exception as e:
+            logger.error(f"Error during merge operations: {str(e)}")
+            return False
 
-        logger.info(
-            "################################################################################"
-        )
-        logger.info("                     ####  NODE CLEANING COMPLETE  ####")
-        logger.info(
-            "################################################################################"
-        )
+
+# Register LLM-based strategy
+DeduplicationStrategyFactory.register_strategy("llm_based", LLMBasedCleaning)

@@ -5,7 +5,7 @@ import asyncio
 import json
 import re
 import os
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Optional
 from collections import Counter, defaultdict
 
 from .utils import (
@@ -46,7 +46,7 @@ from .constants import (
 from .kg.shared_storage import get_storage_keyed_lock
 import time
 from dotenv import load_dotenv
-from .duplicate import LLMBasedCleaning
+from .duplicate import DeduplicationService, DeduplicationStrategyFactory
 
 # use the .env that is inside the current folder
 # allows to use different .env file for each lightrag instance
@@ -1196,7 +1196,7 @@ async def merge_nodes_and_edges(
     current_file_number: int = 0,
     total_files: int = 0,
     file_path: str = "unknown_source",
-    rag=None,
+    deduplication_service: Optional[DeduplicationService] = None,
 ) -> None:
     """Merge nodes and edges from extraction results
 
@@ -1369,16 +1369,61 @@ async def merge_nodes_and_edges(
             if entity_data is not None:
                 entities_data.append(entity_data)
 
-    # Samplified deduplication strategy using LLM-based cleaning
-    deduplication_strategy = LLMBasedCleaning(rag, entities_data, global_config)
+    # Apply deduplication if service is provided
+    if deduplication_service and entities_data:
+        # Extract deduplication configuration from global_config
+        dedup_config_data = global_config.get("deduplication_config", {})
+        strategy_name = dedup_config_data.get("strategy", "llm_based")
+        strategy_config = dedup_config_data.get(strategy_name, {})
 
-    # Classify nodes by similarity using the deduplication strategy
-    nodes_batches_clean = await deduplication_strategy.classify_nodes_by_similarity(
-        entities_data
-    )
+        # Create strategy-specific configuration using ConfigFactory
+        try:
+            from .duplicate import ConfigFactory
 
-    # Clean nodes using the deduplication strategy
-    await deduplication_strategy.clean_nodes(nodes_batches_clean)
+            dedup_config = ConfigFactory.create_config(
+                strategy_name,
+                {
+                    "target_batch_size": strategy_config.get("batch_size", 30),
+                    "similarity_threshold": strategy_config.get(
+                        "similarity_threshold", 0.85
+                    ),
+                    "model_name": strategy_config.get(
+                        "embedding_model", "paraphrase-multilingual-MiniLM-L12-v2"
+                    ),
+                    "system_prompt": strategy_config.get("system_prompt"),
+                },
+            )
+        except Exception as e:
+            logger.error(f"Failed to create deduplication configuration: {e}")
+            logger.info("Skipping deduplication due to configuration creation failure")
+            return
+
+        # Create deduplication strategy using factory
+        try:
+            deduplication_strategy = DeduplicationStrategyFactory.create_strategy(
+                strategy_name, deduplication_service, dedup_config
+            )
+        except ValueError as e:
+            logger.error(f"Failed to create deduplication strategy: {e}")
+            logger.info("Skipping deduplication due to strategy creation failure")
+            return
+
+        # Classify nodes by similarity using the deduplication strategy
+        nodes_batches_clean = await deduplication_strategy.classify_nodes_by_similarity(
+            entities_data
+        )
+
+        # Clean nodes using the deduplication strategy
+        await deduplication_strategy.clean_nodes(nodes_batches_clean)
+
+        logger.info(f"Completed deduplication for {len(entities_data)} entity groups")
+    else:
+        if not deduplication_service:
+            logger.info(
+                "Deduplication service not provided, skipping entity deduplication"
+            )
+        if not entities_data:
+            logger.info("No entities data available for deduplication")
 
     # If all tasks completed successfully, collect results
     # (No need to collect results since these tasks don't return values)
