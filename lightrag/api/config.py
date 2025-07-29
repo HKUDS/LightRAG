@@ -403,8 +403,7 @@ def update_uvicorn_mode_config():
         global_args.workers = 1
         # Log warning directly here
         logging.warning(
-            f"In uvicorn mode, workers parameter was set to {
-                original_workers}. Forcing workers=1"
+            f"In uvicorn mode, workers parameter was set to {original_workers}. Forcing workers=1"
         )
 
 
