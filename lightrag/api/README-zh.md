@@ -69,8 +69,8 @@ LLM_BINDING=ollama
 LLM_MODEL=mistral-nemo:latest
 LLM_BINDING_HOST=http://localhost:11434
 # LLM_BINDING_API_KEY=your_api_key
-###  Ollama 服务器上下文 token 数（基于您的 Ollama 服务器容量）
-OLLAMA_NUM_CTX=8192
+###  Ollama 服务器上下文 token 数（必须大于 MAX_TOTAL_TOKENS+2000）
+OLLAMA_LLM_NUM_CTX=8192
 
 EMBEDDING_BINDING=ollama
 EMBEDDING_BINDING_HOST=http://localhost:11434
