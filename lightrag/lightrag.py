@@ -940,6 +940,7 @@ class LightRAG:
 
         # Store document status (without content)
         await self.doc_status.upsert(new_docs)
+        logger.info(f"New documents: {new_docs}")
         logger.info(f"Stored {len(new_docs)} new unique documents")
 
     async def apipeline_process_enqueue_documents(
@@ -1130,6 +1131,7 @@ class LightRAG:
                                                 timezone.utc
                                             ).isoformat(),
                                             "file_path": file_path,
+                                            "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
                                                 "processing_start_time": processing_start_time
                                             },
@@ -1206,6 +1208,7 @@ class LightRAG:
                                             timezone.utc
                                         ).isoformat(),
                                         "file_path": file_path,
+                                        "track_id": status_doc.track_id,  # Preserve existing track_id
                                         "metadata": {
                                             "processing_start_time": processing_start_time,
                                             "processing_end_time": processing_end_time,
@@ -1251,6 +1254,7 @@ class LightRAG:
                                                 timezone.utc
                                             ).isoformat(),
                                             "file_path": file_path,
+                                            "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
@@ -1302,6 +1306,7 @@ class LightRAG:
                                             "created_at": status_doc.created_at,
                                             "updated_at": datetime.now().isoformat(),
                                             "file_path": file_path,
+                                            "track_id": status_doc.track_id,  # Preserve existing track_id
                                             "metadata": {
                                                 "processing_start_time": processing_start_time,
                                                 "processing_end_time": processing_end_time,
