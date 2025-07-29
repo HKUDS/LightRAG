@@ -1820,6 +1820,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 chunks_list=chunks_list,
                 metadata=metadata,
                 error_msg=result[0].get("error_msg"),
+                track_id=result[0].get("track_id"),
             )
 
     async def get_by_ids(self, ids: list[str]) -> list[dict[str, Any]]:
@@ -1869,6 +1870,7 @@ class PGDocStatusStorage(DocStatusStorage):
                     "chunks_list": chunks_list,
                     "metadata": metadata,
                     "error_msg": row.get("error_msg"),
+                    "track_id": row.get("track_id"),
                 }
             )
 
@@ -1927,6 +1929,7 @@ class PGDocStatusStorage(DocStatusStorage):
                 chunks_list=chunks_list,
                 metadata=metadata,
                 error_msg=element.get("error_msg"),
+                track_id=element.get("track_id"),
             )
 
         return docs_by_status
