@@ -1869,7 +1869,8 @@ def create_document_routes(
                 )
 
                 # Build status summary
-                status_key = doc_status.status.value
+                # Handle both DocStatus enum and string cases for robust deserialization
+                status_key = str(doc_status.status)
                 status_summary[status_key] = status_summary.get(status_key, 0) + 1
 
             return TrackStatusResponse(
