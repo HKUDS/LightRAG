@@ -940,7 +940,6 @@ class LightRAG:
 
         # Store document status (without content)
         await self.doc_status.upsert(new_docs)
-        logger.info(f"New documents: {new_docs}")
         logger.info(f"Stored {len(new_docs)} new unique documents")
 
     async def apipeline_process_enqueue_documents(

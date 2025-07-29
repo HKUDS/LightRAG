@@ -146,6 +146,12 @@ export type DocActionResponse = {
   track_id?: string
 }
 
+export type ScanResponse = {
+  status: 'scanning_started'
+  message: string
+  track_id: string
+}
+
 export type DeleteDocResponse = {
   status: 'deletion_started' | 'busy' | 'not_allowed'
   message: string
@@ -302,7 +308,7 @@ export const getDocuments = async (): Promise<DocsStatusesResponse> => {
   return response.data
 }
 
-export const scanNewDocuments = async (): Promise<{ status: string }> => {
+export const scanNewDocuments = async (): Promise<ScanResponse> => {
   const response = await axiosInstance.post('/documents/scan')
   return response.data
 }
