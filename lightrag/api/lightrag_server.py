@@ -363,7 +363,7 @@ def create_app(args):
             llm_model_kwargs={
                 "host": args.llm_binding_host,
                 "timeout": args.timeout,
-                "options": {"num_ctx": args.ollama_num_ctx}.update(OllamaLLMOptions.options_dict(args)),
+                "options": OllamaLLMOptions.options_dict(args),
                 "api_key": args.llm_binding_api_key,
             }
             if args.llm_binding == "lollms" or args.llm_binding == "ollama"
