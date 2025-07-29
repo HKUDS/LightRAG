@@ -273,7 +273,6 @@ def create_app(args):
 
     embedding_func = EmbeddingFunc(
         embedding_dim=args.embedding_dim,
-        max_token_size=args.max_embed_tokens,
         func=lambda texts: lollms_embed(
             texts,
             embed_model=args.embedding_model,
