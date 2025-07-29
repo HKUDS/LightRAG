@@ -383,6 +383,8 @@ class MongoDocStatusStorage(DocStatusStorage):
                 data = doc.copy()
                 # Remove deprecated content field if it exists
                 data.pop("content", None)
+                # Remove MongoDB _id field if it exists
+                data.pop("_id", None)
                 # If file_path is not in data, use document id as file path
                 if "file_path" not in data:
                     data["file_path"] = "no-file-path"
@@ -410,6 +412,8 @@ class MongoDocStatusStorage(DocStatusStorage):
                 data = doc.copy()
                 # Remove deprecated content field if it exists
                 data.pop("content", None)
+                # Remove MongoDB _id field if it exists
+                data.pop("_id", None)
                 # If file_path is not in data, use document id as file path
                 if "file_path" not in data:
                     data["file_path"] = "no-file-path"
@@ -456,7 +460,8 @@ class MongoDocStatusStorage(DocStatusStorage):
         """Create track_id index for better query performance"""
         try:
             # Check if index already exists
-            existing_indexes = await self._data.list_indexes().to_list(length=None)
+            indexes_cursor = await self._data.list_indexes()
+            existing_indexes = await indexes_cursor.to_list(length=None)
             track_id_index_exists = any(
                 "track_id" in idx.get("key", {}) for idx in existing_indexes
             )
